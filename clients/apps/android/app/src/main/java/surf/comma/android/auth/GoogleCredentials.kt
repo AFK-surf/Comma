@@ -12,6 +12,7 @@ import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.CancellationException
+import surf.comma.android.platform.logging.AppLog
 
 /** What the Google account chooser gave back. */
 sealed interface GoogleCredential {
@@ -43,7 +44,10 @@ internal class CredentialManagerGoogle(private val activity: Activity) : GoogleC
             val credential = CredentialManager.create(activity).getCredential(activity, request).credential
             if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 GoogleCredential.Token(GoogleIdTokenCredential.createFrom(credential.data).idToken)
-            } else GoogleCredential.Failed
+            } else {
+                AppLog.warn(TAG, "Unexpected credential type ${credential.type}")
+                GoogleCredential.Failed
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: GetCredentialCancellationException) {
@@ -54,11 +58,19 @@ internal class CredentialManagerGoogle(private val activity: Activity) : GoogleC
             GoogleCredential.Unavailable
         } catch (_: GetCredentialUnsupportedException) {
             GoogleCredential.Unavailable
-        } catch (_: GetCredentialException) {
+        } catch (e: GetCredentialException) {
+            // Only the class and type, not the message. The cause (for example an APK certificate
+            // that is not registered for the OAuth client) is in the GMS log at the same time.
+            AppLog.warn(TAG, "Google credential failed: ${e.javaClass.simpleName} ${e.type}")
             GoogleCredential.Failed
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // Includes a token that does not parse; its contents are never surfaced.
+            AppLog.warn(TAG, "Google credential failed: ${e.javaClass.simpleName}")
             GoogleCredential.Failed
         }
+    }
+
+    private companion object {
+        const val TAG = "GoogleCredential"
     }
 }

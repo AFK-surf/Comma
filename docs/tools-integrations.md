@@ -28,10 +28,11 @@ Confirmation queues source sync and one Routine run, even for the same source ID
 Reconnect keeps the old account and receipt until the new grant completes. Then it retires only that account.
 Drive is optional. Gmail and Calendar are required. Settings links to Plugins.
 
-GitHub, Linear, Notion, and Slack use Salix OAuth for APIs and recommendations. Notion alone needs separate MCP OAuth.
+GitHub, Linear, Notion, Slack: Salix OAuth for APIs and recommendations; Notion also needs MCP OAuth.
 Linear requests `read` and `write`.
-PostHog: MCP OAuth only; switches name its `features`.
-Stripe, Tencent Docs, flomo, Pixso: MCP OAuth. Other `ChinaServices`: user key.
+PostHog: MCP OAuth; switches name `features`.
+Stripe, Tencent Docs, flomo, Pixso: MCP OAuth. Other hosted services use keys.
+[Fastmail MCP](architecture/FASTMAIL.md) uses an MCP-type token, not JMAP.
 Dropbox, Canva, HubSpot: Composio; not personal sources.
 Native reauthorization gives the OAuth callback the attempt's 2-minute deadline.
 The callback checks generation before binding writes. Cancellation keeps old access if it wins. Otherwise it conflicts.
@@ -221,7 +222,7 @@ An external success followed by a crash before local recording stays ambiguous; 
 ### Private diagnostics
 
 A tool failure without a public summary is a private diagnostic. It opens visible-reply repair.
-A model call of `get_runtime_message`, the runtime's own message name, runs no tool. Its guidance opens no repair and uses no attempt. Its round still does not settle.
+A model call of `get_runtime_message`, the runtime's own message name, runs no tool. Its guidance opens no repair and uses no attempt.
 The model context keeps the diagnostic as committed, during and after repair. The request projection does not change an earlier message to enforce information flow.
 Containment depends on the model: the request shows the diagnostic under a `[private diagnostic]` header, and a prompt rule forbids quoting it.
 A user-reportable failure shows only its public summary in every request.

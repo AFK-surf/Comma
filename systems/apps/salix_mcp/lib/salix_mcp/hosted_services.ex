@@ -135,11 +135,10 @@ defmodule SalixMCP.HostedServices do
       mcp_id: "mcp1_0000000000000000026",
       name: "Fastmail",
       category: "Integrations",
-      description:
-        "Email, contacts, and calendars through Fastmail's official MCP. Use an MCP-type token, not JMAP. Start with Read data; Make changes permits edits and Send email permits sending. Attachments are not supported.",
+      description: "Email, contacts, and calendars through Fastmail's official MCP.",
       url: "https://api.fastmail.com/mcp",
       auth:
-        {:bearer, "FASTMAIL_MCP_TOKEN", "MCP-type API token (not JMAP)",
+        {:bearer, "FASTMAIL_MCP_TOKEN", "Fastmail MCP token",
          "https://www.fastmail.help/hc/en-us/articles/15869557281295"}
     }
   ]
@@ -256,10 +255,15 @@ defmodule SalixMCP.HostedServices do
   end
 
   defp connection(%{auth: {_placement, key, label, help_url}} = service) do
+    connection_label =
+      if String.starts_with?(label, service.name <> " "),
+        do: label,
+        else: service.name <> " " <> label
+
     %{
       "id" => service.id <> "-api-key",
       "kind" => "mcp_api_key",
-      "label" => service.name <> " " <> label,
+      "label" => connection_label,
       "config_key" => key,
       "credential_label" => label,
       "help_url" => help_url

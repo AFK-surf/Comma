@@ -7,15 +7,10 @@ OAuth provider.
 
 ## Connect
 
-1. In Fastmail on the web, open **Settings > Privacy & Security > Connected apps
-   & API tokens > Manage API tokens > New API token**.
-2. Name the token and select **Type: MCP**. A JMAP token is not an MCP token.
-   Fastmail Basic plans do not support API tokens.
-3. Start with **Read data**. Add **Make changes** or **Send email** only when
-   needed.
-4. Generate and copy the token. Fastmail shows it only once.
-5. In Comma, open **Plugins > Fastmail** and enter the token in the credential
-   form. Do not paste it in chat messages, commands, or files.
+The plugin accepts a Fastmail API token of **Type: MCP**. A JMAP token is not
+an MCP token. Fastmail Basic plans do not support API tokens. Grant the lowest
+permission tier that the work needs (see below). Enter the token only in the
+Comma credential form, not in chat messages, commands, or files.
 
 The plugin reuses the existing group-scoped secret form (`FASTMAIL_MCP_TOKEN`).
 Comma sends the token only in the `Authorization: Bearer` header, never in the
@@ -46,7 +41,8 @@ permission does not authorize a specific action.
 ## Unsupported scope
 
 - Attachments through MCP (not supported by Fastmail MCP)
-- Fastmail OAuth
+- Fastmail OAuth (not used by this plugin; Comma currently connects with a
+  Fastmail MCP API token)
 - JMAP
 - Push subscriptions and automatic mailbox ingestion
 - Routine or personal-source collection
@@ -64,10 +60,19 @@ tokens** and select **Remove access**.
 
 Error handling separates authentication failures from throttling:
 
-- **HTTP 401 / 403**: treated as credential rejection during setup and as
-  `auth_failed` or `reauthorization_required` during tool calls. Verify that
-  the token is **Type: MCP**, active, and granted the required permissions,
-  then enter a replacement in the credential form.
+- **HTTP 401 / 403**: tool calls return one of these statuses:
+  - `not_authorized`: a Bearer challenge without `error=`. Live Fastmail sends
+    this for a missing, revoked, or wrong token
+    (`Bearer resource_metadata="...", scope="https://www.fastmail.com/dev/mcp"`).
+  - `reauthorization_required`: a Bearer challenge with
+    `error="invalid_token"` or `error="expired_token"`.
+  - `auth_failed`: a plain 401 or 403 without a Bearer challenge.
+
+  Setup rejects all three as `:plugin_credential_rejected` and deletes the
+  rejected binding. After a runtime rejection, the `mcp_api_key` connection
+  state is `not_connected`. Verify that the token is **Type: MCP**, active, and
+  granted the required permissions, then enter a replacement in the credential
+  form.
 - **HTTP 429**: treated as temporary unavailability during setup
   (`plugin_connection_unavailable`) and as `protocol_error` during tool calls,
   not as an invalid token. Retry later without tight polling, and never retry a
@@ -75,11 +80,10 @@ Error handling separates authentication failures from throttling:
 
 ## Architecture notes
 
-`SalixMCP.HostedServices` declares the built-in MCP definition
+`SalixMCP.HostedServices` declares the built-in MCP definitions and system
+plugin definitions, including Fastmail's MCP definition
 (`mcp1_0000000000000000026`) and system plugin (`fastmail`, category
-**Integrations**). `SalixMCP.ChinaServices` delegates `mcp_definitions/0` and
-`plugin_definitions/0` to `SalixMCP.HostedServices` to keep existing callers
-compatible. Authentication reuses `mcp_api_key` with `FASTMAIL_MCP_TOKEN`,
+**Integrations**). Authentication reuses `mcp_api_key` with `FASTMAIL_MCP_TOKEN`,
 existing setup, binding, transport, and redaction owners.
 
 ## Official references

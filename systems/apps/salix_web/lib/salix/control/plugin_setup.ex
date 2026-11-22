@@ -77,15 +77,15 @@ defmodule Salix.Control.PluginSetup do
       case connection["status"] do
         "running" ->
           if credential_rejected_by_tool?(tenant_id, group_id, binding["binding_id"], check),
-            do: reject_credential(tenant_id, group_id, binding["binding_id"]),
+            do: reject_credential(tenant_id, group_id, definition, binding["binding_id"], key),
             else: :ok
 
         status when status in @rejected_credential_statuses ->
-          {:error, :plugin_credential_rejected}
+          reject_credential(tenant_id, group_id, definition, binding["binding_id"], key)
 
         _ ->
           if rejected_credential?(connection["last_error"], check),
-            do: reject_credential(tenant_id, group_id, binding["binding_id"]),
+            do: reject_credential(tenant_id, group_id, definition, binding["binding_id"], key),
             else: {:error, :plugin_connection_unavailable}
       end
     else
@@ -126,8 +126,20 @@ defmodule Salix.Control.PluginSetup do
 
   defp credential_rejected_by_tool?(_tenant_id, _group_id, _binding_id, _check), do: false
 
-  # A rejected key must not stay behind as a connected binding.
-  defp reject_credential(tenant_id, group_id, binding_id) do
+  # A rejected key must not stay behind as a connected binding. X keeps its
+  # binding for a coexisting OAuth connection, so only the key is removed.
+  defp reject_credential(tenant_id, group_id, %{"plugin_id" => "x-twitter"}, binding_id, key) do
+    with {:ok, current} <- Store.get_binding(tenant_id, group_id, binding_id) do
+      _ =
+        Gateway.update_binding(tenant_id, group_id, binding_id, %{
+          "config_values" => Map.delete(current["config_values"] || %{}, key)
+        })
+    end
+
+    {:error, :plugin_credential_rejected}
+  end
+
+  defp reject_credential(tenant_id, group_id, _definition, binding_id, _key) do
     _ = Gateway.delete_binding(tenant_id, group_id, binding_id)
     {:error, :plugin_credential_rejected}
   end

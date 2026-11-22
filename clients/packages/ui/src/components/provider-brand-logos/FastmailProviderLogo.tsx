@@ -1,6 +1,11 @@
 import type { ProviderBrandLogoProps } from "./ProviderBrandLogos";
 
-/** Fastmail's published brand mark. */
+/**
+ * Fastmail's brand mark. The vector paths are from the mark Fastmail publishes
+ * on fastmail.com (`#i-fm-icon-logo`, 40x40 viewBox). The envelope uses
+ * Fastmail's dark fill (`#1b1e20`) over a white inner disc (`r=16`) under the
+ * blue outer ring, so the mark stays legible on light and dark surfaces.
+ */
 export function FastmailProviderLogo(props: ProviderBrandLogoProps) {
   return (
     <svg

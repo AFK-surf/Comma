@@ -116,14 +116,19 @@ defmodule Salix.Control.FastmailPluginTest do
           :rpc_error ->
             respond_rpc_error(conn, request, tools, token)
 
+          # The challenge live https://api.fastmail.com/mcp sends for a
+          # missing, revoked, or wrong token: no RFC 6750 `error=` parameter.
           :unauthorized ->
             conn
             |> put_resp_header(
               "www-authenticate",
-              ~s(Bearer error="invalid_token", error_description="rejected #{token}")
+              ~s(Bearer resource_metadata="https://api.fastmail.com/.well-known/oauth-protected-resource/mcp", scope="https://www.fastmail.com/dev/mcp")
             )
-            |> send_resp(401, "authorization required for #{token}")
+            |> send_resp(401, "Invalid Authorization bearer parameters for #{token}")
 
+          # Defensive: Fastmail does not send `error=` today. This covers an
+          # RFC 6750 `error="expired_token"` challenge if it starts to, and
+          # checks that a token echoed in `www-authenticate` is redacted.
           :expired ->
             conn
             |> put_resp_header(
@@ -321,11 +326,13 @@ defmodule Salix.Control.FastmailPluginTest do
     mock = mock_server(expected_token: "fastmail-valid-token")
 
     assert {:error, :plugin_credential_rejected} = configure(context, "revoked-fixture-token")
+    assert fastmail_bindings(context) == []
     refute enabled?(context)
     assert Enum.any?(MockMCP.calls(mock), &(not &1.authorized))
 
     MockMCP.set_mode(mock, :expired)
     assert {:error, :plugin_credential_rejected} = configure(context, "expired-fixture-token")
+    assert fastmail_bindings(context) == []
     refute enabled?(context)
 
     MockMCP.set_mode(mock, :ok)
@@ -343,7 +350,8 @@ defmodule Salix.Control.FastmailPluginTest do
                %{"query" => "after-revoke"}
              )
 
-    assert revoked_result["status"] in ["auth_failed", "reauthorization_required"]
+    assert revoked_result["status"] == "not_authorized"
+    assert fastmail_connection_state(context) == "not_connected"
     refute inspect(revoked_result) =~ "fastmail-valid-token"
 
     MockMCP.set_mode(mock, :ok)
@@ -362,7 +370,8 @@ defmodule Salix.Control.FastmailPluginTest do
                %{"query" => "after-expire"}
              )
 
-    assert expired_result["status"] in ["auth_failed", "reauthorization_required"]
+    assert expired_result["status"] == "reauthorization_required"
+    assert fastmail_connection_state(context) == "not_connected"
     refute inspect(expired_result) =~ "fastmail-valid-token"
   end
 
@@ -391,7 +400,7 @@ defmodule Salix.Control.FastmailPluginTest do
 
     assert result["status"] == "protocol_error"
     assert result["content"] =~ "MCP HTTP 429"
-    refute result["status"] in ["auth_failed", "reauthorization_required"]
+    refute result["status"] in ["not_authorized", "auth_failed", "reauthorization_required"]
     refute inspect(result) =~ token
   end
 
@@ -426,6 +435,24 @@ defmodule Salix.Control.FastmailPluginTest do
 
       refute enabled?(%{tenant_id: tenant_id, group_id: group_id})
     end
+
+    # Enabled in another group without a token: nothing of this group's
+    # connection reaches it.
+    assert {:ok, _} = Plugins.enable_group(context.tenant_id, other_group["group_id"], "fastmail")
+    assert MCPStore.list_group_bindings(context.tenant_id, other_group["group_id"]) == []
+
+    assert fastmail_connection_state(%{
+             tenant_id: context.tenant_id,
+             group_id: other_group["group_id"]
+           }) == "not_connected"
+
+    assert Gateway.call_tool(
+             context.tenant_id,
+             other_group["group_id"],
+             binding["binding_id"],
+             "fixture_search_mail",
+             %{"query" => "leak"}
+           ) == {:error, :not_found}
   end
 
   test "logs, projections, last_error, and tool responses redact the token across all failure paths",
@@ -500,7 +527,7 @@ defmodule Salix.Control.FastmailPluginTest do
                    %{"query" => "unauth"}
                  )
 
-        assert unauth_res["status"] in ["auth_failed", "reauthorization_required"]
+        assert unauth_res["status"] == "not_authorized"
         refute inspect(unauth_res) =~ token
 
         assert {:ok, stored_after_401, _def, conn_401} =
@@ -512,6 +539,30 @@ defmodule Salix.Control.FastmailPluginTest do
 
         refute inspect(conn_401["last_error"]) =~ token
         refute inspect(MCPStore.public_binding_with_connection(stored_after_401)) =~ token
+
+        MockMCP.set_mode(mock, :expired)
+
+        assert {:ok, exp_res} =
+                 Gateway.call_tool(
+                   context.tenant_id,
+                   context.group_id,
+                   binding["binding_id"],
+                   "fixture_search_mail",
+                   %{"query" => "expired"}
+                 )
+
+        assert exp_res["status"] == "reauthorization_required"
+        refute inspect(exp_res) =~ token
+
+        assert {:ok, stored_after_exp, _def, conn_exp} =
+                 MCPStore.get_binding_with_definition(
+                   context.tenant_id,
+                   context.group_id,
+                   binding["binding_id"]
+                 )
+
+        refute inspect(conn_exp["last_error"]) =~ token
+        refute inspect(MCPStore.public_binding_with_connection(stored_after_exp)) =~ token
 
         MockMCP.set_mode(mock, :ok)
 

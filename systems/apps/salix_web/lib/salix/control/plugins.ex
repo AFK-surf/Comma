@@ -283,7 +283,7 @@ defmodule Salix.Control.Plugins do
       "plugin_id" => "feishu",
       "name" => "飞书",
       "description" => "Workspace messaging and bot routing through Feishu.",
-      # Listed with the services of mainland China (`SalixMCP.ChinaServices`).
+      # Listed with the China services in `SalixMCP.HostedServices`.
       "ui" => %{"brand" => "feishu", "category" => "中国服务"},
       "default_enabled" => true,
       "setup" => %{
@@ -904,7 +904,7 @@ defmodule Salix.Control.Plugins do
     }
   ]
 
-  @system_plugins @listed_system_plugins ++ SalixMCP.ChinaServices.plugin_definitions()
+  @system_plugins @listed_system_plugins ++ SalixMCP.HostedServices.plugin_definitions()
 
   @doc false
   def system_plugins, do: @system_plugins

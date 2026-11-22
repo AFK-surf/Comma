@@ -1613,6 +1613,8 @@ defmodule CommaWeb.NativePluginConnectionsTest do
                  "config_values" => %{unquote(key) => "wrong-key"}
                })
 
+      assert SalixMCP.Store.list_group_bindings(w["salix_tenant_id"], w["default_group_id"]) == []
+
       assert {:ok, plugins} = Comma.Plugins.list(user, %{}, w["id"])
       refute Enum.find(plugins, &(&1["id"] == unquote(plugin_id)))["installed"]
 

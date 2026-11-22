@@ -3,7 +3,7 @@ import type { ProviderBrandLogoProps } from "./ProviderBrandLogos";
 
 /**
  * Brand marks of the hosted MCP services in mainland China
- * (`SalixMCP.ChinaServices`). The raster marks are each vendor's published
+ * (`SalixMCP.HostedServices`). The raster marks are each vendor's published
  * App Store app icon at 96 px, rounded like an app tile; Gitee publishes no
  * app, so its mark is the vector logo.
  */

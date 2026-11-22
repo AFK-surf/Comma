@@ -2,6 +2,7 @@ import { WeChatProviderLogo } from "./WeChatProviderLogo";
 import { createElement, type ComponentType } from "react";
 import { LarkProviderLogo } from "./LarkProviderLogo";
 import { FeishuProviderLogo } from "./FeishuProviderLogo";
+import { FastmailProviderLogo } from "./FastmailProviderLogo";
 import { BlenderProviderLogo } from "./BlenderProviderLogo";
 import { CanvaProviderLogo } from "./CanvaProviderLogo";
 import { DropboxProviderLogo } from "./DropboxProviderLogo";
@@ -47,6 +48,7 @@ const providerBrandLogos: Record<string, ProviderBrandLogoComponent> = {
   canva: CanvaProviderLogo,
   didi: DidiProviderLogo,
   dropbox: DropboxProviderLogo,
+  fastmail: FastmailProviderLogo,
   feishu: FeishuProviderLogo,
   flomo: FlomoProviderLogo,
   lark: LarkProviderLogo,

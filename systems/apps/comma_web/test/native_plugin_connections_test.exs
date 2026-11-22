@@ -120,7 +120,11 @@ defmodule CommaWeb.NativePluginConnectionsTest do
             do: SystemsRuntime.Proc.send(probe, {:cn_mcp_request, credential})
 
           cond do
-            credential in ["amap-user-key", "Bearer luckin-user-token"] ->
+            credential in [
+              "amap-user-key",
+              "Bearer luckin-user-token",
+              "Bearer fastmail-user-token"
+            ] ->
               SalixWeb.LocalOAuthMock.mcp_resource(conn)
 
             # AMap answers a wrong key with HTTP 200 and its own error body.
@@ -501,6 +505,7 @@ defmodule CommaWeb.NativePluginConnectionsTest do
       "remote:x" => base <> "/x-mcp",
       "remote:amap" => base <> "/cn-mcp?key={AMAP_MAPS_API_KEY}",
       "remote:luckin" => base <> "/cn-mcp",
+      "remote:fastmail" => base <> "/cn-mcp",
       "remote:baidu-maps" => base <> "/cn-mcp-lenient?ak={BAIDU_MAP_API_KEY}",
       "remote:tencent-docs" => base <> "/v1/local-oauth/mcp/resource"
     })
@@ -1584,7 +1589,8 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
   for {plugin_id, key, value, seen} <- [
         {"amap", "AMAP_MAPS_API_KEY", "amap-user-key", "amap-user-key"},
-        {"luckin", "LUCKIN_MCP_TOKEN", "luckin-user-token", "Bearer luckin-user-token"}
+        {"luckin", "LUCKIN_MCP_TOKEN", "luckin-user-token", "Bearer luckin-user-token"},
+        {"fastmail", "FASTMAIL_MCP_TOKEN", "fastmail-user-token", "Bearer fastmail-user-token"}
       ] do
     test "#{plugin_id} installs with the user's key and sends it only to its MCP", %{
       user: user,
@@ -1593,6 +1599,13 @@ defmodule CommaWeb.NativePluginConnectionsTest do
       SystemsRuntime.put_env(:comma_web, :cn_mcp_probe, SystemsRuntime.Proc.self())
       assert {:ok, prompt} = PluginConnections.install(user, %{}, w["id"], unquote(plugin_id))
       assert prompt["configuration"]["key"] == unquote(key)
+
+      assert is_binary(prompt["configuration"]["label"]) and
+               prompt["configuration"]["label"] != ""
+
+      assert is_binary(prompt["configuration"]["helpUrl"]) and
+               prompt["configuration"]["helpUrl"] != ""
+
       refute prompt["plugin"]["installed"]
 
       assert {:error, :plugin_credential_rejected} =

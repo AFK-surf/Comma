@@ -28,12 +28,12 @@ Confirmation queues source sync and one Routine run, even for the same source ID
 Reconnect keeps the old account and receipt until the new grant completes. Then it retires only that account.
 Drive is optional. Gmail and Calendar are required. Settings links to Plugins.
 
-GitHub, Linear, Notion, and Slack use Salix OAuth for APIs and recommendations. Notion alone needs separate MCP OAuth.
-Linear requests `read` and `write`.
-PostHog: MCP OAuth only; switches name its `features`.
-Stripe, Tencent Docs, flomo, Pixso: MCP OAuth. Other `ChinaServices`: user key.
+GitHub/Linear/Notion/Slack: Salix OAuth for APIs and recommendations; Notion also needs MCP OAuth.
+Linear: `read`, `write`. PostHog: MCP OAuth only; switches name `features`.
+Stripe/Tencent Docs/flomo/Pixso: MCP OAuth; other hosted services: keys.
+[Fastmail](architecture/FASTMAIL.md): MCP token, not JMAP.
 Dropbox, Canva, HubSpot: Composio; not personal sources.
-Native reauthorization gives the OAuth callback the attempt's 2-minute deadline.
+Native reauthorization uses the attempt's 2-minute callback deadline.
 The callback checks generation before binding writes. Cancellation keeps old access if it wins. Otherwise it conflicts.
 Comma connects `setup.required_connections` in order and installs after all complete. MCP callbacks match the plugin and group.
 App credentials use tenant overrides or defaults. Grants remain group-scoped.

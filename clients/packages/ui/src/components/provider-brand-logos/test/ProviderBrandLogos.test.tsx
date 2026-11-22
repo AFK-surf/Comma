@@ -32,6 +32,7 @@ describe("ProviderBrandLogos", () => {
     ["PostHog", "posthog"],
     ["Stripe", "stripe"],
     ["Dropbox", "dropbox"],
+    ["Fastmail", "fastmail"],
     ["Canva", "canva"],
     ["HubSpot", "hubspot"],
     ["amap", "amap"],

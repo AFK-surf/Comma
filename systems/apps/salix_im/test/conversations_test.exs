@@ -2629,6 +2629,88 @@ defmodule SalixIM.ConversationsTest do
              "insufficient_credits"
   end
 
+  # Issue #36 reproduction: a Task Worker that billing refused, then the
+  # Workspace gets credits and the ended Task is reopened. The Worker has not
+  # run yet, so its Session activity is still the old refusal. The watch must
+  # not report a new billing block before the Worker is asked again.
+  @tag :issue_36
+  test "TaskWorkerWatch does not repeat an old billing refusal when an ended Task is reopened",
+       %{group_id: group_id, router_id: router_id, worker_id: worker_id} do
+    {conversation_id, session_id, watch} =
+      start_watched_plain_task(group_id, router_id, worker_id, "task-worker-watch-billing-reopen")
+
+    # 1. The Worker's first model call was refused: insufficient_credits.
+    #    In the report the reopen came minutes later, so the stop is older
+    #    than the watch's one-minute grace.
+    failed_at = SystemsClock.system_time(:millisecond) - 5 * 60_000
+    version = Integer.to_string(failed_at)
+
+    TaskSessionActivity.set(
+      worker_id,
+      session_id,
+      "error",
+      failed_at,
+      "insufficient_credits",
+      nil,
+      "error: not enough credits; add credits and try again"
+    )
+
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    settle_receive({:captured_agent_delivery, ^router_id, first_notice, _opts})
+    assert first_notice.content =~ "blocked by billing (insufficient_credits)"
+
+    assert {:acted, ^version, :error, "insufficient_credits", _, _} =
+             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+
+    # 2. The Task ends. Credits are then added (billing state is not read by
+    #    the watch, so nothing here changes).
+    assert {:ok, %{"status" => "completed"}} =
+             ConversationServer.update_group_conversation(group_id, conversation_id, %{
+               "status" => "completed"
+             })
+
+    # 3. The Router reopens the ended Loop Task for a later user request.
+    SystemsClock.sleep(2)
+    human_at = SystemsClock.system_time(:millisecond) + 60_000
+
+    assert {:ok, %{"status" => "active"}} =
+             ConversationServer.restart_task_loop(
+               group_id,
+               conversation_id,
+               %{},
+               "Run the Loop again.",
+               router_id,
+               "issue-36-reopen",
+               human_at
+             )
+
+    settle_receive({:captured_agent_delivery, ^worker_id, restart_command, _opts})
+    assert restart_command.content =~ "Run the Loop again."
+
+    # The Worker has not published any new activity: the activity still shows
+    # the refusal from step 1. No new fee-control decision exists.
+    assert {:ok, %{"state" => "error", "issue" => "insufficient_credits", "version" => ^version}} =
+             TaskSessionActivity.get(worker_id, session_id)
+
+    # Expected: no second billing notice before the Worker runs again.
+    settle_refute_receive({:captured_agent_delivery, ^router_id, _second_notice, _}, 500)
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 50)
+
+    billing_notices =
+      Enum.filter(
+        messages,
+        &(get_in(&1, ["metadata", "message_type"]) == "task_worker_stopped" and
+            get_in(&1, ["metadata", "task_worker_watch", "issue"]) == "insufficient_credits")
+      )
+
+    assert length(billing_notices) == 1,
+           "the reopened Task got #{length(billing_notices)} insufficient_credits notices " <>
+             "from the stale activity version #{version}"
+  end
+
   @tag :task_archive
   test "a Task's latest run starts when it becomes active, and only then", %{
     group_id: group_id,

@@ -63,7 +63,10 @@ defmodule SalixIM.TaskWorkerWatch do
       `@max_attempts` times per stop, after which the stop is given up and
       logged; a later stop starts afresh.
     * A blocking session issue (the runtime itself cannot run the Worker)
-      skips the reminder and notifies the Router at once.
+      skips the reminder and notifies the Router at once. A billing refusal
+      that stopped before the delegation was created answered an earlier
+      delegation (a reopened Task) and is not reported again: the Worker's
+      next run is charged afresh and reports a new stop if refused.
     * While a Loop Task's Loop runs, the Router's Messages other than the
       Task's command are not delegations: the command, the Loop's wakes and
       people's Messages give the Worker its work, and a Router note (such as
@@ -400,6 +403,8 @@ defmodule SalixIM.TaskWorkerWatch do
       ids =
         if loop_runs?, do: %{state | loop_router_agent_id: state.delegator_agent_id}, else: state
 
+      ids = Map.put(ids, :stop_at, timestamp_ms(activity["updated_at"]))
+
       case decide(messages, ids, kind, issue, version) do
         {:review, epoch, result_seq, result_at} ->
           state = %{state | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
@@ -492,6 +497,13 @@ defmodule SalixIM.TaskWorkerWatch do
 
     epoch = delegations |> Enum.map(seq) |> Enum.max(fn -> 0 end)
 
+    # A billing refusal older than the delegation answered an earlier one (a
+    # reopened Task): the Worker has not been charged for this one yet, and
+    # its next run reports a new stop if billing still refuses it.
+    stale_refusal? =
+      issue in @billing_denial_issues and
+        refused_before?(Map.get(ids, :stop_at), Enum.max_by(delegations, seq, fn -> nil end))
+
     since = fn pred -> Enum.any?(messages, fn m -> seq.(m) > epoch and pred.(m) end) end
     nudge? = fn m -> watch_type.(m) == @nudge_type end
     nudged_version = fn m -> get_in(m, ["metadata", "task_worker_watch", "activity_version"]) end
@@ -501,6 +513,7 @@ defmodule SalixIM.TaskWorkerWatch do
       delegations == [] and not Enum.any?(messages, by_worker?) -> :none
       since.(replied?) -> review(messages, epoch, replied?, seq)
       since.(&(watch_type.(&1) == @notify_type)) -> :none
+      kind == :error and stale_refusal? -> :none
       kind == :error and issue in @blocking_failure_issues -> {:notify, epoch, issue}
       # The reminder answered this very stop: nothing new has happened, even
       # if a restarted actor is seeing the stop for the first time.
@@ -509,6 +522,18 @@ defmodule SalixIM.TaskWorkerWatch do
       true -> {:nudge, epoch}
     end
   end
+
+  # Session timestamps may be whole seconds, so the delegation time is floored
+  # to its second, as for `router_settled/2`: a stop in the same second counts
+  # as a refusal of this delegation.
+  defp refused_before?(stop_at, %{"created_at" => created_at}) when is_integer(stop_at) do
+    case timestamp_ms(created_at) do
+      at when is_integer(at) -> stop_at < div(at, 1_000) * 1_000
+      _ -> false
+    end
+  end
+
+  defp refused_before?(_stop_at, _delegation), do: false
 
   # The Worker's latest result above the epoch, unless the Router was already
   # told about that very result.

@@ -6,10 +6,6 @@ export interface ShareCardRenderOptions {
   /** The Task title the excerpt comes from. Empty leaves the footer title slot blank. */
   sourceTitle: string;
   dateLabel: string;
-  /** Shown under the body when the next card continues the text. */
-  continuedLabel?: string | undefined;
-  /** Shown under the body when the selection was cut to fit. */
-  truncatedLabel?: string | undefined;
   iosQr: ShareQrMatrix | null;
   androidQr: ShareQrMatrix | null;
   /** Client sans-serif font stack; defaults to Comma's standard sans stack. */
@@ -40,8 +36,6 @@ export interface ShareCardDimensions {
  */
 const PALETTE = {
   paper: "#F5F5F5",
-  /** Ink as RGB so a passage that runs on can fade its last lines. */
-  inkRgb: "26, 27, 30",
   ink: "#1A1B1E",
   inkSecondary: "#4A4C50",
   meta: "#7F8286",
@@ -145,10 +139,6 @@ function buildStyledParagraphs(slice: ShareCardSlice): StyledChar[][] {
   }
 
   pushText(slice.selectedText, "selected");
-  // A cut mid-sentence trails off; one at a sentence end needs no ellipsis.
-  if (slice.truncatedEnd && !/[。！？.!?…]$/.test(slice.selectedText)) {
-    pushText("……", "selected");
-  }
 
   if (slice.afterContext) {
     if (slice.afterJoin === "paragraph") {
@@ -518,10 +508,10 @@ function chooseBodyType(slice: ShareCardSlice): BodyType {
 
 /** Baseline of the date and folio line, from the top of the page. */
 const HEADER_BASELINE = MARGIN + 8;
-const QR_SIDE = 60;
-const QR_PLATE_PAD = 7;
+const QR_SIDE = 68;
+const QR_PLATE_PAD = 8;
 const QR_GAP = 8;
-const QR_LABEL_GAP = 13; // QR bottom to label baseline
+const QR_LABEL_GAP = 14; // QR bottom to label baseline
 /** Free space between the body's fade and the footer: no rule, the fade parts them. */
 const FOOTER_GAP = 17;
 const PLATE_WIDTH = QR_PLATE_PAD * 2 + QR_SIDE * 2 + QR_GAP;
@@ -605,13 +595,7 @@ export function renderShareCardToCanvas(
     bodyHeight += type.lineHeight;
     if (line.paragraphEnd) bodyHeight += type.paragraphGap;
   }
-  const note = slice.continuesToNext
-    ? options.continuedLabel
-    : slice.truncatedEnd
-      ? options.truncatedLabel
-      : undefined;
-  const noteHeight = note ? 26 : 0;
-  const bodyBottom = bodyTop + bodyHeight + noteHeight;
+  const bodyBottom = bodyTop + bodyHeight;
 
   const naturalHeight = bodyBottom + 36 + FOOTER_CHROME;
   const logicalHeight = Math.ceil(Math.max(MIN_PAGE_HEIGHT, naturalHeight));
@@ -634,19 +618,12 @@ export function renderShareCardToCanvas(
   ctx.fillStyle = PALETTE.paper;
   ctx.fillRect(0, 0, PAGE_WIDTH, logicalHeight);
 
-  // Header, on one baseline: the address on the left, the card folio
-  // centred on the page (a series only), the date on the right.
+  // Header, on one baseline: the address on the left, the date on the right.
   const headerBaseline = HEADER_BASELINE;
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = PALETTE.inkSecondary;
   ctx.font = `500 10px ${sansStack}`;
   ctx.fillText("comma.surf", MARGIN, headerBaseline);
-  if (slice.pageCount > 1) {
-    const folio = `${String(slice.pageIndex + 1).padStart(2, "0")} / ${String(slice.pageCount).padStart(2, "0")}`;
-    ctx.fillStyle = PALETTE.ink;
-    ctx.font = `600 9.5px ${MONO_STACK}`;
-    drawTrackedText(ctx, folio, PAGE_WIDTH / 2, headerBaseline, 0.4, "center");
-  }
   ctx.fillStyle = PALETTE.meta;
   ctx.font = `500 9.5px ${MONO_STACK}`;
   drawTrackedText(
@@ -705,45 +682,15 @@ export function renderShareCardToCanvas(
     return solid;
   };
 
-  // A passage that runs on past the card (next card, or cut short) with no
-  // context after it eases its last three lines toward the paper, so the body
-  // dissolves into the space above the footer instead of stopping at a rule.
-  const runsOn =
-    (slice.continuesToNext || slice.truncatedEnd) &&
-    lastSelected === lines.length - 1 &&
-    lines.length > 3;
-  const runOnFrom = runsOn ? lines.length - 3 : lines.length;
-  const runOnFill = runsOn
-    ? easedRamp(
-        ctx,
-        lineTops[runOnFrom]!,
-        lineTops[lines.length - 1]! + type.lineHeight,
-        PALETTE.inkRgb,
-        1,
-        0.24
-      )
-    : PALETTE.ink;
-
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!;
     const baseline = lineTops[i]! + baselineOffset;
     let x = MARGIN;
     for (const seg of line.segments) {
-      ctx.fillStyle =
-        seg.kind === "selected"
-          ? i >= runOnFrom
-            ? runOnFill
-            : PALETTE.ink
-          : contextFill(i);
+      ctx.fillStyle = seg.kind === "selected" ? PALETTE.ink : contextFill(i);
       ctx.fillText(seg.text, x, baseline);
       x += measureWidth(ctx, seg.text);
     }
-  }
-
-  if (note) {
-    ctx.fillStyle = PALETTE.meta;
-    ctx.font = `500 10px ${sansStack}`;
-    ctx.fillText(note, MARGIN, textBottom + 18);
   }
 
   // Footer, on the same paper with no rule: the body's eased fade parts it.
@@ -796,7 +743,7 @@ export function renderShareCardToCanvas(
     });
   }
   ctx.fillStyle = PALETTE.ink;
-  ctx.font = `600 9px ${sansStack}`;
+  ctx.font = `600 9.5px ${sansStack}`;
   ctx.fillText("iOS", qr.ios.x, labelBaseline);
   ctx.fillText("Android", qr.android.x, labelBaseline);
 

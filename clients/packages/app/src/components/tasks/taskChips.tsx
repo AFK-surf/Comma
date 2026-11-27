@@ -424,8 +424,9 @@ export type TaskHostChipFacts = {
 const STILLFAIL_PLACE = "Monoid";
 
 /**
- * The host chip's text. Only a place goes inside "On …": a known machine, or still.fail for a still.fail chat. A
- * machine this device does not know reads "On a computer", with the model after it, never as the place.
+ * The host chip's text. A known machine goes inside "On …"; a Monoid chat without a
+ * linked machine reads "Monoid" (plus model); an unknown machine reads "On a computer",
+ * with the model after it, never as the place.
  */
 function taskHostChipText(
   host: TaskHostChipFacts,
@@ -434,12 +435,13 @@ function taskHostChipText(
     "station_task_hosted" | "station_task_offline" | "station_task_on"
   >
 ): string {
-  const place = host.machine || (host.stillfail ? STILLFAIL_PLACE : null);
-  const where = place
+  const where = host.machine
     ? messages.station_task_on({
-        where: [place, host.model].filter(Boolean).join(" · "),
+        where: [host.machine, host.model].filter(Boolean).join(" · "),
       })
-    : [messages.station_task_hosted(), host.model].filter(Boolean).join(" · ");
+    : host.stillfail
+      ? [STILLFAIL_PLACE, host.model].filter(Boolean).join(" · ")
+      : [messages.station_task_hosted(), host.model].filter(Boolean).join(" · ");
   return host.online === false
     ? `${where} · ${messages.station_task_offline()}`
     : where;

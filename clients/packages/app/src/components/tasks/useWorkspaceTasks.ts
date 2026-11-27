@@ -252,9 +252,11 @@ function toTaskViewModel(
     ...(item.runStartedAt === undefined ? {} : { runStartedAt: item.runStartedAt }),
     ...(item.createdAt === undefined ? {} : { createdAt: item.createdAt }),
     // A Task a station hosts: where it runs, and what runs it.
+    // A Monoid chat shows its own host chip ("Monoid · <model>") across all
+    // Monoid runtimes, so skip the legacy codex/claude worker badge.
     ...(host ? { host: toTaskHost(host) } : {}),
     ...(item.url ? { url: item.url } : {}),
-    ...(host?.runtime === "codex" || host?.runtime === "claude"
+    ...(!item.url && (host?.runtime === "codex" || host?.runtime === "claude")
       ? { worker: host.runtime }
       : {}),
   };

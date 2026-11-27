@@ -29,6 +29,7 @@ extension ChatTranscriptView {
                         }
                         .padding(.leading, 42)
                         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .environment(\.messageSelection, selection(in: row))
                         .contextMenu { messageMenu(row) }
                         // The anchor is outside the swipe, so a reply line stays where the bubble rests.
                         .modifier(swipeToReply(row))
@@ -126,6 +127,7 @@ extension ChatTranscriptView {
                                 if let message = row.message { extras(message, availableWidth: agentAvailableWidth) }
                             }
                             .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .environment(\.messageSelection, selection(in: row))
                             .contextMenu { messageMenu(row) }
                             // The anchor is outside the swipe, so a reply line stays where the bubble rests.
                             .modifier(swipeToReply(row))

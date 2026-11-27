@@ -4265,6 +4265,52 @@ describe("ConversationView", () => {
     expect(screen.getByTestId("text-share-image-canvas")).toBeInTheDocument();
   });
 
+  it("shows a warning toast instead of opening the dialog when selected text exceeds the single-card character limit", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    const toastWarning = vi.spyOn(toast, "warning");
+    const overLimitText = "字".repeat(601);
+
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          messages: [message("msg_user_over_limit_share", "user", overLimitText)],
+        })}
+      />
+    );
+
+    const output = await screen.findByTestId("chat-user-bubble-content");
+    const textNode = output.firstChild;
+    if (!textNode) throw new Error("expected user bubble text node");
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent(
+      output,
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 120,
+        clientY: 80,
+      })
+    );
+
+    await user.click(await screen.findByRole("menuitem", { name: "Share" }));
+
+    expect(toastWarning).toHaveBeenCalledWith(
+      "Selection is too long to share as an image (max 600 chars)",
+      {
+        id: "share-image-too-long",
+        testId: "share-image-too-long",
+      }
+    );
+    expect(screen.queryByTestId("text-share-image-dialog")).not.toBeInTheDocument();
+  });
+
   it("copies the visible user bubble body without attachment protocol text", async () => {
     const user = userEvent.setup();
     const actions = createActions();

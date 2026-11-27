@@ -24,13 +24,32 @@ extension ChatTranscriptView {
 
     /// The swipe on a row's bubbles; off while a thread is open, whose copies are already gathered.
     func swipeToReply(_ row: ChatRow) -> ReplySwipe {
-        ReplySwipe(id: row.id, pane: ObjectIdentifier(pane), enabled: replyThread == nil && canReply(row)) {
+        ReplySwipe(id: row.id, pane: ObjectIdentifier(pane), enabled: replyThread == nil && canReply(row) && selection(in: row) == nil) {
             openThread(row)
         }
     }
 
-    /// The long-press menu on a bubble.
+    /// The selection running in `row`'s bubbles, if it is the message being selected in.
+    func selection(in row: ChatRow) -> MessageSelectionController? {
+        selectingText.flatMap { $0.rowID == row.id ? $0 : nil }
+    }
+
+    /// Turns `row`'s bubbles into selectable text until a tap outside them.
+    func selectText(_ row: ChatRow) {
+        let selecting = $selectingText
+        selectingText = MessageSelectionController(rowID: row.id) { selecting.wrappedValue = nil }
+    }
+
+    /// The long-press menu on a bubble; none while its text is selected in, whose long press picks a word.
     @ViewBuilder func messageMenu(_ row: ChatRow) -> some View {
+        if selection(in: row) != nil {
+            EmptyView()
+        } else {
+            messageActions(row)
+        }
+    }
+
+    @ViewBuilder private func messageActions(_ row: ChatRow) -> some View {
         if canReply(row) {
             Button { openThread(row) } label: {
                 Label { Text("Reply") } icon: { Image(decorative: "central-arrow-share-left") }
@@ -39,6 +58,9 @@ extension ChatTranscriptView {
         if !row.text.isEmpty {
             Button { UIPasteboard.general.string = row.text } label: {
                 Label { Text("Copy") } icon: { Image(decorative: "central-square-behind-square-6") }
+            }
+            Button { selectText(row) } label: {
+                Label { Text("Select Text") } icon: { Image(decorative: "central-text-select") }
             }
         }
     }

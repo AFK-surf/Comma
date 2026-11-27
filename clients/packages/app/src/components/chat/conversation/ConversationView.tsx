@@ -194,6 +194,7 @@ import {
   resolveShareSourceTitle,
   type ChatSelectionSharePayload,
 } from "./chatMessageContextMenu";
+import { exceedsShareCardLimit, MAX_SHARE_CHARS } from "../share-image/shareTextLayout";
 import { TextShareImageDialog } from "../share-image/TextShareImageDialog";
 import {
   copyTextToClipboard,
@@ -1743,6 +1744,18 @@ export const ConversationView = memo(function ConversationView({
       if (action === "forward") {
         const sharePayload = shareMenuPayloadRef.current;
         if (sharePayload) {
+          if (exceedsShareCardLimit(sharePayload.selectedText)) {
+            toast.warning(
+              messages.chat_share_image_too_long({
+                max: MAX_SHARE_CHARS.toLocaleString(locale),
+              }),
+              {
+                id: "share-image-too-long",
+                testId: "share-image-too-long",
+              }
+            );
+            return;
+          }
           finishSelectionQuote();
           setShareImageState({ isOpen: true, payload: sharePayload });
         }
@@ -1751,7 +1764,7 @@ export const ConversationView = memo(function ConversationView({
       const text = copyMenuTextRef.current;
       if (text) void copyWithFeedback(() => copyTextToClipboard(text), messages);
     },
-    [finishSelectionQuote, openReplyThread, messages]
+    [finishSelectionQuote, locale, openReplyThread, messages]
   );
 
   const handleLinkMenuOpenChange = useCallback(

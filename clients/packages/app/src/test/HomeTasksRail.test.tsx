@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { initializeCommaI18n } from "@comma/i18n";
 import type { ProductInboxItem, ProductInboxListResult } from "@comma/core-client";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { act, render } from "@comma/test-utils/render";
+import { act, render, within } from "@comma/test-utils/render";
 import { loadStatusIndicatorElement } from "@comma/ui/components/status-indicator";
 import { motionDuration } from "@comma/ui/tokens";
 import {
@@ -67,6 +67,84 @@ describe("HomeTasksRail", () => {
 
     expect(router.state.location.pathname).toBe("/tasks");
     expect(router.state.location.search).toEqual({ label: "lbl_work" });
+  });
+
+  it("omits the worker badge on Monoid tasks and keeps it on computers", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: liveResult([
+        {
+          ...taskItem("monoid-claude", 4, "ready_for_review"),
+          title: "Review Cue PR 5669 UI",
+          url: "https://app.monoid.zone/chats/monoid-claude",
+          host: {
+            station: "stn_1",
+            thread: "CHAT/monoid-claude",
+            machine: null,
+            runtime: "claude",
+            model: "claude-opus-5-5",
+          },
+        },
+        {
+          ...taskItem("monoid-codex", 3, "ready_for_review"),
+          title: "Check staging deploy",
+          url: "https://app.monoid.zone/chats/monoid-codex",
+          host: {
+            station: "stn_1",
+            thread: "CHAT/monoid-codex",
+            machine: null,
+            runtime: "codex",
+            model: "gpt-5.5",
+          },
+        },
+        {
+          ...taskItem("monoid-gemini", 2, "ready_for_review"),
+          title: "iOS/Android 语音转文字输入框光效",
+          url: "https://app.monoid.zone/chats/monoid-gemini",
+          host: {
+            station: "stn_1",
+            thread: "CHAT/monoid-gemini",
+            machine: null,
+            runtime: "agy",
+            model: "gemini-4-neon",
+          },
+        },
+        {
+          ...taskItem("computer-claude", 1, "ready_for_review"),
+          title: "Local studio task",
+          host: {
+            station: "stn_2",
+            thread: "CHAT/computer-claude",
+            machine: { name: "Studio", online: true },
+            runtime: "claude",
+            model: "claude-opus-5-5",
+          },
+        },
+      ]),
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderHomeTasksRail(projection.controller);
+
+    await flush();
+    const cards = [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-role="current"] [data-testid="home-task-card"]'
+      ),
+    ];
+    expect(cards).toHaveLength(4);
+    expect(
+      cards.map(
+        (card) => card.querySelector('[data-testid="task-card-host"]')?.textContent
+      )
+    ).toEqual([
+      "Monoid · claude-opus-5-5",
+      "Monoid · gpt-5.5",
+      "Monoid · gemini-4-neon",
+      "On Studio · claude-opus-5-5",
+    ]);
+    expect(within(cards[0]!).queryByText("Claude")).toBeNull();
+    expect(within(cards[1]!).queryByText("Codex")).toBeNull();
+    expect(within(cards[2]!).queryByText("Claude")).toBeNull();
+    expect(within(cards[3]!).getByText("Claude")).toBeVisible();
   });
 
   it.each(["error", "unavailable"] as const)(

@@ -42,7 +42,7 @@ describe("TextShareImageDialog", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders a single Swiss share card for normal selections and saves/copies PNG", async () => {
+  it("renders a single Swiss share card and saves/copies PNG with toast", async () => {
     const user = userEvent.setup();
     renderDialog({
       isOpen: true,
@@ -59,9 +59,9 @@ describe("TextShareImageDialog", () => {
     });
 
     expect(await screen.findByTestId("text-share-image-dialog")).toBeInTheDocument();
-    expect(screen.queryByTestId("text-share-length-bar")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("text-share-export-size")).not.toBeInTheDocument();
     expect(screen.getByTestId("text-share-image-canvas")).toBeInTheDocument();
+    expect(screen.queryByTestId("text-share-pager")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("text-share-length-bar")).not.toBeInTheDocument();
 
     const toastSuccess = vi.spyOn(toast, "success");
 
@@ -76,46 +76,6 @@ describe("TextShareImageDialog", () => {
         testId: "share-image-copied",
       })
     );
-  });
-
-  it("handles 10,000-character selections with excerpt cap and paginated multi-card mode", async () => {
-    const user = userEvent.setup();
-    const tenThousand = "国际主义平面设计强调网格秩序、清晰层级与客观信息传达。".repeat(
-      400
-    );
-
-    renderDialog({
-      isOpen: true,
-      onClose: vi.fn(),
-      sourceTitle: "长文测试",
-      payload: {
-        beforeContext: "前文背景内容",
-        selectedText: tenThousand,
-        afterContext: "后文补充内容",
-        beforeJoin: "paragraph",
-        afterJoin: "paragraph",
-        authorRole: "assistant",
-      },
-    });
-
-    expect(await screen.findByTestId("text-share-length-bar")).toBeInTheDocument();
-    expect(screen.getByTestId("text-share-length-notice")).toHaveTextContent(
-      "已按单图上限节选"
-    );
-
-    await user.click(screen.getByTestId("text-share-mode-pages"));
-    expect(await screen.findByTestId("text-share-pager")).toBeInTheDocument();
-    expect(screen.getByTestId("text-share-page-indicator")).toHaveTextContent(
-      "01 / 09"
-    );
-
-    await user.click(screen.getByRole("button", { name: "下一张" }));
-    expect(screen.getByTestId("text-share-page-indicator")).toHaveTextContent(
-      "02 / 09"
-    );
-
-    await user.click(screen.getByTestId("text-share-save-all-btn"));
-    await waitFor(() => expect(downloadFile).toHaveBeenCalledTimes(9));
   });
 
   it("follows Comma client font-family overrides on documentElement", () => {

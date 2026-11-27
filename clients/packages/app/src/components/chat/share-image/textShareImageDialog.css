@@ -2,13 +2,9 @@
  * Share-image dialog.
  *
  * Motion follows emil-design-eng:
- * - The dialog enters from scale(0.97) and 8px below, never from scale(0), on a
- *   strong ease-out; the card follows one stagger beat later so the eye lands
- *   on it. Exit is shorter, travels less and releases pointer events on its
- *   first frame.
- * - Swapping cards crossfades two layers 16px apart in the direction of
- *   travel with a 2px blur, so a new card arrives instead of popping in. A
- *   swap restarts cleanly when interrupted.
+ * - The dialog and its pre-painted share card enter together from scale(0.97)
+ *   and 8px below on a strong ease-out, with zero secondary card stagger. Exit
+ *   is shorter, travels less and releases pointer events on its first frame.
  * - Copy feedback swaps icon and label in place; the button keeps its width.
  * - Only opacity, transform and filter animate. Reduced motion keeps the
  *   fades and drops movement, scale and blur.
@@ -99,78 +95,6 @@
   gap: var(--spacing-md);
 }
 
-/* Long-text format switch: two equal segments with one sliding thumb. */
-.comma-text-share-length-bar {
-  flex-shrink: 0;
-  padding: 0 var(--spacing-xl) var(--spacing-lg);
-}
-
-.comma-text-share-segmented {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  margin: 0;
-  padding: var(--spacing-xxs);
-  border: 0;
-  border-radius: var(--radius-md);
-  background-color: var(--color-bg-tertiary);
-}
-
-.comma-text-share-segmented-thumb {
-  position: absolute;
-  top: var(--spacing-xxs);
-  bottom: var(--spacing-xxs);
-  left: var(--spacing-xxs);
-  width: calc(50% - var(--spacing-xxs));
-  border-radius: var(--radius-sm);
-  background-color: var(--color-bg-popup-primary);
-  box-shadow:
-    var(--shadow-xs),
-    0 0 0 var(--border-width-0-5) var(--color-border-primary);
-  transition: transform var(--motion-duration-spatial-move)
-    var(--motion-easing-smooth-out);
-}
-
-.comma-text-share-segmented[data-mode="pages"] .comma-text-share-segmented-thumb {
-  transform: translateX(100%);
-}
-
-.dark .comma-text-share-segmented-thumb,
-[data-theme="Dark mode"] .comma-text-share-segmented-thumb {
-  background-color: var(--color-bg-quaternary);
-}
-
-.comma-text-share-segment {
-  position: relative;
-  min-width: 0;
-  min-height: 28px;
-  padding: 0 var(--spacing-md);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-tertiary);
-  font-size: var(--text-xs);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--text-xs--line-height);
-  white-space: nowrap;
-  transition: color var(--motion-duration-state-change) var(--motion-easing-smooth-out);
-}
-
-.comma-text-share-segment[aria-pressed="true"] {
-  color: var(--color-text-primary);
-}
-
-.comma-text-share-segment:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus-brand);
-}
-
-@media (hover: hover) {
-  .comma-text-share-segment[aria-pressed="false"]:hover {
-    color: var(--color-text-secondary);
-  }
-}
-
 /* The stage stays pure white in light mode so the light-grey card reads cleanly. */
 .comma-text-share-stage {
   position: relative;
@@ -196,7 +120,6 @@
 }
 
 .comma-text-share-canvas {
-  grid-area: 1 / 1;
   display: block;
   width: auto;
   height: auto;
@@ -211,71 +134,13 @@
     var(--shadow-xl);
 }
 
-.comma-text-share-canvas[data-role="outgoing"] {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.comma-text-share-modal[data-entering] .comma-text-share-canvas[data-role="current"] {
-  animation: comma-text-share-card-in var(--motion-duration-dialog-enter)
-    var(--motion-easing-surface-smooth-out)
-    calc(var(--motion-duration-reveal-stagger) * 2) both;
-}
-
-.comma-text-share-canvas[data-role="current"][data-swap="next-0"] {
-  animation: comma-text-share-swap-in-next-0 var(--motion-duration-dialog-enter)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="current"][data-swap="next-1"] {
-  animation: comma-text-share-swap-in-next-1 var(--motion-duration-dialog-enter)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="current"][data-swap="prev-0"] {
-  animation: comma-text-share-swap-in-prev-0 var(--motion-duration-dialog-enter)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="current"][data-swap="prev-1"] {
-  animation: comma-text-share-swap-in-prev-1 var(--motion-duration-dialog-enter)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="outgoing"][data-swap="next-0"] {
-  animation: comma-text-share-swap-out-next-0 var(--motion-duration-state-change)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="outgoing"][data-swap="next-1"] {
-  animation: comma-text-share-swap-out-next-1 var(--motion-duration-state-change)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="outgoing"][data-swap="prev-0"] {
-  animation: comma-text-share-swap-out-prev-0 var(--motion-duration-state-change)
-    var(--motion-easing-smooth-out) both;
-}
-
-.comma-text-share-canvas[data-role="outgoing"][data-swap="prev-1"] {
-  animation: comma-text-share-swap-out-prev-1 var(--motion-duration-state-change)
-    var(--motion-easing-smooth-out) both;
-}
-
 .comma-text-share-footer {
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--spacing-md);
   padding: var(--spacing-lg) var(--spacing-xl);
-}
-
-.comma-text-share-pager {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: var(--spacing-xs);
 }
 
 .comma-text-share-actions {
@@ -289,13 +154,11 @@
 /*
  * Responsive layout:
  * - Narrow viewports (split desktop window, portrait tablet/phone <= 560px):
- *   reclaim horizontal insets so the card stays crisp, center the pager on its
- *   own compact row, and align actions cleanly without ragged flex wrapping.
- * - Mobile widths (<= 460px): place secondary actions side by side and give
- *   the primary save CTA a full-width row underneath.
+ *   reclaim horizontal insets so the card stays crisp and place Copy / Save
+ *   side by side across the footer width.
  * - Short viewports (compact desktop windows or landscape phones <= 600px
  *   tall): tighten vertical chrome and allow the stage to scroll vertically so
- *   tall paginated cards never crush into an unreadable thumbnail.
+ *   longer cards never crush into an unreadable thumbnail.
  */
 @container comma-window (width <= 560px) {
   .comma-text-share-overlay {
@@ -313,10 +176,6 @@
     padding: var(--spacing-md) var(--spacing-lg) var(--spacing-sm);
   }
 
-  .comma-text-share-length-bar {
-    padding: 0 var(--spacing-lg) var(--spacing-md);
-  }
-
   .comma-text-share-stage {
     margin: 0 var(--spacing-md);
   }
@@ -332,47 +191,17 @@
     padding: var(--spacing-md) var(--spacing-lg);
   }
 
-  .comma-text-share-pager {
-    justify-content: center;
-  }
-
   .comma-text-share-actions {
     width: 100%;
     margin-left: 0;
-    justify-content: center;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--spacing-sm);
   }
 
-  .comma-text-share-footer[data-paged="false"] .comma-text-share-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .comma-text-share-footer[data-paged="false"] .comma-text-share-actions > button {
+  .comma-text-share-actions > button {
     width: 100%;
     justify-content: center;
-  }
-}
-
-@container comma-window (width <= 460px) {
-  .comma-text-share-segment {
-    padding: 0 var(--spacing-sm);
-  }
-
-  .comma-text-share-footer[data-paged="true"] .comma-text-share-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .comma-text-share-footer[data-paged="true"] .comma-text-share-actions > button {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .comma-text-share-footer[data-paged="true"]
-    .comma-text-share-actions
-    > [data-primary="true"] {
-    grid-column: 1 / -1;
   }
 }
 
@@ -385,10 +214,6 @@
   .comma-text-share-header {
     padding-top: var(--spacing-md);
     padding-bottom: var(--spacing-xs);
-  }
-
-  .comma-text-share-length-bar {
-    padding-bottom: var(--spacing-sm);
   }
 
   .comma-text-share-stage {
@@ -425,10 +250,6 @@
   .comma-text-share-header {
     padding-top: var(--spacing-sm);
     padding-bottom: var(--spacing-xxs);
-  }
-
-  .comma-text-share-length-bar {
-    padding-bottom: var(--spacing-xs);
   }
 
   .comma-text-share-footer {
@@ -520,116 +341,13 @@
   }
 }
 
-@keyframes comma-text-share-card-in {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.985);
-  }
-}
-
-/* Each swap keyframe exists twice (-0 / -1) so consecutive swaps restart. */
-@keyframes comma-text-share-swap-in-next-0 {
-  from {
-    opacity: 0;
-    transform: translateX(16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-in-next-1 {
-  from {
-    opacity: 0;
-    transform: translateX(16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-in-prev-0 {
-  from {
-    opacity: 0;
-    transform: translateX(-16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-in-prev-1 {
-  from {
-    opacity: 0;
-    transform: translateX(-16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-out-next-0 {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-    transform: translateX(-16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-out-next-1 {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-    transform: translateX(-16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-out-prev-0 {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-    transform: translateX(16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-swap-out-prev-1 {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-    transform: translateX(16px);
-    filter: blur(var(--motion-blur-menu-enter));
-  }
-}
-
-@keyframes comma-text-share-reduced-out {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .comma-text-share-modal[data-entering],
-  .comma-text-share-modal[data-entering] .comma-text-share-canvas[data-role="current"],
-  .comma-text-share-canvas[data-role="current"][data-swap] {
+  .comma-text-share-modal[data-entering] {
     animation-name: comma-text-share-fade-in;
   }
 
   .comma-text-share-modal[data-exiting] {
     animation-name: comma-text-share-fade-out;
-  }
-
-  .comma-text-share-canvas[data-role="outgoing"][data-swap] {
-    animation-name: comma-text-share-reduced-out;
-  }
-
-  .comma-text-share-segmented-thumb {
-    transition: none;
   }
 
   .comma-text-share-press,
@@ -641,26 +359,12 @@
   }
 }
 
-:root[data-comma-reduced-motion="true"] .comma-text-share-modal[data-entering],
-:root[data-comma-reduced-motion="true"]
-  .comma-text-share-modal[data-entering]
-  .comma-text-share-canvas[data-role="current"],
-:root[data-comma-reduced-motion="true"]
-  .comma-text-share-canvas[data-role="current"][data-swap] {
+:root[data-comma-reduced-motion="true"] .comma-text-share-modal[data-entering] {
   animation-name: comma-text-share-fade-in;
 }
 
 :root[data-comma-reduced-motion="true"] .comma-text-share-modal[data-exiting] {
   animation-name: comma-text-share-fade-out;
-}
-
-:root[data-comma-reduced-motion="true"]
-  .comma-text-share-canvas[data-role="outgoing"][data-swap] {
-  animation-name: comma-text-share-reduced-out;
-}
-
-:root[data-comma-reduced-motion="true"] .comma-text-share-segmented-thumb {
-  transition: none;
 }
 
 :root[data-comma-reduced-motion="true"] .comma-text-share-press,

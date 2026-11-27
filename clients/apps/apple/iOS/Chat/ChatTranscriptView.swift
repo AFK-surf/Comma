@@ -51,6 +51,8 @@ struct ChatTranscriptView: View {
     @State var dynamicUI: PhoneDynamicUI?
     /// A screen a message's card opened (`comma:screen/…`), live in a sheet.
     @State var screenLink: ScreenLinkRef?
+    /// The message whose text the long-press menu opened for selection, in its bubbles.
+    @State var selectingText: MessageSelectionController?
     var body: some View {
         ZStack {
             // The room the transcript is offered inside its safe area, which a short transcript fills. A clear view

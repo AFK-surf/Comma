@@ -1276,7 +1276,7 @@ describe("TasksRoute", () => {
     renderTasksRoute(projection.controller, "/tasks?platform=monoid");
     await flush();
 
-    // Deep link ?platform=monoid shows only Monoid tasks and keeps On Monoid host chip.
+    // Deep link ?platform=monoid shows only Monoid tasks and keeps Monoid host chip.
     expect(screen.getByText("Deploy staging image")).toBeInTheDocument();
     expect(screen.getByText("Review PR #5655")).toBeInTheDocument();
     expect(screen.queryByText("Draft weekly update")).toBeNull();

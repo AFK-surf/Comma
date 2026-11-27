@@ -6309,7 +6309,21 @@
       }
     },
     "Copy" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制"
+          }
+        }
+      }
     },
     "Copy link" : {
       "extractionState" : "manual",
@@ -13561,7 +13575,21 @@
       }
     },
     "Reply" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reply"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回复"
+          }
+        }
+      }
     },
     "Reply style" : {
       "extractionState" : "manual",
@@ -14117,6 +14145,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请选择更少的照片，总大小不能超过 8 MB。"
+          }
+        }
+      }
+    },
+    "Select Text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select Text"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择文本"
           }
         }
       }

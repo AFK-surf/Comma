@@ -212,8 +212,8 @@ describe("useTaskBadges", () => {
     render(<Cards />, { wrapper: labels.wrapper });
     await flush();
     expect(text("known")).toBe("On Studio · gpt-5.5 · Offline");
-    expect(text("stillfail")).toBe("On Monoid · claude-fable-5-2");
-    expect(text("stillfail-bare")).toBe("On Monoid");
+    expect(text("stillfail")).toBe("Monoid · claude-fable-5-2");
+    expect(text("stillfail-bare")).toBe("Monoid");
     expect(text("unknown")).toBe("On a computer · claude-opus-5-5");
     // A still.fail chat wears still.fail's mark in place of the computer.
     expect(

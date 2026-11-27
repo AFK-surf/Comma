@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import CommaCore
 
 // MARK: - Bubble
@@ -66,22 +67,39 @@ struct MessageBubbles: View {
     var platform: String? = nil
     /// Another person's words in a Task together: on the left, in the incoming bubble.
     var incoming = false
+    /// Set while this message's text is selected in (`MessageSelectionController`).
+    @Environment(\.messageSelection) private var selection
 
     var body: some View {
         if isUser && incoming {
             ChatBubbleSurface(fill: CommaTheme.bubbleAssistant, tail: tail ? .leading : .none, radius: radius) {
-                Text(Self.inline(text)).font(font).foregroundStyle(CommaTheme.textPrimary)
-                    .padding(padding)
-                    .fixedSize(horizontal: false, vertical: true)
+                Group {
+                    if let selection {
+                        SelectableBubbleText(text: SelectableMessageText.person(Self.inline(text), color: UIColor(CommaTheme.textPrimary)),
+                                             controller: selection)
+                    } else {
+                        Text(Self.inline(text)).font(font).foregroundStyle(CommaTheme.textPrimary)
+                    }
+                }
+                .padding(padding)
+                .fixedSize(horizontal: false, vertical: true)
             }
             .selectableMessageText()
         } else if isUser {
             let colors = PlatformBubble.colors(platform)
             ChatBubbleSurface(fill: colors?.fill ?? CommaTheme.brandSolid, tail: tail ? .trailing : .none, radius: radius) {
-                Text(Self.inline(text)).font(font).foregroundStyle(colors?.text ?? .white)
-                    .tint(colors?.text ?? .white)
-                    .padding(padding)
-                    .fixedSize(horizontal: false, vertical: true)
+                Group {
+                    if let selection {
+                        let color = UIColor(colors?.text ?? .white)
+                        SelectableBubbleText(text: SelectableMessageText.person(Self.inline(text), color: color), tint: color,
+                                             controller: selection)
+                    } else {
+                        Text(Self.inline(text)).font(font).foregroundStyle(colors?.text ?? .white)
+                            .tint(colors?.text ?? .white)
+                    }
+                }
+                .padding(padding)
+                .fixedSize(horizontal: false, vertical: true)
             }
             .selectableMessageText()
         } else {

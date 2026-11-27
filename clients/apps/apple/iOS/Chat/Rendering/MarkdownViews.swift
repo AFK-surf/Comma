@@ -9,11 +9,19 @@ struct MarkdownBubbles: View {
     let tail: Bool
     var compact = false
     @Environment(\.assistantBubbleFill) private var fill
+    /// Set while this message's text is selected in: each bubble then shows its words as one selectable text.
+    @Environment(\.messageSelection) private var selection
 
     /// The bubbles of a message's tree; `parts` are the message's, which the tree's Task chips name.
     init(tree: NSArray, parts: [ChatPart], tail: Bool, compact: Bool = false) {
-        let style = MarkdownStyle(compact: compact)
-        slots = MarkdownTree.slots(tree, style: style) { key in
+        slots = Self.slots(tree: tree, parts: parts, style: MarkdownStyle(compact: compact))
+        self.tail = tail
+        self.compact = compact
+    }
+
+    /// The slots of a message's tree, each Task chip as the part of `parts` it names.
+    static func slots(tree: NSArray, parts: [ChatPart], style: MarkdownStyle) -> [MarkdownSlot] {
+        MarkdownTree.slots(tree, style: style) { key in
             guard let index = MarkdownTree.partIndex(key), parts.indices.contains(index) else { return nil }
             switch parts[index] {
             case .task(let id, let title, let section, let unavailable):
@@ -25,8 +33,6 @@ struct MarkdownBubbles: View {
             case .question, .miniApp, .other: return nil
             }
         }
-        self.tail = tail
-        self.compact = compact
     }
 
     /// Plain words in one bubble, for a message the core gave no tree.
@@ -43,10 +49,16 @@ struct MarkdownBubbles: View {
                 switch slot {
                 case .prose(let blocks):
                     ChatBubbleSurface(fill: fill, tail: tail && last ? .leading : .none, radius: radius) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(blocks.enumerated()), id: \.offset) { position, block in
-                                MarkdownBlockView(block: block, style: style)
-                                    .padding(.top, position == 0 ? 0 : style.spacing(before: block))
+                        Group {
+                            if let selection {
+                                SelectableBubbleText(text: SelectableMessageText.prose(blocks), first: index == 0, controller: selection)
+                            } else {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(blocks.enumerated()), id: \.offset) { position, block in
+                                        MarkdownBlockView(block: block, style: style)
+                                            .padding(.top, position == 0 ? 0 : style.spacing(before: block))
+                                    }
+                                }
                             }
                         }
                         .padding(padding)
@@ -54,15 +66,44 @@ struct MarkdownBubbles: View {
                     }
                 case .code(let language, let text):
                     ChatBubbleSurface(fill: CommaTheme.markdownTable, tail: tail && last ? .leading : .none, radius: radius) {
-                        // A long line scrolls to the bubble's edge, which clips it, rather than stopping inside the padding.
-                        MarkdownCodeView(language: language, code: text, style: style, inset: padding)
-                            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-                            .selectableMessageText()
+                        if let selection {
+                            // A long line wraps while it is selected in, so the selection reaches all of it.
+                            VStack(alignment: .leading, spacing: 6) {
+                                if let language, !language.isEmpty {
+                                    Text(language.lowercased()).font(.footnote.weight(.medium))
+                                        .foregroundStyle(CommaTheme.textQuaternary)
+                                }
+                                SelectableBubbleText(text: SelectableMessageText.code(text), first: index == 0, controller: selection)
+                            }
+                            .padding(padding)
+                            .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            // A long line scrolls to the bubble's edge, which clips it, rather than stopping inside the padding.
+                            MarkdownCodeView(language: language, code: text, style: style, inset: padding)
+                                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                                .selectableMessageText()
+                        }
                     }
                 case .table(let table):
                     ChatBubbleSurface(fill: CommaTheme.markdownTable, tail: tail && last ? .leading : .none, radius: radius) {
-                        MarkdownTableView(table: table, style: style, cornerRadius: radius - 4).padding(4)
-                            .selectableMessageText()
+                        if let selection, SelectableMessageText.liesOnGrid(table) {
+                            MarkdownTableView(table: table, style: style, cornerRadius: radius - 4,
+                                              selection: selection, takesSelection: index == 0).padding(4)
+                        } else if let selection {
+                            // The cells of a row on one line, a tab between them: a selection runs across cells and rows.
+                            let rows = SelectableMessageText.table(table)
+                            let shape = RoundedRectangle(cornerRadius: radius - 4, style: .continuous)
+                            SelectableBubbleText(text: rows.text, first: index == 0, controller: selection)
+                                .frame(minWidth: rows.width, alignment: .leading)
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(CommaTheme.markdownSurface, in: shape)
+                                .overlay(shape.strokeBorder(CommaTheme.markdownBorder, lineWidth: 0.5))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(4)
+                        } else {
+                            MarkdownTableView(table: table, style: style, cornerRadius: radius - 4).padding(4)
+                                .selectableMessageText()
+                        }
                     }
                 case .screen(let link):
                     ScreenLinkCard(link: link)
@@ -256,6 +297,13 @@ struct MarkdownTableView: View {
     let style: MarkdownStyle
     /// Concentric with what holds it: a bubble's radius less the 4pt between them, or 12pt inside prose.
     var cornerRadius: CGFloat = 16
+    /// Set while the table's message is selected in and its rows lie on the grid as lines
+    /// (`SelectableMessageText.liesOnGrid`): the grid then holds the rows as one selectable text in place of its cells'.
+    var selection: MessageSelectionController? = nil
+    /// The message's first bubble, which takes the selection when it starts.
+    var takesSelection = false
+    /// The columns' spans in the grid, which place the selectable text's cells.
+    @State private var columns: [Int: ClosedRange<CGFloat>] = [:]
 
     /// As wide as its columns: a scroll view of its own only when they are wider than the bubble, so the bubble
     /// around it ends where the table does. The outline is on what shows, so a scrolled table keeps its corners.
@@ -278,6 +326,10 @@ struct MarkdownTableView: View {
             GridRow {
                 ForEach(Array(table.head.enumerated()), id: \.offset) { column, cell in
                     cellView(cell, bold: true, alignment: alignment(column))
+                        .background(GeometryReader { cell in
+                            let frame = cell.frame(in: .named(Self.gridSpace))
+                            Color.clear.preference(key: TableColumnsKey.self, value: [column: frame.minX...frame.maxX])
+                        })
                 }
             }
             .background(CommaTheme.markdownTable)
@@ -290,7 +342,22 @@ struct MarkdownTableView: View {
                 }
             }
         }
+        .coordinateSpace(.named(Self.gridSpace))
+        .onPreferenceChange(TableColumnsKey.self) { value in
+            MainActor.assumeIsolated { columns = value }
+        }
+        .overlay(alignment: .topLeading) {
+            if let selection, columns.count == table.head.count {
+                // A cell's words are 12pt inside its column, where the text's leading edge is.
+                let spans = (0..<columns.count).compactMap { columns[$0] }.map { ($0.lowerBound)...($0.upperBound - 24) }
+                SelectableBubbleText(text: SelectableMessageText.table(table, columns: spans).text, first: takesSelection,
+                                     controller: selection)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+            }
+        }
     }
+
+    private static let gridSpace = "markdownTableGrid"
 
     private func alignment(_ column: Int) -> MarkdownTable.Alignment {
         table.alignments.indices.contains(column) ? table.alignments[column] : .leading
@@ -303,8 +370,16 @@ struct MarkdownTableView: View {
                 .foregroundStyle(CommaTheme.textPrimary)
                 .multilineTextAlignment(alignment == .trailing ? .trailing : alignment == .center ? .center : .leading)
                 .lineLimit(nil)
+                .opacity(selection == nil ? 1 : 0)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+}
+
+private struct TableColumnsKey: PreferenceKey {
+    static let defaultValue: [Int: ClosedRange<CGFloat>] = [:]
+    static func reduce(value: inout [Int: ClosedRange<CGFloat>], nextValue: () -> [Int: ClosedRange<CGFloat>]) {
+        value.merge(nextValue()) { $1 }
     }
 }
 

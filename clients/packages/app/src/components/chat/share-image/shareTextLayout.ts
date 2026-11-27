@@ -8,49 +8,20 @@ export const COMMA_ANDROID_STORE_URL =
   "https://play.google.com/store/apps/details?id=surf.comma.android";
 
 /**
- * Weighted visual capacity of a single share card (~600 CJK chars or ~1,050
- * Latin chars), keeping card aspect ratio within readable Swiss poster bounds.
+ * Maximum visible characters supported on a single share card.
+ * Selections exceeding this limit trigger a toast instead of splitting across cards.
  */
-export const SINGLE_CARD_MAX_UNITS = 600;
-
-/**
- * Per-card capacity when an oversized selection is split into a numbered
- * multi-card series.
- */
-export const PAGINATED_PAGE_MAX_UNITS = 500;
-
-/**
- * Maximum cards produced in a single multi-card export (matches WeChat 9-grid).
- * Selections larger than ~9 cards (e.g. 10,000+ chars) cap cleanly here.
- */
-export const MAX_SHARE_PAGES = 9;
+export const MAX_SHARE_CHARS = 600;
 
 /** Approximate surrounding context shown above and below the selection (~2 lines). */
 export const CONTEXT_MAX_UNITS = 42;
 
-export type ShareCardMode = "excerpt" | "pages";
-
 export type ShareCardSlice = {
-  pageIndex: number;
-  pageCount: number;
   beforeContext: string;
   beforeJoin: ChatSelectionShareJoin;
   selectedText: string;
   afterContext: string;
   afterJoin: ChatSelectionShareJoin;
-  continuedFromPrev: boolean;
-  continuesToNext: boolean;
-  truncatedEnd: boolean;
-};
-
-export type ShareCardPlan = {
-  mode: ShareCardMode;
-  exceedsSingleLimit: boolean;
-  totalChars: number;
-  shownChars: number;
-  wasTruncated: boolean;
-  totalPossiblePages: number;
-  cards: ShareCardSlice[];
 };
 
 const PARAGRAPH_BREAK_UNITS = 22;
@@ -91,7 +62,7 @@ export function measureShareUnits(text: string): number {
   return total;
 }
 
-/** Counts visible non-whitespace characters (code points) for user-facing notices. */
+/** Counts visible non-whitespace characters (code points) for share-card limits. */
 export function countDisplayChars(text: string): number {
   let count = 0;
   for (const char of text) {
@@ -100,19 +71,16 @@ export function countDisplayChars(text: string): number {
   return count;
 }
 
+/** Returns true when `text` exceeds the single share card character limit. */
+export function exceedsShareCardLimit(text: string): boolean {
+  return countDisplayChars(text.trim()) > MAX_SHARE_CHARS;
+}
+
 const STRONG_BREAK_RE = /[。！？.!?\n]/;
 const SOFT_BREAK_RE = /[，；：、,;:\s]/;
 const LATIN_WORD_CHAR_RE = /[A-Za-z0-9_'-]/;
 
-/**
- * Slices a prefix of `text` up to `maxUnits`, snapping back to a clean
- * paragraph, sentence, clause, or word boundary so neither English words nor
- * surrogate pairs are split mid-token.
- */
-function takePrefixByUnits(
-  text: string,
-  maxUnits: number
-): { head: string; tail: string } {
+function takePrefixByUnits(text: string, maxUnits: number): string {
   const chars = Array.from(text);
   let units = 0;
   let cutIndex = chars.length;
@@ -133,10 +101,9 @@ function takePrefixByUnits(
   }
 
   if (cutIndex >= chars.length) {
-    return { head: text, tail: "" };
+    return text;
   }
 
-  // Prefer natural break within the final 28% window of the slice.
   const minWindow = Math.max(1, Math.floor(cutIndex * 0.72));
   let bestParagraph = -1;
   let bestSentence = -1;
@@ -154,7 +121,6 @@ function takePrefixByUnits(
     if (SOFT_BREAK_RE.test(prev) && bestSoft === -1) {
       bestSoft = i;
     }
-    // Avoid splitting an ASCII/Latin word when walking back.
     if (
       bestSoft === -1 &&
       LATIN_WORD_CHAR_RE.test(prev) &&
@@ -173,7 +139,6 @@ function takePrefixByUnits(
           ? bestSoft
           : cutIndex;
 
-  // Guard against cutting inside a Latin word when no soft break was found.
   if (
     resolvedCut > 1 &&
     LATIN_WORD_CHAR_RE.test(chars[resolvedCut - 1] ?? "") &&
@@ -186,9 +151,7 @@ function takePrefixByUnits(
     if (walk > minWindow) resolvedCut = walk;
   }
 
-  const head = chars.slice(0, resolvedCut).join("").trimEnd();
-  const tail = chars.slice(resolvedCut).join("").trimStart();
-  return { head, tail };
+  return chars.slice(0, resolvedCut).join("").trimEnd();
 }
 
 /**
@@ -255,133 +218,20 @@ export function trimAfterContext(
   const trimmed = afterContext.trim();
   if (!trimmed) return "";
   if (measureShareUnits(trimmed) <= maxUnits) return trimmed;
-  return takePrefixByUnits(trimmed, maxUnits).head;
+  return takePrefixByUnits(trimmed, maxUnits);
 }
 
-/**
- * Plans single-card or paginated Swiss share cards for any selection length,
- * including extreme 10,000+ character selections.
- */
-export function planShareCards(
-  payload: ChatSelectionSharePayload,
-  requestedMode: ShareCardMode = "excerpt"
-): ShareCardPlan {
+/** Plans a single Swiss share card with bounded surrounding context. */
+export function planShareCard(payload: ChatSelectionSharePayload): ShareCardSlice {
   const selected = payload.selectedText.trim();
-  const totalChars = countDisplayChars(selected);
-  const totalUnits = measureShareUnits(selected);
-  const exceedsSingleLimit = totalUnits > SINGLE_CARD_MAX_UNITS;
-
   const beforeSnippet = trimBeforeContext(payload.beforeContext);
   const afterSnippet = trimAfterContext(payload.afterContext);
 
-  if (!exceedsSingleLimit) {
-    return {
-      mode: "excerpt",
-      exceedsSingleLimit: false,
-      totalChars,
-      shownChars: totalChars,
-      wasTruncated: false,
-      totalPossiblePages: 1,
-      cards: [
-        {
-          pageIndex: 0,
-          pageCount: 1,
-          beforeContext: beforeSnippet,
-          beforeJoin: beforeSnippet ? payload.beforeJoin : "paragraph",
-          selectedText: selected,
-          afterContext: afterSnippet,
-          afterJoin: afterSnippet ? payload.afterJoin : "paragraph",
-          continuedFromPrev: false,
-          continuesToNext: false,
-          truncatedEnd: false,
-        },
-      ],
-    };
-  }
-
-  // Always compute full pagination count so the toolbar can display "(N cards)".
-  const allChunks: string[] = [];
-  let remaining = selected;
-  let guard = 0;
-  while (remaining && guard < 100) {
-    guard += 1;
-    if (measureShareUnits(remaining) <= PAGINATED_PAGE_MAX_UNITS) {
-      allChunks.push(remaining);
-      remaining = "";
-      break;
-    }
-    const { head, tail } = takePrefixByUnits(remaining, PAGINATED_PAGE_MAX_UNITS);
-    if (!head) {
-      allChunks.push(remaining);
-      remaining = "";
-      break;
-    }
-    allChunks.push(head);
-    remaining = tail;
-  }
-
-  const totalPossiblePages = Math.max(2, allChunks.length);
-
-  if (requestedMode === "excerpt") {
-    const { head } = takePrefixByUnits(selected, SINGLE_CARD_MAX_UNITS);
-    const excerptText = head || selected;
-    const shownChars = countDisplayChars(excerptText);
-    return {
-      mode: "excerpt",
-      exceedsSingleLimit: true,
-      totalChars,
-      shownChars,
-      wasTruncated: true,
-      totalPossiblePages,
-      cards: [
-        {
-          pageIndex: 0,
-          pageCount: 1,
-          beforeContext: beforeSnippet,
-          beforeJoin: beforeSnippet ? payload.beforeJoin : "paragraph",
-          selectedText: excerptText,
-          afterContext: "",
-          afterJoin: "paragraph",
-          continuedFromPrev: false,
-          continuesToNext: false,
-          truncatedEnd: true,
-        },
-      ],
-    };
-  }
-
-  const cappedChunks = allChunks.slice(0, MAX_SHARE_PAGES);
-  const wasCapped = allChunks.length > MAX_SHARE_PAGES;
-  const pageCount = cappedChunks.length;
-  const shownChars = cappedChunks.reduce(
-    (sum, chunk) => sum + countDisplayChars(chunk),
-    0
-  );
-
-  const cards: ShareCardSlice[] = cappedChunks.map((chunk, index) => {
-    const isFirst = index === 0;
-    const isLast = index === pageCount - 1;
-    return {
-      pageIndex: index,
-      pageCount,
-      beforeContext: isFirst ? beforeSnippet : "",
-      beforeJoin: isFirst && beforeSnippet ? payload.beforeJoin : "paragraph",
-      selectedText: chunk,
-      afterContext: isLast && !wasCapped ? afterSnippet : "",
-      afterJoin: isLast && !wasCapped && afterSnippet ? payload.afterJoin : "paragraph",
-      continuedFromPrev: !isFirst,
-      continuesToNext: !isLast,
-      truncatedEnd: isLast && wasCapped,
-    };
-  });
-
   return {
-    mode: "pages",
-    exceedsSingleLimit: true,
-    totalChars,
-    shownChars,
-    wasTruncated: wasCapped,
-    totalPossiblePages,
-    cards,
+    beforeContext: beforeSnippet,
+    beforeJoin: beforeSnippet ? payload.beforeJoin : "paragraph",
+    selectedText: selected,
+    afterContext: afterSnippet,
+    afterJoin: afterSnippet ? payload.afterJoin : "paragraph",
   };
 }

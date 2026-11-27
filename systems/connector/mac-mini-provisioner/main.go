@@ -30,6 +30,10 @@ const agentVMMVersionTimeout = 2 * time.Second
 const hostRuntimeOperationTimeout = 3 * time.Minute
 const hostRuntimeUpdateTimeout = 21 * time.Minute
 
+// agentVMMUpdateFailureCooldown bounds how often the worker starts the same
+// update request again after the CLI failed without a usable result.
+const agentVMMUpdateFailureCooldown = 15 * time.Minute
+
 type provisionerError struct {
 	code    string
 	message string
@@ -108,6 +112,7 @@ type runOptions struct {
 	loop          bool
 	interval      time.Duration
 	maxIterations int
+	updateGate    *agentVMMUpdateGate
 }
 
 type processExit struct {
@@ -675,17 +680,28 @@ func applyAgentVMMUpdate(opts runOptions, config map[string]any, update map[stri
 		"--lifecycle-helper", lifecycle,
 	}
 	arguments = append(arguments, serviceArgs...)
+	gate := opts.updateGate
+	if advisory, held := gate.held(requestID); held {
+		return false, advisory, nil
+	}
+	fmt.Fprintf(os.Stderr, "Agent VMM update starting: release=%s request_id=%s url=%s size=%d\n", targetRelease, requestID, targetURL, targetSize)
 	ctx, cancel := context.WithTimeout(context.Background(), hostRuntimeUpdateTimeout)
 	defer cancel()
 	output, outputOversize, runErr := runCommandWithOutputLimit(ctx, 2<<20, cli, arguments...)
+	failed := func(code, message string) (bool, map[string]any, error) {
+		advisory := agentVMMTerminalUpdateAdvisory(targetRelease, requestID, code, message)
+		until := gate.clock().Add(agentVMMUpdateFailureCooldown)
+		logAgentVMMUpdateResult(requestID, advisory, code, runErr, output, until)
+		return false, gate.hold(requestID, until, advisory), nil
+	}
 	if outputOversize {
-		return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_result_oversize", "Managed Agent VMM update returned more than 2 MiB."), nil
+		return failed("agent_vmm.update_result_oversize", "Managed Agent VMM update returned more than 2 MiB.")
 	}
 	var result map[string]any
 	if json.Unmarshal(output, &result) != nil || positiveRevision(result["version"]) != 1 || stringValue(result["command"]) != "update" ||
 		stringValue(result["state"]) == "" || stringValue(mapValue(result, "facts")["target_release_id"]) != targetRelease ||
 		stringValue(mapValue(result, "facts")["request_id"]) != requestID {
-		return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_result_invalid", "Managed Agent VMM update returned an invalid result."), nil
+		return failed("agent_vmm.update_result_invalid", "Managed Agent VMM update returned an invalid result.")
 	}
 	state := stringValue(result["state"])
 	disposition := stringValue(result["disposition"])
@@ -697,44 +713,56 @@ func applyAgentVMMUpdate(opts runOptions, config map[string]any, update map[stri
 		"agent_vmm_update": result,
 	}
 	if runErr != nil {
-		return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_process_failed", "Managed Agent VMM update exited without a successful CLI contract."), nil
+		return failed("agent_vmm.update_process_failed", "Managed Agent VMM update exited without a successful CLI contract.")
+	}
+	issue := mapValue(result, "issue")
+	reported := func(until time.Time) (bool, map[string]any, error) {
+		logAgentVMMUpdateResult(requestID, payload, strings.TrimSpace(stringValue(issue["code"])+" "+stringValue(issue["message"])), nil, nil, until)
+		return false, gate.hold(requestID, until, payload), nil
 	}
 	switch disposition {
 	case "exclusive_transition_in_progress":
 		if state != "transition_in_progress" {
-			return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state."), nil
+			return failed("agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state.")
 		}
 		payload["failure_code"] = "agent_vmm.update_" + state
 		payload["failure_message"] = "The lifecycle owner has an exclusive Agent VMM transition in progress."
+		logAgentVMMUpdateResult(requestID, payload, "", nil, nil, time.Time{})
 		return true, payload, nil
 	case "retry_same_request_at":
 		if state != "retry_wait" || strings.TrimSpace(stringValue(mapValue(result, "facts")["retry_at"])) == "" {
-			return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state."), nil
+			return failed("agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state.")
 		}
 		payload["failure_code"] = "agent_vmm.update_" + state
 		payload["failure_message"] = "Managed Agent VMM update did not complete. Follow the typed disposition and keep the same selected target and request identity."
-		return false, payload, nil
+		retryAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(stringValue(mapValue(result, "facts")["retry_at"])))
+		if parseErr != nil {
+			retryAt = gate.clock().Add(agentVMMUpdateFailureCooldown)
+		}
+		return reported(retryAt)
 	case "administrator_action_required":
 		if state != "needs_administrator" {
-			return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state."), nil
+			return failed("agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state.")
 		}
 		payload["failure_code"] = "agent_vmm.update_" + state
 		payload["failure_message"] = "Managed Agent VMM update did not complete. Follow the typed disposition and keep the same selected target and request identity."
-		return false, payload, nil
+		return reported(time.Time{})
 	case "terminal_action_required":
 		if state != "action_required" {
-			return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state."), nil
+			return failed("agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state.")
 		}
 		payload["failure_code"] = "agent_vmm.update_" + state
 		payload["failure_message"] = "Managed Agent VMM update did not complete. Follow the typed disposition and keep the same selected target and request identity."
-		return false, payload, nil
+		return reported(time.Time{})
 	case "continue_normal_work":
 		if state != "succeeded" {
-			return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state."), nil
+			return failed("agent_vmm.update_disposition_invalid", "Managed Agent VMM update returned an invalid disposition for its state.")
 		}
 	default:
-		return false, agentVMMTerminalUpdateAdvisory(targetRelease, requestID, "agent_vmm.update_disposition_invalid", "Managed Agent VMM update did not return a recognized disposition."), nil
+		return failed("agent_vmm.update_disposition_invalid", "Managed Agent VMM update did not return a recognized disposition.")
 	}
+	logAgentVMMUpdateResult(requestID, payload, "", nil, nil, time.Time{})
+	gate.clear()
 	capabilities := copyStringAnyMap(mapValue(config, "capabilities"))
 	digests := copyStringAnyMap(mapValue(capabilities, "component_digests"))
 	digests["agent-vmm-host"] = targetDigest
@@ -744,6 +772,79 @@ func applyAgentVMMUpdate(opts runOptions, config map[string]any, update map[stri
 		return true, payload, provisionerError{code: "agent-vmm.digest_state_persist_failed", message: "agent-vmm installed artifact digest could not be persisted"}
 	}
 	return false, payload, nil
+}
+
+// agentVMMUpdateGate keeps the worker from starting the same update request on
+// every heartbeat after the CLI asked it to wait or to stop. A zero until holds
+// the request until the selected target, and so the request ID, changes.
+type agentVMMUpdateGate struct {
+	now       func() time.Time
+	requestID string
+	until     time.Time
+	advisory  map[string]any
+}
+
+func (gate *agentVMMUpdateGate) clock() time.Time {
+	if gate != nil && gate.now != nil {
+		return gate.now()
+	}
+	return time.Now()
+}
+
+func (gate *agentVMMUpdateGate) held(requestID string) (map[string]any, bool) {
+	if gate == nil || gate.requestID == "" || gate.requestID != requestID {
+		return nil, false
+	}
+	if !gate.until.IsZero() && !gate.clock().Before(gate.until) {
+		return nil, false
+	}
+	return gate.advisory, true
+}
+
+func (gate *agentVMMUpdateGate) hold(requestID string, until time.Time, advisory map[string]any) map[string]any {
+	if gate != nil {
+		gate.requestID, gate.until, gate.advisory = requestID, until, advisory
+	}
+	return advisory
+}
+
+func (gate *agentVMMUpdateGate) clear() {
+	if gate != nil {
+		gate.requestID, gate.until, gate.advisory = "", time.Time{}, nil
+	}
+}
+
+func logAgentVMMUpdateResult(requestID string, payload map[string]any, reason string, runErr error, output []byte, nextAttempt time.Time) {
+	result := mapValue(payload, "agent_vmm_update")
+	line := fmt.Sprintf("Agent VMM update finished: request_id=%s state=%s stage=%s disposition=%s",
+		requestID, stringValue(result["state"]), stringValue(result["stage"]), stringValue(result["disposition"]))
+	if retryAt := stringValue(mapValue(result, "facts")["retry_at"]); retryAt != "" {
+		line += " retry_at=" + retryAt
+	}
+	if reason != "" {
+		line += " reason=" + strconv.Quote(reason)
+	}
+	if runErr != nil {
+		line += " error=" + strconv.Quote(runErr.Error())
+		if tail := lastOutputLine(output, 240); tail != "" {
+			line += " output=" + strconv.Quote(tail)
+		}
+	}
+	if !nextAttempt.IsZero() {
+		line += " next_attempt=" + nextAttempt.UTC().Format(time.RFC3339)
+	} else if disposition := stringValue(result["disposition"]); disposition == "terminal_action_required" || disposition == "administrator_action_required" {
+		line += " next_attempt=target_change"
+	}
+	fmt.Fprintln(os.Stderr, line)
+}
+
+func lastOutputLine(output []byte, limit int) string {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if len(last) > limit {
+		last = last[:limit]
+	}
+	return last
 }
 
 func agentVMMTerminalUpdateAdvisory(targetRelease, requestID, code, message string) map[string]any {
@@ -962,6 +1063,7 @@ func runWorker(opts runOptions) error {
 		return provisionerError{code: "register.provisioner_id_missing", message: "register response missing id"}
 	}
 
+	opts.updateGate = &agentVMMUpdateGate{}
 	iteration := 0
 	for {
 		iteration++

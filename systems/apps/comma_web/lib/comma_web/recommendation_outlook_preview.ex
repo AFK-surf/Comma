@@ -1,11 +1,15 @@
 defmodule CommaWeb.RecommendationOutlookPreview do
   @moduledoc """
-  Exact-link lookup in the member's current collected Outlook source. This does
-  not derive a Graph id from a URL or scan a mailbox for an arbitrary link.
+  Exact-link lookup in the member's current collected Outlook source or owned
+  Home `MailInteraction` entries. This does not derive a Graph id from a URL or
+  scan a mailbox for an arbitrary link.
   """
 
   alias Comma.{MemberSourceConsents, MemberSourceItems, Recommendations}
-  alias CommaWeb.RecommendationComposioMemberSource
+  alias CommaWeb.{ProactiveOutlookMailSource, RecommendationComposioMemberSource}
+  alias SalixIM.{ConversationIds, Conversations, GroupDirectory, MailInteraction}
+
+  @max_body_chars 8_000
 
   def supported_href?(href) when is_binary(href) do
     case URI.parse(href) do
@@ -21,6 +25,16 @@ defmodule CommaWeb.RecommendationOutlookPreview do
   def supported_href?(_), do: false
 
   def preview(workspace, viewer, href, source_id) do
+    case preview_from_routine(workspace, viewer, href, source_id) do
+      {:ok, result} ->
+        {:ok, result}
+
+      _ ->
+        preview_from_home_mail(workspace, viewer, href, source_id)
+    end
+  end
+
+  defp preview_from_routine(workspace, viewer, href, source_id) do
     with true <- supported_href?(href) and workspace["owner_user_id"] == viewer,
          {:ok, profile} <- Recommendations.get_runtime_profile(workspace["id"], viewer),
          true <- profile.relevance_mode == "member",
@@ -44,6 +58,60 @@ defmodule CommaWeb.RecommendationOutlookPreview do
          {:ok, {^source, ^item, ^kind, ^resource_id}} <-
            current(new_profile, workspace, viewer, id, href) do
       {:ok, card(data, kind, href)}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp preview_from_home_mail(workspace, viewer, href, source_id) do
+    with true <- supported_href?(href) and workspace["owner_user_id"] == viewer,
+         {:ok, account_id, message_id} <- home_mail_entry(workspace, viewer, href, source_id),
+         %{"connection_id" => ^account_id} = consent <-
+           MemberSourceConsents.binding(workspace["id"], viewer, "outlook", account_id),
+         {:ok, data} <-
+           RecommendationComposioMemberSource.preview_outlook(
+             workspace,
+             account_id,
+             nil,
+             "message",
+             message_id,
+             href
+           ),
+         true <- valid_card_data?(data),
+         ^consent <- MemberSourceConsents.binding(workspace["id"], viewer, "outlook", account_id) do
+      {:ok, card(data, "message", href)}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp home_mail_entry(workspace, viewer, href, source_id) do
+    group_id = workspace["default_group_id"]
+
+    with true <- is_binary(group_id) and group_id != "",
+         {:ok, group} <- GroupDirectory.get_group(group_id),
+         {:ok, home_id} <- ConversationIds.group_router(group),
+         {:ok, conversation} <- Conversations.get_group_conversation_record(group_id, home_id) do
+      matching =
+        conversation
+        |> MailInteraction.entries()
+        |> Map.values()
+        |> Enum.filter(fn value ->
+          is_map(value) and value["owner_id"] == viewer and
+            is_binary(value["source_url"]) and String.trim(value["source_url"]) == href and
+            is_binary(value["account_id"]) and value["account_id"] != "" and
+            is_binary(value["message_id"]) and value["message_id"] != "" and
+            (is_nil(source_id) or source_id == "" or value["account_id"] == source_id)
+        end)
+        |> Enum.sort_by(&(&1["changed_at"] || 0), :desc)
+
+      case matching do
+        [%{"account_id" => account_id, "message_id" => message_id} | _] ->
+          {:ok, account_id, message_id}
+
+        _ ->
+          {:error, :not_found}
+      end
     else
       _ -> {:error, :not_found}
     end
@@ -110,18 +178,99 @@ defmodule CommaWeb.RecommendationOutlookPreview do
   defp nested(_, _), do: nil
 
   defp card(data, kind, href) do
+    body =
+      if kind == "message" do
+        case ProactiveOutlookMailSource.message_text(data) do
+          {:ok, text} when is_binary(text) and text != "" ->
+            truncate_text(text, @max_body_chars)
+
+          _ ->
+            nil
+        end
+      end
+
+    excerpt_source =
+      case data["bodyPreview"] do
+        text when is_binary(text) and text != "" -> text
+        _ -> body || ""
+      end
+
     %{
       "kind" => if(kind == "message", do: "outlook_message", else: "outlook_event"),
       "href" => href,
       "title" => String.slice(data["subject"] || "Untitled", 0, 200),
-      "excerpt" => String.slice(data["bodyPreview"] || "", 0, 280),
+      "excerpt" => String.slice(String.trim(excerpt_source), 0, 280),
       "sender" =>
         if(kind == "message",
-          do: nested(data, ["from", "emailAddress", "address"]),
+          do: outlook_sender(data["from"]),
           else: nil
         ),
+      "recipients" =>
+        if(kind == "message",
+          do: outlook_recipients(data["toRecipients"]),
+          else: nil
+        ),
+      "receivedAt" =>
+        if(kind == "message",
+          do: iso_unix_ms(data["receivedDateTime"]),
+          else: nil
+        ),
+      "body" => body,
       "startsAt" => if(kind == "event", do: starts_at(data["start"]), else: nil)
     }
+  end
+
+  defp outlook_sender(%{"emailAddress" => %{} = addr}) do
+    name = clean_string(addr["name"])
+    email = clean_string(addr["address"])
+
+    cond do
+      is_binary(name) and is_binary(email) and String.downcase(name) != String.downcase(email) ->
+        "#{name} <#{email}>"
+
+      is_binary(email) ->
+        email
+
+      true ->
+        name
+    end
+  end
+
+  defp outlook_sender(_), do: nil
+
+  defp outlook_recipients(rows) when is_list(rows) do
+    rows
+    |> Enum.take(10)
+    |> Enum.map(&clean_string(nested(&1, ["emailAddress", "address"])))
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      list -> Enum.join(list, ", ")
+    end
+  end
+
+  defp outlook_recipients(_), do: nil
+
+  defp iso_unix_ms(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _offset} -> DateTime.to_unix(dt, :millisecond)
+      _ -> nil
+    end
+  end
+
+  defp iso_unix_ms(_), do: nil
+
+  defp clean_string(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp clean_string(_), do: nil
+
+  defp truncate_text(text, max_chars) do
+    if String.length(text) > max_chars,
+      do: String.slice(text, 0, max_chars - 1) <> "…",
+      else: text
   end
 
   # Graph returns event times in UTC unless a Prefer header asks otherwise;
@@ -136,7 +285,7 @@ defmodule CommaWeb.RecommendationOutlookPreview do
   defp starts_at(_), do: nil
 
   # The viewer's Outlook account the link names, or the only one they consented.
-  defp consent(workspace, viewer, nil) do
+  defp consent(workspace, viewer, source_id) when source_id in [nil, ""] do
     case MemberSourceConsents.toolkit_bindings(workspace["id"], viewer, "outlook") do
       [only] -> only
       _ -> nil

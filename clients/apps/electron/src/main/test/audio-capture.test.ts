@@ -281,6 +281,43 @@ describe("AudioCaptureService", () => {
     await expect(service.state()).resolves.toMatchObject({ status: "idle" });
   });
 
+  it("logs the helper's exit and the WAV format when compression fails", async () => {
+    const logger = { warn: vi.fn() };
+    const { admitted, native, recordingsDir, service, drive, encoder } = createService({
+      logger,
+    });
+    // The shape `execFile` rejects with when MicCaptureHost exits non-zero.
+    encoder.encode.mockRejectedValueOnce(
+      Object.assign(new Error("Command failed: MicCaptureHost --encode-recording"), {
+        code: 1,
+        killed: false,
+        signal: null,
+        stderr:
+          '{"event":"error","message":"Recording compression failed: The operation couldn’t be completed. (OSStatus error 1718449215.)"}\n',
+      })
+    );
+    await service.start({ source: { kind: "system" } });
+    native.taps[0]?.emit(new Float32Array(48 * 2 * 10).fill(0.25));
+    await expect(admitted.stop()).resolves.toMatchObject({
+      status: "unavailable",
+      reason:
+        "The recording could not be compressed. The WAV is retained in Comma's local recordings folder on this device.",
+    });
+    expect(drive.save).not.toHaveBeenCalled();
+    expect(await readdir(recordingsDir)).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith("Recording compression failed.", {
+      sampleRate: 16_000,
+      channels: 1,
+      byteLength: 320,
+      durationMs: 10,
+      code: 1,
+      killed: false,
+      helperMessage:
+        "Recording compression failed: The operation couldn’t be completed. (OSStatus error 1718449215.)",
+      error: "Command failed: MicCaptureHost --encode-recording",
+    });
+  });
+
   it("returns before ASR completes and supplies the saved Drive source", async () => {
     const gate = Promise.withResolvers<void>();
     const onSaved = vi.fn(
@@ -900,6 +937,7 @@ class FakeMicrophone implements MicrophoneCapture {
 
 function createService({
   clock,
+  logger,
   microphone,
   nativeAvailable = true,
   openExternalUrl,
@@ -910,6 +948,7 @@ function createService({
     ConstructorParameters<typeof AudioCaptureService>[0]["onSaved"]
   >;
   clock?: MainClock;
+  logger?: { warn(message: string, context: Record<string, unknown>): void };
   microphone?: MicrophoneCapture;
   nativeAvailable?: boolean;
   openExternalUrl?: (url: string) => Promise<void>;
@@ -949,6 +988,7 @@ function createService({
   const service = new AudioCaptureService({
     ...(clock ? { clock } : {}),
     encoder,
+    ...(logger ? { logger } : {}),
     ...(onSaved ? { onSaved } : {}),
     loadNative: async () => (nativeAvailable ? native : undefined),
     ...(microphone ? { microphone } : {}),

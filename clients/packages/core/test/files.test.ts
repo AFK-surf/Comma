@@ -56,6 +56,18 @@ function setup() {
 }
 
 describe("a chat file's bytes", () => {
+  it("reads a Task together's file from the Task's own folder, by its member route", async () => {
+    const t = setup();
+    const path = "/task/cnv1_1/uploads/msg1_2-brief.pdf";
+    t.api.on("GET", "/v1/comma/collaborations/g%201/cnv1_1/files", () =>
+      bytes(new Uint8Array([9]), "application/octet-stream")
+    );
+    const read = await t.read({ source: "group-file", group: "g 1", path });
+    expect(read).toMatchObject({ value: { bytes: new Uint8Array([9]) } });
+    const [asked] = t.api.seen("GET", "/v1/comma/collaborations/g%201/cnv1_1/files");
+    expect(new URLSearchParams(asked!.path.split("?")[1]).get("path")).toBe(path);
+  });
+
   it("reads a message's attachment, an agent's blob, an uploaded image or the person's avatar, with the type the server gave", async () => {
     const t = setup();
     t.api.on("GET", attachmentPath, () =>

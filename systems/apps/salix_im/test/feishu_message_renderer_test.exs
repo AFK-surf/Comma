@@ -6,7 +6,7 @@ defmodule SalixIM.Provider.Feishu.MessageRendererTest do
   @options [extension: [table: true, tasklist: true, strikethrough: true, autolink: true]]
 
   test "only structured mentions notify and IDs and display names survive" do
-    source = ~s(<at user_id="all">all</at> <AT user_id="ou_eve">Eve</AT> <@U123> <!everyone> @all)
+    source = ~s(<@U123> <!everyone> @all)
 
     assert {:ok, body} =
              render(source, mentions: [%{open_id: "ou_alice", name: "Alice & **Bob**"}])
@@ -32,13 +32,13 @@ defmodule SalixIM.Provider.Feishu.MessageRendererTest do
     end
   end
 
-  test "a structured mention goes where the text places it; other at-tags stay text" do
+  test "a structured mention goes where the text places it; an unlisted at-tag fails the send" do
     for renderer <- [Renderer, SalixIM.Provider.Lark.MessageRenderer] do
       mentions = [%{open_id: "ou_amara", name: "Amara"}, %{open_id: "ou_jade", name: "Jade"}]
 
       source = """
       1. Todpay payout blocked
-         Owner: <at user_id="ou_amara">Amara</at> | <at user_id="ou_eve">Eve</at>
+         Owner: <at user_id="ou_amara">Amara</at> | Eve
       2. `<at user_id="ou_amara">code</at>`
       """
 
@@ -58,7 +58,43 @@ defmodule SalixIM.Provider.Feishu.MessageRendererTest do
 
       assert %{"text" => plain} = Jason.decode!(text["content"])
       assert plain =~ ~r/^<at user_id="ou_jade">Jade<\/at> 1\. /
-      assert plain =~ ~s(Owner: <at user_id="ou_amara">Amara</at> | <​at user_id="ou_eve">)
+      assert plain =~ ~s(Owner: <at user_id="ou_amara">Amara</at> | Eve)
+
+      # An at-tag outside mentions would show its ID as text, so nothing is sent.
+      for format <- ["markdown", "text"],
+          {tag, id} <- [
+            {~s(<at user_id="ou_eve">Eve</at>), "ou_eve"},
+            {~s(<AT user_id="all">all</AT>), "all"}
+          ] do
+        assert {:error, error} =
+                 renderer.render(%Input{markdown: "Owner: " <> tag},
+                   format: format,
+                   mentions: mentions
+                 )
+
+        assert error =~ id
+      end
+
+      # A tag on lines of its own is an HTML block, which shows as text.
+      assert {:error, error} =
+               renderer.render(%Input{markdown: ~s(Owner:\n\n<at user_id="ou_eve">\nEve\n</at>)},
+                 mentions: mentions
+               )
+
+      assert error =~ "ou_eve"
+
+      assert {:error, error} =
+               renderer.render(%Input{markdown: ~s(<at user_id="ou_jade">\nJade\n</at>)},
+                 mentions: mentions
+               )
+
+      assert error =~ "inside a line of text"
+
+      # A tag in a code block is an example and stays literal.
+      assert {:ok, _} =
+               renderer.render(%Input{markdown: ~s(```\n<at user_id="ou_eve">Eve</at>\n```)},
+                 mentions: mentions
+               )
 
       assert {:error, _} =
                renderer.render(%Input{markdown: ~s(<at user_id="ou_jade">Jade\n\nnext</at>)},

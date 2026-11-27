@@ -2,7 +2,14 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   use SystemsClock.Case, async: false
 
   use SalixAgent.TestSupport.Settle
-  alias Salix.Bindings.{GoogleCalendarSource, GoogleCalendarWatch, MeetingCalendar}
+
+  alias Salix.Bindings.{
+    GoogleCalendarSource,
+    GoogleCalendarWatch,
+    MeetingCalendar,
+    MemberMeetingStatus
+  }
+
   alias SalixCluster.Schedules
   alias Salix.Control.ComposioSettings
   alias SalixCalendar.AgentAPI
@@ -1065,39 +1072,299 @@ defmodule Salix.Bindings.MeetingCalendarTest do
              [~D[2030-03-05], ~D[2030-03-12]]
   end
 
-  test "a meeting on members' calendars is prepared once, for its organizer or the first member",
+  # A meeting on two members' calendars, from each member's scan to the
+  # reminder schedule the scheduler fires and the direct messages it sends.
+  test "each member whose calendar holds a meeting gets a direct message, and one plan researches it",
        %{group: group} do
-    stub_list([standalone_event("Standup", 1, "2030-01-02T00:00:00Z")], "sync-members-prep")
-    assert {:ok, _} = sync_source(group)
+    group = personal_setup!(group)
+    stub_list([standalone_event("Members' standup", 1, "2030-01-02T00:00:00Z")], "sync-members")
+    peng = member_calendar!(group, "peng")
+    jinfei = member_calendar!(group, "jinfei")
+    units = member_units(group, [{"peng", peng}, {"jinfei", jinfei}])
 
-    member =
-      Map.merge(group, %{
-        "calendar_scope" => "members",
-        "personal_preparation" => true,
-        "member_emails" => ["owner@example.com", "other@example.com"]
-      })
+    # Peng's calendar scans first and prepares; Jinfei's joins the holders.
+    {_event, first} = scan_member(units["peng@example.com"])
+    assert first["personal_preparation"] == true
+    assert first["personal_recipients"] == ["peng@example.com"]
 
-    plan = fn unit ->
-      assert {:ok, [event]} = MeetingCalendar.list(unit, range_start(), range_end())
-      assert {:ok, plan} = SalixMeet.MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
-      {plan["personal_preparation"], plan["personal_recipients"]}
+    {_event, other} = scan_member(units["jinfei@example.com"])
+    assert other["personal_preparation"] == false
+    assert other["research_enabled"] == false
+
+    for kind <- ~w(decision personal) do
+      assert {:error, :not_found} = Schedules.get(other["preparation"]["schedule_ids"][kind])
     end
 
-    # The organizer is a member: only the organizer's calendar prepares it.
-    assert {true, ["owner@example.com"]} =
-             plan.(Map.put(member, "account_email", "owner@example.com"))
+    # Peng's next pass names both members, and the reminder opens on that
+    # revision.
+    {_event, plan} = scan_member(units["peng@example.com"])
+    assert plan["personal_recipients"] == ["jinfei@example.com", "peng@example.com"]
+    fire_personal!(plan)
+    assert eventually(fn -> length(personal_posts()) == 2 end)
+    SystemsClock.settle()
+    assert dm_channels() == ["DJINFEI", "DPENG"]
 
-    assert {false, _} = plan.(Map.put(member, "account_email", "other@example.com"))
+    assert {:ok, %{"status" => "opened"}} =
+             MeetingPlan.open_trigger(
+               group["group_id"],
+               plan["meeting_plan_id"],
+               "decision",
+               plan["preparation"]["dispatch_revision"],
+               now: plan["preparation"]["decision_at"]
+             )
 
-    # The organizer is not a member: the first member calendar claims it.
-    outside = Map.put(member, "member_emails", ["first@example.com", "second@example.com"])
+    # A member who holds it after the reminders went out gets one; the others
+    # get no second message.
+    qiang = member_calendar!(group, "qiang")
+    units = member_units(group, [{"peng", peng}, {"jinfei", jinfei}, {"qiang", qiang}])
+    scan_member(units["qiang@example.com"])
+    {_event, plan} = scan_member(units["peng@example.com"])
 
-    # The organizer still comes first: the report goes to them when they are
-    # in the Slack workspace, else to the member who claimed the meeting.
-    assert {true, ["owner@example.com", "first@example.com"]} =
-             plan.(Map.put(outside, "account_email", "first@example.com"))
+    assert plan["personal_recipients"] ==
+             ["jinfei@example.com", "peng@example.com", "qiang@example.com"]
 
-    assert {false, _} = plan.(Map.put(outside, "account_email", "second@example.com"))
+    fire_personal!(plan)
+    assert eventually(fn -> length(personal_posts()) == 3 end)
+    SystemsClock.settle()
+    assert dm_channels() == ["DJINFEI", "DPENG", "DQIANG"]
+  end
+
+  # The members' Upcoming page reads the preparer record the scans wrote: the
+  # row is on the preparer's plan, though another member's copy comes first.
+  test "the members' Upcoming row takes the preparer's plan from its record, two reads a row",
+       %{group: group} do
+    group = personal_setup!(group)
+    stub_list([standalone_event("Members' sync", 1, "2030-01-02T00:00:00Z")], "sync-upcoming")
+    peng = member_calendar!(group, "peng")
+    jinfei = member_calendar!(group, "jinfei")
+    # Jinfei's unit comes first in the enrollment; Peng's calendar scans first
+    # and prepares.
+    members = [{"jinfei", jinfei}, {"peng", peng}]
+    units = member_units(group, members)
+    scan_member(units["peng@example.com"])
+    {jinfei_event, jinfei_plan} = scan_member(units["jinfei@example.com"])
+    {peng_event, plan} = scan_member(units["peng@example.com"])
+    assert jinfei_plan["personal_preparation"] == false
+    assert plan["personal_recipients"] == ["jinfei@example.com", "peng@example.com"]
+    project!(units["jinfei@example.com"], jinfei_event)
+    project!(units["peng@example.com"], peng_event)
+
+    # Peng's reminder is settled without a send.
+    assert {:settle, :window_passed} =
+             MeetingPlan.settle_card(group["group_id"], plan["meeting_plan_id"], :window_passed,
+               kind: "personal"
+             )
+
+    S3.Fake.reset_read_log()
+
+    assert {:ok, %{"events" => [row]}} =
+             MemberMeetingStatus.get(member_group(group, members), 20,
+               now: peng_event["start_ms"] - :timer.hours(1)
+             )
+
+    assert row["meeting_plan_id"] == plan["meeting_plan_id"]
+
+    assert row["recipients"] == [
+             %{"email" => "jinfei@example.com", "slack_unmatched" => false},
+             %{"email" => "peng@example.com", "slack_unmatched" => false}
+           ]
+
+    assert row["plan"]["personal_preparation"] == true
+    assert row["plan"]["preparation"]["personal_status"] == "abandoned"
+
+    gets =
+      for {:get, key} <- S3.Fake.read_log(),
+          prefix <- [
+            "ctl/meet/member_preparer/#{group["group_id"]}/",
+            Keys.ctl_meeting_plans_prefix(group["group_id"])
+          ],
+          String.starts_with?(key, prefix),
+          do: prefix
+
+    assert length(gets) == 2 and length(Enum.uniq(gets)) == 2
+  end
+
+  # A member whose Google email names no active full member of the Slack
+  # workspace gets no DM. The plan records them, and the members' Upcoming
+  # row flags them instead of listing them as reminded.
+  test "a member Slack cannot find is flagged on the Upcoming row and logged once without the email",
+       %{group: group} do
+    group = personal_setup!(group)
+    stub_list([standalone_event("Members' review", 1, "2030-01-02T00:00:00Z")], "sync-unmatched")
+    peng = member_calendar!(group, "peng")
+    missing = member_calendar!(group, "missingli")
+    members = [{"peng", peng}, {"missingli", missing}]
+    units = member_units(group, members)
+    scan_member(units["peng@example.com"])
+    {missing_event, _plan} = scan_member(units["missingli@example.com"])
+    {peng_event, plan} = scan_member(units["peng@example.com"])
+    assert plan["personal_recipients"] == ["missingli@example.com", "peng@example.com"]
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        fire_personal!(plan)
+        assert eventually(fn -> length(personal_posts()) == 1 end)
+        SystemsClock.settle()
+      end)
+
+    assert dm_channels() == ["DPENG"]
+
+    assert [line] =
+             log |> String.split("\n") |> Enum.filter(&(&1 =~ "personal recipients not found"))
+
+    assert line =~ "plan=#{plan["meeting_plan_id"]} count=1"
+    refute line =~ "@"
+
+    project!(units["peng@example.com"], peng_event)
+    project!(units["missingli@example.com"], missing_event)
+
+    assert {:ok, %{"events" => [row]}} =
+             MemberMeetingStatus.get(member_group(group, members), 20,
+               now: peng_event["start_ms"] - :timer.hours(1)
+             )
+
+    assert row["meeting_plan_id"] == plan["meeting_plan_id"]
+
+    assert row["recipients"] == [
+             %{"email" => "missingli@example.com", "slack_unmatched" => true},
+             %{"email" => "peng@example.com", "slack_unmatched" => false}
+           ]
+  end
+
+  # The event changes after the last scan, just before its reminder is due:
+  # the reminder plans the meeting again and the new revision's reminder is
+  # sent. The old one is superseded, not reported as not sent.
+  test "a reminder due on a changed event gives way to the new revision's reminder without a warning",
+       %{group: group} do
+    group = personal_setup!(group)
+    stub_list([standalone_event("Members' sync", 1, "2030-01-02T00:00:00Z")], "sync-superseded")
+    peng = member_calendar!(group, "peng")
+    units = member_units(group, [{"peng", peng}])
+    {_event, plan} = scan_member(units["peng@example.com"])
+    assert plan["personal_recipients"] == ["peng@example.com"]
+
+    stub_list(
+      [standalone_event("Members' sync: launch", 2, "2030-01-03T00:00:00Z")],
+      "sync-superseded-2"
+    )
+
+    assert {:ok, _} =
+             refresh_source(
+               Map.put(group, "calendar_id", peng["calendar_id"]),
+               hd(peng["calendars"])["source_id"]
+             )
+
+    handler_id = "meeting-superseded-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    parent = SystemsRuntime.Proc.self()
+
+    :ok =
+      SystemsRuntime.Telemetry.attach(
+        handler_id,
+        [:salix, :operation, :stop],
+        fn _event, _measurements, metadata, _config ->
+          if metadata.operation == "meeting_notice_settle",
+            do: SystemsRuntime.Proc.send(parent, {:settled, metadata.outcome})
+        end,
+        nil
+      )
+
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler_id) end)
+
+    log = ExUnit.CaptureLog.capture_log(fn -> fire_personal!(plan) end)
+    refute log =~ "meeting notice not sent"
+    assert_received {:settled, "skipped"}
+    refute_received {:settled, _}
+    assert personal_posts() == []
+
+    assert {:ok, current} = MeetingPlan.get(group["group_id"], plan["meeting_plan_id"])
+    assert current["status"] == "planned"
+    refute current["preparation"]["dispatch_revision"] == plan["preparation"]["dispatch_revision"]
+    assert current["preparation"]["personal_status"] == nil
+
+    fire_personal!(current)
+    assert eventually(fn -> length(personal_posts()) == 1 end)
+    SystemsClock.settle()
+    assert dm_channels() == ["DPENG"]
+  end
+
+  test "a unit without calendars is not a member, and another member's copy prepares its meeting",
+       %{group: group} do
+    group = personal_setup!(group)
+    # The meeting's organizer is owner@example.com.
+    stub_list([standalone_event("Review", 1, "2030-01-02T00:00:00Z")], "sync-members-owner")
+    owner = member_calendar!(group, "owner")
+    peng = member_calendar!(group, "peng")
+    units = member_units(group, [{"owner", owner}, {"peng", peng}])
+    {_event, owner_plan} = scan_member(units["owner@example.com"])
+    assert owner_plan["personal_preparation"] == true
+    assert is_binary(owner_plan["conversation_id"])
+    assert agent_tasks(group) == 1
+
+    # Peng's copy does not prepare: it runs nothing and makes no Task.
+    {_event, copy} = scan_member(units["peng@example.com"])
+    assert copy["status"] == "planned"
+    assert copy["personal_preparation"] == false
+    assert is_nil(copy["conversation_id"])
+    assert agent_tasks(group) == 1
+
+    # The organizer's calendars can no longer be listed.
+    units = member_units(group, [{"owner", nil}, {"peng", peng}])
+    assert Map.keys(units) == ["peng@example.com"]
+
+    {_event, plan} = scan_member(units["peng@example.com"])
+    assert plan["meeting_plan_id"] == copy["meeting_plan_id"]
+    assert plan["personal_preparation"] == true
+    assert plan["research_enabled"] == true
+    assert plan["personal_recipients"] == ["peng@example.com"]
+
+    # Taking over, the copy gets its Task and its research and reminder.
+    assert is_binary(plan["conversation_id"])
+    assert agent_tasks(group) == 2
+
+    for kind <- ~w(decision personal),
+        do: assert({:ok, _} = Schedules.get(plan["preparation"]["schedule_ids"][kind]))
+
+    # The organizer's plan sends nothing.
+    assert {:ok, %{"status" => "cancelled"}} =
+             MeetingPlan.get(group["group_id"], owner_plan["meeting_plan_id"])
+
+    assert {:error, :not_found} =
+             Schedules.get(owner_plan["preparation"]["schedule_ids"]["personal"])
+
+    fire_personal!(plan)
+    assert eventually(fn -> length(personal_posts()) == 1 end)
+    SystemsClock.settle()
+    assert dm_channels() == ["DPENG"]
+  end
+
+  test "when the preparer's copy goes away, the next member calendar that scans the meeting prepares it",
+       %{group: group} do
+    group = personal_setup!(group)
+    stub_list([standalone_event("Planning", 1, "2030-01-02T00:00:00Z")], "sync-members-release")
+    peng = member_calendar!(group, "peng")
+    jinfei = member_calendar!(group, "jinfei")
+    units = member_units(group, [{"peng", peng}, {"jinfei", jinfei}])
+    {peng_event, peng_plan} = scan_member(units["peng@example.com"])
+    {_event, jinfei_plan} = scan_member(units["jinfei@example.com"])
+    assert jinfei_plan["personal_preparation"] == false
+
+    # Peng's copy leaves his calendar; the scan releases it.
+    assert :ok = MeetingCalendar.release(units["peng@example.com"], peng_event)
+
+    assert {:ok, %{"status" => "cancelled"}} =
+             MeetingPlan.get(group["group_id"], peng_plan["meeting_plan_id"])
+
+    {_event, plan} = scan_member(units["jinfei@example.com"])
+    assert plan["meeting_plan_id"] == jinfei_plan["meeting_plan_id"]
+    assert plan["personal_preparation"] == true
+    assert plan["research_enabled"] == true
+    assert plan["personal_recipients"] == ["jinfei@example.com"]
+    assert {:ok, _} = Schedules.get(plan["preparation"]["schedule_ids"]["decision"])
+
+    fire_personal!(plan)
+    assert eventually(fn -> length(personal_posts()) == 1 end)
+    SystemsClock.settle()
+    assert dm_channels() == ["DJINFEI"]
   end
 
   # The whole chain with real modules: the bot's connection link, member
@@ -3087,17 +3354,89 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   test "unsupported Google recurrence is retained but cannot fabricate occurrences" do
-    unsupported =
-      recurring_master()
-      |> Map.put("recurrence", ["RRULE:FREQ=MONTHLY;BYDAY=1MO"])
+    for recurrence <- [
+          ["RRULE:FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1"],
+          ["RRULE:FREQ=WEEKLY;BYDAY=1MO"],
+          ["RRULE:FREQ=WEEKLY;BYDAY=MO", "RRULE:FREQ=MONTHLY"]
+        ] do
+      unsupported = Map.put(recurring_master(), "recurrence", recurrence)
 
-    assert {:ok, normalized} = GoogleCalendarSource.normalize(unsupported)
-    assert normalized["normalization_state"] == "unsupported_timing"
-    assert normalized["meeting_qualification"]["item_eligible"] == false
-    assert normalized["meeting_qualification"]["item_reason"] == "unsupported_timing"
-    assert normalized["meeting_qualification"]["authorized"] == false
-    assert normalized["meeting_qualification"]["reason"] == "unsupported_timing"
-    assert normalized["object"]["recurrenceRules"] == []
+      assert {:ok, normalized} = GoogleCalendarSource.normalize(unsupported)
+      assert normalized["normalization_state"] == "unsupported_timing"
+      assert normalized["meeting_qualification"]["item_eligible"] == false
+      assert normalized["meeting_qualification"]["item_reason"] == "unsupported_timing"
+      assert normalized["meeting_qualification"]["authorized"] == false
+      assert normalized["meeting_qualification"]["reason"] == "unsupported_timing"
+      assert normalized["object"]["recurrenceRules"] == []
+    end
+  end
+
+  test "a Google weekly series that ends plans its occurrences up to the end and none after", %{
+    group: group
+  } do
+    ended =
+      Map.put(recurring_master(), "recurrence", [
+        "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20300114T100000Z"
+      ])
+
+    stub_list([ended], "sync-weekly-until")
+    assert {:ok, _} = sync_source(group)
+
+    assert {:ok, events} =
+             MeetingCalendar.list(
+               group,
+               unix_ms("2030-01-01T00:00:00Z"),
+               unix_ms("2030-02-01T00:00:00Z")
+             )
+
+    assert Enum.map(events, & &1["start_ms"]) == [
+             unix_ms("2030-01-07T10:00:00Z"),
+             unix_ms("2030-01-14T10:00:00Z")
+           ]
+
+    for event <- events do
+      assert {:ok, %{"status" => "planned"}} =
+               MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+    end
+  end
+
+  test "a Google series ending after a count or on a date ends at its last instance" do
+    until = fn recurrence ->
+      assert {:ok, normalized} =
+               recurring_master()
+               |> Map.put("recurrence", [recurrence])
+               |> GoogleCalendarSource.normalize()
+
+      assert normalized["normalization_state"] == "complete"
+      get_in(normalized, ["object", "recurrenceRules", Access.at(0), "until"])
+    end
+
+    assert until.("RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=3") == "2030-01-21T10:00:00"
+    assert until.("RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20300121") == "2030-01-21T23:59:59"
+  end
+
+  test "a Google monthly series on the first Monday plans that Monday each month", %{
+    group: group
+  } do
+    monthly = Map.put(recurring_master(), "recurrence", ["RRULE:FREQ=MONTHLY;BYDAY=1MO"])
+
+    stub_list([monthly], "sync-monthly-weekday")
+    assert {:ok, _} = sync_source(group)
+
+    assert {:ok, events} =
+             MeetingCalendar.list(
+               group,
+               unix_ms("2030-01-08T00:00:00Z"),
+               unix_ms("2030-03-08T00:00:00Z")
+             )
+
+    assert Enum.map(events, & &1["start_ms"]) == [
+             unix_ms("2030-02-04T10:00:00Z"),
+             unix_ms("2030-03-04T10:00:00Z")
+           ]
+
+    assert {:ok, %{"status" => "planned"}} =
+             MeetingPlan.get(group["group_id"], hd(events)["meeting_plan_id"])
   end
 
   test "Google weekly recurrence with an explicit week start creates a MeetingPlan", %{
@@ -4725,6 +5064,27 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   defp personal_fixture(group, names \\ @personal_names, settings \\ %{}) do
+    group = personal_setup!(group, settings)
+
+    raw =
+      standalone_event("Personal preparation meeting", 1, "2030-01-02T00:00:00Z")
+      |> Map.put(
+        "attendees",
+        Enum.map(
+          names,
+          &%{"email" => &1 <> "@example.com", "responseStatus" => "accepted"}
+        )
+      )
+
+    {_item, event} = writeback_fixture(group, raw)
+    stub_get(raw)
+    assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+    {plan, raw, group}
+  end
+
+  # Saved settings, the bot and Slack stand-ins for personal reminders: a
+  # person `name@example.com` is Slack user `UNAME` with DM channel `DNAME`.
+  defp personal_setup!(group, settings \\ %{}) do
     previous_port = SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod)
 
     on_exit(fn ->
@@ -4773,19 +5133,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
                &Map.put(&1, "ifc", %{"mode" => "off"})
              )
 
-    raw =
-      standalone_event("Personal preparation meeting", 1, "2030-01-02T00:00:00Z")
-      |> Map.put(
-        "attendees",
-        Enum.map(
-          names,
-          &%{"email" => &1 <> "@example.com", "responseStatus" => "accepted"}
-        )
-      )
-
-    {_item, event} = writeback_fixture(group, raw)
-    stub_get(raw)
-
     MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", fn request ->
       name = request["email"] |> String.split("@") |> hd()
 
@@ -4818,8 +5165,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       "channel" => %{"id" => "CPUBLIC", "is_private" => false, "is_member" => true}
     })
 
-    assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
-    {plan, raw, group}
+    group
   end
 
   # The dashboard saves a Group's meeting settings; plans the worker makes
@@ -4844,8 +5190,129 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     saved
   end
 
+  defp agent_tasks(group) do
+    assert {:ok, page} =
+             SalixIM.Conversations.list_group_conversations(group["group_id"],
+               kind: "agent_task",
+               limit: 100
+             )
+
+    length(page["data"])
+  end
+
   defp personal_posts,
     do: Enum.filter(MockExternalHTTP.requests(), &(&1.path == "/api/chat.postMessage"))
+
+  # One member's own Comma Calendar with one Google calendar, synced from
+  # the current provider stub.
+  defp member_calendar!(group, name) do
+    assert {:ok, calendar} =
+             Calendar.ensure_calendar(
+               group["group_id"],
+               %{"kind" => "meeting_test_member", "member" => name},
+               %{"name" => name, "default_time_zone" => "UTC"}
+             )
+
+    assert {:ok, source} =
+             Calendar.ensure_source(group["group_id"], calendar["calendar_id"], %{
+               "adapter" => "google_calendar",
+               "adapter_contract_id" => GoogleCalendarSource.adapter_contract_id(),
+               "source_locator" => %{
+                 "connection_id" => "ca-cal",
+                 "external_calendar_id" => name <> "@example.com"
+               },
+               "access_profile" => "events_read",
+               "sync_policy" => %{
+                 "initial_time_min" => "2029-01-01T00:00:00Z",
+                 "page_size" => 200
+               }
+             })
+
+    assert {:ok, _} =
+             refresh_source(
+               Map.put(group, "calendar_id", calendar["calendar_id"]),
+               source["source_id"]
+             )
+
+    %{
+      "calendar_id" => calendar["calendar_id"],
+      "calendars" => [
+        %{
+          "account_id" => "ca-cal",
+          "calendar_id" => name <> "@example.com",
+          "source_id" => source["source_id"]
+        }
+      ]
+    }
+  end
+
+  # The units an enrollment of these members scans
+  # (`SalixMeet.CalendarAutojoin.scan_units/1`), by member email. A member
+  # given no calendar has an empty unit, as after a failed listing.
+  defp member_units(group, members) do
+    group
+    |> member_group(members)
+    |> SalixMeet.CalendarAutojoin.scan_units()
+    |> Map.new(&{&1["account_email"], &1})
+  end
+
+  # The enrolled Group of these members, in this order.
+  defp member_group(group, members) do
+    units =
+      for {name, calendar} <- members do
+        Map.merge(
+          %{
+            "account_id" => "ca-" <> name,
+            "account_email" => name <> "@example.com",
+            "calendars" => [],
+            "listed_at" => 1
+          },
+          calendar || %{}
+        )
+      end
+
+    group
+    |> Map.drop(["calendar_id", "calendars"])
+    |> Map.merge(%{
+      "calendar_scope" => "members",
+      "personal_preparation" => true,
+      "research_enabled" => true,
+      "channel_notice" => false,
+      "units" => units
+    })
+  end
+
+  # The unit's projection holding its copy, as a scan pass writes it.
+  defp project!(unit, event) do
+    assert {:ok, empty} = SalixMeet.CalendarProjection.load(unit)
+
+    assert {:ok, projection, %{partial_errors: []}} =
+             SalixMeet.CalendarProjection.reconcile(empty, [event], %{}, max_events: 50)
+
+    assert {:ok, _} = SalixMeet.CalendarProjection.checkpoint(projection)
+  end
+
+  # One scan of a member unit: its copy of the meeting and the copy's plan.
+  defp scan_member(unit) do
+    assert {:ok, [event]} = MeetingCalendar.list(unit, range_start(), range_end())
+    assert {:ok, plan} = MeetingPlan.get(unit["group_id"], event["meeting_plan_id"])
+    {event, plan}
+  end
+
+  # Fires the plan's reminder schedule as the scheduler does: the first run
+  # finds the recipients, and the schedule runs again until all are sent.
+  defp fire_personal!(plan) do
+    schedule_id = plan["preparation"]["schedule_ids"]["personal"]
+    assert {:ok, schedule} = Schedules.get(schedule_id)
+    at = plan["preparation"]["card_at"]
+
+    case Schedules.fire(schedule, at, now: at) do
+      {:ok, :pending} -> assert {:ok, _} = finish_personal_schedule(schedule, at, 1_000)
+      result -> assert {:ok, :fired} = result
+    end
+  end
+
+  defp dm_channels, do: personal_posts() |> Enum.map(& &1.body["channel"]) |> Enum.sort()
 
   defp writeback_fixture(group, raw) do
     stub_list([raw], "writeback-fixture")

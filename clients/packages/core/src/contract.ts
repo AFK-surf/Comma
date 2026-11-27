@@ -1,6 +1,7 @@
 // What a UI sees of the core: its topics (what each one's value is) and its calls (what each takes and answers). The
 // one source for both sides: the core checks what UIs send against it, and the React binding (@comma/core-client) is
 // typed by it. No Effect and no zod here, so a UI package can import it.
+import type { ScreenPosture, ScreenPostureId } from "./screen-postures.ts";
 import type { TaskStatusBucket, VisibleTaskStatusBucket } from "@comma/i18n";
 import type { RecommendationEnvelope } from "@comma/recommendation-contract";
 import type {
@@ -17,8 +18,11 @@ import type {
 import type {
   ChatCommandReceipt,
   ChatDeviceSetupOffer,
+  ChatDraftEntry,
   ChatLeasedAttachInput,
   ChatLeasedAttachLocalFilesInput,
+  ChatLeasedAttachLocalPathsInput,
+  ChatLocalPathMode,
   ChatLeasedTarget,
   ChatMessage,
   ChatReadGroupImageInput,
@@ -28,6 +32,7 @@ import type {
   ChatSkill,
   ChatTarget,
   ChatTaskAction,
+  ChatTaskActivity,
   ChatTaskRunChoice,
   ChatWorkspaceResolution,
   ChatWorkspaceSkillsInput,
@@ -79,6 +84,12 @@ export const TOPICS = {
    */
   tasks: { workspace: ["string", "def"], hosted: ["string", "def"] },
   /**
+   * A workspace's Task Feed (chronological Task milestone and outcome stream): `workspace` (empty follows the
+   * workspace in focus, else the first), `attention` ("1" for attention-only items, "" for all). Kept on the device;
+   * read again while shown and whenever the workspace's group stream says its Tasks changed.
+   */
+  taskFeed: { workspace: ["string", "def"], attention: ["string", "def"] },
+  /**
    * Usage and billing for a workspace: `prefer`, or the first. The plans, the workspace's balance and subscription. Read
    * while it is shown, again on `billing.refresh`, and on a backoff after a return from Stripe (`billing.returned`).
    */
@@ -115,6 +126,10 @@ export const TOPICS = {
   routerKeys: { prefer: ["string", "def"] },
   /** Settings › Task requests: requests to the workspace (`prefer`, else the first) and the person's own sends. */
   taskRequests: { prefer: ["string", "def"] },
+  /** The account's invites to Collaborative Tasks and the ones it is a member of (People, Inbox). */
+  collaborations: {},
+  /** The people of a Collaborative Task the account hosts (`workspace`'s Task `task`); none for any other Task. */
+  taskMembers: { workspace: ["string", "req"], task: ["string", "req"] },
   /** Settings › Tailscale: a workspace's tailnet node (`prefer`, else the first workspace; read every 3 s while it waits). */
   tailnet: { prefer: ["string", "def"] },
   /**
@@ -134,10 +149,16 @@ export const TOPICS = {
    */
   agentRequests: { group: ["string", "req"], conversation: ["string", "req"] },
   /**
-   * The pending location requests the person's own messages led to, in every Group. A phone follows it while the app
-   * is open and answers them with `agentRequests.shareLocation` when the system allows it to read its position.
+   * The pending location requests the person's own messages led to, in every Group. A phone or computer follows it while
+   * the app is open and answers them with `agentRequests.shareLocation` while the person shares their location
+   * (`locationSharing`) and the system allows it to read its position.
    */
   agentLocationRequests: {},
+  /**
+   * Whether this device sends its position with each message the person sends (Settings). The device reads its
+   * position while this is on and the app is open, and gives it to `locationSharing.report`.
+   */
+  locationSharing: {},
   /** Settings › Condensed Workspace: the shared facts of the Group of the workspace `prefer` (else the first). */
   condensedWorkspace: { prefer: ["string", "def"] },
   /** Settings › Voice: the verified caller numbers and voice API keys of the workspace `prefer` (else the first). */
@@ -237,6 +258,7 @@ export const TOPICS = {
     workspace: ["string", "req"],
     href: ["string", "req"],
     source: ["string", "def"],
+    read: ["string", "def"],
   },
   /**
    * A task's preview where a chat mentions it (group `group`, conversation `conversation`), asked for each `read` (the
@@ -412,6 +434,8 @@ export const TOPICS = {
     url: ["string", "req"],
     workspace: ["string", "def"],
     link: ["string", "def"],
+    collaborationGroup: ["string", "def"],
+    collaborationTask: ["string", "def"],
   },
   /** A Group's Task-board arrangement (kept on the device; read again when shown). */
   taskOrder: { group: ["string", "req"] },
@@ -478,14 +502,17 @@ export interface PluginCredentialSetup {
   key: string;
   label: string;
   helpUrl: string;
-  /** `show`: nothing is asked; `value` is shown for the member to copy (still.fail's line for its station). */
-  format?: "show" | undefined;
+  /** `show`: nothing is asked; `value` is shown for the member to copy. `oauth_code`: two-step OAuth code paste. */
+  format?: "show" | "oauth_code" | undefined;
   value?: string | undefined;
+  attemptId?: string | undefined;
+  error?: string | undefined;
 }
 
 export interface PluginInstallAnswer {
   authorizationUrl?: string;
   failure?: PluginFailureReason;
+  message?: string;
 }
 
 /** Where an install was started: the Plugins page, or the onboarding (which calls a plugin an app). */
@@ -661,9 +688,15 @@ export type PluginsValue =
     };
 
 export interface PluginSource {
+  bindingId?: string | undefined;
   connectionId: string;
   toolkit: string;
-  kind: "composio" | "managed_oauth" | "native_mcp_oauth" | "im_connect";
+  kind:
+    | "composio"
+    | "managed_oauth"
+    | "native_mcp_oauth"
+    | "im_connect"
+    | "oauth_code_paste";
   state:
     | "ready"
     | "needs_confirmation"
@@ -675,6 +708,11 @@ export interface PluginSource {
   mcpIds?: string[];
   /** The scopes a member's own Lark or Feishu bot lacks; Reconnect scans again to update the app. */
   missingScopes?: string[];
+  metadata?: {
+    ccuBalance?: number | null | undefined;
+    consumptionRateHourly?: number | null | undefined;
+    activeVmCount?: number | undefined;
+  };
 }
 
 export interface PluginAccountConfirmation {
@@ -701,21 +739,38 @@ export interface PluginToolGroup {
   enabled: boolean;
 }
 
-/** A still.fail station a plugin connected: its device. */
+/** A still.fail station a plugin connected: its device (`id` is the backend `device_id`). */
 export interface PluginStation {
+  /** Backend `device_id` from `SalixEnv.StillfailDevices.list/1`. */
   id: string;
   /** What the station called itself as it connected (its still.fail workspace and name); null before it did. */
   name: string | null;
   connected: boolean;
   /** When it last connected (ISO time); null when it never did. */
   connectedAt: string | null;
+  /** Its still.fail workspace's name; null before it connected. */
+  workspace: string | null;
+  /** The workspace's emoji; null where it has none. */
+  emoji: string | null;
+  /** What the station itself is called (the one Comma reaches the workspace through); null before it connected. */
+  station: string | null;
+  /** How many stations the workspace has; null where the station does not say. */
+  stationCount: number | null;
+  /** Runtimes and model ids the station accepts for new Tasks, when reported. */
+  taskModels?: Record<string, string[]>;
 }
+
+export type StillfailNotificationLevel = "off" | "action_needed" | "issues" | "all";
 
 export interface PluginStationsValue {
   /** Null until the first read. */
   stations: PluginStation[] | null;
-  /** Why the last read or disconnect failed. */
-  error: "load_failed" | "disconnect_failed" | null;
+  /** The owner's proactive notification level for connected still.fail chats. */
+  notificationLevel: StillfailNotificationLevel;
+  /** True while a notification level change is in flight. */
+  notificationPending: boolean;
+  /** Why the last read, disconnect or notification level change failed. */
+  error: "load_failed" | "disconnect_failed" | "notification_save_failed" | null;
   /** The station being disconnected now; one at a time per plugin. */
   pending: string | null;
 }
@@ -782,7 +837,14 @@ export interface PluginNotice {
   /** `member`: the scan that failed was the member's own sign-in; the plugin itself is installed. */
   scanStep?: "member";
   /** A credential form's metadata only. Never contains the submitted values. */
-  configuration?: { workspace: string; plugin: Plugin; setup: PluginCredentialSetup };
+  configuration?: {
+    workspace: string;
+    plugin: Plugin;
+    operation?: "install" | "reauthorize";
+    connectionId?: string;
+    bindingId?: string;
+    setup: PluginCredentialSetup;
+  };
 }
 
 export type MeetingPhase =
@@ -879,6 +941,11 @@ export interface ProductInboxItem {
   source: "salix.conversation" | "station.chat";
   /** A Task a station hosts (`source` "station.chat"): its station's chat, which `conversationId` stands in for. */
   host?: ProductInboxHost | undefined;
+  /**
+   * A still.fail station's chat (`source` "station.chat"): its page in still.fail (`https://`). Opening the Task opens
+   * this page outside the app; it has no conversation a client opens.
+   */
+  url?: string | undefined;
   /** What this Task cannot take from here (a station-hosted one: archiving, pinning, a share link); none when absent. */
   unsupported?: TaskAction[] | undefined;
   groupId: string;
@@ -896,6 +963,8 @@ export interface ProductInboxItem {
   clientPlatform?: string | undefined;
   /** Who sent the Task Request this Task was accepted from (`origin` is `task_request`). */
   requestedBy?: TaskRequester | undefined;
+  /** A Task together: the User ids of the people it was started with (its host's own list). */
+  together?: string[] | undefined;
   /**
    * The Message the Task was created from, such as the person's Home request the Router answered with this Task.
    * Quick Chat reads it to show its sent words becoming the Task in the Notch.
@@ -961,6 +1030,84 @@ export interface ProductInboxListResult {
   workspaces?: TaskWorkspace[] | undefined;
 }
 
+export type TaskFeedTriggerKind =
+  | "brief"
+  | "follow_up"
+  | "loop_run"
+  | "run"
+  | "unknown";
+
+export interface TaskFeedMilestone {
+  title: string;
+  at?: number | undefined;
+  messageId?: string | undefined;
+}
+
+export interface TaskFeedMedia {
+  attachmentId: string;
+  mimeType?: string | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
+  filename?: string | undefined;
+}
+
+export interface TaskFeedFile {
+  name: string;
+  mimeType?: string | undefined;
+}
+
+export interface TaskFeedPullRequest {
+  number: number;
+  state: "open" | "draft" | "merged" | "closed";
+  url: string;
+}
+
+export interface TaskFeedEntry {
+  id: string;
+  conversationId: string;
+  groupId: string;
+  clusterKey: string;
+  triggerKind: TaskFeedTriggerKind;
+  triggerText?: string | undefined;
+  taskTitle: string;
+  taskStatus: string;
+  statusBucket: TaskStatusBucket;
+  taskUpdatedAt: number;
+  reviewVersion?: number | undefined;
+  origin?: string | undefined;
+  isLoop: boolean;
+  loopKind?: string | undefined;
+  occurredAt: number;
+  milestones: readonly TaskFeedMilestone[];
+  milestoneCount: number;
+  outcomeMessageId?: string | undefined;
+  outcomeText?: string | undefined;
+  media: readonly TaskFeedMedia[];
+  files: readonly TaskFeedFile[];
+  pullRequest?: TaskFeedPullRequest | undefined;
+}
+
+export type TaskFeedSource = "live" | "cache" | "error" | "unavailable";
+
+export type TaskFeedErrorCode =
+  | "network_unavailable"
+  | "protocol_mismatch"
+  | "session_product_lease_unavailable"
+  | "utility_unavailable"
+  | "unknown";
+
+export interface TaskFeedSnapshot {
+  workspaceId: string | null;
+  groupId: string | null;
+  entries: readonly TaskFeedEntry[];
+  hasMore: boolean;
+  nextCursor?: string | undefined;
+  lastSeenAt?: number | undefined;
+  loaded: boolean;
+  source: TaskFeedSource;
+  errorCode?: TaskFeedErrorCode | undefined;
+}
+
 /** A plan or credit pack on sale, as the Comma API describes it. */
 export interface BillingPlan {
   plan_key: string;
@@ -973,6 +1120,8 @@ export interface BillingPlan {
   grant_credits: number;
   grant_period?: string | null | undefined;
   billing_period?: string | null | undefined;
+  /** The App Store product that sells it; absent where the server does not sell through the App Store. */
+  apple_product_id?: string | null | undefined;
 }
 
 export interface BillingGrant {
@@ -993,6 +1142,11 @@ export interface BillingSubscription {
   package_version: string;
   status: "active" | "trialing" | "past_due" | "unpaid" | "paused";
   source_id: string;
+  /**
+   * Who sells and renews it: `stripe` (the web's checkout and portal), `apple` or `google` (that store's own
+   * management), `comma` (a redeemed code). An older server does not send it.
+   */
+  provider?: string | undefined;
   plan?: BillingPlan | null | undefined;
   source_metadata?:
     | {
@@ -1052,7 +1206,23 @@ export type BillingValue =
       planUsage: PlanUsage | null;
       /** The workspace's credits have no limit, as on a self-hosted instance. */
       unlimited: boolean;
+      /** What this app's store sells; null where the app does not sell through one. */
+      store: BillingStore | null;
     };
+
+/**
+ * The plans this app's store sells (`billing.storePurchase`), with the price the store words for this person, by plan
+ * key. A plan the store does not sell, or whose price is not read yet, is absent.
+ */
+export interface BillingStore {
+  provider: "apple" | "google";
+  prices: Record<string, string>;
+}
+
+/** What a store purchase came to: recorded (the credits are there), waiting (on someone's approval, or on the server), given up, or rejected as unrecordable. */
+export type StorePurchaseResult = {
+  status: "recorded" | "pending" | "cancelled" | "unrecordable";
+};
 
 export interface CreditWarning {
   percent: number;
@@ -1374,11 +1544,12 @@ export type TaskRequestStatus =
   | "expired";
 
 /**
- * Where an accepted request's Task runs, as the New task window chooses it: Comma's cloud on a catalog model, a coding
- * sandbox with a GitHub repository, or one of the workspace's stations on one of its runtimes.
+ * Where an accepted request's Task runs, as the New task window chooses it: Comma's cloud (on a catalog model, or the
+ * workspace's Task model without one), a coding sandbox with a GitHub repository, or one of the workspace's stations
+ * on one of its runtimes.
  */
 export type TaskRequestRun =
-  | { kind: "cloud"; model: string }
+  | { kind: "cloud"; model?: string }
   | {
       kind: "sandbox";
       repo: { owner: string; name: string; baseRef?: string };
@@ -1399,6 +1570,10 @@ export interface TaskRequestGrant {
   invite_url?: string | undefined;
   invite_expires_at?: number | null | undefined;
   created_at: number | null;
+  /** When the person took the invite (seconds): they joined the account's People then. */
+  accepted_at?: number | null | undefined;
+  /** Taken from the owner's own invite link, not made back when the owner took someone else's. */
+  from_invite?: boolean | undefined;
 }
 
 /** A request someone sent to the workspace. */
@@ -1408,8 +1583,6 @@ export interface TaskRequestIncoming {
   title: string;
   content: string;
   status: TaskRequestStatus;
-  /** How an accepted request went on: as a Task, or to the Router's chat. */
-  accepted_as?: "task" | "router" | null | undefined;
   decline_reason: string | null;
   task: { group_id: string | null; id: string } | null;
   created_at: number | null;
@@ -1464,10 +1637,74 @@ export interface ProviderUserLink {
   linked_at: number | null;
 }
 
+/**
+ * A person the account works with (People): they may send requests to the workspace, the account may send requests to
+ * a workspace of theirs, or both. Made from the lists of `TaskRequestsValue`; nothing of its own is stored.
+ */
+export interface TaskRequestContact {
+  /** Their user id. */
+  id: string;
+  name: string | null;
+  email: string | null;
+  /** Where their avatar is read, when they have one. */
+  avatar: FileSource | null;
+  /** Their grant to send requests to the workspace, with how the workspace takes them. */
+  sends: { grant: string; mode: TaskRequestMode } | null;
+  /** Their workspaces the account may send requests to; `full` when one takes no more now. */
+  receives: { grant: string; workspace: string | null; full: boolean }[];
+  /** Their requests waiting for the owner's decision, and the one that came first. */
+  waiting: { count: number; first: string } | null;
+  /** When the two last had to do with each other (seconds): the latest request either way, else the grant. */
+  lastAt: number | null;
+  /** The title of the latest request either way, if any. */
+  lastTitle: string | null;
+}
+
+/** A person of a Collaborative Task and where they are in it. */
+export interface CollaborationMember {
+  /** The seat's id: what the host's resend names. */
+  id?: string | undefined;
+  person: TaskRequestPerson | null;
+  /** The host's view of a seat no account took yet: the address it invited (someone not yet on Comma). */
+  invited_email?: string | undefined;
+  /** The name a guest gave when they joined by the emailed link without an account. */
+  guest_name?: string | null | undefined;
+  /** When the emailed link of a seat no account took stops opening (ISO 8601). */
+  invite_expires_at?: string | null | undefined;
+  status: "invited" | "active" | "declined" | "left" | "removed";
+}
+
+/** A Collaborative Task another person hosts, as one of the people it was started with sees it. */
+export interface Collaboration {
+  /** The invite's id: what joining, declining and leaving name. */
+  id: string;
+  status: "invited" | "active";
+  title: string;
+  /** The host's Task: its Workspace and Group are the host's, which the member reaches through this Task alone. */
+  task: { id: string; group_id: string; workspace_id: string };
+  host: TaskRequestPerson | null;
+  members: CollaborationMember[];
+  invited_at: number | null;
+}
+
+/** `members` is null until the first read; empty for a Task that is not a Collaborative Task. */
+export interface TaskMembersValue {
+  members: CollaborationMember[] | null;
+}
+
+/** `items` is null until the first read; `error`: the last read failed (`collaborations.refresh`). */
+export interface CollaborationsValue {
+  items: Collaboration[] | null;
+  error: boolean;
+}
+
 /** Each list is null until its first read; `error`: the last read of one failed (`taskRequests.refresh`). */
 export interface TaskRequestsValue {
   workspace: string | null;
+  /** The workspace's requests still waiting for its owner. */
   incoming: TaskRequestIncoming[] | null;
+  /** The workspace's latest requests in every status (one page), for a person's page. */
+  received: TaskRequestIncoming[] | null;
   grants: TaskRequestGrant[] | null;
   targets: TaskRequestTarget[] | null;
   sent: TaskRequestSent[] | null;
@@ -1475,6 +1712,8 @@ export interface TaskRequestsValue {
   links: ProviderUserLink[] | null;
   /** How the workspace takes its owner's own requests, sent from a linked chat account. */
   own: TaskRequestMode | null;
+  /** The people of the lists above, the latest first; null until both grants and targets are read. */
+  people: TaskRequestContact[] | null;
   error: boolean;
 }
 
@@ -1579,6 +1818,10 @@ export interface AgentLocationRequestsValue {
   requests: { id: string; group: string; conversation: string }[];
 }
 
+export interface LocationSharingValue {
+  enabled: boolean;
+}
+
 /**
  * An Agent asks to use a person's phone in this Conversation (Salix's `env.android` on a computer's own phone). Only
  * the owner of the computer the phone is on allows or denies it (`agentRequests.decide`).
@@ -1632,8 +1875,17 @@ export interface AgentOAuthRequest extends AgentRequestBase {
  * `secret`: a value such as an API key, which ends the request. `app`: the Workspace's own app, after which the
  * request waits on the provider's page as any other.
  */
+/** One value a secret asks for: shown as typed unless `secret`, and may be left empty when `optional`. */
+export interface AgentRequestField {
+  name: string;
+  label: string;
+  secret: boolean;
+  optional: boolean;
+}
+
 export type AgentRequestInput =
-  | { kind: "secret"; label?: string; helpUrl?: string }
+  /** A secret with `fields` asks for each of them; without, for one value. */
+  | { kind: "secret"; label?: string; helpUrl?: string; fields?: AgentRequestField[] }
   | { kind: "app"; helpUrl?: string; redirectUri?: string }
   /** A CLI login in a Task's sandbox: a device code to confirm on the page, a page alone, or a page's code to paste. */
   | { kind: "device"; code: string }
@@ -1739,6 +1991,12 @@ export interface VoiceCallValue {
   workspace: string | null;
   muted: boolean;
   connectedAt: number | null;
+  /** Why the last call ended unexpectedly (e.g. `"billing_unavailable"`), cleared on next start, hang-up, account change, or `voiceCall.dismissEnd`. */
+  lastEnd?: {
+    id: number;
+    phase: "calling" | "connected";
+    reason: string;
+  } | null;
 }
 
 /** Each half is null until read; its error is whether its last read failed (`voice.refresh`). */
@@ -2213,6 +2471,8 @@ export interface TaskFile {
   size: number;
   /** When the Message was sent, in ms. */
   created_at: number;
+  /** A Task together's file: its place in the Task's own folder, read from there instead of a Message. */
+  path?: string;
 }
 
 /**
@@ -2254,12 +2514,34 @@ interface LinkPerson {
 /** A link's rich preview, one shape per provider (`linkPreview`). */
 export type LinkPreview =
   | {
+      kind: "web_page";
+      href: string;
+      title: string;
+      description: string | null;
+      siteName: string;
+      image: string | null;
+      icon: string | null;
+    }
+  | {
       kind: "outlook_message" | "outlook_event";
       href: string;
       excerpt: string;
       sender: string | null;
       startsAt: number | null;
       title: string;
+      receivedAt?: number | null;
+      recipients?: string | null;
+      body?: string | null;
+    }
+  | {
+      kind: "gmail_message";
+      href: string;
+      title: string;
+      sender: string | null;
+      recipients?: string | null;
+      receivedAt?: number | null;
+      excerpt: string;
+      body?: string | null;
     }
   | {
       kind: "github_pull_request";
@@ -2342,6 +2624,30 @@ export type LinkPreview =
       owner: LinkPerson | null;
       size: number | null;
       title: string;
+    }
+  | {
+      kind: "stillfail_chat";
+      href: string;
+      ref: string;
+      title: string;
+      stationName: string | null;
+      status: "need" | "running" | "done" | "failed";
+      note: string | null;
+      updatedAt: number | null;
+      offline: boolean;
+      messages: {
+        seq: number;
+        authorKind: "agent" | "person";
+        author: string | null;
+        text: string;
+        createdAt: number | null;
+        card: {
+          type: string;
+          choice: string | null;
+          closed: boolean;
+          options: string[];
+        } | null;
+      }[];
     };
 
 /**
@@ -2395,7 +2701,7 @@ export type FileSource =
       agent: string;
       blobRef: { hash: string; kind: "blob"; size: number; uuid: string };
     }
-  | { source: "group-file"; group: string; path: string }
+  | { source: "group-file"; group: string; path: string; task?: string | undefined }
   /** The signed-in person's avatar at a revision of their profile. */
   | { source: "avatar"; revision: string }
   /** The avatar of the person who sent a Task request to the workspace, for its owner. */
@@ -2404,6 +2710,16 @@ export type FileSource =
   | { source: "recipient-avatar"; request: string; revision: string }
   /** The avatar of a person the signed-in person may send requests to, through their grant. */
   | { source: "target-avatar"; grant: string; revision: string }
+  /** The avatar of a person who holds an active grant on the signed-in person's workspace. */
+  | { source: "grant-avatar"; workspace: string; grant: string; revision: string }
+  /** The avatar of a person in a Collaborative Task the signed-in person hosts or joined. */
+  | {
+      source: "collaboration-avatar";
+      group: string;
+      task: string;
+      user: string;
+      revision: string;
+    }
   /** The avatar of a person on a link preview, by the reference the preview carries (`avatarRef`). */
   | { source: "link-preview-avatar"; ref: string };
 
@@ -2465,6 +2781,8 @@ export interface ChatSuggestion {
 export interface MentionTask {
   id: string;
   status: string;
+  /** The state of the Task's Loop, for its status bucket. */
+  loopState?: string | undefined;
   title: string;
   updatedAt: number;
 }
@@ -2484,6 +2802,8 @@ export interface SessionBrowserBinding {
 /** Current cloud Registration facts; local request execution belongs to native. */
 export type ComputeNodeRegistrationValue = {
   hostBound?: boolean;
+  deviceId?: string;
+  connected?: boolean;
   status: "processing" | "ready" | "stopped" | "action_required" | "removed";
   workActivity: "idle" | "active" | "unknown";
   errorCode?: string;
@@ -2606,6 +2926,7 @@ export interface GroupTask {
   status: string;
   updatedAt: number;
   activityStatus: string;
+  loop?: TaskLoop | undefined;
 }
 
 /** A Task a station hosts (a chat on the station's own page), as the station last reported it to Comma. */
@@ -2625,6 +2946,11 @@ export interface StationTask {
   model: string | null;
   /** The Group's label ids a person set on it (kept by its station). */
   labels: string[];
+  /**
+   * A still.fail station's chat: its page in still.fail (`https://`), where a client opens it, as no client reaches
+   * that station. Null for any other station's Task.
+   */
+  url: string | null;
   /**
    * The machine that hosts it, as this device knows the workspace's stations (a desktop keeps them linked): its name,
    * and whether it is online (connected to Comma, or reached by this device). Null where none is known (an app that
@@ -2943,12 +3269,37 @@ export interface CodingChanges {
  * `stopped` (shut down while idle; a reply starts a new one), `lost`, `failed` (`reason`) or `ended`.
  */
 /** The tokens a coding Session's model calls used: input includes the cached part. */
+export interface CodingSlotUsage {
+  slot?: string | undefined;
+  isPrimary?: boolean | undefined;
+  unreadable?: boolean | undefined;
+  partial?: boolean | undefined;
+  usage?:
+    | {
+        modelCalls: number;
+        inputTokens: number;
+        cachedTokens: number;
+        outputTokens: number;
+        model: string | null;
+      }
+    | null
+    | undefined;
+  modelCalls?: number | undefined;
+  inputTokens?: number | undefined;
+  cachedTokens?: number | undefined;
+  outputTokens?: number | undefined;
+  model?: string | null | undefined;
+}
+
 export interface CodingUsage {
   modelCalls: number;
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
   model: string | null;
+  models?: string[] | undefined;
+  partial?: boolean | undefined;
+  bySlot?: Record<string, CodingSlotUsage> | undefined;
 }
 
 /** What a tool step did, as the page shows it. */
@@ -3036,12 +3387,15 @@ export interface AgentModels {
    * The workspace's default place to run Tasks; Comma's cloud when a server does not say. `sandboxes` is true where
    * the deployment has Task sandboxes: a sandbox is then a place to offer, and the Cloud VM is retired.
    * `cloud_vm_station` is the Cloud VM's device id where it is on an Agent VMM Host: a place names it as that station.
+   * `sandbox_runtimes` are the runtimes a new sandbox can run on the accounts the workspace lends it, with none
+   * selected; a server that does not say gives no limit.
    */
   task_place: {
     place: TaskPlace;
     sandboxes?: boolean;
     cloud_vm_retired?: boolean;
     cloud_vm_station?: string;
+    sandbox_runtimes?: string[];
   };
 }
 
@@ -3215,7 +3569,7 @@ export interface LocalFileRegistrationFailure {
 
 /**
  * Which step a recording's transcription failed at (`detail.kind` of `transcription_failed`), to report it without its
- * text: the audio is over 30 MiB, two are already in flight, no answer in time, the request could not be made, an
+ * text: the audio is over 256 MiB, two are already in flight, no answer in time, the request could not be made, an
  * answer that is not one, a stream that ended without one, or the server's own failure.
  */
 export type TranscriptionFailureKind =
@@ -3292,6 +3646,8 @@ export interface TaskSummary {
   requested_by?: string | undefined;
   /** The sender's User id, to tell apart two senders with one name. */
   requested_by_id?: string | undefined;
+  /** A Task together: the User ids of the people it was started with. */
+  together?: string[] | undefined;
   /** Their avatar, read as a `sender-avatar` file of this request at this revision. */
   requested_by_avatar?:
     | { workspace: string; request: string; revision: string }
@@ -3314,6 +3670,12 @@ export interface TaskRequester {
 export interface TaskSummariesValue {
   /** Those of the ids asked for that are known, in the order asked. */
   summaries: TaskSummary[];
+  /**
+   * Some id asked for is not known yet and the server has not answered for it:
+   * its absence from `summaries` does not mean the Task is gone. Absent when
+   * every id is known or answered.
+   */
+  pending?: true;
 }
 
 /** A paged Settings list of a workspace's Group. */
@@ -3358,6 +3720,28 @@ export interface TaskShare {
 export type TaskShareValue =
   | { status: "loading" | "failed"; share: null }
   | { status: "ready"; share: TaskShare | null };
+
+/** The owner's view of a document's public link: the version it shows is attachment `index` of `message_id`. */
+export interface DocumentShare {
+  url: string;
+  file_name: string;
+  message_id: string;
+  index: number;
+  /** Seconds. */
+  created_at: number;
+  shared_at: number;
+}
+
+/** An active public link to a document, in a Group's list. */
+export interface SharedDocument {
+  url: string;
+  fileName: string;
+  /** The document's Task: its conversation id and title. */
+  conversation: string;
+  task: string;
+  /** Seconds. */
+  shared_at: number;
+}
 
 export interface TaskOrderValue {
   /** Bucket → conversation ids, as the Group keeps them (with this device's drops not yet saved). */
@@ -3463,8 +3847,11 @@ export interface MiniAppImageValue {
   src: string | null;
 }
 
-/** Where an opened app runs from: a Workspace that owns or installed it, or a link. */
-export type MiniAppVia = { workspace: string } | { token: string };
+/** Where an opened app runs from: a Workspace that owns or installed it, a link, or a collaborative Task. */
+export type MiniAppVia =
+  | { workspace: string }
+  | { token: string }
+  | { collaboration: { group: string; task: string } };
 
 /** The platform a host runs apps on. */
 export type MiniAppPlatform = "mac" | "web" | "ios" | "android";
@@ -3536,6 +3923,7 @@ export interface TopicValues {
   pluginNotices: { notices: PluginNotice[] };
   /** Null until the first read settles when the device kept nothing: loading, not an empty list. */
   tasks: ProductInboxListResult | null;
+  taskFeed: TaskFeedSnapshot;
   stationTasks: StationTasksValue;
   billing: BillingValue;
   creditWarning: CreditWarning | null;
@@ -3547,11 +3935,14 @@ export interface TopicValues {
   linear: LinearValue;
   routerKeys: RouterKeysValue;
   taskRequests: TaskRequestsValue;
+  collaborations: CollaborationsValue;
+  taskMembers: TaskMembersValue;
   tailnet: TailnetValue;
   taskLabels: TaskLabelsValue;
   taskLabelCounts: Record<string, number> | null;
   agentRequests: AgentRequestsValue;
   agentLocationRequests: AgentLocationRequestsValue;
+  locationSharing: LocationSharingValue;
   condensedWorkspace: CondensedWorkspaceValue;
   voice: VoiceValue;
   voiceCall: VoiceCallValue;
@@ -3657,6 +4048,10 @@ export type ScreenViewEvent =
         switches?: boolean;
         /** How late its frames are, in ms: capture to drawn, and capture to sent (each second while frames come). */
         latency?: { frame: number; before: number };
+        /** Round trip on the view's chosen path, in ms. */
+        rtt?: number;
+        /** Outbound packet loss on the view's chosen path over recent traffic, in % (0..100). */
+        loss?: number;
         /** How its pictures are made: what captures them, the encoder's name, whether it is the hardware's. */
         video?: { capture: string; encoder?: string; hardware?: boolean };
         /**
@@ -3679,6 +4074,13 @@ export type ScreenViewEvent =
         /** How a device stands: which way it is turned, a foldable's pose. */
         orientation?: 0 | 90 | 180 | 270;
         pose?: "closed" | "book" | "open";
+        /** A foldable's hinge angle now, 0 closed to 180 open, where its station says (one that takes any angle). */
+        hinge?: number;
+        /**
+         * Its picture is as the panel draws it, never turned (`orientation` says how its UI stands on it): a foldable
+         * whose station sweeps its hinge, in a view that is not a peek. Its UI's own turn plays on it live.
+         */
+        panel?: boolean;
         /** In the first state: the station logs its frames' times; each `ack` says the page's (`sendToScreenView`). */
         timing?: boolean;
         /**
@@ -3781,6 +4183,8 @@ export type ListedScreen = {
     chrome?: ScreenChromePanel[] | undefined;
     /** The ways a foldable can stand. */
     poses?: ("closed" | "book" | "open")[] | undefined;
+    /** Its hinge takes any angle (`{t:"hinge", degrees, ms}`), not only `poses`: an iPhone Duo Simulator's. */
+    hinge?: boolean | undefined;
     /** A person may close it for good (`devices.closeScreenDevice`). */
     closable?: boolean | undefined;
     /** Its running app's logs can be read (`devices.openScreenLogs`); none from a station before. */
@@ -3795,6 +4199,12 @@ export type ListedScreen = {
   phone?: boolean;
   /** An agent's lease on it lasts now. */
   agent?: boolean;
+  /**
+   * How a device whose hinge takes any angle (an iPhone Duo, `capabilities.hinge`) can be shown and held
+   * (`screen-postures.ts`); a view moves to one with `devices.sendToScreenView`'s `posture`. None for other devices: a
+   * foldable that takes only its `poses` (an Android one) folds by them.
+   */
+  postures?: ScreenPosture[];
 };
 
 /**
@@ -4017,14 +4427,24 @@ export interface Calls {
       origin?: PluginInstallOrigin;
       /** Transient submission. Never persisted or published to topics. */
       configValues?: Record<string, string>;
+      attemptId?: string;
+      mode?: string;
       /** This desktop's device in the workspace, for a plugin that runs on it (the Mac apps). */
       deviceId?: string;
     };
     result: PluginInstallAnswer;
   };
   "plugin.reauthorize": {
-    params: { workspace: string; plugin: string; connection: string };
-    result: { authorizationUrl?: string };
+    params: {
+      workspace: string;
+      plugin: string;
+      connection?: string;
+      bindingId?: string;
+      attemptId?: string;
+      configValues?: Record<string, string>;
+      origin?: PluginInstallOrigin;
+    };
+    result: PluginInstallAnswer;
   };
   "plugin.uninstall": { params: { workspace: string; plugin: string }; result: null };
   /** Stops an install or reconnect under way (its authorization is let go). */
@@ -4054,6 +4474,15 @@ export interface Calls {
     params: { workspace: string; plugin: string; station: string };
     result: null;
   };
+  /** Sets the owner's proactive notification level for connected still.fail chats (`pluginStations`). */
+  "plugin.station.notificationLevel.set": {
+    params: {
+      workspace: string;
+      plugin: string;
+      level: StillfailNotificationLevel;
+    };
+    result: null;
+  };
   "plugin.sources.refresh": {
     params: { workspace: string; plugin: string };
     result: null;
@@ -4079,6 +4508,26 @@ export interface Calls {
   };
   /** Reads the list's next page. */
   "tasks.more": { params: { workspace?: string }; result: null };
+  /** Reads the first page of a workspace's Task Feed again now. */
+  "taskFeed.refresh": {
+    params: { workspace?: string; attention?: boolean };
+    result: null;
+  };
+  /** Reads the next page of a workspace's Task Feed from `cursor` and appends deduplicated entries. */
+  "taskFeed.loadMore": {
+    params: { workspace?: string; attention?: boolean; cursor: string };
+    result: null;
+  };
+  /** Advances the persisted `lastSeenAt` watermark (Unix ms) for a workspace's Task Feed monotonically. */
+  "taskFeed.markSeen": {
+    params: { workspace?: string; at: number };
+    result: { lastSeenAt: number };
+  };
+  /** Reads a Task's complete milestone activity timeline via `view=activity` pagination and `taskActivity()`. */
+  "taskFeed.activity": {
+    params: { groupId: string; conversationId: string };
+    result: ChatTaskActivity | null;
+  };
   /** Reads the next page of the Task panel's list `groupTasks {group, read}`, unless one is read now. */
   "groupTasks.more": { params: { group: string; read?: string }; result: null };
   /** Turns the local recommendation mock on or off for the account's first workspace (as read now). */
@@ -4190,6 +4639,31 @@ export interface Calls {
   };
   /** Stops sharing the Task; it leaves the Shared tasks list. */
   "taskShare.revoke": { params: { group: string; conversation: string }; result: null };
+  /** A document's public link; null where it is not shared. A document is its Task and its file name. */
+  "documentShare.get": {
+    params: { group: string; conversation: string; fileName: string };
+    result: DocumentShare | null;
+  };
+  /** Shares the version of a document that attachment `index` of `message` holds, or moves its link there. */
+  "documentShare.publish": {
+    params: { group: string; conversation: string; message: string; index: number };
+    result: DocumentShare;
+  };
+  /** Replaces the document's link (the previous URL stops working): the new one. */
+  "documentShare.reset": {
+    params: { group: string; conversation: string; fileName: string };
+    result: DocumentShare;
+  };
+  /** Stops sharing the document. */
+  "documentShare.revoke": {
+    params: { group: string; conversation: string; fileName: string };
+    result: null;
+  };
+  /** One page of a Group's active document links, most recently shared first; `cursor` asks for the next. */
+  "documentShares.list": {
+    params: { group: string; cursor?: string };
+    result: { shares: SharedDocument[]; cursor: string | null };
+  };
   /** Reads a Workspace's apps again. */
   "miniApps.refresh": { params: { workspace: string }; result: null };
   /** Reads one app again. */
@@ -4358,6 +4832,31 @@ export interface Calls {
   "billing.redeem": { params: { workspace: string; code: string }; result: null };
   /** Closes the credit warning shown for a workspace until its grants change or it gets lower. */
   "billing.dismissWarning": { params: { workspace: string }; result: null };
+  /**
+   * Buys a plan or credit pack through this app's store for `workspace`'s Billing Account. A paid purchase is reported
+   * to the server, and finished once it is recorded; one the server could not record yet stays with the store
+   * (`billing.storeSettle`). Fails `unsupported` where the app sells through no store, and with the server's code
+   * (`subscription_active_elsewhere`) when another channel's subscription runs.
+   */
+  "billing.storePurchase": {
+    params: { workspace: string; plan: string };
+    result: StorePurchaseResult;
+  };
+  /**
+   * Reports the store's unfinished transactions (the app asks at launch and when the store hands it one: a renewal,
+   * an approved Ask to Buy), through `workspace` or the account's first. Answers how many were recorded.
+   */
+  "billing.storeSettle": {
+    params: { workspace?: string };
+    result: { recorded: number };
+  };
+  /** Restores purchases: asks the store again, then settles what it hands back. */
+  "billing.storeRestore": {
+    params: { workspace: string };
+    result: { recorded: number };
+  };
+  /** Opens the store's own subscription management. */
+  "billing.storeManage": { params: Record<string, never>; result: null };
   /** Reads the workspace and Telegram again. */
   "telegram.refresh": { params: Record<string, never>; result: null };
   /** Starts Telegram's official login; the UI opens `authorizationUrl`, and the core follows the login from there. */
@@ -4786,6 +5285,41 @@ export interface Calls {
   };
   /** The Tasks of `group` the Tasks Live Activity follows now (at most two), as the server picks them. */
   "notifications.taskActivity": { params: { group: string }; result: TaskActivity };
+  /**
+   * Registers a generalized Live Status Activity token (`live_status_v1`): push-to-start when `activity` and `liveKey`
+   * are omitted, or a per-key update token when both are provided.
+   */
+  "notifications.registerLiveStatus": {
+    params: {
+      session: string;
+      workspace: string;
+      group: string;
+      token: string;
+      environment: "sandbox" | "production";
+      bundleId: string;
+      locale: string;
+      registration: string;
+      activity?: string;
+      liveKey?: string;
+    };
+    result: NotificationRegistration;
+  };
+  /** Takes one generalized Live Status Activity registration off the server, saying why when it is known. */
+  "notifications.unregisterLiveStatus": {
+    params: {
+      id: string;
+      reason?:
+        | "dismissed"
+        | "expired"
+        | "finished"
+        | "stopped"
+        | "disabled"
+        | "authority_changed";
+    };
+    result: null;
+  };
+  /** The active generalized Live Status items of `group`, as the server keeps them. */
+  "notifications.liveStatuses": { params: { group: string }; result: LiveStatuses };
   /** The Router chat's unread replies in `group`. */
   "notifications.routerUnread": { params: { group: string }; result: RouterUnread };
   /** Marks the Router chat read up to the message `messageId` shown: its unread replies after. */
@@ -4799,6 +5333,15 @@ export interface Calls {
    */
   "accountSessions.pairWatch": {
     params: Record<string, never>;
+    result: { pairingId: string; pairingSecret: string; expiresAt: number };
+  };
+  /**
+   * A one-time pairing the desktop app hands the Raycast extension that asked to be connected, which the extension
+   * exchanges for a session of its own. `challenge` is the SHA-256 of a verifier only that extension holds, so the
+   * pairing is of no use to anything else that reads it.
+   */
+  "accountSessions.pairRaycast": {
+    params: { challenge: string };
     result: { pairingId: string; pairingSecret: string; expiresAt: number };
   };
   "recommendations.visit": { params: { workspace: string }; result: null };
@@ -4943,6 +5486,11 @@ export interface Calls {
     result: null;
   };
   "stations.remove": { params: { workspace: string; station: string }; result: null };
+  /**
+   * The app is in the foreground again (a phone back from the background): the endpoint binds its sockets anew, which
+   * the system may have taken meanwhile. Nothing when no endpoint is bound.
+   */
+  "stations.wake": { params: Record<string, never>; result: null };
   /** Starts a new chat on `station`, on the first runtime its profiles offer: its session and chat. */
   "stations.newChat": {
     params: { workspace: string; station: string };
@@ -5058,6 +5606,11 @@ export interface Calls {
       background?: string | undefined;
       /** A preview: it only looks, small and about twice a second. Only of a screen that says `peek`. */
       peek?: boolean;
+      /**
+       * The page draws the device turned, in 3D (a screen with `postures`): it takes the panel's own picture, never
+       * turned, and the state says `panel`. Never of a preview; nothing for a screen without postures.
+       */
+      panel?: boolean;
       /** The picture's greatest width and height. */
       maxWidth?: number;
       maxHeight?: number;
@@ -5075,6 +5628,11 @@ export interface Calls {
        * this number, not as progress. None: they come as progress.
        */
       sink?: number;
+      /**
+       * The Task whose sandbox `device` is: the view asks the sandbox to show its screen as it opens and each minute
+       * while it is open (`coding.screen`), and fails as that call does. Such a view only looks: `control` is false.
+       */
+      task?: string;
     };
     result: null;
   };
@@ -5262,6 +5820,11 @@ export interface Calls {
        */
       clipboard?: ScreenClip;
       paste?: boolean;
+      /**
+       * Move the device to one of its `postures`: the core turns its picture straight to the posture's way up, then
+       * sweeps its hinge to the posture's opening. Nothing for a screen without postures.
+       */
+      posture?: ScreenPostureId;
       /** The view's sound off (muted: the computer sends none) or on again; on as a view that asked `audio` opens. */
       sound?: boolean;
     };
@@ -5351,6 +5914,8 @@ export interface Calls {
   "voiceCall.start": { params: { workspace: string }; result: null };
   /** Hangs up the call, if any. */
   "voiceCall.end": { params: Record<string, never>; result: null };
+  /** Acknowledges `voiceCall.lastEnd` once the UI has presented it so remounts or other windows do not re-toast. */
+  "voiceCall.dismissEnd": { params: { id: number }; result: null };
   /** Mutes or unmutes this side of the call. */
   "voiceCall.setMuted": { params: { muted: boolean }; result: null };
   /** Makes the workspace's custom voice from a description and selects it. */
@@ -5374,7 +5939,10 @@ export interface Calls {
       group: string;
       conversation: string;
       request: string;
-      values: { value: string } | { client_id: string; client_secret: string };
+      values:
+        | { value: string }
+        | { client_id: string; client_secret: string }
+        | { fields: Record<string, string> };
     };
     result: null;
   };
@@ -5387,6 +5955,23 @@ export interface Calls {
       latitude: number;
       longitude: number;
       accuracy?: number;
+    };
+    result: null;
+  };
+  /** Turns sharing this device's position with each sent message on or off (`locationSharing`); off forgets it. */
+  "locationSharing.set": { params: { enabled: boolean }; result: null };
+  /**
+   * The phone's newest position (`readAt` epoch ms, `accuracy` metres) while sharing is on and the app is in front, or
+   * null once it is not. Kept in memory only; ignored while sharing is off.
+   */
+  "locationSharing.report": {
+    params: {
+      position: {
+        latitude: number;
+        longitude: number;
+        accuracy?: number | null;
+        readAt: number;
+      } | null;
     };
     result: null;
   };
@@ -5470,8 +6055,7 @@ export interface Calls {
     result: null;
   };
   /**
-   * Accepts a request: `to` "task" (the default) creates its Task in the workspace, with the owner's `title` when
-   * given; "router" sends it to the owner's Router chat as their own message.
+   * Accepts a request and creates its Task in the workspace, with the owner's `title` when given.
    */
   "taskRequests.accept": {
     params: {
@@ -5480,7 +6064,6 @@ export interface Calls {
       title?: string;
       /** The owner's edit of the request's words. */
       content?: string;
-      to?: "task" | "router";
       /** Where the Task runs and on what; without it, the workspace's defaults. */
       run?: TaskRequestRun;
     };
@@ -5528,6 +6111,41 @@ export interface Calls {
     result: { status: TaskRequestStatus };
   };
   "taskRequests.withdraw": { params: { request: string }; result: null };
+  /** Hides a decided sent request from the sender's lists on the server; leaves the recipient's Task untouched. */
+  "taskRequests.hide": { params: { request: string }; result: null };
+  "collaborations.refresh": { params: Record<string, never>; result: null };
+  /** Join a Collaborative Task one is invited to, decline the invite, or leave the Task. */
+  "collaborations.answer": {
+    params: { id: string; answer: "accept" | "decline" | "leave" };
+    result: null;
+  };
+  /** Reads the people of a hosted Task (`taskMembers`) again. */
+  "taskMembers.refresh": { params: { task: string }; result: null };
+  /** The host takes a member, or an invite not yet answered, out of their Collaborative Task. */
+  "collaborations.remove": {
+    params: { workspace: string; task: string; person: string };
+    result: null;
+  };
+  /** The host emails a seat given by email a fresh link; it counts toward the host's invite emails of the day. */
+  "collaborations.resend": {
+    params: { workspace: string; task: string; member: string };
+    result: null;
+  };
+  /**
+   * A Task the person hosts with people of People (their user ids): made in the workspace on Comma's built-in model,
+   * with its members fixed and each of them invited. Its usage is the workspace's.
+   */
+  "collaborations.start": {
+    params: {
+      workspace: string;
+      people: string[];
+      /** People not yet on Comma, by the address they will sign in with. */
+      emails?: string[] | undefined;
+      content: string;
+      key: string;
+    };
+    result: { task: { id: string; group_id: string } };
+  };
   /** Which chat account a link (or its token) names, before the person confirms it. */
   "taskRequests.linkPreview": {
     params: { link: string };
@@ -5705,14 +6323,14 @@ export interface Calls {
     result: ModelProfile;
   };
   /**
-   * Signs a Codex or Claude subscription in through the browser, which comes back to the desktop app's loopback
+   * Signs a Codex, Claude or Gemini subscription in through the browser, which comes back to the desktop app's loopback
    * listener; the profiles are read again. One at a time; cancelled with the call. Fails `authorization_port_in_use`,
    * `authorization_denied`, `authorization_expired` (15 minutes, or the session ended) or `authorization_failed`.
    */
   "models.signIn.loopback": {
     params: {
       workspace: string;
-      provider: "codex" | "claude";
+      provider: "codex" | "claude" | "gemini";
       account?: string;
       version?: string;
     };
@@ -5755,9 +6373,12 @@ export interface Calls {
    * Reads a page of a session history: its first 3 records (`preview`, once), its latest 50 (`latest`), or the 50
    * before what is shown (`older`). Answers once the history shows the page, or (its `status` and `error`) why not.
    */
-  /** Replaces the view's draft. */
+  /**
+   * Replaces the view's draft. `entry` marks the draft as written outside this app (`ChatDraftEntry`): the message sent
+   * from it reports that. Later edits keep the mark until the draft is sent or emptied.
+   */
   "chatView.setDraft": {
-    params: ChatViewTarget & { draft: string };
+    params: ChatViewTarget & { draft: string; entry?: ChatDraftEntry };
     result: ChatCommandReceipt;
   };
   /** As `chat.prefillDraft`, for the view. */
@@ -5923,6 +6544,11 @@ export interface Calls {
     params: ChatLeasedAttachLocalFilesInput;
     result: ChatCommandReceipt;
   };
+  /** Adds files the message names by their path on this computer: nothing of them uploads (Main's picks and drops). */
+  "chat.attachLocalPaths": {
+    params: ChatLeasedAttachLocalPathsInput;
+    result: ChatCommandReceipt;
+  };
   /** The account's default workspace and its chat, or `workspaceId`'s; the chat is made when there is none yet. */
   "chat.resolveWorkspaceChat": {
     params: { workspaceId?: string };
@@ -6013,16 +6639,17 @@ export interface Calls {
     result: { name: string; path: string; size: number };
   };
   /**
-   * A Task in Comma's cloud with `model`, its first message `text`, owned by the person. The message names the files
-   * `uploads` (`chat.uploadTaskFile`), and may be them alone. Made once under `key`: made again with it (a call that
-   * failed), it is the same Task. Answers the Task as soon as it is made; nothing is posted to Home. A refusal fails
-   * `refused` with why.
+   * A Task in Comma's cloud with `model`, or the Workspace's Task model without one, its first message `text`, owned
+   * by the person. The message names the files `uploads` (`chat.uploadTaskFile`), and may be them alone. Made once
+   * under `key`: made again with it (a call that failed), it is the same Task. Answers the Task as soon as it is made; nothing is posted to Home. A placement/model refusal fails
+   * `refused` with why; billing denials fail `billing_unavailable` (402) with `detail.reason`.
    */
   "chat.startTask": {
     params: {
       workspaceId: string;
       key: string;
-      model: { id: string; name: string };
+      model?: { id: string; name: string };
+      stillfail?: { deviceId: string; provider?: string; model?: string };
       text: string;
       uploads?: { name: string; path: string }[];
     };
@@ -6146,6 +6773,17 @@ export interface Calls {
     params: { workspaceId: string; taskId: string };
     result: { url: string };
   };
+  /**
+   * Asks the Task's sandbox to show its screen to the Task's owner, and gives the Device the sandbox runs as, whose
+   * display is viewed as a computer's (`devices.openScreenView` with `task`). The sandbox shows it for a few minutes
+   * from each ask: a view of it asks by itself as it opens and while it is open. Fails `forbidden` for another member,
+   * `sandbox_not_running` when none is ready, `sandbox_has_no_screen` when the sandbox's station serves none, and
+   * `sandbox_unreachable` when it could not be told.
+   */
+  "coding.screen": {
+    params: { workspaceId: string; taskId: string };
+    result: { deviceId: string };
+  };
   /** The language the core words chat's messages in. */
   "chat.locale": { params: { locale: string }; result: null };
   /** This device's id per workspace (Electron's connector), sent with each message. */
@@ -6180,10 +6818,13 @@ export interface Calls {
     };
     result: ChatCommandReceipt;
   };
-  /** Opens an attachment intake (files dropped on a window): the draft's send waits until it settles. */
+  /**
+   * Opens an attachment intake (files dropped on a window): the draft's send waits until it settles. `localPathMode`:
+   * which of the files that are not images Main names by their path rather than uploads.
+   */
   "chat.intake.claim": {
     params: ChatLeasedTarget & { surfaceId: string };
-    result: { intakeId: string };
+    result: { intakeId: string; localPathMode: ChatLocalPathMode };
   };
   /**
    * The room the intake's draft has; fails when the intake no longer belongs to its draft (checked before each file is
@@ -6303,6 +6944,46 @@ export type TaskActivity = {
   }[];
 };
 
+/** One generalized Live Status Activity item (`live_status_v1`). */
+export type LiveStatusItem = {
+  key: string;
+  workspaceId: string;
+  groupId: string;
+  conversationId: string | null;
+  category:
+    | "car"
+    | "delivery"
+    | "flight"
+    | "train"
+    | "transit"
+    | "package"
+    | "order"
+    | "timer"
+    | "progress";
+  status: "active" | "attention" | "done" | "cancelled" | "failed";
+  accent: "auto" | "brand" | "green" | "amber" | "blue" | "red" | "neutral";
+  title: string;
+  subtitle: string | null;
+  compactLabel: string | null;
+  etaEpochSeconds: number | null;
+  progress: number | null;
+  stepCurrent: number | null;
+  stepTotal: number | null;
+  stepLabel: string | null;
+  detailLeft: string | null;
+  detailRight: string | null;
+  staleEpochSeconds: number | null;
+  expiresEpochSeconds: number | null;
+  startedAtEpochSeconds: number | null;
+  dismissAtEpochSeconds: number | null;
+  updatedAtEpochSeconds: number;
+};
+
+/** Active generalized Live Status items for a group. */
+export type LiveStatuses = {
+  items: LiveStatusItem[];
+};
+
 /** The session a chat value is of (its id and audience); null while the core shows none. */
 export type ChatSessionIdentity = { sessionId: string; audience: string } | null;
 
@@ -6334,6 +7015,20 @@ export const TOPIC_SPECS: Record<string, KeyedSpec> = {
   plugins: { fields: { plugins: byId, categories: byId } },
   onboardingApps: { fields: { rows: byId } },
   tasks: { fields: { items: byId, workspaces: byId } },
+  taskFeed: {
+    fields: {
+      entries: {
+        key: ["id"],
+        item: {
+          fields: {
+            milestones: byIndex,
+            media: { key: ["attachmentId"] },
+            files: byIndex,
+          },
+        },
+      },
+    },
+  },
   pluginNotices: { fields: { notices: byId } },
   pluginSources: {
     fields: {
@@ -6414,9 +7109,15 @@ export const TOPIC_SPECS: Record<string, KeyedSpec> = {
   deviceSetup: { fields: { state: { fields: { devices: byIndex } } } },
   taskOrder: { fields: { sections: { key: ["bucket"] } } },
   taskRequests: {
-    fields: { incoming: byId, targets: { key: ["grant_id"] }, links: byId },
+    fields: {
+      incoming: byId,
+      received: byId,
+      targets: { key: ["grant_id"] },
+      links: byId,
+    },
   },
   taskLabels: { fields: { catalog: { fields: { labels: byId } } } },
+  taskMembers: { fields: { members: byIndex } },
   recommendations: {
     fields: { envelope: { fields: { settings: { fields: { sources: byIndex } } } } },
   },

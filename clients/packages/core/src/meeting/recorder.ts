@@ -173,6 +173,7 @@ export function registerNoMeetingRecorder(ctx: Ctx): void {
 export class MeetingRecorder {
   readonly #ctx: Ctx;
   readonly #ports: MeetingPorts;
+  readonly #locale: () => CommaLocale;
   readonly tasks: MeetingTasks;
   readonly #scope: Scoped;
   readonly #inputs = Effect.runSync(Queue.unbounded<Input>());
@@ -202,6 +203,7 @@ export class MeetingRecorder {
   constructor(ctx: Ctx, ports: MeetingPorts, locale: () => CommaLocale) {
     this.#ctx = ctx;
     this.#ports = ports;
+    this.#locale = locale;
     this.#scope = ctx.runner.child();
     this.tasks = new MeetingTasks(
       ctx,
@@ -729,7 +731,8 @@ export class MeetingRecorder {
             ...saved,
             summary: "error",
             summaryError:
-              saved.summaryError ?? meetingSubmissionError("prepare", failure(exit)),
+              saved.summaryError ??
+              meetingSubmissionError("prepare", failure(exit), this.#locale()),
           },
     });
   }

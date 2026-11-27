@@ -435,6 +435,102 @@ defmodule SalixAgent.Tools.Memory do
     {Jason.encode!(%{"ok" => true, "path" => path, "mode" => mode}), [event]}
   end
 
+  @doc """
+  Raises unless this activation may change memory, when any of `events`
+  writes, deletes or copies onto a `/memory` path. `SalixAgent.Tools` calls it
+  on every tool's events before they are committed, so no file tool
+  (`memory.write`, `fs.*`, `env.copy`, `migration.import`) reaches memory
+  around it.
+  """
+  @spec authorize_events!([map()], map()) :: :ok
+  def authorize_events!(events, ctx) when is_list(events) do
+    if Enum.any?(events, &memory_event?/1), do: authorize_writer!(ctx), else: :ok
+  end
+
+  def authorize_events!(_events, _ctx), do: :ok
+
+  @doc "True when `path` is in this agent's memory."
+  @spec memory_path?(term()) :: boolean()
+  def memory_path?(path) when is_binary(path),
+    do: path == "/memory" or String.starts_with?(path, "/memory/")
+
+  def memory_path?(_path), do: false
+
+  defp memory_event?(%{} = event) do
+    case event["type"] || event[:type] do
+      type when type in ["vfs_write", "vfs_delete"] -> memory_path?(event["path"] || event[:path])
+      "vfs_copy" -> memory_path?(event["to"] || event[:to])
+      _other -> false
+    end
+  end
+
+  defp memory_event?(_event), do: false
+
+  @doc """
+  Raises unless this activation may change memory. A Group's administrator
+  can let only named people change it (`memory_writers` on the Group record,
+  set on the CFT Data policy page). The person is whoever this activation acts
+  for: the sender, or the person a schedule or Loop was made by. With nobody
+  to name, the write is refused.
+  """
+  @spec authorize_writer!(map()) :: :ok
+  def authorize_writer!(ctx) do
+    case memory_writers(ctx) do
+      %{"restricted" => true, "writers" => writers} when is_list(writers) ->
+        unless (key = requester_key(ctx)) && key in writers do
+          raise "Memory in this workspace can be changed only by the people an administrator named, " <>
+                  "and the person this request is for is not one of them. Nothing was written. " <>
+                  "Tell them you cannot remember this for them."
+        end
+
+        :ok
+
+      _anyone ->
+        :ok
+    end
+  end
+
+  defp memory_writers(ctx) do
+    with group_id when is_binary(group_id) and group_id != "" <- Map.get(ctx, :group_id) do
+      tenant_id =
+        case Map.get(ctx, :tenant_id) do
+          tenant when is_binary(tenant) and tenant != "" -> tenant
+          _ -> SalixStore.Ids.tenant_id_from_group!(group_id)
+        end
+
+      case SalixAgent.GroupContext.get(group_id, tenant_id) do
+        {:ok, group} -> group["memory_writers"]
+        {:error, :not_found} -> nil
+        {:error, _reason} -> raise "who may change memory could not be read just now; try again"
+      end
+    else
+      _no_group -> nil
+    end
+  end
+
+  defp requester_key(ctx) do
+    principal =
+      case Map.get(ctx, :ifc) do
+        %{"requester" => requester} when is_binary(requester) ->
+          case SalixIFC.Codec.decode_principal(requester) do
+            {:ok, principal} -> principal
+            :error -> nil
+          end
+
+        _no_context ->
+          SalixAgent.IFC.principal(Map.get(ctx, :trusted_origin))
+      end
+
+    person_key(principal)
+  end
+
+  defp person_key({:provider_user, _connect, _user} = principal),
+    do: SalixIFC.Codec.encode_principal!(principal)
+
+  defp person_key({:schedule, _id, creator}), do: person_key(creator)
+  defp person_key({:api_key, _id, creator}), do: person_key(creator)
+  defp person_key(_nobody), do: nil
+
   defp execute_write(ctx, path, content, "write") do
     if daily_path?(path) do
       raise "#{@write_tool_name} write mode is not allowed for daily memory; use append mode on today's file"

@@ -124,6 +124,10 @@ defmodule CommaWeb.TaskRequestTools do
   def request_accepted?(id, group),
     do: match?({:ok, _request}, TaskRequests.accepted_in_group(id, group))
 
+  @doc "Binds a Task created by the owner's Router (`task_request_id`) to its accepted request."
+  def attach_task(id, group, task_id, status \\ nil),
+    do: TaskRequests.attach_router_task(id, group, task_id, status)
+
   # A chat user's own Workspaces. A Comma user is already in theirs.
   defp own_targets(user, ctx) do
     case SalixAgent.IFC.principal(ctx[:trusted_origin] || %{}) do

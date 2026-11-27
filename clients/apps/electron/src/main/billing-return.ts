@@ -1,4 +1,6 @@
 export const billingSettingsRoute = "/settings?category=usage-billing";
+/** The menu-bar usage row's route: `from` names it as the billing page's entry. */
+export const billingSettingsRouteFromMenuBar = `${billingSettingsRoute}&from=menu_bar`;
 
 export type BillingReturn = {
   status: "cancel" | "portal" | "subscription" | "success";
@@ -6,7 +8,7 @@ export type BillingReturn = {
 };
 
 export function billingSettingsRouteForReturn(status: BillingReturn["status"]): string {
-  return `${billingSettingsRoute}&billing-return=${status}`;
+  return `${billingSettingsRoute}&from=billing_return&billing-return=${status}`;
 }
 
 export function parseBillingReturnUrl(

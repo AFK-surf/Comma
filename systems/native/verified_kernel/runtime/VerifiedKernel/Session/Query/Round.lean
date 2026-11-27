@@ -350,6 +350,10 @@ def replyTargets (origin : Term) : KernelM Term := do
       let chat := textKey destination "chat_id"
       if !chat.isBinary || chat == b "" then pure ([], route)
       else pure (["im_api.signal.send_message"], route.put (b "chat_id") chat)
+    else if provider == b "wecom" then do
+      let chat := textKey destination "chat_id"
+      if !chat.isBinary || chat == b "" then pure ([], route)
+      else pure (["im_api.wecom.send_message"], route.put (b "chat_id") chat)
     else pure ([], route)
   return list (tools.map (fun tool => Term.map [(b "tool", b tool), (b "params", route)]))
 
@@ -386,7 +390,10 @@ def replyRequest : List Term → KernelM (Option Term)
     let threads ← requests.mapM (fun message => StateQuery.originThread (valueOf message "trusted_origin"))
     if threads.any (· == nil) || (uniq threads).length != 1 then return none
     return (← requests.filterM (fun message => do
-      return (← replyTargets (valueOf message "trusted_origin")) != list [])).getLast?
+      let origin := valueOf message "trusted_origin"
+      let telegram := origin.get (b "source_actor_type") == b "provider_user" &&
+        textKey origin "provider" == b "telegram"
+      return telegram || (← replyTargets origin) != list [])).getLast?
 
 /-- A Loop's or a schedule's delivery with no authority. It carries no origin, so it
 is not queued behind a person and can arrive while they wait. It asks nothing of them,
@@ -432,6 +439,19 @@ def sourceScope (state : Term) : KernelM Term := do
   if (← ReplyQuery.currentSourceMessageIds state) != sources then return nil
   return .map [(b "source_message_id", source), (b "context_source_message_ids", ← currentSourceIds state),
     (b "trusted_origin", origin)]
+
+/-- Exact authenticated human reply domains, separately retained for intersection. -/
+def projectionOrigins (state : Term) : KernelM Term := do
+  let messages ← currentUserMessages state
+  let requests ← messages.filterM humanRequest
+  let mut origins : List Term := []
+  for message in requests do
+    let origin := valueOf message "trusted_origin"
+    let source := valueOf message "source_message_id"
+    if textKey origin "source_message_id" != source ||
+      (← replyTargets origin) == list [] then return list []
+    origins := origins ++ [origin]
+  return list origins
 
 /-- The destination half of `bindingMatches` for a human source scope. -/
 private def sourceBindingMatches (state args : Term) : KernelM Bool := do
@@ -638,6 +658,7 @@ def table : OpTable :=
    ("wait_expired?", fun state _ => waitExpired state),
    ("completion_target", completionTarget),
    ("terminal_reply_source_scope", fun state _ => sourceScope state),
+   ("ifc_projection_origins", fun state _ => projectionOrigins state),
    ("terminal_reply_targets", fun state _ => do
      let scope ← sourceScope state
      replyTargets (scope.get (b "trusted_origin"))),

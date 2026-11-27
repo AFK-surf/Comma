@@ -29,6 +29,10 @@ defmodule Comma.Salix.Runtime do
     do: {:error, :salix_client_not_configured}
 
   @impl true
+  def create_collaborative_task(_workspace, _attrs),
+    do: {:error, :salix_client_not_configured}
+
+  @impl true
   def ensure_guest_tenant(_tenant_id, _limit), do: {:error, :salix_client_not_configured}
 
   @impl true

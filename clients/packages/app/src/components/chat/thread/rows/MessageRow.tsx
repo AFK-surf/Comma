@@ -16,6 +16,10 @@ import type {
   RowRelationshipProps,
 } from "../replies/messageRelationships";
 import { ThreadDefaultActorRoleContext } from "../threadContexts";
+import { CommaAuthContext } from "../../../auth-context";
+import { UserAvatar } from "../../../UserAvatar";
+import { usePeopleAvatars, usePersonName } from "../../../people/usePersonName";
+import { useAvatarUrl } from "../../../useProfileAvatarUrl";
 import { AssistantResponseRow } from "./assistant/AssistantResponseRow";
 import { MessageBlockExtras } from "./MessageBlockExtras";
 import { MessageCopyAction } from "./MessageCopyAction";
@@ -27,7 +31,11 @@ import {
   textAttachmentsToPills,
 } from "./user/messageTextAttachments";
 import { UserMessageBubble } from "./user/UserMessageBubble";
-import { MessagePlatformBadge, otherClientSource } from "../../MessagePlatformBadge";
+import {
+  MessagePlatformBadge,
+  messageBubblePlatform,
+  otherClientSource,
+} from "../../MessagePlatformBadge";
 import { MessageTaskCards } from "../../tasks/MessageTaskCards";
 import { TaskRunBlockedCard } from "../../tasks/TaskRunBlockedCard";
 import { TASK_RUN_BLOCKED } from "../../tasks/taskRunSwitch";
@@ -105,6 +113,45 @@ export const MessageRow = memo(function MessageRow({
       ? { ...message, attachments: mergedAttachments }
       : message;
   const quickChat = message.messageType === QUICK_CHAT_MESSAGE_TYPE;
+  // In a Task together, another person's message: on the left, under their face and name, not in the account's own
+  // bubble. The Router's chat calls its one user "current"; a Task stores each writer's user id.
+  const auth = useContext(CommaAuthContext);
+  // A page with no account (a guest's) has no writer of its own: each one it names is someone else.
+  const otherWriter =
+    message.role === "user" &&
+    message.createdBy &&
+    message.createdBy !== "current" &&
+    message.createdBy !== auth?.userId
+      ? message.createdBy
+      : undefined;
+  // A guest who joined by an email link has no account: the name they gave comes with the message, as every
+  // writer's does on a guest's own page, where there is no People to look them up in.
+  const guest = otherWriter?.startsWith("guest:") ?? false;
+  const named = guest || Boolean(message.authorName);
+  const otherName =
+    usePersonName(named ? undefined : otherWriter) ?? message.authorName;
+  const otherAvatar = usePeopleAvatars(Boolean(otherWriter) && !named)(
+    named ? undefined : otherWriter
+  );
+  const otherAvatarUrl = useAvatarUrl(otherAvatar ?? undefined);
+  const changedName = usePersonName(message.memberChange?.userId);
+
+  // A Task together's line for its people: someone left it or was taken out.
+  if (message.memberChange)
+    return (
+      <article
+        ref={articleRef}
+        className="comma-chat-member-change"
+        data-message-id={message.messageId}
+        data-source={message.source}
+      >
+        {(message.memberChange.status === "left"
+          ? messagesApi.people_member_left_line
+          : messagesApi.people_member_removed_line)({
+          name: changedName ?? messagesApi.people_member_unnamed(),
+        })}
+      </article>
+    );
 
   // A Task's model that could not start: one card with why and, while it stands, the model to switch to.
   if (message.messageType === TASK_RUN_BLOCKED)
@@ -142,6 +189,7 @@ export const MessageRow = memo(function MessageRow({
       ref={articleRef}
       className={cx(
         "comma-chat-message-user",
+        otherWriter && "comma-chat-message-other",
         message.delivery === "failed" && "comma-chat-message-failed"
       )}
       data-delivery={message.delivery}
@@ -153,6 +201,40 @@ export const MessageRow = memo(function MessageRow({
       }
       data-source={message.source}
     >
+      {/* Another person's message sits as an Agent's does: their face in the avatar gutter beside the bubble's foot
+          (so a reply to it joins face to face), their name over the bubble's text. A run of their messages wears the
+          face once, at its foot, and the name once, over its first. */}
+      {otherWriter ? (
+        <>
+          {relationship.groupLast !== false ? (
+            <span
+              aria-hidden
+              className="comma-chat-assistant-source-avatar comma-chat-user-source-avatar"
+            >
+              <UserAvatar
+                {...(otherAvatarUrl ? { avatarUrl: otherAvatarUrl } : {})}
+                displayName={otherName ?? (guest ? "@" : "")}
+                email=""
+                size="xs"
+              />
+            </span>
+          ) : null}
+          {relationship.groupFirst !== false ? (
+            <div className="comma-chat-assistant-source-label">
+              {otherName ??
+                (guest
+                  ? messagesApi.collab_guest_member_placeholder_guest()
+                  : messagesApi.chat_reply_user())}
+              {guest && otherName ? (
+                <span className="text-quaternary">
+                  {" "}
+                  · {messagesApi.people_member_guest_tag()}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      ) : null}
       {/* iMessage-style stack: images, then quotes, then file pills and
           conversation refs, with the bubble last so it lands nearest the
           composer it flew out of. */}
@@ -184,7 +266,7 @@ export const MessageRow = memo(function MessageRow({
             onAnchorOutgoingTurn={onAnchorOutgoingTurn}
             onOutgoingAnimationComplete={onOutgoingAnimationComplete}
             outgoingPresentation={outgoingPresentation}
-            platform={message.platformSource}
+            platform={messageBubblePlatform(message)}
             renderContent={renderUserContent}
             text={displayBody}
           />

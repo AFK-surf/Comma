@@ -50,6 +50,11 @@ actor FixtureServer {
     private var workspacesFailOnce = ProcessInfo.processInfo.arguments.contains("--fail-workspaces-once")
     /// `--models` answers the read of the Workspace's models (`FixtureData.modelCatalog`).
     private let models = ProcessInfo.processInfo.arguments.contains("--models")
+    /// `--routines-clear` serves a briefing the member can clear (`FixtureData.clearableRecommendations`): a dismissal
+    /// leaves its card out, and a refresh publishes the cards again as a new briefing.
+    private let routinesClear = ProcessInfo.processInfo.arguments.contains("--routines-clear")
+    private var dismissedRoutineItems = Set<String>()
+    private var routineGeneration = 1
     /// `--fail-task-open` refuses every read of a Task, which then never loaded, until `PerfSignal.recover`.
     private var taskOpenFails = ProcessInfo.processInfo.arguments.contains("--fail-task-open")
 
@@ -59,6 +64,7 @@ actor FixtureServer {
         router = perf.variedChat ? PerfChat.varied() : perf.longChat ? PerfChat.messages() : FixtureData.routerMessages
         if ProcessInfo.processInfo.arguments.contains("--startup-short-chat") { router = Array(router.prefix(2)) }
         if ChatImageFixture.enabled { router += ChatImageFixture.messages }
+        if ProcessInfo.processInfo.arguments.contains("--platform-messages") { router += FixtureData.platformMessages }
         replyGate = perf.stream ? PerfReplyGate.listening() : nil
     }
 
@@ -174,6 +180,16 @@ actor FixtureServer {
             json = #"{"lines":[],"numbers":[],"readiness":{"ready":true}}"#
         case ("GET", "workspaces/w/voice-api-keys"):
             json = "[]"
+        case ("POST", "workspaces/w/recommendations/dismissals") where routinesClear:
+            let dismissal = body.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            if let url = dismissal?["sourceUrl"] as? String { dismissedRoutineItems.insert(url) }
+            json = FixtureData.clearableRecommendations(without: dismissedRoutineItems, generation: routineGeneration)
+        case ("POST", "workspaces/w/recommendations/refresh") where routinesClear:
+            dismissedRoutineItems.removeAll()
+            routineGeneration += 1
+            json = #"{"envelope":"# + FixtureData.clearableRecommendations(without: [], generation: routineGeneration) + "}"
+        case (_, "workspaces/w/recommendations") where routinesClear:
+            json = FixtureData.clearableRecommendations(without: dismissedRoutineItems, generation: routineGeneration)
         case (_, "workspaces/w/recommendations"):
             json = FixtureData.recommendations
         case (_, "groups/g/task-activity"):

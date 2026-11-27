@@ -82,7 +82,12 @@ afterEach(() => {
   refused = undefined;
 });
 
-function scriptedCore(incoming: unknown[], calls: string[], sent: unknown[] = []) {
+function scriptedCore(
+  incoming: unknown[],
+  calls: string[],
+  sent: unknown[] = [],
+  received: unknown[] = incoming
+) {
   // The Inbox's deleted marks, kept as the core keeps them: a mark never moves back.
   const deleted: Record<string, number> = {};
   const core = createScriptedCore({
@@ -95,6 +100,7 @@ function scriptedCore(incoming: unknown[], calls: string[], sent: unknown[] = []
             ? {
                 workspace: "w1",
                 incoming,
+                received,
                 grants: [],
                 targets: [],
                 sent,
@@ -173,9 +179,13 @@ function renderInbox(
 }
 
 /** The Inbox's rail and detail pane as the app routes them: a request, a Task's conversation, or nothing open. */
-function renderPane(incoming: unknown[], at = "/inbox") {
+function renderPane(
+  incoming: unknown[],
+  at = "/inbox",
+  received: unknown[] = incoming
+) {
   const calls: string[] = [];
-  const core = scriptedCore(incoming, calls);
+  const core = scriptedCore(incoming, calls, [], received);
   const root = createRootRoute({
     component: () =>
       core.wrap(
@@ -454,10 +464,34 @@ it("closes a request's pane once it has been answered elsewhere", async () => {
   expect(router.state.location.pathname).toBe("/inbox");
 });
 
+it("keeps a declined incoming request open in a read-only pane when it is only in received", async () => {
+  const declined = {
+    ...request("trq_declined", 1_000),
+    status: "declined",
+    decline_reason: "Not this week",
+  };
+  const { router } = renderPane([], "/inbox/request/trq_declined", [declined]);
+  await flush();
+  expect(router.state.location.pathname).toBe("/inbox/request/trq_declined");
+  const pane = screen.getByTestId("inbox-answered-request-pane");
+  expect(pane.querySelector(".comma-chat-header h1")?.textContent).toBe(
+    "Request trq_declined"
+  );
+  expect(pane).toHaveTextContent("Do trq_declined");
+  expect(screen.getByTestId("inbox-answered-request-status")).toHaveTextContent(
+    "Declined"
+  );
+  expect(screen.getByTestId("inbox-answered-request-from")).toHaveTextContent("Sam");
+  expect(screen.getByTestId("inbox-answered-request-from")).toHaveTextContent(
+    "Not this week"
+  );
+});
+
 /** The `taskRequests` topic with these requests waiting. */
 const waiting = (incoming: unknown[]) => ({
   workspace: "w1",
   incoming,
+  received: incoming,
   grants: [],
   targets: [],
   sent: [],
@@ -682,6 +716,266 @@ it("follows a request the person sent as the Task it asked for, and raises its r
   expect(openNativePlatformExternalUrl).toHaveBeenCalledWith(
     "https://example.com/report"
   );
+
+  // The title's overflow menu offers a server-backed Delete request action with confirmation.
+  await user().click(screen.getByTestId("inbox-sent-request-actions"));
+  await flush();
+  await user().click(screen.getByRole("menuitem", { name: "Delete request" }));
+  await flush();
+  expect(screen.getByText("Delete this request?")).toBeTruthy();
+  expect(core.sent).not.toContainEqual(["taskRequests.hide", { request: "trq_9" }]);
+  await user().click(screen.getByRole("button", { name: "Delete" }));
+  await flush();
+  expect(core.sent).toContainEqual(["taskRequests.hide", { request: "trq_9" }]);
+});
+
+/** The result toasts on screen: those Sonner has not taken away. */
+const resultToasts = () =>
+  screen
+    .queryAllByTestId("task-request-result")
+    .filter(
+      (t) => t.closest("[data-sonner-toast]")?.getAttribute("data-removed") !== "true"
+    );
+
+it("suppresses result toasts for historical backfill, account switches, and older page shifts", async () => {
+  const core = scriptedCore(
+    [],
+    [],
+    [
+      sentRequest({
+        id: "trq_backfill_done",
+        task_status: null,
+        reply: null,
+        created_at: 100,
+        task_updated_at: null,
+      }),
+      sentRequest({
+        id: "trq_backfill_active",
+        task_status: null,
+        reply: null,
+        created_at: 101,
+        task_updated_at: null,
+      }),
+      sentRequest({
+        id: "trq_backfill_reported",
+        task_status: null,
+        reply: null,
+        created_at: 102,
+        task_updated_at: null,
+      }),
+    ]
+  );
+  const root = createRootRoute({
+    component: () =>
+      core.wrap(
+        <>
+          <Arrivals />
+          <Toaster />
+        </>
+      ),
+  });
+  const router = createRouter({
+    routeTree: root,
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  await flush();
+  expect(screen.queryByTestId("task-request-result")).toBeNull();
+
+  // Backfilling a historical row from null -> completed without a reply must not raise a toast;
+  // backfilling to active clears its unfilled mark so a real completion afterwards still toasts.
+  core.emit("taskRequests", {
+    ...waiting([]),
+    sent: [
+      sentRequest({
+        id: "trq_backfill_done",
+        task_status: "completed",
+        reply: null,
+        created_at: 100,
+        task_updated_at: 105,
+      }),
+      sentRequest({
+        id: "trq_backfill_active",
+        task_status: "active",
+        reply: null,
+        created_at: 101,
+        task_updated_at: 106,
+      }),
+      sentRequest({
+        id: "trq_backfill_reported",
+        task_status: null,
+        reply: null,
+        created_at: 102,
+        task_updated_at: null,
+      }),
+    ],
+  });
+  await flush();
+  expect(screen.queryByTestId("task-request-result")).toBeNull();
+
+  // An older already-completed request entering the window after hiding a newer one must not toast.
+  core.emit("taskRequests", {
+    ...waiting([]),
+    sent: [
+      sentRequest({
+        id: "trq_backfill_done",
+        task_status: "completed",
+        reply: null,
+        created_at: 100,
+        task_updated_at: 105,
+      }),
+      sentRequest({
+        id: "trq_backfill_active",
+        task_status: "active",
+        reply: null,
+        created_at: 101,
+        task_updated_at: 106,
+      }),
+      sentRequest({
+        id: "trq_backfill_reported",
+        task_status: null,
+        reply: null,
+        created_at: 102,
+        task_updated_at: null,
+      }),
+      sentRequest({
+        id: "trq_older_page",
+        task_status: "completed",
+        reply: null,
+        created_at: 50,
+        task_updated_at: 55,
+      }),
+    ],
+  });
+  await flush();
+  expect(screen.queryByTestId("task-request-result")).toBeNull();
+
+  // Live completion after backfilling to active, and a report with a reply, both still toast.
+  core.emit("taskRequests", {
+    ...waiting([]),
+    sent: [
+      sentRequest({
+        id: "trq_backfill_done",
+        task_status: "completed",
+        reply: null,
+        created_at: 100,
+        task_updated_at: 105,
+      }),
+      sentRequest({
+        id: "trq_backfill_active",
+        task_status: "completed",
+        reply: null,
+        created_at: 101,
+        task_updated_at: 120,
+      }),
+      sentRequest({
+        id: "trq_backfill_reported",
+        task_status: "completed",
+        reply: "Finished cleanly.",
+        created_at: 102,
+        task_updated_at: 121,
+      }),
+      sentRequest({
+        id: "trq_older_page",
+        task_status: "completed",
+        reply: null,
+        created_at: 50,
+        task_updated_at: 55,
+      }),
+    ],
+  });
+  await flush();
+  expect(resultToasts()).toHaveLength(2);
+  toast.dismissAll();
+  await flush();
+  await advance(1000);
+  expect(resultToasts()).toEqual([]);
+
+  // If a request initially suppressed as unfilled later receives a live Router reply,
+  // raise its result toast once instead of losing it.
+  core.emit("taskRequests", {
+    ...waiting([]),
+    sent: [
+      sentRequest({
+        id: "trq_backfill_done",
+        task_status: "completed",
+        reply: "Late router summary.",
+        created_at: 100,
+        task_updated_at: 122,
+      }),
+      sentRequest({
+        id: "trq_backfill_active",
+        task_status: "completed",
+        reply: null,
+        created_at: 101,
+        task_updated_at: 120,
+      }),
+      sentRequest({
+        id: "trq_backfill_reported",
+        task_status: "completed",
+        reply: "Finished cleanly.",
+        created_at: 102,
+        task_updated_at: 121,
+      }),
+      sentRequest({
+        id: "trq_older_page",
+        task_status: "completed",
+        reply: null,
+        created_at: 50,
+        task_updated_at: 55,
+      }),
+    ],
+  });
+  await flush();
+  expect(resultToasts()).toHaveLength(1);
+  expect(resultToasts()[0]).toHaveTextContent("Late router summary.");
+  toast.dismissAll();
+  await flush();
+  await advance(1000);
+  expect(resultToasts()).toEqual([]);
+
+  // Switching to another account/workspace must reset the baseline and not replay its finished rows.
+  core.emit("taskRequests", {
+    ...waiting([]),
+    workspace: "w_other",
+    sent: [
+      sentRequest({
+        id: "trq_other_account_done",
+        task_status: "completed",
+        reply: null,
+        created_at: 200,
+        task_updated_at: 210,
+      }),
+    ],
+  });
+  await flush();
+  expect(resultToasts()).toEqual([]);
+
+  // Live transitions after the baseline still raise a toast.
+  core.emit("taskRequests", {
+    ...waiting([]),
+    workspace: "w_other",
+    sent: [
+      sentRequest({
+        id: "trq_other_account_done",
+        task_status: "completed",
+        reply: null,
+        created_at: 200,
+        task_updated_at: 210,
+      }),
+      sentRequest({
+        id: "trq_live_new",
+        task_status: "completed",
+        reply: "All set.",
+        created_at: 300,
+        task_updated_at: 305,
+      }),
+    ],
+  });
+  await flush();
+  expect(resultToasts()).toHaveLength(1);
+  expect(resultToasts()[0]).toHaveTextContent("Your request to CatsJuice: Done");
+  expect(resultToasts()[0]).toHaveTextContent("All set.");
 });
 
 /** Opens a row's menu as a right click does, and chooses `item` in it. */

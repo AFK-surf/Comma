@@ -1,29 +1,44 @@
 import SwiftUI
 
-/// What the router's circle in the tab bar shows over the bar's own glyph, where the bar cannot draw it: the logo
-/// animation while the router thinks or streams a reply (the bar's glyph is still), and the count of replies not
-/// yet seen on its rim (a badge the bar draws on the circle is clipped by it).
+/// What the router's circle shows over the bar's own glyph: the logo animation while Comma replies, and the mark
+/// itself while the circle travels in a zoom, away from the bar. The unread count sits in `RouterBadgeOverlay`
+/// outside the zoom's clipped source view so its overhanging rim badge is never clipped by the circle.
 struct RouterCircleOverlay: View {
     var replying = false
-    var unread = 0
+    /// At rest the bar's glyph is the mark, so it presses, dims and enlarges with the other tabs.
+    var restingMark = false
 
     var body: some View {
         ZStack {
-            if replying {
-                CommaLogoAnimation(ink: CommaTheme.textPrimary, aperture: CommaTheme.bgPrimary)
-                    .frame(width: Self.markSide, height: Self.markSide)
-                    .transition(.opacity)
+            if replying || restingMark {
+                RouterMark(replying: replying, size: Self.markSide, ink: .primary.opacity(0.96)).transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .topTrailing) { CountBadge(count: unread) }
         .animation(CommaMotion.stateChange, value: replying)
+        .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
     /// The mark's side in the circle, the bar's glyph and the animation alike.
     static let markSide: CGFloat = 26
+}
+
+/// The router circle's unread count, hosted outside the zoom transition's source view so UIKit's circular morph
+/// portal never clips the badge straddling the top-trailing rim.
+struct RouterBadgeOverlay: View {
+    var unread = 0
+    var visible = true
+
+    var body: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) { CountBadge(count: visible ? unread : 0) }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 }
 
 /// A count on the circle's rim, as on an app icon: centred on the edge at its top-trailing diagonal, growing

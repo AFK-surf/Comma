@@ -13,6 +13,7 @@
     "./testing": "./src/testing/index.ts",
     "./api-schemas": "./src/comma/api-schemas.ts",
     "./chat": "./src/chat/public.ts",
+    "./collab-guest": "./src/hosts/collab-guest.ts",
     "./markdown": "./src/markdown/index.ts"
   },
   "dependencies": {

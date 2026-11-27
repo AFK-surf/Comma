@@ -19,6 +19,16 @@ defmodule SalixIM.MentionReplyLatency do
   one by one. A message in the thread with no evidence at all is counted as
   uncertain and answers nothing.
 
+  A mention lives in a place: the provider, the namespace its ids belong to and
+  the channel or chat. A Slack connect's namespace is its Comma group and Slack
+  workspace, which every Slack app of that group in that workspace shares; any
+  other connect is its own namespace. So a Router that receives a mention
+  through one Slack app and answers through another still answers it, and no
+  reply crosses a group or workspace. One provider message delivered by several
+  apps of the group is one mention: each delivery's source can answer it, and it
+  ends as `no_reply` only when every delivery that arrived chose silence. A
+  delivery that arrives after its message was settled adds nothing.
+
   A send can be confirmed before its link arrives, so a reply that answered
   nothing but carries evidence is kept for a few minutes and tried again on
   each link.
@@ -198,7 +208,16 @@ defmodule SalixIM.MentionReplyLatency do
 
   @doc "Records one provider-confirmed visible message of `connect`."
   def reply(provider, connect, reply, server \\ __MODULE__) when is_map(reply) do
-    place = scope(provider, connect["connect_id"], reply[:place])
+    place =
+      scope(
+        provider,
+        %{
+          connect_id: connect["connect_id"],
+          group_id: connect["group_id"],
+          workspace_id: connect["workspace_id"]
+        },
+        reply[:place]
+      )
 
     reply = %{
       provider: provider,
@@ -309,12 +328,24 @@ defmodule SalixIM.MentionReplyLatency do
 
   defp millis(_value), do: nil
 
-  defp scope(provider, connect_id, place),
-    do:
-      if(
-        Enum.all?([provider, connect_id, place], &(is_binary(&1) and &1 != "")),
-        do: DeliveryTelemetry.source_key(Enum.join([provider, connect_id, place], "\n"))
-      )
+  defp scope(provider, connect, place) do
+    parts = namespace(provider, connect) ++ [place]
+
+    if Enum.all?(parts, &present?/1),
+      do: DeliveryTelemetry.source_key(Enum.join(parts, "\n"))
+  end
+
+  # The apps of one group in one Slack workspace see the same channels and
+  # message timestamps; nothing outside that pair does.
+  defp namespace("slack", %{group_id: group, workspace_id: workspace} = connect) do
+    if present?(group) and present?(workspace),
+      do: ["slack", "group", group, workspace],
+      else: ["slack", connect[:connect_id]]
+  end
+
+  defp namespace(provider, connect), do: [provider, connect[:connect_id]]
+
+  defp present?(value), do: is_binary(value) and value != ""
 
   defp tokens(scope, ids) do
     ids
@@ -364,8 +395,11 @@ defmodule SalixIM.MentionReplyLatency do
   def handle_cast({:mention, mention}, state) do
     provider = mention[:provider]
     now = state.clock.()
-    place = scope(provider, mention[:connect_id], mention[:place])
+    place = scope(provider, mention, mention[:place])
     key = DeliveryTelemetry.source_key(mention[:source_message_id])
+    message = tokens(place, [mention[:message]])
+    # Every delivery of one provider message has the same identity.
+    identity = List.first(message, key)
 
     cond do
       is_nil(key) or is_nil(place) ->
@@ -374,16 +408,27 @@ defmodule SalixIM.MentionReplyLatency do
       known?(state, key) ->
         {:noreply, state}
 
+      Map.has_key?(state.answered, identity) ->
+        {:noreply, %{state | answered: Map.put(state.answered, key, state.answered[identity])}}
+
+      Map.has_key?(state.pending, identity) ->
+        held = state.pending[identity]
+        entry = Map.put(held, :keys, Enum.uniq(keys(held) ++ [key]))
+        cast_peers(state, {:observed, entry})
+        {:noreply, put_in(state.pending[identity], entry)}
+
       true ->
         event([:mention], %{count: 1}, %{provider: provider})
 
         case source_time(mention[:source_sent_at_ms], now) do
           {:ok, sent_at} ->
             entry = %{
-              key: key,
+              key: identity,
+              keys: [key],
+              silent: [],
               provider: provider,
               scope: place,
-              message: tokens(place, [mention[:message]]),
+              message: message,
               thread: tokens(place, [mention[:message] | List.wrap(mention[:thread])]),
               cards: [],
               uncertain?: false,
@@ -401,9 +446,16 @@ defmodule SalixIM.MentionReplyLatency do
   end
 
   def handle_cast({:observed, entry}, state) do
-    if known?(state, entry.key),
-      do: {:noreply, state},
-      else: {:noreply, admit(state, entry, state.clock.())}
+    cond do
+      Map.has_key?(state.answered, entry.key) ->
+        {:noreply, state}
+
+      Map.has_key?(state.pending, entry.key) ->
+        {:noreply, put_in(state.pending[entry.key], merge(state.pending[entry.key], entry))}
+
+      true ->
+        {:noreply, admit(state, entry, state.clock.())}
+    end
   end
 
   def handle_cast({:gap, provider, at}, state), do: {:noreply, gap(state, provider, at)}
@@ -561,12 +613,30 @@ defmodule SalixIM.MentionReplyLatency do
   defp later(left, right), do: max(left, right)
 
   defp known?(state, key),
-    do: Map.has_key?(state.pending, key) or Map.has_key?(state.answered, key)
+    do:
+      Map.has_key?(state.answered, key) or
+        Enum.any?(state.pending, fn {_, entry} -> key in keys(entry) end)
+
+  # The delivery sources of a mention. An entry from a release before
+  # deliveries were merged has its key alone.
+  defp keys(entry), do: Map.get(entry, :keys, [entry.key])
+
+  # Two pods that each admitted a delivery of one message first agree on it.
+  defp merge(left, right) do
+    Map.merge(left, %{
+      keys: Enum.uniq(keys(left) ++ keys(right)),
+      silent: Enum.uniq(Map.get(left, :silent, []) ++ Map.get(right, :silent, [])),
+      cards: Enum.uniq(left.cards ++ right.cards),
+      uncertain?: left.uncertain? or right.uncertain?,
+      sent_at_ms: min(left.sent_at_ms, right.sent_at_ms),
+      origin: min(left.origin, right.origin)
+    })
+  end
 
   defp link(state, keys, card) do
     pending =
       Map.new(state.pending, fn {key, entry} ->
-        if key in keys or overlap?(entry.cards, keys),
+        if overlap?(keys(entry), keys) or overlap?(entry.cards, keys),
           do: {key, %{entry | cards: Enum.uniq([card | entry.cards])}},
           else: {key, entry}
       end)
@@ -619,7 +689,7 @@ defmodule SalixIM.MentionReplyLatency do
 
   defp causal?(entry, reply) do
     overlap?(entry.message, reply.parent) or reply.card in entry.cards or
-      ((entry.key in reply.sources or overlap?(entry.cards, reply.sources)) and
+      ((overlap?(keys(entry), reply.sources) or overlap?(entry.cards, reply.sources)) and
          (reply.thread == [] or overlap?(entry.thread, reply.thread)))
   end
 
@@ -687,26 +757,38 @@ defmodule SalixIM.MentionReplyLatency do
     state
   end
 
-  defp close_no_reply(state, keys) do
-    closed =
-      state.pending
-      |> Map.values()
-      |> Enum.filter(&(&1.key in keys or overlap?(&1.cards, keys)))
+  # A message delivered more than once is silent once every delivery is.
+  defp close_no_reply(state, silent) do
+    {closed, pending} =
+      Enum.reduce(state.pending, {[], state.pending}, fn {key, entry}, {closed, pending} ->
+        held = Enum.filter(keys(entry), &(&1 in silent))
+        quiet = Enum.uniq(Map.get(entry, :silent, []) ++ held)
+
+        cond do
+          overlap?(entry.cards, silent) or (held != [] and keys(entry) -- quiet == []) ->
+            {[entry | closed], pending}
+
+          held != [] ->
+            {closed, Map.put(pending, key, Map.put(entry, :silent, quiet))}
+
+          true ->
+            {closed, pending}
+        end
+      end)
 
     for entry <- closed, recorder?(state, entry) do
       event([:no_reply], %{count: 1}, %{provider: entry.provider})
     end
 
-    settle(state, closed)
+    settle(%{state | pending: pending}, closed)
   end
 
   defp settle(state, answered) do
     Enum.reduce(answered, state, fn entry, acc ->
-      %{
-        acc
-        | pending: Map.delete(acc.pending, entry.key),
-          answered: Map.put(acc.answered, entry.key, entry.sent_at_ms)
-      }
+      answered =
+        Enum.reduce([entry.key | keys(entry)], acc.answered, &Map.put(&2, &1, entry.sent_at_ms))
+
+      %{acc | pending: Map.delete(acc.pending, entry.key), answered: answered}
     end)
   end
 

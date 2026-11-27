@@ -254,7 +254,7 @@ defmodule BridgeForTeams.FeishuScopes do
       %{
         id: "sso",
         title: "SSO login",
-        description: "Use when the app only signs users into Bridge For Teams.",
+        description: "Use when the app only signs users into Comma for Teams.",
         json: import_json(:sso),
         required_scopes: required_scope_ids(:sso)
       },

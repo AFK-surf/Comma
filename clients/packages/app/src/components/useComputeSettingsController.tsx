@@ -5,6 +5,7 @@ import {
 } from "./useLocalComputeCategory";
 import { useEffect, useRef, useState } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
+import { uiClock } from "@comma/ui/clock";
 import { Dialog } from "@comma/ui/components/dialog";
 import type { ComputeNodeExpectedBinding } from "@comma/native-bridge";
 import { useActiveWorkspaceId } from "./activeWorkspace";
@@ -40,6 +41,9 @@ export function useComputeSettingsController(
   );
   const refreshWorkloads = workloads.refresh;
   const [confirm, setConfirm] = useState<"drain" | "remove" | "recover">();
+  const [maintenanceConfirm, setMaintenanceConfirm] = useState<
+    "repair" | "reset" | "uninstall"
+  >();
   const target = useRef<string | undefined>(undefined);
   const expectedBinding = useRef<ComputeNodeExpectedBinding | undefined>(undefined);
   const refreshRef = useRef(node.refresh);
@@ -56,6 +60,7 @@ export function useComputeSettingsController(
     state?.bindingRegistrationId,
     state?.desiredEnabled,
     state?.status,
+    state?.facets.workActivity,
     state?.operation?.requestId,
     state?.operation?.outcome,
   ]);
@@ -65,10 +70,28 @@ export function useComputeSettingsController(
     previousNativeProjection.current = nativeProjectionKey;
     if (changed && visible && hasCloud && !document.hidden) refreshWorkloads();
   }, [nativeProjectionKey, visible, hasCloud, refreshWorkloads]);
+  useEffect(() => {
+    if (!visible || !hasCloud) return undefined;
+    let lastFocusRefreshAt = 0;
+    const onFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = uiClock.now();
+      if (now - lastFocusRefreshAt < 2_000) return;
+      lastFocusRefreshAt = now;
+      if (node.available) void refreshRef.current();
+      refreshWorkloads();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [visible, hasCloud, node.available, refreshWorkloads]);
   const maintenanceActive = local.maintenance.pending || local.maintenance.unfinished;
-  const checkWorkspace = () => void refreshRef.current();
+  const checkWorkspace = () => {
+    void refreshRef.current();
+    void local.maintenance.refresh();
+  };
   useEffect(() => {
     setConfirm(undefined);
+    setMaintenanceConfirm(undefined);
     target.current = undefined;
     expectedBinding.current = undefined;
   }, [
@@ -98,14 +121,17 @@ export function useComputeSettingsController(
         ? m.compute_workspace_label({ id: id.slice(-8) })
         : m.compute_no_workspace();
   // A reader sees the state; Main checks the binding owner of every connection action again.
-  const canManage = workloads.canManage;
+  // Only enter read-only when the cloud explicitly returned can_manage === false.
   const readOnly = !!workloads.projection && !workloads.canManage;
+  const canManage = !readOnly;
   const card = computeNodeCard(
     {
       state,
       maintenance: {
         state: local.maintenance.state,
-        active: maintenanceActive && !local.maintenance.failed,
+        active:
+          maintenanceActive && (!local.maintenance.failed || local.maintenance.pending),
+        pending: local.maintenance.pending,
         title: local.maintenance.title,
       },
       readFailed: !!node.error,
@@ -129,11 +155,20 @@ export function useComputeSettingsController(
   };
   // Closes an install request that the cloud never handed over; Main decides when that is possible.
   const startMaintenance = (
-    action: "update" | "reinstall" | "uninstall" | "clear" | "reinstall_reset"
+    action:
+      | "update"
+      | "reinstall"
+      | "uninstall"
+      | "uninstall_reset"
+      | "clear"
+      | "reinstall_reset"
   ) => {
     workloads.close();
     setDetail("settings");
     void local.maintenance.submit(action);
+  };
+  const openMaintenanceConfirm = (action: "repair" | "reset" | "uninstall") => {
+    setMaintenanceConfirm(action);
   };
   /** Runs one card action. Enabling binds the one workspace the card names, so it needs no dialog. */
   const run = (action: ComputeCardActionId) => {
@@ -205,6 +240,7 @@ export function useComputeSettingsController(
     run,
     canRun,
     startMaintenance,
+    openMaintenanceConfirm,
     openConfirm,
     checkWorkspace,
     nodeOverlay: confirm ? (
@@ -250,6 +286,52 @@ export function useComputeSettingsController(
                 void node.remove(expectedBinding.current);
               else if (action === "recover" && expectedBinding.current)
                 void node.reauthorize(expectedBinding.current);
+            },
+          },
+        ]}
+      />
+    ) : maintenanceConfirm ? (
+      <Dialog
+        isOpen
+        isDismissable
+        title={
+          maintenanceConfirm === "repair"
+            ? m.compute_sandbox_repair_title()
+            : maintenanceConfirm === "reset"
+              ? m.compute_sandbox_reset_title()
+              : m.compute_sandbox_uninstall_title()
+        }
+        description={
+          maintenanceConfirm === "repair"
+            ? m.compute_sandbox_repair_confirm()
+            : maintenanceConfirm === "reset"
+              ? m.compute_sandbox_reset_confirm()
+              : m.compute_sandbox_uninstall_confirm()
+        }
+        onOpenChange={(open) => {
+          if (!open) setMaintenanceConfirm(undefined);
+        }}
+        actions={[
+          {
+            label: m.settings_profile_cancel(),
+            hierarchy: "secondary-gray",
+            onPress: () => setMaintenanceConfirm(undefined),
+          },
+          {
+            label:
+              maintenanceConfirm === "repair"
+                ? m.compute_sandbox_repair_confirm_action()
+                : maintenanceConfirm === "reset"
+                  ? m.compute_sandbox_reset_confirm_action()
+                  : m.compute_sandbox_uninstall_confirm_action(),
+            hierarchy: maintenanceConfirm === "repair" ? "primary" : "destructive",
+            disabled: false,
+            onPress: () => {
+              const action = maintenanceConfirm;
+              setMaintenanceConfirm(undefined);
+              if (action === "repair") startMaintenance("reinstall");
+              else if (action === "reset") startMaintenance("reinstall_reset");
+              else startMaintenance("uninstall_reset");
             },
           },
         ]}

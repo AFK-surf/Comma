@@ -250,7 +250,10 @@ defmodule SystemsClock do
     :atomics.add(clock.arms, 1, 1)
     note(clock, {:armed, dest, message, ms, armed_at()})
     send(clock.holder, :armed)
-    if fires_here?(), do: fire_due(clock)
+    # Only a zero-delay timer is due immediately; firing the whole table here
+    # would steal timers a concurrent `advance/1` or `settle/1` just made due
+    # before that caller finishes delivering them.
+    if ms == 0 and fires_here?(), do: fire_ref(clock, ref)
     ref
   end
 
@@ -3118,16 +3121,18 @@ defmodule SystemsClock do
     ])
     |> Enum.sort()
     |> then(&if(count == :all, do: &1, else: Enum.take(&1, count)))
-    |> Enum.each(fn {_, _, ref} ->
-      case :ets.take(clock.timers, ref) do
-        [{^ref, _, dest, message}] ->
-          note(clock, {:fired, dest, message})
-          deliver(dest, message)
+    |> Enum.each(fn {_, _, ref} -> fire_ref(clock, ref) end)
+  end
 
-        [] ->
-          :ok
-      end
-    end)
+  defp fire_ref(clock, ref) do
+    case :ets.take(clock.timers, ref) do
+      [{^ref, _, dest, message}] ->
+        note(clock, {:fired, dest, message})
+        deliver(dest, message)
+
+      [] ->
+        :ok
+    end
   end
 
   # As `Process.send_after/4`, a timer for a name that is not registered is dropped.

@@ -78,6 +78,7 @@ final class ConversationPane {
     @ObservationIgnored private var draftSave: Task<Void, Never>?
     /// A read problem was reported, and no read has succeeded since.
     @ObservationIgnored private var problemReported = false
+    @ObservationIgnored private var hasInstalledState = false
     /// The files picked for the draft, by the core's attachment id: what their tiles show.
     @ObservationIgnored private var localFiles: [String: (file: AttachmentPayload, thumbnail: Data?)] = [:]
     @ObservationIgnored private var labelWatch: Task<Void, Never>?
@@ -120,6 +121,8 @@ final class ConversationPane {
     var boundWorker: BoundWorker? {
         state.boundWorker.map { BoundWorker(participantID: $0.participantID, actorID: $0.actorID, name: $0.name) }
     }
+    /// Active worker sessions on a multi-session Task (up to 6 entries).
+    var workerSessions: [ChatWorkerSession] { state.workerSessions }
     /// The maker of the model the Task runs, whose logo stands for its Worker.
     var workerVendor: String? { state.workerVendor }
     var canSend: Bool { store?.session != nil && !closed }
@@ -305,7 +308,7 @@ final class ConversationPane {
 
     /// Sends what the person filled in on request `id`'s card to the server, through the core, which keeps none of it.
     /// False when it was refused; the card goes on as the core reads the request's answer.
-    func fillRequest(_ id: String, values: [String: String]) async -> Bool {
+    func fillRequest(_ id: String, values: [String: Any]) async -> Bool {
         guard let store, !closed else { return false }
         do {
             _ = try await store.core.call("agentRequests.fill",
@@ -333,6 +336,14 @@ final class ConversationPane {
     }
 
     private func install(_ next: ChatViewState) {
+        var previousStatuses: [String: ChatDraftAttachment.Status] = [:]
+        for item in state.attachments { previousStatuses[item.id] = item.status }
+        for item in questionAttachments.values.joined() { previousStatuses[item.id] = item.status }
+        let newlyFailedAttachment = (next.attachments + Array(next.questionAttachments.values.joined())).first { item in
+            item.status == .failed
+                && previousStatuses[item.id] != .failed
+                && (hasInstalledState || previousStatuses[item.id] == .uploading)
+        }
         if let shown = assistantDraft, !next.timeline.contains(where: { if case .draft(_, let draft) = $0 { draft == shown } else { false } }) {
             var rows = replyRows
             rows.handOff(shown, from: messages, to: next.timeline.compactMap { if case .message(_, let item) = $0 { item } else { nil } })
@@ -348,6 +359,10 @@ final class ConversationPane {
             if questionThumbnails.keys.contains(where: { !kept.contains($0) }) {
                 questionThumbnails = questionThumbnails.filter { kept.contains($0.key) }
             }
+        }
+        hasInstalledState = true
+        if let failed = newlyFailedAttachment {
+            showAttachmentError(Self.uploadFailureMessage(failed.error))
         }
         let ready = revisionWaiters.filter { $0.revision <= next.revision }
         revisionWaiters.removeAll { $0.revision <= next.revision }
@@ -397,6 +412,12 @@ final class ConversationPane {
 
     func dismissError() { error = nil; errorOrigin = nil }
     func showError(_ value: String) { error = value; errorOrigin = .local; errorRevision += 1 }
+    private func showAttachmentError(_ value: String) { error = value; errorOrigin = .attachment; errorRevision += 1 }
+
+    static func uploadFailureMessage(_ raw: String?) -> String {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? String(localized: "The file could not be uploaded.") : trimmed
+    }
 
     func present(_ failure: any Error, as origin: ErrorOrigin = .request) {
         guard !closed, !(failure is CancellationError) else { return }
@@ -571,7 +592,7 @@ final class ConversationPane {
             let state: DraftAttachment.State = switch item.status {
             case .uploading: .uploading
             case .uploaded: .ready
-            case .failed: .failed(item.error ?? String(localized: "The file could not be uploaded."))
+            case .failed: .failed(Self.uploadFailureMessage(item.error))
             }
             return DraftAttachment(id: item.id, file: file, thumbnail: local?.thumbnail, state: state)
         }
@@ -635,6 +656,7 @@ final class ConversationPane {
 
     /// Uploads a failed file of the draft, or of question card `questionMessageID`, again.
     func retryAttachment(_ id: String, questionMessageID: String? = nil) {
+        if errorOrigin == .attachment { dismissError() }
         var params: [String: Any] = ["attachmentId": id]
         if let questionMessageID { params["questionMessageId"] = questionMessageID }
         Task { _ = try? await call("retryAttachment", params) }
@@ -642,6 +664,7 @@ final class ConversationPane {
 
     /// Removes a file from the draft, or from question card `questionMessageID`.
     func removeAttachment(_ id: String, questionMessageID: String? = nil) {
+        if errorOrigin == .attachment { dismissError() }
         localFiles[id] = nil
         // A file picked from Files waits on disk under its row's id; nothing else is held for it.
         store?.localFiles?.release(id)
@@ -763,12 +786,14 @@ extension ConversationPane {
         case send(String)
         /// Work on this device: a file too large, a photo that would not load.
         case local
+        /// An attachment upload that failed in the core.
+        case attachment
 
         /// A later read of the conversation that works clears it.
         var answeredByRead: Bool {
             switch self {
             case .server, .send: true
-            case .request, .local: false
+            case .request, .local, .attachment: false
             }
         }
     }

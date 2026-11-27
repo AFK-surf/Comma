@@ -100,6 +100,7 @@ defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
       defdelegate choose_model(choice, tenant), to: BridgeForTeams.Salix.Erpc
       defdelegate public_model(choice, tenant), to: BridgeForTeams.Salix.Erpc
       defdelegate platform_model(role), to: BridgeForTeams.Salix.Erpc
+      defdelegate platform_router(tenant), to: BridgeForTeams.Salix.Erpc
       defdelegate get_group_task_model(group), to: BridgeForTeams.Salix.Erpc
       defdelegate put_group_task_model(tenant, group, choice), to: BridgeForTeams.Salix.Erpc
       defdelegate get_group_task_place(group), to: BridgeForTeams.Salix.Erpc
@@ -120,6 +121,7 @@ defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
                      choose_model: 2,
                      public_model: 2,
                      platform_model: 1,
+                     platform_router: 1,
                      get_group_task_model: 1,
                      put_group_task_model: 3,
                      get_group_task_place: 1,

@@ -11,7 +11,11 @@
     <string name="mini_apps_app_failed">应用无法加载，请重试。</string>
     <string name="mini_apps_action_failed">操作未完成，请重试。</string>
     <string name="mini_apps_empty">还没有应用</string>
-    <string name="mini_apps_empty_detail">让 Comma 为你构建一个应用。在这个工作区创建或安装的应用会显示在这里。</string>
+    <!-- Two lines on purpose: the example stays whole on its own line. -->
+    <string name="mini_apps_empty_detail">可以让 Comma 构建一个，\n例如“为我的团队做一个习惯打卡应用”。</string>
+    <string name="mini_apps_new">新建应用</string>
+    <!-- The start of a request to build an app, left in the router composer for the member to finish. -->
+    <string name="mini_apps_new_prompt">帮我做一个 Comma 应用，用来</string>
     <string name="mini_apps_no_results">没有与“%s”匹配的应用</string>
     <string name="mini_apps_no_workspace">没有工作区</string>
     <string name="mini_apps_no_workspace_detail">选择或创建一个工作区来查看你的应用。</string>

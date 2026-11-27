@@ -66,6 +66,26 @@ function setup(host = new FakeHost()) {
 }
 
 describe("a link's preview", () => {
+  it("reads public website metadata through the same authenticated preview endpoint", async () => {
+    const t = setup();
+    const pageHref = "https://www.exxactcorp.com/server";
+    const page = {
+      kind: "web_page",
+      href: pageHref,
+      title: "B300 Server",
+      description: "Eight GPUs",
+      siteName: "Exxact",
+      image: null,
+      icon: null,
+    };
+    t.api.on("GET", path, page);
+    const shown = t.watch(card(pageHref, ""));
+    await t.time.pass(10);
+    expect(shown()).toEqual({ status: "ready", preview: page });
+    expect(t.api.seen("GET", path)[0]!.path).toBe(
+      `${path}?href=${encodeURIComponent(pageHref)}`
+    );
+  });
   it("is read once for every card showing it, and read again once no card shows it", async () => {
     const t = setup();
     t.api.on("GET", path, preview);
@@ -79,12 +99,69 @@ describe("a link's preview", () => {
     expect(t.api.seen("GET", path)[0]!.path).toBe(
       `${path}?href=${encodeURIComponent(href)}&sourceId=github-account`
     );
-    // The link can be private: a later card asks the server to authorize it again.
+    // A later card shows the recent preview at once, and still asks the server to authorize it again.
     await t.closeAll();
+    const release = t.api.hold("GET", path);
     const again = t.watch(card());
     await t.time.pass(10);
     expect(again()).toEqual({ status: "ready", preview });
     expect(t.api.seen("GET", path)).toHaveLength(2);
+    release();
+    await t.time.pass(100);
+    expect(again()).toEqual({ status: "ready", preview });
+  });
+
+  it("takes a recent preview away when the server no longer gives it", async () => {
+    const t = setup();
+    let answer = json(200, preview);
+    t.api.on("GET", path, () => answer);
+    t.watch(card());
+    await t.time.pass(10);
+    await t.closeAll();
+    answer = json(403, { error: "forbidden" });
+    const release = t.api.hold("GET", path);
+    const again = t.watch(card());
+    await t.time.pass(10);
+    expect(again()).toEqual({ status: "ready", preview });
+    release();
+    await t.time.pass(100);
+    expect(again()).toEqual({ status: "missing" });
+    // Nothing of it is kept: the next card loads.
+    await t.closeAll();
+    t.api.hold("GET", path);
+    const later = t.watch(card());
+    await t.time.pass(10);
+    expect(later()).toEqual({ status: "loading" });
+  });
+
+  it("loads again once the preview is 5 minutes old", async () => {
+    const t = setup();
+    t.api.on("GET", path, preview);
+    t.watch(card());
+    await t.time.pass(10);
+    await t.closeAll();
+    await t.time.pass(5 * 60_000, 10_000);
+    const release = t.api.hold("GET", path);
+    const again = t.watch(card());
+    await t.time.pass(10);
+    expect(again()).toEqual({ status: "loading" });
+    release();
+    await t.time.pass(100);
+    expect(again()).toEqual({ status: "ready", preview });
+  });
+
+  it("drops recent previews when the account changes", async () => {
+    const t = setup();
+    t.api.on("GET", path, preview);
+    t.watch(card());
+    await t.time.pass(10);
+    await t.closeAll();
+    t.core.observeSession(signedIn("user-2"));
+    await t.time.pass(10);
+    t.api.hold("GET", path);
+    const again = t.watch(card());
+    await t.time.pass(10);
+    expect(again()).toEqual({ status: "loading" });
   });
 
   it("asks without a source when the link has none", async () => {

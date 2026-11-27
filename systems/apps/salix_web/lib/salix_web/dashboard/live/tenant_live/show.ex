@@ -1,7 +1,8 @@
 defmodule SalixWeb.Dashboard.TenantLive.Show do
   @moduledoc """
-  Tenant detail: config editing, API key management and the tenant's own
-  Signal number (`Salix.Control.Signal`, docs/messaging-voice.md).
+  Tenant detail: config editing, API key management, the tenant's own
+  Signal number (`Salix.Control.Signal`, docs/messaging-voice.md) and its
+  platform Router (`SalixAgent.PlatformRouter`).
   """
   use SalixWeb.Dashboard, :live_view
 
@@ -24,7 +25,8 @@ defmodule SalixWeb.Dashboard.TenantLive.Show do
            new_key: nil
          )
          |> load_keys()
-         |> load_signal()}
+         |> load_signal()
+         |> load_platform_router()}
 
       {:error, _} ->
         {:ok,
@@ -53,7 +55,86 @@ defmodule SalixWeb.Dashboard.TenantLive.Show do
     end
   end
 
+  # The platform keys' models are read on page entry and after a save or
+  # clear: at most 100 Profiles and 500 models (`RoutingModels.platform_models/0`).
+  defp load_platform_router(socket) do
+    router =
+      case SalixAgent.PlatformRouter.get(socket.assigns.tenant_id) do
+        {:ok, router} -> router
+        {:error, :not_found} -> nil
+      end
+
+    models =
+      case SalixWeb.Dashboard.RoutingModels.platform_models() do
+        {:ok, models} -> models
+        {:error, _} -> []
+      end
+
+    assign(socket,
+      platform_router: router,
+      router_models: models,
+      router_form: router || %{"billing" => "record"}
+    )
+  end
+
+  defp router_model_options(models),
+    do: Enum.map(models, &{&1["name"], &1["model"]})
+
+  # The model's display name from the loaded list, else its id.
+  defp router_model_name(models, model) do
+    case Enum.find(models, &(&1["model"] == model)) do
+      %{"name" => name} when is_binary(name) and name != "" -> name
+      _ -> model
+    end
+  end
+
+  defp router_effort_options(models, model) do
+    efforts =
+      case Enum.find(models, &(&1["model"] == model)) do
+        %{"routing_efforts" => efforts} -> efforts
+        nil -> [nil]
+      end
+
+    Enum.map(efforts, &{&1 || "Provider default", &1 || ""})
+  end
+
+  defp router_billing_options,
+    do: [{"Record usage, no charge", "record"}, {"Deduct credits", "deduct"}]
+
   @impl true
+  def handle_event("change-router", %{"router" => form}, socket),
+    do: {:noreply, assign(socket, router_form: form)}
+
+  def handle_event("save-router", %{"router" => form}, socket) do
+    tenant = socket.assigns.tenant_id
+
+    with {:ok, _router} <- SalixAgent.PlatformRouter.put(tenant, form),
+         {:ok, count} <- SalixAgent.PlatformRouter.apply(tenant) do
+      {:noreply,
+       socket
+       |> put_flash(:info, "Platform Router saved. #{count} Router(s) now use it.")
+       |> load_platform_router()}
+    else
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(router_form: form)
+         |> put_flash(:error, "Platform Router not saved: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("clear-router", _params, socket) do
+    :ok = SalixAgent.PlatformRouter.delete(socket.assigns.tenant_id)
+
+    {:noreply,
+     socket
+     |> put_flash(
+       :info,
+       "Platform Router cleared. Its Routers now use the tenant's subscriptions, and its API keys only when their choice allows pay-per-use."
+     )
+     |> load_platform_router()}
+  end
+
   def handle_event("save-signal", %{"number" => number}, socket) do
     case Salix.Control.Signal.put_tenant_number(socket.assigns.tenant_id, %{"number" => number}) do
       {:ok, view} ->
@@ -190,6 +271,75 @@ defmodule SalixWeb.Dashboard.TenantLive.Show do
           </:action>
         </.table>
         <.empty_state :if={@api_keys == []} icon="key" title="No API keys" />
+      </.card>
+
+      <.card>
+        <:title>Platform Router</:title>
+        <p class="mb-3 text-sm text-neutral-600">
+          <span :if={@platform_router} id="platform-router-summary">
+            Routers of this tenant use
+            <span class="font-medium">
+              {router_model_name(@router_models, @platform_router["model"])}
+            </span>
+            on platform API keys first, then the tenant's {if @platform_router["allow_paid"],
+              do: "subscriptions and API keys",
+              else: "subscriptions"}.
+          </span>
+          <span :if={!@platform_router}>Not set. Routers use only the tenant's own Profiles.</span>
+          A tenant admin who chooses another model leaves it; save again to bring every Router back.
+        </p>
+        <form
+          id="tenant-platform-router"
+          phx-change="change-router"
+          phx-submit="save-router"
+          class="flex flex-wrap items-end gap-2"
+        >
+          <.select
+            id="platform-router-model"
+            name="router[model]"
+            label="Model"
+            prompt="Choose a model"
+            value={@router_form["model"]}
+            options={router_model_options(@router_models)}
+            class="w-64"
+          />
+          <.select
+            id="platform-router-effort"
+            name="router[reasoning_effort]"
+            label="Reasoning effort"
+            value={@router_form["reasoning_effort"] || ""}
+            options={router_effort_options(@router_models, @router_form["model"])}
+            class="w-44"
+          />
+          <.select
+            id="platform-router-billing"
+            name="router[billing]"
+            label="Billing"
+            value={@router_form["billing"]}
+            options={router_billing_options()}
+            class="w-56"
+          />
+          <label class="inline-flex items-center gap-2 py-2 text-sm">
+            <input type="hidden" name="router[allow_paid]" value="false" />
+            <input
+              type="checkbox"
+              id="platform-router-allow-paid"
+              name="router[allow_paid]"
+              value="true"
+              checked={@router_form["allow_paid"] in [true, "true"]}
+            /> Allow pay-per-use (the tenant's API keys)
+          </label>
+          <.button type="submit" variant="primary">Save</.button>
+          <.button
+            :if={@platform_router}
+            type="button"
+            variant="danger"
+            phx-click="clear-router"
+            data-confirm="Clear the platform Router of this tenant?"
+          >
+            Clear
+          </.button>
+        </form>
       </.card>
     </div>
     """

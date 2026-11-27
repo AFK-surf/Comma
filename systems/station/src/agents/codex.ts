@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../ops/log.ts";
+import { BROWSER_MCP_NAME, BROWSER_MCP_TOOL_TIMEOUT_SECONDS, browserMcp } from "./browser-mcp.ts";
 import { LiveFromCodex, chars, type CodexLiveState } from "./live.ts";
 import { linkCodexAuth, type Env } from "./machine-logins.ts";
 import { AgentProcess, ackedOffset, debug, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
@@ -413,6 +414,10 @@ export class CodexDriver implements AgentDriver {
     return "codex";
   }
 
+  browser(): boolean {
+    return browserMcp(this.env) !== null;
+  }
+
   /// Whether an app-server runs on a profile now (its login is not renewed from outside meanwhile).
   running(profileId: string): boolean {
     return this.hosts.get(profileId)?.alive() === true;
@@ -555,6 +560,14 @@ export class CodexDriver implements AgentDriver {
       // Salix backend): the app-server is one process for the profile, so the session's token goes in its thread.
       "shell_environment_policy.set": { COMMA_STATION_MCP_URL: options.mcpUrl, COMMA_STATION_MCP_TOKEN: options.mcpToken },
     };
+    // The machine's browser, where it brings one (a coding sandbox).
+    const browser = browserMcp(this.env);
+    if (browser) {
+      config[`mcp_servers.${BROWSER_MCP_NAME}.command`] = browser.command;
+      config[`mcp_servers.${BROWSER_MCP_NAME}.args`] = browser.args;
+      config[`mcp_servers.${BROWSER_MCP_NAME}.env`] = browser.env;
+      config[`mcp_servers.${BROWSER_MCP_NAME}.tool_timeout_sec`] = BROWSER_MCP_TOOL_TIMEOUT_SECONDS;
+    }
     if (options.effort !== undefined) config.model_reasoning_effort = options.effort;
     if (skillsOff.length > 0) config["skills.config"] = skillsOff;
     const common: Json = { cwd: options.cwd, approvalPolicy: "never", sandbox: "danger-full-access", developerInstructions: options.instructions, config };

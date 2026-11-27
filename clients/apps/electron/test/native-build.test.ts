@@ -169,8 +169,9 @@ esac
     const nodeGypPath = join(root, "node-gyp");
     writeFileSync(nodeGypPath, "node-gyp fixture");
     let log: string[] = [];
-    const runNodeGyp = ([command, flag]: string[], cwd: string) => {
-      log.push(`${command} ${flag}`);
+    const runNodeGyp = (args: string[], cwd: string) => {
+      const [command, flag] = args;
+      log.push(args.join(" "));
       const build = join(cwd, "build");
       if (command === "rebuild") rmSync(build, { recursive: true, force: true });
       if (command === "configure" || command === "rebuild") {
@@ -195,6 +196,8 @@ esac
       nodeGypPath,
       configuration: "debug" as const,
       incremental: true,
+      // Headers from the running Node's install, so node-gyp does not fetch them.
+      nodeDir: "/node",
       runNodeGyp,
     };
     const build = (overrides: { configuration?: "debug" | "release" } = {}) => {
@@ -202,20 +205,22 @@ esac
       buildNativeAddon({ ...options, ...overrides });
       return log;
     };
-    expect(build()).toEqual(["rebuild --debug"]);
+    expect(build()).toEqual(["rebuild --debug --nodedir=/node"]);
     expect(readFileSync(output, "utf8")).toBe("1");
     const outputTime = statSync(output).mtimeMs;
-    expect(build()).toEqual(["configure --debug", "build --debug"]);
+    expect(build()).toEqual(["configure --debug --nodedir=/node", "build --debug"]);
     // An unchanged addon keeps its installed file.
     expect(statSync(output).mtimeMs).toBe(outputTime);
 
     writeFileSync(join(root, "value"), "2");
-    expect(build()).toEqual(["configure --debug", "build --debug"]);
+    expect(build()).toEqual(["configure --debug --nodedir=/node", "build --debug"]);
     expect(readFileSync(output, "utf8")).toBe("2");
     rmSync(output);
-    expect(build()).toEqual(["configure --debug", "build --debug"]);
+    expect(build()).toEqual(["configure --debug --nodedir=/node", "build --debug"]);
     expect(readFileSync(output, "utf8")).toBe("2");
-    expect(build({ configuration: "release" })).toEqual(["rebuild --release"]);
+    expect(build({ configuration: "release" })).toEqual([
+      "rebuild --release --nodedir=/node",
+    ]);
     expect(readFileSync(output, "utf8")).toBe("2");
   });
 

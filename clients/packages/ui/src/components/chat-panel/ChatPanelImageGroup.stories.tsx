@@ -108,6 +108,20 @@ export const FiveImagesStack: Story = {
   },
 };
 
+export const AgentStartAlignedStack: Story = {
+  args: {
+    align: "start",
+    images: fiveImages,
+  },
+  decorators: [
+    (Story) => (
+      <div className="flex w-[640px] max-w-full flex-col items-start">
+        <Story />
+      </div>
+    ),
+  ],
+};
+
 export const DelayedSecondImage: Story = {
   args: {
     images: [

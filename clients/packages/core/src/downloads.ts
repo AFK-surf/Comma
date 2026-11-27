@@ -191,7 +191,7 @@ export class Downloads {
       return;
     }
     const path = `${account.dbName}/${key}/${safeName(name)}`;
-    const request = fileRequest(source);
+    const request = fileRequest(source, this.#ctx);
     const running: Omit<Running, "fiber"> & { fiber?: Running["fiber"] } = {
       received: 0,
       total: expect?.size ?? null,
@@ -336,6 +336,8 @@ function parse(p: unknown): {
     parsed.data.source.source === "sender-avatar" ||
     parsed.data.source.source === "recipient-avatar" ||
     parsed.data.source.source === "target-avatar" ||
+    parsed.data.source.source === "grant-avatar" ||
+    parsed.data.source.source === "collaboration-avatar" ||
     parsed.data.source.source === "link-preview-avatar"
   )
     throw CoreError.invalid("not a file to download");
@@ -359,6 +361,8 @@ function readTopicSource(topic: Topic): FileSource | null {
       parsed.data.source !== "sender-avatar" &&
       parsed.data.source !== "recipient-avatar" &&
       parsed.data.source !== "target-avatar" &&
+      parsed.data.source !== "grant-avatar" &&
+      parsed.data.source !== "collaboration-avatar" &&
       parsed.data.source !== "link-preview-avatar"
       ? parsed.data
       : null;
@@ -375,13 +379,17 @@ export function fileKey(source: FileSource): string {
     case "attachment":
       return `a${hash(`${source.group}\n${source.conversation}\n${source.message}\n${source.index}`)}`;
     case "group-file":
-      return `f${hash(`${source.group}\n${source.path}`)}`;
+      return `f${hash(`${source.group}\n${source.task ?? ""}\n${source.path}`)}`;
     case "avatar":
       return `v${hash(source.revision)}`;
     case "sender-avatar":
       return `s${hash(`${source.workspace}\n${source.request}\n${source.revision}`)}`;
     case "target-avatar":
       return `t${hash(`${source.grant}\n${source.revision}`)}`;
+    case "grant-avatar":
+      return `g${hash(`${source.workspace}\n${source.grant}\n${source.revision}`)}`;
+    case "collaboration-avatar":
+      return `c${hash(`${source.group}\n${source.task}\n${source.user}\n${source.revision}`)}`;
     case "recipient-avatar":
       return `r${hash(`${source.request}\n${source.revision}`)}`;
     case "link-preview-avatar":

@@ -1,8 +1,10 @@
 import type {
   ChatCommandReceipt,
+  ChatDraftEntry,
   ChatLeasedAttachInput,
   ChatLeasedAttachConversationFilesInput,
   ChatLeasedAttachLocalFilesInput,
+  ChatLeasedAttachLocalPathsInput,
   ChatLeasedAttachmentIdInput,
   ChatLeasedSetDraftInput,
 } from "@comma/chat-contract";
@@ -29,12 +31,21 @@ export class DraftEditor {
     this.#publisher = entries.publisher;
   }
 
-  setDraft(input: ChatLeasedSetDraftInput): ChatCommandReceipt {
+  /**
+   * Replaces the draft. With `entry`, the draft is marked as written there
+   * until it is sent or emptied; later edits here keep the mark.
+   */
+  setDraft(
+    input: ChatLeasedSetDraftInput & { entry?: ChatDraftEntry | undefined }
+  ): ChatCommandReceipt {
     const entry = this.#entries.required(input);
     claimDraftOwner(entry, input.surfaceId);
     // A text edit is a user intent change: any send still draining an
     // attachment intake must re-admit against this newer draft, not consume it.
     entry.draftEpoch += 1;
+    // An emptied draft starts over: what is written next was written here.
+    if (!input.draft.trim()) entry.draftEntry = undefined;
+    else if (input.entry) entry.draftEntry = input.entry;
     entry.channel.setDraft(input.draft);
     entry.boundary.assertCurrent();
     return this.#publisher.receipt(entry);
@@ -108,6 +119,14 @@ export class DraftEditor {
     const entry = this.#entries.required(input);
     claimDraftOwner(entry, input.surfaceId);
     entry.channel.attachLocalFiles(input.files);
+    entry.boundary.assertCurrent();
+    return this.#publisher.receipt(entry);
+  }
+
+  attachLocalPaths(input: ChatLeasedAttachLocalPathsInput): ChatCommandReceipt {
+    const entry = this.#entries.required(input);
+    claimDraftOwner(entry, input.surfaceId);
+    entry.channel.attachLocalPaths(input.files);
     entry.boundary.assertCurrent();
     return this.#publisher.receipt(entry);
   }

@@ -8,7 +8,7 @@ defmodule SalixStore.ConversationSearch do
   projection writes.
   """
 
-  alias SalixStore.{Repo, SearchDocumentEnvelope}
+  alias SalixStore.{CutoverMarkers, Repo, SearchDocumentEnvelope}
 
   @marker_name "conversation_search_projection_v1"
   @max_limit 50
@@ -69,6 +69,89 @@ defmodule SalixStore.ConversationSearch do
   end
 
   def search(_group_id, _query, _opts), do: {:error, :invalid}
+
+  @max_group_ids 64
+
+  @max_group_candidates 200
+
+  @doc """
+  Searches indexed Task conversations across up to #{@max_group_ids} authorized
+  Groups in one query.
+
+  Each Group contributes its own newest matches (at most `min(limit, 20)` title
+  and `min(limit * 2, 40)` message documents), so one large Group cannot crowd
+  the others out. Conversations are then ranked across Groups by title match
+  first and the conversation's projection update time, newest first, with
+  `agent_group_id` and `conversation_id` as the final tie-break, and at most
+  `min(limit * 4, #{@max_group_candidates})` are returned so a caller that
+  filters some out still has `limit` left. Each hit carries `updated_at_us`.
+  """
+  @spec search_groups([String.t()], String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, :invalid | :unavailable}
+  def search_groups(group_ids, query, opts \\ [])
+
+  def search_groups(group_ids, query, opts)
+      when is_list(group_ids) and is_binary(query) and is_list(opts) do
+    ids =
+      group_ids
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    query = String.trim(query)
+    limit = Keyword.get(opts, :limit, 20)
+
+    cond do
+      ids == [] ->
+        {:ok, []}
+
+      length(ids) > @max_group_ids or length(ids) != length(group_ids) ->
+        {:error, :invalid}
+
+      not is_integer(limit) or limit not in 1..@max_limit or Keyword.keys(opts) -- [:limit] != [] ->
+        {:error, :invalid}
+
+      true ->
+        case SearchDocumentEnvelope.query(query) do
+          {:ok, query_envelope} ->
+            pattern = "%" <> escape_like(query_envelope.folded) <> "%"
+
+            case run_projection_query(search_groups_sql(), [
+                   ids,
+                   pattern,
+                   min(limit, 20),
+                   min(limit * 2, 40),
+                   query_envelope.short_grams,
+                   min(limit * 4, @max_group_candidates)
+                 ]) do
+              {:ok, rows} ->
+                {:ok,
+                 Enum.flat_map(rows, fn [group_id | rest] ->
+                   {hit_row, [updated_at_us]} = Enum.split(rest, 10)
+
+                   hit_row
+                   |> project_hit(query_envelope)
+                   |> Enum.map(
+                     &Map.merge(&1, %{"group_id" => group_id, "updated_at_us" => updated_at_us})
+                   )
+                 end)}
+
+              {:error, _reason} ->
+                {:error, :unavailable}
+            end
+
+          {:error, _reason} ->
+            {:error, :invalid}
+        end
+    end
+  rescue
+    _exception -> {:error, :unavailable}
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
+  def search_groups(_group_ids, _query, _opts), do: {:error, :invalid}
 
   @doc """
   Every indexed Message of one Task whose text matches `query`, oldest first:
@@ -440,6 +523,94 @@ defmodule SalixStore.ConversationSearch do
 
   defp opened(:ok), do: {:ok, :opened}
   defp opened({:error, _reason} = error), do: error
+
+  @title_unigram_page 500
+
+  @doc """
+  One page of the pass that gives the configured generation's projected titles
+  their `u:` unigrams (`SearchDocumentEnvelope`), so a one-character query
+  finds Task titles written before the release that added them.
+
+  The release runner calls it only after core rollout success, when no Pod of
+  the release before is left to write a title without unigrams. Pages go in
+  primary-key order, at most #{@title_unigram_page} titles each; the marker
+  records the next position (`SalixStore.CutoverMarkers.page/2`), and a title
+  that already has unigrams is left as it is. Without a configured generation
+  there is nothing to fill. Answers `{:ok, %{processed: n, done: boolean}}`.
+  """
+  @spec title_unigrams_after_rollout_page(pos_integer()) ::
+          {:ok, %{processed: non_neg_integer(), done: boolean()}} | {:error, term()}
+  def title_unigrams_after_rollout_page(limit \\ @title_unigram_page)
+      when is_integer(limit) and limit > 0 do
+    case writer_generation() do
+      {:error, :unavailable} ->
+        {:ok, %{processed: 0, done: true}}
+
+      {:ok, generation} ->
+        CutoverMarkers.page(
+          "conversation_search_title_unigrams_v1:" <> generation,
+          &title_unigram_page(generation, &1, limit)
+        )
+    end
+  end
+
+  defp title_unigram_page(generation, position, limit) do
+    [group_id, conversation_id, document_id] = position || ["", "", ""]
+
+    case Repo.query(title_unigram_page_sql(), [
+           generation,
+           group_id,
+           conversation_id,
+           document_id,
+           limit
+         ]) do
+      {:ok, %{rows: [[_updated, nil, nil, nil]]}} ->
+        {:ok, %{processed: 0, next: nil}}
+
+      {:ok, %{rows: [[updated, last_group, last_conversation, last_document]]}} ->
+        {:ok, %{processed: updated, next: [last_group, last_conversation, last_document]}}
+
+      {:error, reason} ->
+        {:error, {:title_unigrams, reason}}
+    end
+  end
+
+  defp title_unigram_page_sql do
+    """
+    WITH page AS MATERIALIZED (
+      SELECT document.agent_group_id, document.conversation_id, document.document_id
+      FROM conversation_search_documents AS document
+      WHERE document.writer_generation = $1 AND document.document_type = 'title'
+        AND (document.agent_group_id, document.conversation_id, document.document_id) >
+            ($2, $3, $4)
+      ORDER BY document.agent_group_id, document.conversation_id, document.document_id
+      LIMIT $5
+    ), updated AS (
+      UPDATE conversation_search_documents AS document
+      SET short_grams = document.short_grams || ARRAY(
+        SELECT DISTINCT 'u:' || ch
+        FROM regexp_split_to_table(document.folded_content, '') AS ch
+      )
+      FROM page
+      WHERE document.writer_generation = $1 AND document.document_type = 'title'
+        AND document.agent_group_id = page.agent_group_id
+        AND document.conversation_id = page.conversation_id
+        AND document.document_id = page.document_id
+        AND document.folded_content <> ''
+        AND NOT EXISTS (
+          SELECT 1 FROM unnest(document.short_grams) AS gram WHERE gram LIKE 'u:%'
+        )
+      RETURNING 1
+    ), last AS (
+      SELECT agent_group_id, conversation_id, document_id FROM page
+      ORDER BY agent_group_id DESC, conversation_id DESC, document_id DESC
+      LIMIT 1
+    )
+    SELECT (SELECT count(*)::integer FROM updated),
+           (SELECT agent_group_id FROM last), (SELECT conversation_id FROM last),
+           (SELECT document_id FROM last)
+    """
+  end
 
   @doc "The sole production transition that creates the reader-ready marker."
   def seal_backfill(generation) do
@@ -1253,6 +1424,8 @@ defmodule SalixStore.ConversationSearch do
         AND document.document_type = 'title'
         AND document.short_grams @> $7::text[]
         AND document.folded_content LIKE $3 ESCAPE E'\\\\'
+      ORDER BY document.updated_at DESC, document.conversation_id DESC,
+               document.document_id DESC
       LIMIT $5
     ), message_documents AS MATERIALIZED (
       SELECT document.conversation_id, document.document_type,
@@ -1263,6 +1436,8 @@ defmodule SalixStore.ConversationSearch do
         AND document.document_type = 'message'
         AND document.short_grams @> $7::text[]
         AND document.folded_content LIKE $3 ESCAPE E'\\\\'
+      ORDER BY document.source_created_at DESC NULLS LAST, document.source_seq DESC,
+               document.conversation_id DESC, document.document_id DESC
       LIMIT $6
     ), candidate_documents AS MATERIALIZED (
       SELECT * FROM title_documents
@@ -1316,6 +1491,98 @@ defmodule SalixStore.ConversationSearch do
     ORDER BY CASE selected.document_type WHEN 'title' THEN 0 ELSE 1 END,
              selected.source_seq DESC NULLS LAST, selected.source_version DESC,
              selected.conversation_id
+    """
+  end
+
+  # `$3` pattern, `$4`/`$5` per-Group title/message candidates, `$6` short
+  # grams, `$7` total candidates. Every LIMIT has a total ORDER BY.
+  defp search_groups_sql do
+    """
+    WITH target AS MATERIALIZED (
+      SELECT DISTINCT requested.group_id FROM unnest($2::text[]) AS requested(group_id)
+    ), title_documents AS MATERIALIZED (
+      SELECT picked.*
+      FROM target
+      CROSS JOIN LATERAL (
+        SELECT document.agent_group_id, document.conversation_id, document.document_type,
+               document.content, document.source_id, document.source_seq
+        FROM conversation_search_documents AS document
+        WHERE document.writer_generation = $1 AND document.agent_group_id = target.group_id
+          AND document.document_type = 'title'
+          AND document.short_grams @> $6::text[]
+          AND document.folded_content LIKE $3 ESCAPE E'\\\\'
+        ORDER BY document.updated_at DESC, document.conversation_id DESC,
+                 document.document_id DESC
+        LIMIT $4
+      ) AS picked
+    ), message_documents AS MATERIALIZED (
+      SELECT picked.*
+      FROM target
+      CROSS JOIN LATERAL (
+        SELECT document.agent_group_id, document.conversation_id, document.document_type,
+               document.content, document.source_id, document.source_seq
+        FROM conversation_search_documents AS document
+        WHERE document.writer_generation = $1 AND document.agent_group_id = target.group_id
+          AND document.document_type = 'message'
+          AND document.short_grams @> $6::text[]
+          AND document.folded_content LIKE $3 ESCAPE E'\\\\'
+        ORDER BY document.source_created_at DESC NULLS LAST, document.source_seq DESC,
+                 document.conversation_id DESC, document.document_id DESC
+        LIMIT $5
+      ) AS picked
+    ), candidate_documents AS MATERIALIZED (
+      SELECT * FROM title_documents
+      UNION ALL
+      SELECT * FROM message_documents
+    ), candidates AS MATERIALIZED (
+      SELECT state.agent_group_id, state.conversation_id, state.title, document.document_type,
+             document.content, document.source_id, document.source_seq,
+             state.source_version,
+             (extract(epoch FROM state.updated_at) * 1000000)::bigint AS updated_at_us
+      FROM candidate_documents AS document
+      JOIN conversation_search_states AS state
+        ON state.writer_generation = $1
+       AND state.agent_group_id = document.agent_group_id
+       AND state.conversation_id = document.conversation_id
+      WHERE state.conversation_kind = 'agent_task'
+    ), ranked AS (
+      SELECT candidates.*,
+             row_number() OVER (
+               PARTITION BY agent_group_id, conversation_id
+               ORDER BY CASE document_type WHEN 'title' THEN 0 ELSE 1 END,
+                        source_seq DESC NULLS LAST, source_id
+             ) AS hit_rank
+      FROM candidates
+    ), selected AS MATERIALIZED (
+      SELECT agent_group_id, conversation_id, title, document_type, content, source_id, source_seq,
+             source_version, updated_at_us
+      FROM ranked
+      WHERE hit_rank = 1
+      ORDER BY CASE document_type WHEN 'title' THEN 0 ELSE 1 END,
+               updated_at_us DESC, source_version DESC, agent_group_id, conversation_id
+      LIMIT $7
+    )
+    SELECT selected.agent_group_id, selected.conversation_id, selected.title,
+           selected.document_type, selected.content, selected.source_id, selected.source_seq,
+           selected.source_version, content_match.content, content_match.source_id,
+           content_match.source_seq, selected.updated_at_us
+    FROM selected
+    LEFT JOIN LATERAL (
+      SELECT document.content, document.source_id, document.source_seq
+      FROM conversation_search_documents AS document
+      WHERE selected.document_type = 'title'
+        AND document.writer_generation = $1
+        AND document.agent_group_id = selected.agent_group_id
+        AND document.conversation_id = selected.conversation_id
+        AND document.document_type = 'message'
+        AND document.short_grams @> $6::text[]
+        AND document.folded_content LIKE $3 ESCAPE E'\\\\'
+      ORDER BY document.source_seq DESC
+      LIMIT 1
+    ) AS content_match ON TRUE
+    ORDER BY CASE selected.document_type WHEN 'title' THEN 0 ELSE 1 END,
+             selected.updated_at_us DESC, selected.source_version DESC,
+             selected.agent_group_id, selected.conversation_id
     """
   end
 

@@ -55,12 +55,49 @@ defmodule SalixIM.TaskCardProjection do
 
   def participant?(_participant), do: false
 
-  def output_message?(%{"actor_type" => "agent"} = message) do
+  def output_message?(message, primary_pid \\ nil)
+
+  def output_message?(%{"actor_type" => "agent"} = message, primary_pid) do
     str(message["role_label"]) != "delegator" and
-      timeline_message?(message)
+      projectable_card_message?(message, primary_pid)
   end
 
-  def output_message?(_message), do: false
+  def output_message?(_message, _primary_pid), do: false
+
+  @doc """
+  Canonical eligibility predicate for Task card timeline and output projection
+  (initial build, incremental `advance/2`, `refresh/2` rebuild/repair, and `output/1`).
+  Excludes `peer_handoff` messages and non-primary worker messages lacking
+  `explicit_router_mention == true`.
+  """
+  def projectable_card_message?(message, primary_pid \\ nil) when is_map(message) do
+    timeline_message?(message) and
+      get_in(message, ["metadata", "peer_handoff"]) != true and
+      worker_card_eligible?(message, primary_pid)
+  end
+
+  defp worker_card_eligible?(%{"actor_type" => "agent"} = message, primary_pid) do
+    if str(message["role_label"]) == "delegator" do
+      true
+    else
+      cond do
+        get_in(message, ["metadata", "explicit_router_mention"]) == true ->
+          true
+
+        get_in(message, ["metadata", "secondary_worker"]) == true ->
+          false
+
+        is_binary(primary_pid) and primary_pid != "" and
+          is_binary(message["participant_id"]) and message["participant_id"] != "" ->
+          message["participant_id"] == primary_pid
+
+        true ->
+          true
+      end
+    end
+  end
+
+  defp worker_card_eligible?(_message, _primary_pid), do: true
 
   def timeline_message?(%{"actor_type" => actor_type} = message)
       when actor_type in ["agent", "user", "provider_user"] do
@@ -82,13 +119,15 @@ defmodule SalixIM.TaskCardProjection do
   """
   def initial_payload(conversation) do
     tail_seq = tail_seq(conversation)
+    primary_pid = primary_worker_participant_id(conversation)
 
-    with {:ok, output} <- initial_output(conversation),
+    with {:ok, output} <- initial_output(conversation, primary_pid),
          {:ok, recent_messages} <-
            recent_messages_through(
              conversation["agent_group_id"],
              conversation["conversation_id"],
-             tail_seq
+             tail_seq,
+             primary_pid
            ) do
       {:ok,
        %{
@@ -100,6 +139,12 @@ defmodule SalixIM.TaskCardProjection do
          "render_repair_required" => true,
          "output" => output
        }
+       |> then(
+         &if(is_binary(primary_pid) and primary_pid != "",
+           do: Map.put(&1, "primary_worker_participant_id", primary_pid),
+           else: &1
+         )
+       )
        |> put_model_label(
          AgentModelLabel.resolve(
            conversation["task_worker_agent_id"],
@@ -119,16 +164,23 @@ defmodule SalixIM.TaskCardProjection do
         %{"agent_group_id" => group_id, "conversation_id" => conversation_id} = rec
       ) do
     boundary_seq = int_or(rec["message_seq"] || rec["conversation_message_tail_seq"], -1)
+    primary_pid = payload["primary_worker_participant_id"] || primary_worker_participant_id(rec)
 
     with true <- boundary_seq >= 0,
          {:ok, recent_messages} <-
-           recent_messages_through(group_id, conversation_id, boundary_seq) do
+           recent_messages_through(group_id, conversation_id, boundary_seq, primary_pid) do
       {:ok,
        payload
        |> Map.delete("details")
        |> Map.put("render_repair_required", false)
        |> Map.put("recent_messages", recent_messages)
-       |> Map.put("recent_messages_through_seq", boundary_seq)}
+       |> Map.put("recent_messages_through_seq", boundary_seq)
+       |> then(
+         &if(is_binary(primary_pid) and primary_pid != "",
+           do: Map.put(&1, "primary_worker_participant_id", primary_pid),
+           else: &1
+         )
+       )}
     else
       false -> {:error, :invalid_task_card_projection_boundary}
       {:error, _reason} = error -> error
@@ -143,7 +195,11 @@ defmodule SalixIM.TaskCardProjection do
     next_lifecycle = lifecycle(rec["conversation_status"], payload["lifecycle"])
     message_text = rec["message_content"] |> ConversationMessage.text_content() |> String.trim()
     metadata = rec["message_metadata"] || %{}
-    recent_messages = append_recent_message(payload["recent_messages"], rec, message_text)
+    primary_pid = payload["primary_worker_participant_id"]
+    projectable? = delivery_projectable?(rec, message_text, primary_pid)
+
+    recent_messages =
+      append_recent_message(payload["recent_messages"], rec, message_text, projectable?)
 
     next_output =
       cond do
@@ -154,7 +210,7 @@ defmodule SalixIM.TaskCardProjection do
           payload["output"]
 
         rec["source_actor_type"] == "agent" and str(rec["source_role_label"]) != "delegator" and
-            message_text != "" ->
+          message_text != "" and projectable? ->
           bounded_content(message_text)
 
         true ->
@@ -231,7 +287,10 @@ defmodule SalixIM.TaskCardProjection do
   def lifecycle(value, fallback),
     do: if(str(value) in @lifecycles, do: str(value), else: fallback)
 
-  defp initial_output(%{"task_public_output_message_id" => message_id} = conversation)
+  defp initial_output(
+         %{"task_public_output_message_id" => message_id} = conversation,
+         primary_pid
+       )
        when is_binary(message_id) do
     case Conversations.get_group_conversation_message(
            conversation["agent_group_id"],
@@ -239,22 +298,26 @@ defmodule SalixIM.TaskCardProjection do
            message_id
          ) do
       {:ok, message} ->
-        {:ok,
-         message["content"]
-         |> ConversationMessage.text_content()
-         |> String.trim()
-         |> bounded_content()}
+        if projectable_card_message?(message, primary_pid) do
+          {:ok,
+           message["content"]
+           |> ConversationMessage.text_content()
+           |> String.trim()
+           |> bounded_content()}
+        else
+          {:ok, ""}
+        end
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp initial_output(_conversation), do: {:ok, ""}
+  defp initial_output(_conversation, _primary_pid), do: {:ok, ""}
 
-  defp recent_messages_through(_group_id, _conversation_id, 0), do: {:ok, []}
+  defp recent_messages_through(_group_id, _conversation_id, 0, _primary_pid), do: {:ok, []}
 
-  defp recent_messages_through(group_id, conversation_id, boundary_seq)
+  defp recent_messages_through(group_id, conversation_id, boundary_seq, primary_pid)
        when is_integer(boundary_seq) and boundary_seq > 0 do
     case Conversations.list_group_conversation_messages(group_id, conversation_id,
            after_seq: max(boundary_seq - @initial_timeline_scan_limit, 0),
@@ -264,7 +327,7 @@ defmodule SalixIM.TaskCardProjection do
         {:ok,
          messages
          |> Enum.filter(&(int_or(&1["seq"], 0) <= boundary_seq))
-         |> Enum.filter(&timeline_message?/1)
+         |> Enum.filter(&projectable_card_message?(&1, primary_pid))
          |> Enum.take(-@timeline_window_limit)
          |> Enum.map(&recent_message/1)}
 
@@ -273,8 +336,8 @@ defmodule SalixIM.TaskCardProjection do
     end
   end
 
-  defp append_recent_message(recent_messages, rec, text) do
-    message = if delivery_timeline_message?(rec, text), do: recent_message(rec, text)
+  defp append_recent_message(recent_messages, rec, text, projectable?) do
+    message = if projectable?, do: recent_message(rec, text)
 
     case message do
       nil ->
@@ -337,7 +400,7 @@ defmodule SalixIM.TaskCardProjection do
       })
       when is_binary(agent_id) and agent_id != "" do
     with {:ok, %{"participant_id" => participant_id}} <-
-           ConversationServer.get_group_conversation_agent_participant_identity(
+           ConversationServer.get_group_conversation_primary_worker_identity(
              group_id,
              conversation_id,
              agent_id
@@ -355,6 +418,39 @@ defmodule SalixIM.TaskCardProjection do
   end
 
   def task_session_model(_conversation), do: nil
+
+  defp primary_worker_participant_id(%{
+         "agent_group_id" => group_id,
+         "conversation_id" => conversation_id,
+         "task_worker_agent_id" => agent_id
+       })
+       when is_binary(group_id) and is_binary(conversation_id) and is_binary(agent_id) and
+              agent_id != "" do
+    case ConversationServer.get_group_conversation_primary_worker_identity(
+           group_id,
+           conversation_id,
+           agent_id
+         ) do
+      {:ok, %{"participant_id" => participant_id}} -> participant_id
+      _ -> nil
+    end
+  end
+
+  defp primary_worker_participant_id(%{
+         "agent_group_id" => group_id,
+         "conversation_id" => conversation_id
+       })
+       when is_binary(group_id) and is_binary(conversation_id) do
+    case ConversationServer.get_group_conversation_task_worker_identities(
+           group_id,
+           conversation_id
+         ) do
+      {:ok, %{"primary" => %{"participant_id" => participant_id}}} -> participant_id
+      _ -> nil
+    end
+  end
+
+  defp primary_worker_participant_id(_record), do: nil
 
   defp put_model_label(payload, ""), do: payload
   defp put_model_label(payload, label), do: Map.put(payload, "model_label", label)
@@ -383,9 +479,16 @@ defmodule SalixIM.TaskCardProjection do
   defp timeline_detail_text(content),
     do: content |> timeline_text() |> String.slice(0, @timeline_entry_limit)
 
-  defp delivery_timeline_message?(rec, text) do
-    rec["source_actor_type"] in ["agent", "user", "provider_user"] and text != "" and
-      get_in(rec, ["message_metadata", "message_type"]) != "task_command"
+  defp delivery_projectable?(rec, text, primary_pid) do
+    msg = %{
+      "actor_type" => rec["source_actor_type"],
+      "role_label" => rec["source_role_label"],
+      "participant_id" => rec["source_participant_id"],
+      "content" => text,
+      "metadata" => rec["message_metadata"] || %{}
+    }
+
+    projectable_card_message?(msg, primary_pid)
   end
 
   defp nonempty_audience?(nil), do: true

@@ -81,6 +81,7 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
     private var fillPages = 0
     private var topInset = 0
     private var bottomReserve = 0
+    private var switcherLift = 0
     private var filterSheet: FilterSheet? = null
     private var workspaceId: String? = savedFilter.workspaceId
 
@@ -167,7 +168,24 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
         topInset = top
         bottomReserve = bottom
         list.setPadding(0, top, 0, bottom + activity.dp(StatusSwitcher.HEIGHT_DP + SWITCHER_GAP_DP * 2))
-        (switcher.layoutParams as LayoutParams).bottomMargin = bottom + activity.dp(SWITCHER_GAP_DP)
+        placeSwitcher()
+    }
+
+    /**
+     * How far above its place the switcher floats, with the tab bar, while the app's foot follows a leaving Task's
+     * bar down. Only the switcher moves: the list keeps its layout.
+     */
+    fun setSwitcherLift(lift: Int) {
+        if (lift == switcherLift) return
+        switcherLift = lift
+        placeSwitcher()
+    }
+
+    private fun placeSwitcher() {
+        val margin = bottomReserve + switcherLift + activity.dp(SWITCHER_GAP_DP)
+        val params = switcher.layoutParams as LayoutParams
+        if (params.bottomMargin == margin) return
+        params.bottomMargin = margin
         switcher.requestLayout()
     }
 
@@ -274,7 +292,7 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
 
     private fun bindFooter(view: FrameLayout, filling: Boolean) {
         view.removeAllViews()
-        if (filling) view.addView(android.widget.ProgressBar(activity), LayoutParams(activity.dp(24), activity.dp(24), Gravity.CENTER))
+        if (filling) view.addView(surf.comma.android.ui.kit.ActivityIndicator(activity), LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
         else view.addView(CapsuleButton(activity, activity.getString(R.string.home_load_more)).apply {
             setOnClickListener { activity.lifecycleScope.launch { store.tasks.loadMore() } }
         }, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
@@ -349,7 +367,7 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
             }, LayoutParams(activity.dp(44), activity.dp(44)))
             text.isAccessibilityHeading = true
             tactile(0.97f)
-            setOnClickListener { RoutineSheet(activity, store, routineActions, store::openTask).show() }
+            setOnClickListener { RoutineSheet(activity, store, routineActions).show() }
             layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
         }
 

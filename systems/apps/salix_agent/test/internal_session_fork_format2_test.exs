@@ -1095,7 +1095,10 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
 
     assert inlined.native_content_trusted == true
 
-    assert [%{"type" => "text", "text" => note}] = Jason.decode!(inlined.content)
+    assert [%{"type" => "text", "text" => notice}, %{"type" => "text", "text" => note}] =
+             Jason.decode!(inlined.content)
+
+    assert notice =~ ~s("tool_call_id":"get-provider-before-fork")
     assert note =~ "forked-result.pdf"
     refute inlined.content =~ Base.encode64(pdf)
   end

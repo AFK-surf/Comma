@@ -1,6 +1,6 @@
 import { helperContractFailure } from "./host-maintenance-protocol";
 import type { ComputeNodeState } from "@comma/native-bridge";
-import { runCommand } from "./command";
+import { ComputeNodeCommandError, runCommand } from "./command";
 
 const COMMA_AGENT_VMM_SERVICE_ARGS = ["--service-type", "agent"] as const;
 
@@ -18,12 +18,16 @@ export interface ComputeNodeRuntimeObservation {
   };
   registration?: "present" | "absent" | "unreadable";
   registrationState?: "enabled" | "draining" | "revoked";
+  dataEpoch?: number;
+  deviceId?: string;
+  deviceIdentityState?: "ready" | "needs_repair";
   /** The installed Host stopped because it cannot open this Mac's local data. */
   hostStartFailure?: {
     code: "STATE_SCHEMA_INCOMPATIBLE" | "STATE_MIGRATION_FAILED";
     dataSchema?: number;
   };
-  reason?:
+  reason?: /** The lifecycle helper does not exist at its install location. */
+    | "helper_missing"
     | "operator_unavailable"
     | "registration_unreadable"
     | "registration_not_found"
@@ -108,8 +112,9 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
     requestId: string,
     registrationId?: string
   ): Promise<NativeRequestReceipt | undefined> {
-    const value = JSON.parse(
-      await this.run(
+    let raw: string;
+    try {
+      raw = await this.run(
         this.lifecyclePath,
         [
           "operation",
@@ -120,8 +125,28 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
         ],
         undefined,
         5_000
-      )
-    );
+      );
+    } catch (error) {
+      if (
+        registrationId &&
+        error instanceof ComputeNodeCommandError &&
+        error.reason === "command_failed" &&
+        error.native?.code === "request_blocked" &&
+        error.native.reason === "local_owner_fence" &&
+        error.native.requestId &&
+        error.native.requestId !== requestId
+      ) {
+        raw = await this.run(
+          this.lifecyclePath,
+          ["operation", ...COMMA_AGENT_VMM_SERVICE_ARGS, "--request-id", requestId],
+          undefined,
+          5_000
+        );
+      } else {
+        throw error;
+      }
+    }
+    const value = JSON.parse(raw);
     const receipt = parseRequestReceipt(value);
     if (
       receipt &&
@@ -169,12 +194,32 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
           ? value.registrationState
           : undefined;
       const contractFailure = helperContractFailure(value);
+      const dataEpoch =
+        typeof value.dataEpoch === "number" &&
+        Number.isSafeInteger(value.dataEpoch) &&
+        value.dataEpoch >= 0
+          ? value.dataEpoch
+          : undefined;
+      const deviceId =
+        typeof value.deviceId === "string" &&
+        value.deviceId.length > 0 &&
+        value.deviceId.length <= 200
+          ? value.deviceId
+          : undefined;
+      const deviceIdentityState =
+        value.deviceIdentityState === "ready" ||
+        value.deviceIdentityState === "needs_repair"
+          ? value.deviceIdentityState
+          : undefined;
       const observed: ComputeNodeRuntimeObservation = {
         ...(contractFailure ? { helperContractFailure: contractFailure } : {}),
         ...(registrationId ? readRemoteProtocol(value.remoteProtocol) : {}),
         ...readHostStartFailure(value.hostStartFailure),
         ...(registration ? { registration } : {}),
         ...(registrationId && registrationState ? { registrationState } : {}),
+        ...(dataEpoch !== undefined ? { dataEpoch } : {}),
+        ...(deviceId ? { deviceId } : {}),
+        ...(deviceIdentityState ? { deviceIdentityState } : {}),
         ...(registrationId && !value.registrationRead
           ? { reason: "capability_missing" as const }
           : {}),
@@ -201,8 +246,16 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
       this.lastKnown = observed;
       return observed;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !registrationId)
-        return { ...absentObservation };
+      // A missing helper is a separate fact from one that fails: Main decides with the Host's installation.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return registrationId
+          ? {
+              ...lastKnown,
+              readability: "unreadable",
+              registration: "unreadable",
+              reason: "helper_missing",
+            }
+          : { ...absentObservation, reason: "helper_missing" };
       if (registrationId)
         return {
           ...lastKnown,

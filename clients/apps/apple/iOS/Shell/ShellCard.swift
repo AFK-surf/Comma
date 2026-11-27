@@ -16,7 +16,7 @@ struct ShellCard: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let columns = ShellColumnLayout(width: geometry.size.width, folded: folded, division: geometry.shellFoldDivision)
+            let columns = ShellColumnLayout(size: geometry.size, folded: folded, division: geometry.shellFoldDivision)
             ZStack(alignment: .leading) {
                 ShellTabs(store: store, activity: activity, query: query, showsRoutines: false)
                     .accessibilityHidden(navigation.routerOpen || navigation.searchOpen)

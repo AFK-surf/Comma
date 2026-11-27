@@ -32,7 +32,9 @@ defmodule BillingStripe.Checkout do
           mode: stripe_mode(mode),
           success_url: required(attrs, :success_url),
           cancel_url: required(attrs, :cancel_url),
-          line_items: [%{price: provider_price_id, quantity: 1}],
+          line_items: [
+            %{price: provider_price_id, quantity: attrs[:quantity] || attrs["quantity"] || 1}
+          ],
           customer: attrs[:customer_id] || attrs["customer_id"],
           client_reference_id: required(attrs, :billing_account_id),
           metadata: metadata,
@@ -78,6 +80,12 @@ defmodule BillingStripe.Checkout do
     |> then(fn metadata ->
       if mode == "subscription",
         do: Map.put(metadata, "subscription_checkout_key", required(attrs, :idempotency_key)),
+        else: metadata
+    end)
+    |> then(fn metadata ->
+      # A product's analytics opt-out of the checkout request, read back by its webhook.
+      if (attrs[:analytics_opt_out] || attrs["analytics_opt_out"]) == true,
+        do: Map.put(metadata, "analytics_opt_out", "true"),
         else: metadata
     end)
     |> stringify_metadata()

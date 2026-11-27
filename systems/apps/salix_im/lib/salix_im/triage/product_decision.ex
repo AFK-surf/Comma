@@ -302,78 +302,204 @@ defmodule SalixIM.Triage.ProductDecision do
   so the closed validator fails them rather than inventing a route.
   """
   @spec enforce_target_boundary(term(), String.t()) :: term()
-  def enforce_target_boundary(decision, "none"), do: decision
-
-  def enforce_target_boundary(decision, "other") when is_map(decision) do
-    decision
-    |> Map.put("communication", %{
-      "kind" => "silence",
-      "reason" => "outside_authority",
-      "explanation" =>
-        "This message explicitly addresses another recipient. Triage does not take over their reply.",
-      "source_refs" => []
-    })
-    |> clear_companion_reaction()
-    |> Map.put("delegations", [])
-  end
-
   def enforce_target_boundary(decision, syntactic_addressee)
-      when is_map(decision) and syntactic_addressee in ["self", "mixed"] do
-    decision
-    |> Map.put("communication", %{
-      "kind" => "silence",
-      "reason" => "duplicate",
-      "explanation" =>
-        "The direct-message route handles this explicitly addressed message. This patrol does not send a second reply.",
-      "source_refs" => []
-    })
-    |> clear_companion_reaction()
-    |> Map.put("delegations", [])
+      when is_map(decision) and is_binary(syntactic_addressee) do
+    case SalixVerifiedKernel.Proactive.triage_boundary_action(syntactic_addressee) do
+      :allow ->
+        decision
+
+      :force_silence_outside_authority ->
+        decision
+        |> Map.put("communication", %{
+          "kind" => "silence",
+          "reason" => "outside_authority",
+          "explanation" =>
+            "This message explicitly addresses another recipient. Triage does not take over their reply.",
+          "source_refs" => []
+        })
+        |> clear_companion_reaction()
+        |> Map.put("delegations", [])
+
+      :force_silence_duplicate ->
+        decision
+        |> Map.put("communication", %{
+          "kind" => "silence",
+          "reason" => "duplicate",
+          "explanation" =>
+            "The direct-message route handles this explicitly addressed message. This patrol does not send a second reply.",
+          "source_refs" => []
+        })
+        |> clear_companion_reaction()
+        |> Map.put("delegations", [])
+
+      :reject_target ->
+        decision
+    end
   end
 
   def enforce_target_boundary(decision, _syntactic_addressee), do: decision
 
-  @doc "Returns the product-owner route for one projected Slack decision target and source lane."
-  @spec target_route(map(), String.t() | nil) :: String.t() | nil
-  def target_route(%{"decision_target" => target} = slack_context, "clickhouse_etl")
-      when is_map(target) do
-    addressee = target["syntactic_addressee"]
-    target_source_ref = target["source_ref"]
-    messages = Map.get(slack_context, "messages", [])
+  @recheck_wakeup_suffix " This follow-up triggered the current scheduled recheck. Do not postpone this occurrence based on the next check time; it may already name a future retry."
 
-    actor_kind =
-      Enum.find_value(List.wrap(messages), fn
-        %{"source_ref" => ^target_source_ref, "actor_kind" => kind} -> kind
-        _message -> nil
+  @doc """
+  Computes the projected `source_ref`s that can anchor a delegation to the
+  current Slack target thread (or, on a scheduled recheck, the due follow-up
+  that triggered this run).
+  """
+  @spec delegation_anchor_refs(map() | nil, map() | nil, String.t() | nil) :: [String.t()]
+  def delegation_anchor_refs(slack_context, team_project_memory \\ nil, source_mode \\ nil)
+
+  def delegation_anchor_refs(%{} = slack_context, team_project_memory, source_mode) do
+    messages = List.wrap(slack_context["messages"])
+    target_ref = get_in(slack_context, ["decision_target", "source_ref"])
+
+    target_thread_ref =
+      Enum.find_value(messages, fn
+        %{"source_ref" => ^target_ref, "thread_ref" => thread_ref}
+        when is_binary(thread_ref) and thread_ref != "" ->
+          thread_ref
+
+        _message ->
+          nil
       end)
 
-    if actor_kind == "agent" and addressee in ["self", "mixed"],
-      do: "none",
-      else: addressee
+    slack_anchors =
+      cond do
+        is_binary(target_thread_ref) ->
+          for %{"thread_ref" => ^target_thread_ref, "source_ref" => ref} <- messages,
+              is_binary(ref) and ref != "",
+              do: ref
+
+        messages != [] ->
+          for %{"source_ref" => ref} <- messages, is_binary(ref) and ref != "", do: ref
+
+        true ->
+          for ref <- List.wrap(slack_context["source_refs"]),
+              is_binary(ref) and ref != "",
+              do: ref
+      end
+
+    recheck_anchors =
+      if source_mode == "scheduled_recheck" and is_map(team_project_memory) do
+        for %{
+              "kind" => "retained_follow_up",
+              "source_ref" => ref,
+              "text" => text
+            } <- List.wrap(team_project_memory["facts"]),
+            is_binary(ref) and ref != "" and is_binary(text) and
+              String.ends_with?(text, @recheck_wakeup_suffix),
+            do: ref
+      else
+        []
+      end
+
+    Enum.uniq(slack_anchors ++ recheck_anchors)
   end
 
-  def target_route(%{"decision_target" => target}, _source_mode) when is_map(target),
-    do: target["syntactic_addressee"]
+  def delegation_anchor_refs(_slack_context, _team_project_memory, _source_mode), do: []
+
+  @doc """
+  Drops any delegation that is not anchored to at least one `source_ref` in
+  `anchor_refs`, keeping anchored delegations and the rest of the decision.
+  """
+  @spec enforce_delegation_anchors(term(), [String.t()]) :: term()
+  def enforce_delegation_anchors(%{"delegations" => delegations} = decision, anchor_refs)
+      when is_list(delegations) and is_list(anchor_refs) and anchor_refs != [] do
+    anchors = MapSet.new(anchor_refs)
+
+    kept =
+      Enum.filter(delegations, fn
+        %{"source_refs" => refs} when is_list(refs) ->
+          Enum.any?(refs, &MapSet.member?(anchors, &1))
+
+        _other ->
+          false
+      end)
+
+    Map.put(decision, "delegations", kept)
+  end
+
+  def enforce_delegation_anchors(decision, _anchor_refs), do: decision
+
+  @doc """
+  Validates that every delegation in `decision` cites at least one `source_ref`
+  anchored to the current target thread or due scheduled recheck.
+  """
+  @spec validate_delegation_anchors(term(), [String.t()]) ::
+          :ok | {:error, :unanchored_delegation}
+  def validate_delegation_anchors(%{"delegations" => []}, _anchor_refs), do: :ok
+
+  def validate_delegation_anchors(%{"delegations" => delegations}, anchor_refs)
+      when is_list(delegations) and is_list(anchor_refs) and anchor_refs != [] do
+    anchors = MapSet.new(anchor_refs)
+
+    if Enum.all?(delegations, fn
+         %{"source_refs" => refs} when is_list(refs) ->
+           Enum.any?(refs, &MapSet.member?(anchors, &1))
+
+         _other ->
+           false
+       end) do
+      :ok
+    else
+      {:error, :unanchored_delegation}
+    end
+  end
+
+  def validate_delegation_anchors(%{"delegations" => [_ | _]}, _anchor_refs),
+    do: {:error, :unanchored_delegation}
+
+  def validate_delegation_anchors(_decision, _anchor_refs), do: :ok
+
+  @doc "Returns the product-owner route for one projected Slack decision target and source lane."
+  @spec target_route(map(), String.t() | nil) :: String.t() | nil
+  def target_route(%{"decision_target" => target} = slack_context, source_mode)
+      when is_map(target) do
+    case target["syntactic_addressee"] do
+      addressee when addressee in ~w(none self mixed other) ->
+        target_source_ref = target["source_ref"]
+        messages = Map.get(slack_context, "messages", [])
+
+        actor_kind =
+          Enum.find_value(List.wrap(messages), fn
+            %{"source_ref" => ^target_source_ref, "actor_kind" => kind} -> kind
+            _message -> nil
+          end)
+
+        source_mode
+        |> SalixVerifiedKernel.Proactive.triage_target_route(addressee, actor_kind == "agent")
+        |> Atom.to_string()
+
+      other ->
+        other
+    end
+  end
 
   def target_route(_slack_context, _source_mode), do: nil
 
-  defp valid_target_boundary?(_decision, "none"), do: true
-
-  defp valid_target_boundary?(decision, "other") do
-    Map.delete(decision["communication"], "explanation") == %{
-      "kind" => "silence",
-      "reason" => "outside_authority",
-      "source_refs" => decision["communication"]["source_refs"]
-    } and no_companion_reaction?(decision) and decision["delegations"] == []
-  end
-
   defp valid_target_boundary?(decision, syntactic_addressee)
-       when syntactic_addressee in ["self", "mixed"] do
-    Map.delete(decision["communication"], "explanation") == %{
-      "kind" => "silence",
-      "reason" => "duplicate",
-      "source_refs" => decision["communication"]["source_refs"]
-    } and no_companion_reaction?(decision) and decision["delegations"] == []
+       when is_binary(syntactic_addressee) do
+    case SalixVerifiedKernel.Proactive.triage_boundary_action(syntactic_addressee) do
+      :allow ->
+        true
+
+      :force_silence_outside_authority ->
+        Map.delete(decision["communication"], "explanation") == %{
+          "kind" => "silence",
+          "reason" => "outside_authority",
+          "source_refs" => decision["communication"]["source_refs"]
+        } and no_companion_reaction?(decision) and decision["delegations"] == []
+
+      :force_silence_duplicate ->
+        Map.delete(decision["communication"], "explanation") == %{
+          "kind" => "silence",
+          "reason" => "duplicate",
+          "source_refs" => decision["communication"]["source_refs"]
+        } and no_companion_reaction?(decision) and decision["delegations"] == []
+
+      :reject_target ->
+        false
+    end
   end
 
   defp valid_target_boundary?(_decision, _syntactic_addressee), do: false

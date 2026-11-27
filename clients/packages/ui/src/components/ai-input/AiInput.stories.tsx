@@ -177,7 +177,7 @@ const mentionMenuRegistration = (
     },
     {
       id: "routines",
-      label: "Routines",
+      label: "Briefing",
       ...(overrides.loading ? { status: "loading" as const } : {}),
       items: overrides.loading
         ? []
@@ -562,7 +562,7 @@ export const MentionMenu: Story = {
     expect(panel).toBeVisible();
     expect(canvas.getByText("Add")).toBeVisible();
     expect(canvas.getByText("Tasks")).toBeVisible();
-    expect(canvas.getByText("Routines")).toBeVisible();
+    expect(canvas.getByText("Briefing")).toBeVisible();
     expect(canvas.getByText("Plugins")).toBeVisible();
     expect(canvas.getByRole("option", { name: "Add files or folders" })).toBeVisible();
     expect(canvas.getByRole("option", { name: "Comma-151" })).toBeVisible();

@@ -39,8 +39,8 @@ func Copy(inputs runtimeinputs.Manifest, approvedDir, outputDir string) ([]strin
 	if err := json.Unmarshal(data, &approved); err != nil {
 		return nil, nil
 	}
-	// Format 2 bundles predate input identities and are deliberately rebuilt.
-	if approved.SchemaVersion != 3 {
+	// Bundles prior to schemaVersion 4 (pre-EROFS) are deliberately rebuilt.
+	if approved.SchemaVersion != 4 {
 		return nil, nil
 	}
 	if len(approved.Images) != len(inputs.Images) {
@@ -63,11 +63,11 @@ func Copy(inputs runtimeinputs.Manifest, approvedDir, outputDir string) ([]strin
 		if prior.InputDigest != current.InputDigest {
 			continue
 		}
-		source := filepath.Join(approvedDir, current.Class+".oci.tar")
+		source := filepath.Join(approvedDir, current.Class+".erofs.zst")
 		if err := verifyArchive(source, prior.ArchiveSHA256, prior.ArchiveSize); err != nil {
 			continue
 		}
-		if err := copyFile(source, filepath.Join(outputDir, current.Class+".oci.tar")); err != nil {
+		if err := copyFile(source, filepath.Join(outputDir, current.Class+".erofs.zst")); err != nil {
 			return nil, fmt.Errorf("copy approved %s runtime archive: %w", current.Class, err)
 		}
 		reused = append(reused, current.Class)

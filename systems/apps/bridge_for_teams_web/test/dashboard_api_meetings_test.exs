@@ -254,6 +254,108 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       end)
     end
 
+    test "members' meetings show the personal reminder's state and its recipients",
+         %{conn: conn, org: org, project: project} do
+      plan = fn preparation, personal? ->
+        %{
+          "status" => "planned",
+          "settings_revision" => 4,
+          "personal_preparation" => personal?,
+          "preparation" => preparation
+        }
+      end
+
+      ana = %{"email" => "ana@example.test", "slack_unmatched" => false}
+      ben = %{"email" => "ben@example.test", "slack_unmatched" => false}
+      unmatched = %{"email" => "cy@example.test", "slack_unmatched" => true}
+
+      event = fn id, plan, recipients ->
+        %{
+          "meeting_id" => "mtg-" <> id,
+          "meeting_plan_id" => id,
+          "title" => "Weekly sync",
+          "start_ms" => 1_000,
+          "end_ms" => 2_000,
+          "recipients" => recipients,
+          "plan" => plan
+        }
+      end
+
+      Process.put(
+        {:meetings, "overview"},
+        {:ok,
+         %{
+           "settings" => %{
+             "enabled" => true,
+             "calendar_scope" => "members",
+             "personal_preparation" => true,
+             "settings_revision" => 4
+           },
+           "connects" => [],
+           "calendar" => %{
+             "health" => "members",
+             "member_calendars" => 30,
+             "projection" => %{"truncated" => true},
+             "events" => [
+               event.(
+                 "mp-dropped",
+                 plan.(%{"personal_status" => "abandoned", "report_available" => true}, true),
+                 [ana, ben]
+               ),
+               event.("mp-sent", plan.(%{"personal_status" => "sent"}, true), [ana, unmatched]),
+               # Slack found none of its recipients: nobody got the reminder.
+               event.("mp-nobody", plan.(%{"personal_status" => "sent"}, true), [unmatched]),
+               event.("mp-ready", plan.(%{"report_available" => true}, true), [ana]),
+               event.("mp-handover", plan.(%{}, false), [])
+             ]
+           }
+         }}
+      )
+
+      overview = conn |> get(meetings_path(org, project)) |> json_response(200) |> data()
+
+      assert overview["events"] == [
+               %{
+                 "meeting_plan_id" => "mp-dropped",
+                 "title" => "Weekly sync",
+                 "start_ms" => 1_000,
+                 "status" => "not_sent",
+                 "recipients" => [ana, ben]
+               },
+               %{
+                 "meeting_plan_id" => "mp-sent",
+                 "title" => "Weekly sync",
+                 "start_ms" => 1_000,
+                 "status" => "queued",
+                 "recipients" => [ana, unmatched]
+               },
+               %{
+                 "meeting_plan_id" => "mp-nobody",
+                 "title" => "Weekly sync",
+                 "start_ms" => 1_000,
+                 "status" => "not_sent",
+                 "recipients" => [unmatched]
+               },
+               %{
+                 "meeting_plan_id" => "mp-ready",
+                 "title" => "Weekly sync",
+                 "start_ms" => 1_000,
+                 "status" => "ready",
+                 "recipients" => [ana]
+               },
+               %{
+                 "meeting_plan_id" => "mp-handover",
+                 "title" => "Weekly sync",
+                 "start_ms" => 1_000,
+                 "status" => "scheduled",
+                 "recipients" => []
+               }
+             ]
+
+      assert overview["member_calendars"] == 30
+      assert overview["truncated"] == true
+    end
+
     test "the detail read returns the shared report", %{conn: conn, org: org, project: project} do
       Process.put({:meetings, "detail"}, {:ok, %{"report" => "Agenda", "private" => "x"}})
 

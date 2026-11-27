@@ -76,6 +76,8 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
     SalixStore.S3.Fake.reset()
     SalixAgent.TestSupport.configure_platform_models!()
     %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
+    # The swarm model pickers offer only models an account serves.
+    serve_models!(org)
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Acme", "slug" => "acme"})
     drain_all()
     %{conn: conn, user: user, org: org, project: project}
@@ -385,13 +387,38 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
       refute inspect(audit) =~ "Be helpful."
     end
 
+    test "names a current allowed choice that no enabled account serves", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      opus = %{"kind" => "catalog", "model" => "claude-opus-5-5", "allow_paid" => false}
+
+      {:ok, agent} =
+        create_agent(project, %{"name" => "Router", "role" => "router", "model" => opus})
+
+      tenant = org.salix_tenant_id
+      {:ok, %{"accounts" => accounts}} = SalixAgent.AccountPool.list(tenant)
+      claude = Enum.find(accounts, &((&1["source"] || &1["provider"]) == "claude"))
+      assert {:ok, _} = SalixAgent.AccountPool.delete(tenant, claude["id"], claude["version"])
+
+      config =
+        conn |> get(agent_path(org, project, agent, "/config")) |> json_response(200) |> data()
+
+      assert [%{"disabled" => true, "label" => label}] =
+               Enum.filter(config["models"], &(&1["choice"] == opus))
+
+      assert label =~ "(current; no enabled account serves it)"
+    end
+
     test "shows a choice the allowed models exclude without letting it be chosen again", %{
       conn: conn,
       org: org,
       project: project
     } do
       current = %{"kind" => "catalog", "model" => "deepseek-chat-v3.1", "allow_paid" => false}
-      allowed = %{"kind" => "catalog", "model" => "gpt-5", "allow_paid" => false}
+      # The picker offers an allowed model only while an account serves it.
+      allowed = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
 
       {:ok, agent} =
         create_agent(project, %{"name" => "Router", "role" => "router", "model" => current})
@@ -435,6 +462,93 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
 
       {:ok, following} = Agents.get_agent(agent.id)
       refute following.salix["model"]
+    end
+
+    test "a Router on the platform Router keeps it until an admin picks another model, for good",
+         %{conn: conn, org: org, project: project} do
+      tenant = org.salix_tenant_id
+      put_platform_router!(tenant, "gpt-5.5")
+      marked = %{"kind" => "catalog", "model" => "gpt-5.5", "platform" => true}
+      {:ok, agent} = Agents.current_router(project)
+      assert agent.salix["model"] == marked
+
+      assert %{"agent" => %{"model" => "GPT-5.5", "model_platform_provided" => true}} =
+               conn |> get(agent_path(org, project, agent)) |> json_response(200) |> data()
+
+      config =
+        conn |> get(agent_path(org, project, agent, "/config")) |> json_response(200) |> data()
+
+      assert config["platform_provided"] == true
+      assert config["model_key"] == "catalog:gpt-5.5+platform"
+
+      assert %{
+               "disabled" => true,
+               "group" => "Platform",
+               "label" => "GPT-5.5 (provided by the platform)"
+             } = Enum.find(config["models"], &(&1["key"] == config["model_key"]))
+
+      assert %{"choice" => plain} = Enum.find(config["models"], &(&1["key"] == "catalog:gpt-5.5"))
+
+      # Saving with the model untouched keeps the mark.
+      assert conn
+             |> patch(agent_path(org, project, agent), %{"system_prompt" => "Route politely."})
+             |> json_response(200)
+
+      assert {:ok, %{"model" => ^marked}} = SalixAgent.Control.get(agent.salix_agent_id, tenant)
+
+      # A request that carries the mark is refused.
+      assert %{"error" => %{"code" => "invalid_model"}} =
+               conn
+               |> patch(agent_path(org, project, agent), %{"model" => marked})
+               |> json_response(422)
+
+      # Another model leaves the platform Router, and the org cannot go back.
+      assert %{"agent" => %{"model_platform_provided" => false}} =
+               conn
+               |> patch(agent_path(org, project, agent), %{"model" => plain})
+               |> json_response(200)
+               |> data()
+
+      assert {:ok, %{"model" => ^plain}} = SalixAgent.Control.get(agent.salix_agent_id, tenant)
+
+      assert conn
+             |> patch(agent_path(org, project, agent), %{"model" => marked})
+             |> json_response(422)
+
+      assert %{"platform_provided" => false, "model_key" => "catalog:gpt-5.5"} =
+               conn
+               |> get(agent_path(org, project, agent, "/config"))
+               |> json_response(200)
+               |> data()
+    end
+
+    test "a platform Router that allows pay-per-use is still only the platform's row",
+         %{conn: conn, org: org, project: project} do
+      put_platform_router!(org.salix_tenant_id, "gpt-5.5", %{"allow_paid" => true})
+
+      marked = %{
+        "kind" => "catalog",
+        "model" => "gpt-5.5",
+        "platform" => true,
+        "allow_paid" => true
+      }
+
+      {:ok, agent} = Agents.current_router(project)
+      assert agent.salix["model"] == marked
+
+      config =
+        conn |> get(agent_path(org, project, agent, "/config")) |> json_response(200) |> data()
+
+      assert config["model_key"] == "catalog:gpt-5.5+paid+platform"
+
+      # Only the disabled Platform row carries the mark; no offered row does.
+      assert [%{"disabled" => true, "group" => "Platform"}] =
+               Enum.filter(config["models"], &(&1["choice"]["platform"] == true))
+
+      assert %{"error" => %{"code" => "invalid_model"}} =
+               conn
+               |> patch(agent_path(org, project, agent), %{"model" => marked})
+               |> json_response(422)
     end
 
     test "a swarm member cannot read the catalog or configure; the attempt is audited", %{
@@ -615,6 +729,34 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
                  build_conn() |> log_in_user(user_fixture()) |> get(path) |> json_response(404)
       end
     end
+  end
+
+  # The platform admin's save (`SalixAgent.PlatformRouter`): a platform API
+  # key that serves the model, the record, and the tenant's Routers marked.
+  defp put_platform_router!(tenant, model, attrs \\ %{}) do
+    {:ok, key} =
+      SalixAgent.AccountPool.create(SalixAgent.AccountPool.platform_tenant(), %{
+        "credential_kind" => "provider_api_key",
+        "source" => "openrouter",
+        "api_key" => "sk-or-v1-platform-router-0000"
+      })
+
+    on_exit(fn ->
+      SalixAgent.SubscriptionStore.query("DELETE FROM subscription_accounts WHERE id=$1", [
+        key["id"]
+      ])
+
+      SalixAgent.PlatformRouter.delete(tenant)
+    end)
+
+    {:ok, _} =
+      SalixAgent.PlatformRouter.put(
+        tenant,
+        Map.merge(%{"model" => model, "billing" => "record"}, attrs)
+      )
+
+    {:ok, _count} = SalixAgent.PlatformRouter.apply(tenant)
+    :ok
   end
 
   defp agents_path(org, project, rest \\ ""),

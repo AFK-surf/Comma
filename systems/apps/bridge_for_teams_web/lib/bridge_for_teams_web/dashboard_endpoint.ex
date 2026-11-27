@@ -41,13 +41,29 @@ defmodule BridgeForTeamsWeb.DashboardEndpoint do
     endpoint: :bft_dashboard,
     route_resolver: {BridgeForTeamsWeb.DashboardRouter, :telemetry_route}
 
-  plug Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
-    pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+  @parsers_opts Plug.Parsers.init(
+                  parsers: [:urlencoded, :multipart, :json],
+                  pass: ["*/*"],
+                  json_decoder: Phoenix.json_library()
+                )
+
+  plug BridgeForTeamsWeb.M2squareWebhookPlug
+  plug :parse_request_body
 
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
   plug BridgeForTeamsWeb.DashboardRouter
+
+  defp parse_request_body(
+         %Plug.Conn{method: "POST", path_info: ["v1", "billing", "m2square", "webhook"]} = conn,
+         _opts
+       ) do
+    conn = Plug.Conn.fetch_query_params(conn)
+    %{conn | body_params: %{}, params: conn.query_params}
+  end
+
+  defp parse_request_body(conn, _opts) do
+    Plug.Parsers.call(conn, @parsers_opts)
+  end
 end

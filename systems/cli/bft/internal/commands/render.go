@@ -53,6 +53,8 @@ Human mode:
   bft telegram status --org acme --project bridge
   bft telegram chats --org acme --project bridge --chat -1002233445566 --confirm-mutating
   bft qq connect --org acme --project bridge --app-id 1900012345 --app-secret-env BFT_QQ_APP_SECRET --confirm-mutating
+  bft wecom connect --org acme --project bridge --bot-id aibXXXXXXXX --secret-env BFT_WECOM_SECRET --confirm-mutating
+  bft wecom status --org acme --project bridge
   bft qq status --org acme --project bridge
   bft qq menu --org acme --project bridge
   bft qq menu add --org acme --project bridge --name 周报 --description 生成本周周报 --prompt "根据本周群聊生成周报" --scope group --confirm-mutating
@@ -241,6 +243,8 @@ func commandSchema() map[string]any {
 			{"name": "qq menu", "example": "bft qq menu --org acme --project support --json", "mutates": false},
 			{"name": "qq menu add", "example": "bft qq menu add --org acme --project support --name 周报 --description 生成本周周报 --prompt 根据本周群聊生成周报 --scope group --confirm-mutating --json", "mutates": true, "requires_confirm": true},
 			{"name": "qq menu remove", "example": "bft qq menu remove --org acme --project support --name 周报 --confirm-mutating --json", "mutates": true, "requires_confirm": true},
+			{"name": "wecom connect", "example": "bft wecom connect --org acme --project support --bot-id aibXXXXXXXX --secret-env BFT_WECOM_SECRET --confirm-mutating --json", "mutates": true},
+			{"name": "wecom status", "example": "bft wecom status --org acme --project support --json", "mutates": false},
 			{"name": "runners install-command", "example": "bft runners install-command --org acme --confirm-mutating --json", "mutates": true, "requires_confirm": true},
 			{"name": "runners list", "example": "bft runners list --org acme --limit 20 --json", "mutates": false, "bounded": true},
 			{"name": "onboarding smoke", "example": "bft onboarding smoke --step cli-login --org acme --json", "mutates": false},
@@ -248,6 +252,7 @@ func commandSchema() map[string]any {
 			{"name": "slack connects list", "example": "bft slack connects list --org acme --project support --json", "mutates": false},
 			{"name": "slack connects create", "example": "bft slack connects create --org acme --project support --app-id A123 --client-id 123.abc --client-secret-env BFT_SLACK_CLIENT_SECRET --signing-secret-env BFT_SLACK_SIGNING_SECRET --inbound-agent agent_123 --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects update", "example": "bft slack connects update --org acme --project support --connect conn_123 --inbound-agent agent_456 --confirm-mutating --json", "mutates": true},
+			{"name": "slack connects update (member scope)", "example": "bft slack connects update --org acme --project support --connect conn_123 --member-scope external --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects update (auto-join)", "example": "bft slack connects update --org acme --project support --connect conn_123 --auto-join-public-channels off --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects disable", "example": "bft slack connects disable --org acme --project support --connect conn_123 --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects enable", "example": "bft slack connects enable --org acme --project support --connect conn_123 --confirm-mutating --json", "mutates": true},
@@ -791,6 +796,9 @@ func slackConnectText(prefix string, data map[string]any) string {
 	if stringField(connect, "provider") == "slack" {
 		lines = append(lines, "Auto-join new public channels: "+slackAutoJoinField(connect))
 	}
+	if scope := stringField(connect, "member_scope"); scope != "" {
+		lines = append(lines, "Member scope: "+scope)
+	}
 	if oauthURL := stringField(data, "oauth_url"); oauthURL != "" {
 		lines = append(lines, "OAuth URL: "+oauthURL)
 	}
@@ -1040,6 +1048,33 @@ func qqConnectText(data map[string]any) string {
 		lines = append(lines, "Callback URL: "+callbackURL)
 	}
 	return strings.Join(append(lines, qqChecklistLines(data)...), "\n") + "\n"
+}
+
+func wecomConnectText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	lines := []string{"WeCom bot connected to " + stringField(project, "name"), "Secrets printed: false"}
+	if action := stringField(data, "action"); action != "" {
+		lines = append(lines, "Action: "+action)
+	}
+	return strings.Join(append(lines, qqChecklistLines(data)...), "\n") + "\n"
+}
+
+func wecomStatusText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	connects, _ := data["connects"].([]any)
+	if len(connects) == 0 {
+		return "No WeCom bot is connected to " + stringField(project, "name") + ".\n"
+	}
+	lines := []string{"WeCom bots of " + stringField(project, "name")}
+	for _, item := range connects {
+		connect, _ := item.(map[string]any)
+		state := "enabled"
+		if connect["disabled_at"] != nil {
+			state = "disabled"
+		}
+		lines = append(lines, "", stringField(connect, "app_id")+" ("+state+")", "  Connect: "+stringField(connect, "connect_id"))
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func qqStatusText(data map[string]any) string {

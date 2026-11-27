@@ -67,6 +67,7 @@ Comma 直接提供 HTTP MCP，不为每个会话另起进程。工具的名字�
 - `slack_api` 以连接的 Slack bot 身份调 Web API。别的会话所在的 thread 不能写。
 - Claude：启动时用 `--mcp-config` 传入 MCP 服务，header 为 `Authorization: Bearer ${COMMA_STATION_MCP_TOKEN}`。token 作为该会话进程的环境变量注入。
 - Codex：MCP 服务不写进账号配置。`thread/start` / `thread/resume` 的 `config` 按 thread 传 `mcp_servers.comma-station.url` 和 `mcp_servers.comma-station.http_headers`，因为一个 app-server 进程承载多个会话。仍加载着的 thread 被 `thread/resume` 原样接回，`config` 不再生效；它的 MCP 连接若已失败（当时 station 的 MCP 端点未开），站点先 `thread/unsubscribe` 再 `thread/resume`，让它重新连接。MCP 端点打开前，station 不开始任何轮次。
+- 浏览器工具是例外，只在自带浏览器的机器上有（Coding sandbox 镜像，环境变量 `COMMA_BROWSER_MCP_CONFIG`）：`src/agents/browser-mcp.ts` 让 Claude 和 Codex 各自用 stdio 再起一个 Playwright MCP 进程（`playwright`），它不经过 Comma 的 MCP 端点，也不按 token 识别会话。浏览器在第一次调用工具时才打开，随 agent 进程结束。
 
 ## 7. 结束状态约定
 

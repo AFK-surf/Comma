@@ -8,11 +8,15 @@ defmodule SalixIM.PhotonIMessage do
 
   Photon publishes OpenAPI clients for TypeScript, Python, Go and Rust, but no
   Elixir client. This module covers only the calls Comma uses.
-  Redirects and automatic retries are disabled. The bearer belongs to one
+  Redirects and Req retries are disabled. The bearer belongs to one
   configured origin, and an ambiguous send is not evidence that nothing was sent.
-  A `202` is Photon acceptance, not Apple delivery. No cross-call deduplication
-  is claimed.
+  A send that gets no answer, or a 408, 502, 503 or 504, is repeated with the
+  same idempotency key, for which Photon answers with the stored result.
+  A `202` is Photon acceptance, not Apple delivery. Only a text sent again with
+  its `resend_token` is deduplicated across calls.
   """
+
+  require Logger
 
   @base_url "https://api.photon.codes"
   @max_image_bytes 20 * 1024 * 1024
@@ -24,6 +28,16 @@ defmodule SalixIM.PhotonIMessage do
   # A streamed upload of up to @max_file_bytes. The Agent tool deadline for
   # `imessage.send_file` is longer than this upload plus one send.
   @upload_timeout_ms 120_000
+  # One send: at most three requests with one idempotency key, inside the
+  # Agent tool deadline of 30 s.
+  @send_attempts 3
+  @send_budget_ms 20_000
+  @send_retry_delay_ms 500
+  # A text whose outcome stayed unknown can be sent again with its token for a day.
+  @resend_max_age_ms 24 * 60 * 60 * 1_000
+  @resend_pages 5
+  # Allowance for a Photon clock that is behind this one.
+  @resend_skew_ms 10_000
   # Types that `MIME` does not know. Other names use `MIME.from_path/1`.
   @extra_types %{
     ".aif" => "audio/aiff",
@@ -76,6 +90,8 @@ defmodule SalixIM.PhotonIMessage do
   @doc """
   Normalizes an iMessage handle as Photon matches it: E.164 for a phone
   number, lowercase for an email address. Returns `nil` for anything else.
+  A phone number needs its country code, after `+` or the international `00`;
+  spaces, dots, dashes and brackets are ignored.
   """
   def normalize_handle(value) when is_binary(value) do
     trimmed = String.trim(value)
@@ -84,7 +100,11 @@ defmodule SalixIM.PhotonIMessage do
       email = String.downcase(trimmed)
       if Regex.match?(~r/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/, email), do: email
     else
-      phone = String.replace(trimmed, ~r/[\s().-]/, "")
+      phone =
+        trimmed
+        |> String.replace(~r/[\s\p{Z}().\-\x{2010}-\x{2015}]/u, "")
+        |> String.replace(~r/^(\x{FF0B}|00)/u, "+")
+
       if Regex.match?(~r/^\+[1-9]\d{6,14}$/, phone), do: phone
     end
   end
@@ -298,11 +318,14 @@ defmodule SalixIM.PhotonIMessage do
   Lists received iMessage Messages created at or after `since`, oldest first.
   Photon lists are eventually consistent, so callers re-read an overlap window.
   """
-  def list_received(%DateTime{} = since, page_token \\ nil) do
+  def list_received(%DateTime{} = since, page_token \\ nil),
+    do: list_messages("received", since, page_token)
+
+  defp list_messages(direction, since, page_token) do
     params =
       [
         platform: "imessage",
-        direction: "received",
+        direction: direction,
         createdSince: DateTime.to_iso8601(since),
         orderBy: "created_at",
         order: "asc",
@@ -320,6 +343,30 @@ defmodule SalixIM.PhotonIMessage do
         error
     end
   end
+
+  @doc """
+  Lists the newest received Messages of one Space, newest first, one page.
+  Photon refuses a time window or platform together with a Space filter.
+  """
+  def list_space_received(space_id, perspective_user_id, page_size)
+      when is_binary(space_id) and is_binary(perspective_user_id) do
+    params = [
+      direction: "received",
+      spaceId: space_id,
+      perspectiveUserId: perspective_user_id,
+      order: "desc",
+      pageSize: page_size
+    ]
+
+    case request(:get, "/messages", params: params) do
+      {:ok, %{"items" => items}} when is_list(items) -> {:ok, Enum.filter(items, &is_map/1)}
+      {:ok, _body} -> {:error, :imessage_unavailable}
+      error -> error
+    end
+  end
+
+  def list_space_received(_space_id, _perspective_user_id, _page_size),
+    do: {:error, :imessage_unavailable}
 
   @doc """
   Maps one received Photon Message to the transport-neutral iMessage event
@@ -348,7 +395,7 @@ defmodule SalixIM.PhotonIMessage do
            "sender_handle" => normalize_handle(sent_by["handle"]) || "",
            "chat_guid" => space["id"],
            "agent_user_id" => agent_user_id,
-           "is_group" => length(participants) != 2,
+           "is_group" => group_space?(space, participants),
            "text" => text,
            "attachments" => attachments,
            "reply_to_message_id" => msg["parentMessageId"]
@@ -358,6 +405,15 @@ defmodule SalixIM.PhotonIMessage do
   end
 
   def to_event(_message), do: :ignore
+
+  # Photon iMessage group spaces can list only the agent and one sender in
+  # `participantIds`, so `space["kind"]` is authoritative when present.
+  defp group_space?(%{"kind" => "direct"}, participants), do: length(participants) != 2
+
+  defp group_space?(%{"kind" => kind}, _participants) when is_binary(kind) and kind != "",
+    do: true
+
+  defp group_space?(_space, participants), do: length(participants) != 2
 
   # Pasted text can hold NUL characters, which PostgreSQL text and jsonb refuse.
   # Keeping one would fail every later receiver pass.
@@ -474,15 +530,140 @@ defmodule SalixIM.PhotonIMessage do
 
   # ---- send ----
 
-  @doc "Sends text with an optional parent. An explicit unsupported-reply refusal permits one ordinary send."
-  def send_text(sender_id, space_id, text, parent_id \\ nil) do
-    send_content(
-      sender_id,
-      space_id,
-      %{"type" => "text", "format" => "plain", "text" => text},
-      parent_id
-    )
+  @doc """
+  Sends text with an optional parent. An explicit unsupported-reply refusal permits one ordinary send.
+
+  An unknown outcome carries a `resend_token`. A later call with the same text
+  and that token first looks for the text among the Messages Photon sent, and
+  sends only when it is not there, with the idempotency key and parent of the
+  first send.
+  """
+  def send_text(sender_id, space_id, text, parent_id \\ nil, resend_token \\ nil)
+
+  def send_text(sender_id, space_id, text, parent_id, nil),
+    do: send_content(sender_id, space_id, text_content(text), parent_id)
+
+  def send_text(sender_id, space_id, text, new_parent_id, resend_token) do
+    content = text_content(text)
+
+    with {:ok, key, since, parent_id} <- parse_resend_token(resend_token) do
+      case find_sent(sender_id, space_id, text, since, nil, @resend_pages) do
+        {:ok, id} ->
+          {:ok, %{"id" => id, "message_id" => id, "resend" => "already_sent"}}
+
+        # Photon answers a repeated key with the failed Message, so use a new key.
+        :failed ->
+          send_content(sender_id, space_id, content, parent_id)
+
+        :none ->
+          case send_content(sender_id, space_id, content, parent_id, key, since) do
+            # The text is not the text of the token. Photon sent nothing: send it as a new text.
+            {:error, %{"provider_code" => "IDEMPOTENCY_KEY_REUSED"}} ->
+              with {:ok, message} <- send_content(sender_id, space_id, content, new_parent_id) do
+                {:ok, Map.put(message, "resend", "sent_as_new_text")}
+              end
+
+            result ->
+              result
+          end
+
+        :unverified ->
+          offer_resend(SalixIM.IMessageRelay.delivery_unknown(), content, key, since, parent_id)
+      end
+    end
   end
+
+  defp text_content(text), do: %{"type" => "text", "format" => "plain", "text" => text}
+
+  defp resend_token(key, since, parent_id) do
+    %{"k" => key, "t" => since, "p" => parent_id}
+    |> Jason.encode!()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp parse_resend_token(token) do
+    with true <- is_binary(token),
+         {:ok, json} <- Base.url_decode64(token, padding: false),
+         {:ok, %{"k" => "comma-send-" <> _ = key, "t" => since} = fields}
+         when is_integer(since) and byte_size(key) <= 64 <- Jason.decode(json),
+         parent_id when is_nil(parent_id) or is_binary(parent_id) <- fields["p"] do
+      if SystemsClock.system_time(:millisecond) - since > @resend_max_age_ms do
+        not_sent(
+          "imessage_resend_expired",
+          "This resend_token is older than 24 hours. Nothing was sent. Do not send that text again."
+        )
+      else
+        {:ok, key, since, parent_id}
+      end
+    else
+      _ ->
+        not_sent(
+          "imessage_resend_token_invalid",
+          "resend_token is not a token from an imessage_delivery_unknown result. Nothing was sent."
+        )
+    end
+  end
+
+  # Looks for the text among the Messages this sender sent to the Space since
+  # the first send. Photon lists are eventually consistent: the idempotency key
+  # covers a Message that is not listed yet.
+  defp find_sent(sender_id, space_id, text, since, page_token, pages) do
+    created_since = DateTime.from_unix!(since - @resend_skew_ms, :millisecond)
+
+    case list_messages("sent", created_since, page_token) do
+      {:ok, items, next} ->
+        found =
+          Enum.filter(
+            items,
+            &match?(
+              %{
+                "id" => id,
+                "space" => %{"id" => ^space_id},
+                "sentBy" => %{"id" => ^sender_id},
+                "content" => %{"type" => "text", "text" => ^text}
+              }
+              when is_binary(id) and id != "",
+              &1
+            )
+          )
+
+        cond do
+          sent = Enum.find(found, &(&1["status"] != "failed")) -> {:ok, sent["id"]}
+          found != [] -> :failed
+          is_nil(next) -> :none
+          pages > 1 -> find_sent(sender_id, space_id, text, since, next, pages - 1)
+          true -> :unverified
+        end
+
+      _ ->
+        :unverified
+    end
+  end
+
+  defp offer_resend(
+         {:error, %{"code" => "imessage_delivery_unknown"} = unknown},
+         %{"type" => "text"},
+         key,
+         since,
+         parent_id
+       ) do
+    {:error,
+     Map.merge(unknown, %{
+       "resend_token" => resend_token(key, since, parent_id),
+       "message" =>
+         "Photon did not acknowledge this send. The message may already have been sent. " <>
+           "Do not send it again in this turn, send a failure notice, or claim delivery. " <>
+           "End this turn now with end_turn and outcome=blocked. " <>
+           "Use a private reason: iMessage delivery is unknown. " <>
+           "Do not ask through iMessage or wait_for a human response. " <>
+           "This stops only this send. When the person writes again and this text still matters, " <>
+           "first call imessage.send_message with exactly this text and this resend_token. " <>
+           "That call sends the text only if Photon does not have it. " <>
+           "Then answer the new message in a second call without the token."
+     })}
+  end
+
+  defp offer_resend(result, _content, _key, _since, _parent_id), do: result
 
   @doc """
   Adds a tapback (`❤️ 👍 👎 😂 ‼️ ❓`) or emoji reaction on `parent_id`.
@@ -529,12 +710,9 @@ defmodule SalixIM.PhotonIMessage do
   end
 
   @doc """
-  Uploads the image, then sends it. Photon accepts attachment captions only on
-  Telegram, so a caption follows as a separate text Message.
-  An upload failure sends nothing. After the image send, a caption failure is
-  reported as unknown delivery.
+  Uploads the image, then sends it. An upload failure sends nothing.
   """
-  def send_image(sender_id, space_id, upload, caption \\ "", parent_id \\ nil) do
+  def send_image(sender_id, space_id, upload, parent_id \\ nil) do
     if byte_size(upload.data) > @max_image_bytes do
       {:error, :imessage_image_too_large}
     else
@@ -542,7 +720,7 @@ defmodule SalixIM.PhotonIMessage do
 
       case upload_attachment(filename, byte_size(upload.data), [upload.data], @request_timeout_ms) do
         {:ok, attachment_id} ->
-          send_attachment(sender_id, space_id, attachment_id, caption, parent_id)
+          send_attachment(sender_id, space_id, attachment_id, parent_id)
 
         {:error, :too_large} ->
           {:error, :imessage_image_too_large}
@@ -557,24 +735,24 @@ defmodule SalixIM.PhotonIMessage do
   Uploads a file of any type from a stream of `size` bytes, then sends it.
   The upload streams the bytes and does not hold the whole file in memory.
   A file over `max_file_bytes/0` or an empty file is refused before any request.
-  An upload failure sends nothing. Captions behave as for `send_image/5`.
+  An upload failure sends nothing.
   """
-  def send_file(sender_id, space_id, file, caption \\ "", parent_id \\ nil)
+  def send_file(sender_id, space_id, file, parent_id \\ nil)
 
-  def send_file(_sender_id, _space_id, %{size: size}, _caption, _parent_id)
+  def send_file(_sender_id, _space_id, %{size: size}, _parent_id)
       when not is_integer(size) or size <= 0,
       do: not_sent("imessage_file_empty", "The file is empty. Nothing was sent.")
 
-  def send_file(_sender_id, _space_id, %{size: size}, _caption, _parent_id)
+  def send_file(_sender_id, _space_id, %{size: size}, _parent_id)
       when size > @max_file_bytes,
       do: file_too_large(size)
 
-  def send_file(sender_id, space_id, %{stream: stream, size: size} = file, caption, parent_id) do
+  def send_file(sender_id, space_id, %{stream: stream, size: size} = file, parent_id) do
     filename = Path.basename(to_string(file[:filename] || "file"))
 
     case upload_attachment(filename, size, stream, @upload_timeout_ms) do
       {:ok, attachment_id} ->
-        send_attachment(sender_id, space_id, attachment_id, caption, parent_id)
+        send_attachment(sender_id, space_id, attachment_id, parent_id)
 
       {:error, :too_large} ->
         file_too_large(size)
@@ -609,27 +787,13 @@ defmodule SalixIM.PhotonIMessage do
          "message" => message
        }}
 
-  defp send_attachment(sender_id, space_id, attachment_id, caption, parent_id) do
-    with {:ok, sent} <-
-           send_content(
-             sender_id,
-             space_id,
-             %{"type" => "attachment", "attachmentId" => attachment_id},
-             parent_id
-           ) do
-      if is_binary(caption) and String.trim(caption) != "" do
-        case send_text(sender_id, space_id, caption) do
-          {:ok, caption_sent} ->
-            {:ok, Map.merge(caption_sent, Map.take(sent, ["reply_fallback"]))}
-
-          _ ->
-            # The attachment was accepted. Do not describe the whole operation as not sent.
-            SalixIM.IMessageRelay.delivery_unknown()
-        end
-      else
-        {:ok, sent}
-      end
-    end
+  defp send_attachment(sender_id, space_id, attachment_id, parent_id) do
+    send_content(
+      sender_id,
+      space_id,
+      %{"type" => "attachment", "attachmentId" => attachment_id},
+      parent_id
+    )
   end
 
   # One multipart/related request: JSON metadata, then the file bytes.
@@ -669,15 +833,14 @@ defmodule SalixIM.PhotonIMessage do
     end
   end
 
-  defp send_content(sender_id, space_id, content, parent_id) do
+  defp send_content(sender_id, space_id, content, parent_id, key \\ nil, since \\ nil) do
     body = %{"spaceId" => space_id, "senderId" => sender_id, "content" => content}
     body = if parent_id, do: Map.put(body, "parentMessageId", parent_id), else: body
 
-    result =
-      request(:post, "/messages",
-        json: body,
-        headers: [{"idempotency-key", idempotency_key("send")}]
-      )
+    key = key || idempotency_key("send")
+    since = since || SystemsClock.system_time(:millisecond)
+    deadline = SystemsClock.monotonic_time(:millisecond) + @send_budget_ms
+    result = post_message(body, key, deadline, 1)
 
     # This observed v2 refusal is narrower than SPACE_NOT_SENDABLE alone.
     # It proves that the first send was rejected. Never downgrade an ambiguous send.
@@ -701,9 +864,40 @@ defmodule SalixIM.PhotonIMessage do
         if content["type"] == "reaction", do: reaction_unsupported(problem), else: sent(result)
 
       _ ->
-        sent(result)
+        result |> sent() |> offer_resend(content, key, since, parent_id)
     end
   end
+
+  # Photon keeps the result of a send under its idempotency key, so a repeat
+  # with the same key and body cannot send a second Message.
+  defp post_message(body, key, deadline, attempt) do
+    left = deadline - SystemsClock.monotonic_time(:millisecond)
+
+    result =
+      request(:post, "/messages",
+        json: body,
+        headers: [{"idempotency-key", key}],
+        timeout_ms: left |> min(@request_timeout_ms) |> max(1_000)
+      )
+
+    if unacknowledged?(result) and attempt < @send_attempts and
+         deadline - SystemsClock.monotonic_time(:millisecond) > @send_retry_delay_ms + 1_000 do
+      SystemsClock.sleep(@send_retry_delay_ms)
+      post_message(body, key, deadline, attempt + 1)
+    else
+      result
+    end
+  end
+
+  # No answer, or an answer that does not say whether Photon took the send.
+  defp unacknowledged?({:error, {:photon, status, problem}}),
+    do: status in [:transport, 408, 502, 503, 504] or send_in_progress?(status, problem)
+
+  defp unacknowledged?(_result), do: false
+
+  # The first request with this key is still running in Photon.
+  defp send_in_progress?(status, problem),
+    do: status == 409 and problem["code"] == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
 
   defp reaction_unsupported(problem) do
     rejected(
@@ -720,6 +914,9 @@ defmodule SalixIM.PhotonIMessage do
 
   defp sent({:error, :imessage_unavailable} = error), do: error
 
+  defp sent({:error, {:photon, 409, %{"code" => "IDEMPOTENCY_REQUEST_IN_PROGRESS"}}} = result),
+    do: unknown(result)
+
   defp sent({:error, {:photon, status, problem}}) when status in 400..499 and status != 408 do
     rejected(
       "imessage_send_rejected",
@@ -729,7 +926,24 @@ defmodule SalixIM.PhotonIMessage do
     )
   end
 
-  defp sent(_), do: SalixIM.IMessageRelay.delivery_unknown()
+  defp sent(result), do: unknown(result)
+
+  # The log names what Photon answered. The Agent gets only the outcome.
+  defp unknown(result) do
+    {status, problem} =
+      case result do
+        {:error, {:photon, status, %{} = problem}} -> {status, problem}
+        _accepted_without_id -> {:no_message_id, %{}}
+      end
+
+    Logger.warning("imessage_photon_send_unacknowledged",
+      status: status,
+      provider_code: problem["code"],
+      provider_request_id: problem["requestId"]
+    )
+
+    SalixIM.IMessageRelay.delivery_unknown()
+  end
 
   defp rejected(code, message, problem) do
     {:error,

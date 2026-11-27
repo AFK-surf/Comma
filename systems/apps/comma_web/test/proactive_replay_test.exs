@@ -276,6 +276,72 @@ defmodule CommaWeb.ProactiveReplayTest do
     assert Enum.map(entries, & &1["text"]) == ["always tell me before an account is deleted"]
   end
 
+  test "portrait builds grounded entries from Router memory and recent tasks without Slack" do
+    input =
+      MemberPortrait.input(
+        [],
+        [],
+        [],
+        "kai",
+        [],
+        %{
+          "memory" => [
+            %{
+              "path" => "/memory/episodes/2026-11-24.md",
+              "text" => "Maintains Medalsmith 3D medal app in repo motion-space/medalsmith."
+            }
+          ],
+          "tasks" => [
+            %{
+              "source" => "station_task",
+              "title" => "Comma 1.0.4 Usage billing sandbox testing",
+              "note" => "Credits fulfill only for cue.surf or comma.surf workspace owners"
+            }
+          ]
+        }
+      )
+
+    {:ok, entries} =
+      MemberPortrait.build(
+        %{
+          "entries" => [
+            %{
+              "kind" => "duty",
+              "text" => "maintains Medalsmith in motion-space/medalsmith",
+              "evidence" => ["/memory/episodes/2026-11-24.md"],
+              "watch" => ["repo:motion-space/medalsmith", "repo:made/up"]
+            },
+            %{
+              "kind" => "ongoing",
+              "text" =>
+                "testing Comma 1.0.4 Usage billing with cue.surf/comma.surf workspace rule",
+              "evidence" => ["tasks"]
+            },
+            %{
+              "kind" => "duty",
+              "text" => "ungrounded duty",
+              "evidence" => ["home"]
+            }
+          ]
+        },
+        input,
+        ~D[2026-11-25]
+      )
+
+    assert [
+             %{
+               "kind" => "duty",
+               "text" => "maintains Medalsmith in motion-space/medalsmith",
+               "watch" => ["repo:motion-space/medalsmith"]
+             },
+             %{
+               "kind" => "ongoing",
+               "text" =>
+                 "testing Comma 1.0.4 Usage billing with cue.surf/comma.surf workspace rule"
+             }
+           ] = entries
+  end
+
   defp scenarios(kase, names),
     do: Map.update!(kase, "scenarios", fn all -> Enum.filter(all, &(&1["name"] in names)) end)
 

@@ -19,6 +19,8 @@ export type ConnectorConfig = {
   alias: string;
   root: string;
   server: string;
+  /** The HTTP proxy the dial to `server` goes through first (the app's answer for the system proxy); empty for none. */
+  proxy: string;
   token: string;
   statusPath: string;
   reconnect: boolean;
@@ -75,6 +77,7 @@ export function defaultConfig(env: Record<string, string | undefined> = process.
     alias: "",
     root: process.cwd(),
     server: "",
+    proxy: "",
     token: "",
     statusPath: "",
     reconnect: false,
@@ -194,6 +197,8 @@ type FileConfig = {
     device_state_root?: string;
     workspace_id?: string;
     server?: string;
+    /** The system's proxy for `server`, as the app resolved it when it wrote the file. */
+    proxy?: string;
     connector_token?: string;
     name?: string;
     alias?: string;
@@ -215,6 +220,7 @@ export function applyConfigFile(cfg: ConnectorConfig, explicit: Set<string>): Ef
     const conn = file.connector ?? {};
     if (file.status?.path && !explicit.has("status-file")) cfg.statusPath = file.status.path;
     if (conn.server && !explicit.has("server")) cfg.server = conn.server;
+    cfg.proxy = typeof conn.proxy === "string" ? conn.proxy : "";
     if (conn.connector_token && !explicit.has("connector-token")) cfg.token = conn.connector_token;
     if (conn.name && !explicit.has("name")) cfg.name = conn.name;
     if (conn.alias && !explicit.has("alias")) cfg.alias = conn.alias;
@@ -246,6 +252,7 @@ export function applyConfigFile(cfg: ConnectorConfig, explicit: Set<string>): Ef
 /** Trims and fills derived values; an unknown scope never widens to full capability. */
 export function normalizeConfig(cfg: ConnectorConfig): void {
   cfg.server = cfg.server.trim();
+  cfg.proxy = connectProxy(cfg.proxy);
   cfg.token = cfg.token.trim();
   cfg.runNonce = cfg.runNonce.trim().toLowerCase();
   cfg.shutdownRequestPath = cfg.shutdownRequestPath.trim();
@@ -262,6 +269,16 @@ export function normalizeConfig(cfg: ConnectorConfig): void {
   if (!cfg.computerUseRuntimePath && cfg.runtimeRoot) cfg.computerUseRuntimePath = join(cfg.runtimeRoot, "computer-use");
   cfg.localFileIndexRoot = cfg.localFileIndexRoot.trim();
   if (cfg.localFileIndexRoot) cfg.localFileIndexRoot = normalize(resolve(cfg.localFileIndexRoot));
+}
+
+/** A proxy the dial can go through (an http or https URL), or "": what is not one is not used, and the dial is direct. */
+export function connectProxy(value: string): string {
+  const proxy = value.trim();
+  try {
+    return ["http:", "https:"].includes(new URL(proxy).protocol) ? proxy : "";
+  } catch {
+    return "";
+  }
 }
 
 const RUN_NONCE = /^[a-f0-9]{32}$/;

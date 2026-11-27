@@ -6,6 +6,7 @@ defmodule SalixSignal.Service.HttpAndChallengeTest do
   alias SalixSignal.Service.{Challenge, Chat, Credentials, Http, Response}
   alias SalixSignal.Test.FakeChat
   alias SalixSignalProto.Service.Frame
+
   setup_all do
     %{chain: FakeChat.chain()}
   end

@@ -2,13 +2,30 @@ defmodule SalixIM.TriageProductObligationTest do
   use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.{
-    ExpressionContext,
     ProductDecision,
-    ProductObligation,
-    RehearsalSlackReaction
+    ProductObligation
   }
 
   alias SalixIM.Triage.RunFence.AuthorizedProductEffects
+
+  defmodule ChannelBatchFresh do
+    def check(_claim, _opts) do
+      {:ok,
+       %{
+         status: :fresh,
+         authority_ref: :same,
+         message_roots: %{
+           "100.000005" => "100.000001",
+           "200.000005" => "200.000001"
+         }
+       }}
+    end
+  end
+
+  defmodule ChannelBatchPort do
+    def prepare(_claim, _delegation, request_id), do: {:ok, request_id}
+    def commit(request_id), do: {:ok, %{"disposition" => "routed", "request_id" => request_id}}
+  end
 
   test "only the domain assignment proof marks ordinary intake, never a model-selected Worker" do
     authorization =
@@ -89,6 +106,90 @@ defmodule SalixIM.TriageProductObligationTest do
              ProductObligation.prepare("triage-shadow", "triage/fence.json", authorization)
   end
 
+  test "ChannelBatch prepare keeps storage-compatible source_messages while allowing target-thread replies and rejecting sibling threads" do
+    reply_ref = "slack://T1/C1/channel/100.000005"
+    sibling_ref = "slack://T1/C1/channel/200.000005"
+
+    base_channel =
+      authorization()
+      |> put_in([Access.key(:raw_bundle), "source_authority"], %{
+        "connect_id" => "connect-1",
+        "connect_generation" => "generation-1",
+        "workspace_id" => "T1",
+        "channel_id" => "C1",
+        "scope_kind" => "channel",
+        "thread_ts" => "__channel__"
+      })
+      |> put_in([Access.key(:raw_bundle), "sealed_events"], [
+        %{
+          "message_ts" => "100.000005",
+          "bucket" => %{"thread_ts" => "100.000001"}
+        }
+      ])
+      |> put_in([Access.key(:raw_bundle), "raw_context", "slack_context"], %{
+        "messages" => [
+          %{
+            "actor_id" => "U_PENG",
+            "actor_kind" => "human",
+            "message_ts" => "100.000005",
+            "root_thread_ts" => "100.000001",
+            "text" => "Please verify the release notes in this thread.",
+            "source_ref" => reply_ref
+          },
+          %{
+            "actor_id" => "U_OTHER",
+            "actor_kind" => "human",
+            "message_ts" => "200.000005",
+            "root_thread_ts" => "200.000001",
+            "text" => "Unrelated thread chatter.",
+            "source_ref" => sibling_ref
+          }
+        ],
+        "source_refs" => [reply_ref, sibling_ref]
+      })
+      |> put_in([Access.key(:raw_bundle), "target_cutoff"], %{
+        "event_message_timestamps" => ["100.000005"]
+      })
+      |> put_in([Access.key(:alias_map), "sources"], %{
+        reply_ref => "source://run/s001",
+        sibling_ref => "source://run/s002",
+        "memory://P1/fact-1" => "source://run/s003"
+      })
+      |> put_in(
+        [Access.key(:fence), "terminal", "decision", "context_candidates"],
+        []
+      )
+
+    # Target-thread reply delegation succeeds through prepare, valid?, and DelegationEffect.apply.
+    assert {:ok, obligation} =
+             ProductObligation.prepare("triage-shadow", "triage/fence.json", base_channel)
+
+    assert ProductObligation.valid?(obligation)
+    assert obligation["target"]["thread_ts"] == "100.000001"
+
+    assert Enum.all?(obligation["source_messages"], &(not Map.has_key?(&1, "root_thread_ts")))
+    assert Enum.any?(obligation["source_messages"], &(&1["message_ts"] == "100.000005"))
+
+    claim = %{obligation_id: obligation["obligation_id"], payload: obligation}
+
+    assert {:ok, [%{"index" => 0, "status" => "routed"}]} =
+             SalixIM.Triage.DelegationEffect.apply(claim,
+               freshness_port: __MODULE__.ChannelBatchFresh,
+               delegation_port: __MODULE__.ChannelBatchPort
+             )
+
+    # Sibling-thread reply delegation is rejected at prepare.
+    sibling_auth =
+      put_in(
+        base_channel,
+        [Access.key(:fence), "terminal", "decision", "delegations", Access.at(0), "source_refs"],
+        ["source://run/s002"]
+      )
+
+    assert {:error, :invalid_triage_product_obligation} =
+             ProductObligation.prepare("triage-shadow", "triage/fence.json", sibling_auth)
+  end
+
   test "a personal candidate without a human source cannot acquire a person owner" do
     authorization =
       authorization()
@@ -163,6 +264,50 @@ defmodule SalixIM.TriageProductObligationTest do
     assert companion["context_candidates"] == []
     assert companion["delegations"] == []
     assert companion["obligation_id"] != primary["obligation_id"]
+  end
+
+  test "prepare rejects delegations citing only unrelated retained context and allows due scheduled rechecks" do
+    unanchored =
+      authorization()
+      |> put_in(
+        [Access.key(:fence), "terminal", "decision", "delegations"],
+        [
+          %{"task" => "Anchored current thread task", "source_refs" => ["source://run/s001"]},
+          %{"task" => "Unrelated cross-thread follow-up", "source_refs" => ["source://run/s002"]}
+        ]
+      )
+
+    assert {:error, :invalid_triage_product_obligation} =
+             ProductObligation.prepare("triage-shadow", "triage/fence.json", unanchored)
+
+    due_recheck =
+      authorization()
+      |> put_in(
+        [Access.key(:alias_map), "sources", "triage-context://due-1"],
+        "source://run/s004"
+      )
+      |> put_in(
+        [Access.key(:raw_bundle), "sealed_events"],
+        [
+          %{
+            "event_id" => "recheck:due-1",
+            "source_mode" => "scheduled_recheck",
+            "recheck_context_ref" => "triage-context://due-1"
+          }
+        ]
+      )
+      |> put_in(
+        [Access.key(:fence), "terminal", "decision", "delegations"],
+        [
+          %{"task" => "Verify due follow-up", "source_refs" => ["source://run/s004"]}
+        ]
+      )
+
+    assert {:ok, obligation} =
+             ProductObligation.prepare("triage-shadow", "triage/fence.json", due_recheck)
+
+    assert obligation["recheck_context_refs"] == ["triage-context://due-1"]
+    assert hd(obligation["delegations"])["source_refs"] == ["triage-context://due-1"]
   end
 
   defp selected_worker_authorization do

@@ -20,6 +20,12 @@ defmodule SalixAgent.Application do
     _ = SalixAgent.DeliveryTelemetry.create_table()
     # Skill projections must outlive the tasks that build round configurations.
     _ = SalixAgent.SkillProjection.create_table()
+    # Bounded watermark hint table for background living handoff updates.
+    _ = SalixAgent.LivingHandoff.create_table()
+    # Device screenshots that request builds inline, shared by session actors.
+    _ = SalixAgent.ImageRefs.ScreenshotCache.create_table()
+    # Node-local cooldown cache for Google Colab GPU accounts.
+    _ = SalixAgent.Colab.Pool.create_table()
     # miIO and other LAN codec sessions outlive the tool calls that open them.
 
     fleet_max_restarts =
@@ -63,6 +69,7 @@ defmodule SalixAgent.Application do
        name: SalixAgent.Browser.Supervisor, strategy: :one_for_one},
       SalixAgent.SubscriptionWorker,
       background(SalixAgent.SubscriptionQuotaWorker, :subscription_quota_worker),
+      background(SalixAgent.Colab.Reaper, :colab_reaper_worker),
       background(SalixAgent.PlatformBalance, :platform_balance_worker),
       background(SalixAgent.PreparedBlobCleanup, :prepared_blob_cleanup),
       # Background Loops: the node's spinfoam child, the build artifact
@@ -73,6 +80,8 @@ defmodule SalixAgent.Application do
       # actors; this registry only names them. SSH over Tailcat goes through
       # one gateway process per node, started on first use.
       {SystemsRuntime.Registry, keys: :unique, name: SalixAgent.SSH.Registry},
+      # Ephemeral node-local WebSocket-SSH tunnels for Google Colab VMs.
+      SalixAgent.Colab.Tunnels.children(),
       # A station's registry tool calls in flight (`SalixAgent.StationToolCalls`).
       {SystemsRuntime.Registry, keys: :duplicate, name: SalixAgent.StationToolCalls.Registry},
       SalixAgent.SSH.TailcatGateway,

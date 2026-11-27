@@ -20,8 +20,9 @@ export const taskListItemChecked =
 
 export const taskListItemDisabled = "cursor-not-allowed opacity-60";
 
+/** Clips to the row's line, but leaves room for the hairline ring an avatar icon draws just outside its box. */
 export const taskListItemSidebarMain =
-  "flex min-w-0 flex-1 items-center overflow-hidden text-primary";
+  "flex min-w-0 flex-1 items-center overflow-clip [overflow-clip-margin:var(--border-width-default)] text-primary";
 
 export const taskListItemContentMain =
   "flex min-w-0 flex-1 items-center gap-md text-primary";
@@ -62,6 +63,13 @@ export const taskListItemTitle = taskListItemTitleByLayout.content;
  * shrink, overlap and fold instead.
  */
 export const taskListItemBadges = "flex shrink-0 items-center gap-xs";
+
+/**
+ * A sidebar row is one text line high: its 22px avatar and Loop chips stand
+ * centred over that 20px line instead of growing the row, so every row keeps
+ * the height its list lays it out at and rows never touch.
+ */
+export const taskListItemSidebarBadges = `${taskListItemBadges} h-5`;
 
 export const taskListItemTailContents = "contents";
 

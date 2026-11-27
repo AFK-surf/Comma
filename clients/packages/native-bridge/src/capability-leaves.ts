@@ -662,6 +662,11 @@ export interface BrowserSidebarOpenInput {
   cornerRadii?: BrowserSidebarCornerRadii | undefined;
   closeBeforeOpenSessionIds?: string[] | undefined;
   navigationRevision?: number | undefined;
+  /**
+   * Whether the view shows once it opens; absent: it shows. A page behind a
+   * full-window overlay opens hidden, so it loads without painting over it.
+   */
+  visible?: boolean | undefined;
 }
 
 export interface BrowserSidebarUpdateInput {
@@ -680,6 +685,10 @@ export interface BrowserSidebarCaptureInput {
 export interface BrowserSidebarOpenTabRequest {
   tabId: string;
   url: string;
+}
+
+export interface BrowserSidebarCloseTabRequest {
+  tabId: string;
 }
 
 /**
@@ -924,6 +933,20 @@ export const keepAwakeWhenLidClosedStatusSchema = z.enum([
 export type KeepAwakeWhenLidClosedStatus = z.output<
   typeof keepAwakeWhenLidClosedStatusSchema
 >;
+
+// macOS: whether Comma may use a privacy-protected resource (location, the
+// microphone). Main reads this back from the system on every state read; it is
+// never persisted and the renderer never writes it. `notDetermined`: macOS has
+// not asked about Comma yet, so a request shows its prompt. `denied`: off for
+// Comma (or the whole Mac); only System Settings can turn it on. `unknown`:
+// nothing to read on this system or build.
+export const systemPermissionStatusSchema = z.enum([
+  "authorized",
+  "notDetermined",
+  "denied",
+  "unknown",
+]);
+export type SystemPermissionStatus = z.output<typeof systemPermissionStatusSchema>;
 
 export const commaClientLocalePreferenceSchema = z.enum(["system", "en", "zh-CN"]);
 export const commaClientThemePreferenceSchema = z.enum([
@@ -1294,6 +1317,7 @@ export function withoutRetiredAppPreferences(
 export const commaDefaultHomeViewSchema = z.enum([
   "home",
   "inbox",
+  "people",
   "tasks",
   "drive",
   "apps",
@@ -1313,6 +1337,8 @@ export const commaClientSettingsSchema = z
     condensedWorkspaceSettingsVisible: z.boolean().default(false),
     // Debug: shows Settings › Voice › Calls (call voice, custom voice, Router calls).
     voiceLabsEnabled: z.boolean().default(false),
+    // Debug: shows People in primary navigation and collaborative Task controls.
+    peopleEnabled: z.boolean().default(false),
     // Reaches this person's own computers over the mesh, which their screens' cards and views need: on by default, off
     // or through Salix alone (`salix`, to test that path) in Settings › Debug. Read when the app starts.
     computerMesh: z.enum(["off", "on", "salix"]).default("on"),
@@ -1335,6 +1361,9 @@ export const commaClientSettingsSchema = z
     // The reader continued past the warning that the Router may use a profile
     // they turn on; later profiles turn on without it.
     routerProfileNoticeSeen: z.boolean().default(false),
+    // Sends this device's product analytics and error reports (PostHog). Read
+    // before analytics starts, so a switched-off app sends nothing at launch.
+    usageAnalyticsEnabled: z.boolean().default(true),
   })
   .strict();
 export const commaClientSettingsPatchSchema = z
@@ -1358,6 +1387,7 @@ export const commaClientSettingsPatchSchema = z
     computerUseScreenEnabled: z.boolean().optional(),
     condensedWorkspaceSettingsVisible: z.boolean().optional(),
     voiceLabsEnabled: z.boolean().optional(),
+    peopleEnabled: z.boolean().optional(),
     computerMesh: z.enum(["off", "on", "salix"]).optional(),
     meetingStartRecording: z.enum(["reminder", "auto"]).optional(),
     meetingHideRecorder: z.boolean().optional(),
@@ -1368,6 +1398,7 @@ export const commaClientSettingsPatchSchema = z
     sidebarNavOrder: z.array(z.string()).optional(),
     onboardingCompletedUserIds: z.array(z.string()).optional(),
     routerProfileNoticeSeen: z.boolean().optional(),
+    usageAnalyticsEnabled: z.boolean().optional(),
   })
   .strict()
   .refine((patch) => Object.keys(patch).length > 0, {
@@ -1399,6 +1430,8 @@ const mutableAppPreferencesSchema = z
     showInAirDrop: z.boolean(),
     showInDock: z.boolean(),
     showInMenuBar: z.boolean(),
+    /** macOS: whether Computer Use runs on a virtual desktop with the top notch island; off falls back to plain background mode. */
+    showComputerUseInNotch: z.boolean(),
     /** macOS: whether Comma shows running Tasks and AirDrop around the notch. */
     showInNotch: z.boolean(),
     /** Whether Quick Chat's shortcut (`clientSettings.quickChatShortcut`) or the menu-bar item opens it. */
@@ -1430,9 +1463,12 @@ export const appPreferencesSchema = mutableAppPreferencesSchema.extend({
   quickChatEnabled: z.boolean().default(true),
   revision: z.number().int().nonnegative().default(0),
   showInAirDrop: z.boolean().default(true),
+  showComputerUseInNotch: z.boolean().default(true),
   showInNotch: z.boolean().default(true),
   systemNotifications: z.boolean().default(true),
   systemNotificationsStatus: systemNotificationsStatusSchema.optional(),
+  systemLocationStatus: systemPermissionStatusSchema.optional(),
+  systemMicrophoneStatus: systemPermissionStatusSchema.optional(),
 });
 export const appPreferencesPatchSchema = mutableAppPreferencesSchema
   .partial()
@@ -1485,6 +1521,7 @@ export const defaultAppPreferences = appPreferencesSchema.parse({
   showInAirDrop: true,
   showInDock: true,
   showInMenuBar: true,
+  showComputerUseInNotch: true,
   showInNotch: true,
   systemNotifications: true,
 });
@@ -1605,6 +1642,7 @@ export const browserSidebarOpenInputSchema = z
     cornerRadii: browserSidebarCornerRadiiSchema.optional(),
     closeBeforeOpenSessionIds: browserSidebarCloseBeforeOpenSessionIdsSchema.optional(),
     navigationRevision: z.number().int().nonnegative().optional(),
+    visible: z.boolean().optional(),
   })
   .strict()
   .refine((input) => !input.closeBeforeOpenSessionIds?.includes(input.sessionId), {
@@ -1618,6 +1656,12 @@ export const browserSidebarOpenTabRequestSchema = z
     url: browserSidebarUrlSchema,
   })
   .strict() satisfies z.ZodType<BrowserSidebarOpenTabRequest>;
+
+export const browserSidebarCloseTabRequestSchema = z
+  .object({
+    tabId: browserSidebarTabIdSchema,
+  })
+  .strict() satisfies z.ZodType<BrowserSidebarCloseTabRequest>;
 
 export const browserSidebarUpdateInputSchema = z
   .object({
@@ -2126,6 +2170,70 @@ export const appPreferencesRequestNotificationAuthorizationCapability =
     sessionAdmissionRationale:
       "Asks the operating system to let Comma post notifications. No Session state is involved.",
     webFallback: "unsupported",
+  });
+
+/**
+ * The answer to a location or microphone request. `denied`: it is off for
+ * Comma (or, for location, the whole Mac), and System Settings is open on it.
+ * `unknown`: nothing to ask through; the read itself decides, as before.
+ */
+export const systemLocationAuthorizationSchema = z.enum([
+  "authorized",
+  "denied",
+  "unknown",
+]);
+export type SystemLocationAuthorization = z.output<
+  typeof systemLocationAuthorizationSchema
+>;
+
+// macOS prompts while it has not asked about Comma, and resolves with the
+// answer. Comma or Location Services already off: macOS never asks again, so
+// Main opens Location Services in System Settings and answers `denied`. Asked
+// before Settings › Share location turns on and before a location request card
+// shares, since Chromium neither prompts nor refuses without the grant.
+export const appPreferencesRequestLocationAuthorizationCapability =
+  defineNativeCapability({
+    bridge: { method: "requestLocationAuthorization", namespace: "appPreferences" },
+    channel: "comma:app-preferences:request-location-authorization",
+    handler: {
+      exportName: "AppPreferencesProvider",
+      member: "requestLocationAuthorization",
+      module: "../../../apps/electron/src/main/modules/native/index",
+      provider: "appPreferences",
+    },
+    id: "appPreferences.requestLocationAuthorization",
+    input: z.void(),
+    mock: "unknown",
+    output: systemLocationAuthorizationSchema,
+    permission: "app-preferences.settings",
+    sessionAdmission: "local_only",
+    sessionAdmissionRationale:
+      "Asks the operating system to let Comma read the device's position. No Session state is involved.",
+    webFallback: "unknown",
+  });
+
+// Like location: macOS prompts while it has not asked about Comma, and
+// resolves with the answer. Already off: macOS never asks again, so Main opens
+// Microphone in System Settings and answers `denied`.
+export const appPreferencesRequestMicrophoneAuthorizationCapability =
+  defineNativeCapability({
+    bridge: { method: "requestMicrophoneAuthorization", namespace: "appPreferences" },
+    channel: "comma:app-preferences:request-microphone-authorization",
+    handler: {
+      exportName: "AppPreferencesProvider",
+      member: "requestMicrophoneAuthorization",
+      module: "../../../apps/electron/src/main/modules/native/index",
+      provider: "appPreferences",
+    },
+    id: "appPreferences.requestMicrophoneAuthorization",
+    input: z.void(),
+    mock: "unknown",
+    output: systemLocationAuthorizationSchema,
+    permission: "app-preferences.settings",
+    sessionAdmission: "local_only",
+    sessionAdmissionRationale:
+      "Asks the operating system to let Comma use the microphone. No Session state is involved.",
+    webFallback: "unknown",
   });
 
 const unavailableConnectorScope = connectorScopeStateSchema.parse({
@@ -3665,6 +3773,8 @@ export type ClipboardReadTextResult = z.infer<typeof clipboardReadTextResultSche
 export const clipboardWriteTextInputSchema = z
   .object({
     text: z.string(),
+    /** The same content as HTML, for an editor that pastes rich text; an editor that does not takes `text`. */
+    html: z.string().max(4_000_000).optional(),
   })
   .strict();
 
@@ -3720,7 +3830,7 @@ export const clipboardWriteTextCapability = defineNativeCapability({
   permission: "clipboard.write",
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
-    "Writes plain text to the local operating-system clipboard without Session state or authenticated transport.",
+    "Writes plain text, and the same content as HTML when given, to the local operating-system clipboard without Session state or authenticated transport.",
   webFallback: { ok: true },
 });
 
@@ -4714,6 +4824,16 @@ export const browserSidebarOpenTabRequestedEvent = defineNativeEvent({
     url: "https://example.com/",
   },
   payload: browserSidebarOpenTabRequestSchema,
+  permission: browserSidebarOpenCapability.permission,
+  target: { role: "main-window", type: "role" },
+});
+
+export const browserSidebarCloseTabRequestedEvent = defineNativeEvent({
+  bridge: { method: "onCloseTabRequested", namespace: "browserSidebar" },
+  channel: "comma:browser-sidebar:close-tab-requested",
+  id: "browserSidebar.closeTabRequested",
+  mock: { tabId: "tab_mock" },
+  payload: browserSidebarCloseTabRequestSchema,
   permission: browserSidebarOpenCapability.permission,
   target: { role: "main-window", type: "role" },
 });
@@ -6728,9 +6848,12 @@ export const airDropStateLeaf = defineNativeState({
 // Settings › Task requests › Add someone nearby. Main finds the Comma
 // receivers around this computer, over AirDrop on a Mac and on the same local
 // network on any desktop, and sends a picked one an invite link
-// (`taskRequests.createInvite`) the way it was found. On the other computer
-// the link is held, not saved: the window shows the connect card, which accepts
-// the invite in the core and then answers, so the sender learns the answer.
+// (`taskRequests.createInvite`) the way it was found; a receiver the local
+// network cannot reach gets it over AirDrop when that reaches it, and is
+// otherwise reported `unreachable`. On the other computer the link is held, not
+// saved: Main brings the main window forward and it shows the connect card,
+// which accepts the invite in the core and then answers, so the sender learns
+// the answer.
 // Nothing here is a Session read; the core reads and accepts the invite.
 
 /** The token of a Comma invite link (`…invite=<token>`), as the core reads it (`taskRequestInviteToken`). */
@@ -6757,13 +6880,17 @@ export const nearbyStateSchema = z
           .strict()
       )
       .max(64),
-    /** Invites sent to peers: `asking` until the other person answers, `accepted` or `unanswered` after. */
+    /**
+     * Invites sent to peers: `asking` until the other person answers, `accepted`
+     * or `unanswered` (declined, or no answer in time) after; `unreachable` when
+     * the invite could not be delivered to their computer at all.
+     */
     asks: z
       .array(
         z
           .object({
             peerId: z.string().min(1).max(256),
-            status: z.enum(["asking", "accepted", "unanswered"]),
+            status: z.enum(["asking", "accepted", "unanswered", "unreachable"]),
           })
           .strict()
       )
@@ -6776,7 +6903,7 @@ export const nearbyStateSchema = z
             invite: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
             requestId: z.string().uuid(),
             senderName: z.string().max(160).optional(),
-            /** The window that shows the card; absent, any window does. */
+            /** The window that shows the card (the main window); absent, any window does. */
             surfaceId: z.string().min(1).max(256).optional(),
           })
           .strict()
@@ -8012,6 +8139,8 @@ export const nativeCapabilityRegistry = [
   appPreferencesOpenNotificationSettingsCapability,
   appPreferencesRefreshLaunchAtLoginCapability,
   appPreferencesRequestNotificationAuthorizationCapability,
+  appPreferencesRequestLocationAuthorizationCapability,
+  appPreferencesRequestMicrophoneAuthorizationCapability,
   appPreferencesUpdateCapability,
   connectorRuntimeStateCapability,
   connectorRuntimeScopeCapability,
@@ -8159,6 +8288,7 @@ export const nativeEventRegistry = [
   blenderStateChangedEvent,
   browserSidebarChangedEvent,
   browserSidebarOpenTabRequestedEvent,
+  browserSidebarCloseTabRequestedEvent,
   surfacesChangedEvent,
   surfacesWindowFullScreenChangedEvent,
   surfacesWindowMaximizedChangedEvent,

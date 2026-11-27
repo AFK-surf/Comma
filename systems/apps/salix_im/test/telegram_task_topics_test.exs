@@ -232,6 +232,7 @@ defmodule SalixIM.TelegramTaskTopicsTest do
 
     assert task_text(ctx.group, task) =~ "One more thing"
     assert_agent_input(router, "One more thing")
+    refute_agent_input(ctx.worker["agent_id"], "One more thing")
   end
 
   test "wrong peer, Worker caller, and retired connection cannot open or continue a topic", ctx do

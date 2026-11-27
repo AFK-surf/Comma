@@ -71,10 +71,32 @@ defmodule SalixAgent.ImageRefsTest do
           {:ok,
            %{"ok" => true, "image_base64" => Base.encode64(<<137, 80, 78, 71, 13, 10, 26, 10>>)}}
 
+        # The connector's own answer, as `readImage` gives it.
+        {:connector, error} ->
+          {:ok, %{"ok" => false, "error" => error}}
+
         reason ->
           {:error, reason}
       end
     end
+  end
+
+  test "late stored results cannot replace a visible placeholder with a foreign body" do
+    {:ok, domain} = SalixIFC.Codec.decode_label(["scope|connect|alice"])
+    projection = %{destinations: [domain], facts: SalixIFC.Facts.new()}
+
+    foreign = %{
+      "result" => %{"content" => "FOREIGN", "ifc" => %{"label" => ["scope|connect|bob"]}}
+    }
+
+    resolver = fn _ -> {:ok, foreign} end
+
+    assert ImageRefs.reader(%{async_result_resolver: resolver}).({:request_result, 7}) ==
+             {:ok, foreign}
+
+    assert ImageRefs.reader(%{async_result_resolver: resolver, ifc_projection: projection}).(
+             {:request_result, 7}
+           ) == :error
   end
 
   test "async device screenshot reaches each model protocol without a workspace copy", %{
@@ -180,10 +202,21 @@ defmodule SalixAgent.ImageRefsTest do
       assert body =~ Base.encode64(@png)
     end
 
-    Process.put(:device_image_failure, :no_environment)
-    [unavailable] = ImageRefs.inline([message], ctx)
-    assert unavailable.content =~ "device_offline_or_screenshot_expired"
-    refute unavailable.content =~ Base.encode64(@png)
+    # Each failure keeps its own reason: an offline device is not an expired
+    # screenshot.
+    for {failure, reason} <- [
+          {:no_environment, "reason=device_unreachable"},
+          {:disconnected, "reason=device_unreachable"},
+          {:timeout, "reason=device_timeout"},
+          {{:connector, "screenshot expired or unavailable"}, "reason=screenshot_expired"},
+          {{:connector, "screenshot unavailable"}, "reason=device_read_failed"}
+        ] do
+      Process.put(:device_image_failure, failure)
+      [unavailable] = ImageRefs.inline([message], ctx)
+      assert unavailable.content =~ reason
+      refute unavailable.content =~ Base.encode64(@png)
+    end
+
     Process.delete(:device_image_failure)
     Process.put(:screenshot_reads, 0)
     forged = %{message | role: "assistant"}
@@ -193,6 +226,31 @@ defmodule SalixAgent.ImageRefsTest do
     [unsupported] = ImageRefs.inline([message], %{ctx | model_supports_images: false})
     assert unsupported.content =~ "model_does_not_support_images"
     assert Process.get(:screenshot_reads) == 0
+
+    # A session's later requests keep the screenshot as the first one sent it,
+    # with no device read, also after the device deleted it: the request
+    # prefix does not change, so the provider's prompt cache still applies.
+    session_ctx =
+      Map.put(ctx, :session_id, "ses1_cached_#{SystemsRuntime.Proc.unique_integer([:positive])}")
+
+    [first] = ImageRefs.inline([message], session_ctx)
+    assert first.content =~ Base.encode64(@png)
+    assert Process.get(:screenshot_reads) == 1
+    Process.put(:device_image_failure, {:connector, "screenshot expired or unavailable"})
+    [later] = ImageRefs.inline([message], session_ctx)
+    assert later.content == first.content
+    assert Process.get(:screenshot_reads) == 1
+
+    # Another session reads the device itself.
+    [other] =
+      ImageRefs.inline([message], %{
+        session_ctx
+        | session_id: "ses1_other_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      })
+
+    assert other.content =~ "reason=screenshot_expired"
+    assert Process.get(:screenshot_reads) == 2
+    Process.delete(:device_image_failure)
   end
 
   setup do
@@ -223,6 +281,36 @@ defmodule SalixAgent.ImageRefsTest do
     {:ok, ev} = AgentWorkspace.prepare_write(agent, "/pic.png", @png)
     assert {:ok, _} = AgentWorkspace.seed_operation(agent, "text-only-seed", %{}, [ev])
     agent
+  end
+
+  test "projected image reads reject a path replaced by a foreign-labelled blob", %{agent: agent} do
+    {:ok, domain} = SalixIFC.Codec.decode_label(["scope|connect|alice"])
+    projection = %{destinations: [domain], facts: SalixIFC.Facts.new()}
+    ctx = %{agent_id: agent, model_supports_images: true, ifc_projection: projection}
+
+    block = %{
+      "type" => "image",
+      "file_ref" => %{"environment_id" => "vfs", "path" => "/pic.png"},
+      "mime_type" => "image/png"
+    }
+
+    reader = ImageRefs.reader(ctx)
+    assert reader.({:request_image, block}) == []
+    {:ok, event} = AgentWorkspace.prepare_write(agent, "/pic.png", @png)
+
+    assert {:ok, _} =
+             AgentWorkspace.seed_operation(agent, "foreign-replacement", %{}, [
+               Map.put(event, "ifc_label", ["scope|connect|bob"])
+             ])
+
+    assert reader.({:request_image, block}) == []
+
+    assert {:ok, _} =
+             AgentWorkspace.seed_operation(agent, "visible-replacement", %{}, [
+               Map.put(event, "ifc_label", ["scope|connect|alice"])
+             ])
+
+    assert [%{"type" => "image_url"}] = reader.({:request_image, block})
   end
 
   defp image_read_content(path, size) do
@@ -366,6 +454,74 @@ defmodule SalixAgent.ImageRefsTest do
 
     assert Base.decode64!(b64) == @png
     assert text["type"] == "text"
+  end
+
+  # An async image result replaces its completion notice's content. The model
+  # must still see which call completed, or it waits for a call that is done
+  # and fetches the same image again.
+  test "an async image completion keeps the notice's call, status and source ref", %{agent: a} do
+    fetched = image_read_content("/pic.png", 8)
+
+    read_record =
+      Jason.encode!(%{
+        "tool_call_id" => "read",
+        "tool_name" => "fs.read_file",
+        "status" => "completed",
+        "result" => %{
+          "id" => "read",
+          "name" => "fs.read_file",
+          "status" => "completed",
+          "content" => fetched
+        }
+      })
+
+    for {call, name, content} <- [
+          {"call_fetch", "im_api.slack.fetch_file", fetched},
+          {"call_result", "tool_call.get_result", read_record}
+        ] do
+      record = %{
+        "seq" => 56,
+        "tool_call_id" => call,
+        "tool_name" => name,
+        "status" => "completed",
+        "error" => false,
+        "result" => %{
+          "id" => call,
+          "name" => name,
+          "status" => "completed",
+          "content" => content,
+          "error" => false
+        }
+      }
+
+      message = %{
+        id: 12,
+        role: "runtime",
+        type: "tool_call_completed",
+        source_tool_call_id: call,
+        result_seq: 56,
+        content: ~s([src:a-56]\n{"status":"completed","tool_call_id":"#{call}"})
+      }
+
+      ctx = %{agent_id: a, async_result_resolver: fn 56 -> {:ok, record} end}
+      [projected] = ImageRefs.inline([message], ctx)
+      assert projected.role == "user"
+
+      assert [%{"type" => "text", "text" => "[src:a-56]\n" <> notice}, image, _summary] =
+               Jason.decode!(projected.content)
+
+      assert %{
+               "type" => "tool_call_completed",
+               "tool_call_id" => ^call,
+               "tool_name" => ^name,
+               "status" => "completed"
+             } = Jason.decode!(notice)
+
+      assert %{"type" => "image_url", "image_url" => %{"url" => "data:image/png;base64," <> b64}} =
+               image
+
+      assert Base.decode64!(b64) == @png
+    end
   end
 
   test "fs.read_file materializes a bounded preview, preserving the VFS original", %{agent: a} do

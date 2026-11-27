@@ -147,6 +147,35 @@ describe("useResource failures", () => {
     expect(result.current[0]).toMatchObject({ state: "error" });
   });
 
+  it("retryAndWait() settles only when its read has ended, failed or not", async () => {
+    const loads = controlledLoads<string>();
+    const { result } = renderHook(() => useResource("k", loads.load));
+    await waitFor(() => expect(loads.pending.length).toBe(1));
+    act(() => loads.pending.shift()?.resolve("v1"));
+    await waitFor(() =>
+      expect(result.current[0]).toMatchObject({ state: "ready", data: "v1" })
+    );
+
+    let settled = 0;
+    act(() => {
+      void result.current[3]().then(() => (settled += 1));
+    });
+    await waitFor(() => expect(loads.pending.length).toBe(1));
+    await act(async () => {});
+    expect(settled).toBe(0);
+    await act(async () => loads.pending.shift()?.resolve("v2"));
+    expect(settled).toBe(1);
+    expect(result.current[0]).toMatchObject({ state: "ready", data: "v2" });
+
+    act(() => {
+      void result.current[3]().then(() => (settled += 1));
+    });
+    await waitFor(() => expect(loads.pending.length).toBe(1));
+    await act(async () => loads.pending.shift()?.reject(new Error("503")));
+    expect(settled).toBe(2);
+    expect(result.current[0]).toMatchObject({ state: "error" });
+  });
+
   it("a failed first read shows the error", async () => {
     const loads = controlledLoads<string>();
     const { result } = renderHook(() => useResource("k", loads.load));

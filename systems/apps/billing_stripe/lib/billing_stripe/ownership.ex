@@ -14,6 +14,9 @@ defmodule BillingStripe.Ownership do
       surfaces == ["comma"] ->
         {:ok, :comma}
 
+      surfaces == ["bridge"] ->
+        {:ok, :bridge}
+
       surfaces != [] ->
         {:ok, :foreign}
 
@@ -66,6 +69,7 @@ defmodule BillingStripe.Ownership do
 
       cond do
         surface == "comma" -> {:ok, :comma}
+        surface == "bridge" -> {:ok, :bridge}
         is_binary(surface) -> {:ok, :foreign}
         true -> payment_owner(pi)
       end
@@ -120,6 +124,7 @@ defmodule BillingStripe.Ownership do
               {false, [session]} ->
                 case get_in(session, ["metadata", "surface"]) do
                   "comma" -> {:ok, :comma}
+                  "bridge" -> {:ok, :bridge}
                   surface when is_binary(surface) -> {:ok, :foreign}
                   _ -> provider_owner("checkout.session.completed", session)
                 end
@@ -141,6 +146,7 @@ defmodule BillingStripe.Ownership do
         with {:ok, object} <- api().retrieve_invoice(invoice, %{}, opts()) do
           case BillingStripe.Events.billing_metadata(object)["surface"] do
             "comma" -> {:ok, :comma}
+            "bridge" -> {:ok, :bridge}
             surface when is_binary(surface) -> {:ok, :foreign}
             _ -> object_catalog_owner(object)
           end
@@ -168,6 +174,9 @@ defmodule BillingStripe.Ownership do
                     cond do
                       surface == "comma" ->
                         :comma
+
+                      surface == "bridge" or key == "bridge_for_teams_seat_quarterly_v1" ->
+                        :bridge
 
                       is_binary(surface) ->
                         :foreign
@@ -199,6 +208,7 @@ defmodule BillingStripe.Ownership do
 
         {:ok, values} when values != [] ->
           cond do
+            Enum.all?(values, &(&1 == :bridge)) -> {:ok, :bridge}
             Enum.all?(values, &(&1 == :foreign)) -> {:ok, :foreign}
             :comma in values -> {:error, :stripe_event_owner_conflict}
             true -> {:error, :stripe_event_ownership_unknown}

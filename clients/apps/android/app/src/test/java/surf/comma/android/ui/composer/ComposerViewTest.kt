@@ -766,6 +766,36 @@ class ComposerViewTest {
         assertEquals("hello brave new".length, composer.field.selectionStart)
     }
 
+    @Test fun `recording shows a check in send's corner that ends it`() = withComposer { activity, _, composer ->
+        // Springs land at once, so the check's scale and opacity are read at rest.
+        val durationScale = android.animation.ValueAnimator::class.java
+            .getDeclaredMethod("setDurationScale", Float::class.javaPrimitiveType)
+        durationScale.invoke(null, 0f)
+        try { recordAndEndWithTheCheck(activity, composer) } finally { durationScale.invoke(null, 1f) }
+    }
+
+    private fun recordAndEndWithTheCheck(activity: ComponentActivity, composer: ComposerView) {
+        dictating(activity, composer) { "words" }
+        val send = byDescription(composer, activity.getString(R.string.composer_send))
+        press(byDescription(composer, activity.getString(R.string.composer_dictate)))
+        val capsule = descendants(composer).filterIsInstance<DictationCapsule>().single()
+        val check = descendants(capsule).filterIsInstance<android.widget.ImageView>().single()
+        assertEquals(1f, check.alpha)
+        val sendBox = boxIn(composer, send)
+        val checkBox = boxIn(composer, check)
+        assertEquals(sendBox.centerX(), checkBox.centerX())
+        assertEquals(sendBox.centerY(), checkBox.centerY())
+        // A tap on the check reaches the capsule, which ends the recording.
+        val at = boxIn(capsule, check)
+        for ((action, time) in listOf(android.view.MotionEvent.ACTION_DOWN to 0L, android.view.MotionEvent.ACTION_UP to 10L)) {
+            capsule.dispatchTouchEvent(android.view.MotionEvent.obtain(0L, time, action,
+                at.exactCenterX(), at.exactCenterY(), 0))
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("words", composer.field.text.toString())
+        assertEquals(0f, check.alpha)
+    }
+
     @Test fun `plus cancels a dictation, holds send meanwhile, and leaves the draft`() = withComposer { activity, _, composer ->
         val capture = dictating(activity, composer) { "words" }
         var sent = 0

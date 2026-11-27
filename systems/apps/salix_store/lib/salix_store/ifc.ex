@@ -105,6 +105,7 @@ defmodule SalixStore.IFC do
       field(:canonical_scope_id, :string)
       field(:display_name, :string)
       field(:members_complete, :boolean)
+      field(:bot_present, :boolean)
       field(:revision, :integer)
       field(:observed_at, :utc_datetime_usec)
     end
@@ -375,6 +376,29 @@ defmodule SalixStore.IFC do
     else
       {:error, :invalid_scope_kind}
     end
+  end
+
+  @doc """
+  Records whether this connection's bot is in a conversation the store
+  already knows. A conversation with no structure yet gets none from this:
+  the next structure read stores it, and the refresh after it reads the bot.
+  The structure's own observation time is left alone.
+  """
+  @spec observe_bot_presence(String.t(), String.t(), String.t(), String.t(), boolean()) ::
+          :ok | {:error, :unavailable}
+  def observe_bot_presence(tenant_id, group_id, connect_id, scope_id, present)
+      when is_boolean(present) do
+    from(f in ScopeFact,
+      where:
+        f.tenant_id == ^tenant_id and f.group_id == ^group_id and
+          f.connect_id == ^connect_id and f.scope_id == ^scope_id and
+          (is_nil(f.bot_present) or f.bot_present != ^present)
+    )
+    |> Repo.update_all(set: [bot_present: present], inc: [revision: 1])
+
+    :ok
+  rescue
+    _ -> {:error, :unavailable}
   end
 
   @doc """
@@ -889,6 +913,7 @@ defmodule SalixStore.IFC do
       canonical_scope_id: fact && fact.canonical_scope_id,
       display_name: fact && fact.display_name,
       members: if(fact && fact.members_complete, do: Enum.sort(members), else: :unknown),
+      bot_present: fact && fact.bot_present,
       # When the projection last heard from the provider. The caller owns the
       # freshness bound: only it knows what re-observing costs, and a member
       # set past its bound must read as unknown rather than as an answer.

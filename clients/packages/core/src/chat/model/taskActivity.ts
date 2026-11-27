@@ -40,6 +40,7 @@ export type TaskActivityMessage = Pick<
   | "display"
   | "messageId"
   | "milestones"
+  | "participantId"
   | "role"
   | "routerRequest"
   | "seq"
@@ -167,7 +168,11 @@ export function withEarlier(
   };
 }
 
-type Awaiting = { entry: ChatTaskActivityEntry; author: string | undefined };
+type Awaiting = {
+  entry: ChatTaskActivityEntry;
+  author: string | undefined;
+  participantId: string | undefined;
+};
 
 function readActivity(
   messages: readonly TaskActivityMessage[],
@@ -200,8 +205,12 @@ function readActivity(
       awaiting = [];
     }
     if (shown) {
-      awaiting = awaiting.filter(({ entry, author }) => {
-        if (message.actorType !== "agent" || message.actorId !== author) return true;
+      awaiting = awaiting.filter(({ entry, author, participantId }) => {
+        const sameAuthor =
+          participantId && message.participantId
+            ? message.participantId === participantId
+            : message.actorId === author;
+        if (message.actorType !== "agent" || !sameAuthor) return true;
         entry.messageId = message.messageId;
         return false;
       });
@@ -219,7 +228,12 @@ function readActivity(
         ...(lastShown === undefined ? {} : { messageId: lastShown }),
       };
       current.entries.push(entry);
-      if (!shown) awaiting.push({ entry, author: message.actorId });
+      if (!shown)
+        awaiting.push({
+          entry,
+          author: message.actorId,
+          participantId: message.participantId,
+        });
       any = true;
     }
   }

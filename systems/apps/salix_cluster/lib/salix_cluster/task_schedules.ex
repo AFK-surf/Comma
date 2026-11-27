@@ -517,7 +517,12 @@ defmodule SalixCluster.TaskSchedules do
   defp initial_task_message(conversation_id, delegator_agent_id, attrs, schedule) do
     %{
       "kind" => "message",
-      "content" => initial_task_content(schedule["command"], schedule["schedule_id"]),
+      "content" =>
+        initial_task_content(
+          schedule["command"],
+          schedule["schedule_id"],
+          attrs["initial_attachments"]
+        ),
       "metadata" => initial_task_metadata(attrs, schedule["schedule_id"]),
       "client_request_id" => "delegate-task-" <> conversation_id,
       "created_at" => SystemsClock.system_time(:millisecond)
@@ -567,6 +572,14 @@ defmodule SalixCluster.TaskSchedules do
   end
 
   defp initial_task_content(command, _schedule_id), do: command
+
+  defp initial_task_content(command, schedule_id, attachments)
+       when schedule_id in [nil, ""] and is_list(attachments) and attachments != [] do
+    [%{"type" => "text", "text" => command} | attachments]
+  end
+
+  defp initial_task_content(command, schedule_id, _attachments),
+    do: initial_task_content(command, schedule_id)
 
   defp initial_task_metadata(attrs, schedule_id) do
     metadata =

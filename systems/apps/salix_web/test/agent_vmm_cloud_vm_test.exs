@@ -6,7 +6,7 @@ defmodule SalixWeb.AgentVMMCloudVMTest do
   alias SalixEnv.ComputeReconciler
   alias SalixStore.{AgentVMM, Repo}
   alias SalixStore.Compute, as: GroupCompute
-  alias SalixWeb.CloudVM.RuntimeLifecycle
+  alias SalixWeb.GroupStationLifecycle, as: RuntimeLifecycle
   alias SalixWeb.ComputeProviders.Cloudflare
 
   # The Host's container, as SalixEnv.ComputeProviders.AgentVMM drives it.

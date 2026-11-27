@@ -7,9 +7,13 @@ import { Toggle } from "@comma/ui/components/toggle";
 import { Dialog } from "@comma/ui/components/dialog";
 import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { qqMenuScopes, type BftQqMenuItem } from "./api";
+import { memberScopes, qqMenuScopes, type BftQqMenuItem } from "./api";
 import type {
   BftApi,
+  BftGrantDays,
+  BftMemberGrant,
+  BftMemberProvider,
+  BftMemberScope,
   BftRunChecks,
   BftSignalClaim,
   BftSlackCredentials,
@@ -21,7 +25,8 @@ import type {
 import { useConnectionConfirm } from "./connectionConfirm";
 import { CodeBlock, CopyButton, DialogError, writeErrorMessage } from "./dialogs";
 import { showFlash } from "./flash";
-import { formatRelative, humanize } from "./format";
+import { PersonPicker } from "./DataPolicyPage";
+import { formatDateTime, formatRelative, humanize } from "./format";
 import { messages } from "./messages";
 import { orgHref, projectHref } from "./navSpec";
 import { useApi, useLastReady, type Resource } from "./resource";
@@ -48,6 +53,7 @@ type Slack = NonNullable<Data["messaging"]["slack"]>;
 type Lark = NonNullable<Data["messaging"]["lark"]>;
 type Qq = NonNullable<Data["messaging"]["qq"]>;
 type Telegram = NonNullable<Data["messaging"]["telegram"]>;
+type Wecom = NonNullable<Data["messaging"]["wecom"]>;
 type Tone = "ok" | "warn" | "error" | "neutral";
 
 /** The messaging sections a `?provider=` address scrolls to. */
@@ -57,6 +63,7 @@ export const messagingProviders = [
   "slack",
   "qq",
   "telegram",
+  "wecom",
 ] as const;
 
 /** The section a `?provider=` deep link names, if it is one of this page's. */
@@ -140,42 +147,60 @@ interface Writes {
   project: string;
   manage: boolean;
   orgAdmin: boolean;
-  notify: (notice: string) => void;
-  fail: (error: unknown) => void;
+  /**
+   * Says `notice` in the section the write was made in and reads the page
+   * again; settles when that read ends. A failed read keeps the last data and
+   * says it may be out of date.
+   */
+  notify: (notice: string, section?: string) => Promise<void>;
+  fail: (error: unknown, section?: string) => void;
 }
 
+/** `writes` whose notices and refusals show in the section `section`. */
+const inSection = (writes: Writes, section: string): Writes => ({
+  ...writes,
+  notify: (notice) => writes.notify(notice, section),
+  fail: (error) => writes.fail(error, section),
+});
+
 /**
- * An Agent Swarm's connections: where people reach it (Feishu, Lark, Slack, QQ, Telegram
- * and Signal), the third-party accounts its agents act with (managed OAuth
+ * An Agent Swarm's connections: where people reach it (Feishu, Lark, Slack, QQ, Telegram,
+ * WeCom and Signal), the third-party accounts its agents act with (managed OAuth
  * and Composio), and the organization's Tailscale network its agents reach.
  * Swarm admins connect and change them; everyone else reads.
- * `?provider=feishu|lark|slack|qq|telegram` opens the page at that messaging section.
+ * `?provider=feishu|lark|slack|qq|telegram|wecom` opens the page at that messaging section.
  */
 export function SwarmConnectionsPage({
   org,
   project,
   first,
   onRetry,
+  onReread,
 }: {
   org: string;
   project: string;
   first: Resource<Data>;
   onRetry: () => void;
+  /** Reads the page again; settles when that read has ended. */
+  onReread: () => Promise<void>;
 }) {
   const { data, resource, stale } = useLastReady(first);
   const path = projectHref(org, project, "/connections");
+  // A write's notice shows in its section at once; the page is read again,
+  // and a dialog that made the write stays open until that read ends.
   const notify = useCallback(
-    (notice: string) => {
-      showFlash({ kind: "info", text: notice }, path);
-      onRetry();
+    (notice: string, section?: string) => {
+      showFlash({ kind: "info", text: notice, ...(section ? { section } : {}) }, path);
+      return onReread();
     },
-    [path, onRetry]
+    [path, onReread]
   );
-  // A refused write is said above the page, which is read again.
+  // A refused write is said in its section, and the page is read again.
   const fail = useCallback(
-    (error: unknown) => {
+    (error: unknown, section?: string) => {
       const text = writeErrorMessage(error);
-      if (text) showFlash({ kind: "error", text }, path);
+      if (text)
+        showFlash({ kind: "error", text, ...(section ? { section } : {}) }, path);
       onRetry();
     },
     [path, onRetry]
@@ -225,43 +250,65 @@ export function SwarmConnectionsPage({
                       <FeishuSection
                         feishu={page.messaging.feishu}
                         swarm={page.project.name}
-                        writes={writes}
+                        writes={inSection(writes, "feishu")}
                       />
                     ) : null}
                     {page.messaging.lark ? (
-                      <LarkSection lark={page.messaging.lark} writes={writes} />
+                      <LarkSection
+                        lark={page.messaging.lark}
+                        writes={inSection(writes, "lark")}
+                      />
                     ) : null}
                     {page.messaging.slack ? (
-                      <SlackSection slack={page.messaging.slack} writes={writes} />
+                      <SlackSection
+                        slack={page.messaging.slack}
+                        writes={inSection(writes, "slack")}
+                      />
                     ) : null}
                     {page.messaging.qq ? (
-                      <QqSection qq={page.messaging.qq} writes={writes} />
+                      <QqSection
+                        qq={page.messaging.qq}
+                        writes={inSection(writes, "qq")}
+                      />
                     ) : null}
                     {page.messaging.telegram ? (
                       <TelegramSection
                         telegram={page.messaging.telegram}
-                        writes={writes}
+                        writes={inSection(writes, "telegram")}
+                      />
+                    ) : null}
+                    {page.messaging.wecom ? (
+                      <WecomSection
+                        wecom={page.messaging.wecom}
+                        writes={inSection(writes, "wecom")}
                       />
                     ) : null}
                   </>
                 ) : (
                   <SectionState onRetry={onRetry} status={page.messaging.status} />
                 )}
-                <SignalSection signal={page.signal} writes={writes} />
+                <SignalSection
+                  signal={page.signal}
+                  writes={inSection(writes, "signal")}
+                />
               </Group>
               <Group note={t.accountsNote} title={t.accountsTitle}>
                 <AccountsSection
                   accounts={page.accounts}
                   onRetry={onRetry}
-                  writes={writes}
+                  writes={inSection(writes, "accounts")}
                 />
-                <ComposioSection composio={page.composio} writes={writes} />
+                <ComposioSection
+                  composio={page.composio}
+                  writes={inSection(writes, "composio")}
+                />
               </Group>
               <Group note={t.networkNote} title={t.networkTitle}>
                 <TailnetSection
+                  onReread={onReread}
                   onRetry={onRetry}
                   tailnet={page.tailnet}
-                  writes={writes}
+                  writes={inSection(writes, "tailnet")}
                 />
               </Group>
             </div>
@@ -321,7 +368,7 @@ const relative = (iso: string | null) => (iso && formatRelative(iso)) || null;
 
 // ---- Feishu ----
 
-/** A Feishu, Lark, Slack, QQ or Telegram connect's writes: turn it on or off, or delete it after confirming. */
+/** A Feishu, Lark, Slack, QQ, Telegram or WeCom connect's writes: turn it on or off, or delete it after confirming. */
 function ConnectMenu({
   connect,
   writes,
@@ -458,6 +505,7 @@ function FeishuSection({
                 manage={manage}
                 onUpdate={() => setUpdating(connect.connect_id)}
               />
+              <ConnectMembers connect={connect} provider="feishu" writes={writes} />
             </li>
           ))}
         </ul>
@@ -538,6 +586,7 @@ function FeishuConnectForm({ feishu, writes }: { feishu: Feishu; writes: Writes 
   const write = useWrite();
   const [appId, setAppId] = useState(feishu.apps[0]?.app_id);
   const [name, setName] = useState("");
+  const [scope, setScope] = useState<BftMemberScope>("organization");
   const chosen = feishu.apps.find((app) => app.app_id === appId) ?? feishu.apps[0];
 
   if (feishu.apps.length === 0) {
@@ -580,6 +629,12 @@ function FeishuConnectForm({ feishu, writes }: { feishu: Feishu; writes: Writes 
           placeholder={chosen?.name ?? ""}
           value={name}
         />
+        <MemberScopeField
+          disabled={write.busy}
+          onChange={setScope}
+          provider="feishu"
+          value={scope}
+        />
       </div>
       <div className="bft-form-actions">
         {write.error ? (
@@ -599,10 +654,12 @@ function FeishuConnectForm({ feishu, writes }: { feishu: Feishu; writes: Writes 
                 api.createFeishuConnect(writes.org, writes.project, {
                   app_id: chosen.app_id,
                   app_name: name.trim(),
+                  member_scope: scope,
                 }),
               ({ notice }) => {
                 setName("");
-                writes.notify(notice);
+                setScope("organization");
+                return writes.notify(notice);
               }
             );
           }}
@@ -755,6 +812,7 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
                   manage={manage}
                   onUpdate={() => setUpdating(connect.connect_id)}
                 />
+                <ConnectMembers connect={connect} provider="lark" writes={writes} />
               </li>
             );
           })}
@@ -819,10 +877,7 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
       {adding ? (
         <LarkDialog
           onClose={() => setAdding(false)}
-          onCreated={(notice) => {
-            setAdding(false);
-            writes.notify(notice);
-          }}
+          onCreated={(notice) => writes.notify(notice).then(() => setAdding(false))}
           writes={writes}
         />
       ) : null}
@@ -879,8 +934,13 @@ const scanPlatforms = {
     failed: t.larkScanFailed,
     begin: (api: BftApi, org: string, project: string, connectId?: string) =>
       api.beginLarkRegistration(org, project, connectId),
-    poll: (api: BftApi, org: string, project: string, registration: string) =>
-      api.pollLarkRegistration(org, project, registration),
+    poll: (
+      api: BftApi,
+      org: string,
+      project: string,
+      registration: string,
+      memberScope?: BftMemberScope
+    ) => api.pollLarkRegistration(org, project, registration, memberScope),
   },
   feishu: {
     title: t.feishuScanTitle,
@@ -893,8 +953,13 @@ const scanPlatforms = {
     failed: t.feishuScanFailed,
     begin: (api: BftApi, org: string, project: string, connectId?: string) =>
       api.beginFeishuRegistration(org, project, connectId),
-    poll: (api: BftApi, org: string, project: string, registration: string) =>
-      api.pollFeishuRegistration(org, project, registration),
+    poll: (
+      api: BftApi,
+      org: string,
+      project: string,
+      registration: string,
+      memberScope?: BftMemberScope
+    ) => api.pollFeishuRegistration(org, project, registration, memberScope),
   },
 };
 
@@ -921,8 +986,11 @@ function ScanDialog({
   const words = scanPlatforms[platform];
   const [scan, setScan] = useState<Scan>({ state: "starting" });
   const [attempt, setAttempt] = useState(0);
-  const latest = useRef({ onConnected });
-  latest.current = { onConnected };
+  // A new app's connect gets the scope chosen when the scan is confirmed; each
+  // ask sends the current choice, so changing it keeps the same code.
+  const [scope, setScope] = useState<BftMemberScope>("organization");
+  const latest = useRef({ onConnected, scope });
+  latest.current = { onConnected, scope };
 
   useEffect(() => {
     let live = true;
@@ -932,26 +1000,34 @@ function ScanDialog({
     };
     const ask = (registration: string, url: string, intervalMs: number) => {
       timer = setTimeout(() => {
-        words.poll(api, writes.org, writes.project, registration).then(
-          (answer) => {
-            if (!live) return;
-            if (answer.state === "connected") {
-              latest.current.onConnected(answer.notice ?? "");
-            } else if (answer.state === "pending" && answer.registration) {
-              const next = answer.slow_down ? intervalMs + 5_000 : intervalMs;
-              setScan({
-                state: "waiting",
-                url,
-                registration: answer.registration,
-                intervalMs: next,
-              });
-              ask(answer.registration, url, next);
-            } else if (answer.state === "denied") end(words.denied);
-            else if (answer.state === "failed") end(words.failed(answer.error ?? ""));
-            else end(t.larkScanExpired);
-          },
-          (error: unknown) => end(writeErrorMessage(error) ?? t.larkScanExpired)
-        );
+        words
+          .poll(
+            api,
+            writes.org,
+            writes.project,
+            registration,
+            connectId ? undefined : latest.current.scope
+          )
+          .then(
+            (answer) => {
+              if (!live) return;
+              if (answer.state === "connected") {
+                latest.current.onConnected(answer.notice ?? "");
+              } else if (answer.state === "pending" && answer.registration) {
+                const next = answer.slow_down ? intervalMs + 5_000 : intervalMs;
+                setScan({
+                  state: "waiting",
+                  url,
+                  registration: answer.registration,
+                  intervalMs: next,
+                });
+                ask(answer.registration, url, next);
+              } else if (answer.state === "denied") end(words.denied);
+              else if (answer.state === "failed") end(words.failed(answer.error ?? ""));
+              else end(t.larkScanExpired);
+            },
+            (error: unknown) => end(writeErrorMessage(error) ?? t.larkScanExpired)
+          );
       }, intervalMs);
     };
     words.begin(api, writes.org, writes.project, connectId).then(
@@ -1004,6 +1080,14 @@ function ScanDialog({
       title={connectId ? words.updateTitle : words.title}
     >
       <div className="bft-form bft-lark-scan">
+        {connectId ? null : (
+          <MemberScopeField
+            disabled={false}
+            onChange={setScope}
+            provider={platform}
+            value={scope}
+          />
+        )}
         {scan.state === "waiting" ? (
           <>
             <figure
@@ -1051,11 +1135,12 @@ function LarkDialog({
 }: {
   writes: Writes;
   onClose: () => void;
-  onCreated: (notice: string) => void;
+  onCreated: (notice: string) => Promise<void>;
 }) {
   const api = useApi();
   const write = useWrite();
   const [draft, setDraft] = useState(emptyLarkDraft);
+  const [scope, setScope] = useState<BftMemberScope>("organization");
   // What the last submit found missing; a refused write's field errors otherwise.
   const [missing, setMissing] = useState<ReturnType<typeof larkDraftErrors>>({});
   const errors = { ...write.fields, ...missing };
@@ -1079,7 +1164,11 @@ function LarkDialog({
         setMissing(lacks);
         if (Object.keys(lacks).length > 0) return;
         write.run(
-          () => api.createLarkConnect(writes.org, writes.project, connect),
+          () =>
+            api.createLarkConnect(writes.org, writes.project, {
+              ...connect,
+              member_scope: scope,
+            }),
           ({ notice }) => onCreated(notice)
         );
       }}
@@ -1114,6 +1203,12 @@ function LarkDialog({
         label={t.larkEncryptKey}
         onChange={(encrypt_key) => change({ encrypt_key })}
         value={draft.encrypt_key}
+      />
+      <MemberScopeField
+        disabled={write.busy}
+        onChange={setScope}
+        provider="lark"
+        value={scope}
       />
     </FormDialog>
   );
@@ -1232,6 +1327,7 @@ function SlackSection({ slack, writes }: { slack: Slack; writes: Writes }) {
                 ])}
               </span>
               <SlackAutoJoin connect={connect} writes={writes} />
+              <ConnectMembers connect={connect} provider="slack" writes={writes} />
             </li>
           ))}
         </ul>
@@ -1247,10 +1343,7 @@ function SlackSection({ slack, writes }: { slack: Slack; writes: Writes }) {
       {adding ? (
         <SlackDialog
           onClose={() => setAdding(false)}
-          onCreated={(notice) => {
-            setAdding(false);
-            writes.notify(notice);
-          }}
+          onCreated={(notice) => writes.notify(notice).then(() => setAdding(false))}
           slack={slack}
           writes={writes}
         />
@@ -1289,6 +1382,258 @@ function SlackAutoJoin({
       }}
       size="sm"
     />
+  );
+}
+
+// ---- Members ----
+
+const memberScopeItems = memberScopes.map((id) => ({
+  id,
+  label: t.memberScopes[id],
+}));
+// A Slack workspace's people, or a Feishu or Lark tenant's.
+const memberPlace = (provider: BftMemberProvider) =>
+  provider === "slack" ? "workspace" : "tenant";
+
+/** The Members choice of a new connection; its people are added after it connects. */
+function MemberScopeField({
+  provider,
+  value,
+  onChange,
+  disabled,
+}: {
+  provider: BftMemberProvider;
+  value: BftMemberScope;
+  onChange: (scope: BftMemberScope) => void;
+  disabled: boolean;
+}) {
+  return (
+    <Dropdown
+      className="bft-form-field"
+      disabled={disabled}
+      hint={
+        value === "external"
+          ? t.memberScopeNewExternal
+          : t.memberScopeHints[memberPlace(provider)].organization
+      }
+      items={memberScopeItems}
+      label={t.members}
+      onChange={(id) => onChange(id as BftMemberScope)}
+      size="sm"
+      value={value}
+    />
+  );
+}
+
+/**
+ * Whether a connect's people are the organization's, who may have the agents
+ * use the swarm's computers, or external, who may chat but use the computers
+ * only when an admin adds them here. A change saves at once.
+ */
+function ConnectMembers({
+  provider,
+  connect,
+  writes,
+}: {
+  provider: BftMemberProvider;
+  connect: {
+    connect_id: string;
+    member_scope: BftMemberScope;
+    member_grants: BftMemberGrant[];
+  };
+  writes: Writes;
+}) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const { org, project, manage } = writes;
+  const id = connect.connect_id;
+  const save = (write: () => Promise<{ notice: string }>) => {
+    setBusy(true);
+    void write()
+      .then(({ notice }) => writes.notify(notice), writes.fail)
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="bft-connect-members">
+      <div className="bft-connect-members-scope">
+        <span className="bft-field-label">{t.members}</span>
+        <Dropdown
+          ariaLabel={t.members}
+          disabled={!manage || busy}
+          items={memberScopeItems}
+          onChange={(scope) => {
+            if (scope !== connect.member_scope)
+              save(() =>
+                api.setMemberScope(org, project, provider, id, scope as BftMemberScope)
+              );
+          }}
+          size="xs"
+          value={connect.member_scope}
+          width="content"
+        />
+      </div>
+      <span className="bft-setting-row-sub">
+        {t.memberScopeHints[memberPlace(provider)][connect.member_scope]}
+      </span>
+      {connect.member_scope === "external" ? (
+        <div className="bft-connect-grants">
+          <div className="bft-connect-grants-head">
+            <h4 className="bft-field-label">{t.memberGrants}</h4>
+            {manage ? (
+              <Button
+                hierarchy="secondary-gray"
+                isDisabled={busy}
+                onPress={() => setAdding(true)}
+                size="xs"
+              >
+                {t.addMemberGrant}
+              </Button>
+            ) : null}
+          </div>
+          {connect.member_grants.length === 0 ? (
+            <p className="bft-quiet bft-quiet-inline">{t.memberGrantsNone}</p>
+          ) : (
+            <ul aria-label={t.memberGrants} className="bft-list">
+              {connect.member_grants.map((grant) => {
+                const main = grant.name ?? grant.email ?? grant.subject;
+                return (
+                  <li className="bft-setting-row" key={grant.subject}>
+                    <span className="bft-setting-row-main">
+                      <span className="bft-truncate">{main}</span>
+                      {grant.name && grant.email ? (
+                        <span className="bft-setting-row-sub bft-truncate">
+                          {grant.email}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="bft-setting-row-sub bft-connect-grant-expiry">
+                      {grant.expires_at === null
+                        ? t.noExpiry
+                        : t.expiresOn(formatDateTime(grant.expires_at))}
+                    </span>
+                    {manage ? (
+                      <button
+                        aria-label={t.removeGrant(main)}
+                        className="bft-btn bft-btn-sm"
+                        disabled={busy}
+                        onClick={() =>
+                          save(() =>
+                            api.revokeMemberAccess(
+                              org,
+                              project,
+                              provider,
+                              id,
+                              grant.subject
+                            )
+                          )
+                        }
+                        type="button"
+                      >
+                        {messages.common.remove}
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
+      {adding ? (
+        <GrantDialog
+          connectId={id}
+          onClose={() => setAdding(false)}
+          provider={provider}
+          writes={writes}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const grantDays = ["none", "1", "7", "30"] as const;
+
+/** Adds one person of an external connect, found by name, email or a pasted id. */
+function GrantDialog({
+  provider,
+  connectId,
+  writes,
+  onClose,
+}: {
+  provider: BftMemberProvider;
+  connectId: string;
+  writes: Writes;
+  onClose: () => void;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const [person, setPerson] = useState<{
+    id: string;
+    name: string | null;
+    email: string | null;
+  } | null>(null);
+  const [days, setDays] = useState<(typeof grantDays)[number]>("none");
+  const [missing, setMissing] = useState(false);
+  const { org, project } = writes;
+
+  return (
+    <FormDialog
+      description={t.addMemberGrantNote}
+      onClose={() => {
+        if (!write.busy) onClose();
+      }}
+      onSubmit={() => {
+        if (!person) return setMissing(true);
+        write.run(
+          () =>
+            api.grantMemberAccess(org, project, provider, connectId, {
+              subject: person.id,
+              expires_in_days: (days === "none" ? null : Number(days)) as BftGrantDays,
+            }),
+          ({ notice }) => writes.notify(notice).then(onClose)
+        );
+      }}
+      submitLabel={t.addMemberGrant}
+      title={t.addMemberGrant}
+      write={write}
+    >
+      <PersonPicker
+        disabled={write.busy}
+        onChange={(chosen) => {
+          setPerson(chosen);
+          if (chosen) setMissing(false);
+        }}
+        search={(query) =>
+          api
+            .connectPeople(org, project, provider, connectId, query)
+            .then(({ people, complete }) => ({
+              people: people.map(({ subject, name, email }) => ({
+                id: subject,
+                name,
+                email,
+              })),
+              complete,
+            }))
+        }
+        value={person}
+      />
+      {missing ? (
+        <p className="bft-dialog-error" role="alert">
+          {messages.dataPolicy.personRequired}
+        </p>
+      ) : null}
+      <Dropdown
+        className="bft-form-field"
+        disabled={write.busy}
+        items={grantDays.map((id) => ({ id, label: t.grantExpiries[id] ?? id }))}
+        label={t.grantExpiry}
+        onChange={(id) => setDays(id as (typeof grantDays)[number])}
+        size="sm"
+        value={days}
+      />
+    </FormDialog>
   );
 }
 
@@ -1411,10 +1756,7 @@ function QqSection({ qq, writes }: { qq: Qq; writes: Writes }) {
       {adding ? (
         <QqDialog
           onClose={() => setAdding(false)}
-          onCreated={(notice) => {
-            setAdding(false);
-            writes.notify(notice);
-          }}
+          onCreated={(notice) => writes.notify(notice).then(() => setAdding(false))}
           writes={writes}
         />
       ) : null}
@@ -1422,10 +1764,7 @@ function QqSection({ qq, writes }: { qq: Qq; writes: Writes }) {
         <QqMenuDialog
           connect={menuOf}
           onClose={() => setMenuOf(null)}
-          onSaved={(notice) => {
-            setMenuOf(null);
-            writes.notify(notice);
-          }}
+          onSaved={(notice) => writes.notify(notice).then(() => setMenuOf(null))}
           writes={writes}
         />
       ) : null}
@@ -1463,7 +1802,7 @@ function QqMenuDialog({
   connect: Qq["connects"][number];
   writes: Writes;
   onClose: () => void;
-  onSaved: (notice: string) => void;
+  onSaved: (notice: string) => Promise<void>;
 }) {
   const api = useApi();
   const write = useWrite();
@@ -1580,7 +1919,7 @@ function QqDialog({
 }: {
   writes: Writes;
   onClose: () => void;
-  onCreated: (notice: string) => void;
+  onCreated: (notice: string) => Promise<void>;
 }) {
   const api = useApi();
   const write = useWrite();
@@ -1616,6 +1955,140 @@ function QqDialog({
         label={t.qqAppSecret}
         onChange={(app_secret) => setDraft((value) => ({ ...value, app_secret }))}
         value={draft.app_secret}
+      />
+    </FormDialog>
+  );
+}
+
+// ---- WeCom ----
+
+/**
+ * The swarm's WeCom AI bots. A bot is connected with its Bot ID and Secret;
+ * Comma holds its long connection, so nothing goes back into WeCom.
+ */
+function WecomSection({ wecom, writes }: { wecom: Wecom; writes: Writes }) {
+  const confirm = useConfirm();
+  const [adding, setAdding] = useState(false);
+  const { manage } = writes;
+
+  return (
+    <FormSection
+      action={
+        manage ? (
+          <Button hierarchy="primary" onPress={() => setAdding(true)} size="xs">
+            {t.addWecom}
+          </Button>
+        ) : (
+          <Status tone={routeTones[wecom.route.status]}>
+            {t.routeStatuses[wecom.route.status]}
+          </Status>
+        )
+      }
+      description={t.wecomNote}
+      id="wecom"
+      level={3}
+      title={t.wecomTitle}
+    >
+      {wecom.connects.length === 0 ? (
+        <p className="bft-quiet bft-quiet-inline">{t.wecomEmpty}</p>
+      ) : (
+        <ul aria-label={t.wecomConnects} className="bft-list bft-connects">
+          {wecom.connects.map((connect) => (
+            <li className="bft-connect" key={connect.connect_id}>
+              <div className="bft-connect-head">
+                <span className="bft-connect-main">
+                  <span className="bft-connect-title">
+                    <span className="bft-truncate">
+                      {connect.bot_id ?? connect.connect_id}
+                    </span>
+                    <Status
+                      tone={connect.disabled ? "error" : connect.online ? "ok" : "warn"}
+                    >
+                      {connect.disabled
+                        ? t.disabledState
+                        : connect.online
+                          ? t.wecomOnline
+                          : t.wecomOffline}
+                    </Status>
+                  </span>
+                  <span className="bft-setting-row-sub bft-truncate">
+                    {[
+                      relative(connect.updated_at)
+                        ? t.updated(relative(connect.updated_at) ?? "")
+                        : null,
+                      flags([[t.wecomSecret, connect.secret_configured]]),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </span>
+                {manage ? (
+                  <ConnectMenu connect={connect} onAsk={confirm.ask} writes={writes} />
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {wecom.connects.length > 0 ? (
+        <p className="bft-form-section-note">{t.wecomSetupHint}</p>
+      ) : null}
+      {adding ? (
+        <WecomDialog
+          onClose={() => setAdding(false)}
+          onCreated={(notice) => writes.notify(notice).then(() => setAdding(false))}
+          writes={writes}
+        />
+      ) : null}
+      {confirm.dialog}
+    </FormSection>
+  );
+}
+
+/** Connects a WeCom AI bot with its Bot ID and Secret. */
+function WecomDialog({
+  writes,
+  onClose,
+  onCreated,
+}: {
+  writes: Writes;
+  onClose: () => void;
+  onCreated: (notice: string) => Promise<void>;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const [draft, setDraft] = useState({ bot_id: "", secret: "" });
+
+  return (
+    <FormDialog
+      description={t.wecomDialogNote}
+      onClose={onClose}
+      onSubmit={() =>
+        write.run(
+          () =>
+            api.createWecomConnect(writes.org, writes.project, {
+              bot_id: draft.bot_id.trim(),
+              secret: draft.secret.trim(),
+            }),
+          ({ notice }) => onCreated(notice)
+        )
+      }
+      submitLabel={t.connect}
+      title={t.addWecom}
+      write={write}
+    >
+      <TextField
+        error={write.fields.app_id}
+        label={t.wecomBotId}
+        onChange={(bot_id) => setDraft((value) => ({ ...value, bot_id }))}
+        value={draft.bot_id}
+      />
+      <SecretField
+        configured={false}
+        error={write.fields.app_secret}
+        label={t.wecomSecret}
+        onChange={(secret) => setDraft((value) => ({ ...value, secret }))}
+        value={draft.secret}
       />
     </FormDialog>
   );
@@ -1696,10 +2169,7 @@ function TelegramSection({ telegram, writes }: { telegram: Telegram; writes: Wri
       {adding ? (
         <TelegramDialog
           onClose={() => setAdding(false)}
-          onCreated={(notice) => {
-            setAdding(false);
-            writes.notify(notice);
-          }}
+          onCreated={(notice) => writes.notify(notice).then(() => setAdding(false))}
           writes={writes}
         />
       ) : null}
@@ -1865,7 +2335,7 @@ function TelegramDialog({
 }: {
   writes: Writes;
   onClose: () => void;
-  onCreated: (notice: string) => void;
+  onCreated: (notice: string) => Promise<void>;
 }) {
   const api = useApi();
   const write = useWrite();
@@ -1927,7 +2397,7 @@ function SlackDialog({
   slack: Slack;
   writes: Writes;
   onClose: () => void;
-  onCreated: (notice: string) => void;
+  onCreated: (notice: string) => Promise<void>;
 }) {
   const api = useApi();
   const write = useWrite();
@@ -1941,6 +2411,7 @@ function SlackDialog({
   // A Router's id, `inboundTasks`, or null for the swarm's Router.
   const [inbound, setInbound] = useState(() => initialInbound(slack));
   const [modelKey, setModelKey] = useState("");
+  const [scope, setScope] = useState<BftMemberScope>("organization");
   const manifest = useManifest(writes.org, writes.project, draft.app_name, slack);
   const set = (patch: Partial<BftSlackCredentials>) =>
     setDraft((value) => ({ ...value, ...patch }));
@@ -1967,6 +2438,7 @@ function SlackDialog({
               app_id: draft.app_id.trim(),
               client_id: draft.client_id.trim(),
               ...target,
+              member_scope: scope,
             }),
           ({ notice }) => onCreated(notice)
         )
@@ -2104,6 +2576,12 @@ function SlackDialog({
             <FieldError message={write.fields.inbound_tasks} />
           </div>
         ) : null}
+        <MemberScopeField
+          disabled={write.busy}
+          onChange={setScope}
+          provider="slack"
+          value={scope}
+        />
       </div>
     </FormDialog>
   );
@@ -2334,10 +2812,12 @@ function TailnetSection({
   tailnet,
   writes,
   onRetry,
+  onReread,
 }: {
   tailnet: BftTailnetSection;
   writes: Writes;
   onRetry: () => void;
+  onReread: () => Promise<void>;
 }) {
   const api = useApi();
   const confirm = useConfirm();
@@ -2465,10 +2945,7 @@ function TailnetSection({
       {editing ? (
         <TailnetDialog
           onClose={() => setEditing(false)}
-          onSaved={() => {
-            setEditing(false);
-            onRetry();
-          }}
+          onSaved={() => onReread().then(() => setEditing(false))}
           tailnet={tailnet}
           writes={writes}
         />
@@ -2487,7 +2964,7 @@ function TailnetDialog({
   tailnet: BftTailnetSection;
   writes: Writes;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: () => Promise<void>;
 }) {
   const api = useApi();
   const write = useWrite();

@@ -102,6 +102,64 @@ import CommaCore
         XCTAssertTrue(harness.core.calls("billing.checkout").isEmpty)
     }
 
+    func testUsageBuysOnlyWhatTheAppStoreSellsAndLeavesAWebSubscriptionToTheWeb() async throws {
+        let harness = try StoreHarness(); PhoneRoutineUsageFixtures.configure(harness.core); await harness.start()
+        harness.core.serve("billing") { _ in PhoneRoutineUsageFixtures.storeBilling() }
+        let model = PhoneUsageModel(store: harness.store, workspace: try XCTUnwrap(harness.store.workspace))
+        let following = Task { await model.follow() }; defer { following.cancel() }
+        try await ready { model.subscriptionPlans.count == 3 }
+        // A plan the App Store does not sell is not offered.
+        XCTAssertEqual(model.subscriptionPlans.compactMap { $0.string("plan_key") }, ["plus_monthly", "pro_monthly", "pro_yearly"])
+        XCTAssertEqual(model.creditPacks.compactMap { $0.string("plan_key") }, ["pack_4m"])
+        XCTAssertTrue(model.isCurrent(model.subscriptionPlans[0]))
+        XCTAssertFalse(model.managedElsewhere)
+
+        harness.core.on("billing.storePurchase") { _ in ["status": "recorded"] }
+        await model.buy(model.subscriptionPlans[1])
+        XCTAssertEqual(harness.core.calls("billing.storePurchase").first?["plan"] as? String, "pro_monthly")
+        XCTAssertEqual(harness.core.calls("billing.storePurchase").first?["workspace"] as? String, "w1")
+        XCTAssertEqual(model.notice, .recorded)
+        XCTAssertNil(model.purchasing)
+
+        // The server refuses an App Store subscription while a web one runs: the page says so, not as an error.
+        harness.core.on("billing.storePurchase") { _ in
+            throw CoreError(code: "subscription_active_elsewhere", message: "conflict", status: 409)
+        }
+        await model.buy(model.subscriptionPlans[1])
+        XCTAssertEqual(model.notice, .managedElsewhere)
+        XCTAssertNil(model.scope.error)
+
+        harness.core.publish("billing", PhoneRoutineUsageFixtures.storeBilling(provider: "stripe"))
+        try await ready { model.managedElsewhere }
+        XCTAssertTrue(harness.core.calls("billing.checkout").isEmpty)
+    }
+
+    func testUsageHidesEmptyStoreSectionsShowsUnrecordableNoticeAndAllowsSubscribingOverRedeemedCode() async throws {
+        let harness = try StoreHarness(); PhoneRoutineUsageFixtures.configure(harness.core); await harness.start()
+        harness.core.serve("billing") { _ in
+            var emptyStore = PhoneRoutineUsageFixtures.storeBilling(provider: "comma")
+            emptyStore["store"] = ["provider": "apple", "prices": [String: String]()]
+            return emptyStore
+        }
+        let model = PhoneUsageModel(store: harness.store, workspace: try XCTUnwrap(harness.store.workspace))
+        let following = Task { await model.follow() }; defer { following.cancel() }
+        try await ready { model.storePrices != nil }
+        XCTAssertFalse(model.showStoreSection)
+        XCTAssertFalse(model.showPlansSection)
+        XCTAssertFalse(model.showCreditPacksSection)
+
+        // A redeemed code (`comma`) does not mark the matching App Store plan as current.
+        harness.core.publish("billing", PhoneRoutineUsageFixtures.storeBilling(provider: "comma"))
+        try await ready { model.subscriptionPlans.count == 3 }
+        XCTAssertTrue(model.showStoreSection)
+        XCTAssertFalse(model.isCurrent(model.subscriptionPlans[0]))
+
+        harness.core.on("billing.storePurchase") { _ in ["status": "unrecordable"] }
+        await model.buy(model.subscriptionPlans[0])
+        XCTAssertEqual(model.notice, .unrecordable)
+        XCTAssertNil(model.scope.error)
+    }
+
     private func ready(_ condition: @escaping @MainActor () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }

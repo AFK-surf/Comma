@@ -76,6 +76,9 @@ systems/apps/salix_agent/priv/tailcat_testpeer
 # Tailnet gateway and its test peer, built from systems/tailnet-gateway.
 systems/apps/salix_agent/priv/tailnet_gateway
 systems/apps/salix_agent/priv/tailnet_testpeer
+# Agent VMM worker and its test Host, built from systems/gateway/salix-vmm-worker.
+systems/apps/salix_store/priv/salix_vmm_worker
+systems/apps/salix_store/priv/salix_vmm_test_host
 systems/apps/salix_web/priv/cloud_vm_connector.tar.gz
 
 # Self-hosted instance credentials.

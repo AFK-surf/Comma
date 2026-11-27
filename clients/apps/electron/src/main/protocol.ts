@@ -74,6 +74,7 @@ const rendererAuthorityHeaders = new Set([
   "x-comma-client-surface",
   "x-comma-expected-auth-session-id",
   "x-comma-session-lifecycle-version",
+  "x-comma-session-transport",
   sessionPresenceExpectationHeader,
 ]);
 
@@ -348,6 +349,10 @@ export async function proxyCommaApiRequest(
   const targetUrl = new URL(`${url.pathname}${url.search}`, lease.audience);
   const headers = rendererRequestHeaders(request.headers);
   headers.set("authorization", `Bearer ${lease.token}`);
+  // The server takes a bearer on the account's session endpoints only when the request says it is one. Only the
+  // core's requests come here with such a path: the renderer's are refused before.
+  if (isRendererAuthPath(url.pathname))
+    headers.set("x-comma-session-transport", "bearer");
 
   // Ends the upstream request once its answer is let go (the body cancelled) or not passed on: cancelling the body of a
   // `net.fetch` answer alone leaves its connection open. The caller's signal cannot do it then: the requests of

@@ -1064,6 +1064,20 @@ defmodule SalixWeb.CodingSandboxesTest do
     due!(other)
     assert_received {:l4es, "POST", ^path, _, body}
     assert body["env"]["COMMA_GIT_USER_EMAIL"] == "owner@example.com"
+
+    # A repo-less sandbox never receives the host's personal email or name in env.
+    repoless = %{
+      r
+      | conversation_id: "cnv_repoless",
+        device_id: Store.device_id("cnv_repoless"),
+        repo: nil
+    }
+
+    :ok = CodingSandboxes.reserve(Map.put(repoless, :requester, "usr_ann"))
+    due!(repoless)
+    assert_received {:l4es, "POST", ^path, _, body}
+    refute Map.has_key?(body["env"], "COMMA_GIT_USER_NAME")
+    refute Map.has_key?(body["env"], "COMMA_GIT_USER_EMAIL")
   end
 
   test "with a release's image manifest, the workspace gets that image, its older ones removed",
@@ -1208,7 +1222,7 @@ defmodule SalixWeb.CodingSandboxesTest do
     # The same members, synced lately: nothing is asked again; others are synced.
     assert_received {:l4es, "GET", ^members, _, _}
     {:ok, same} = Members.members(nil, nil)
-    assert :ok = SalixWeb.L4ES.set_members(r.group_id, same)
+    assert :ok = SalixWeb.L4ES.set_members(r.group_id, Enum.reverse(same))
     refute_received {:l4es, "GET", ^members, _, _}
 
     Answers.push({"GET", members}, 200, %{
@@ -1217,6 +1231,15 @@ defmodule SalixWeb.CodingSandboxesTest do
 
     assert :ok = SalixWeb.L4ES.set_members(r.group_id, [%{subject: "usr_kept"}])
     assert_received {:l4es, "GET", ^members, _, _}
+
+    # Returning to a previous set must restore it, not reuse that set's old cache entry.
+    Answers.push({"GET", members}, 200, %{
+      "members" => [%{"provider" => "comma", "subject" => "usr_kept"}]
+    })
+
+    assert :ok = SalixWeb.L4ES.set_members(r.group_id, same)
+    assert_received {:l4es, "GET", ^members, _, _}
+    assert_received {:l4es, "POST", ^members, _, %{"subject" => "usr_new"}}
   end
 
   test "members L4ES could not take hold no sandbox back", %{reservation: r} do
@@ -1286,6 +1309,7 @@ defmodule SalixWeb.CodingSandboxesTest do
     # The one trace of a station that connected without readying its Workload.
     log = capture_log(fn -> :ok = CodingSandboxes.connected(old) end)
     assert log =~ "station connected but its Workload was not marked ready"
+
     assert log =~
              "tenant=#{r.tenant_id} device=#{r.device_id} workload=#{w.id} generation=#{w.generation} run=old-run"
 
@@ -1456,7 +1480,7 @@ defmodule SalixWeb.CodingSandboxesTest do
 
     assert workload(r).spec["facts"]["usage"]["value"] == usage
 
-    # A page that says the Session made no model calls is kept as that.
+    # A page that says nil usage never erases previously recorded monotonic usage.
     :ok =
       CodingSandboxes.remember(
         r.tenant_id,
@@ -1465,7 +1489,7 @@ defmodule SalixWeb.CodingSandboxesTest do
         DateTime.add(at, 2, :second)
       )
 
-    assert workload(r).spec["facts"]["usage"]["value"] == nil
+    assert workload(r).spec["facts"]["usage"]["value"] == usage
   end
 
   test "a sandbox of a Task that ended without its sandbox knowing stops once idle",
@@ -1688,11 +1712,13 @@ defmodule SalixWeb.CodingSandboxesTest do
     assert w.spec["state"] == "starting"
     assert w.spec["created"] == false
 
-    # Made again by the same name, on a new disk.
+    # Made again on a new disk, by a new name: L4ES keeps the deleted one's
+    # until its node confirms the delete.
+    remade = CodingSandboxes.sandbox_name("cnv_code", w.generation) <> "-r1"
     w = due!(r)
     assert_received {:l4es, "POST", _, _, %{"name" => ^name}}
-    assert_received {:l4es, "POST", _, _, %{"name" => ^name}}
-    assert w.spec["sandbox"] == name
+    assert_received {:l4es, "POST", _, _, %{"name" => ^remade}}
+    assert w.spec["sandbox"] == remade
     assert w.spec["created"] == true
   end
 
@@ -1730,22 +1756,23 @@ defmodule SalixWeb.CodingSandboxesTest do
     assert told =~ "made again on a new disk"
     assert told =~ "unpushed commits"
 
-    # The draining node has not confirmed the destroy yet: the name is still
-    # stopping, so the create is retried, without a second delete.
-    Answers.push("POST", 409, %{"error" => "The sandbox is still stopping."})
-    for _ <- 1..2, do: Answers.push({"GET", sandbox}, 200, %{"state" => "deleting"})
+    # The draining node keeps the old name until it confirms the destroy, which
+    # a node down for maintenance does not do for hours: the new sandbox takes
+    # a name of its own, which any node takes. Its start budget runs from the
+    # remake: 330 s after the wake it is still starting.
+    remade = CodingSandboxes.sandbox_name("cnv_code", w.generation) <> "-r1"
     SystemsClock.advance(30_000)
     w = due!(r)
-    assert w.spec["created"] == false
-    refute_received {:l4es, "DELETE", _, _, _}
-
-    # Made again by its name, a new sandbox that any node takes. Its start
-    # budget runs from the remake: 330 s after the wake it is still starting.
-    SystemsClock.advance(30_000)
-    w = due!(r)
-    assert_received {:l4es, "POST", _, _, %{"name" => ^name}}
+    assert_received {:l4es, "POST", _, _, %{"name" => ^remade}}
+    refute_received {:l4es, "POST", _, _, %{"name" => ^name}}
+    assert w.spec["sandbox"] == remade
     assert w.spec["created"] == true
-    Answers.push({"GET", sandbox}, 200, %{"state" => "scheduled", "data_status" => "unknown"})
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{
+      "state" => "scheduled",
+      "data_status" => "unknown"
+    })
+
     SystemsClock.advance(120_000)
     w = due!(r)
     assert w.spec["state"] == "starting"
@@ -1814,6 +1841,49 @@ defmodule SalixWeb.CodingSandboxesTest do
     assert w.spec["state"] == "starting"
     assert w.spec["created"] == true
     refute_received {:l4es, "DELETE", _, _, _}
+  end
+
+  test "a start that runs out of its budget says what it waited for", %{reservation: r} do
+    :ok = CodingSandboxes.reserve(r)
+    due!(r)
+    sandbox = sandbox_path(r)
+
+    # No node had room: the Task is told so, not only that 5 minutes passed.
+    Answers.push({"GET", sandbox}, 200, %{"state" => "pending", "data_status" => "unknown"})
+    SystemsClock.advance(30_000)
+    assert due!(r).spec["reason"] == "no L4ES node had room for it"
+
+    # A node took it and it runs, but its station has not connected.
+    Answers.push({"GET", sandbox}, 200, %{"state" => "running", "data_status" => "unknown"})
+    SystemsClock.advance(30_000)
+    assert due!(r).spec["reason"] == "the sandbox runs, but its station has not connected"
+
+    SystemsClock.advance(300_000)
+    assert due!(r).spec["state"] == "failed"
+
+    assert [%{"content" => told}] = Task.messages()
+
+    assert told ==
+             "The sandbox could not run: the sandbox did not start within 5 minutes " <>
+               "(the sandbox runs, but its station has not connected). Reply to try again."
+  end
+
+  test "a station with no account for the Task's runtime says which account the workspace lacks",
+       %{reservation: r} do
+    SystemsRuntime.put_env(
+      :salix_web,
+      :coding_invite_result,
+      {:error, "task.invite: no claude profile configured"}
+    )
+
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :coding_invite_result) end)
+    :ok = CodingSandboxes.reserve(r)
+    due!(r)
+    connect!(r)
+    assert workload(r).spec["state"] == "failed"
+    assert [%{"content" => told}] = Task.messages()
+    assert told =~ "the workspace lends a sandbox no claude account"
+    assert told =~ "Settings > Model & API"
   end
 
   # The Task ends with its sandbox up, as a Router completes it.
@@ -2124,6 +2194,151 @@ defmodule SalixWeb.CodingSandboxesTest do
     assert refused.spec["state"] == "ended"
     assert refused.spec["reopened"] == nil
     assert %{"metadata" => %{"kind" => "sandbox_notice"}} = List.last(Task.messages())
+  end
+
+  @image_broke "reading system image: error decoding response body: end of file before message length reached"
+
+  test "a new sandbox L4ES failed to start is made again as a new one, and the Task is not told",
+       %{reservation: r} do
+    :ok = CodingSandboxes.reserve(r)
+    first = due!(r).spec["sandbox"]
+    assert_received {:l4es, "POST", _, _, %{"name" => ^first}}
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{
+      "state" => "failed",
+      "data_status" => "unknown",
+      "failure" => @image_broke
+    })
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{"state" => "failed"})
+    w = due!(r)
+    assert w.spec["state"] == "starting"
+    assert w.spec["created"] == false
+    assert w.spec["reason"] =~ "L4ES failed to start it: reading system image"
+    assert_received {:l4es, "DELETE", path, _, _}
+    assert path =~ first
+
+    # Made again under a name of its own; its station connects.
+    w = due!(r)
+    remade = w.spec["sandbox"]
+    refute remade == first
+    assert_received {:l4es, "POST", _, _, %{"name" => ^remade}}
+    connect!(r)
+    assert workload(r).spec["state"] == "ready"
+    assert Task.messages() == []
+  end
+
+  test "a woken sandbox L4ES failed to start on its disk fails at once, keeping the disk",
+       %{reservation: r} do
+    stopped!(r)
+    due!(r)
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{
+      "state" => "failed",
+      "data_status" => "retained",
+      "failure" => @image_broke
+    })
+
+    assert due!(r).spec["state"] == "failed"
+    refute_received {:l4es, "DELETE", _, _, _}
+    assert [%{"content" => told}] = Task.messages()
+    assert told =~ "The sandbox could not run: the sandbox stopped: reading system image"
+  end
+
+  test "a woken sandbox whose disk ran fails at once though L4ES reports its data unknown",
+       %{reservation: r} do
+    # A node's reboot resets the data status to unknown while the disk is
+    # still there: Salix knows the disk ran, and keeps it.
+    stopped!(r)
+    due!(r)
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{
+      "state" => "failed",
+      "data_status" => "unknown",
+      "failure" => @image_broke
+    })
+
+    assert due!(r).spec["state"] == "failed"
+    refute_received {:l4es, "DELETE", _, _, _}
+    assert [%{"content" => _told}] = Task.messages()
+  end
+
+  test "a sandbox recorded before disk generations were kept is never remade on a failed start",
+       %{reservation: r} do
+    # A Workload from an earlier release has no `disk_generation`: its disk may
+    # hold the Task's work whatever L4ES reports (a reboot reports `unknown`),
+    # so it is kept.
+    :ok = CodingSandboxes.reserve(r)
+    due!(r)
+
+    {:ok, _} =
+      Store.update(workload(r).id, fn w -> {:ok, Map.delete(w.spec, "disk_generation")} end)
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{
+      "state" => "failed",
+      "data_status" => "unknown",
+      "failure" => @image_broke
+    })
+
+    assert due!(r).spec["state"] == "failed"
+    refute_received {:l4es, "DELETE", _, _, _}
+  end
+
+  test "a woken sandbox whose disk L4ES reports missing is made again when it fails to start",
+       %{reservation: r} do
+    stopped!(r)
+    due!(r)
+    failed = %{"state" => "failed", "data_status" => "missing", "failure" => @image_broke}
+    Answers.push({"GET", sandbox_path(r)}, 200, failed)
+    Answers.push({"GET", sandbox_path(r)}, 200, failed)
+    w = due!(r)
+    assert w.spec["state"] == "starting"
+    assert w.spec["created"] == false
+    assert_received {:l4es, "DELETE", _, _, _}
+    assert Task.messages() == []
+  end
+
+  test "a retry runs within the first start's budget: past it, the start fails",
+       %{reservation: r} do
+    :ok = CodingSandboxes.reserve(r)
+    due!(r)
+    failed = %{"state" => "failed", "data_status" => "unknown", "failure" => @image_broke}
+    Answers.push({"GET", sandbox_path(r)}, 200, failed)
+    Answers.push({"GET", sandbox_path(r)}, 200, failed)
+    assert due!(r).spec["created"] == false
+
+    # The remake sets no new budget: 5 minutes after the first start, it fails.
+    SystemsClock.advance(301_000)
+    w = due!(r)
+    assert w.spec["state"] == "failed"
+    assert [%{"content" => told}] = Task.messages()
+
+    assert told =~
+             "did not start within 5 minutes (the sandbox is made again: L4ES failed to start it"
+  end
+
+  test "a new sandbox L4ES fails to start again and again fails after two more tries",
+       %{reservation: r} do
+    :ok = CodingSandboxes.reserve(r)
+    due!(r)
+
+    for _ <- 1..2 do
+      failed = %{"state" => "failed", "data_status" => "unknown", "failure" => @image_broke}
+      Answers.push({"GET", sandbox_path(r)}, 200, failed)
+      Answers.push({"GET", sandbox_path(r)}, 200, failed)
+      assert due!(r).spec["created"] == false
+      assert due!(r).spec["created"] == true
+    end
+
+    Answers.push({"GET", sandbox_path(r)}, 200, %{
+      "state" => "failed",
+      "data_status" => "unknown",
+      "failure" => @image_broke
+    })
+
+    assert due!(r).spec["state"] == "failed"
+    assert [%{"content" => told}] = Task.messages()
+    assert told =~ "the sandbox stopped: reading system image"
   end
 
   test "a ready sandbox that L4ES stopped is lost", %{reservation: r} do

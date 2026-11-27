@@ -35,6 +35,9 @@ function workerBootstrap(resources: string[], data: unknown, state: unknown) {
     });
   }
   const post = globalThis.postMessage.bind(globalThis);
+  // The Worker runs from here: the host times the script, not the browser
+  // starting this thread.
+  post({ type: "started" });
   const clone = globalThis.structuredClone.bind(globalThis);
   const measure = JSON.stringify;
   const encode = TextEncoder.prototype.encode.bind(new TextEncoder());
@@ -406,6 +409,9 @@ function runtimeBootstrap(
         timeZone,
         copy,
         cardState,
+        mapTiles,
+        mapCredit,
+        mapSnapshots,
       } = initial.data;
       applyTokens(tokens);
       cardProgress = cardState;
@@ -417,6 +423,24 @@ function runtimeBootstrap(
           timeZone: typeof timeZone === "string" ? timeZone.slice(0, 64) : "",
           copy: copy && typeof copy === "object" ? copy : {},
           icons: icons && typeof icons === "object" ? icons : {},
+          // Map cards draw these tiles; a host may name its own provider and credit,
+          // or draw each map's base itself.
+          ...(mapSnapshots === true
+            ? {
+                mapSnapshots: true,
+                mapCredit: typeof mapCredit === "string" ? mapCredit.slice(0, 80) : "",
+              }
+            : typeof mapTiles === "string" && /^https:\/\/[^\s"'<>]+$/.test(mapTiles)
+              ? {
+                  mapTiles,
+                  mapCredit:
+                    typeof mapCredit === "string" ? mapCredit.slice(0, 80) : "",
+                }
+              : {
+                  mapTiles:
+                    "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=2&style=8&x={x}&y={y}&z={z}",
+                  mapCredit: "© 高德地图",
+                }),
           state: cardProgress,
           send: (message: CardOutgoing) => send(message),
         }));
@@ -645,7 +669,12 @@ function runtimeBootstrap(
       surface(content);
       applyTheme(theme);
       if (payload.script.trim() || externalScripts.length) {
-        const source = `const __name = (fn) => fn; (${workerSource})(${JSON.stringify(externalScripts)},${JSON.stringify(payload.data ?? {})},${JSON.stringify(state ?? {})});\n${payload.script}\n`;
+        // The script's top-level declarations exist before the first line
+        // here runs. postMessage is declared here, so a script that declares
+        // it too does not parse and fails as a script. Otherwise its
+        // postMessage would take the place of the Worker's own, and the host
+        // would never hear that the Worker runs.
+        const source = `const __name = (fn) => fn, postMessage = globalThis.postMessage.bind(globalThis); (${workerSource})(${JSON.stringify(externalScripts)},${JSON.stringify(payload.data ?? {})},${JSON.stringify(state ?? {})});\n${payload.script}\n`;
         const url = URL.createObjectURL(
           new Blob([source], { type: "text/javascript" })
         );
@@ -919,8 +948,34 @@ function runtimeBootstrap(
               break;
           }
         };
+        // Each challenge is issued after the previous response. A blocked Worker
+        // cannot read the next random challenge from its event queue. The
+        // challenges begin when the Worker says it runs: until then no script
+        // runs, and how long the browser takes to start the thread is not the
+        // script's time.
+        let watching = false;
+        const watch = () => {
+          if (watching) return;
+          watching = true;
+          timers.push(
+            window.setInterval(() => {
+              if (pendingPing) {
+                if (performance.now() - pingAt > 1500) stop("UI script timed out");
+                return;
+              }
+              pendingPing = Array.from(crypto.getRandomValues(new Uint32Array(4))).join(
+                "-"
+              );
+              pingAt = performance.now();
+              worker?.postMessage({ type: "ping", value: pendingPing });
+            }, 250)
+          );
+        };
         const applyOther = (message: MessageEvent["data"]) => {
           switch (message.type) {
+            case "started":
+              watch();
+              break;
             case "pong":
               if (message.value === pendingPing) pendingPing = undefined;
               break;
@@ -999,21 +1054,6 @@ function runtimeBootstrap(
               });
             }
           });
-        // Each challenge is issued after the previous response. A blocked Worker
-        // cannot read the next random challenge from its event queue.
-        timers.push(
-          window.setInterval(() => {
-            if (pendingPing) {
-              if (performance.now() - pingAt > 1500) stop("UI script timed out");
-              return;
-            }
-            pendingPing = Array.from(crypto.getRandomValues(new Uint32Array(4))).join(
-              "-"
-            );
-            pingAt = performance.now();
-            worker?.postMessage({ type: "ping", value: pendingPing });
-          }, 250)
-        );
       }
       let height = 0;
       timers.push(
@@ -1042,6 +1082,8 @@ function runtimeBootstrap(
         applyTokens(event.data.tokens);
       }
       if (event.data?.type === "brand-icons") cards?.receiveIcons(event.data.icons);
+      if (event.data?.type === "map-snapshot")
+        cards?.receiveMapSnapshot(event.data.id, event.data.src);
       if (event.data?.type === "card-state") {
         cardProgress = event.data.value;
         cards?.receiveState(cardProgress);

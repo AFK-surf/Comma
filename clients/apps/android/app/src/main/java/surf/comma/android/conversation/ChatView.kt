@@ -461,10 +461,19 @@ class ChatView internal constructor(
     }
 
     /**
+     * The Workspace of the conversation shown, as a Settings page sees it, for a plugin install started from a request's
+     * card; it retires with the account or Workspace, and its owner closes it. Null when no conversation is shown.
+     */
+    internal fun workspaceScope(parent: CoroutineScope): surf.comma.android.settings.desktop.WorkspaceScope? {
+        val current = current() ?: return null
+        return surf.comma.android.settings.desktop.WorkspaceScope(core ?: return null, sessions, current.scope, parent)
+    }
+
+    /**
      * Sends what the person filled in on request [requestId]'s card to the server, through the core, which keeps none
      * of it. False when it was refused; the card goes on as the core reads the request's answer.
      */
-    suspend fun fillRequest(requestId: String, values: Map<String, String>): Boolean {
+    suspend fun fillRequest(requestId: String, values: Map<String, Any>): Boolean {
         val current = current() ?: return false
         return try {
             core?.call("agentRequests.fill", JSONObject().put("group", current.scope.groupId)
@@ -572,6 +581,36 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
                     said.string("issue"), said.string("workingProvider"), said.optLongOrNull("updatedAt"),
                     loopWake = said.optBoolean("loopWake"))
             },
+            workerSessions = objects(json.optJSONArray("workerSessions")).mapNotNull { session ->
+                val participantId = session.string("participantId") ?: return@mapNotNull null
+                val slot = session.string("slot") ?: return@mapNotNull null
+                val label = session.string("label") ?: return@mapNotNull null
+                val issueDetail = session.optJSONObject("issueDetail")?.let { d ->
+                    ParticipantIssueDetail(
+                        source = d.string("source"),
+                        profileId = d.string("profileId"),
+                        profileName = d.string("profileName"),
+                        resetAt = d.optLongOrNull("resetAt"),
+                        credits = if (d.has("credits") && !d.isNull("credits")) d.optBoolean("credits") else null,
+                        trigger = d.string("trigger"),
+                    )
+                }
+                WorkerSession(
+                    participantId = participantId,
+                    actorId = session.string("actorId"),
+                    slot = slot,
+                    label = label,
+                    model = session.string("model"),
+                    runtime = session.string("runtime"),
+                    isPrimary = session.optBoolean("isPrimary"),
+                    subscribed = if (session.has("subscribed") && !session.isNull("subscribed")) session.optBoolean("subscribed") else null,
+                    state = session.string("state") ?: "stopped",
+                    status = session.optString("status"),
+                    updatedAt = session.optLongOrNull("updatedAt"),
+                    issue = session.string("issue"),
+                    issueDetail = issueDetail,
+                )
+            }.take(6),
             activity = json.optJSONObject("activity")?.let { activity ->
                 ReplyActivity(activity.optString("responseKey"), strings(activity.optJSONArray("sourceMessageIds")),
                     activity.optString("phase"), activity.optString("status"), activity.optString("summaryClass"),
@@ -663,6 +702,10 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
             brief = json.optBoolean("brief"),
             createdTaskIds = objects(json.optJSONArray("createdTasks")).mapNotNull { it.string("conversationId") },
             markdown = json.optJSONArray("markdown")?.toString(),
+            platformSource = json.string("platformSource"),
+            createdBy = json.string("createdBy").takeIf { user },
+            actorRole = json.string("actorRole"),
+            participantId = json.string("participantId"),
         )
     }
 

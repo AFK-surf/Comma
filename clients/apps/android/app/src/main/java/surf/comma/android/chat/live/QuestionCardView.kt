@@ -254,12 +254,14 @@ internal class QuestionCardStrings(context: Context) {
     val addImage: String = context.getString(R.string.chat_question_add_image)
     val uploading: String = context.getString(R.string.chat_question_uploading)
     val skip: String = context.getString(R.string.chat_question_skip)
+    val dismiss: String = context.getString(R.string.chat_question_dismiss)
     val send: String = context.getString(R.string.chat_question_send)
     val failed: String = context.getString(R.string.chat_question_failed)
     val retry: String = context.getString(R.string.chat_question_retry)
     val receipt = QuestionReceiptLabels(
         sending = context.getString(R.string.chat_question_sending),
         skipped = context.getString(R.string.chat_question_skipped),
+        dismissed = context.getString(R.string.chat_question_dismissed),
         replied = context.getString(R.string.chat_question_replied),
         replaced = context.getString(R.string.chat_question_replaced),
     )
@@ -602,6 +604,7 @@ internal class QuestionCardView(context: Context) : FrameLayout(context) {
         }
         prompt.text = question.prompt
         meta.isVisible = question.multiSelect
+        skip.text = if (question.dismissOnSkip) strings.dismiss else strings.skip
         state.images(next.imageCount)
         thumbs.show(next)
         receipt.visibility = GONE

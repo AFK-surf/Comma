@@ -18,7 +18,10 @@ import {
   newsFixture,
   orderFixture,
   placeFixture,
+  placeMapFixture,
+  placePinFixture,
   pullRequestsFixture,
+  routeFixture,
   storageFixture,
   trainOptionsFixture,
   versusFixture,
@@ -124,6 +127,42 @@ describe("card layouts", () => {
     expect(layoutsFor("options", hotelOptionsFixture)).toEqual(new Set(["pick"]));
     expect(layoutsFor("options", trainOptionsFixture)).not.toContain("pick");
     expect(layoutsFor("forecast", forecastFixture)).not.toContain("compact");
+  });
+
+  it("shows a forecast of one day without a strip or a range bar", () => {
+    // The staging forecasts that broke: one day, with decimal temperatures.
+    const day = {
+      label: "Tomorrow",
+      condition: "clear",
+      conditionLabel: "Sunny",
+      high: 10.5,
+      low: 3.7,
+      precipitation: 40,
+    };
+    const today = show(
+      "forecast",
+      {
+        title: "Zhuhai",
+        current: { temperature: 21.2, label: "Cloudy", feelsLike: 19.6 },
+        days: [day],
+      },
+      "block-1",
+      "today"
+    ).target;
+    expect(today.querySelector(".wc-fc-temp")?.textContent).toBe("21°");
+    expect(today.textContent).toContain("Feels like 20°");
+    expect(today.querySelector(".wc-fc-strip")).toBeNull();
+    const week = show(
+      "forecast",
+      { title: "Shanghai", days: [day] },
+      "block-1",
+      "week"
+    ).target;
+    expect(week.querySelector(".wc-range")).toBeNull();
+    expect(week.querySelector(".wc-fc-single > .wc-push")?.textContent).toBe(
+      "4° – 11°"
+    );
+    expect(week.querySelector(".wc-fc-single-rain")?.textContent).toBe("40%");
   });
 
   it("honours a requested layout only when it fits", () => {
@@ -1374,5 +1413,147 @@ describe("timer card", () => {
     vi.advanceTimersByTime(1100);
 
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+const onMap = (kind: string, data: unknown, mapTiles?: string) => {
+  const target = document.createElement("section");
+  document.body.append(target);
+  const engine = cardEngine({
+    seed: "block-1",
+    locale: "en",
+    copy: {},
+    icons: {},
+    state: {},
+    mapTiles,
+    mapCredit: mapTiles && "© Test Maps",
+    send: () => {},
+  });
+  target.replaceChildren(engine.mount(target, { kind, data }, "card"));
+  return target;
+};
+const mapLayout = (target: Element) =>
+  target.querySelector<HTMLElement>("[data-layout]")?.dataset.layout;
+
+describe("map cards", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it("draws places with coordinates on a map, numbered as the list is", () => {
+    const target = onMap("place", placeMapFixture);
+
+    expect(mapLayout(target)).toBe("place.map");
+    expect(texts(target, ".wc-map-pin-label")).toEqual(["1", "2", "3", "4"]);
+    expect(texts(target, ".wc-place-index")).toEqual(["1", "2", "3", "4"]);
+    // Without coordinates the same places stay a list.
+    expect(mapLayout(onMap("place", placeFixture))).toBe("place.nearby");
+  });
+
+  it("names a single place on its map", () => {
+    const target = onMap("place", placePinFixture);
+
+    expect(mapLayout(target)).toBe("place.map");
+    expect(target.querySelector(".wc-map-sheet")?.textContent).toContain(
+      "Blue Bottle 兴业太古汇店"
+    );
+    expect(target.querySelectorAll(".wc-map-pin")).toHaveLength(1);
+  });
+
+  it("shows a route's travel time and opens navigation from its button", () => {
+    const target = onMap("route", routeFixture);
+    const go = target.querySelector<HTMLAnchorElement>(".wc-trip-go");
+
+    expect(mapLayout(target)).toBe("route.map");
+    expect(go?.getAttribute("href")).toBe(new URL(routeFixture.href!).href);
+    expect(go?.textContent).toBe("28 分钟");
+    // The car is drawn by the template, since phones pass no icons.
+    expect(go?.querySelector("svg path")).not.toBeNull();
+    expect(target.querySelector(".wc-map-bubble")?.textContent).toBe("28 分钟");
+    expect(target.querySelector(".wc-map-sheet")?.textContent).toContain("15.2 公里");
+    const line = target.querySelector(".wc-map-path-line")?.getAttribute("points");
+    expect(line?.split(" ")).toHaveLength(routeFixture.path!.length);
+  });
+
+  it("joins the two ends of a route that has no path", () => {
+    const { path: _path, href: _href, ...plain } = routeFixture;
+    const target = onMap("route", plain);
+    const line = target.querySelector(".wc-map-path-line")?.getAttribute("points");
+
+    expect(line?.split(" ")).toHaveLength(2);
+    // Without a link the button only shows the time.
+    expect(target.querySelector("a.wc-trip-go")).toBeNull();
+    expect(target.querySelector(".wc-trip-go")?.textContent).toBe("28 分钟");
+  });
+
+  it("loads map tiles only from the host's template and credits its provider", () => {
+    expect(onMap("route", routeFixture).querySelector(".wc-map-tiles img")).toBeNull();
+
+    const target = onMap(
+      "route",
+      routeFixture,
+      "https://t{s}.tiles.test/{z}/{x}/{y}.png"
+    );
+    const sources = [
+      ...target.querySelectorAll<HTMLImageElement>(".wc-map-tiles img"),
+    ].map((img) => img.getAttribute("src"));
+
+    expect(sources.length).toBeGreaterThan(0);
+    for (const source of sources)
+      expect(source).toMatch(/^https:\/\/t[1-4]\.tiles\.test\/\d+\/\d+\/\d+\.png$/);
+    expect(target.querySelector(".wc-map-credit")?.textContent).toBe("© Test Maps");
+  });
+
+  it("asks the host to draw the map's base and shows only an image it drew", () => {
+    const sent: CardOutgoing[] = [];
+    const target = document.createElement("section");
+    document.body.append(target);
+    const engine = cardEngine({
+      seed: "block-1",
+      locale: "en",
+      copy: {},
+      icons: {},
+      state: {},
+      mapSnapshots: true,
+      mapCredit: "Test Maps",
+      send: (message) => sent.push(message),
+    });
+    target.replaceChildren(
+      engine.mount(target, { kind: "route", data: routeFixture }, "card")
+    );
+    const asked = sent.find((message) => message.type === "map-snapshot");
+    const image = target.querySelector<HTMLImageElement>(".wc-map-snapshot");
+
+    expect(target.querySelector(".wc-map-tiles img")).toBeNull();
+    expect(asked).toMatchObject({ width: 800, height: 240 });
+    // The area is around the route, in zoom-0 Web Mercator pixels.
+    const [x, y, width, height] = asked!.type === "map-snapshot" ? asked!.rect : [];
+    const [originX, originY] = [
+      ((routeFixture.origin.lng + 180) / 360) * 256,
+      (0.5 -
+        Math.log(
+          (1 + Math.sin((routeFixture.origin.lat * Math.PI) / 180)) /
+            (1 - Math.sin((routeFixture.origin.lat * Math.PI) / 180))
+        ) /
+          (4 * Math.PI)) *
+        256,
+    ];
+    expect(originX).toBeGreaterThan(x!);
+    expect(originX).toBeLessThan(x! + width!);
+    expect(originY).toBeGreaterThan(y!);
+    expect(originY).toBeLessThan(y! + height!);
+
+    const id = asked!.type === "map-snapshot" ? asked!.id : "";
+    engine.receiveMapSnapshot(id, "https://elsewhere.test/map.png");
+    expect(image?.getAttribute("src")).toBeNull();
+    engine.receiveMapSnapshot(id, "data:image/jpeg;base64,AAAA");
+    expect(image?.getAttribute("src")).toBe("data:image/jpeg;base64,AAAA");
+    expect(target.querySelector(".wc-map-credit")?.textContent).toBe("Test Maps");
+  });
+
+  it("rejects a route without coordinates for both ends", () => {
+    expect(() =>
+      onMap("route", { ...routeFixture, destination: { name: "虹桥 T2" } })
+    ).toThrow(/destination with a name, lat and lng/);
   });
 });

@@ -97,13 +97,15 @@
           ]
         },
         "days": {
+          "description": "from today on; with current, days[0] is today",
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
               "label": {
                 "type": "string",
-                "pattern": "\\S"
+                "pattern": "\\S",
+                "description": "a short day name: \"今天\", \"明天\", \"周五\""
               },
               "condition": {
                 "type": "string",
@@ -1411,6 +1413,17 @@
                 "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
                 "title": "url",
                 "description": "an HTTPS URL"
+              },
+              "lat": {
+                "description": "with lng on every place, shows the places on a map",
+                "type": "number",
+                "minimum": -85,
+                "maximum": 85
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
               }
             },
             "required": [
@@ -1425,7 +1438,7 @@
         "places"
       ],
       "description": "places to go: nearby results or recommendations",
-      "layouts": "single (1 place), nearby (2 or more)"
+      "layouts": "map (every place has lat and lng), single (1 place), nearby (2 or more)"
     },
     "feed": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2256,6 +2269,180 @@
       ],
       "description": "a ride on its way or under way; title names the service",
       "layouts": "pickup (plate), trip (pickup and dropoff)"
+    },
+    "route": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "origin": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "address": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "lat": {
+              "type": "number",
+              "minimum": -85,
+              "maximum": 85
+            },
+            "lng": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            }
+          },
+          "required": [
+            "name",
+            "lat",
+            "lng"
+          ],
+          "title": "spot",
+          "description": "where the trip starts, such as the viewer's \"当前位置\""
+        },
+        "destination": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "address": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "lat": {
+              "type": "number",
+              "minimum": -85,
+              "maximum": 85
+            },
+            "lng": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            }
+          },
+          "required": [
+            "name",
+            "lat",
+            "lng"
+          ],
+          "title": "spot"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "drive",
+            "walk",
+            "transit",
+            "cycle"
+          ]
+        },
+        "duration": {
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed",
+          "description": "the travel time, such as \"20 分钟\""
+        },
+        "distance": {
+          "description": "such as \"11.7 公里\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "note": {
+          "description": "one line on the route, such as \"经情侣北路，路况畅通\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "path": {
+          "description": "the route's points as [lat, lng], in order; without it a straight line",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": [
+              {
+                "type": "number",
+                "minimum": -85,
+                "maximum": 85
+              },
+              {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              }
+            ]
+          },
+          "limit": 400
+        },
+        "href": {
+          "description": "opens navigation, such as an uri.amap.com link",
+          "type": "string",
+          "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+          "title": "url"
+        }
+      },
+      "required": [
+        "title",
+        "origin",
+        "destination",
+        "duration"
+      ],
+      "description": "how to get from one place to another: the route on a map and its travel time",
+      "layouts": "map"
     },
     "product": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3252,7 +3439,7 @@
     "fact: {label, value}",
     "control: {label, prompt}",
     "cell: text, a number, {text, tone?} to color the text, or null or \"\" for an empty cell",
-    "forecast (weather for one place: now, today or the coming days): {location?, current?: {temperature: number, condition?, label?, feelsLike?: number, humidity?: number (percent), wind?}, days?: [{label, condition, conditionLabel, high: number, low: number, precipitation?: number (percent)}] (<= 7), highlight?}; needs days or current; layouts: today (needs current), week, compact (current and <= 2 days)",
+    "forecast (weather for one place: now, today or the coming days): {location?, current?: {temperature: number, condition?, label?, feelsLike?: number, humidity?: number (percent), wind?}, days?: [{label (a short day name: \"今天\", \"明天\", \"周五\"), condition, conditionLabel, high: number, low: number, precipitation?: number (percent)}] (<= 7; from today on; with current, days[0] is today), highlight?}; needs days or current; layouts: today (needs current), week, compact (current and <= 2 days)",
     "options (choices to pick one from, such as trains, flights, hotels or plans): {items: [{primary, id?, secondary? (arrival time), span?, meta?, price?, priceNote?, status?, tags?: [text] (<= 3), reason?, recommended?: boolean, filterKeys?: [text] (<= 8)}] (1 to 8), filters?: [{key, label}] (<= 4)}; layouts: timetable and list (every item has secondary), pick (no item has secondary)",
     "metric (one to six key numbers, or progress toward a goal): {metrics?: [{label, value (display text), unit?, delta?, caption?, series?: [number] (<= 64)}] (<= 6), goal?: {current: number, target: number, valueLabel, targetLabel, note?}}; needs metrics or goal; layouts: single (1 metric), grid (2 to 6), goal (with any metrics under it)",
     "trend (how numbers change over time, or a watchlist of prices; a number per category is bars): {brand?, value?, delta?, ranges?: [{key, label, points: [number] (2 to 64), axis: [text] (<= 6)}] (<= 4), bars?: {labels: [text] (1 to 31), values: [number] (1 to 31), valueLabels?: [text] (<= 31), averageLabel? (names the dashed line at the mean of the bars, such as \"日均 217\")} (one bar per period, oldest first; the last bar is the current one), series?: [{label, value, points: [number] (2 to 64), brand?, delta?}] (<= 6)}; needs ranges, bars or series; bars.labels has as many entries as bars.values; layouts: area (ranges), bars, watchlist (series)",
@@ -3260,12 +3447,13 @@
     "schedule (a day's events, an itinerary of one or several days, or the stages of a process; ISO event times show in zone, where the events happen, or on the viewer's clock without it): {zone?, now?, events?: [{start (a clock time such as \"09:30\", or an ISO time), title, end?, detail?, state?, tone?}] (<= 8), stages?: [{label, state, detail?}] (2 to 6), summary?}; needs events or stages; layouts: agenda and timeline (events), stages",
     "checklist (things to do, pack or check off): {groups: [{label?, items: [{label, id?, detail?, done?: boolean, actions?: [{label, prompt}] (<= 3; this item's follow-ups, such as adding it to the calendar, reminders or Routine; a click proposes the prompt like comma.request)}] (>= 1)}] (1 to 4; at most 20 items in total)}; layouts: progress, grouped (2 or more groups)",
     "composition (how a total splits into parts that add up to it): {total: text or number, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
-    "place (places to go: nearby results or recommendations): {places: [{name, category?, note? (what it is or why it fits, in one line), rating?: number, reviews? (a review count such as \"2,310 条评价\"), status?, address?, distance?, eta?, href?: url}] (1 to 8)}; layouts: single (1 place), nearby (2 or more)",
+    "place (places to go: nearby results or recommendations): {places: [{name, category?, note? (what it is or why it fits, in one line), rating?: number, reviews? (a review count such as \"2,310 条评价\"), status?, address?, distance?, eta?, href?: url, lat?: number from -85 to 85 (with lng on every place, shows the places on a map), lng?: number from -180 to 180}] (1 to 8)}; layouts: map (every place has lat and lng), single (1 place), nearby (2 or more)",
     "feed (news, updates and status lists such as a day's pull requests, issues or CI runs; over 12 items show title, status, source and time, and each filter shows its count): {items?: [{source, title, brand?, excerpt?, time? (a label such as \"2 小时前\"), at?: ISO time (when it happened), status?, tags?: [text] (<= 3), href?: url, filterKeys?: [text] (<= 8)}] (<= 60), filters?: [{key, label}] (<= 4), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (<= 12 items), list (items without excerpts or tags, or over 12), digest (groups)",
     "timer (a countdown to a moment, a focus timer, or days until an event): {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)",
     "order (one order and where it is: a purchase, a takeout or a parcel; title names the merchant or carrier): {brand?, orderId?, status (where the order is, such as \"正在出库\"), arrival? (the expected arrival without a clock time, such as \"预计 10月29日 周四 送达\"), arrivesBy?: ISO time (the latest arrival moment, shown on the viewer's clock), items?: [{name, quantity?: integer >= 1, detail? (a variant such as size or color), price?}] (<= 6), total?, totalLabel? (such as \"实付\"), address?, stages?: [{label, state}] (2 to 5)}; layouts: tracking (stages), receipt (an item with a price, or a total), compact",
     "ticket (one train or flight ticket, or a boarding pass; title names the carrier): {brand?, mode?: train | flight, number (train or flight number), depart: {place (station, airport or stop), code? (such as PVG), at: ISO time, zone?, terminal?}, arrive: {place (station, airport or stop), code? (such as PVG), at: ISO time, zone?, terminal?}, duration?, details?: [fact] (<= 4; such as seat, gate, cabin or boarding time), passenger?, status?, reference? (booking reference or e-ticket number)}; layouts: ticket, pass",
     "ride (a ride on its way or under way; title names the service): {brand?, status (such as \"司机正在赶来\"), eta? (such as \"3 分钟\"), plate?, car? (color and model), driver?: {name, rating?: number, trips?}, pickup?, dropoff?, fare?}; layouts: pickup (plate), trip (pickup and dropoff)",
+    "route (how to get from one place to another: the route on a map and its travel time): {origin: {name, address?, lat: number from -85 to 85, lng: number from -180 to 180} (where the trip starts, such as the viewer's \"当前位置\"), destination: {name, address?, lat: number from -85 to 85, lng: number from -180 to 180}, mode?: drive | walk | transit | cycle, duration (the travel time, such as \"20 分钟\"), distance? (such as \"11.7 公里\"), note? (one line on the route, such as \"经情侣北路，路况畅通\"), path?: [[text]] (<= 400; the route's points as [lat, lng], in order; without it a straight line), href?: url}; layouts: map",
     "product (products to buy, with images and prices): {products: [{name, image?: url, price, originalPrice?, badge? (such as \"券后\" or \"包邮\"), shop?, rating?: number, sales? (such as \"月销 2万+\"), href?: url}] (1 to 6)}; layouts: hero (1 product), grid (2 to 6), list",
     "booking (a reservation or appointment: a table, a room, a doctor; title names the venue): {brand?, status?, at: ISO time (when the booking starts), zone?, details?: [fact] (<= 6; such as party size, room or department), confirmation?, address?}; layouts: confirmation, compact",
     "device (smart home devices, their state and controls): {devices: [{name, on?: boolean, online?: boolean (false shows it offline), value? (the main reading, such as \"26\"), unit? (such as \"°C\" or \"%\"), mode?, detail?, controls?: [control] (<= 4)}] (1 to 6)}; layouts: single (1 device), grid (2 to 6)",
@@ -3275,7 +3463,7 @@
     "table (rows and columns of facts that no other kind shows: a leaderboard with several numbers, orders, hosts and their readings, more than three subjects compared, a cohort grid): {columns: [text] (2 to 8; a heading per column; \"\" leaves one without), rows: [[cell]] (1 to 24; the first cell names the row)}; rows[] has as many entries as columns; layouts: grid"
   ],
   "levels": {
-    "level": 2,
+    "level": 3,
     "base": 1,
     "kinds": {
       "forecast": 1,
@@ -3292,6 +3480,7 @@
       "order": 1,
       "ticket": 2,
       "ride": 1,
+      "route": 3,
       "product": 1,
       "booking": 2,
       "device": 1,
@@ -3301,7 +3490,8 @@
       "table": 2
     },
     "features": {
-      "chartSeries": 2
+      "chartSeries": 2,
+      "placeMap": 3
     }
   }
 }

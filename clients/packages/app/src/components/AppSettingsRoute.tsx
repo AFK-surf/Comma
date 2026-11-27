@@ -1,7 +1,15 @@
 import { useBrowserSettingsCategory } from "./chat/useBrowserSettingsCategory";
 import { useAirDropNameSetting } from "./useAirDropNameSetting";
 import { useProactiveSetting } from "./recommendations/useProactiveSetting";
-import { useComputerUsePermissions } from "./useComputerUsePermissions";
+import {
+  isSingleGrant,
+  useSystemPermissions,
+  type ComputerUseGrantId,
+  type PermissionStatus,
+  type SingleGrantId,
+  type SystemPermissionId,
+  type SystemPermissionRow,
+} from "./permissions/systemPermissions";
 import { useWeChatIntegration } from "./useWeChatIntegration";
 import { useModelsCategory } from "./models/useModelsCategory";
 import { useArchivedTasksCategory } from "./tasks/useArchivedTasksCategory";
@@ -70,7 +78,7 @@ import {
 } from "./commaAppearance";
 import { useLocalFontFamilies } from "./localFontFamilies";
 import { useCommaAppPreferences } from "./commaAppPreferences";
-import { isLabelProposalPolicy } from "./tasks/labelProposalPolicy";
+import { useLocationSharing } from "./location/locationSharing";
 import {
   isReplyStyle,
   useRouterReplyStyle,
@@ -143,6 +151,7 @@ function isFontSizePreference(value: string): value is CommaFontSizePreference {
 // A guest Session keeps only device-local preferences and its account row.
 const guestSettingsCategoryIds = new Set([
   "general",
+  "privacy",
   "profile",
   "appearance",
   "notifications",
@@ -151,7 +160,6 @@ const guestSettingsCategoryIds = new Set([
 ]);
 const guestHiddenSettingsSectionIds = new Set([
   "profile.danger",
-  "general.permissions",
   "general.tone",
   "general.system-prompt",
   "general.airdrop",
@@ -249,6 +257,7 @@ export function AppSettingsRoute({
     {
       home: m.settings_default_home_view_home(),
       inbox: m.nav_inbox(),
+      people: m.nav_people(),
       tasks: m.nav_tasks(),
       drive: m.nav_drive(),
       apps: m.nav_apps(),
@@ -313,11 +322,7 @@ export function AppSettingsRoute({
     linkedAccount
   );
   const miniAppsCategory = useMiniAppsSettingsCategory(activeCategoryId === "apps");
-  const { category: taskLabelsCategory, approvalPolicy: labelProposalPolicy } =
-    useTaskLabelsCategory(
-      activeCategoryId === "labels",
-      activeCategoryId === "general" && !guest
-    );
+  const taskLabelsCategory = useTaskLabelsCategory(activeCategoryId === "labels");
   const replyStyle = useRouterReplyStyle(activeCategoryId === "general" && !guest);
   const instructions = useRouterInstructions(activeCategoryId === "general" && !guest);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
@@ -335,6 +340,7 @@ export function AppSettingsRoute({
     activeCategoryId === "usage-billing"
   );
   const proactive = useProactiveSetting(activeCategoryId === "recommendations");
+  const locationSharing = useLocationSharing(activeCategoryId === "privacy" && !guest);
   // The account's profile as the core keeps it, read while Profile shows.
   const { value: profileShown } = useTopic(
     activeCategoryId === "profile" && !guest ? { topic: "profile" } : null
@@ -344,8 +350,6 @@ export function AppSettingsRoute({
   const [nameDialogOpen, setNameDialogOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [changeEmailOpen, setChangeEmailOpen] = useState(false);
-  const [notificationPermissionDialogOpen, setNotificationPermissionDialogOpen] =
-    useState(false);
   const [keepAwakeApprovalDialogOpen, setKeepAwakeApprovalDialogOpen] = useState(false);
   const profileLoading =
     activeCategoryId === "profile" &&
@@ -561,17 +565,19 @@ export function AppSettingsRoute({
       setQuickChatShortcutPending(false);
     }
   };
-  const computerUse = useComputerUsePermissions(activeCategoryId === "computer-use");
+  const systemPermissions = useSystemPermissions(activeCategoryId === "permissions");
+  // A grant whose flow did not open says so on its row until the next press.
+  const [grantFailedId, setGrantFailedId] = useState<SystemPermissionId>();
+  const grantPermission = (id: SystemPermissionId) => {
+    setGrantFailedId(undefined);
+    void systemPermissions.grant(id).then((opened) => {
+      if (!opened) setGrantFailedId(id);
+    });
+  };
+  const grantFailed = (id: SystemPermissionId) =>
+    grantFailedId === id ? { errorMessage: m.settings_permission_open_failed() } : {};
   // In a browser, the desktop app's controls stay live and offer the Mac app.
   const desktopOnly = needsDesktopApp();
-  const permissionStatus = (granted: boolean | undefined) =>
-    !computerUse.available
-      ? m.settings_computer_use_macos_only()
-      : granted === undefined
-        ? m.settings_computer_use_unknown()
-        : granted
-          ? m.settings_computer_use_granted()
-          : m.settings_computer_use_missing();
 
   const settingsShortcutDefinitions = appShortcutDefinitions.filter(
     (definition) => !(guest && guestHiddenShortcutIds.has(definition.id))
@@ -911,13 +917,13 @@ export function AppSettingsRoute({
     setNameError(undefined);
     setNameDialogOpen(false);
   };
-  // The OS decides whether Comma may notify at all. When it says no, the master
-  // switch still reads as off and stays interactive: turning it on opens a
-  // dialog that jumps to System Settings. The stored choice is kept for when
-  // the OS allows it again. An OS that has not asked the user yet
-  // (`undetermined`) reads like an available one: its prompt comes with the
-  // first banner. So does one Main could not ask (`unknown`): Electron decides
-  // when the banner is posted.
+  // The OS decides whether Comma may notify at all; this switch only decides
+  // whether Comma does. When the OS says no, the row offers the same System
+  // Settings button as Settings › Permissions instead of the switch, and the
+  // stored choice is kept for when the OS allows it again. An OS that has not
+  // asked the user yet (`undetermined`) reads like an available one: its
+  // prompt comes with the first banner. So does one Main could not ask
+  // (`unknown`): Electron decides when the banner is posted.
   const systemNotificationsStatus =
     appPreferences?.systemNotificationsStatus ?? "available";
   const systemNotificationsBlocked =
@@ -925,27 +931,33 @@ export function AppSettingsRoute({
     systemNotificationsStatus === "unsupported";
   const systemNotificationsOn =
     (appPreferences?.systemNotifications ?? false) && !systemNotificationsBlocked;
-  const systemNotificationsChecked =
-    notificationPermissionDialogOpen || systemNotificationsOn;
+  // A refusal shows no text of its own: the row's button already says what
+  // is left to do.
   const systemNotificationsDescription =
-    systemNotificationsStatus === "denied"
-      ? m.settings_system_notifications_denied_description()
-      : systemNotificationsStatus === "unsupported"
-        ? m.settings_system_notifications_unsupported_description()
-        : m.settings_system_notifications_description();
+    systemNotificationsStatus === "unsupported"
+      ? m.settings_system_notifications_unsupported_description()
+      : m.settings_system_notifications_description();
+  const systemNotificationsDenied =
+    !desktopOnly && systemNotificationsStatus === "denied";
+  const systemLocationDenied =
+    !desktopOnly && appPreferences?.systemLocationStatus === "denied";
+  const systemNotificationsGranting = systemPermissions.pendingId === "notifications";
   const handleSystemNotificationsChange = (event: { target: { checked: boolean } }) => {
-    const next = event.target.checked;
-    if (next && systemNotificationsStatus === "denied") {
-      setNotificationPermissionDialogOpen(true);
-      if (!(appPreferences?.systemNotifications ?? false)) {
-        void updateAppPreferences({ systemNotifications: true });
-      }
-      return;
-    }
-    setNotificationPermissionDialogOpen(false);
     void updateAppPreferences({
-      systemNotifications: next,
+      systemNotifications: event.target.checked,
     });
+  };
+  // The one grant flow Settings › Permissions also runs. Turning Comma's own
+  // switch on with it keeps the choice for when macOS allows it.
+  const grantSystemNotifications = () => {
+    if (!(appPreferences?.systemNotifications ?? false)) {
+      void updateAppPreferences({ systemNotifications: true });
+    }
+    if (systemPermissions.available) {
+      grantPermission("notifications");
+    } else {
+      void openNotificationSettings();
+    }
   };
   // macOS runs the sleep guard only after the user allows it once in Login
   // Items. Until then the choice waits: the switch reads off, turning it on
@@ -984,52 +996,138 @@ export function AppSettingsRoute({
     setKeepAwakeApprovalDialogOpen(false);
     void updateAppPreferences({ keepAwakeWhenLidClosed: false });
   };
-  const computerUseCategory: SettingsCategoryDefinition = {
-    id: "computer-use",
-    icon: "computer-use",
-    label: m.settings_computer_use(),
+  const permissionCopy: Record<
+    SingleGrantId,
+    { title: string; description: string; keywords: readonly string[] }
+  > = {
+    notifications: {
+      title: m.settings_permission_notifications(),
+      description: m.settings_permission_notifications_description(),
+      keywords: ["notification", "通知"],
+    },
+    location: {
+      title: m.settings_permission_location(),
+      description: m.settings_permission_location_description(),
+      keywords: ["location", "位置", "定位"],
+    },
+    microphone: {
+      title: m.settings_permission_microphone(),
+      description: m.settings_permission_microphone_description(),
+      keywords: ["microphone", "mic", "麦克风"],
+    },
+  };
+  // Only a granted row has a badge: any other row's button already says
+  // what is left to do.
+  const grantedStatus = {
+    status: { label: m.settings_permission_granted(), color: "success" as const },
+  };
+  const permissionRow = (row: SystemPermissionRow<SingleGrantId>) => {
+    const copy = permissionCopy[row.id];
+    const pending = systemPermissions.pendingId === row.id;
+    const granted = row.status === "granted";
+    const unreadable = !desktopOnly && row.unreadable === true;
+    return {
+      id: `permissions.${row.id}`,
+      ...grantFailed(row.id),
+      title: copy.title,
+      // Like the Computer Use row: an unreadable grant says where to look.
+      description: unreadable ? m.settings_permission_unreadable() : copy.description,
+      keywords: copy.keywords,
+      // Granted needs nothing; an unreadable grant has nothing to press.
+      ...(unreadable
+        ? {}
+        : !desktopOnly && granted
+          ? grantedStatus
+          : {
+              control: {
+                type: "button" as const,
+                label: pending
+                  ? m.settings_permission_waiting()
+                  : row.settingsOnly
+                    ? m.settings_permission_open_settings()
+                    : m.settings_permission_allow(),
+                disabled: !desktopOnly && (pending || row.status === "checking"),
+                onPress: desktopOnly
+                  ? () => requestDesktopApp("permissions")
+                  : () => grantPermission(row.id),
+              },
+            }),
+    };
+  };
+  // Accessibility and Screen Recording belong to the Comma Computer Use
+  // helper, not to Comma, and one helper window grants both, so they are one
+  // row, granted once both are.
+  const computerUseRow = () => {
+    const status = (id: ComputerUseGrantId) =>
+      systemPermissions.rows.find((row) => row.id === id)?.status ?? "checking";
+    const accessibility = status("accessibility");
+    const screenRecording = status("screenRecording");
+    const combined: PermissionStatus =
+      accessibility === "checking" || screenRecording === "checking"
+        ? "checking"
+        : accessibility === "granted" && screenRecording === "granted"
+          ? "granted"
+          : "notGranted";
+    const unreadable = systemPermissions.unreadable;
+    const pending =
+      systemPermissions.pendingId === "accessibility" ||
+      systemPermissions.pendingId === "screenRecording";
+    return {
+      id: "permissions.computerUse",
+      ...grantFailed("accessibility"),
+      title: m.settings_permission_computer_use(),
+      description: unreadable
+        ? m.settings_permission_computer_use_unreadable()
+        : m.settings_permission_computer_use_description(),
+      keywords: [
+        "computer use",
+        "accessibility",
+        "screen recording",
+        "电脑操作",
+        "辅助功能",
+        "屏幕录制",
+      ],
+      // An unreadable grant has no answer to show, only where to go.
+      ...(!desktopOnly && unreadable
+        ? {}
+        : !desktopOnly && combined === "granted"
+          ? grantedStatus
+          : {
+              control: {
+                type: "button" as const,
+                label: pending
+                  ? m.settings_permission_waiting()
+                  : m.settings_permission_allow(),
+                disabled: !desktopOnly && (pending || combined === "checking"),
+                onPress: desktopOnly
+                  ? () => requestDesktopApp("permissions")
+                  : () => grantPermission("accessibility"),
+              },
+            }),
+    };
+  };
+  // Every macOS permission Comma asks for, on one page: what it is for, what
+  // macOS says now, and the one action that can change it — macOS's own prompt
+  // while it has not asked, System Settings once it has refused. Main re-reads
+  // them all when the window regains focus, so a grant made in System Settings
+  // shows on return. In a browser the rows offer the Mac app instead.
+  const permissionsCategory: SettingsCategoryDefinition = {
+    id: "permissions",
+    icon: "permissions",
+    label: m.settings_permissions(),
+    keywords: ["permission", "privacy", "macOS", "权限", "隐私"],
     sections: [
       {
-        id: "computer-use.access",
-        title: m.settings_access(),
+        id: "permissions.system",
+        // The page title is the heading; the card stands alone under it.
+        title: "",
         items: [
-          {
-            id: "computer-use.accessibility",
-            title: m.settings_computer_use_accessibility(),
-            description: permissionStatus(computerUse.permissions?.accessibility),
-          },
-          {
-            id: "computer-use.screen-recording",
-            title: m.settings_computer_use_screen_recording(),
-            description: permissionStatus(computerUse.permissions?.screenRecording),
-          },
-          {
-            id: "computer-use.permissions",
-            title: m.settings_computer_use_permissions(),
-            description: m.settings_computer_use_permissions_description(),
-            control: {
-              type: "button",
-              label: m.settings_computer_use_manage(),
-              disabled: !desktopOnly && (!computerUse.available || computerUse.pending),
-              onPress: desktopOnly
-                ? () => requestDesktopApp("computer-use")
-                : computerUse.open,
-            },
-          },
-          {
-            id: "computer-use.refresh",
-            title: m.settings_computer_use_status(),
-            description:
-              computerUse.error ?? m.settings_computer_use_refresh_description(),
-            control: {
-              type: "button",
-              label: m.settings_computer_use_refresh(),
-              disabled: !desktopOnly && (!computerUse.available || computerUse.pending),
-              onPress: desktopOnly
-                ? () => requestDesktopApp("computer-use")
-                : computerUse.refresh,
-            },
-          },
+          ...systemPermissions.rows
+            .filter((row): row is SystemPermissionRow<SingleGrantId> =>
+              isSingleGrant(row.id)
+            )
+            .map(permissionRow),
+          computerUseRow(),
         ],
       },
     ],
@@ -1049,34 +1147,6 @@ export function AppSettingsRoute({
             label: m.settings_general(),
             overlay: airDropName.overlay,
             sections: [
-              {
-                id: "general.permissions",
-                title: m.settings_permissions(),
-                items: [
-                  {
-                    id: "permissions.label-changes",
-                    title: m.settings_label_changes(),
-                    description: labelProposalPolicy.error
-                      ? m.settings_label_changes_failed()
-                      : m.settings_label_changes_description(),
-                    keywords: ["label", "标签"],
-                    control: {
-                      type: "dropdown",
-                      value: labelProposalPolicy.value,
-                      disabled: labelProposalPolicy.disabled,
-                      placeholder: m.settings_label_changes_ask(),
-                      items: [
-                        { id: "ask", label: m.settings_label_changes_ask() },
-                        { id: "auto", label: m.settings_label_changes_auto() },
-                      ],
-                      onChange: (value) => {
-                        if (isLabelProposalPolicy(value))
-                          labelProposalPolicy.set(value);
-                      },
-                    },
-                  },
-                ],
-              },
               {
                 id: "general.tone",
                 title: m.settings_tone(),
@@ -1147,13 +1217,22 @@ export function AppSettingsRoute({
                     description: m.settings_default_home_view_description(),
                     control: {
                       type: "dropdown",
-                      value: clientSettings.settings.defaultHomeView,
+                      value:
+                        !clientSettings.settings.peopleEnabled &&
+                        clientSettings.settings.defaultHomeView === "people"
+                          ? "home"
+                          : clientSettings.settings.defaultHomeView,
                       placeholder: m.settings_default_home_view(),
                       disabled: clientSettingsPending,
-                      items: commaDefaultHomeViewSchema.options.map((id) => ({
-                        id,
-                        label: defaultHomeViewLabels[id],
-                      })),
+                      items: commaDefaultHomeViewSchema.options
+                        .filter(
+                          (id) =>
+                            clientSettings.settings.peopleEnabled || id !== "people"
+                        )
+                        .map((id) => ({
+                          id,
+                          label: defaultHomeViewLabels[id],
+                        })),
                       onChange: (value) => {
                         const parsed = commaDefaultHomeViewSchema.safeParse(value);
                         if (parsed.success)
@@ -1384,11 +1463,129 @@ export function AppSettingsRoute({
                               />
                             ) : null,
                         },
+                        {
+                          id: "app.computerUseNotch",
+                          title: m.settings_computer_use_notch(),
+                          description: m.settings_computer_use_notch_description(),
+                          keywords: [
+                            "notch",
+                            "computer use",
+                            "virtual desktop",
+                            "dynamic island",
+                            "刘海",
+                            "灵动岛",
+                            "虚拟桌面",
+                          ],
+                          control: {
+                            type: "toggle" as const,
+                            checked: appPreferences?.showComputerUseInNotch ?? false,
+                            disabled: !appPreferences || appPreferencesPending,
+                            onChange: (event: { target: { checked: boolean } }) => {
+                              void updateAppPreferences({
+                                showComputerUseInNotch: event.target.checked,
+                              });
+                            },
+                          },
+                        },
                       ],
                     },
                   ]
                 : []),
               onboardingReplay,
+            ],
+          },
+          {
+            id: "privacy",
+            icon: "privacy",
+            label: m.settings_privacy(),
+            keywords: [
+              "privacy",
+              "location",
+              "analytics",
+              "telemetry",
+              "隐私",
+              "位置",
+              "统计",
+            ],
+            sections: [
+              // What this device sends about the person: its location with
+              // messages (the macOS grant behind it is listed with the others
+              // under System › Permissions), and its product analytics and
+              // error reports, for guests too.
+              {
+                id: "privacy.device",
+                // The page title is the heading; the card stands alone under it.
+                title: "",
+                items: [
+                  ...(locationSharing.available && !guest
+                    ? [
+                        {
+                          id: "location.share",
+                          ...grantFailed("location"),
+                          title: m.settings_share_location(),
+                          // macOS refusing Comma reads like the Notifications
+                          // switch: the Permissions page's button, no text of
+                          // its own. A browser's refusal still says why.
+                          description:
+                            locationSharing.denied && !systemLocationDenied
+                              ? m.settings_share_location_denied()
+                              : m.settings_share_location_description(),
+                          keywords: ["location", "nearby", "位置", "定位", "附近"],
+                          control: systemLocationDenied
+                            ? {
+                                type: "button" as const,
+                                label:
+                                  systemPermissions.pendingId === "location"
+                                    ? m.settings_permission_waiting()
+                                    : m.settings_permission_open_settings(),
+                                disabled: systemPermissions.pendingId === "location",
+                                onPress: () => {
+                                  // Kept on for when macOS allows it; nothing
+                                  // is sent until then.
+                                  if (locationSharing.enabled !== true)
+                                    void locationSharing.keepOn();
+                                  grantPermission("location");
+                                },
+                              }
+                            : {
+                                type: "toggle" as const,
+                                checked: locationSharing.enabled === true,
+                                disabled:
+                                  locationSharing.enabled === undefined ||
+                                  locationSharing.pending,
+                                onChange: (event: { target: { checked: boolean } }) =>
+                                  void locationSharing.set(event.target.checked),
+                              },
+                        },
+                      ]
+                    : []),
+                  {
+                    id: "usage-analytics",
+                    title: m.settings_usage_analytics(),
+                    description: m.settings_usage_analytics_description(),
+                    keywords: [
+                      "analytics",
+                      "telemetry",
+                      "error reports",
+                      "privacy",
+                      "统计",
+                      "遥测",
+                      "错误报告",
+                      "隐私",
+                    ],
+                    control: {
+                      type: "toggle" as const,
+                      checked: clientSettings.settings.usageAnalyticsEnabled,
+                      disabled: clientSettingsPending,
+                      onChange: (event: { target: { checked: boolean } }) => {
+                        void clientSettings.update({
+                          usageAnalyticsEnabled: event.target.checked,
+                        });
+                      },
+                    },
+                  },
+                ],
+              },
             ],
           },
           {
@@ -1749,22 +1946,32 @@ export function AppSettingsRoute({
                 items: [
                   {
                     id: "notifications.system",
+                    ...grantFailed("notifications"),
                     title: m.settings_system_notifications(),
                     description: systemNotificationsDescription,
                     keywords: ["notification", "system", "banner", "通知", "系统"],
-                    control: {
-                      type: "toggle",
-                      checked: systemNotificationsChecked,
-                      disabled:
-                        !desktopOnly &&
-                        (!appPreferencesAvailability.notifications ||
-                          !appPreferences ||
-                          systemNotificationsStatus === "unsupported" ||
-                          appPreferencesPending),
-                      onChange: desktopOnly
-                        ? () => requestDesktopApp("notifications")
-                        : handleSystemNotificationsChange,
-                    },
+                    control: systemNotificationsDenied
+                      ? {
+                          type: "button" as const,
+                          label: systemNotificationsGranting
+                            ? m.settings_permission_waiting()
+                            : m.settings_permission_open_settings(),
+                          disabled: systemNotificationsGranting,
+                          onPress: grantSystemNotifications,
+                        }
+                      : {
+                          type: "toggle",
+                          checked: systemNotificationsOn,
+                          disabled:
+                            !desktopOnly &&
+                            (!appPreferencesAvailability.notifications ||
+                              !appPreferences ||
+                              systemNotificationsStatus === "unsupported" ||
+                              appPreferencesPending),
+                          onChange: desktopOnly
+                            ? () => requestDesktopApp("notifications")
+                            : handleSystemNotificationsChange,
+                        },
                   },
                   {
                     id: "notifications.router-messages",
@@ -2366,9 +2573,9 @@ export function AppSettingsRoute({
         label: m.settings_group_system(),
         categories: [
           voiceCategory,
-          // Computer Use is the macOS app's (its helper): a desktop app
-          // elsewhere (Windows) has nothing to grant; the web offers the app.
-          ...(desktopOnly || computerUse.available ? [computerUseCategory] : []),
+          // These permissions are the macOS app's: a desktop app elsewhere
+          // (Windows) has nothing to grant; the web offers the Mac app.
+          ...(desktopOnly || systemPermissions.available ? [permissionsCategory] : []),
           ...additionalSystemCategories.filter((category) => category.id !== "debug"),
           ...(aboutCategory ? [aboutCategory] : []),
         ],
@@ -2471,6 +2678,26 @@ export function AppSettingsRoute({
                       onChange: (event) =>
                         void clientSettings.update({
                           voiceLabsEnabled: event.target.checked,
+                        }),
+                    },
+                  },
+                ],
+              },
+              {
+                id: "debug.people",
+                title: m.settings_debug_people_title(),
+                items: [
+                  {
+                    id: "debug.people.enabled",
+                    title: m.settings_debug_people(),
+                    description: m.settings_debug_people_description(),
+                    control: {
+                      type: "toggle",
+                      checked: clientSettings.settings.peopleEnabled,
+                      disabled: clientSettingsPending,
+                      onChange: (event) =>
+                        void clientSettings.update({
+                          peopleEnabled: event.target.checked,
                         }),
                     },
                   },
@@ -2642,30 +2869,6 @@ export function AppSettingsRoute({
               onPress: () => {
                 setGuestDiscardOpen(false);
                 auth.signOut();
-              },
-            },
-          ]}
-        />
-      ) : null}
-      {notificationPermissionDialogOpen ? (
-        <Dialog
-          isOpen
-          isDismissable
-          onOpenChange={setNotificationPermissionDialogOpen}
-          title={m.settings_system_notifications_permission_title()}
-          description={m.settings_system_notifications_permission_description()}
-          actions={[
-            {
-              label: m.settings_profile_cancel(),
-              hierarchy: "secondary-gray",
-              onPress: () => setNotificationPermissionDialogOpen(false),
-            },
-            {
-              label: m.settings_system_notifications_open_system_settings(),
-              hierarchy: "primary",
-              onPress: () => {
-                setNotificationPermissionDialogOpen(false);
-                void openNotificationSettings();
               },
             },
           ]}

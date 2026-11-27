@@ -4,7 +4,7 @@ import { Button } from "@comma/ui/components/Button";
 import {
   PanelRightIcon,
   SquareCursorIcon,
-  WindowAppIcon,
+  PictureInPictureIcon,
 } from "@comma/ui/components/icons";
 import { OverlayPortalProvider } from "@comma/ui/components/portal";
 import { toast } from "@comma/ui/components/toast";
@@ -44,7 +44,7 @@ import { ScreenFrameMark, type ScreenSelection } from "./ScreenFrameMark";
 import { ScreenShotThumb, ScreenShutter, type ScreenShot } from "./ScreenShot";
 import { useScreenWatchHint } from "./useScreenWatchHint";
 import { NoScreenFrame, SelectionsFull, screenFrameCanvas } from "./screenToChat";
-import type { ScreenStreamStats as Stats } from "./screenStreamStats";
+import type { ScreenLinkTone, ScreenStreamStats as Stats } from "./screenStreamStats";
 
 /**
  * A computer's screen as a side panel page: the big screen, under a toolbar as the browser's has. Here the person may
@@ -59,6 +59,7 @@ export function ScreenStreamPanel({
   computer,
   initialTarget,
   via,
+  looks = false,
   controlKey,
   onOpenWindow,
   onMoveBack,
@@ -67,6 +68,8 @@ export function ScreenStreamPanel({
   appName: string | undefined;
   source: ScreenStreamSource;
   active: boolean;
+  /** The screen is only looked at (a Task's sandbox): no Watch or Control to choose, and it is never driven. */
+  looks?: boolean | undefined;
   /** How this device's connection to the computer runs now, over the mesh. */
   via?: "direct" | "relay" | "salix" | undefined;
   /** What it shows first: an app's windows, unless asked for the whole display. */
@@ -172,7 +175,7 @@ export function ScreenStreamPanel({
     deviceName: computer?.screen ? screenName(computer.screen) : undefined,
     dropControl: () => setControl(false),
   });
-  const control = wantsControl && canControl;
+  const control = !looks && wantsControl && canControl;
   // Watch and Control to choose from. A computer's screen or a phone has them in the toolbar, always. A simulator has
   // them on the stage, beside the device, while an agent uses it or while it is not driven (so Control can be asked).
   // A station from before says nothing of leases: the page cannot tell when to let go, so both stay there once the
@@ -207,6 +210,8 @@ export function ScreenStreamPanel({
     (read: (() => Stats) | undefined) => setReadStats(() => read),
     []
   );
+  // How its link fares, for the bars' colour without reading the statistics (none while not live).
+  const [linkTone, setLinkTone] = useState<ScreenLinkTone | undefined>();
   const [full, toggleFull] = useFullscreen(panel, control);
   const [asking, setAsking] = useState(false);
   const noPicture = () =>
@@ -342,7 +347,7 @@ export function ScreenStreamPanel({
                   title={title}
                 />
               )}
-              {simulated ? null : (
+              {simulated || looks ? null : (
                 <fieldset
                   aria-label={messages.remote_screen_control()}
                   className="comma-remote-screen-segments"
@@ -381,7 +386,11 @@ export function ScreenStreamPanel({
                     placement="bottom"
                   />
                 ) : null}
-                <ScreenStatsPanel read={readStats} way={way} />
+                <ScreenStatsPanel
+                  read={readStats}
+                  tone={state === "live" ? linkTone : undefined}
+                  way={way}
+                />
                 {audio ? (
                   <ScreenStreamMuteAction
                     muted={muted}
@@ -398,7 +407,7 @@ export function ScreenStreamPanel({
                 )}
                 {onOpenWindow ? (
                   <ScreenStreamAction
-                    icon={<WindowAppIcon aria-hidden />}
+                    icon={<PictureInPictureIcon aria-hidden />}
                     label={messages.remote_screen_open_window()}
                     onClick={() => {
                       if (panel.current) onOpenWindow(panel.current);
@@ -445,12 +454,14 @@ export function ScreenStreamPanel({
             onAgent={setAgent}
             onAudio={setAudio}
             onState={setState}
+            onLinkTone={setLinkTone}
             onStats={onStats}
             quality={quality}
             source={source}
             state={state}
             target={target}
-            watching={watchHint.watching}
+            // (a screen only looked at has no Control for the hint to point to)
+            watching={looks ? undefined : watchHint.watching}
           />
         ) : null}
         {/* (only while it is driven: a station from before lists none, and neither does a phone or a computer's screen) */}

@@ -15,19 +15,69 @@ defmodule BillingCommerce.SubscriptionCheckout do
   defp reserve(repo, account_id, attrs) do
     repo.transaction(fn ->
       pending = lock(repo, account_id)
+      now = SystemsClock.utc_now()
 
+      if quote_expires_at = attrs[:quote_expires_at] || attrs["quote_expires_at"] do
+        if is_integer(quote_expires_at) and DateTime.to_unix(now, :second) >= quote_expires_at do
+          repo.rollback(:quote_expired)
+        end
+      end
+
+      # One payment channel owns the account's subscription at a time.
+      # A cancelled subscription keeps its status until its paid period ends.
       %{rows: rows} =
         Ecto.Adapters.SQL.query!(
           repo,
           """
-          SELECT id FROM billing_subscriptions
-          WHERE billing_account_id = $1 AND source_type = 'stripe_subscription'
+          SELECT source_type FROM billing_subscriptions
+          WHERE billing_account_id = $1
+            AND source_type IN ('stripe_subscription', 'apple_subscription', 'google_subscription')
             AND status IN ('active', 'trialing', 'past_due', 'unpaid', 'paused') LIMIT 1
           """,
           [account_id]
         )
 
-      if rows != [], do: repo.rollback(:subscription_already_exists)
+      case rows do
+        [] -> :ok
+        [["stripe_subscription"]] -> repo.rollback(:subscription_already_exists)
+        [[_store]] -> repo.rollback(:subscription_active_elsewhere)
+      end
+
+      %{rows: m2_paid_rows} =
+        Ecto.Adapters.SQL.query!(
+          repo,
+          """
+          SELECT c.id
+          FROM billing_subscription_cycles c
+          JOIN billing_subscriptions s ON s.id = c.subscription_id
+          CROSS JOIN LATERAL jsonb_each(COALESCE(c.source_metadata->'payment_sources', '{}'::jsonb)) p
+          WHERE c.billing_account_id = $1
+            AND s.source_type = 'm2square_term'
+            AND c.period_end > $2
+            AND p.value->>'state' = 'paid'
+          LIMIT 1
+          """,
+          [account_id, now]
+        )
+
+      if m2_paid_rows != [], do: repo.rollback(:subscription_already_exists)
+
+      %{rows: m2_pending_rows} =
+        Ecto.Adapters.SQL.query!(
+          repo,
+          """
+          SELECT mch_order_id
+          FROM billing_m2square_orders
+          WHERE billing_account_id = $1
+            AND status IN ('creating', 'open')
+            AND inserted_at > $2
+          LIMIT 1
+          """,
+          [account_id, DateTime.add(now, -3600, :second)]
+        )
+
+      if m2_pending_rows != [], do: repo.rollback(:subscription_checkout_pending)
+
       pending || new_pending(repo, account_id, attrs)
     end)
   end
@@ -39,6 +89,7 @@ defmodule BillingCommerce.SubscriptionCheckout do
 
     request =
       attrs
+      |> Map.drop([:quote_expires_at, "quote_expires_at"])
       |> Map.put(:idempotency_key, key)
       |> Map.put(:expires_at, DateTime.to_unix(SystemsClock.utc_now()) + 86_400)
       |> Map.new(fn {k, v} -> {to_string(k), v} end)
@@ -60,7 +111,7 @@ defmodule BillingCommerce.SubscriptionCheckout do
         current["status"] == "expired" ->
           {:ok, Map.put(current, "expired", true)}
 
-        pending["plan"] != (attrs[:provider_price_id] || attrs["provider_price_id"]) ->
+        not same_purchase?(pending, attrs) ->
           {:error, :subscription_checkout_pending}
 
         true ->
@@ -70,11 +121,19 @@ defmodule BillingCommerce.SubscriptionCheckout do
   end
 
   defp resolve(pending, attrs, create, _retrieve) do
-    if pending["plan"] == (attrs[:provider_price_id] || attrs["provider_price_id"]) do
+    if same_purchase?(pending, attrs) do
       create.(pending["request"])
     else
       {:error, :subscription_checkout_pending}
     end
+  end
+
+  defp same_purchase?(pending, attrs) do
+    request = pending["request"]
+
+    pending["plan"] == (attrs[:provider_price_id] || attrs["provider_price_id"]) and
+      (request["quantity"] || 1) == (attrs[:quantity] || attrs["quantity"] || 1) and
+      request["teams_signup"] == (attrs[:teams_signup] || attrs["teams_signup"])
   end
 
   defp store(repo, account_id, pending, session) do

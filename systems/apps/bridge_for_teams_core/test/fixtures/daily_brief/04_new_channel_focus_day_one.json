@@ -1,0 +1,54 @@
+{
+  "name": "new_channel_focus_day_one",
+  "window_after": "2026-11-18T01:00:00Z",
+  "now": "2026-11-19T01:00:00Z",
+  "member": {
+    "slack_user_id": "UPENG1",
+    "name": "Peng Xiao",
+    "timezone": "Asia/Shanghai",
+    "aliases": [{"kind": "name", "term": "Peng Xiao"}],
+    "focus_channels": []
+  },
+  "channels": {
+    "C_NEW_PROJ": "proj-pinshot"
+  },
+  "messages": [
+    {
+      "channel_id": "C_NEW_PROJ",
+      "ts": "1795020100.000100",
+      "actor_kind": "user",
+      "actor_id": "UPENG1",
+      "text": "建个新频道同步 PinShot 0.3 发布"
+    },
+    {
+      "channel_id": "C_NEW_PROJ",
+      "ts": "1795020200.000100",
+      "actor_kind": "user",
+      "actor_id": "UPENG1",
+      "text": "安装包签名脚本已经跑通"
+    },
+    {
+      "channel_id": "C_NEW_PROJ",
+      "ts": "1795020300.000100",
+      "actor_kind": "user",
+      "actor_id": "UPENG1",
+      "text": "大家测一下贴图缩放有没有模糊"
+    },
+    {
+      "channel_id": "C_NEW_PROJ",
+      "ts": "1795020400.000100",
+      "actor_kind": "user",
+      "actor_id": "UBOB",
+      "text": "高分屏下贴图缩放正常，明天能直接发 0.3 正式版吗？"
+    }
+  ],
+  "direct_messages": [],
+  "followups": [],
+  "closed": [],
+  "issues": {},
+  "issue_states": {},
+  "expect": {
+    "mine_open_contains": ["PinShot 0.3"],
+    "text_contains": ["PinShot 0.3"]
+  }
+}

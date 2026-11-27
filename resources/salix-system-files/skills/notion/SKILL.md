@@ -1,6 +1,7 @@
 ---
 name: notion
 description: Work with Notion through the `notion-cli` (4ier/notion-cli), including OAuth-backed CLI access, CLI installation via npm, and workspace operations such as searching pages, reading content, querying databases, and listing recent updates. Use when the user asks to read, search, or update their Notion workspace from the CLI.
+prompt_summary: "Search, read, and edit Notion pages/databases via official Notion MCP or API token (separate auths); check existing connections first."
 ---
 
 # Notion

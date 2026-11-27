@@ -52,7 +52,10 @@ internal class WorkspaceScope(
 
     val current: Boolean get() = sessions.isCurrent(session)
 
-    fun onChange(listener: () -> Unit) { listeners += listener }
+    fun onChange(listener: () -> Unit): () -> Unit {
+        listeners += listener
+        return { listeners -= listener }
+    }
     fun changed() = listeners.toList().forEach { it() }
 
     /** A scope of its own (its own busy state and error) for one part of this page; it closes with this one. */

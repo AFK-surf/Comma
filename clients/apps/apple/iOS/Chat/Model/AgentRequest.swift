@@ -5,7 +5,9 @@ import SwiftUI
 /// Capability Request). The server owns its status and outcome: the first ending wins, and every device shows it.
 /// Connecting an account (`oauth_authorization`) succeeds on the provider's verified callback, so the person here opens
 /// the provider's page or declines. A location request (`location`) ends when the person shares this device's position
-/// once or declines; its `provider` is `locationProvider`, since no account stands behind it.
+/// once or declines; its `provider` is `locationProvider`, since no account stands behind it. A plugin install
+/// (`plugin_install`) ends when the plugin is installed in its Workspace, by this card or anywhere else, or the person
+/// declines; its `provider` is the plugin's id.
 struct AgentRequest: Sendable, Equatable, Identifiable {
     enum Status: String, Sendable {
         case pending, completed
@@ -16,7 +18,7 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
         case failed
     }
 
-    enum Outcome: String, Sendable { case connected, shared, declined }
+    enum Outcome: String, Sendable { case connected, shared, declined, installed }
 
     static let locationProvider = "location"
     /// This device's position is asked for, not an account.
@@ -44,6 +46,18 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
     let label: String?
     /// What the person fills in first, while the request waits.
     let input: Input?
+    /// The plugin a Router asks to install.
+    let plugin: Plugin?
+
+    /// A plugin a Router asks to install: adding it is the Plugins page's install, in the Workspace it names.
+    struct Plugin: Sendable, Equatable {
+        let id: String
+        let name: String
+        /// Whose mark the card shows; the plugin's id when absent.
+        let brand: String?
+        /// The Workspace it goes into.
+        let workspace: String
+    }
 
     /// A `secret` value ends the request; the Workspace's own `app` leaves it waiting on the provider's page.
     struct Input: Sendable, Equatable {
@@ -56,6 +70,16 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
         let redirectURI: String?
         /// A CLI login's device code, to confirm on the page.
         let code: String?
+        /// The values a secret asks for by name; empty for one value.
+        let fields: [Field]
+
+        /// One value a secret asks for: shown as typed unless `secret`, and may be left empty when `optional`.
+        struct Field: Sendable, Equatable {
+            let name: String
+            let label: String
+            let secret: Bool
+            let optional: Bool
+        }
 
         /// The card's button asks for what the person fills in, not for a page to open.
         var fills: Bool { kind == .secret || kind == .app || kind == .paste }
@@ -66,12 +90,18 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
             helpURL = json.string("helpUrl").flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
             redirectURI = json.string("redirectUri")
             code = json.string("code")
+            fields = json.objects("fields").compactMap { field in
+                guard let name = field.string("name") else { return nil }
+                return Field(name: name, label: field.string("label") ?? name,
+                             secret: (field["secret"] as? NSNumber)?.boolValue ?? true, optional: field.bool("optional"))
+            }
         }
     }
 
     /// The card's title: a secret by what the Agent calls it, an account by its provider.
     var title: LocalizedStringKey {
-        switch provider {
+        if let plugin { return "Add \(plugin.name)" }
+        return switch provider {
         case Self.locationProvider: "Share your location"
         case "secret": "Fill in \(secretName)"
         case "cli": "Log in to \(alias ?? "") CLI"
@@ -80,6 +110,8 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
     }
 
     var secretName: String { label ?? alias ?? providerName }
+    /// Whose logo the card shows: a secret is named for its service (didi), so its alias picks the logo.
+    var markKey: String? { plugin.map { $0.brand ?? $0.id } ?? (provider == "secret" ? alias : provider) }
 
     /// Nil for a request the app draws no card for.
     init?(_ json: NSDictionary) {
@@ -90,6 +122,17 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
                       expiresAt: json.double("expiresAt"), createdAt: json.double("createdAt"),
                       sourceMessageID: json.string("sourceMessageId"), provider: Self.locationProvider,
                       reason: location.text("reason") ?? "")
+            return
+        }
+        if json.string("type") == "plugin_install" {
+            guard let id = json.string("id"), let status = json.string("status").flatMap(Status.init(rawValue:)),
+                  let plugin = json.object("plugin"), let pluginID = plugin.string("id"),
+                  let workspace = plugin.string("workspace") else { return nil }
+            self.init(id: id, status: status, outcome: json.string("outcome").flatMap(Outcome.init(rawValue:)),
+                      expiresAt: json.double("expiresAt"), createdAt: json.double("createdAt"),
+                      sourceMessageID: json.string("sourceMessageId"), provider: pluginID, reason: plugin.text("reason") ?? "",
+                      plugin: Plugin(id: pluginID, name: plugin.string("name") ?? pluginID, brand: plugin.string("brand"),
+                                     workspace: workspace))
             return
         }
         guard json.string("type") == "oauth_authorization", let id = json.string("id"),
@@ -105,10 +148,11 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
 
     init(id: String, status: Status, outcome: Outcome? = nil, expiresAt: Double? = nil, createdAt: Double? = nil,
          sourceMessageID: String? = nil, provider: String, reason: String, authorizationURL: URL? = nil, account: String? = nil,
-         alias: String? = nil, label: String? = nil, input: Input? = nil) {
+         alias: String? = nil, label: String? = nil, input: Input? = nil, plugin: Plugin? = nil) {
         self.id = id; self.status = status; self.outcome = outcome; self.expiresAt = expiresAt; self.createdAt = createdAt
         self.sourceMessageID = sourceMessageID; self.provider = provider; self.reason = reason
         self.authorizationURL = authorizationURL; self.account = account; self.alias = alias; self.label = label; self.input = input
+        self.plugin = plugin
     }
 
     /// The requests of the core's `agentRequests` value, newest first as it gives them.

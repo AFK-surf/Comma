@@ -19,6 +19,8 @@ const participantIssueDetailSchema = lazySchema(() =>
       profile_id: z.string().min(1).optional(),
       profile_name: z.string().min(1).optional(),
       reset_at: z.number().positive().optional(),
+      credits: z.literal(true).optional(),
+      trigger: z.enum(["background", "voice_call"]).optional(),
     })
     .optional()
     .catch(undefined)
@@ -196,6 +198,7 @@ export const salixMessageSchema = lazySchema(() =>
       thread_root_message_id: z.string().min(1).optional(),
       kind: z.string().min(1),
       actor_type: z.string().min(1),
+      participant_id: z.string().min(1).optional(),
       agent_id: z.string().min(1).optional(),
       user_id: z.string().min(1).optional(),
       role_label: z.string().min(1).optional(),
@@ -296,6 +299,12 @@ const commaTaskRunSchema = lazySchema(() =>
               .optional(),
             state: z.string(),
             reason: z.string().nullable().optional(),
+            // The sandbox's station can show its display, to this person: the Task's owner.
+            screen_owner: z.string().optional().catch(undefined),
+            // The Device the sandbox runs as, whose display is viewed.
+            screen_device: z.string().optional().catch(undefined),
+            // Something is on that display now: a Session is using its browser on it.
+            screen_active: z.boolean().optional().catch(undefined),
             // The models its station runs, by runtime, while it is connected: what a switch may name.
             task_models: z
               .record(z.string(), z.array(z.string()))
@@ -384,6 +393,8 @@ export const commaConversationSchema = lazySchema(() =>
       requested_by: z.string().max(256).optional(),
       /** The sender's User id, to tell apart two senders with one name. */
       requested_by_id: z.string().max(256).optional(),
+      /** A Task together: the User ids of the people it was started with. */
+      together: z.array(z.string().max(256)).max(8).optional(),
       /** Their avatar: a `sender-avatar` file of this request at this revision. */
       requested_by_avatar: z
         .object({
@@ -433,6 +444,8 @@ export const commaConversationPreviewSchema = lazySchema(() =>
       origin: z.string().optional(),
       /** Included only when the caller requests the Task's Worker identity. */
       bound_worker: commaBoundWorkerSchema.nullable().optional(),
+      /** Comes with `bound_worker`: active worker sessions on a multi-session Task. */
+      worker_sessions: z.array(commaWorkerSessionSchema).max(6).optional(),
       /** Comes with `bound_worker`: where the Task runs and its model. */
       run: optionalTaskRunSchema,
       /** Comes with `bound_worker`: a Loop Task's Loop; read it with `taskLoop`. */
@@ -440,6 +453,27 @@ export const commaConversationPreviewSchema = lazySchema(() =>
     })
     .strip()
 );
+
+export const commaWorkerSessionSchema = lazySchema(() =>
+  z
+    .object({
+      participant_id: z.string().min(1),
+      actor_id: z.string().optional(),
+      slot: z.string().min(1),
+      label: z.string().min(1),
+      model: z.string().optional(),
+      runtime: z.string().optional(),
+      is_primary: z.boolean(),
+      subscribed: z.boolean().optional(),
+      state: z.enum(["active", "waiting", "error", "stopped"]),
+      status: z.string(),
+      updated_at: z.number().optional(),
+      issue: z.string().optional(),
+      issue_detail: participantIssueDetailSchema,
+    })
+    .strip()
+);
+export type CommaWorkerSession = z.output<typeof commaWorkerSessionSchema>;
 
 export const commaTaskParticipantStatusesSchema = lazySchema(() =>
   z
@@ -465,6 +499,7 @@ export const commaTaskParticipantStatusesSchema = lazySchema(() =>
           })
         )
         .max(2),
+      worker_sessions: z.array(commaWorkerSessionSchema).max(6).optional(),
     })
     .superRefine((event, context) => {
       if (

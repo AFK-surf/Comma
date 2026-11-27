@@ -26,7 +26,12 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE,
 } from "./chat/model/protocol.ts";
 import { historyItems } from "./coding-history.ts";
-import { pullRequestSchema, toPullRequest, usageSchema } from "./coding-wire.ts";
+import {
+  pullRequestSchema,
+  toCodingUsage,
+  toPullRequest,
+  usageSchema,
+} from "./coding-wire.ts";
 import { CodingPullRequests } from "./coding-pull-requests.ts";
 import type {
   CodingChanges,
@@ -169,6 +174,29 @@ const sessionSchema = lazySchema(() =>
 );
 
 const base = (workspace: string) => route`/v1/comma/workspaces/${workspace}/coding`;
+
+/**
+ * Asks Task `taskId`'s sandbox to show its screen to the Task's owner, and gives the Device the sandbox runs as
+ * (`coding.screen`). The sandbox shows it for three minutes from each ask (systems/station/src/mesh/device-mesh.ts
+ * `STALE_MS`), so a view of that screen asks as it opens and again while it is open (screen-views.ts): nothing else
+ * ends the showing, and a view that closed asks no more.
+ */
+export const askSandboxScreen = (ctx: Ctx, workspaceId: string, taskId: string) =>
+  ctx.session.account().pipe(
+    Effect.flatMap((account) =>
+      ctx.api.request(
+        account,
+        "POST",
+        `${base(workspaceId)}${route`/sessions/${taskId}`}/screen`,
+        z.object({ device_id: z.string().min(1).max(256) }),
+        {}
+      )
+    ),
+    Effect.map(({ device_id }) => ({ deviceId: device_id }))
+  );
+
+/** How often an open view of a sandbox's screen asks again: three asks within what the station lets stand. */
+export const SANDBOX_SCREEN_EVERY_MS = 60_000;
 
 export function registerCoding(ctx: Ctx): void {
   const request = <S extends z.ZodType>(
@@ -448,7 +476,7 @@ export function registerCoding(ctx: Ctx): void {
               start: h.start,
               total: h.total,
               items: historyItems(h.entries, h.start),
-              usage: h.usage ?? null,
+              usage: toCodingUsage(h.usage),
             })
           )
         );
@@ -579,6 +607,9 @@ export function registerCoding(ctx: Ctx): void {
           z.object({ url: z.string().url() }),
           {}
         ).pipe(Effect.map(({ url }) => ({ url }))),
+    },
+    "coding.screen": {
+      run: (p) => askSandboxScreen(ctx, text(p, "workspaceId"), text(p, "taskId")),
     },
   });
 }

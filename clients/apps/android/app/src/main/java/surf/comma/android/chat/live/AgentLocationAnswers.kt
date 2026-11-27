@@ -15,8 +15,9 @@ import surf.comma.android.core.TopicValue
 
 /**
  * Answers the location requests the person's own messages led to while the app is open (the core's
- * `agentLocationRequests`, in any conversation): with location allowed in the system, the phone sends its position and
- * the person is not asked. A request that cannot be read stays on its card, which asks them. Nothing here keeps a
+ * `agentLocationRequests`, in any conversation): while the person shares their location (Settings › Share location, or
+ * Always share on a card) and the system allows it, the phone sends its position and the person is not asked.
+ * Otherwise, or when the position cannot be read, the request stays on its card, which asks them. Nothing here keeps a
  * position. Runs on the main thread.
  */
 internal class AgentLocationAnswers(
@@ -25,11 +26,15 @@ internal class AgentLocationAnswers(
     private val scope: CoroutineScope,
     private val allowed: (Context) -> Boolean = DeviceLocation::allowed,
     private val read: (Context, (DeviceLocation.Reading) -> Unit) -> Unit = DeviceLocation::readGranted,
+    /** Whether the person shares their location now. */
+    private val shared: () -> Boolean,
 ) {
     private class Own(val id: String, val group: String, val conversation: String)
 
     private var following: Job? = null
     private val tried = HashSet<String>()
+    /** The requests still waiting, as the core last said. */
+    private var waiting: List<Own> = emptyList()
     private val reading = HashSet<String>()
     private val watchers = LinkedHashSet<() -> Unit>()
 
@@ -41,6 +46,9 @@ internal class AgentLocationAnswers(
         watchers += changed
         return { watchers -= changed }
     }
+
+    /** Sharing was turned on or off: a request still waiting may be answered now. */
+    fun sharingChanged() = waiting.forEach(::answer)
 
     fun setForeground(visible: Boolean) {
         if (!visible) {
@@ -56,17 +64,19 @@ internal class AgentLocationAnswers(
             api.subscribe(JSONObject().put("topic", "agentLocationRequests"), ::parse).collect { value ->
                 if (value !is TopicValue.Value) return@collect
                 tried.retainAll(value.value.mapTo(HashSet()) { it.id })
+                waiting = value.value
                 value.value.forEach(::answer)
             }
         }
     }
 
     private fun answer(request: Own) {
-        if (!allowed(context) || !tried.add(request.id)) return
+        if (!shared() || !allowed(context) || !tried.add(request.id)) return
         reading += request.id
         changed()
         read(context) { position ->
-            if (position !is DeviceLocation.Reading.At) {
+            // Sharing may have been turned off while the phone read its position.
+            if (position !is DeviceLocation.Reading.At || !shared()) {
                 finish(request.id)
                 return@read
             }
@@ -104,15 +114,21 @@ internal class AgentLocationAnswers(
     }
 
     companion object {
-        @Volatile private var shared: AgentLocationAnswers? = null
+        @Volatile private var instance: AgentLocationAnswers? = null
 
         /** The process's one, so every screen's cards see what it is reading. */
-        fun of(context: Context): AgentLocationAnswers = shared ?: synchronized(this) {
-            shared ?: AgentLocationAnswers(
-                context.applicationContext,
-                AuthGraph.core(context),
-                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-            ).also { shared = it }
+        fun of(context: Context): AgentLocationAnswers = instance ?: synchronized(this) {
+            instance ?: LocationSharing.of(context).let { sharing ->
+                AgentLocationAnswers(
+                    context.applicationContext,
+                    AuthGraph.core(context),
+                    CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                    shared = { sharing.enabled == true },
+                ).also { answers ->
+                    sharing.watch(answers::sharingChanged)
+                    instance = answers
+                }
+            }
         }
     }
 }

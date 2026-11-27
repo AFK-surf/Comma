@@ -10,7 +10,7 @@ defmodule BridgeForTeamsWeb.Dashboard.DailyBriefController do
   use BridgeForTeamsWeb.Dashboard, :controller
 
   alias BridgeForTeams.{DailyBrief, Memberships, Orgs, Repo}
-  alias BridgeForTeams.DailyBrief.DirectMessages
+  alias BridgeForTeams.DailyBrief.{DirectMessages, Members}
   alias BridgeForTeams.Schema.DailyBriefMember
   alias BridgeForTeamsWeb.MacMiniRelease
 
@@ -85,7 +85,11 @@ defmodule BridgeForTeamsWeb.Dashboard.DailyBriefController do
          :ok <- Memberships.authorize(user.id, :read, %{org_id: org.id, min_org_role: "member"}),
          %{enabled: true} = settings <- DailyBrief.get_settings(org.id),
          %DailyBriefMember{enabled: true} = member <-
-           Repo.get_by(DailyBriefMember, org_id: org.id, user_id: user.id) do
+           Repo.get_by(DailyBriefMember,
+             org_id: org.id,
+             user_id: user.id,
+             provider: Members.provider(settings)
+           ) do
       {:ok, org, settings, member}
     else
       {:error, reason} -> {:error, reason}
@@ -116,6 +120,10 @@ defmodule BridgeForTeamsWeb.Dashboard.DailyBriefController do
     do: "这个 Swarm 的 Slack bot 和组织的 Slack 连接用的是同一个 app，私信授权会和 agent 的授权混在一起。请管理员给 bot 单独建一个 app。"
 
   defp message(:dm_enabled), do: "每日简报已经在读你的私信了。"
+
+  defp message(:direct_messages_slack_only),
+    do: "飞书和 Lark 的每日简报只读公开群，不读私聊。"
+
   defp message(:not_set_up), do: "这个组织还没有为你开启每日简报。"
   defp message(_reason), do: "没能开启，请稍后再试。"
 end

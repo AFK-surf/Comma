@@ -70,6 +70,10 @@ export type DriveFilePreview = Extract<
   CommaRecommendationLinkPreview,
   { kind: "google_drive_file" }
 >;
+export type StillfailChatPreview = Extract<
+  CommaRecommendationLinkPreview,
+  { kind: "stillfail_chat" }
+>;
 
 export function LinkPreviewCard({
   preview,
@@ -79,9 +83,13 @@ export function LinkPreviewCard({
   source?: LinkPreviewSourceLike | undefined;
 }) {
   switch (preview.kind) {
+    case "web_page":
+      return <WebPagePreviewCard preview={preview} />;
     case "outlook_message":
     case "outlook_event":
-      return <OutlookPreviewCard preview={preview} />;
+      return <OutlookPreviewCard preview={preview} source={source} />;
+    case "gmail_message":
+      return <GmailMessagePreviewCard preview={preview} source={source} />;
     case "github_pull_request":
       return <PullRequestPreviewCard preview={preview} source={source} />;
     case "linear_issue":
@@ -94,27 +102,80 @@ export function LinkPreviewCard({
       return <SlackMessagePreviewCard preview={preview} source={source} />;
     case "google_drive_file":
       return <DriveFilePreviewCard preview={preview} source={source} />;
+    case "stillfail_chat":
+      return <StillfailChatPreviewCard preview={preview} source={source} />;
   }
+}
+
+function WebPagePreviewCard({
+  preview,
+}: {
+  preview: Extract<CommaRecommendationLinkPreview, { kind: "web_page" }>;
+}) {
+  const [failedImage, setFailedImage] = useState<string>();
+  const [failedIcon, setFailedIcon] = useState<string>();
+  return (
+    <LinkCard kind="web_page">
+      {preview.image && preview.image !== failedImage ? (
+        <img
+          className="comma-web-link-preview-image"
+          src={preview.image}
+          alt=""
+          onError={() => setFailedImage(preview.image ?? undefined)}
+        />
+      ) : null}
+      <div className="comma-recommendation-link-card-meta">
+        {preview.icon && preview.icon !== failedIcon ? (
+          <img
+            className="comma-web-link-preview-icon"
+            src={preview.icon}
+            alt=""
+            onError={() => setFailedIcon(preview.icon ?? undefined)}
+          />
+        ) : null}
+        <span className="comma-recommendation-link-card-ref">{preview.siteName}</span>
+      </div>
+      <div className="comma-recommendation-link-card-stack">
+        <span className="comma-recommendation-link-card-title">{preview.title}</span>
+        {preview.description ? (
+          <span className="comma-recommendation-link-card-detail comma-web-link-preview-description">
+            {preview.description}
+          </span>
+        ) : null}
+        <span className="comma-recommendation-link-preview-url">
+          {describeLinkDestination(preview.href)}
+        </span>
+      </div>
+    </LinkCard>
+  );
 }
 
 function OutlookPreviewCard({
   preview,
+  source,
 }: {
   preview: Extract<
     CommaRecommendationLinkPreview,
     { kind: "outlook_message" | "outlook_event" }
   >;
+  source: LinkPreviewSourceLike | undefined;
 }) {
+  const messages = useCommaMessages();
   const locale = useCommaLocale();
+  const resolvedSource = source ?? { appId: "outlook", appName: "Outlook" };
   return (
     <LinkCard kind={preview.kind}>
-      <div className="comma-recommendation-link-card-stack">
+      <div className="comma-recommendation-link-card-meta">
+        <span aria-hidden="true" className="comma-recommendation-link-card-mark">
+          <LinkProviderIcon source={resolvedSource} />
+        </span>
+        <span className="comma-recommendation-link-card-ref">
+          {preview.sender ?? resolvedSource.appName ?? "Outlook"}
+        </span>
+        <LinkCardTime at={preview.receivedAt ?? null} locale={locale} />
+      </div>
+      <div className="comma-recommendation-link-card-body">
         <span className="comma-recommendation-link-card-title">{preview.title}</span>
-        {preview.sender ? (
-          <span className="comma-recommendation-link-card-detail">
-            {preview.sender}
-          </span>
-        ) : null}
         {preview.startsAt === null ? null : (
           <time
             className="comma-recommendation-link-card-detail"
@@ -130,10 +191,55 @@ function OutlookPreviewCard({
           </time>
         )}
         {preview.excerpt ? (
-          <span className="comma-recommendation-link-card-detail">
+          <span className="comma-recommendation-link-card-excerpt">
             {preview.excerpt}
           </span>
         ) : null}
+        {preview.kind === "outlook_message" ? (
+          <div className="comma-recommendation-link-card-facts">
+            <span className="comma-recommendation-link-card-chips">
+              <LinkCardChip>{messages.mail_preview_click_hint()}</LinkCardChip>
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </LinkCard>
+  );
+}
+
+function GmailMessagePreviewCard({
+  preview,
+  source,
+}: {
+  preview: Extract<CommaRecommendationLinkPreview, { kind: "gmail_message" }>;
+  source: LinkPreviewSourceLike | undefined;
+}) {
+  const messages = useCommaMessages();
+  const locale = useCommaLocale();
+  const resolvedSource = source ?? { appId: "gmail", appName: "Gmail" };
+  return (
+    <LinkCard kind="gmail_message">
+      <div className="comma-recommendation-link-card-meta">
+        <span aria-hidden="true" className="comma-recommendation-link-card-mark">
+          <LinkProviderIcon source={resolvedSource} />
+        </span>
+        <span className="comma-recommendation-link-card-ref">
+          {preview.sender ?? resolvedSource.appName ?? "Gmail"}
+        </span>
+        <LinkCardTime at={preview.receivedAt ?? null} locale={locale} />
+      </div>
+      <div className="comma-recommendation-link-card-body">
+        <span className="comma-recommendation-link-card-title">{preview.title}</span>
+        {preview.excerpt ? (
+          <span className="comma-recommendation-link-card-excerpt">
+            {preview.excerpt}
+          </span>
+        ) : null}
+        <div className="comma-recommendation-link-card-facts">
+          <span className="comma-recommendation-link-card-chips">
+            <LinkCardChip>{messages.mail_preview_click_hint()}</LinkCardChip>
+          </span>
+        </div>
       </div>
     </LinkCard>
   );
@@ -590,6 +696,81 @@ function DriveFilePreviewCard({
   );
 }
 
+const stillfailStateMeta = {
+  need: { icon: CircleInfoIcon, state: "review" },
+  running: { icon: LoaderIcon, state: "started" },
+  done: { icon: CircleCheckIcon, state: "completed" },
+  failed: { icon: CircleXIcon, state: "canceled" },
+} as const satisfies Record<
+  StillfailChatPreview["status"],
+  { icon: typeof CircleInfoIcon; state: string }
+>;
+
+function StillfailChatPreviewCard({
+  preview,
+  source,
+}: {
+  preview: StillfailChatPreview;
+  source: LinkPreviewSourceLike | undefined;
+}) {
+  const messages = useCommaMessages();
+  const locale = useCommaLocale();
+  const stateMeta = stillfailStateMeta[preview.status];
+  const StateIcon = stateMeta.icon;
+  const stateLabel = {
+    need: messages.stillfail_preview_status_need(),
+    running: messages.stillfail_preview_status_running(),
+    done: messages.stillfail_preview_status_done(),
+    failed: messages.stillfail_preview_status_failed(),
+  }[preview.status];
+  const latestMessage = preview.messages[preview.messages.length - 1];
+  const rawExcerpt = latestMessage?.text.trim() || preview.note?.trim() || undefined;
+  const excerpt = rawExcerpt ? stripMarkdownForExcerpt(rawExcerpt) : undefined;
+  const resolvedSource = source ?? { appId: "stillfail", appName: "still.fail" };
+
+  return (
+    <LinkCard kind="stillfail_chat">
+      <div className="comma-recommendation-link-card-meta">
+        <LinkCardState icon={<StateIcon />} state={stateMeta.state}>
+          {stateLabel}
+        </LinkCardState>
+        <span className="comma-recommendation-link-card-ref">
+          {preview.stationName ?? resolvedSource.appName ?? "still.fail"}
+        </span>
+        <LinkCardTime at={preview.updatedAt} locale={locale} />
+      </div>
+      <div className="comma-recommendation-link-card-body">
+        <span className="comma-recommendation-link-card-title">{preview.title}</span>
+        {excerpt ? (
+          <span className="comma-recommendation-link-card-excerpt">{excerpt}</span>
+        ) : null}
+        <div className="comma-recommendation-link-card-facts">
+          <span aria-hidden="true" className="comma-recommendation-link-card-mark">
+            <LinkProviderIcon source={resolvedSource} />
+          </span>
+          <span className="comma-recommendation-link-card-chips">
+            {preview.offline ? (
+              <LinkCardChip>{messages.stillfail_preview_offline()}</LinkCardChip>
+            ) : (
+              <LinkCardChip>{messages.stillfail_preview_click_hint()}</LinkCardChip>
+            )}
+          </span>
+        </div>
+      </div>
+    </LinkCard>
+  );
+}
+
+function stripMarkdownForExcerpt(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_~]+/g, "")
+    .replace(/^\s*#{1,6}\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // "Mon, Aug 24 · 9:00 – 9:45 AM" (all-day: "Mon, Aug 24 · All day").
 function describeEventTime(
   preview: CalendarEventPreview,
@@ -706,6 +887,19 @@ export function providerFromHref(href: string): LinkPreviewSourceLike | undefine
   }
   if (hostname === "docs.google.com" || hostname === "drive.google.com") {
     return { appId: "googledrive", appName: "Google Drive" };
+  }
+  if (hostWithin(hostname, "still.fail") || hostWithin(hostname, "app.youdid.wtf")) {
+    return { appId: "stillfail", appName: "still.fail" };
+  }
+  if (
+    hostname === "outlook.live.com" ||
+    hostname === "outlook.office.com" ||
+    hostname === "outlook.office365.com"
+  ) {
+    return { appId: "outlook", appName: "Outlook" };
+  }
+  if (hostname === "mail.google.com") {
+    return { appId: "gmail", appName: "Gmail" };
   }
   return undefined;
 }

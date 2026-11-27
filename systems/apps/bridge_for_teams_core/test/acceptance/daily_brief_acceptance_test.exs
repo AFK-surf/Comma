@@ -20,6 +20,9 @@ defmodule BridgeForTeams.DailyBriefAcceptanceTest do
   defmodule Mirror do
     @moduledoc "The ClickHouse mirror reader, serving Slack-shaped messages."
     def search(_scope, opts) do
+      owner = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :acceptance_owner)
+      SystemsRuntime.Proc.send(owner, {:mirror_search, opts[:channel_id]})
+
       messages =
         SystemsRuntime.fetch_env!(:bridge_for_teams_core, :acceptance_mirror)
         |> Enum.filter(fn m ->
@@ -33,6 +36,22 @@ defmodule BridgeForTeams.DailyBriefAcceptanceTest do
 
       {:ok, %{messages: messages, next_cursor: nil, has_more?: false}}
     end
+
+    def thread_participation(_scope, actor_id, threads) do
+      messages = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :acceptance_mirror)
+
+      wrote =
+        for {channel, ts} <- threads,
+            Enum.any?(messages, fn m ->
+              m["channel"] == channel and m["user"] == actor_id and
+                (m["thread_ts"] == ts or m["ts"] == ts)
+            end),
+            do: {channel, ts}
+
+      {:ok, wrote}
+    end
+
+    def actor_channel_counts(_scope, _actors, _channels, _after_us), do: {:ok, []}
 
     # The mirror's current rows by key, as named messages are read.
     def latest_states(_scope, keys) do
@@ -215,9 +234,11 @@ defmodule BridgeForTeams.DailyBriefAcceptanceTest do
     refute_received {:posted, _, _}
 
     # 09:00: the team brief is written once from the stream, then both
-    # members' briefs go out from the bot.
+    # members' briefs go out from the bot. All three share one channel read.
     SystemsClock.advance(60_000)
     SystemsClock.settle(until: fn -> briefs() == 2 end)
+    assert_received {:mirror_search, "CMAIN1"}
+    refute_received {:mirror_search, "CMAIN1"}
     assert_received {:team_input, team_input}
     assert Enum.any?(team_input["items"], &(&1["text"] =~ "客户在问报价"))
     refute_received {:team_input, _}
@@ -255,6 +276,194 @@ defmodule BridgeForTeams.DailyBriefAcceptanceTest do
     assert_received {:personal_input, %{"me" => %{"label" => "@UALICE1"}} = next}
     assert next["previous_brief"] =~ "先回客户的报价"
     assert next["items"] == []
+  end
+
+  defmodule GitHubStub do
+    @behaviour Plug
+    import Plug.Conn
+
+    @impl true
+    def init(opts), do: opts
+
+    @impl true
+    def call(conn, _opts) do
+      body =
+        case conn.request_path do
+          "/repos/AFK-surf/Cue/issues/5286" ->
+            %{"state" => "closed", "pull_request" => %{"merged_at" => "2026-11-13T10:00:00Z"}}
+
+          _other ->
+            %{"message" => "Not Found"}
+        end
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(body))
+    end
+  end
+
+  defmodule OAuthStoreStub do
+    def agent_oauth_context("agt"), do: {:ok, %{tenant: "tenant", group_id: "group-gh"}}
+    def agent_oauth_context(_), do: {:error, :not_found}
+
+    def bindings_for_group("group-gh"),
+      do: {:ok, [%{"provider" => "github", "alias" => "team", "connection_id" => "gh-team"}]}
+  end
+
+  test "online flow: batch shared read, team PR states, to_me rules, and prefix-cached model calls",
+       _ctx do
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_store = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    prev_overrides = SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, OAuthStoreStub)
+
+    gh_bandit =
+      start_supervised!(
+        {Bandit,
+         plug: GitHubStub, scheme: :http, ip: {127, 0, 0, 1}, port: 0, startup_log: false},
+        id: :gh_stub
+      )
+
+    {:ok, {_ip, gh_port}} = ThousandIsland.listener_info(gh_bandit)
+
+    SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, %{
+      "github" => %{"api_url" => "http://127.0.0.1:#{gh_port}"}
+    })
+
+    :ok =
+      SalixStore.OAuth.put("gh-team", %{
+        "connection_id" => "gh-team",
+        "provider" => "github",
+        "access_token" => "gh-token",
+        "status" => "active"
+      })
+
+    on_exit(fn ->
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, prev_overrides)
+
+      if prev_store,
+        do: SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, prev_store),
+        else: SystemsRuntime.delete_env(:salix_agent, :oauth_store_mod)
+
+      SystemsRuntime.delete_env(:salix_web, :daily_brief_test_completion)
+    end)
+
+    SystemsRuntime.put_env(:bridge_for_teams_core, :acceptance_mirror, [
+      %{
+        "type" => "message",
+        "channel" => "CMAIN1",
+        "ts" => "1792680000.000100",
+        "thread_ts" => "1792680000.000100",
+        "user" => "UALICE1",
+        "text" => "域名上限准备了方案 A 和方案 B"
+      },
+      %{
+        "type" => "message",
+        "channel" => "CMAIN1",
+        "ts" => "1792680100.000100",
+        "thread_ts" => "1792680000.000100",
+        "user" => "UALICE1",
+        "text" => "方案 A 限制便宜后缀"
+      },
+      %{
+        "type" => "message",
+        "channel" => "CMAIN1",
+        "ts" => "1792680200.000100",
+        "thread_ts" => "1792680000.000100",
+        "user" => "UALICE1",
+        "text" => "方案 B 走独立账号"
+      },
+      %{
+        "type" => "message",
+        "channel" => "CMAIN1",
+        "ts" => "1792680300.000100",
+        "thread_ts" => "1792680000.000100",
+        "user" => "UBOB1",
+        "text" => "先按方案 A 来做吧，那存量组织怎么迁移？"
+      },
+      %{
+        "type" => "message",
+        "channel" => "CMAIN1",
+        "ts" => "1792681000.000100",
+        "user" => "UBOB1",
+        "text" => "<@UALICE1> IFC 信息隔离的会下周几点开？",
+        "reactions" => [%{"name" => "eyes", "users" => ["UALICE1"]}]
+      },
+      %{
+        "type" => "message",
+        "channel" => "CMAIN1",
+        "ts" => "1792682000.000100",
+        "user" => "UBOB1",
+        "text" => "<@UALICE1> iMessage 名片 #5286 合了吗？https://github.com/AFK-surf/Cue/pull/5286",
+        "reactions" => [%{"name" => "+1", "users" => ["UALICE1"]}]
+      }
+    ])
+
+    owner = SystemsRuntime.Proc.self()
+
+    SystemsRuntime.put_env(:salix_web, :daily_brief_test_completion, fn input, messages ->
+      SystemsRuntime.Proc.send(owner, {:llm_call, input, messages})
+
+      content =
+        cond do
+          Map.has_key?(input, "names") ->
+            "域名上限按方案 A 推进，iMessage #5286 已合并。[原消息](m4)"
+
+          Map.has_key?(input, "followups") ->
+            ~s({"items": [{"kind": "asked", "what": "定 IFC 会议时间", "owner": "me", "waiting": "@UBOB1", "due": "", "status": "open", "evidence": "m5"}]})
+
+          Map.has_key?(input, "draft") ->
+            "**一句话**：先回 @UBOB1 存量迁移和 IFC 会议时间。\n\n### 域名方案：定了方案 A\n你列了方案 A 和 B，@UBOB1 拍板按方案 A 走，问存量怎么迁。[原消息](m1) [原消息](m4)"
+
+          true ->
+            # First draft omits m1/m2/m3 on purpose so `cover` triggers a third call.
+            "**一句话**：先回 @UBOB1 的 IFC 会议时间。[原消息](m5)"
+        end
+
+      {:ok,
+       %{
+         "choices" => [%{"finish_reason" => "stop", "message" => %{"content" => content}}],
+         "usage" => %{"prompt_tokens" => 500, "completion_tokens" => 80}
+       }}
+    end)
+
+    SystemsClock.advance(2 * 60_000)
+    assert {:ok, 2} = DeliveryWorker.run_once(agent_id: "agt")
+
+    # 1. Batch I/O: team_brief + Alice + Bob read the mirror channel only once.
+    assert_received {:mirror_search, "CMAIN1"}
+    refute_received {:mirror_search, "CMAIN1"}
+
+    # 2. Team brief receives real-time GitHub PR state (#5286 -> merged).
+    assert_received {:llm_call, %{"names" => _, "issues" => team_issues}, _team_msgs}
+    assert [%{"ref" => "#5286", "state" => "merged"}] = team_issues
+
+    # 3. Alice's 3 personal model calls (:mine, :personal, cover) share an identical 2-message prefix,
+    #    and her items reflect the updated to_me rules.
+    assert_received {:llm_call, %{"me" => %{"label" => "@UALICE1"}, "followups" => _} = mine_in,
+                     [sys_1, shared_1, _step_1]}
+
+    assert_received {:llm_call, %{"me" => %{"label" => "@UALICE1"}, "mine" => _} = compose_in,
+                     [sys_2, shared_2, _step_2]}
+
+    assert_received {:llm_call, %{"me" => %{"label" => "@UALICE1"}, "draft" => _},
+                     [sys_3, shared_3, _step_3]}
+
+    assert sys_1 == sys_2 and sys_2 == sys_3
+    assert shared_1 == shared_2 and shared_2 == shared_3
+    refute Map.has_key?(compose_in, "draft")
+
+    by_text = Map.new(mine_in["items"], &{&1["text"], &1})
+    # Un-@ed question in Alice's own thread -> to_me: true
+    assert by_text["先按方案 A 来做吧，那存量组织怎么迁移？"]["to_me"] == true
+    # Question with only "eyes" reaction from Alice -> still to_me: true
+    assert by_text["@UALICE1 IFC 信息隔离的会下周几点开？"]["to_me"] == true
+    # Question with "+1" reaction from Alice -> answered, not to_me
+    refute by_text["@UALICE1 iMessage 名片 #5286 合了吗？https://github.com/AFK-surf/Cue/pull/5286"][
+             "to_me"
+           ]
   end
 
   defp world(base) do

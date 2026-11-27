@@ -1,13 +1,15 @@
 import { commaProductMarkPathData } from "@comma/config";
 import type { useCommaMessages } from "@comma/i18n/react";
 import {
+  LinearProviderLogo,
   SignalProviderMark,
   SlackProviderLogo,
+  StillfailProviderLogo,
   TelegramProviderLogo,
 } from "@comma/ui/components/provider-brand-logos";
 import { InboxIcon, WechatBrandIcon } from "@comma/ui/components/icons";
 
-/** Where a Task was asked for: a chat provider, Comma itself, or another person's Task request. */
+/** Where a Task was asked for: a chat provider, an app that hands work to Comma (Linear), Monoid, Comma itself, or another person's Task request. */
 export const TASK_ORIGIN_KEYS = [
   "slack",
   "telegram",
@@ -15,6 +17,8 @@ export const TASK_ORIGIN_KEYS = [
   "lark",
   "wechat",
   "signal",
+  "linear",
+  "monoid",
   "comma",
   "task_request",
 ] as const;
@@ -40,6 +44,10 @@ export function taskOriginLabel(messages: CommaMessages, key: TaskOriginKey): st
       return messages.task_panel_origin_wechat();
     case "signal":
       return messages.task_panel_origin_signal();
+    case "linear":
+      return messages.task_panel_origin_linear();
+    case "monoid":
+      return "Monoid";
     case "task_request":
       return messages.task_panel_origin_task_request();
     default:
@@ -72,6 +80,10 @@ export function TaskOriginIcon({
       return <WechatBrandIcon className={`${className} comma-task-origin-wechat`} />;
     case "signal":
       return <SignalProviderMark className={className} />;
+    case "linear":
+      return <LinearProviderLogo className={className} />;
+    case "monoid":
+      return <StillfailProviderLogo className={className} />;
     case "comma":
       return <CommaMark className={`${className} text-primary`} />;
     case "task_request":

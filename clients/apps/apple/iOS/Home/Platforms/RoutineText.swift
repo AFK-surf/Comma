@@ -17,7 +17,7 @@ struct RoutineItemText: View {
                 Text(title).font(.callout.weight(.medium)).foregroundStyle(CommaTheme.textPrimary)
             }
             if !item.parts.isEmpty {
-                RoutineProse(parts: item.parts, feed: feed, references: .mentions(within: source?.appID))
+                RoutineProse(parts: item.parts, feed: feed, home: source?.appID)
             } else if let detail = item.detail {
                 Text(detail).font(.footnote).foregroundStyle(CommaTheme.textTertiary)
             }
@@ -26,64 +26,40 @@ struct RoutineItemText: View {
     }
 }
 
-/// Briefing prose: in a row, `.callout`, a step under the page's body; as the briefing's summary, a lead paragraph
-/// a step over it, the first thing read on the sheet. Text runs, and links and Tasks drawn like the desktop's
-/// inline sources; in the summary they are links, a Task opening and a source showing in the browser.
+/// A row's prose, `.callout`, a step under the page's body. Text runs, with links and Tasks as mentions: the name
+/// a weight heavier after its source's mark, since a box inside the tappable row would read as a second, smaller
+/// button. A mention of the row's own platform (`home`) leaves out the mark its title or caption shows.
 struct RoutineProse: View {
     let parts: [RecommendationPart]
     let feed: RecommendationFeed
-    var references = References.chips
+    var home: String?
     /// The inline provider mark sits a point under the text and scales with it.
-    @ScaledMetric(relativeTo: .callout) private var rowMark: CGFloat = 15
-    @ScaledMetric(relativeTo: .body) private var leadSize: CGFloat = 19
-    @ScaledMetric(relativeTo: .body) private var leadMark: CGFloat = 17
+    @ScaledMetric(relativeTo: .callout) private var mark: CGFloat = 15
     @Environment(\.colorScheme) private var colorScheme
-
-    private var lead: Bool { references == .chips }
-    private var font: Font { lead ? .system(size: leadSize) : .callout }
 
     var body: some View {
         parts.reduce(Text("")) { text, part in
             switch part {
             case .text(let value):
-                return text + Text(Self.inlineMarkdown(value, emphasis: font.weight(.semibold)))
+                return text + Text(Self.inlineMarkdown(value, emphasis: .callout.weight(.semibold)))
                     .foregroundColor(CommaTheme.textPrimary)
-            case .link(let label, let url, let source):
-                return text + reference(label: label, sourceID: source, opens: url)
-            case .task(let label, let id, let source):
-                return text + reference(label: label, sourceID: source, opens: RoutineLink.task(id))
+            case .link(let label, _, let source): return text + mention(label, sourceID: source)
+            case .task(let label, _, let source): return text + mention(label, sourceID: source)
             }
         }
-        .font(font)
-        .lineSpacing(lead ? 5 : 0)
-        .tint(CommaTheme.brandSolid)
+        .font(.callout)
     }
 
-    /// How links and Tasks read: in the briefing's summary, links in the app's blue after their source's mark, which
-    /// open what they name (a box behind a run cannot round its corners and breaks across lines); or, in a row, mentions, the name a weight heavier, so a box inside the tappable row doesn't read as a
-    /// second, smaller button. A mention of the row's own platform leaves out the mark its title or caption shows.
-    enum References: Equatable {
-        case chips
-        case mentions(within: String?)
-    }
-
-    private func reference(label: String, sourceID: String?, opens url: URL?) -> Text {
+    private func mention(_ label: String, sourceID: String?) -> Text {
         let appID = feed.source(sourceID)?.appID
         var run = AttributedString(label)
-        switch references {
-        case .chips:
-            run.foregroundColor = CommaTheme.brandSolid
-            run.font = font.weight(.medium)
-            run.link = url
-        case .mentions(let home):
-            run.foregroundColor = CommaTheme.textPrimary
-            run.font = .callout.weight(.medium)
-            if appID == home { return Text(run) }
-        }
+        run.foregroundColor = CommaTheme.textPrimary
+        run.font = .callout.weight(.medium)
+        if appID == home { return Text(run) }
         let tint = UIColor(CommaTheme.textSecondary).resolvedColor(with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light))
         // An inline image cannot carry a run background, so the mark leads the label.
-        if let mark = ProviderArtwork.inline(appID, pointSize: lead ? leadMark : rowMark, tint: tint) {
-            return Text(mark).baselineOffset(-2) + Text("\u{2009}") + Text(run)
+        if let image = ProviderArtwork.inline(appID, pointSize: mark, tint: tint) {
+            return Text(image).baselineOffset(-2) + Text("\u{2009}") + Text(run)
         }
         return Text(run)
     }
@@ -139,19 +115,4 @@ struct RoutineQuote: View {
         }
         return out
     }
-}
-
-/// A Task named in the briefing's summary, as a link the sheet opens itself.
-enum RoutineLink {
-    static let scheme = "comma-task"
-
-    static func task(_ id: String) -> URL? {
-        var components = URLComponents()
-        components.scheme = scheme
-        components.path = id
-        return components.url
-    }
-
-    /// The Task a summary link names; nil for a source's own link.
-    static func taskID(_ url: URL) -> String? { url.scheme == scheme ? url.path : nil }
 }

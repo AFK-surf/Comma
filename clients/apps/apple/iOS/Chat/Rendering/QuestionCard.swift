@@ -49,7 +49,8 @@ private struct QuestionForm: View {
         self.question = question
         self.pane = pane
         let failed = question.state.status == .failed
-        let recommended = question.choices.first(where: \.recommended)?.id
+        // A sole choice is the answer Send gives, recommended or not.
+        let recommended = question.choices.first(where: \.recommended)?.id ?? (question.choices.count == 1 ? question.choices.first?.id : nil)
         let picks = failed ? question.state.choiceIDs : question.multiSelect ? [] : recommended.map { [$0] } ?? []
         _picks = State(initialValue: picks)
         _other = State(initialValue: failed ? question.state.other ?? "" : "")
@@ -91,7 +92,9 @@ private struct QuestionForm: View {
                     .padding(.horizontal, 16).padding(.top, 8)
             }
             ThirdsLayout(spacing: 8) {
-                Button("Skip") { pane.answerQuestion(question.messageID, choiceIDs: [], skipped: true) }
+                Button(question.skipBehavior == "dismiss" ? LocalizedStringKey("Dismiss") : LocalizedStringKey("Skip")) {
+                    pane.answerQuestion(question.messageID, choiceIDs: [], skipped: true)
+                }
                     .buttonStyle(CommaButtonStyle(hierarchy: .secondary))
                 Button("Send", action: submit)
                     .buttonStyle(CommaButtonStyle())
@@ -516,7 +519,8 @@ private struct QuestionReceipt: View {
             } else {
                 given.font(.subheadline)
             }
-        case .skipped: muted(Text("Skipped. The agent decides."))
+        case .skipped:
+            muted(Text(question.skipBehavior == "dismiss" ? LocalizedStringKey("Dismissed") : LocalizedStringKey("Skipped. The agent decides.")))
         case .replied: muted(Text("Answered in the chat"))
         case .replaced: muted(Text("Replaced by a newer question"))
         case .open, .failed: EmptyView()

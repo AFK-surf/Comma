@@ -1,0 +1,258 @@
+{
+  "name": "proactive_signals_2026_11_25",
+  "description": "Evaluates the dual-track signal model and pre-gate/portrait foundations: high-leverage readiness with a non-obvious rule, external milestone for the owner's own product, cross-source contradiction against an active draft, portrait extraction from Router memory and recent tasks without Slack, and three negative controls (generic newsletter, unrelated TestFlight build, and junk-folder award bait).",
+  "now": "2026-11-25T03:30:00Z",
+  "pending_since": "2026-11-25T00:00:00Z",
+  "locale": "zh-CN",
+  "timezone": "Asia/Shanghai",
+  "owner": {
+    "user": "outlook-user-1",
+    "team": "T0TEAM0001",
+    "handle": "kai",
+    "mail": "kai@example.com"
+  },
+  "user_md": "<!-- comma:portrait -->\n- 关于你 · 职责: 维护 3D 勋章制作应用 Medalsmith（将涂鸦、照片或 SVG 生成金属和珐琅质感 3D 勋章） · 2026-11-24\n- 关于你 · 进行中: 推进 Comma iOS 1.0.4 Usage 页订阅与积分包内购测试；按后端沙盒规则，测积分到账须使用所有者邮箱为 cue.surf 或 comma.surf 的工作区，否则 Apple 显示购买成功但 Comma 不会入账 · 2026-11-24\n- 关于你 · 进行中: 正在起草 v2 计费客户端接入方案，当前草稿假设 webhook 验签采用静态 Bearer Token · 2026-11-24\n<!-- /comma:portrait -->\n",
+  "memory": [
+    {
+      "path": "/memory/episodes/2026-11-24.md",
+      "text": "Today worked on Medalsmith (3D metal & enamel medal maker app, motion-space/medalsmith) and reviewed Comma 1.0.4 Usage page IAP billing rules: sandbox credits only fulfill for workspaces owned by cue.surf or comma.surf emails."
+    }
+  ],
+  "tasks": [
+    {
+      "source": "station_task",
+      "title": "Medalsmith Android & iOS 3D shader polish",
+      "status": "in_progress"
+    },
+    {
+      "source": "comma_task",
+      "title": "Comma 1.0.4 TestFlight Usage subscription & credit pack test plan",
+      "status": "in_progress"
+    }
+  ],
+  "home": [],
+  "labels": {
+    "testflight_comma_23": "https://outlook.office.com/mail/inbox/id/testflight_comma_23",
+    "dex_medalsmith": "https://outlook.office.com/mail/inbox/id/dex_medalsmith",
+    "webhook_auth_conflict": "https://outlook.office.com/mail/inbox/id/webhook_auth_conflict",
+    "generic_newsletter": "https://outlook.office.com/mail/inbox/id/generic_newsletter",
+    "unrelated_testflight": "https://outlook.office.com/mail/inbox/id/unrelated_testflight",
+    "junk_fake_award": "https://outlook.office.com/mail/junk/id/junk_fake_award"
+  },
+  "outlook": [
+    {
+      "id": "testflight_comma_23",
+      "conversationId": "c-tf-comma-23",
+      "subject": "TestFlight: Comma 1.0.4 (23) is ready to test",
+      "from": {
+        "emailAddress": {
+          "address": "no_reply@email.apple.com"
+        }
+      },
+      "receivedDateTime": "2026-11-25T03:20:00Z",
+      "bodyPreview": "Comma 1.0.4 (23) is now available to test in TestFlight. What to Test: Usage page subscriptions and credit pack in-app purchases.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/testflight_comma_23",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Comma 1.0.4 (23) is now available to test in TestFlight.\r\nWhat to Test:\r\n- Usage page subscriptions and credit pack purchases.\r\nExpires in 89 days. Open TestFlight on iOS to install."
+      }
+    },
+    {
+      "id": "dex_medalsmith",
+      "conversationId": "c-dex-373",
+      "subject": "DEX 周刊 #373：3D 勋章生成工具 Medalsmith 与本周设计产品精选",
+      "from": {
+        "emailAddress": {
+          "address": "digest@dexweekly.example"
+        }
+      },
+      "receivedDateTime": "2026-11-25T02:10:00Z",
+      "bodyPreview": "本期产品推荐：dingyi 推荐了 Medalsmith——可以把涂鸦、照片或 SVG 做成有金属和珐琅质感的 3D 勋章，光影和材质细节非常出色。",
+      "webLink": "https://outlook.office.com/mail/inbox/id/dex_medalsmith",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "DEX 周刊 #373\r\n\r\n本周产品推荐：\r\n1. Medalsmith —— dingyi 特别推荐了这款应用，能把涂鸦、照片或 SVG 直接做成带金属和珐琅质感的 3D 勋章，交互和材质表现都很惊艳。\r\n2. 其他两款字体与配色工具更新。"
+      }
+    },
+    {
+      "id": "webhook_auth_conflict",
+      "conversationId": "c-webhook-auth",
+      "subject": "[Engineering] v2 计费 webhook 鉴权变更公告",
+      "from": {
+        "emailAddress": {
+          "address": "eng-updates@example.com"
+        }
+      },
+      "receivedDateTime": "2026-11-25T02:45:00Z",
+      "bodyPreview": "通知：v2 计费 webhook 已切换为 HMAC-SHA256 签名校验，静态 Bearer Token 方案已废弃，请相关接入方知悉。",
+      "webLink": "https://outlook.office.com/mail/inbox/id/webhook_auth_conflict",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Hi all,\r\n\r\nv2 计费 webhook 已于今天合入主线并统一切换为 HMAC-SHA256 签名校验（X-Billing-Signature），原定静态 Bearer Token 校验方式已移除，不再支持。仅供各接入方同步。"
+      }
+    },
+    {
+      "id": "generic_newsletter",
+      "conversationId": "c-gen-news",
+      "subject": "Design Digest #104：本周 5 个值得一看的图标库与排版技巧",
+      "from": {
+        "emailAddress": {
+          "address": "newsletter@designdigest.example"
+        }
+      },
+      "receivedDateTime": "2026-11-25T02:00:00Z",
+      "bodyPreview": "本周精选了 5 套开源图标库、2 篇字体排版长文和 Figma 新插件合集。",
+      "webLink": "https://outlook.office.com/mail/inbox/id/generic_newsletter",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Design Digest #104\r\n本周精选了 5 套开源图标库、2 篇字体排版长文以及 Figma 社区热门插件合集。点击查看全文，或随时退订。"
+      }
+    },
+    {
+      "id": "unrelated_testflight",
+      "conversationId": "c-tf-other",
+      "subject": "TestFlight: WeatherNotes 3.2.0 (118) is ready to test",
+      "from": {
+        "emailAddress": {
+          "address": "no_reply@email.apple.com"
+        }
+      },
+      "receivedDateTime": "2026-11-25T03:05:00Z",
+      "bodyPreview": "WeatherNotes 3.2.0 (118) is now available to test in TestFlight. Minor widget bug fixes.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/unrelated_testflight",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "WeatherNotes 3.2.0 (118) is now available to test in TestFlight.\r\nWhat to Test: Minor widget bug fixes and localization updates."
+      }
+    }
+  ],
+  "outlook_junk": [
+    {
+      "id": "junk_fake_award",
+      "conversationId": "c-junk-award",
+      "subject": "Congratulations! Medalsmith selected for Global App Award 2026",
+      "from": {
+        "emailAddress": {
+          "address": "awards-promo@random-marketing.biz"
+        }
+      },
+      "receivedDateTime": "2026-11-25T02:30:00Z",
+      "bodyPreview": "Medalsmith has been nominated for our paid Global App Directory badge! Pay $299 today to unlock your winner certificate.",
+      "webLink": "https://outlook.office.com/mail/junk/id/junk_fake_award",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Congratulations! Medalsmith has been nominated for our Global App Directory badge. Pay $299 sponsorship fee within 24 hours to claim your featured listing and winner trophy."
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "testflight_readiness_with_backend_rule",
+      "only": ["testflight_comma_23"],
+      "notebook": "# Comma 笔记本\n\n## 进行中与等待\n- Comma 1.0.4 Usage 页订阅与积分包内购上线准备 — 测积分到账须使用所有者邮箱为 cue.surf 或 comma.surf 的工作区（后端沙盒规则）\n",
+      "expect": {
+        "routed_any": ["testflight_comma_23"],
+        "decision_any": ["signal", "interrupt"]
+      }
+    },
+    {
+      "name": "product_featured_in_newsletter",
+      "only": ["dex_medalsmith"],
+      "expect": {
+        "routed_any": ["dex_medalsmith"],
+        "decision_any": ["signal"]
+      }
+    },
+    {
+      "name": "product_featured_with_refreshed_portrait_from_memory_no_slack",
+      "portrait": "refresh",
+      "user_md": "",
+      "only": ["dex_medalsmith"],
+      "expect": {
+        "routed_any": ["dex_medalsmith"],
+        "decision_any": ["signal"]
+      }
+    },
+    {
+      "name": "cross_source_draft_conflict",
+      "only": ["webhook_auth_conflict"],
+      "notebook": "# Comma 笔记本\n\n## 接下来\n- 完成 v2 计费客户端接入方案草稿（目前按静态 Bearer Token 验签）\n",
+      "expect": {
+        "routed_any": ["webhook_auth_conflict"],
+        "decision_any": ["signal", "interrupt"]
+      }
+    },
+    {
+      "name": "negative_control_generic_newsletter",
+      "only": ["generic_newsletter"],
+      "expect": {
+        "not_routed": ["generic_newsletter"],
+        "decision_any": ["briefing"]
+      }
+    },
+    {
+      "name": "negative_control_unrelated_testflight",
+      "only": ["unrelated_testflight"],
+      "expect": {
+        "not_routed": ["unrelated_testflight"],
+        "decision_any": ["briefing"]
+      }
+    },
+    {
+      "name": "negative_control_junk_praise_phish",
+      "only": ["junk_fake_award"],
+      "expect": {
+        "not_routed": ["junk_fake_award"],
+        "decision_any": ["briefing"]
+      }
+    }
+  ]
+}

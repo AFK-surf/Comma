@@ -65,6 +65,20 @@ defmodule Comma.IMessageLinks do
     ).num_rows == 1
   end
 
+  @doc """
+  When today's guidance reply went to this sender, or nil. The sender has had
+  no binding since then: a link or a disconnect clears the reply.
+  """
+  def guidance_replied_at(sender_handle) do
+    case Repo.query!(
+           "SELECT replied_at FROM comma_imessage_guidance_replies WHERE sender_handle = $1 AND replied_at >= $2",
+           [normalize_user_id(sender_handle), guidance_cutoff()]
+         ).rows do
+      [[%NaiveDateTime{} = at]] -> DateTime.from_naive!(at, "Etc/UTC")
+      _ -> nil
+    end
+  end
+
   # A person who connects or disconnects can need guidance again at once.
   defp clear_guidance_reply(sender_handle) do
     Repo.query!("DELETE FROM comma_imessage_guidance_replies WHERE sender_handle = $1", [

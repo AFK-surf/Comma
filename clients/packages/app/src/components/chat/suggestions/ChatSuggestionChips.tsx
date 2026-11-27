@@ -16,9 +16,12 @@ import type { ChatSuggestion } from "@comma/core/contract";
  * hard clip.
  */
 export const ChatSuggestionChips = memo(function ChatSuggestionChips({
+  align = "start",
   items,
   onSelect,
 }: {
+  /** `end`: under the account's own line, on its side. */
+  align?: "start" | "end";
   items: readonly ChatSuggestion[];
   onSelect: (suggestion: ChatSuggestion) => void;
 }) {
@@ -29,10 +32,16 @@ export const ChatSuggestionChips = memo(function ChatSuggestionChips({
     <ScrollArea
       aria-label={messages.chat_suggestions_label()}
       className="comma-chat-suggestions"
-      contentClassName="flex w-max items-center gap-md py-xxs"
+      contentClassName={
+        align === "end"
+          ? "ms-auto flex w-max items-center gap-md py-xxs"
+          : "flex w-max items-center gap-md py-xxs"
+      }
       data-testid="chat-suggestions"
-      edgeEffect="mask"
-      edgeMask={{ size: spacing["4xl"] }}
+      // A row on the account's side is one chip that fits: no edge to fade.
+      {...(align === "end"
+        ? { edgeEffect: "none" as const }
+        : { edgeEffect: "mask" as const, edgeMask: { size: spacing["4xl"] } })}
       orientation="horizontal"
       role="toolbar"
       scrollbar={false}

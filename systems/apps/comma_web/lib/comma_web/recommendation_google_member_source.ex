@@ -9,29 +9,48 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
   @calendar "https://www.googleapis.com/calendar/v3/calendars/primary"
   @drive "https://www.googleapis.com/drive/v3"
   @week 7 * 86_400
-  @awaiting "in:inbox to:me -category:promotions newer_than:7d"
-  @spam "in:spam to:me newer_than:7d"
+  @awaiting "in:inbox -category:promotions newer_than:7d"
+  @promotions "in:inbox category:promotions newer_than:7d"
+  @spam "in:spam newer_than:7d"
   @window 15
+  @promo_window 5
   @junk 10
 
-  # Recent inbox mail to the member, read or not. Provider importance and social
+  # Recent inbox mail delivered to the member's mailbox (including shared
+  # aliases and groups), read or not. Provider importance and social
   # categories do not decide whether a matter needs the member. As before,
   # the thread's latest message is not one the member sent. One item per thread.
   # Important mail keeps its own read window and precedes ordinary mail within
   # the byte budget. Important threads alone can still exceed that budget.
+  # When portrait entity terms are provided (`opts[:targets]["terms"]`), one
+  # bounded query rescues matching promotions-tab newsletters/digests that
+  # specifically name the member's own products or projects.
   # The most recent spam follows it, marked as junk.
-  def read("gmail", request, _now) do
-    [profile, important, recent, spam] =
+  def read(toolkit, request, now, opts \\ [])
+
+  def read("gmail", request, _now, opts) do
+    terms = target_terms(opts)
+
+    base_urls = [
+      @gmail <> "/profile",
+      threads_url("is:important " <> @awaiting),
+      threads_url(@awaiting),
+      threads_url(@spam, @junk)
+    ]
+
+    urls =
+      if terms == [],
+        do: base_urls,
+        else: base_urls ++ [threads_url(promotions_query(terms), @promo_window)]
+
+    [profile, important, recent, spam | promo_rest] =
       RecommendationMemberRead.map(
-        [
-          @gmail <> "/profile",
-          threads_url("is:important " <> @awaiting),
-          threads_url(@awaiting),
-          threads_url(@spam, @junk)
-        ],
+        urls,
         &request.("GET", &1, []),
-        4
+        length(urls)
       )
+
+    promo = List.first(promo_rest)
 
     with {:ok, %{"emailAddress" => email}} when is_binary(email) and email != "" <- profile,
          {:ok, important} when is_map(important) <- important,
@@ -51,11 +70,13 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
 
       readable = for {:ok, item} <- results, do: item
       missing = Enum.count(results, &(&1 == :missing))
+      promoted = promotion_items(promo, request, readable, email, terms)
 
       # Keep readable mail, but never report an unreadable mailbox as caught up.
-      if readable != [] or missing == 0 do
+      if readable != [] or promoted != [] or missing == 0 do
         data = %{
-          "messages" => readable ++ spam_items(spam, request, readable, email),
+          "messages" =>
+            readable ++ promoted ++ spam_items(spam, request, readable ++ promoted, email),
           "memberRelation" => "awaiting_your_reply"
         }
 
@@ -74,7 +95,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
     end
   end
 
-  def read("googlecalendar", request, now) do
+  def read("googlecalendar", request, now, _opts) do
     [calendar, events] =
       RecommendationMemberRead.map(
         [
@@ -112,9 +133,14 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
         |> Enum.uniq_by(& &1["id"])
         |> Enum.take(40)
         |> Enum.map(fn item ->
+          others = calendar_other_attendees(item)
+          summary = others |> Enum.join(", ") |> String.slice(0, 240)
+
           item
+          |> Map.put("attendeeCount", length(others))
+          |> then(&if(summary != "", do: Map.put(&1, "attendeesSummary", summary), else: &1))
           |> CommaWeb.RecommendationSourceContext.attach(~w(status description location))
-          |> Map.take(~w(id summary htmlLink start end context))
+          |> Map.take(~w(id summary htmlLink start end attendeeCount attendeesSummary context))
           |> RecommendationSourceQuote.put(
             title: item["summary"],
             body: {:html, item["description"]}
@@ -131,7 +157,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
 
   # Owned files and comment mentions are independent: either one keeps the
   # source readable, with a partial-source warning for the other.
-  def read("googledrive", request, now) do
+  def read("googledrive", request, now, _opts) do
     since = now |> DateTime.add(-@week) |> DateTime.to_iso8601()
 
     [about, owned, recent] =
@@ -201,6 +227,69 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
       {:error, _} = error -> error
       _ -> {:error, :invalid_provider_response}
     end
+  end
+
+  # A promotions rescue query that fails leaves promotions out; inbox decides readability.
+  defp promotion_items({:ok, %{"threads" => threads}}, request, inbox, email, terms)
+       when is_list(threads) and terms != [] do
+    seen = MapSet.new(inbox, & &1["threadId"])
+
+    threads
+    |> Enum.filter(&(is_map(&1) and valid_id?(&1["id"]) and not MapSet.member?(seen, &1["id"])))
+    |> Enum.uniq_by(& &1["id"])
+    |> Enum.take(@promo_window)
+    |> RecommendationMemberRead.map(
+      &request.("GET", @gmail <> "/threads/" <> &1["id"] <> "?format=full", []),
+      5
+    )
+    |> Enum.flat_map(fn
+      {:ok, %{"id" => thread, "messages" => [_ | _] = messages}} when is_binary(thread) ->
+        latest = Enum.max_by(messages, &internal_ms/1)
+        labels = if is_map(latest), do: latest["labelIds"], else: nil
+
+        with true <- is_list(labels) and valid_id?(latest["id"]),
+             true <-
+               "INBOX" in labels and "CATEGORY_PROMOTIONS" in labels and
+                 Enum.all?(~w(SENT SPAM TRASH), &(&1 not in labels)),
+             {:ok, item} <- mail_item(latest, thread, email, "inbox"),
+             true <- matches_any_term?(item, terms) do
+          [Map.put(item, "memberRelation", "mentions_your_work")]
+        else
+          _ -> []
+        end
+
+      _unreadable ->
+        []
+    end)
+  end
+
+  defp promotion_items(_promo, _request, _inbox, _email, _terms), do: []
+
+  defp target_terms(opts) do
+    opts
+    |> Keyword.get(:targets, %{})
+    |> Map.get("terms", [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&(&1 |> String.replace(~r/["():\r\n]/u, " ") |> String.trim()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq_by(&String.downcase/1)
+    |> Enum.take(5)
+  end
+
+  defp promotions_query(terms) do
+    clause = Enum.map_join(terms, " OR ", &~s("#{&1}"))
+    @promotions <> " (" <> clause <> ")"
+  end
+
+  defp matches_any_term?(item, terms) do
+    haystack =
+      [item["subject"], get_in(item, ["context", "text"]), get_in(item, ["quote", "body"])]
+      |> Enum.filter(&is_binary/1)
+      |> Enum.join("\n")
+      |> String.downcase()
+
+    Enum.any?(terms, &String.contains?(haystack, String.downcase(&1)))
   end
 
   # A spam read that fails only leaves spam out; the inbox decides readability.
@@ -276,28 +365,43 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
         _ -> nil
       end
 
+    has_attachments? = CommaWeb.ProactiveMailSource.attachments?(message)
+    to_header = non_direct_recipient(headers["to"], email)
+
     item = %{
       "messageId" => message["id"],
       "threadId" => thread,
       "subject" => headers["subject"],
       "sender" => headers["from"],
+      "to" => to_header,
       "messageTimestamp" => timestamp(message["internalDate"]),
       "snippet" => message["snippet"],
       "messageText" => text
     }
 
-    if mail_context?(item) do
+    if mail_context?(item, has_attachments?) do
+      context_fields =
+        cond do
+          is_binary(text) and text != "" ->
+            ~w(sender to messageText)
+
+          is_binary(item["snippet"]) and String.trim(item["snippet"]) != "" ->
+            ~w(sender to snippet)
+
+          true ->
+            ~w(sender to subject)
+        end
+
       {:ok,
        item
        # The snippet repeats the start of the text; it stands in only without one.
-       |> CommaWeb.RecommendationSourceContext.attach(
-         if(is_binary(text) and text != "", do: ~w(sender messageText), else: ~w(sender snippet))
-       )
-       |> Map.take(~w(messageId threadId subject sender messageTimestamp context))
+       |> CommaWeb.RecommendationSourceContext.attach(context_fields)
+       |> Map.take(~w(messageId threadId subject sender to messageTimestamp context))
+       |> Map.reject(fn {key, value} -> key == "to" and is_nil(value) end)
        # The pool keeps no attachment. The proactive check reads a mail's
        # attachments before it judges one marked unread.
        |> then(
-         &if(CommaWeb.ProactiveMailSource.attachments?(message),
+         &if(has_attachments?,
            do: put_in(&1, ["context", "attachments"], "unread"),
            else: &1
          )
@@ -434,9 +538,56 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
 
   defp drive_mention(_file, _comment, _email), do: []
 
-  defp mail_context?(message) do
+  defp mail_context?(message, has_attachments?) do
     Enum.any?(~w(snippet messageText), fn key ->
       is_binary(message[key]) and String.trim(message[key]) != ""
+    end) or
+      (has_attachments? and is_binary(message["subject"]) and
+         String.trim(message["subject"]) != "")
+  end
+
+  # Preserve the bounded To header only when the mail was not addressed directly
+  # to the member's own mailbox (e.g., a shared alias or Google Group such as
+  # support@...), keeping direct-mail context and fingerprints unchanged.
+  defp non_direct_recipient(to, email) when is_binary(to) and is_binary(email) do
+    normalized = to |> String.replace(~r/\s+/u, " ") |> String.trim()
+    down_email = String.downcase(String.trim(email))
+
+    cond do
+      normalized == "" -> nil
+      down_email != "" and String.contains?(String.downcase(normalized), down_email) -> nil
+      true -> String.slice(normalized, 0, 160)
+    end
+  end
+
+  defp non_direct_recipient(_to, _email), do: nil
+
+  defp calendar_other_attendees(event) do
+    event
+    |> Map.get("attendees", [])
+    |> List.wrap()
+    |> Enum.filter(fn attendee ->
+      is_map(attendee) and attendee["self"] != true and attendee["resource"] != true and
+        attendee["responseStatus"] != "declined"
+    end)
+    |> Enum.take(12)
+    |> Enum.flat_map(fn attendee ->
+      name = attendee["displayName"]
+      email = attendee["email"]
+
+      cond do
+        is_binary(name) and String.trim(name) != "" and is_binary(email) and email != "" ->
+          ["#{String.trim(name)} <#{email}>"]
+
+        is_binary(email) and email != "" ->
+          [email]
+
+        is_binary(name) and String.trim(name) != "" ->
+          [String.trim(name)]
+
+        true ->
+          []
+      end
     end)
   end
 

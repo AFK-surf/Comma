@@ -1,6 +1,6 @@
 defmodule SalixIM.PrivateChatStatus do
   @moduledoc """
-  Best-effort, source-scoped Telegram, WeChat, Signal and Photon iMessage activity. Runs outside inbound delivery;
+  Best-effort, source-scoped Telegram, WeChat, Signal, Photon iMessage and LINE activity. Runs outside inbound delivery;
   presentation failure must never turn accepted input into a webhook retry.
   """
 
@@ -29,7 +29,7 @@ defmodule SalixIM.PrivateChatStatus do
 
   defp private_source?(metadata),
     do:
-      metadata["provider"] in ["telegram", "signal", "imessage"] and
+      metadata["provider"] in ["telegram", "signal", "imessage", "line"] and
         metadata["chat_type"] == "private"
 
   defp start_projection(group_id, metadata, source_id, agent_id, session_id) do

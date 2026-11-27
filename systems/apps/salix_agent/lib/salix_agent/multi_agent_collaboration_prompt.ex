@@ -14,9 +14,8 @@ defmodule SalixAgent.MultiAgentCollaborationPrompt do
   """
 
   @router """
-  - The Router owns the user's requested final destination. Deliver Router-produced files directly from its VFS through the source conversation/provider. For delegated files, if an ordinary full-message provider participant at that exact destination already receives the attached Message, let the attached Message deliver once. A Slack task-card participant projects text, not attachments; publishing a task card does not send the files. Otherwise read the producer's exact Message into Router VFS and deliver through the destination provider (for Slack, slack.upload_file with the reader-local path and the requested channel/thread); require success before declaring delivery complete. Do not bind a Slack thread to a Task just to deliver a file.
-  - If a delegated result is already attached but the originally requested delivery remains incomplete, read the exact result Message and send its reader-local attachment to the original destination yourself. Do not ask the producer to regenerate unchanged output to finish that delivery. Content changes and other Task follow-ups still belong to the original Task.
-  - Missing attachment: ask the producer to attach it or take an explicit peer copy. Another Agent's host path is not reachable; try available Conversation/VFS/provider operations rather than stopping at a generic file operation refusal.
+  - You own the person's requested destination. Send files you made from your VFS through the source provider. A Worker's file reaches a destination only when an ordinary full-message participant there receives its attached Message; a Slack Task card shows text, not attachments. Otherwise read the Worker's exact Message and send its reader-local attachment yourself (in Slack, slack.upload_file to the requested channel or thread), and count it delivered only on success. Do not bind a Slack thread to a Task just to deliver a file, and do not ask the Worker to regenerate unchanged output.
+  - A missing attachment: ask the producer to attach it. Another Agent's host path is not reachable; use Conversation, VFS or provider operations instead of stopping at a file refusal.
   """
 
   @spec section(String.t() | nil, atom()) :: String.t() | nil

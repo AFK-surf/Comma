@@ -76,7 +76,8 @@ export function deviceServing(m: Pick<Members, "admin" | "up"> & { screens?: Scr
       // A screen's view is its own: both sides send for as long as it lasts, where `answer` reads a request's body first.
       const screen = m.screens?.handle(request.principal, request, via, link);
       if (screen) return counted(await screen, open);
-      if (!servedToOwner(request.method, request.path)) return json(403, { error: "not served to this computer over the mesh" });
+      // A Task's sandbox shows its Task's owner its screens, and no more of the station.
+      if (admissions.looks || !servedToOwner(request.method, request.path)) return json(403, { error: "not served to this computer over the mesh" });
       return answer(m, request.principal, request.method, request.path, request.headers, request.body, request.signal);
     },
     now: () => wall.now(),
@@ -91,7 +92,7 @@ export function linkOf(native: Pick<Connection, "paths" | "stats">): LinkStats |
     const stats = native.stats?.();
     if (!path && !stats) return null;
     return {
-      ...(path ? { rttMs: Math.round(path.rttMs * 10) / 10, ...(path.cwnd !== undefined ? { cwnd: path.cwnd, congestionEvents: path.congestionEvents, sentDatagrams: path.sentDatagrams, lostPackets: path.lostPackets } : {}) } : {}),
+      ...(path ? { via: path.via, ...(path.relay !== undefined ? { relay: path.relay } : {}), rttMs: Math.round(path.rttMs * 10) / 10, ...(path.cwnd !== undefined ? { cwnd: path.cwnd, congestionEvents: path.congestionEvents, sentDatagrams: path.sentDatagrams, lostPackets: path.lostPackets } : {}) } : {}),
       ...(stats ? { txBytes: stats.txBytes, rxBytes: stats.rxBytes, lost: stats.lostPackets } : {}),
     };
   } catch {

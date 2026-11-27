@@ -40,6 +40,8 @@ defmodule SalixMeet.FeishuProvider do
       else
         :ignored -> :ignored
         {:error, :ignored} -> :ignored
+        {:already_in_meeting, _existing_id, ref} -> prompt(connect, ref, "机器人已在这场会议中。")
+        {:error, {:join_abandoned, {:already_in_meeting, _existing_id}}} -> {:ok, :handled}
         {:prompt, text, ref} -> prompt(connect, ref, text)
         {:error, _} = error -> error
         false -> :ignored
@@ -114,11 +116,32 @@ defmodule SalixMeet.FeishuProvider do
          "provider" => "feishu"
        }}
     else
-      {:prompt, _text, _ref} -> {:error, :meeting_thread_has_different_meeting}
-      {:error, _} = error -> error
-      false -> {:error, :invalid_meeting_source}
-      other -> {:error, other}
+      {:already_in_meeting, existing_id, _ref} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      {:error, {:join_abandoned, {:already_in_meeting, existing_id}}} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      {:prompt, _text, _ref} ->
+        {:error, :meeting_thread_has_different_meeting}
+
+      {:error, _} = error ->
+        error
+
+      false ->
+        {:error, :invalid_meeting_source}
+
+      other ->
+        {:error, other}
     end
+  end
+
+  defp already_in_meeting_result(existing_id) do
+    base = %{"status" => "already_in_meeting", "provider" => "feishu"}
+
+    if is_binary(existing_id) and trim(existing_id) != "",
+      do: Map.put(base, "meeting_id", trim(existing_id)),
+      else: base
   end
 
   @doc "Terminal meeting publication used by `SalixMeet.ProviderDispatcher`."
@@ -353,7 +376,13 @@ defmodule SalixMeet.FeishuProvider do
         end
 
       nil ->
-        create_meeting(connect, meeting_agent, envelope, event, message, request)
+        case Store.find_active_google_meet(connect["group_id"], request["meet_url"]) do
+          {:ok, existing_id, _existing_state} ->
+            {:already_in_meeting, existing_id, ref}
+
+          :not_found ->
+            create_meeting(connect, meeting_agent, envelope, event, message, request)
+        end
     end
   end
 

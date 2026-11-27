@@ -84,9 +84,13 @@ defmodule SalixWeb.ConnectorSocket do
       :workload_id,
       :workload_generation,
       :workload_owner,
+      # What a coding Task's sandbox said of itself that its Task's run shows
+      # (`SalixWeb.CodingSandboxes.station_says/1`), as last kept and told.
+      :sandbox_said,
       :owner_user_id,
       :scope,
       :last_peer_heartbeat_ms,
+      :connected_at_ms,
       :disconnect_error,
       # The station takes stream chunks as binary frames.
       binary_streams: false,
@@ -108,6 +112,8 @@ defmodule SalixWeb.ConnectorSocket do
       tunnels: %{},
       relay_challenge: nil,
       relay: nil,
+      peer_heartbeats: 0,
+      device_read_only: false,
       # The station asked for the mesh's facts: the number of the last it was told, as they change.
       mesh_seq: nil,
       # The read and push under way, one at a time, and whether a change was heard since it began.
@@ -142,7 +148,8 @@ defmodule SalixWeb.ConnectorSocket do
       workload_owner: Keyword.get(opts, :workload_owner),
       owner_user_id: Keyword.get(opts, :owner_user_id),
       scope: Keyword.get(opts, :scope),
-      last_peer_heartbeat_ms: monotonic_ms()
+      last_peer_heartbeat_ms: monotonic_ms(),
+      connected_at_ms: monotonic_ms()
     }
 
     owner_scope =
@@ -249,8 +256,10 @@ defmodule SalixWeb.ConnectorSocket do
     # A Workload's station is given the workspace's accounts it runs with, once it is connected,
     # and is placed in its Group's station roster (SalixWeb.StationPlace).
     if state.managed_compute do
-      # A coding Task's sandbox is reached through Salix only, not placed in a
-      # roster; its Task is told it is up (`SalixWeb.CodingSandboxes`).
+      # A coding Task's sandbox is not placed in a roster; its Task is told it
+      # is up (`SalixWeb.CodingSandboxes`). It asks for no mesh facts: its
+      # station is told them when its Task's owner asks to see its screen
+      # (`SalixWeb.CodingSandboxes.show_screen/4`).
       if state.workload_owner == "coding_task" do
         sandbox_connected(state)
       else
@@ -439,7 +448,31 @@ defmodule SalixWeb.ConnectorSocket do
     # connector advertises. System info also stamps its own last-update time.
     case metadata_patch(m, state) do
       {:ok, patch} ->
-        {:ok, enqueue_control(%{kind: :metadata, patch: patch}, state)}
+        next_owner_email = get_in(patch, ["capabilities", "stillfail_owner_email"])
+        prev_owner_email = Map.get(state, :stillfail_owner_email)
+
+        notify_owner_email? =
+          is_binary(next_owner_email) and next_owner_email != prev_owner_email
+
+        state =
+          if is_binary(next_owner_email),
+            do: Map.put(state, :stillfail_owner_email, next_owner_email),
+            else: state
+
+        # A coding Task's sandbox says what its Task's run shows of it: once
+        # this is kept, the Task's open streams are told if it is new
+        # (`sandbox_told/3`).
+        operation =
+          if state.workload_owner == "coding_task",
+            do: %{
+              kind: :metadata,
+              patch: patch,
+              notify_owner_email?: notify_owner_email?,
+              sandbox_says: SalixWeb.CodingSandboxes.station_says(m["capabilities"])
+            },
+            else: %{kind: :metadata, patch: patch, notify_owner_email?: notify_owner_email?}
+
+        {:ok, enqueue_control(operation, note_device_access(m, state))}
 
       {:error, _invalid_metadata} ->
         Salix.Telemetry.emit_operation("salix_env", "connector_metadata", "system", "error", 0)
@@ -448,7 +481,12 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp handle_message(%{"type" => "heartbeat"}, state) do
-    state = %{state | last_peer_heartbeat_ms: monotonic_ms()}
+    state = %{
+      state
+      | last_peer_heartbeat_ms: monotonic_ms(),
+        peer_heartbeats: state.peer_heartbeats + 1
+    }
+
     {:ok, enqueue_control(%{kind: :heartbeat}, state)}
   end
 
@@ -522,7 +560,7 @@ defmodule SalixWeb.ConnectorSocket do
 
         # A device's run is a station's once it proves one: it is given the workspace's accounts then, without
         # placement. A Workload's station was given them at connect.
-        if is_nil(state.relay) and state.managed_compute != true,
+        if is_nil(state.relay) and state.managed_compute != true and not state.device_read_only,
           do: send(self(), :push_station_profiles)
 
         # The proven endpoint id is the station's id: the Device records which station it runs.
@@ -1687,8 +1725,28 @@ defmodule SalixWeb.ConnectorSocket do
   defp merge_control(%{kind: :heartbeat}, %{kind: :heartbeat} = incoming), do: incoming
 
   defp merge_control(%{kind: :metadata} = current, %{kind: :metadata} = incoming) do
-    %{incoming | patch: Map.merge(current.patch, incoming.patch)}
+    merged = %{incoming | patch: Map.merge(current.patch, incoming.patch)}
+
+    # What the sandbox says is in the newer one that carries it.
+    if Map.has_key?(current, :sandbox_says) and not Map.has_key?(incoming, :sandbox_says),
+      do: Map.put(merged, :sandbox_says, current.sandbox_says),
+      else: merged
   end
+
+  # What a coding Task's sandbox said of itself is kept: when it is not what
+  # the Task's streams were last told, they are told, and it is remembered.
+  # Remembered only once kept, so a write that kept nothing leaves the same
+  # words new the next time they are said.
+  defp sandbox_told(state, %{sandbox_says: says}, result) do
+    if control_persisted?(result) and says != state.sandbox_said do
+      SalixWeb.CodingSandboxes.station_said(state.tenant_id, state.device_id)
+      %{state | sandbox_said: says}
+    else
+      state
+    end
+  end
+
+  defp sandbox_told(state, _operation, _result), do: state
 
   defp safe_execute_control(operation, state) do
     started = SystemsClock.monotonic_time()
@@ -1731,7 +1789,7 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  defp execute_registry_control(%{kind: :metadata, patch: patch}, state) do
+  defp execute_registry_control(%{kind: :metadata, patch: patch} = operation, state) do
     result =
       Registry.update_meta(
         state.connector_run_id,
@@ -1741,6 +1799,10 @@ defmodule SalixWeb.ConnectorSocket do
 
     if control_persisted?(result) and get_in(patch, ["capabilities", "runtime_auth_v1"]) == true do
       SalixWeb.SubscriptionRuntimeAuth.reconnect(state)
+    end
+
+    if control_persisted?(result) and Map.get(operation, :notify_owner_email?, false) do
+      SalixWeb.StationTaskIndex.notify_changed(state.group_id)
     end
 
     result
@@ -2246,7 +2308,7 @@ defmodule SalixWeb.ConnectorSocket do
         state = clear_control_job(state, job)
 
         if control_success?(result) do
-          {:ok, start_control_if_idle(state)}
+          {:ok, state |> sandbox_told(job.operation, result) |> start_control_if_idle()}
         else
           {:ok, retry_control_job(state, job, result)}
         end
@@ -2741,7 +2803,14 @@ defmodule SalixWeb.ConnectorSocket do
 
     if state.control_retry_timer, do: SystemsClock.cancel_timer(state.control_retry_timer)
 
-    Logger.info("connector socket down: env=#{state.env_id} reason=#{disconnect_reason(reason)}")
+    now = monotonic_ms()
+
+    Logger.info(
+      "connector socket down: env=#{state.env_id} reason=#{disconnect_reason(reason)} " <>
+        "up_ms=#{now - state.connected_at_ms} peer_heartbeats=#{state.peer_heartbeats} " <>
+        "peer_silent_ms=#{now - state.last_peer_heartbeat_ms}"
+    )
+
     :ok
   end
 
@@ -2787,6 +2856,21 @@ defmodule SalixWeb.ConnectorSocket do
       {:ok, patch}
     end
   end
+
+  # A desktop's bearer stays full and its station says its access in metadata.
+  # On read access it takes no accounts; widened once proved, it is lent them.
+  defp note_device_access(%{"capabilities" => %{"scope" => scope}}, state)
+       when is_binary(scope) do
+    read_only = scope == "local_file_read"
+
+    if state.device_read_only and not read_only and not is_nil(state.relay) and
+         state.managed_compute != true,
+       do: send(self(), :push_station_profiles)
+
+    %{state | device_read_only: read_only}
+  end
+
+  defp note_device_access(_message, state), do: state
 
   defp metadata_capabilities(capabilities) when is_map(capabilities),
     do: Map.delete(capabilities, "agent_runtimes")

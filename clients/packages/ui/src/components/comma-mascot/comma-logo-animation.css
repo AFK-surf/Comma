@@ -93,9 +93,16 @@
   transform-origin: 0 0;
 }
 
-/* The next comma grows from (606.44863, 595.56644) of the view box. */
+/* The next comma grows from (606.44863, 595.56644) of the view box.
+   will-change keeps the compositor from aligning this layer to the pixel grid
+   on its own. At a fractional device position, such as a zoomed window, a
+   separate snap offset differs from the scene and the zoom multiplies it.
+   Without this hint, the nested layer shifts relative to the scene until the
+   loop restarts. In cutout mode, the next comma sits off-center in its
+   aperture. */
 .comma-logo-animation__nested-comma {
   transform-origin: 83.0751548% 81.5844438%;
+  will-change: transform;
 }
 
 .comma-logo-animation__nested-comma,
@@ -122,6 +129,7 @@
   .comma-logo-animation__nested-comma,
   .comma-logo-animation__aperture {
     animation: none;
+    will-change: auto;
   }
 }
 
@@ -129,4 +137,5 @@
 :root[data-comma-reduced-motion="true"] .comma-logo-animation__nested-comma,
 :root[data-comma-reduced-motion="true"] .comma-logo-animation__aperture {
   animation: none;
+  will-change: auto;
 }

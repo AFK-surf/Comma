@@ -6,6 +6,7 @@ metadata:
   icon: externaldrive
   color: blue
   visibility: toggled
+prompt_summary: "Read, search, save deliverables to, or organize files in Comma Drive (shared workspace files and mounts)."
 ---
 
 # Comma Drive

@@ -29,6 +29,7 @@ Update the relevant topic. Do not add a plan, review transcript, or completion r
 | [Testing](testing.md) | Test placement, CI, manual evidence |
 | [Product features](product-features.md) | Cross-client contracts and source map |
 | [Chinese user manual](user_manual/bridge_for_teams/manual_zh.tex) | Dashboard procedures, PDF source |
+| [Chinese memory manual](user_manual/memory/manual_zh.tex) | Memory, search, Condensed Workspace, Slack index; PDF source |
 
 ## Maintenance
 

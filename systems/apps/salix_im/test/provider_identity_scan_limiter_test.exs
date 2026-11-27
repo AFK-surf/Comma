@@ -40,6 +40,7 @@ defmodule SalixIM.ProviderIdentityScanLimiterTest do
   end
 
   defp set_cap(n), do: SystemsRuntime.put_env(:salix_im, :identity_scan_max_concurrency, n)
+
   test "N truly simultaneous cold-start callers never exceed the cap", %{table: table} do
     set_cap(2)
 

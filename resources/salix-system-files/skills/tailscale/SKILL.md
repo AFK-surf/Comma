@@ -1,6 +1,7 @@
 ---
 name: tailscale
 description: Connect the Group to the user's own Tailscale network (tailnet) and reach the devices there. Guide a tailnet admin to approve the Group's node with a login link and to grant its tag access, then use tailnet.peers, ssh.open with via_tailnet and web.http_request with via_tailnet.
+prompt_summary: "Discover and reach Tailscale tailnet peers over SSH or HTTP (via_tailnet), including admin approval and tag access."
 ---
 
 # Tailscale Network
@@ -26,7 +27,7 @@ Use the user's conversation language. Keep commands, tags, names and addresses u
 ## Connect the Group
 
 Only the Router connects or disconnects the Group. A Worker asks the Router or the user.
-The user can also do this in the Comma app settings or the Bridge For Teams dashboard.
+The user can also do this in the Comma app settings or the Comma for Teams dashboard.
 
 ### 1. Prepare the tailnet policy
 

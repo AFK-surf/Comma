@@ -99,6 +99,16 @@
     opacity: 0.45;
   }
 
+  /* A download in progress shows its spinner at full strength. */
+  :is(
+    .chat-panel-media-control,
+    .chat-panel-image-action,
+    .chat-panel-media-preview-action
+  )[aria-busy="true"] {
+    cursor: progress;
+    opacity: 1;
+  }
+
   .chat-panel-media-download-anchor {
     position: relative;
     display: inline-flex;
@@ -106,12 +116,14 @@
   }
 
   .chat-panel-media-control[data-download-state="error"],
-  .chat-panel-image-action[data-download-state="error"] {
+  .chat-panel-image-action[data-download-state="error"],
+  .chat-panel-media-preview-action[data-download-state="error"] {
     color: var(--color-fg-error-primary);
   }
 
   .chat-panel-media-control[data-download-state="success"],
-  .chat-panel-image-action[data-download-state="success"] {
+  .chat-panel-image-action[data-download-state="success"],
+  .chat-panel-media-preview-action[data-download-state="success"] {
     color: var(--color-fg-success-primary);
   }
 
@@ -617,6 +629,126 @@
     font-size: var(--text-xs);
     line-height: var(--text-xs--line-height);
     text-align: right;
+  }
+
+  /* A card for what opens beside the chat (ChatPanelPreviewCard): what it is
+     and Open, then a picture of it across the card's width. */
+  .chat-panel-preview-card {
+    display: flex;
+    width: 100%;
+    max-width: var(--container-sm);
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: var(--radius-xl);
+    background: var(--color-bg-popup-secondary);
+    /* The ring is outside the card: the picture fills the card to its edge and would cover an inset one. */
+    box-shadow:
+      0 0 0 var(--border-width-0-5) var(--color-border-primary),
+      var(--shadow-xs);
+    color: var(--color-fg-primary);
+    /* A press anywhere on the card opens it. */
+    cursor: pointer;
+  }
+
+  /* The header is a file's row (.chat-panel-file) with Open in it: the same
+     height, spacing, icon and words, so a file reads the same whether or not
+     the card shows a picture of it. As the row does, it answers the pointer
+     that is over the card and not over one of its controls. */
+  .chat-panel-preview-card-header {
+    display: flex;
+    min-height: 60px;
+    align-items: center;
+    gap: var(--spacing-lg);
+    padding: calc(var(--spacing-md) + var(--spacing-xxs)) var(--spacing-lg);
+    transition: background-color var(--button-state-duration) var(--button-state-easing);
+    /* The press that opens the card selects none of its words. */
+    user-select: none;
+  }
+
+  .chat-panel-preview-card:hover:not(:has(.chat-panel-preview-card-actions:hover))
+    .chat-panel-preview-card-header {
+    background: var(--color-bg-secondary);
+  }
+
+  .chat-panel-preview-card:active:not(:has(.chat-panel-preview-card-actions:active))
+    .chat-panel-preview-card-header {
+    background: var(--color-bg-tertiary);
+  }
+
+  .chat-panel-preview-card-icon {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .chat-panel-preview-card-details {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--spacing-xxs);
+  }
+
+  .chat-panel-preview-card-title,
+  .chat-panel-preview-card-subtitle {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-panel-preview-card-title {
+    color: var(--color-markdown-text-primary);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+  }
+
+  .chat-panel-preview-card-subtitle {
+    color: var(--color-text-quaternary);
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
+  }
+
+  .chat-panel-preview-card-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--spacing-sm);
+    cursor: default;
+  }
+
+  /* The picture is as wide as the card and as tall as a slide of that
+     width: a deck's first page shows whole, and a page of text shows its
+     top. */
+  .chat-panel-preview-card-picture {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    border-top: var(--border-width-0-5) solid var(--color-border-primary);
+    background: var(--color-bg-primary);
+  }
+
+  .chat-panel-preview-card-content {
+    height: 100%;
+    user-select: none;
+  }
+
+  /* Text that runs past the bottom edge fades into the card. The fade is
+     the card's ground over the text, so the glyphs keep their weight. */
+  .chat-panel-preview-card-picture[data-fades="true"]::after {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: var(--spacing-6xl);
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-bg-primary) 0%, transparent),
+      var(--color-bg-primary)
+    );
+    content: "";
+    pointer-events: none;
   }
 
   .chat-panel-file-icon {
@@ -1339,6 +1471,63 @@
     transition: none !important;
   }
 
+  @keyframes chat-panel-media-preview-shared-fade-in {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes chat-panel-media-preview-shared-fade-out {
+    from {
+      opacity: 1;
+    }
+
+    to {
+      opacity: 0;
+    }
+  }
+
+  .chat-panel-media-preview-overlay[data-shared-transition="opening"] {
+    animation: chat-panel-media-preview-shared-fade-in 280ms
+      var(--motion-easing-surface-smooth-out) both;
+    transition: none;
+  }
+
+  .chat-panel-media-preview-overlay[data-shared-transition="closing"] {
+    animation: chat-panel-media-preview-shared-fade-out 260ms
+      var(--motion-easing-surface-smooth-out) both;
+    pointer-events: none;
+    transition: none;
+  }
+
+  .chat-panel-media-preview-modal[data-shared-transition] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .chat-panel-media-preview-modal[data-shared-transition="opening"]
+    :is(.chat-panel-media-preview-actions, .chat-panel-image-filmstrip-navigation) {
+    animation: chat-panel-media-preview-shared-fade-in 280ms
+      var(--motion-easing-surface-smooth-out) both;
+  }
+
+  .chat-panel-media-preview-modal[data-shared-transition="closing"]
+    :is(.chat-panel-media-preview-actions, .chat-panel-image-filmstrip-navigation) {
+    animation: chat-panel-media-preview-shared-fade-out 260ms
+      var(--motion-easing-surface-smooth-out) both;
+  }
+
+  .chat-panel-media-preview-modal[data-shared-transition]
+    .chat-panel-image-filmstrip-frame {
+    visibility: hidden !important;
+    transition: none !important;
+  }
+
   @media (any-hover: none), (any-pointer: coarse) {
     .chat-panel-video-stage > .chat-panel-media-player,
     .chat-panel-media-preview-stage[data-media-kind="video"] > .chat-panel-media-player,
@@ -1386,6 +1575,12 @@
   .chat-panel-media-preview-overlay {
     transition: opacity var(--motion-duration-feedback-out)
       var(--motion-easing-smooth-out) !important;
+  }
+
+  .chat-panel-media-preview-overlay[data-shared-transition],
+  .chat-panel-media-preview-modal[data-shared-transition]
+    :is(.chat-panel-media-preview-actions, .chat-panel-image-filmstrip-navigation) {
+    animation: none !important;
   }
 
   .chat-panel-media-preview-modal {

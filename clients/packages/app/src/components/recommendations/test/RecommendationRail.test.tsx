@@ -6,8 +6,7 @@ import type {
 } from "@comma/core/contract";
 import { advance, flush } from "@comma/test-utils/fake-clock";
 import { stubProperty } from "@comma/test-utils/stub-property";
-import { installUiClock, uiClock } from "@comma/ui/clock";
-import { createVirtualUiClock } from "@comma/ui/clock/virtual";
+import { uiClock } from "@comma/ui/clock";
 import {
   createScriptedCore,
   delegateScriptedCore,
@@ -42,14 +41,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Toaster, toast } from "@comma/ui/components/toast";
 import {
   RecommendationCardView,
+  RecommendationDocument,
   RecommendationLinkPreviewProvider as Provider,
   RecommendationRail as Rail,
-  RecommendationSummary,
-  boundRoutineDragTranslation,
   briefingGreeting,
-  reconcileRoutineCardOrder,
-  reorderRoutineCardIds,
-  routineDragOverdragCap,
 } from "../RecommendationRail";
 
 const { loadRecommendationMediaMock, nativePlatform } = vi.hoisted(() => ({
@@ -220,65 +215,11 @@ const routinesHeadingFollowsGreeting = () =>
   Boolean(
     screen
       .getByRole("heading", { level: 1 })
-      .compareDocumentPosition(
-        screen.getByRole("heading", { level: 2, name: "Routines" })
-      ) & Node.DOCUMENT_POSITION_FOLLOWING
+      .compareDocumentPosition(screen.getByRole("heading", { level: 2 })) &
+    Node.DOCUMENT_POSITION_FOLLOWING
   );
 
 describe("RecommendationRail", () => {
-  it("reconciles and reorders current-snapshot routine cards without losing new cards", () => {
-    expect(
-      reconcileRoutineCardOrder(["news", "document"], ["document", "tasks"])
-    ).toEqual(["document", "tasks"]);
-    expect(
-      reorderRoutineCardIds(
-        ["document", "news", "tasks"],
-        ["document"],
-        "tasks",
-        "after"
-      )
-    ).toEqual(["news", "tasks", "document"]);
-    expect(
-      reorderRoutineCardIds(
-        ["document", "news", "tasks"],
-        ["news", "tasks"],
-        "document",
-        "before"
-      )
-    ).toEqual(["news", "tasks", "document"]);
-  });
-
-  it("bounds the pointer-drag translation to the row band with damped overshoot", () => {
-    const initialTops = new Map([
-      ["document", 100],
-      ["news", 128],
-      ["tasks", 156],
-    ]);
-
-    // Inside the band the translation tracks the pointer 1:1.
-    expect(boundRoutineDragTranslation(10, initialTops, 128)).toBe(10);
-    expect(boundRoutineDragTranslation(-28, initialTops, 128)).toBe(-28);
-    expect(boundRoutineDragTranslation(56, initialTops, 100)).toBe(56);
-
-    // Past the band the overshoot is damped, monotonic, and capped so the
-    // scroll viewport's scrollable overflow stays bounded.
-    const nearOvershoot = boundRoutineDragTranslation(70, initialTops, 100);
-    const farOvershoot = boundRoutineDragTranslation(500, initialTops, 100);
-    expect(nearOvershoot).toBeGreaterThan(56);
-    expect(nearOvershoot).toBeLessThan(70);
-    expect(farOvershoot).toBeGreaterThan(nearOvershoot);
-    expect(farOvershoot).toBeLessThanOrEqual(56 + routineDragOverdragCap);
-
-    const farUndershoot = boundRoutineDragTranslation(-500, initialTops, 156);
-    expect(farUndershoot).toBeLessThan(-56);
-    expect(farUndershoot).toBeGreaterThanOrEqual(-56 - routineDragOverdragCap);
-
-    // A lone row stays pinned within the overshoot cap.
-    expect(
-      Math.abs(boundRoutineDragTranslation(90, new Map([["only", 30]]), 30))
-    ).toBeLessThanOrEqual(routineDragOverdragCap);
-  });
-
   it("does not fetch recommendations while the home surface is paused", async () => {
     script();
     render(
@@ -344,7 +285,7 @@ describe("RecommendationRail", () => {
     const { rerender } = render(<Rail {...props} />);
 
     await flush();
-    expect(screen.getByRole("heading", { name: "Good morning." })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Document" })).toBeInTheDocument();
     const initialParseCount = parse.mock.calls.length;
     expect(initialParseCount).toBeGreaterThan(0);
 
@@ -439,7 +380,9 @@ describe("RecommendationRail", () => {
     expect(
       screen.getByText("Refresh to generate your first briefing.")
     ).toBeInTheDocument();
-    expect(screen.queryByText("No routines created yet")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Connect apps to get your daily briefing")
+    ).not.toBeInTheDocument();
   });
 
   it("shows the server-owned generating state and keeps duplicate refresh disabled", async () => {
@@ -456,13 +399,6 @@ describe("RecommendationRail", () => {
     await flush();
     expect(screen.getByText("Generating your briefing…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Customize routines" }));
-    await flush();
-    expect(screen.getByRole("dialog", { name: "Customize routines" })).toHaveAttribute(
-      "data-has-cards",
-      "false"
-    );
-    expect(screen.queryByRole("menuitem", { name: "Refresh" })).not.toBeInTheDocument();
   });
 
   it("asks the core to start discovery over each time Home is shown again", async () => {
@@ -741,12 +677,16 @@ describe("RecommendationRail", () => {
     expect(screen.getByTestId("recommendations-discovering")).toHaveTextContent(
       "Looking for connected apps…"
     );
-    expect(screen.queryByText("No routines created yet")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Connect apps to get your daily briefing")
+    ).not.toBeInTheDocument();
 
     // The next check finds the sources checked (the core checks every 1.5 s).
     core.say({ envelope: waiting, discovering: false });
     await flush();
-    expect(screen.getByText("No routines created yet")).toBeInTheDocument();
+    expect(
+      screen.getByText("Connect apps to get your daily briefing")
+    ).toBeInTheDocument();
   });
 
   it("explains a refused refresh in a toast while the briefing stays", async () => {
@@ -845,7 +785,6 @@ describe("RecommendationRail", () => {
     expect(refresh).toBeDisabled();
     // The current briefing holds in place instead of collapsing to a skeleton.
     expect(screen.getByRole("group", { name: "Document" })).toBeInTheDocument();
-    expect(screen.getByText(/before standup/)).toBeInTheDocument();
     expect(screen.queryByTestId("recommendations-loading")).not.toBeInTheDocument();
 
     // The run published: the core takes the answer's briefing.
@@ -861,15 +800,14 @@ describe("RecommendationRail", () => {
     ).toBeNull();
     expect(toastSuccess).toHaveBeenCalledTimes(1);
     expect(toastSuccess).toHaveBeenCalledWith(
-      "Routines updated",
+      "Briefing updated",
       expect.objectContaining({ testId: "routine-updated-toast" })
     );
   });
 
   it("previews an inline link on hover with its source, label and destination", async () => {
     render(
-      <RecommendationSummary
-        fallbackTitle="Good morning."
+      <RecommendationDocument
         onOpenTask={vi.fn()}
         onOpenUrl={vi.fn()}
         parts={[
@@ -929,8 +867,7 @@ describe("RecommendationRail", () => {
     });
     render(
       <Provider workspaceId="wsp_1">
-        <RecommendationSummary
-          fallbackTitle="Good morning."
+        <RecommendationDocument
           onOpenTask={vi.fn()}
           onOpenUrl={vi.fn()}
           parts={[
@@ -1028,8 +965,7 @@ describe("RecommendationRail", () => {
     });
     render(
       <Provider workspaceId="wsp_1">
-        <RecommendationSummary
-          fallbackTitle="Good morning."
+        <RecommendationDocument
           onOpenTask={vi.fn()}
           onOpenUrl={vi.fn()}
           parts={[
@@ -1109,8 +1045,7 @@ describe("RecommendationRail", () => {
   it("shows no link card for private links (Gmail) and never requests a preview", async () => {
     render(
       <Provider workspaceId="wsp_1">
-        <RecommendationSummary
-          fallbackTitle="Good morning."
+        <RecommendationDocument
           onOpenTask={vi.fn()}
           onOpenUrl={vi.fn()}
           parts={[
@@ -1229,30 +1164,30 @@ describe("RecommendationRail", () => {
     expect(onAction).toHaveBeenCalledWith(action);
   });
 
-  it("uses a fixed time-of-day greeting as the briefing title", async () => {
+  it("greets the member by name and shows none of the briefing's prose", async () => {
     vi.setSystemTime(new Date("2026-08-27T09:15:00"));
+    script();
     render(
-      <RecommendationSummary
-        fallbackTitle="Your briefing"
+      <Rail
         greetingName="Zanwei"
         onOpenTask={vi.fn()}
         onOpenUrl={vi.fn()}
-        parts={[
-          {
-            kind: "markdown",
-            text: "Here\u2019s your clearest path through today\n\nLinear has 2 updates.",
-          },
-        ]}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
       />
     );
 
-    // The model's own opener never reaches the heading, and it is not repeated
-    // in the body either.
+    await flush();
     expect(
-      screen.getByRole("heading", { name: "Good morning, Zanwei." })
+      screen.getByRole("heading", { level: 1, name: "Good morning, Zanwei." })
     ).toBeVisible();
-    expect(screen.queryByText(/clearest path through today/)).toBeNull();
-    expect(screen.getByText(/Linear has 2 updates/)).toBeVisible();
+    // The briefing's summary, a title and a paragraph with a link, stays out.
+    expect(screen.queryByText("Good morning.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/before standup/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "COMMA-151 summary" })
+    ).not.toBeInTheDocument();
+    expect(routinesHeadingFollowsGreeting()).toBe(true);
   });
 
   it("picks the greeting from the local time of day", () => {
@@ -1290,7 +1225,9 @@ describe("RecommendationRail", () => {
     );
 
     await flush();
-    expect(screen.getByText("No routines created yet")).toBeInTheDocument();
+    expect(
+      screen.getByText("Connect apps to get your daily briefing")
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Connect apps" }));
     expect(onConnectApps).toHaveBeenCalledTimes(1);
   });
@@ -1333,7 +1270,7 @@ describe("RecommendationRail", () => {
 
     await flush();
     expect(screen.getByTestId("routine-reconnect-notice")).toHaveTextContent(
-      "Routines can’t read Slack. Reconnect to continue."
+      "Briefing can’t read Slack. Reconnect to continue."
     );
     expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
@@ -1364,11 +1301,9 @@ describe("RecommendationRail", () => {
     expect(screen.getByText("Open report")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open report row" }));
     expect(openUrl).toHaveBeenCalledWith("https://example.com/report");
-    fireEvent.click(screen.getByText("COMMA-151 summary"));
-    expect(openUrl).toHaveBeenCalledWith("https://linear.app/comma/issue/COMMA-151");
   });
 
-  it("renders the greeting and brief before the routines toolbar and cards", async () => {
+  it("renders the greeting, then what is left beside the refresh control, then the cards", async () => {
     script();
     render(
       <Rail
@@ -1380,32 +1315,17 @@ describe("RecommendationRail", () => {
     );
 
     await flush();
-    const greeting = screen.getByText("Good morning.");
-    const brief = screen.getByText("COMMA-151 summary");
-    const routines = screen.getByRole("heading", { name: "Routines" });
+    // No signed-in name here, so the heading is the plain title.
+    const greeting = screen.getByRole("heading", { level: 1, name: "Your briefing" });
+    // The briefing's three rows: two of Document, one of News.
+    const status = screen.getByRole("heading", { level: 2, name: "3 things need you" });
     const card = screen.getByRole("group", { name: "Document" });
 
-    expect(greeting.compareDocumentPosition(brief)).toBe(
+    expect(greeting.compareDocumentPosition(status)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
-    expect(brief.compareDocumentPosition(routines)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    );
-    expect(routines.compareDocumentPosition(card)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    );
-    const routinesControl = screen.getByRole("button", {
-      name: "Customize routines",
-    });
+    expect(status.compareDocumentPosition(card)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     const refreshControl = screen.getByRole("button", { name: "Refresh" });
-    expect(routinesControl).toHaveClass(
-      "comma-icon-button",
-      "size-7",
-      "p-xs",
-      "text-sidebar-icon-primary"
-    );
-    expect(routinesControl.querySelector("svg")).toHaveClass("comma-input-icon");
-    expect(routinesControl).toHaveAttribute("data-no-press-feedback");
     expect(refreshControl).toHaveAttribute("data-no-press-feedback");
     expect(refreshControl).toHaveClass(
       "comma-icon-button",
@@ -1418,31 +1338,13 @@ describe("RecommendationRail", () => {
     expect(refreshControl.querySelector("[data-comma-icon]")).toHaveClass(
       "comma-input-icon"
     );
-    expect(refreshControl.compareDocumentPosition(routinesControl)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    );
-    expect(
-      routinesControl
-        .closest(".comma-recommendations-heading")
-        ?.querySelectorAll("button, a")
-    ).toHaveLength(2);
-    fireEvent.click(routinesControl);
-    expect(document.querySelector('[data-slot="menu-popover"]')).toHaveClass(
-      "comma-routines-popover"
-    );
-    expect(screen.queryByRole("menuitem", { name: "Refresh" })).not.toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Routines settings" })).toHaveAttribute(
-      "href",
-      "/#/settings?category=recommendations"
-    );
-    expect(
-      screen
-        .getByRole("menuitem", { name: "Routines settings" })
-        .querySelector('[data-slot="menu-item-icon"]')
-    ).toBeNull();
+    // The refresh control is the row's only control, on the status's line.
+    const row = status.closest(".comma-recommendations-heading")!;
+    expect(row.contains(refreshControl)).toBe(true);
+    expect(row.querySelectorAll("button, a")).toHaveLength(1);
   });
 
-  it("shows product logos and lets a routine be hidden and shown from the panel", async () => {
+  it("names its source, with the product's logo, under every card of a routine", async () => {
     script();
     const { container } = render(
       <Rail
@@ -1467,207 +1369,6 @@ describe("RecommendationRail", () => {
       ).toBeInTheDocument();
     }
     expect(container.querySelectorAll(".comma-recommendation-card")).toHaveLength(2);
-
-    fireEvent.click(screen.getByRole("button", { name: "Customize routines" }));
-    expect(
-      screen.getByRole("button", { name: "Reorder Document" })
-    ).toBeInTheDocument();
-    const visibility = screen.getByRole("button", {
-      name: /Document visibility$/,
-    });
-    fireEvent.click(visibility);
-    await flush();
-    fireEvent.click(screen.getByRole("option", { name: "Hidden" }));
-
-    await flush();
-    // The open panel hides the rail from the accessibility tree.
-    const documentCard = '.comma-recommendation-card[aria-label="Document"]';
-    expect(container.querySelector(documentCard)).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /Document visibility$/ })
-    ).toHaveTextContent("Hidden");
-
-    fireEvent.click(screen.getByRole("button", { name: /Document visibility$/ }));
-    await flush();
-    fireEvent.click(screen.getByRole("option", { name: "Show" }));
-    await flush();
-    expect(container.querySelector(documentCard)).toBeInTheDocument();
-  });
-
-  it("keeps a routine row dragged past the list end pinned to the last slot", async () => {
-    script();
-    render(
-      <Rail
-        onOpenTask={vi.fn()}
-        onOpenUrl={vi.fn()}
-        onUsePrompt={vi.fn()}
-        workspaceId="wsp_1"
-      />
-    );
-
-    await flush();
-    expect(screen.getByRole("group", { name: "Document" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Customize routines" }));
-
-    const rows = [
-      ...document.querySelectorAll<HTMLElement>(".comma-routines-card-row"),
-    ];
-    expect(rows.map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Document"),
-      expect.stringContaining("News"),
-    ]);
-    // Keep jsdom's shared capability set unchanged. This regression alone
-    // exercises the FLIP animation path, so only its routine rows receive the
-    // minimal Web Animations surface used by the drag implementation.
-    rows.forEach((row) => {
-      Object.defineProperties(row, {
-        animate: {
-          configurable: true,
-          value: vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation),
-        },
-        getAnimations: {
-          configurable: true,
-          value: vi.fn(() => []),
-        },
-      });
-    });
-    const rowHeight = 28;
-    const rowRect = (top: number) =>
-      ({
-        bottom: top + rowHeight,
-        height: rowHeight,
-        left: 0,
-        right: 320,
-        toJSON: () => ({}),
-        top,
-        width: 320,
-        x: 0,
-        y: top,
-      }) as DOMRect;
-    rows.forEach((row, index) => {
-      vi.spyOn(row, "getBoundingClientRect").mockImplementation(() =>
-        rowRect(100 + index * rowHeight)
-      );
-    });
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      callback(performance.now());
-      return 0;
-    });
-
-    const dragHitArea = rows[0]!.querySelector<HTMLElement>(
-      ".comma-routines-card-drag-hit-area"
-    )!;
-    fireEvent.pointerDown(dragHitArea, {
-      button: 0,
-      clientY: 114,
-      isPrimary: true,
-      pointerId: 7,
-      pointerType: "mouse",
-    });
-    fireEvent.pointerMove(dragHitArea, {
-      clientY: 614,
-      isPrimary: true,
-      pointerId: 7,
-      pointerType: "mouse",
-    });
-
-    // A drag 500px past the list must keep the row at the last slot plus at
-    // most the damped overshoot cap; unbounded translation opens an
-    // ever-growing empty scroll region.
-    expect(rows[0]).toHaveAttribute("data-pointer-dragging", "true");
-    const draggedTranslate = Number(
-      /translate3d\(0, (-?[\d.]+)px, 0\)/.exec(rows[0]!.style.transform)?.[1]
-    );
-    expect(draggedTranslate).toBeGreaterThanOrEqual(rowHeight);
-    expect(draggedTranslate).toBeLessThanOrEqual(rowHeight + routineDragOverdragCap);
-    expect(rows[1]).toHaveAttribute("data-routine-drag-shift", "up");
-
-    fireEvent.pointerUp(dragHitArea, {
-      clientY: 614,
-      isPrimary: true,
-      pointerId: 7,
-      pointerType: "mouse",
-    });
-
-    await flush();
-    expect(
-      [...document.querySelectorAll<HTMLElement>(".comma-routines-card-row")].map(
-        (row) => row.textContent
-      )
-    ).toEqual([expect.stringContaining("News"), expect.stringContaining("Document")]);
-  });
-
-  it("autoscrolls a held routine row the same distance by a moment whatever the frame rate before it", async () => {
-    // A row is lifted and held near the bottom of the list; 400ms after the
-    // hold began, the list has scrolled the same way at 60fps, at 10fps, and
-    // with one frame straight at 400ms.
-    const scrolledAt400ms = async (frameMs: number) => {
-      script();
-      const view = render(
-        <Rail
-          onOpenTask={vi.fn()}
-          onOpenUrl={vi.fn()}
-          onUsePrompt={vi.fn()}
-          workspaceId="wsp_1"
-        />
-      );
-      await flush();
-      fireEvent.click(screen.getByRole("button", { name: "Customize routines" }));
-      const rows = [
-        ...document.querySelectorAll<HTMLElement>(".comma-routines-card-row"),
-      ];
-      rows.forEach((row, index) => {
-        Object.defineProperties(row, {
-          animate: {
-            configurable: true,
-            value: vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation),
-          },
-          getAnimations: { configurable: true, value: vi.fn(() => []) },
-        });
-        vi.spyOn(row, "getBoundingClientRect").mockImplementation(() =>
-          DOMRect.fromRect({ x: 0, y: 100 + index * 28, width: 320, height: 28 })
-        );
-      });
-      const viewport = document.querySelector<HTMLElement>(
-        ".comma-routines-card-scroll [data-slot='scroll-area-viewport']"
-      )!;
-      vi.spyOn(viewport, "getBoundingClientRect").mockImplementation(() =>
-        DOMRect.fromRect({ x: 0, y: 100, width: 320, height: 200 })
-      );
-      Object.defineProperty(viewport, "scrollHeight", {
-        configurable: true,
-        value: 2_000,
-      });
-      Object.defineProperty(viewport, "clientHeight", {
-        configurable: true,
-        value: 200,
-      });
-      viewport.scrollTop = 0;
-
-      const clock = createVirtualUiClock({ frameMs });
-      const restore = installUiClock(clock);
-      try {
-        const hitArea = rows[0]!.querySelector<HTMLElement>(
-          ".comma-routines-card-drag-hit-area"
-        )!;
-        const pointer = { isPrimary: true, pointerId: 7, pointerType: "mouse" };
-        fireEvent.pointerDown(hitArea, { ...pointer, button: 0, clientY: 114 });
-        fireEvent.pointerMove(hitArea, { ...pointer, clientY: 280 });
-        act(() => clock.advance(150));
-        fireEvent.pointerMove(hitArea, { ...pointer, clientY: 295 });
-        act(() => clock.advance(250));
-        return viewport.scrollTop;
-      } finally {
-        restore();
-        view.unmount();
-      }
-    };
-    // Frames every 16ms land on 400ms exactly; 1000/60 does not add up to it.
-    const at60fps = await scrolledAt400ms(16);
-    expect(at60fps).toBeGreaterThan(0);
-    expect(await scrolledAt400ms(100)).toBe(at60fps);
-    // One frame, at 400ms: straight to the moment.
-    expect(await scrolledAt400ms(400)).toBe(at60fps);
   });
 
   it("uses the Gmail brand logo for Gmail routine sources", () => {
@@ -1706,7 +1407,7 @@ describe("RecommendationRail", () => {
     ).toBeNull();
   });
 
-  it("uses the canonical Google Calendar name in the card and routines panel", async () => {
+  it("uses the canonical Google Calendar name on the card", async () => {
     const baseSnapshot = recommendationSnapshot();
     const baseCard = baseSnapshot.cards.find((card) => card.template === "text-list@1");
     expect(baseCard).toBeDefined();
@@ -1751,130 +1452,55 @@ describe("RecommendationRail", () => {
         '.comma-recommendation-source-origin-mark svg[data-provider-logo="google-calendar"]'
       )
     ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Customize routines" }));
-    const calendarRow = screen.getByRole("row", { name: "Google Calendar" });
-    expect(calendarRow).toBeInTheDocument();
-    expect(
-      calendarRow.querySelector('svg[data-provider-logo="google-calendar"]')
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Reorder Google Calendar" })
-    ).toBeInTheDocument();
   });
 
-  it("resets temporary routine visibility when a new snapshot arrives", async () => {
-    const nextSnapshot = {
-      ...recommendationSnapshot(),
-      generatedAt: 2,
-      generation: 2,
-    };
-    // An accepted refresh: the core takes the briefing it answers with.
-    script({
-      shown: { envelope: envelope() },
-      refresh: () => {
-        core.say({ envelope: envelope(nextSnapshot) });
-        return { rateLimited: false };
-      },
-    });
-
-    const { container } = render(
-      <Rail
-        onOpenTask={vi.fn()}
-        onOpenUrl={vi.fn()}
-        onUsePrompt={vi.fn()}
-        workspaceId="wsp_1"
-      />
-    );
-
-    await flush();
-    expect(screen.getByRole("group", { name: "Document" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Customize routines" }));
-    fireEvent.click(screen.getByRole("button", { name: /Document visibility$/ }));
-    await flush();
-    fireEvent.click(screen.getByRole("option", { name: "Hidden" }));
-    await flush();
-    expect(
-      [...container.querySelectorAll(".comma-recommendation-card")].map((card) =>
-        card.getAttribute("aria-label")
-      )
-    ).toEqual(["News"]);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Customize routines", hidden: true })
-    );
-    await flush();
-    expect(
-      screen.queryByRole("dialog", { name: "Customize routines" })
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-
-    await flush();
-    expect(screen.getByRole("group", { name: "Document" })).toBeInTheDocument();
-  });
-
-  it("preserves every summary paragraph after the greeting", async () => {
-    const snapshot = recommendationSnapshot();
-    snapshot.summary = [
-      {
-        kind: "markdown",
-        text: "Good morning.\n\nFirst brief paragraph.\n\nSecond brief paragraph.",
-      },
-    ];
-
-    script({ shown: { envelope: envelope(snapshot) } });
-    render(
-      <Rail
-        onOpenTask={vi.fn()}
-        onOpenUrl={vi.fn()}
-        onUsePrompt={vi.fn()}
-        workspaceId="wsp_1"
-      />
-    );
-
-    await flush();
-    expect(screen.getByText("First brief paragraph.")).toBeInTheDocument();
-    expect(screen.getByText("Second brief paragraph.")).toBeInTheDocument();
-  });
-
-  it("shows no prose for a summary that keeps only its title", async () => {
-    // What the server answers once a dismissed row takes model prose with it.
-    const snapshot = {
-      ...recommendationSnapshot(),
-      summary: [{ kind: "markdown" as const, text: "Your work briefing\n\n" }],
-    };
-
-    script({ shown: { envelope: envelope(snapshot) } });
-    const { container } = render(
-      <Rail
-        greetingName="Zanwei"
-        onOpenTask={vi.fn()}
-        onOpenUrl={vi.fn()}
-        onUsePrompt={vi.fn()}
-        workspaceId="wsp_1"
-      />
-    );
-
-    await flush();
-    expect(screen.queryByText("Your work briefing")).not.toBeInTheDocument();
-    expect(container.querySelector(".comma-recommendations-summary-body")).toBeNull();
-  });
-
-  it("does not promote an oversized legacy summary paragraph to the title", async () => {
-    const oversized =
-      "GitHub: 3 unread notifications to review, including PR #884 for Comma Center recommendations.";
-    const snapshot = {
-      ...recommendationSnapshot(),
-      summary: [
+  it("renders the Monoid provider mark for stillfail Routine cards even without a configured source entry", async () => {
+    const baseSnapshot = recommendationSnapshot();
+    const snapshot: RecommendationSnapshot = {
+      ...baseSnapshot,
+      cards: [
         {
-          kind: "markdown" as const,
-          text: `${oversized}\n\nLinear has two issues to review.`,
+          fallbackText: "Monoid",
+          id: "routine-stillfail",
+          items: [
+            {
+              action: {
+                label: "Review Fix release build",
+                prompt: "Check Fix release build in Monoid",
+                requiresConfirmation: true,
+                sourceId: "stillfail",
+                sourceUrl: "https://still.fail/c/1",
+                type: "send_to_comma",
+              },
+              id: "stillfail-1",
+              parts: [
+                {
+                  kind: "markdown",
+                  text: "Review ",
+                },
+                {
+                  kind: "inline-link",
+                  link: {
+                    href: "https://still.fail/c/1",
+                    label: "Fix release build",
+                    sourceId: "stillfail",
+                  },
+                },
+              ],
+            },
+          ],
+          sourceIds: ["stillfail"],
+          template: "text-list@1",
+          title: "Monoid Tasks",
         },
       ],
     };
-
-    script({ shown: { envelope: envelope(snapshot) } });
-    render(
+    script({
+      shown: {
+        envelope: envelope(snapshot, []),
+      },
+    });
+    const { container } = render(
       <Rail
         onOpenTask={vi.fn()}
         onOpenUrl={vi.fn()}
@@ -1884,8 +1510,16 @@ describe("RecommendationRail", () => {
     );
 
     await flush();
-    expect(screen.getByRole("heading", { name: "Your briefing" })).toBeInTheDocument();
-    expect(screen.getByText(oversized)).toBeInTheDocument();
+    expect(
+      container.querySelector(
+        '.comma-recommendation-source-origin-mark svg[data-provider-logo="stillfail"]'
+      )
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector(
+        '.comma-recommendation-inline-link svg[data-provider-logo="stillfail"]'
+      )
+    ).toBeInTheDocument();
   });
 
   it("omits a removed template from the production rail", async () => {
@@ -1914,7 +1548,9 @@ describe("RecommendationRail", () => {
     );
 
     await flush();
-    expect(screen.getByRole("heading", { name: "Routines" })).toBeInTheDocument();
+    // With no card it can render, the briefing reads as cleared.
+    expect(screen.getByRole("heading", { name: "All cleared" })).toBeInTheDocument();
+    expect(screen.getByTestId("routines-cleared")).toBeInTheDocument();
     expect(
       screen.queryByRole("group", { name: "GitHub: unread notifications" })
     ).not.toBeInTheDocument();
@@ -2267,6 +1903,142 @@ describe("RecommendationRail", () => {
     expect(row).not.toHaveAttribute("inert");
   });
 
+  it("celebrates once when the member clears the last card, until a refresh brings new cards", async () => {
+    const flights: { finish: () => void }[] = [];
+    stubProperty(Element.prototype, "animate", {
+      value(this: Element) {
+        const done = pending<Animation>();
+        const animation = {
+          cancel: vi.fn(),
+          finished: done.promise,
+        } as unknown as Animation;
+        // The dismissed row leaves at once; a confetti piece flies until told.
+        if (this.classList.contains("comma-routines-confetti"))
+          flights.push({ finish: () => done.resolve(animation) });
+        else done.resolve(animation);
+        return animation;
+      },
+    });
+    const snapshot = recommendationSnapshot();
+    // One card with one row the member can dismiss.
+    const lastCard = envelope({
+      ...snapshot,
+      cards: [
+        {
+          fallbackText: "Open the report.",
+          id: "document",
+          items: [
+            {
+              action: {
+                href: "https://example.com/report",
+                label: "Open report row",
+                requiresConfirmation: false,
+                type: "open_url",
+              },
+              id: "report",
+              parts: [
+                {
+                  kind: "inline-link",
+                  link: {
+                    href: "https://example.com/report",
+                    label: "Open report",
+                    sourceId: "linear-account",
+                  },
+                },
+              ],
+            },
+          ],
+          sourceIds: ["linear-account"],
+          template: "text-list@1",
+          title: "Document",
+        },
+      ],
+    });
+    script({
+      shown: { envelope: lastCard },
+      // The server answers the briefing without the dismissed row.
+      dismiss: () => {
+        core.say({ envelope: envelope({ ...snapshot, cards: [] }) });
+        return null;
+      },
+      refresh: () => {
+        core.say({
+          envelope: envelope({ ...snapshot, generatedAt: 2, generation: 2 }),
+        });
+        return { rateLimited: false };
+      },
+    });
+    const { rerender } = render(railIn("wsp_1"));
+
+    await flush();
+    expect(screen.queryByTestId("routines-cleared")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
+      "1 thing needs you"
+    );
+    fireEvent.click(screen.getByTestId("routine-row-dismiss"));
+    await flush();
+
+    const cleared = screen.getByTestId("routines-cleared");
+    expect(cleared).toHaveTextContent("Congrats, briefing cleared");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("All cleared");
+    expect(screen.queryByRole("group", { name: "Document" })).not.toBeInTheDocument();
+    // Both poppers throw, and the pieces leave once their flights end.
+    const burst = screen.getByTestId("routines-cleared-burst");
+    expect(burst).toHaveAttribute("aria-hidden", "true");
+    expect(burst.children.length).toBeGreaterThan(0);
+    expect(flights).toHaveLength(burst.children.length);
+    await act(async () => flights.forEach((flight) => flight.finish()));
+    await flush();
+    expect(burst.children).toHaveLength(0);
+    expect(cleared).toHaveTextContent("Congrats, briefing cleared");
+
+    // Another workspace and back: the cleared briefing shows without a second burst.
+    const thrown = flights.length;
+    rerender(railIn("wsp_2"));
+    await flush();
+    rerender(railIn("wsp_1"));
+    await flush();
+    expect(screen.getByTestId("routines-cleared")).toHaveTextContent(
+      "Congrats, briefing cleared"
+    );
+    expect(screen.getByTestId("routines-cleared-burst").children).toHaveLength(0);
+    expect(flights).toHaveLength(thrown);
+
+    // Cleared stays until the member refreshes: the new briefing's cards show.
+    const refresh = screen.getByRole("button", { name: "Refresh" });
+    expect(refresh).toBeEnabled();
+    fireEvent.click(refresh);
+    await flush();
+    expect(screen.queryByTestId("routines-cleared")).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Document" })).toBeInTheDocument();
+  });
+
+  it("shows a briefing read already cleared without throwing confetti again", async () => {
+    stubProperty(Element.prototype, "animate", {
+      value: () => ({ cancel: vi.fn(), finished: new Promise(() => {}) }),
+    });
+    script({
+      shown: { envelope: envelope({ ...recommendationSnapshot(), cards: [] }) },
+    });
+    render(
+      <Rail
+        greetingName="Zanwei"
+        onOpenTask={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
+      />
+    );
+
+    await flush();
+    expect(screen.getByTestId("routines-cleared")).toHaveTextContent(
+      "Congrats, briefing cleared"
+    );
+    expect(screen.getByTestId("routines-cleared-burst").children).toHaveLength(0);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Zanwei");
+    expect(routinesHeadingFollowsGreeting()).toBe(true);
+  });
+
   it("dates a fresh briefing only once it is more than a day old", async () => {
     const now = uiClock.now();
     for (const [age, dated] of [
@@ -2337,9 +2109,9 @@ describe("RecommendationRail", () => {
     expect(screen.queryByText("Notion was temporarily unavailable.")).toBeNull();
   });
 
-  it("answers a right-click on a greeting inline link with the chat link menu", async () => {
+  it("answers a right-click on a row's inline link with the chat link menu", async () => {
     const onOpenUrl = vi.fn();
-    script();
+    script({ shown: { envelope: envelope(snapshotWithLinkRow()) } });
     render(
       <Rail
         onOpenTask={vi.fn()}
@@ -2350,15 +2122,13 @@ describe("RecommendationRail", () => {
     );
 
     await flush();
-    const inlineLink = screen.getByRole("button", { name: "COMMA-151 summary" });
-    expect(inlineLink.closest(".comma-recommendations-summary")).toBeInTheDocument();
-
+    const inlineLink = screen.getByRole("button", { name: "COMMA-151" });
     fireEvent.contextMenu(inlineLink, { clientX: 120, clientY: 80 });
 
     await flush();
     const menu = screen.getByRole("menu", { name: "Link menu" });
     // The same items chat offers, minus the one that has no meaning here:
-    // a briefing link sits in prose, not in a message.
+    // a Routine link sits in a card, not in a message.
     expect(
       within(menu)
         .getAllByRole("menuitem")
@@ -2373,9 +2143,9 @@ describe("RecommendationRail", () => {
     expect(onOpenUrl).not.toHaveBeenCalled();
   });
 
-  it("opens a briefing link in Comma or the external browser from the link menu", async () => {
+  it("opens a row's link in Comma or the external browser from the link menu", async () => {
     const onOpenUrl = vi.fn();
-    script();
+    script({ shown: { envelope: envelope(snapshotWithLinkRow()) } });
     const props = {
       onOpenTask: vi.fn(),
       onOpenUrl,
@@ -2385,7 +2155,7 @@ describe("RecommendationRail", () => {
     const { rerender } = render(<Rail {...props} />);
 
     await flush();
-    const inlineLink = screen.getByRole("button", { name: "COMMA-151 summary" });
+    const inlineLink = screen.getByRole("button", { name: "COMMA-151" });
     fireEvent.contextMenu(inlineLink, { clientX: 120, clientY: 80 });
     await flush();
     fireEvent.click(
@@ -2397,7 +2167,7 @@ describe("RecommendationRail", () => {
 
     rerender(<Rail {...props} />);
     await flush();
-    fireEvent.contextMenu(screen.getByRole("button", { name: "COMMA-151 summary" }), {
+    fireEvent.contextMenu(screen.getByRole("button", { name: "COMMA-151" }), {
       clientX: 120,
       clientY: 80,
     });
@@ -2412,23 +2182,35 @@ describe("RecommendationRail", () => {
     );
   });
 
-  it("stages a summary task link's prompt and opens a plain summary link", async () => {
+  it("stages the row's task from its task link chip and opens a plain link chip", async () => {
     const issueUrl = "https://linear.app/comma/issue/COMMA-152";
-    const snapshot = recommendationSnapshot();
-    snapshot.summary = [
-      ...snapshot.summary,
-      {
-        kind: "inline-link" as const,
-        link: recommendationInlineLinkSchema.parse({
-          href: issueUrl,
-          label: "Linear source",
-          objective: "Investigate the determinism failure",
-          previewText: "Determinism failed (attempt 1)",
-          sourceId: "linear-account",
-          taskPrompt: `Investigate the determinism failure\n\n${issueUrl}`,
-        }),
-      },
-    ];
+    const action: RecommendationAction = {
+      label: "Investigate the determinism failure",
+      memberTask: true,
+      prompt: `Investigate the determinism failure\n\n${issueUrl}`,
+      requiresConfirmation: true,
+      sourceId: "linear-account",
+      sourceUrl: issueUrl,
+      type: "send_to_comma",
+    };
+    const snapshot = snapshotWithLinkRow({
+      action,
+      id: "task-link",
+      parts: [
+        { kind: "markdown", text: "Investigate " },
+        {
+          kind: "inline-link",
+          link: recommendationInlineLinkSchema.parse({
+            href: issueUrl,
+            label: "Linear source",
+            objective: "Investigate the determinism failure",
+            previewText: "Determinism failed (attempt 1)",
+            sourceId: "linear-account",
+            taskPrompt: action.prompt,
+          }),
+        },
+      ],
+    });
     const usePrompt = vi.fn();
     const onOpenUrl = vi.fn();
     script({ shown: { envelope: envelope(snapshot) } });
@@ -2442,7 +2224,7 @@ describe("RecommendationRail", () => {
     );
     await flush();
 
-    // A link that names the member's task stages it, as the task's row does.
+    // A link that names the member's task stages it, as its card does.
     fireEvent.click(screen.getByRole("button", { name: "Linear source" }));
     expect(usePrompt).toHaveBeenCalledWith({
       source: linear,
@@ -2451,11 +2233,11 @@ describe("RecommendationRail", () => {
     });
     expect(onOpenUrl).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "COMMA-151 summary" }));
+    fireEvent.click(screen.getByRole("button", { name: "COMMA-151" }));
     expect(onOpenUrl).toHaveBeenCalledWith("https://linear.app/comma/issue/COMMA-151");
   });
 
-  it("leaves briefing text alone and exposes Task archive actions on task chips", async () => {
+  it("leaves the greeting alone and exposes Task archive actions on task chips", async () => {
     script();
     render(
       <Rail
@@ -2468,7 +2250,7 @@ describe("RecommendationRail", () => {
     );
 
     await flush();
-    const heading = screen.getByRole("heading", { name: "Good morning." });
+    const heading = screen.getByRole("heading", { level: 1 });
     const headingEvent = createEvent.contextMenu(heading, { clientX: 8, clientY: 8 });
     fireEvent(heading, headingEvent);
     expect(headingEvent.defaultPrevented).toBe(false);
@@ -2484,6 +2266,46 @@ describe("RecommendationRail", () => {
 });
 
 describe("linked mail Tasks", () => {
+  it("reads as cleared when the core settles that the row's Task is gone", async () => {
+    const snapshot = recommendationSnapshot();
+    snapshot.cards = [
+      {
+        id: "mail",
+        title: "Gmail",
+        template: "text-list@1",
+        fallbackText: "Follow up",
+        sourceIds: ["gmail-account"],
+        items: [
+          {
+            id: "mail-task",
+            parts: [
+              {
+                kind: "inline-task",
+                task: {
+                  conversationId: "cnv_gone",
+                  label: "Follow up on contract",
+                  sourceId: "gmail-account",
+                },
+              },
+            ],
+            action: {
+              type: "open_url",
+              label: "Open mail",
+              href: "https://mail.google.com/mail/#inbox/m1",
+              requiresConfirmation: false,
+            },
+          },
+        ],
+      },
+    ];
+    script({ shown: { envelope: envelope(snapshot) } });
+    render(railIn("wsp_1"), true);
+    await flush();
+    await flush();
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("All cleared");
+    expect(screen.getByTestId("routines-cleared")).toBeInTheDocument();
+  });
+
   for (const status of ["active", "completed"] as const) {
     it(
       "keeps the canonical Task action and respects " + status + " state",
@@ -2533,8 +2355,14 @@ describe("linked mail Tasks", () => {
           status
         );
         await flush();
-        expect(screen.getByRole("group", { name: "Gmail" })).toBeInTheDocument();
+        await flush();
+        // The status line counts only the rows the cards show; with the
+        // Task's row gone the briefing is cleared.
+        expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
+          status === "active" ? "1 thing needs you" : "All cleared"
+        );
         if (status === "active") {
+          expect(screen.getByRole("group", { name: "Gmail" })).toBeInTheDocument();
           await flush();
           const targets = screen.getAllByRole("button", {
             name: "Follow up on contract",
@@ -2542,6 +2370,7 @@ describe("linked mail Tasks", () => {
           fireEvent.click(targets[0]!);
           expect(onOpenTask).toHaveBeenCalledWith("cnv_private_task_identity");
         } else {
+          expect(screen.getByTestId("routines-cleared")).toBeInTheDocument();
           expect(
             screen.queryByRole("button", { name: "Follow up on contract" })
           ).not.toBeInTheDocument();
@@ -2554,6 +2383,18 @@ describe("linked mail Tasks", () => {
     );
   }
 });
+
+/** The rail of one workspace, with actions nobody watches. */
+function railIn(workspaceId: string) {
+  return (
+    <Rail
+      onOpenTask={vi.fn()}
+      onOpenUrl={vi.fn()}
+      onUsePrompt={vi.fn()}
+      workspaceId={workspaceId}
+    />
+  );
+}
 
 function recommendationSnapshot(): RecommendationSnapshot {
   return {
@@ -2652,6 +2493,50 @@ function recommendationSnapshot(): RecommendationSnapshot {
     ],
     templateCatalogVersion: 1,
     warnings: [],
+  };
+}
+
+/**
+ * The published briefing with one more Linear card: a row that is a sentence
+ * around a link chip, then `rows`.
+ */
+function snapshotWithLinkRow(...rows: unknown[]): RecommendationSnapshot {
+  const snapshot = recommendationSnapshot();
+  return {
+    ...snapshot,
+    cards: [
+      ...snapshot.cards,
+      {
+        fallbackText: "Review COMMA-151.",
+        id: "linear-links",
+        items: [
+          {
+            action: {
+              label: "Review COMMA-151",
+              prompt: "Review COMMA-151",
+              requiresConfirmation: false,
+              type: "open_task_form",
+            },
+            id: "link-row",
+            parts: [
+              { kind: "markdown", text: "Review " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://linear.app/comma/issue/COMMA-151",
+                  label: "COMMA-151",
+                  sourceId: "linear-account",
+                },
+              },
+            ],
+          },
+          ...rows,
+        ],
+        sourceIds: ["linear-account"],
+        template: "text-list@1",
+        title: "Linear",
+      } as RecommendationCard,
+    ],
   };
 }
 

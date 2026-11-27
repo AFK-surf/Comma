@@ -3,8 +3,10 @@
  * (border, fill, shadow) and each action supplies its own label plus keycaps,
  * so a single-action bar is pixel-identical to the Figma frame.
  */
-export const selectionActionBar =
-  "comma-selection-action-bar fixed z-50 inline-flex items-center rounded-md border border-primary bg-ai-input-panel-bg-input shadow-xs";
+export const selectionActionBarChrome =
+  "inline-flex items-center rounded-md border border-primary bg-ai-input-panel-bg-input shadow-xs";
+
+export const selectionActionBar = `comma-selection-action-bar fixed z-50 ${selectionActionBarChrome}`;
 
 export const selectionActionBarAction =
   "inline-flex shrink-0 cursor-default items-center gap-xs rounded-md bg-transparent px-md py-xs outline-none transition-colors duration-[var(--motion-duration-feedback-in)] hover:bg-quaternary data-[pressed]:bg-quaternary-hover focus-visible:shadow-focus-gray motion-reduce:transition-none";

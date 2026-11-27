@@ -44,6 +44,8 @@
     <string name="settings_font_size">字体大小</string>
     <string name="settings_font_size_default">默认</string>
     <string name="settings_font_size_large">大</string>
+    <string name="settings_share_location">分享位置</string>
+    <string name="settings_share_location_detail">发消息时附上这台手机的位置，方便 Comma 推荐附近的东西</string>
     <string name="settings_glass">玻璃材质（实验性）</string>
     <string name="settings_glass_on">开</string>
     <string name="settings_glass_off">关</string>

@@ -95,6 +95,8 @@ class TaskSheetLayout(
         // Taps on the sheet's empty areas must not fall through to the scrim and close it.
         content.isClickable = true
         addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        // A body set after the window dispatched its insets would otherwise never get them.
+        ViewCompat.requestApplyInsets(content)
     }
 
     fun open() {

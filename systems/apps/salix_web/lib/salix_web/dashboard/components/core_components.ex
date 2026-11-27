@@ -288,16 +288,20 @@ defmodule SalixWeb.Dashboard.CoreComponents do
 
   @doc """
   A dense table. Provide `:col` slots (each with a `:label` attr) and an optional
-  trailing `:action` slot.
+  trailing `:action` slot. With `fixed`, column widths come from the `:col`
+  slots' `class` (applied to the header and every cell), not from the rows'
+  content, so columns stay in place when the rows change.
   """
   attr(:id, :string, required: true)
   attr(:rows, :list, required: true)
   attr(:row_id, :any, default: nil)
   attr(:row_click, :any, default: nil)
   attr(:class, :string, default: nil)
+  attr(:fixed, :boolean, default: false)
 
   slot :col, required: true do
     attr(:label, :string)
+    attr(:class, :string)
   end
 
   slot(:action)
@@ -310,12 +314,15 @@ defmodule SalixWeb.Dashboard.CoreComponents do
 
     ~H"""
     <div class={["overflow-x-auto rounded-lg border border-neutral-200", @class]}>
-      <table class="w-full text-sm">
+      <table class={["w-full text-sm", @fixed && "table-fixed"]}>
         <thead>
           <tr class="border-b border-neutral-200">
             <th
               :for={col <- @col}
-              class="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-neutral-500"
+              class={[
+                "px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-neutral-500",
+                col[:class]
+              ]}
             >
               {col[:label]}
             </th>
@@ -338,7 +345,7 @@ defmodule SalixWeb.Dashboard.CoreComponents do
             class={["hover:bg-neutral-50", @row_click && "cursor-pointer"]}
             phx-click={@row_click && @row_click.(row)}
           >
-            <td :for={col <- @col} class="px-3 py-2 align-middle text-neutral-700">
+            <td :for={col <- @col} class={["px-3 py-2 align-middle text-neutral-700", col[:class]]}>
               {render_slot(col, row_item(row))}
             </td>
             <td :if={@action != []} class="px-3 py-2 text-right align-middle">

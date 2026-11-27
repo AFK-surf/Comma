@@ -78,7 +78,8 @@ final class TaskSearchPresentationTests: XCTestCase {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let original = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
-        let navigation = AppNavigation(tab: .apps)
+        let navigation = AppNavigation(tab: .settings)
+        navigation.settingsPath = [.apps]
         let root = UIHostingController(rootView: AppShellView(store: harness.store,
             activity: TaskActivityCoordinator(), navigation: navigation))
         window.rootViewController = root
@@ -97,7 +98,7 @@ final class TaskSearchPresentationTests: XCTestCase {
         XCTAssertEqual(frame.minX, 0, accuracy: 1)
         XCTAssertEqual(frame.minY, 0, accuracy: 1)
         XCTAssertEqual(frame.width, window.bounds.width, accuracy: 1,
-                       "App details must cover both columns, independent of the Apps tab's content inset")
+                       "App details must cover both columns, independent of the Apps page's content inset")
         XCTAssertEqual(frame.height, window.bounds.height, accuracy: 1)
         let detailNavigation = try XCTUnwrap(controllers(details).compactMap { $0 as? UINavigationController }.first)
         let detailItem = try XCTUnwrap(detailNavigation.navigationBar.topItem)
@@ -109,7 +110,8 @@ final class TaskSearchPresentationTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertNil(root.presentedViewController)
-        XCTAssertEqual(navigation.tab, .apps, "Closing details returns to the same Apps list")
+        XCTAssertEqual(navigation.tab, .settings, "Closing details returns to the same Apps list")
+        XCTAssertEqual(navigation.settingsPath, [.apps], "Closing details returns to the same Apps list")
     }
 
     func testMinimizedTaskRailControlsStayClearOfItsRoundedCorners() async throws {
@@ -197,7 +199,8 @@ final class TaskSearchPresentationTests: XCTestCase {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let original = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
-        guard window.bounds.width >= ShellColumnLayout.minimumColumnWidth * 2 else {
+        guard window.bounds.width >= ShellColumnLayout.minimumColumnWidth * 2,
+              window.bounds.height >= ShellColumnLayout.minimumHeight else {
             throw XCTSkip("Requires a window wide enough for the Routines column")
         }
         let navigation = AppNavigation(routerOpen: true)
@@ -208,7 +211,7 @@ final class TaskSearchPresentationTests: XCTestCase {
         defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
         try await Task.sleep(for: .milliseconds(600))
         controller.view.layoutIfNeeded()
-        let layout = ShellColumnLayout(width: window.bounds.width, folded: false, division: nil)
+        let layout = ShellColumnLayout(size: window.bounds.size, folded: false, division: nil)
         XCTAssertTrue(layout.isWide)
         let nav = try XCTUnwrap(controllers(controller).compactMap { $0 as? UINavigationController }.first)
         let bar = nav.navigationBar.convert(nav.navigationBar.bounds, to: window)
@@ -246,9 +249,9 @@ final class TaskSearchPresentationTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(700))
         root.view.layoutIfNeeded()
         let router = try XCTUnwrap(controllers(root).compactMap { $0 as? RouterLayerController }.first)
-        XCTAssertFalse(router.gestureRecognizerShouldBegin(DownwardChatPan()),
+        XCTAssertFalse(router.canDismiss(at: CGPoint(x: 100, y: 30), velocity: CGVector(dx: 0, dy: 100)),
                        "With no Duo header, a downward message scroll must not be claimed as a header-dismiss drag")
-        let nav = try XCTUnwrap(controllers(router).compactMap { $0 as? UINavigationController }.first)
+        let nav = try XCTUnwrap(controllers(router.hosting).compactMap { $0 as? UINavigationController }.first)
         let item = try XCTUnwrap(nav.navigationBar.topItem)
         let items = item.leadingItemGroups.flatMap(\.barButtonItems) + item.trailingItemGroups.flatMap(\.barButtonItems)
             + (item.leftBarButtonItems ?? []) + (item.rightBarButtonItems ?? [])
@@ -352,12 +355,16 @@ final class TaskSearchPresentationTests: XCTestCase {
     func testTaskSidePanelUsesTheWideLandscapeRoutineColumn() {
         XCTAssertEqual(TaskDockPlacement.resolve(size: CGSize(width: 390, height: 844), leadingInset: 0,
                                                 folded: false, division: nil), .bottom)
+        XCTAssertEqual(TaskDockPlacement.resolve(size: CGSize(width: 852, height: 393), leadingInset: 0,
+                                                folded: false, division: nil), .bottom)
+        XCTAssertEqual(TaskDockPlacement.resolve(size: CGSize(width: 956, height: 440), leadingInset: 0,
+                                                folded: false, division: nil), .bottom)
         XCTAssertEqual(TaskDockPlacement.resolve(size: CGSize(width: 1024, height: 1366), leadingInset: 0,
                                                 folded: false, division: nil), .bottom)
         XCTAssertEqual(TaskDockPlacement.resolve(size: CGSize(width: 916, height: 650), leadingInset: 0,
                                                 folded: false, division: nil), .leading(width: 458))
         let division = CGRect(x: 492, y: 0, width: 16, height: 650)
-        let columns = ShellColumnLayout(width: 916, folded: true, division: division)
+        let columns = ShellColumnLayout(size: CGSize(width: 916, height: 650), folded: true, division: division)
         XCTAssertEqual(TaskDockPlacement.resolve(size: CGSize(width: 916, height: 650), leadingInset: 0,
                                                 folded: true, division: division), .leading(width: columns.leadingWidth, gap: columns.gap))
     }
@@ -554,7 +561,7 @@ final class TaskSearchPresentationTests: XCTestCase {
         root.view.layoutIfNeeded()
         let dock = try XCTUnwrap(controllers(root).compactMap { $0 as? TaskDockViewController }.first)
         XCTAssertTrue(dock.placement.isLeading, "A wide landscape Task occupies the left column")
-        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? ShellTabBarController }.first)
+        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? any ShellBar }.first)
         let tabs = try XCTUnwrap(bar.parent)
         let deadline = ContinuousClock.now + .seconds(2)
         while tabs.view.convert(tabs.view.bounds, to: root.view).minX == 0, ContinuousClock.now < deadline {
@@ -720,9 +727,16 @@ final class TaskSearchPresentationTests: XCTestCase {
         defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
         try await Task.sleep(for: .milliseconds(300))
         window.layoutIfNeeded()
-        let native = try XCTUnwrap(shell.children.compactMap { $0 as? ShellTabBarController }.first)
-        let standIn = try XCTUnwrap(native.selectedViewController)
+        let native = try XCTUnwrap(shell.children.compactMap { $0 as? any ShellBar }.first)
+        let standIn = try XCTUnwrap(native.children.first { $0.viewIfLoaded === native.standIn })
         let page = try XCTUnwrap(shell.children.compactMap { $0 as? UIHostingController<HostedContent<AnyView>> }.first { !$0.view.isHidden })
+        if #available(iOS 26.0, *) {
+            // The bar the app draws gives the room itself, and takes it back on its next layout: the page has it.
+            XCTAssertGreaterThan(standIn.view.safeAreaInsets.bottom, window.safeAreaInsets.bottom, "The bar takes room from the page")
+            XCTAssertEqual(page.view.safeAreaInsets.bottom, standIn.view.safeAreaInsets.bottom, accuracy: 1,
+                           "The visible page keeps clear of the bar without a tab switch")
+            return
+        }
         let before = page.view.safeAreaInsets.right
         standIn.additionalSafeAreaInsets.right += 40
         standIn.view.layoutIfNeeded()
@@ -785,7 +799,7 @@ final class TaskSearchPresentationTests: XCTestCase {
 
     private func coldHomeGeometry(_ window: UIWindow) throws -> (width: CGFloat, right: CGFloat) {
         let root = try XCTUnwrap(window.rootViewController)
-        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? ShellTabBarController }.first)
+        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? any ShellBar }.first)
         let shell = try XCTUnwrap(bar.parent)
         let page = try XCTUnwrap(shell.children.first { $0 !== bar && $0.isViewLoaded && !$0.view.isHidden })
         XCTAssertEqual(page.view.bounds.width, shell.view.bounds.width, accuracy: 1,
@@ -840,14 +854,20 @@ final class TaskSearchPresentationTests: XCTestCase {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { rotates.fulfill() }
             await fulfillment(of: [rotates], timeout: 3)
             XCTAssertEqual(scene.interfaceOrientation.isLandscape, orientation == .landscapeLeft)
-            for tab in [AppTab.home, .inbox, .apps, .settings] {
+            // Apps is a page of the bar's menu; before iOS 26 it is Settings › Comma › Apps.
+            var pages: [(AppTab, [SettingsRoute])] = [(.home, []), (.inbox, []), (.settings, [])]
+            if #available(iOS 26.0, *) { pages.append((.apps, [])) } else { pages.append((.settings, [.apps])) }
+            for (tab, path) in pages {
                 navigation.select(tab)
-                let settled = expectation(description: tab.title + " layout settled")
+                navigation.settingsPath = path
+                let apps = tab == .apps || path == [.apps]
+                let title = apps ? String(localized: "Apps") : tab.title
+                let settled = expectation(description: title + " layout settled")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { settled.fulfill() }
                 await fulfillment(of: [settled], timeout: 3)
                 controller.view.layoutIfNeeded()
                 let lists = descendants(window).filter(isVisible).compactMap { $0 as? UIScrollView }
-                let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? ShellTabBarController }.first)
+                let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? any ShellBar }.first)
                 let tabs = try XCTUnwrap(bar.parent)
                 #if canImport(SwiftUI, _version: 8.0.85)
                 if #available(iOS 27.1, *), tab == .home, bar.traitCollection.verticalBarEdge != .unspecified {
@@ -867,21 +887,22 @@ final class TaskSearchPresentationTests: XCTestCase {
                     let frame = $0.convert($0.bounds, to: window)
                     return frame.midX >= column.minX && frame.width >= column.width * 0.9
                 }, "The selected main page fills its column")
-                if tab == .apps {
+                if apps {
                     let field = try XCTUnwrap(descendants(window).filter(isVisible).compactMap { $0 as? UITextField }
                         .first { $0.placeholder == String(localized: "Search apps") })
                     let searchFrame = field.convert(field.bounds, to: window)
                     XCTAssertLessThan(searchFrame.maxY, window.bounds.midY, "Apps search stays at the top of the full shell")
-                    let routerFrame = navigation.routerButtonFrame
+                    let source = bar.routerFace
+                    let routerFrame = source.convert(source.bounds, to: window)
                     XCTAssertFalse(routerFrame.isEmpty, "The full shell must expose the Comma entry geometry")
                     XCTAssertFalse(searchFrame.intersects(routerFrame), "Apps search must not cover the Comma entry")
                 }
                 let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
                 let attachment = XCTAttachment(image: image)
-                attachment.name = "Main " + tab.title + (orientation == .portrait ? " portrait" : " landscape")
+                attachment.name = "Main " + title + (orientation == .portrait ? " portrait" : " landscape")
                 attachment.lifetime = .keepAlways
                 add(attachment)
-                if tab == .apps {
+                if apps {
                     controller.overrideUserInterfaceStyle = .dark
                     try await Task.sleep(for: .milliseconds(200))
                     attach(window, named: "Apps grid dark " + (orientation == .portrait ? "portrait" : "landscape"))
@@ -1154,18 +1175,20 @@ final class TaskSearchPresentationTests: XCTestCase {
             controller.view.frame = CGRect(x: 0, y: 0, width: width, height: 700)
             try await Task.sleep(for: .milliseconds(400))
             controller.view.layoutIfNeeded()
-            let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? ShellTabBarController }.first)
+            let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? any ShellBar }.first)
             let tabs = try XCTUnwrap(bar.parent)
             let frame = tabs.view.convert(tabs.view.bounds, to: controller.view)
             XCTAssertEqual(frame.width, width, accuracy: 1,
                            "The native toolbar keeps the full viewport while content columns resize")
-            let page = try XCTUnwrap(tabs.children.first { $0 !== bar && $0.isViewLoaded && !$0.view.isHidden })
+            let pages = tabs.children.filter { $0 !== bar }.compactMap(\.viewIfLoaded)
+            XCTAssertEqual(pages.count, AppTab.allCases.count)
+            let page = try XCTUnwrap(pages.first { !$0.isHidden })
             if width >= 700 {
-                XCTAssertGreaterThan(page.view.safeAreaInsets.left, width * 0.35,
+                XCTAssertGreaterThan(page.safeAreaInsets.left, width * 0.35,
                                      "Page content reserves the persistent Routine column")
-                XCTAssertLessThan(page.view.safeAreaLayoutGuide.layoutFrame.width, width * 0.6)
+                XCTAssertLessThan(page.safeAreaLayoutGuide.layoutFrame.width, width * 0.6)
             } else {
-                XCTAssertLessThan(page.view.safeAreaInsets.left, width * 0.1,
+                XCTAssertLessThan(page.safeAreaInsets.left, width * 0.1,
                                   "Compact content releases the Routine reservation")
             }
             for tab in [AppTab.inbox, .settings, .home] {
@@ -1175,7 +1198,7 @@ final class TaskSearchPresentationTests: XCTestCase {
                 XCTAssertTrue(bar.parent === tabs, "A tab switch retains the column's native container")
                 XCTAssertEqual(tabs.view.convert(tabs.view.bounds, to: controller.view), frame,
                                "Switching tabs preserves the room reserved for Routines")
-                XCTAssertEqual(tabs.children.filter { $0 !== bar && $0.isViewLoaded && !$0.view.isHidden }.count, 1)
+                XCTAssertEqual(pages.filter { !$0.isHidden }.count, 1)
             }
         }
     }
@@ -1209,7 +1232,7 @@ final class TaskSearchPresentationTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(300))
             controller.view.layoutIfNeeded()
-            let page = try XCTUnwrap(controller.children.first { !($0 is ShellTabBarController) && !$0.view.isHidden })
+            let page = try XCTUnwrap(controller.children.first { !($0 is any ShellBar) && !$0.view.isHidden })
             let nav = try XCTUnwrap(controllers(page).compactMap { $0 as? UINavigationController }.first)
             if let firstBarWidth {
                 XCTAssertEqual(nav.navigationBar.bounds.width, firstBarWidth, accuracy: 1,
@@ -1242,7 +1265,7 @@ final class TaskSearchPresentationTests: XCTestCase {
         window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
         try await Task.sleep(for: .milliseconds(300))
-        let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? ShellTabBarController }.first)
+        let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? any ShellBar }.first)
         let shell = try XCTUnwrap(bar.parent)
         let page = try XCTUnwrap(shell.children.first { $0 !== bar && !$0.view.isHidden })
         let barWidth = bar.view.bounds.width
@@ -1267,6 +1290,38 @@ final class TaskSearchPresentationTests: XCTestCase {
         XCTAssertGreaterThan((intermediateInsets.max() ?? start) - (intermediateInsets.min() ?? start), 1)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(page.additionalSafeAreaInsets.left, end, accuracy: 1)
+    }
+
+    func testWideTabBarStartsAfterTheLeadingSafeArea() async throws {
+        let harness = try StoreHarness()
+        await harness.start()
+        harness.store.profileRead = true
+        harness.store.tasksLoaded = true
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let original = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let container = UIViewController()
+        let controller = UIHostingController(rootView: ShellTabs(store: harness.store,
+            activity: TaskActivityCoordinator(), query: HomeTaskQuery())
+            .environment(AppNavigation()).providingInbox(store: harness.store))
+        window.rootViewController = container
+        container.addChild(controller)
+        container.view.addSubview(controller.view)
+        controller.didMove(toParent: container)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
+        // A phone on its side: the sensor housing insets the leading edge.
+        controller.additionalSafeAreaInsets.left = 48 - controller.view.safeAreaInsets.left
+        controller.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 700)
+        try await Task.sleep(for: .milliseconds(400))
+        controller.view.layoutIfNeeded()
+        let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? any ShellBar }.first)
+        let tabs = try XCTUnwrap(bar.parent)
+        let page = try XCTUnwrap(tabs.children.filter { $0 !== bar }.compactMap(\.viewIfLoaded).first { !$0.isHidden })
+        let content = page.convert(page.safeAreaLayoutGuide.layoutFrame, to: controller.view)
+        XCTAssertGreaterThan(content.minX, 1024 * 0.35)
+        XCTAssertEqual(bar.view.convert(bar.view.bounds, to: controller.view).minX, content.minX, accuracy: 1,
+                       "The bar starts where its column does, clear of Routines")
     }
 
     func testWideShellLoadsRoutinesOnFirstAppearanceWithoutRotation() async throws {
@@ -1299,7 +1354,7 @@ final class TaskSearchPresentationTests: XCTestCase {
             }
             let feed = try XCTUnwrap(harness.store.routines.feed,
                                     "The visible sidebar loads on first appearance and after a reset without a rotation or Home visit")
-            XCTAssertEqual(feed.summaryText, "The first briefing is ready.")
+            XCTAssertEqual(feed.generation, 1)
             let topics = harness.core.topics("recommendations")
             XCTAssertEqual(topics.count, 1, "The sidebar shares one Workspace subscription")
             XCTAssertEqual(topics.first?["workspace"] as? String, "w1")
@@ -1308,10 +1363,19 @@ final class TaskSearchPresentationTests: XCTestCase {
 
     func testRoutineGreetingKeepsRoomAboveTheScrollingBriefing() async throws {
         let harness = try StoreHarness()
-        let summary = (1...18).map { "Update \($0): Review the project notes and reply to the team before the next meeting." }.joined(separator: "\n\n")
         harness.core.serve("recommendations") { _ in
-            ["envelope": ["state": "fresh", "settings": ["sources": []],
-                          "snapshot": ["generation": 1, "summary": [["kind": "markdown", "text": summary]], "cards": []]]]
+            // Twelve cards, four to a source card as the contract bounds one: more than the column shows at once.
+            let cards: [[String: Any]] = (0..<3).map { card in
+                ["id": "c\(card)", "title": "Linear", "template": "text-list@1", "sourceIds": ["conn-linear"], "fallbackText": "Linear",
+                 "items": (1...4).map { row -> [String: Any] in
+                     ["id": "i\(card)-\(row)",
+                      "parts": [["kind": "markdown", "text": "Update \(card * 4 + row): Review the project notes and reply to the team before the next meeting."]],
+                      "action": ["type": "open_task_form", "label": "Review", "prompt": "Review the project notes", "requiresConfirmation": false]]
+                 }]
+            }
+            return ["envelope": ["state": "fresh",
+                                 "settings": ["sources": [["appId": "linear", "appName": "Linear", "connectionId": "conn-linear", "enabled": true]]],
+                                 "snapshot": ["generation": 1, "summary": [["kind": "markdown", "text": "Your work briefing"]], "cards": cards]]]
         }
         await harness.start()
         harness.store.profileRead = true
@@ -1335,6 +1399,27 @@ final class TaskSearchPresentationTests: XCTestCase {
         controller.overrideUserInterfaceStyle = .dark
         try await Task.sleep(for: .milliseconds(150))
         attach(window, named: "Routine greeting dark")
+    }
+
+    func testRoutineColumnKeepsItsBackgroundWithoutACard() async throws {
+        let harness = try StoreHarness()
+        harness.core.serve("recommendations") { _ in ["envelope": ["state": "empty", "snapshot": NSNull()]] }
+        await harness.start()
+        harness.store.profileRead = true
+        _ = await harness.store.routines.load(store: harness.store)
+        await until { harness.store.routines.feed != nil }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let original = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let controller = UIHostingController(rootView: RoutineSidebar(store: harness.store).environment(AppNavigation()))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
+        try await Task.sleep(for: .milliseconds(300))
+        controller.view.layoutIfNeeded()
+        let scroll = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? UIScrollView }.first)
+        XCTAssertEqual(scroll.convert(scroll.bounds, to: controller.view).width, controller.view.bounds.width, accuracy: 1,
+                       "The column's background spans it when the briefing has no line or card")
     }
 
     func testPlatformCardsKeepTheirWidthInWiderWindows() async throws {
@@ -1383,7 +1468,7 @@ final class TaskSearchPresentationTests: XCTestCase {
         // A 1000pt display leaves 916pt for content after its 84pt right system bar.
         // The physical fold remains at x=500 in this content coordinate space.
         let fold = CGRect(x: 488, y: 0, width: 24, height: 700)
-        let layout = ShellColumnLayout(width: 916, folded: true, division: fold)
+        let layout = ShellColumnLayout(size: CGSize(width: 916, height: 700), folded: true, division: fold)
         let leadingEdge = layout.leadingWidth
         let trailingEdge = 916 - layout.trailingWidth
         XCTAssertEqual(fold.midX - leadingEdge, trailingEdge - fold.midX, accuracy: 0.5,
@@ -1393,14 +1478,57 @@ final class TaskSearchPresentationTests: XCTestCase {
                        "The right content column leaves room for the right system bar")
 
         let widerFold = CGRect(x: 452, y: 0, width: 96, height: 700)
-        let wider = ShellColumnLayout(width: 916, folded: true, division: widerFold)
+        let wider = ShellColumnLayout(size: CGSize(width: 916, height: 700), folded: true, division: widerFold)
         XCTAssertLessThanOrEqual(wider.leadingWidth, widerFold.minX)
         XCTAssertGreaterThanOrEqual(916 - wider.trailingWidth, widerFold.maxX,
                                     "A wider system-reserved division must stay entirely clear")
 
-        let flat = ShellColumnLayout(width: 916, folded: false, division: widerFold)
+        let flat = ShellColumnLayout(size: CGSize(width: 916, height: 700), folded: false, division: widerFold)
         XCTAssertEqual(flat.leadingWidth, flat.trailingWidth)
         XCTAssertEqual(flat.gap, 0)
+    }
+
+    func testCandybarPhoneLandscapeStaysSingleColumn() async throws {
+        for size in [CGSize(width: 852, height: 393), CGSize(width: 874, height: 402), CGSize(width: 956, height: 440)] {
+            let layout = ShellColumnLayout(size: size, folded: false, division: nil)
+            XCTAssertFalse(layout.isWide, "Candybar phone landscape \(size) must stay single-column")
+            XCTAssertEqual(layout.contentLeadingInset, 0)
+        }
+        for size in [CGSize(width: 916, height: 650), CGSize(width: 744, height: 1133), CGSize(width: 1133, height: 744)] {
+            let layout = ShellColumnLayout(size: size, folded: false, division: nil)
+            XCTAssertTrue(layout.isWide, "Unfolded Duo and iPad \(size) keep split columns")
+            XCTAssertGreaterThan(layout.contentLeadingInset, 0)
+        }
+
+        let harness = try StoreHarness()
+        await harness.start()
+        harness.store.tasksLoaded = true
+        harness.store.profileRead = true
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let original = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let container = UIViewController()
+        let navigation = AppNavigation(tab: .settings)
+        navigation.settingsPath = [.models]
+        let controller = UIHostingController(rootView: ShellCard(store: harness.store,
+            activity: TaskActivityCoordinator(), navigation: navigation, query: HomeTaskQuery()))
+        window.rootViewController = container
+        container.addChild(controller)
+        container.view.addSubview(controller.view)
+        controller.didMove(toParent: container)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
+
+        controller.view.frame = CGRect(x: 0, y: 0, width: 852, height: 393)
+        try await Task.sleep(for: .milliseconds(600))
+        controller.view.layoutIfNeeded()
+        let bar = try XCTUnwrap(controllers(controller).compactMap { $0 as? any ShellBar }.first)
+        let tabs = try XCTUnwrap(bar.parent)
+        let settingsPage = try XCTUnwrap(tabs.children.first { $0 !== bar && !$0.view.isHidden })
+        let navStacks = controllers(settingsPage).compactMap { $0 as? UINavigationController }.filter { isVisible($0.view) }
+        XCTAssertEqual(navStacks.count, 1, "Candybar phone landscape must not split Settings into two columns")
+        XCTAssertEqual(bar.view.frame.minX, 0, accuracy: 1, "Tab bar spans the full width without a leading Routines column")
+        XCTAssertEqual(bar.view.frame.width, 852, accuracy: 1)
     }
 
     func testHomeFoldLayoutKeepsItsModeAcrossSmallAngleChanges() {
@@ -1468,12 +1596,6 @@ final class TaskSearchPresentationTests: XCTestCase {
     }
 }
 
-
-private final class DownwardChatPan: UIPanGestureRecognizer {
-    override func location(in view: UIView?) -> CGPoint { CGPoint(x: 100, y: 30) }
-    override func velocity(in view: UIView?) -> CGPoint { CGPoint(x: 0, y: 100) }
-    override func translation(in view: UIView?) -> CGPoint { .zero }
-}
 
 private final class EndedTaskDockPan: UIPanGestureRecognizer {
     override var state: UIGestureRecognizer.State {

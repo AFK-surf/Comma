@@ -14,7 +14,7 @@ defmodule SalixAgent.IFCCheckTest do
 
   use SalixAgent.TestSupport.Settle
   alias SalixAgent.IFC
-  alias SalixAgent.IFC.{Check, Context, Declaration, Destination, Provenance, Render}
+  alias SalixAgent.IFC.{Check, Context, Declaration, Destination, Render}
 
   @connect "cnx1"
   @space "space|cnx1"
@@ -200,6 +200,67 @@ defmodule SalixAgent.IFCCheckTest do
     def llm_attempt(_fact), do: :ok
   end
 
+  describe "easy dispatch" do
+    test "shares an eligible private source without receipt confirmation" do
+      send =
+        call("im_api.slack.send_dm", %{"user_id" => "U_B", "text" => "shared"}, %{
+          "request" => "src:q-1",
+          "sources" => ["src:t-12"]
+        })
+
+      reply = facts(Map.merge(destination([@general], "unknown"), %{"mode" => "easy"}))
+      assert {:execute, admitted} = authorize(send, ctx(mode: :easy), reply)
+      assert admitted.ifc_evidence["requester"] == @a
+      refute_received {:receipt_spent, _, _, _}
+    end
+
+    test "blocks another person's DM even when its destination would allow flow" do
+      send =
+        call("im_api.slack.send_dm", %{"user_id" => "U_A", "text" => "private"}, %{
+          "request" => "src:q-2",
+          "sources" => ["src:t-12"]
+        })
+
+      reply = facts(Map.merge(destination([@dm_a]), %{"mode" => "easy"}))
+
+      assert {:blocked, _} =
+               authorize(
+                 send,
+                 ctx(mode: :easy, requester: @b, request: "src:q-2", source_scope: [@general]),
+                 reply
+               )
+    end
+
+    test "effects without IM content need no requester or fact lookup" do
+      Facts.start(fn _request -> flunk("non-IM effects must not resolve permissions") end)
+
+      send =
+        call("im_api.slack.send_dm", %{"user_id" => "U_A", "text" => "hello"}, %{"sources" => []})
+
+      assert [{:execute, _}] = Check.authorize([{:execute, send}], ctx(mode: :easy, ifc: nil))
+    end
+
+    test "IM disclosure fails closed when the resolver is unavailable" do
+      Facts.start(fn _request -> {:error, :unavailable} end)
+
+      send =
+        call("im_api.slack.send_dm", %{"user_id" => "U_A", "text" => "private"}, %{
+          "request" => "src:q-1",
+          "sources" => ["src:t-12"]
+        })
+
+      assert [{:blocked, _}] = Check.authorize([{:execute, send}], ctx(mode: :easy))
+    end
+
+    test "easy and hard hold drafts until the decision; legacy enforce stays strict" do
+      refute IFC.draft_before_decision?("easy")
+      refute IFC.draft_before_decision?("hard")
+      refute IFC.draft_before_decision?("enforce")
+      assert IFC.draft_before_decision?("audit")
+      assert IFC.mode("hard") == IFC.mode("enforce")
+    end
+  end
+
   describe "prepared correction at the dispatch boundary" do
     setup do
       disclosure = %{
@@ -261,7 +322,13 @@ defmodule SalixAgent.IFCCheckTest do
     test "async dispatch preserves invalid params and checks the corrected effect", %{
       dispatch_ctx: ctx
     } do
-      invalid = call("call", %{"tool" => "im_api.slack.send_dm", "params" => %{}})
+      invalid =
+        call("call", %{
+          "tool" => "im_api.slack.send_dm",
+          "params" => %{},
+          "ifc" => %{"sources" => ["src:q-1"]}
+        })
+
       Facts.start(fn _ -> flunk("invalid params must not authorize an effect") end)
 
       {[result], []} = SalixAgent.SessionToolDispatch.execute_with_async_window([invalid], ctx)
@@ -269,6 +336,7 @@ defmodule SalixAgent.IFCCheckTest do
       assert result.guidance_reason == "invalid_params"
       assert Jason.decode!(result.content)["error"] =~ "user_id"
       assert @dm_a in result.ifc["label"]
+      assert [%{"index" => 0, "label" => ["public"]}] = result.ifc["items"]
 
       corrected =
         call("call", %{
@@ -296,7 +364,13 @@ defmodule SalixAgent.IFCCheckTest do
       SystemsRuntime.put_env(:salix_agent, :agent_observability_mod, GuidanceObservability)
       on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :agent_observability_mod) end)
       Facts.start(fn _ -> flunk("invalid params must not authorize an effect") end)
-      invalid = call("call", %{"tool" => "im_api.slack.send_dm", "params" => %{}})
+
+      invalid =
+        call("call", %{
+          "tool" => "im_api.slack.send_dm",
+          "params" => %{},
+          "ifc" => %{"sources" => ["src:q-1"]}
+        })
 
       decided = SalixAgent.SessionToolDispatch.decide_ifc_once([invalid], ctx)
       [sync] = SalixAgent.SessionToolDispatch.execute([invalid], decided)
@@ -445,7 +519,10 @@ defmodule SalixAgent.IFCCheckTest do
     end)
 
     Check.authorize(
-      [{:execute, call("fs.write_file", %{"path" => "/notes/a.txt"}, %{"sources" => "context"})}],
+      [
+        {:execute,
+         call("fs.write_file", %{"path" => "/notes/a.txt"}, %{"sources" => ["src:t-12"]})}
+      ],
       ctx()
     )
 
@@ -594,6 +671,11 @@ defmodule SalixAgent.IFCCheckTest do
         assert {:read, _} = Destination.describe(name, %{"device_id" => "dev_1"}, %{})
       end
 
+      for name <-
+            ~w(im_api.internal.station_task.list im_api.internal.task.list im_api.internal.usage.query im_api.internal.label.list) do
+        assert {:read, _} = Destination.describe(name, %{"source" => "stillfail"}, %{})
+      end
+
       assert {:none, _} = Destination.describe("help", %{}, %{})
     end
 
@@ -708,6 +790,51 @@ defmodule SalixAgent.IFCCheckTest do
       assert {:execute, _} = check.(Enum.take(titles, 1))
       assert {:blocked, _} = check.(titles)
       assert {:blocked, _} = check.(Enum.reverse(titles))
+    end
+
+    test "batch Task archive, unarchive and dismiss reach every named Conversation and fail closed" do
+      args = %{"conversation_ids" => ["cnv_a", "cnv_b", "cnv_a"]}
+
+      for tool <- [
+            "im_api.internal.task.archive",
+            "im_api.internal.task.unarchive",
+            "im_api.internal.task.dismiss"
+          ] do
+        assert {:egress, %{"kind" => "conversation", "conversation_id" => "cnv_a"}} =
+                 Destination.describe(tool, args, %{})
+
+        assert [{:egress, %{"kind" => "conversation", "conversation_id" => "cnv_b"}}] =
+                 Destination.additional_destinations(tool, args, %{})
+      end
+
+      Facts.start(fn request ->
+        case request["destination"]["conversation_id"] do
+          "cnv_a" -> {:ok, facts(destination([@dm_a]))}
+          "cnv_b" -> {:ok, facts(destination([@space]))}
+        end
+      end)
+
+      for tool <- ["im_api.internal.task.archive", "im_api.internal.task.unarchive"] do
+        check = fn ids ->
+          [decision] =
+            Check.authorize(
+              [
+                {:execute,
+                 call(tool, %{"conversation_ids" => ids}, %{
+                   "request" => "src:q-1",
+                   "sources" => ["src:t-12"]
+                 })}
+              ],
+              ctx()
+            )
+
+          decision
+        end
+
+        assert {:execute, _} = check.(["cnv_a"])
+        assert {:blocked, _} = check.(["cnv_a", "cnv_b"])
+        assert {:blocked, _} = check.(["cnv_b", "cnv_a"])
+      end
     end
 
     test "an unclassified tool is treated as public egress" do
@@ -1087,6 +1214,25 @@ defmodule SalixAgent.IFCCheckTest do
   end
 
   describe "control flow is not a source" do
+    test "delegated authority admits one effect without promoting the original data context" do
+      original = Map.put(wire(), "input_refs", %{"delegated-task-input" => "src:t-9"})
+
+      effect =
+        call("im_api.slack.post_message", %{"channel" => "C_LEGAL"}, %{
+          "request" => "src:t-9",
+          "sources" => []
+        })
+
+      resolved = facts(destination([@legal]))
+
+      assert {:blocked, before} = authorize(effect, ctx(ifc: original), resolved)
+      assert Jason.decode!(before.content)["clause"] == "request_not_command"
+      delegated = Context.delegate_request(original, "delegated-task-input", @a)
+      assert {:execute, _} = authorize(effect, ctx(ifc: delegated), resolved)
+      assert {:blocked, after_delegation} = authorize(effect, ctx(ifc: original), resolved)
+      assert Jason.decode!(after_delegation.content)["clause"] == "request_not_command"
+    end
+
     # A, in their DM, asks for a public page to be posted in #general as three
     # bullets. The bullets are derived from the page; the DM only said what to
     # do and how. Declaring the page alone is honest, the post flows, nothing
@@ -1111,15 +1257,236 @@ defmodule SalixAgent.IFCCheckTest do
   end
 
   describe "the model's declaration" do
-    test "an undeclared effect counts the entire context" do
-      decision =
-        authorize(
-          call("im_api.slack.post_message", %{"channel" => "C_GEN"}),
-          ctx(requester: @b, source_scope: [@general], request: "src:q-2"),
-          facts(destination([@space]))
+    test "fixed local metadata calls can omit sources but explicit malformed declarations fail" do
+      local_ctx =
+        Map.put(ctx(), :tool_disclosure, %{
+          "tools" =>
+            Enum.map(["help", "im.provider_apis_list"], fn name ->
+              %{
+                "name" => name,
+                "callable" => true,
+                "input_schema" => SalixAgent.Tools.entry_schema(SalixAgent.Tools.find_entry(name))
+              }
+            end)
+        })
+
+      for {name, args} <- [
+            {"help", %{"tool" => "ifc"}},
+            {"im.provider_apis_list", %{"provider" => "slack"}}
+          ] do
+        [prepared] = SalixAgent.Tools.prepare_for_dispatch([call(name, args, nil)], local_ctx)
+        assert :not_guidance = SalixAgent.Tools.prepared_guidance_result(prepared)
+        assert Declaration.from_call(prepared).sources == []
+        [invalid] = SalixAgent.Tools.prepare_for_dispatch([call(name, args, %{})], local_ctx)
+        assert {:ok, _} = SalixAgent.Tools.prepared_guidance_result(invalid)
+      end
+    end
+
+    test "metadata discovery output never inherits the empty argument declaration" do
+      call = call("im.provider_apis_list", %{"provider" => "slack"}, %{"sources" => []})
+
+      [result] =
+        Check.stamp_results(
+          [%{id: call.id, content: "local connection configuration"}],
+          [call],
+          ctx()
         )
 
-      assert {:blocked, _result} = decision
+      assert result.ifc["label"] == ["agent_private"]
+
+      [labelled] =
+        Check.stamp_results([%{id: call.id, ifc: %{"label" => [@legal]}}], [call], ctx())
+
+      assert labelled.ifc["label"] == [@legal]
+    end
+
+    test "the model envelope requires declarations for local discovery and egress" do
+      [spec] = Declaration.for_mode([SalixAgent.Tools.call_spec()], :enforce)
+      schema = spec["input_schema"]
+
+      assert {:error, _} =
+               SalixAgent.Tools.validate_schema(
+                 %{"tool" => "help", "params" => %{"tool" => "ifc"}},
+                 schema
+               )
+
+      assert {:error, _} =
+               SalixAgent.Tools.validate_schema(
+                 %{"tool" => "im_api.slack.post_message", "params" => %{}},
+                 schema
+               )
+
+      assert :ok =
+               SalixAgent.Tools.validate_schema(
+                 %{
+                   "tool" => "im_api.slack.post_message",
+                   "params" => %{},
+                   "ifc" => %{"sources" => []}
+                 },
+                 schema
+               )
+    end
+
+    test "local unavailable-tool diagnostics omit selectors and remain absent in off mode" do
+      local_ctx = Map.put(ctx(), :tool_disclosure, %{"tools" => []})
+      request = call("im_api.slack.search", %{"query" => "PRIVATE_ENTITY"}, %{"sources" => []})
+      [prepared] = SalixAgent.Tools.prepare_for_dispatch([request], local_ctx)
+      assert {:ok, result} = SalixAgent.Tools.prepared_guidance_result(prepared)
+      assert [item] = Jason.decode!(result.content)["items"]
+      refute Jason.encode!(item) =~ "PRIVATE_ENTITY"
+      refute Jason.encode!(item) =~ "slack"
+
+      [off] =
+        SalixAgent.Tools.prepare_for_dispatch([request], Map.put(local_ctx, :ifc_mode, :off))
+
+      assert {:ok, off_result} = SalixAgent.Tools.prepared_guidance_result(off)
+      refute Jason.decode!(off_result.content)["items"]
+    end
+
+    test "business reads and arbitrary help selectors still require declarations" do
+      for {name, args} <- [
+            {"device.list", %{}},
+            {"history.list", %{}},
+            {"oauth.list_credentials", %{}},
+            {"env.computer_use", %{}},
+            {"im_api.slack.search", %{"query" => "private"}},
+            {"help", %{"tool" => "private-entity-not-a-tool"}},
+            {"im.provider_apis_list", %{"provider" => "slack", "connect_id" => "private-connect"}}
+          ] do
+        [prepared] = SalixAgent.Tools.prepare_for_dispatch([call(name, args, nil)], ctx())
+        assert {:ok, result} = SalixAgent.Tools.prepared_guidance_result(prepared)
+        assert result.guidance_reason == "invalid_params"
+      end
+    end
+
+    test "local parameter diagnostics have a public fixed item while original guidance remains private" do
+      [prepared] =
+        SalixAgent.Tools.prepare_for_dispatch(
+          [call("device.list", %{"secret" => "DO_NOT_COPY"}, nil)],
+          ctx()
+        )
+
+      assert {:ok, result} = SalixAgent.Tools.prepared_guidance_result(prepared)
+      assert result.ifc["label"] == ["agent_private"]
+      assert [%{"index" => 0, "label" => ["public"]}] = result.ifc["items"]
+      assert [diagnostic] = Jason.decode!(result.content)["items"]
+      refute Jason.encode!(diagnostic) =~ "DO_NOT_COPY"
+      refute Jason.encode!(diagnostic) =~ "device"
+      assert result.input =~ "DO_NOT_COPY"
+    end
+
+    test "enabled modes reject undeclared effects before resolving the context" do
+      Facts.start(fn _request -> flunk("invalid declarations must not resolve context facts") end)
+
+      for mode <- [:audit, :easy, :enforce],
+          declaration <- [
+            nil,
+            %{},
+            %{"sources" => "context"},
+            %{"sources" => "[]"},
+            %{"sources" => ["q-1"]},
+            %{"sources" => [42]},
+            %{"sources" => [], "request" => 42},
+            %{"sources" => [], "request" => ""},
+            %{"sources" => [], "request" => "[src:q-1]"},
+            %{"sources" => ["src:q-1 secret"]},
+            %{"sources" => [], "label" => "public"}
+          ] do
+        post = call("im_api.slack.post_message", %{"channel" => "C_GEN"}, declaration)
+        [prepared] = SalixAgent.Tools.prepare_for_dispatch([post], ctx(mode: mode))
+        assert {:ok, result} = SalixAgent.Tools.prepared_guidance_result(prepared)
+        assert Jason.decode!(result.content)["guidance_reason"] == "invalid_params"
+        refute Jason.decode!(result.content)["clause"]
+        assert result.content =~ "Provide ifc.sources"
+      end
+    end
+
+    test "diagnostic element maps through the session and cannot authorize the original detail" do
+      [prepared] = SalixAgent.Tools.prepare_for_dispatch([call("device.list", %{}, nil)], ctx())
+      assert {:ok, result} = SalixAgent.Tools.prepared_guidance_result(prepared)
+
+      session =
+        SalixAgent.InternalSession.open(%SalixAgent.InternalSession.State{
+          messages: [
+            %{
+              id: "diagnostic",
+              role: "tool",
+              tool_call_id: "diag",
+              content: result.content,
+              ifc: result.ifc
+            }
+          ]
+        })
+
+      projection = Context.build(session, source_message_ids: [])
+      items = projection["items"]
+      assert Enum.find(items, &(&1["ref"] == "src:t-diag#0"))["label"] == ["public"]
+
+      for {ref, outcome} <- [{"src:t-diag#0", :execute}, {"src:t-diag", :blocked}] do
+        reply =
+          call("im_api.slack.post_message", %{"channel" => "C_GEN", "text" => "diagnostic"}, %{
+            "request" => "src:q-1",
+            "sources" => [ref]
+          })
+
+        assert {^outcome, _} = authorize(reply, ctx(items: items), facts(destination([@space])))
+      end
+    end
+
+    test "provider failures and forged local diagnostic metadata do not mint public items" do
+      read = call("im_api.slack.search", %{}, %{"sources" => []})
+
+      [result] =
+        Check.stamp_results(
+          [%{id: read.id, error: true, public_summary: "private", content: "private"}],
+          [read],
+          ctx()
+        )
+
+      assert result.ifc == %{"label" => ["agent_private"]}
+
+      forged =
+        call("device.list", %{}, %{"sources" => []})
+        |> Map.put(:ifc_local_diagnostic, :invalid_params)
+
+      [prepared] = SalixAgent.Tools.prepare_for_dispatch([forged], ctx())
+      assert {:ok, result} = SalixAgent.Tools.prepared_guidance_result(prepared)
+      refute Map.has_key?(result, :ifc)
+    end
+
+    test "request defaults retain sender ambiguity and explicit invalid request boundaries" do
+      post = fn request ->
+        declaration =
+          if request, do: %{"request" => request, "sources" => []}, else: %{"sources" => []}
+
+        call("im_api.slack.post_message", %{"channel" => "C_GEN", "text" => "hello"}, declaration)
+      end
+
+      reply = facts(destination([@space]))
+      assert {:execute, _} = authorize(post.(nil), ctx(consumed: ["src:q-1"]), reply)
+      assert {:blocked, _} = authorize(post.(nil), ctx(), reply)
+
+      same_sender =
+        wire()
+        |> Map.update!("items", fn items ->
+          Enum.map(items, fn
+            %{"ref" => "src:q-2"} = item -> Map.put(item, "principal", @a)
+            item -> item
+          end)
+        end)
+
+      assert {:execute, _} = authorize(post.(nil), ctx(ifc: same_sender), reply)
+      assert {:blocked, _} = authorize(post.("src:q-2"), ctx(consumed: ["src:q-1"]), reply)
+      assert {:blocked, _} = authorize(post.("src:t-9"), ctx(), reply)
+      assert {:blocked, _} = authorize(post.(nil), ctx(requester: nil, consumed: []), reply)
+      assert {:execute, _} = authorize(post.("src:missing"), ctx(mode: :off), reply)
+    end
+
+    test "a tool schema without properties still gets the required declaration" do
+      for schema <- [%{}, %{"type" => "object"}] do
+        assert %{"properties" => %{"ifc" => _}, "required" => ["ifc"]} =
+                 Declaration.require_declaration(schema)
+      end
     end
 
     test "an unreadable declaration falls back to the whole context" do
@@ -1607,5 +1974,22 @@ defmodule SalixAgent.IFCCheckTest do
 
     assert unknown |> InternalSession.get(:messages) |> List.last() |> Map.get(:ifc) ==
              %{"label" => ["agent_private"]}
+  end
+
+  describe "live_activity destination classification" do
+    test "classifies live_activity.list as read and upsert/end as group live_activity egress" do
+      base_ctx = %{group_id: "grp_live_1"}
+
+      assert Destination.describe("live_activity.list", %{}, base_ctx) == {:read, %{}}
+
+      assert Destination.describe(
+               "live_activity.upsert",
+               %{"key" => "ride:1", "category" => "car", "title" => "On the way"},
+               base_ctx
+             ) == {:egress, %{"kind" => "live_activity", "group_id" => "grp_live_1"}}
+
+      assert Destination.describe("live_activity.end", %{"key" => "ride:1"}, base_ctx) ==
+               {:egress, %{"kind" => "live_activity", "group_id" => "grp_live_1"}}
+    end
   end
 end

@@ -6,6 +6,7 @@ defmodule SalixAgent.ContextProviders do
   alias SalixAgent.InternalSession
   alias SalixAgent.MigrationNotice
   alias SalixAgent.PlatformCapabilities
+  alias SalixAgent.ToolDisclosure
 
   @doc false
   def current_state(session_config) when is_map(session_config) do
@@ -13,18 +14,28 @@ defmodule SalixAgent.ContextProviders do
     tool_revision = value(session_config, :tool_disclosure_revision)
     skill_revision = value(session_config, :skill_projection_revision)
     mcp_state = value(session_config, :mcp_provider_state)
-    plugin_revision = value(session_config, :plugin_projection_revision)
+    plugin_projection = value(session_config, :plugin_projection)
+
+    plugin_revision =
+      value(session_config, :plugin_projection_revision) ||
+        plugin_projection_revision(plugin_projection)
 
     %{
       "model_context" => %{"version" => 1},
       "migration_notice" => %{"version" => MigrationNotice.version()},
       "tool_disclosure" =>
         %{
-          "revision" => tool_revision || disclosure_revision(tool_disclosure)
+          "revision" => tool_revision || disclosure_revision(tool_disclosure),
+          "tools" => tool_disclosure && ToolDisclosure.listed_fingerprints(tool_disclosure)
         }
         |> compact_map(),
       "skill_projection" => %{"revision" => skill_revision} |> compact_map(),
-      "plugins" => %{"revision" => plugin_revision} |> compact_map(),
+      "plugins" =>
+        %{
+          "revision" => plugin_revision,
+          "enabled_plugin_ids" => enabled_plugin_ids(plugin_projection)
+        }
+        |> compact_map(),
       "mcp" => normalize_mcp_state(mcp_state)
     }
     |> Enum.reject(fn {_provider, state} -> empty_map?(state) end)
@@ -96,7 +107,7 @@ defmodule SalixAgent.ContextProviders do
           baseline_messages(current, session_config)
 
         true ->
-          delta_messages(known, current, session_config)
+          delta_messages(known, current, session_config, fresh_session?(session, known))
       end
 
     messages =
@@ -162,10 +173,11 @@ defmodule SalixAgent.ContextProviders do
     # whose body may contain obsolete instructions or a legacy projection.
     notices = migration_notice_delta(%{}, current)
 
+    # The tool list is long, so the short notes come first.
     parts = [
-      authoritative_tool_names(value(session_config, :tool_disclosure)),
       "Current skills are indexed at /.runtime/skills/index.md. Read relevant skills when needed.",
-      "Use current plugin visibility and mcp.list/help for current MCP bindings and operations. Older availability notices are historical."
+      "Use current plugin visibility and mcp.list/help for current MCP bindings and operations. Older availability notices are historical.",
+      authoritative_tool_names(value(session_config, :tool_disclosure))
     ]
 
     notices ++ [runtime_guidance_payload(%{}, current, parts)]
@@ -252,8 +264,10 @@ defmodule SalixAgent.ContextProviders do
 
   def strip_llm_private_metadata(message), do: message
 
-  defp delta_messages(known, current, session_config) do
-    migration_notice_messages = migration_notice_delta(known, current)
+  defp delta_messages(known, current, session_config, fresh?) do
+    # A fresh session's system prompt already describes the current product,
+    # so it adopts the current notice version without the earlier notices.
+    migration_notice_messages = if fresh?, do: [], else: migration_notice_delta(known, current)
 
     guidance_parts =
       [
@@ -381,25 +395,83 @@ defmodule SalixAgent.ContextProviders do
       known_revision == current_revision ->
         []
 
+      is_binary(get_in(known, ["tool_disclosure", "tools"])) ->
+        changed_tools_notice(get_in(known, ["tool_disclosure", "tools"]), disclosure)
+
       true ->
         [authoritative_tool_names(disclosure)]
     end
   end
 
-  defp authoritative_tool_names(%{"tools" => tools}) when is_list(tools) do
-    names =
-      tools
-      |> Enum.filter(&(&1["callable"] == true and &1["prompt_visibility"] != "hidden"))
-      |> Enum.map(& &1["name"])
-      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+  defp parse_fingerprints(fingerprints) do
+    fingerprints
+    |> String.split("\n", trim: true)
+    |> Map.new(fn line ->
+      case String.split(line, "=", parts: 2) do
+        [name, digest] -> {name, digest}
+        [name] -> {name, ""}
+      end
+    end)
+  end
+
+  # Up to this many new or changed tools show their whole manual and schema.
+  # A larger change shows each as the Tool Disclosure does, so a release that
+  # touches many tools does not put every manual into the history.
+  @full_changed_tools 8
+
+  defp changed_tools_notice(known_fingerprints, disclosure) do
+    known_tools = parse_fingerprints(known_fingerprints)
+    current_tools = disclosure |> ToolDisclosure.listed_fingerprints() |> parse_fingerprints()
+
+    changed =
+      disclosure
+      |> ToolDisclosure.listed_tools()
+      |> Enum.filter(&(Map.get(known_tools, &1["name"]) != current_tools[&1["name"]]))
+
+    removed =
+      known_tools
+      |> Map.keys()
+      |> Enum.reject(&Map.has_key?(current_tools, &1))
       |> Enum.sort()
 
-    "Tool availability changed. The current preloaded callable tools are: " <>
-      Enum.join(names, ", ") <>
-      ". This list excludes on-demand tools. Discover those through help namespaces or mcp.list. It updates the older Tool Disclosure in the session system-prompt " <>
+    full? = length(changed) <= @full_changed_tools
+
+    parts =
+      [
+        changed != [] &&
+          if(full?,
+            do: "New or changed tools, with their current manual and schema:\n",
+            else:
+              "New or changed tools. One listed with one line and no schema: read it with help before its first call.\n"
+          ) <>
+            ToolDisclosure.render_entries(changed, :internal, full: full?),
+        removed != [] && "No longer available: " <> Enum.join(removed, ", ") <> "."
+      ]
+      |> Enum.filter(&is_binary/1)
+
+    case parts do
+      [] ->
+        []
+
+      parts ->
+        [
+          Enum.join(
+            [
+              "Tool availability changed. This updates the Tool Disclosure in the session system-prompt snapshot; where they differ, this notice is current. Other listed tools are unchanged."
+              | parts
+            ],
+            "\n\n"
+          )
+        ]
+    end
+  end
+
+  defp authoritative_tool_names(%{"tools" => tools} = disclosure) when is_list(tools) do
+    "Tool availability changed. The current Tool Disclosure below replaces the one in the session system-prompt " <>
       "snapshot; a listed tool is callable even if older context says it is missing. " <>
-      "Call business tools through the current runtime envelope and use help when you " <>
-      "need a listed tool's current manual or schema."
+      "It excludes on-demand tools. Discover those through help namespaces or mcp.list. " <>
+      "A tool listed with one line and no schema: read it with help before its first call.\n\n" <>
+      ToolDisclosure.render_entries(ToolDisclosure.listed_tools(disclosure))
   end
 
   defp authoritative_tool_names(_disclosure) do
@@ -442,9 +514,48 @@ defmodule SalixAgent.ContextProviders do
 
       true ->
         [
-          "Plugin projection changed. If relevant, inspect current plugin visibility before using affected tools, skills, MCP bindings, OAuth credentials, or IM connects."
+          format_plugin_delta(
+            get_in(known, ["plugins", "enabled_plugin_ids"]),
+            get_in(current, ["plugins", "enabled_plugin_ids"])
+          )
         ]
     end
+  end
+
+  defp format_plugin_delta(known_enabled, current_enabled)
+       when is_list(known_enabled) and is_list(current_enabled) do
+    known_set = MapSet.new(known_enabled)
+    current_set = MapSet.new(current_enabled)
+
+    added = MapSet.difference(current_set, known_set) |> Enum.sort()
+    removed = MapSet.difference(known_set, current_set) |> Enum.sort()
+
+    case {added, removed} do
+      {[_ | _], []} ->
+        "Enabled plugins changed (enabled: #{Enum.join(added, ", ")}). " <>
+          "If your next step uses their tools, skills, MCP bindings, OAuth credentials, or IM connects, " <>
+          "inspect current plugin visibility as needed."
+
+      {[], [_ | _]} ->
+        "Enabled plugins changed (disabled: #{Enum.join(removed, ", ")}). " <>
+          "If relevant to your next step, inspect current plugin visibility before using " <>
+          "affected tools, skills, MCP bindings, OAuth credentials, or IM connects."
+
+      {[_ | _], [_ | _]} ->
+        "Enabled plugins changed (enabled: #{Enum.join(added, ", ")}; disabled: #{Enum.join(removed, ", ")}). " <>
+          "If relevant to your next step, inspect current plugin visibility before using " <>
+          "affected tools, skills, MCP bindings, OAuth credentials, or IM connects."
+
+      {[], []} ->
+        "Plugin projection updated with no change to enabled plugins. " <>
+          "If relevant to your next step, inspect current plugin visibility before using " <>
+          "affected tools, skills, MCP bindings, OAuth credentials, or IM connects."
+    end
+  end
+
+  defp format_plugin_delta(_known_enabled, _current_enabled) do
+    "Plugin projection changed. If relevant to your next step, inspect current plugin visibility " <>
+      "before using affected tools, skills, MCP bindings, OAuth credentials, or IM connects."
   end
 
   defp mcp_delta(known, current) do
@@ -498,6 +609,27 @@ defmodule SalixAgent.ContextProviders do
   defp disclosure_revision(%{revision: revision}), do: revision
   defp disclosure_revision(_), do: nil
 
+  defp plugin_projection_revision(%{"revision" => revision}), do: revision
+  defp plugin_projection_revision(%{revision: revision}), do: revision
+  defp plugin_projection_revision(_), do: nil
+
+  defp enabled_plugin_ids(projection) when is_map(projection) do
+    case value(projection, :enabled_plugin_ids) do
+      ids when is_list(ids) ->
+        ids
+        |> Enum.map(&to_string/1)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      _other ->
+        nil
+    end
+  end
+
+  defp enabled_plugin_ids(_projection), do: nil
+
   defp maybe_put_migration_notice(states, attrs) do
     if adopted_llm_context?(attrs) do
       Map.put(states, "migration_notice", %{"version" => 0})
@@ -516,6 +648,11 @@ defmodule SalixAgent.ContextProviders do
       Map.put(states, "tool_disclosure", %{"revision" => revision})
     end
   end
+
+  # No recorded notice version and no adopted LLM context: the session has not
+  # yet committed a round, so no earlier notice applies to it.
+  defp fresh_session?(session, known),
+    do: not Map.has_key?(known, "migration_notice") and not adopted_llm_context?(session)
 
   defp adopted_llm_context?(session) when InternalSession.is_session(session),
     do: InternalSession.query(session, :adopted_llm_context?)

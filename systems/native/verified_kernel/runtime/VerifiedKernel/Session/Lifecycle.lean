@@ -21,7 +21,7 @@ def defaults : List (String × Term) :=
    ("last_ack_message_id", i 0), ("terminal_reply_ack_hwm", nil), ("runtime_failure_reply", nil), ("queue_ack_id", i 0),
    ("next_queue_id", i 1), ("input_queue", list []), ("next_message_id", i 1),
    ("input_dedupe", emptySet), ("conversation_sources", empty), ("summary_sequence", i 0), ("compacted_through", i 0),
-   ("summary", nil), ("provider_compaction", nil), ("compaction_failure", nil),
+   ("summary", nil), ("summary_ifc_view_label", nil), ("provider_compaction", nil), ("compaction_failure", nil),
    ("visible_reply_repair", nil), ("visible_reply_activation_scope", nil),
    ("visible_reply_intent", nil), ("visible_reply_egress_facts", empty),
    ("provider_reply_obligations", empty), ("messages", list []), ("events", list []),
@@ -29,7 +29,7 @@ def defaults : List (String × Term) :=
    ("runtime_node", nil), ("work_index_token", nil), ("work_index_reasons", list []),
    ("platform", nil), ("billing_context", empty), ("task_origin", nil), ("source_agent_id", nil),
    ("source_session_id", nil), ("source_schedule_id", nil), ("system_prompt", nil),
-   ("context_provider_states", empty), ("miniskills", empty), ("live_context_bytes", nil), ("storage_format", i 1),
+   ("context_provider_states", empty), ("compacted_provider_states", empty), ("miniskills", empty), ("live_context_bytes", nil), ("storage_format", i 1),
    ("last_seq", i 0), ("compacted_seq", i 0), ("archived_through", i 0), ("archive_chunks", list []),
    ("segment_catalog", list []), ("archive_refs", nil), ("flush_id", nil), ("async_results", list []),
    ("async_result_refs", empty), ("llm_failure_streak", nil), ("context_overflow_recovery", nil),
@@ -285,11 +285,37 @@ def migrationStates (state : Term) : KernelM Term := do
     return .map [(b "migration_notice", .map [(b "version", i 0)])]
   return empty
 
+/-- The provider states that compacted history adopted: those of the
+highest-id assistant boundary at or below `compacted_through` still in the
+transcript, else the stored `compacted_provider_states`, which keeps them
+after the archive drops those messages and across reloads. A summary or
+provider compaction replaces the messages that carried the states, not the
+context the model adopted from them. -/
+def compactedProviderStates (state : Term) : KernelM Term := do
+  let compacted := (← field state "compacted_through").default (i 0)
+  let messages := wrap (← field state "messages")
+  let found ← messages.foldlM (fun (acc : Option (Int × Term)) message => do
+    if !(assistantMap message) then return acc
+    let id := integerValue (← alias message (a "id") (b "id"))
+    if ← greater (i id) compacted then return acc
+    if let some (best, _) := acc then
+      if id ≤ best then return acc
+    let states ← messageProviderStates message
+    match states with
+    | .map (_ :: _) => return some (id, states)
+    | _ => return acc) none
+  match found with
+  | some (_, states) => return states
+  | none => return (← field state "compacted_provider_states").default empty
+
 /-- The latest retained assistant boundary owns the provider state. Without a
-live boundary, use the existing migration seed. -/
+live boundary, use the states compacted history adopted; a session compacted
+before they were kept uses the existing migration seed. -/
 def retainedProviderStates (state migration : Term) : KernelM Term := do
   let boundaries ← boundaryProviderStates state
-  return match boundaries with | .map (_ :: _) => boundaries | _ => migration
+  if let .map (_ :: _) := boundaries then return boundaries
+  let compacted ← providerStates (← compactedProviderStates state)
+  return match compacted with | .map (_ :: _) => compacted | _ => migration
 
 /-! ### `normalize` -/
 

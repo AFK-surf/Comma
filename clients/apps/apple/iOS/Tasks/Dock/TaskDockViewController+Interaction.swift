@@ -158,6 +158,7 @@ extension TaskDockViewController {
     /// Expanded, the header opens the Task details; minimized, it raises the sheet as before.
     func headerTapped() {
         guard progress > 0.5 else { return toggle() }
+        guard pane.workspace.groupID == store.workspace?.groupID else { return }
         view.endEditing(true)
         state.detailsOpen.toggle()
     }
@@ -198,6 +199,7 @@ extension TaskDockViewController {
         if state.topInset != topInset { state.topInset = topInset }
         let inset = max(keyboardOverlap, safeBottom)
         if state.bottomInset != inset { state.bottomInset = inset }
+        if state.keyboardOverlap != keyboardOverlap { state.keyboardOverlap = keyboardOverlap }
         if state.sideInset != safeSides { state.sideInset = safeSides }
         let actionsByComposer = usesVerticalBar && !placement.isLeading
         if state.actionsByComposer != actionsByComposer { state.actionsByComposer = actionsByComposer }
@@ -214,6 +216,34 @@ extension TaskDockViewController {
         withAnimation(Self.keyboardAnimation(note)) { updateInsets() }
     }
 
+    /// A finger dragging the keyboard down from the transcript moves it with no notification until it lets go. The
+    /// keyboard layout guide follows the finger; a view hung from it reports each step, and the inset follows at
+    /// once. A step inside an animation is the keyboard's own show or hide, which `keyboardWillChange` animates.
+    func trackKeyboard() {
+        let tracker = KeyboardTrackerView()
+        tracker.isUserInteractionEnabled = false
+        tracker.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(tracker)
+        NSLayoutConstraint.activate([
+            tracker.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tracker.widthAnchor.constraint(equalToConstant: 1),
+            tracker.topAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            tracker.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        tracker.onMove = { [weak self, weak tracker] in
+            guard let self, let tracker, let window = view.window, UIView.inheritedAnimationDuration == 0 else { return }
+            let top = tracker.convert(CGPoint.zero, to: window).y
+            // The guide rests on the bottom safe area while the keyboard is down.
+            var overlap = max(0, window.bounds.maxY - top)
+            if overlap <= safeBottom + 0.5 { overlap = 0 }
+            guard abs(overlap - keyboardOverlap) > 0.5 else { return }
+            keyboardOverlap = overlap
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { updateInsets() }
+        }
+    }
+
     /// The keyboard's own motion, for SwiftUI. UIKit builds curve 7 as a spring of mass 3, stiffness 1000 and
     /// damping 500 (critically damped, response 0.34) whatever the notification's duration; a zero duration
     /// means the keyboard jumps, and so does the transcript.
@@ -222,6 +252,16 @@ extension TaskDockViewController {
         let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
         guard duration > 0 else { return nil }
         return curve == 7 ? .spring(Spring(mass: 3, stiffness: 1000, damping: 500)) : .easeInOut(duration: duration)
+    }
+}
+
+/// Hangs from the keyboard layout guide's top and reports each change of its height.
+final class KeyboardTrackerView: UIView {
+    var onMove: () -> Void = {}
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onMove()
     }
 }
 

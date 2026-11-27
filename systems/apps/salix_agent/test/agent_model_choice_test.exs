@@ -2,7 +2,7 @@ defmodule SalixAgent.AgentModelChoiceTest do
   @moduledoc "An Agent's model choice stored as its own `model` value."
   use SystemsClock.Case, async: false
 
-  alias SalixAgent.{AccountPool, AgentModel, Control, LlmResolver}
+  alias SalixAgent.{AccountPool, AgentModel, Control, LlmResolver, PlatformRouter}
   alias SalixAgent.Migrations.AgentModelChoices
   alias SalixStore.{Ids, Keys, S3}
 
@@ -59,6 +59,118 @@ defmodule SalixAgent.AgentModelChoiceTest do
 
     assert {:ok, %{"kind" => "platform", "tier" => "worker"}, :platform_default} =
              AgentModel.choice(following)
+  end
+
+  test "only the platform admin's save puts a Router on the platform Router; a tenant cannot", %{
+    agent: worker,
+    tenant: tenant
+  } do
+    platform = AccountPool.platform_tenant()
+
+    on_exit(fn ->
+      SalixAgent.SubscriptionStore.query(
+        "DELETE FROM subscription_accounts WHERE tenant_id=$1",
+        [platform]
+      )
+
+      PlatformRouter.delete(tenant)
+    end)
+
+    {:ok, _} =
+      AccountPool.create(platform, %{
+        "credential_kind" => "provider_api_key",
+        "source" => "openrouter",
+        "api_key" => "sk-or-v1-platform-router-0000"
+      })
+
+    assert {:error, _} =
+             PlatformRouter.put(tenant, %{"model" => "gpt-5.5", "billing" => "free"})
+
+    assert {:ok, _} =
+             PlatformRouter.put(tenant, %{
+               "model" => "gpt-5.5",
+               "reasoning_effort" => "high",
+               "billing" => "record"
+             })
+
+    marked = PlatformRouter.choice(tenant)
+    assert marked == Map.put(@catalog, "platform", true)
+
+    # A new Router of the tenant takes the marked choice; a Worker does not.
+    router_id = Ids.new_agent_id(worker["group_id"])
+
+    router =
+      SalixAgent.TestSupport.create_control_agent!(router_id, %{
+        role: "router",
+        model: @catalog
+      })
+
+    assert router["model"] == marked
+    assert worker["model"] == nil
+
+    assert {:ok, llm} = LlmResolver.resolve_runtime(router_id)
+    assert AccountPool.platform_route?(llm)
+
+    assert {:ok, %{"platform_provided" => true, "model_display_name" => "GPT-5.5"}} =
+             SalixAgent.ModelChoice.public(marked, tenant)
+
+    # No tenant write path stores the mark.
+    assert {:error, :invalid_model_configuration} =
+             SalixAgent.ModelChoice.choose(marked, tenant)
+
+    assert {:error, {:bad_request, "invalid model"}} =
+             Control.configure(worker["agent_id"], %{"model" => marked}, tenant)
+
+    # The Router's own marked choice sent back with another change stays.
+    assert {:ok, renamed} =
+             Control.configure(router_id, %{"name" => "Front desk", "model" => marked}, tenant)
+
+    assert renamed["model"] == marked
+
+    # Another model drops the mark, and the tenant cannot set it back.
+    assert {:ok, switched} = Control.configure(router_id, %{"model" => @catalog}, tenant)
+    assert switched["model"] == Map.put(@catalog, "allow_paid", false)
+
+    assert {:error, {:bad_request, "invalid model"}} =
+             Control.configure(router_id, %{"model" => marked}, tenant)
+
+    # Saving again brings the Router back; Workers stay as they are.
+    assert {:ok, 1} = PlatformRouter.apply(tenant)
+    assert {:ok, %{"model" => ^marked}} = Control.get(router_id, tenant)
+    assert {:ok, unchanged} = Control.get(worker["agent_id"], tenant)
+    assert unchanged["model"] == nil
+
+    # The admin's pay-per-use option goes into the marked choice and its
+    # route; the organization's view never shows it.
+    assert {:error, :invalid_platform_router} =
+             PlatformRouter.put(tenant, %{
+               "model" => "gpt-5.5",
+               "billing" => "record",
+               "allow_paid" => "yes"
+             })
+
+    assert {:ok, %{"allow_paid" => true}} =
+             PlatformRouter.put(tenant, %{
+               "model" => "gpt-5.5",
+               "reasoning_effort" => "high",
+               "billing" => "record",
+               "allow_paid" => "true"
+             })
+
+    paid = PlatformRouter.choice(tenant)
+    assert paid == Map.put(marked, "allow_paid", true)
+    assert {:ok, 1} = PlatformRouter.apply(tenant)
+
+    assert {:ok, renamed} =
+             Control.configure(router_id, %{"name" => "Desk", "model" => paid}, tenant)
+
+    assert renamed["model"] == paid
+
+    assert {:ok, %{"provider_config" => %{"allow_paid" => true, "platform" => true}}} =
+             SalixAgent.ModelChoice.record(paid, tenant)
+
+    assert {:ok, public} = PlatformRouter.public(tenant)
+    assert Map.keys(public) |> Enum.sort() == ["label", "model"]
   end
 
   test "the migration stores private catalog and runtime choices as model values", %{

@@ -48,13 +48,13 @@ defmodule CommaWeb.MemberGlossary do
     unique: [
       period: 172_800,
       fields: [:worker, :args],
-      states: [:available, :scheduled, :executing, :retryable, :suspended, :completed]
+      states: [:available, :scheduled, :executing, :retryable, :suspended, :completed, :cancelled]
     ]
 
   require Logger
   alias CommaWeb.{HomeMail, RecommendationRenderer, RecommendationRuntime}
   alias Salix.Bindings.MeetingGlossary
-  alias SalixAgent.{AgentActor, AgentWorkspace}
+  alias SalixAgent.{AgentActor, AgentWorkspace, BillingAvailability, StorageAuthorization}
   alias SalixIM.Conversations
 
   @people_path "/memory/semantic/people.md"
@@ -104,17 +104,24 @@ defmodule CommaWeb.MemberGlossary do
         {:error, reason} = error ->
           Logger.warning("member_glossary failed reason=#{inspect(reason, limit: 3)}")
 
-          # Without credits a retry fails the same way; the next day tries again.
-          case reason do
-            :insufficient_credits -> {:cancel, reason}
-            {:billing_unavailable, _} -> {:cancel, reason}
-            _ -> error
-          end
+          # Explicit billing denials fail the same way on retry; the next day tries again.
+          # Billing infrastructure errors retain Oban recovery.
+          if billing_denied?(reason), do: {:cancel, reason}, else: error
       end
     else
       _ -> :ok
     end
   end
+
+  defp billing_denied?(:insufficient_credits), do: true
+
+  defp billing_denied?({:billing_unavailable, decision}) when is_map(decision),
+    do: BillingAvailability.denied?({:billing_unavailable, decision})
+
+  defp billing_denied?({:billing_unavailable, code}) when is_binary(code),
+    do: BillingAvailability.denied?({:billing_unavailable, %{reason: code}})
+
+  defp billing_denied?(_reason), do: false
 
   defp personal?(workspace, owner),
     do: Enum.map(workspace["members"] || [], & &1["user_id"]) in [[], [owner]]
@@ -167,10 +174,22 @@ defmodule CommaWeb.MemberGlossary do
       |> Map.put("people", if(people_changed?, do: people, else: ""))
       |> Map.put("known", known(file))
 
-    with {:ok, model} <- RecommendationRuntime.model(agent),
+    with {:ok, billing} <- billing(workspace),
+         :ok <- authorize_storage_write(agent, MeetingGlossary.path(), billing),
+         {:ok, model} <- RecommendationRuntime.model(agent),
          {:ok, answer} <-
            RecommendationRenderer.glossary(workspace, model, owner, input, @timeout_ms),
          do: build(answer, material, people, file)
+  end
+
+  defp authorize_storage_write(agent, path, billing) do
+    StorageAuthorization.authorize_write(%{
+      agent_id: agent,
+      events: [%{"type" => "vfs_write", "path" => path}],
+      billing_context: billing,
+      entrypoint: "storage_write",
+      actor_type: "system"
+    })
   end
 
   # Where the next refresh starts: after the last message read when the

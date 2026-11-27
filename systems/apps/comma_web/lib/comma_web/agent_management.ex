@@ -76,23 +76,29 @@ defmodule CommaWeb.AgentManagement do
   end
 
   def user_context(scope) do
-    case workspace_for(scope) do
-      {:ok, workspace} ->
-        {:ok, Comma.Accounts.agent_context(workspace["owner_user_id"], workspace["id"])}
+    case group_for(scope) do
+      {:ok, %{"purpose" => "collaboration"}} ->
+        {:ok, SalixAgent.AgentManagement.Ports.no_user_context()}
 
-      :other_product ->
-        Salix.Bindings.AgentManagement.user_context(scope)
+      _ ->
+        case workspace_for(scope) do
+          {:ok, workspace} ->
+            {:ok, Comma.Accounts.agent_context(workspace["owner_user_id"], workspace["id"])}
 
-      error ->
-        error
+          :other_product ->
+            Salix.Bindings.AgentManagement.user_context(scope)
+
+          error ->
+            error
+        end
     end
   end
 
   defp workspace_for(scope) do
-    with {:ok, group} <- Salix.Control.Groups.get(scope.group_id, scope.tenant_id) do
+    with {:ok, group} <- group_for(scope) do
       case group["billing_owner"] do
         %{"surface" => "comma", "product_owner_type" => "workspace", "product_owner_id" => id} ->
-          workspace(id, scope)
+          workspace(id, group, scope)
 
         _ ->
           :other_product
@@ -100,11 +106,34 @@ defmodule CommaWeb.AgentManagement do
     end
   end
 
-  defp workspace(id, scope) do
+  defp group_for(scope) do
+    case Salix.Control.Groups.get(scope.group_id, scope.tenant_id) do
+      {:ok, group} ->
+        {:ok, group}
+
+      {:error, :not_found} ->
+        case Salix.Control.Groups.get(scope.group_id) do
+          {:ok, %{"tenant_id" => tenant_id, "purpose" => "collaboration"} = group}
+          when tenant_id == scope.tenant_id ->
+            {:ok, group}
+
+          _ ->
+            {:error, :not_found}
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp workspace(id, group, scope) do
     with {:ok, workspace} <- Comma.Workspaces.get(id),
          true <-
            workspace["salix_tenant_id"] == scope.tenant_id and
-             workspace["default_group_id"] == scope.group_id do
+             (workspace["default_group_id"] == scope.group_id or
+                (group["purpose"] == "collaboration" and
+                   get_in(group, ["billing_owner", "home_group_id"]) ==
+                     workspace["default_group_id"])) do
       {:ok, workspace}
     else
       false -> {:error, :worker_default_unavailable}

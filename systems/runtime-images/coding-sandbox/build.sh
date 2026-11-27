@@ -20,7 +20,7 @@ context=$(mktemp -d)
 trap 'rm -rf -- "$context"' EXIT
 mkdir -p "$context/systems/runtime-images/station" "$context/systems/runtime-images/coding-sandbox"
 cp systems/runtime-images/station/{apt-package-recovery.mjs,entrypoint.sh,initialize-access.mjs,silk2wav,file-tools-packages,file-tools-requirements.txt} "$context/systems/runtime-images/station/"
-cp systems/runtime-images/coding-sandbox/{comma-display.service,comma-station.service,comma-station-start,tmp.mount,docker-daemon.json,native-build-packages} "$context/systems/runtime-images/coding-sandbox/"
+cp systems/runtime-images/coding-sandbox/{comma-display.service,comma-station.service,comma-station-start,tmp.mount,docker-daemon.json,native-build-packages,browser-mcp.json} "$context/systems/runtime-images/coding-sandbox/"
 
 args=()
 for pair in \
@@ -47,41 +47,8 @@ done
 "$engine" build --platform linux/amd64 -f systems/runtime-images/coding-sandbox/Dockerfile \
   --build-arg STATION_RUNTIME_IMAGE=comma-station-runtime:amd64 \
   --build-arg "PACKAGE_SNAPSHOT=$(lock_value packageSnapshot)" \
-  --build-arg "ELAN_TARBALL=$(lock_value elanAmd64.tarball)" --build-arg "ELAN_INTEGRITY=$(lock_value elanAmd64.integrity)" -t comma-coding-sandbox:amd64 "$context"
+  --build-arg "ELAN_TARBALL=$(lock_value elanAmd64.tarball)" --build-arg "ELAN_INTEGRITY=$(lock_value elanAmd64.integrity)" \
+  --build-arg "PLAYWRIGHT_MCP_TARBALL=$(lock_value playwrightMcp.tarball)" \
+  --build-arg "PLAYWRIGHT_MCP_INTEGRITY=$(lock_value playwrightMcp.integrity)" -t comma-coding-sandbox:amd64 "$context"
 
-mkdir -p "$out"
-out=$(cd "$out" && pwd)
-container=$("$engine" create --platform linux/amd64 comma-coding-sandbox:amd64)
-trap 'rm -rf -- "$context"; "$engine" rm -f "$container" >/dev/null' EXIT
-# The image tools from Debian trixie at the locked snapshot: mkfs.erofs (erofs-utils 1.8: Ubuntu 24.04's 1.7.1 writes,
-# for this image, big-pcluster indexes that its superblock does not announce, which the sandbox kernel refuses) and
-# veritysetup. The coding sandbox's Debian trixie base brings node for apt-package-recovery.mjs.
-snapshot=$(lock_value packageSnapshot)
-printf '%s\n' "FROM $(lock_value baseImages.codingSandbox)" \
-  "RUN --mount=type=bind,source=systems/runtime-images/station/apt-package-recovery.mjs,target=/tmp/apt-package-recovery.mjs printf 'Types: deb\\nURIs: http://snapshot.debian.org/archive/debian/$snapshot\\nSuites: trixie\\nComponents: main\\nCheck-Valid-Until: no\\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\\n' > /etc/apt/sources.list.d/debian.sources && apt-get update && node /tmp/apt-package-recovery.mjs $snapshot install -y --no-install-recommends erofs-utils cryptsetup-bin && rm -rf /var/lib/apt/lists/*" |
-  "$engine" build --platform linux/amd64 -t comma-image-tools:amd64 -f - "$context"
-# L4ES boots a verified system image (l4h-sandbox image/verity.py, README "Custom system images"): the EROFS file
-# system, then its dm-verity hash tree (format 1, SHA-256, 4 KiB blocks, no superblock), salted with the file system's
-# SHA-256 so that a rebuild of the same files is the same image. The tree is checked against its root hash once made.
-"$engine" export "$container" |
-  "$engine" run --rm -i --platform linux/amd64 -v "$out:/out" comma-image-tools:amd64 sh -euc '
-    cd /out
-    mkfs.erofs --quiet --tar=f -zlz4hc -b4096 rootfs.erofs
-    size=$(stat -c %s rootfs.erofs)
-    [ $((size % 4096)) = 0 ] && [ "$size" -le $((8 * 1024 * 1024 * 1024)) ]
-    salt=$(sha256sum rootfs.erofs | cut -d" " -f1)
-    opts="--format=1 --hash=sha256 --data-block-size=4096 --hash-block-size=4096 --no-superblock --salt=$salt --data-blocks=$((size / 4096))"
-    veritysetup format rootfs.erofs tree $opts --root-hash-file=root >/dev/null
-    cat rootfs.erofs tree > rootfs.verity
-    veritysetup verify rootfs.verity rootfs.verity "$(cat root)" $opts --hash-offset="$size"
-    echo "$(cat root) $salt $((size / 4096))" > verity
-    rm rootfs.erofs tree root'
-read -r root salt blocks < "$out/verity"
-rm "$out/verity"
-# L4ES reserves a sandbox's raw region from the zstd frame's content size.
-zstd -q -T0 -10 --content-size -f "$out/rootfs.verity" -o "$out/rootfs.verity.zst"
-rm "$out/rootfs.verity"
-sha=$(sha256sum "$out/rootfs.verity.zst" | cut -d' ' -f1)
-mv "$out/rootfs.verity.zst" "$out/$sha"
-printf '{"rootfs_sha256":"%s","verity":{"root_hash":"%s","salt":"%s","data_blocks":%s},"revision":"%s"}\n' \
-  "$sha" "$root" "$salt" "$blocks" "$(git rev-parse HEAD)" | tee "$out/image.json"
+systems/runtime-images/export-sandbox-image.sh "$out" comma-coding-sandbox:amd64

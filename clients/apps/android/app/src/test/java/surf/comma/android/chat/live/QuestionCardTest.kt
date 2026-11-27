@@ -160,15 +160,46 @@ class QuestionCardTest {
     }
 
     @Test fun `a closed card's receipt says the answer or how it closed`() {
-        val labels = QuestionReceiptLabels(sending = "Sending", skipped = "Skipped", replied = "Answered in the chat", replaced = "Replaced")
+        val labels = QuestionReceiptLabels(sending = "Sending", skipped = "Skipped", dismissed = "Dismissed", replied = "Answered in the chat", replaced = "Replaced")
         val picked = QuestionState(QuestionStatus.ANSWERED, listOf("c3", "c1"), " rename one ")
         assertEquals("Keep both、Drop the older one、rename one", questionReceiptLine(question(state = picked), labels))
         assertEquals("Keep both、Drop the older one、rename one · Sending",
             questionReceiptLine(question(state = picked.copy(status = QuestionStatus.SENDING)), labels))
         assertEquals("Sending", questionReceiptLine(question(state = QuestionState(QuestionStatus.SENDING)), labels))
         assertEquals("Skipped", questionReceiptLine(question(state = QuestionState(QuestionStatus.SKIPPED)), labels))
+        assertEquals("Dismissed", questionReceiptLine(
+            question(state = QuestionState(QuestionStatus.SKIPPED)).copy(independent = true, skipBehavior = "dismiss"),
+            labels,
+        ))
         assertEquals("Answered in the chat", questionReceiptLine(question(state = QuestionState(QuestionStatus.REPLIED)), labels))
         assertEquals("Replaced", questionReceiptLine(question(state = QuestionState(QuestionStatus.REPLACED)), labels))
         assertEquals("", questionReceiptLine(question(), labels))
+    }
+
+    @Test fun `single-choice independent dismiss card parses and round-trips through payload`() {
+        val single = AgentQuestion(
+            messageId = "msg_monoid_1",
+            prompt = "Approve deployment on station?",
+            choices = listOf(QuestionChoice("approve", "Approve", "Run deploy now", recommended = true)),
+            multiSelect = false,
+            allowOther = false,
+            state = QuestionState(QuestionStatus.OPEN),
+            independent = true,
+            skipBehavior = "dismiss",
+        )
+        val parsed = AgentQuestion.parse(single.json())
+        assertEquals(single, parsed)
+        assertTrue(parsed!!.independent)
+        assertEquals("dismiss", parsed.skipBehavior)
+        assertTrue(parsed.dismissOnSkip)
+
+        val payload = QuestionCardPayload(single)
+        assertEquals(payload, QuestionCardPayload.decode(payload.encode()))
+
+        // Zero choices and more than six choices are still rejected.
+        val empty = single.json().put("choices", JSONArray())
+        assertNull(AgentQuestion.parse(empty))
+        val seven = single.json().put("choices", JSONArray((1..7).map { JSONObject().put("id", "c$it").put("label", "Option $it") }))
+        assertNull(AgentQuestion.parse(seven))
     }
 }

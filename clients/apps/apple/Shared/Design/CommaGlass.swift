@@ -1,9 +1,9 @@
 import SwiftUI
 
 extension View {
-    /// Liquid Glass on iOS 26 and later; a translucent material with a hairline on earlier systems. Without
-    /// `shown` the control keeps its place and content but drops its glass, which on iOS 26 melts into a
-    /// neighbouring glass shape in the same container instead of vanishing.
+    /// Liquid Glass on iOS 26 and later; a translucent material with a hairline on earlier systems. Setting
+    /// `shown: false` removes the glass immediately (`.identity` on iOS 26+); to morph into a neighbouring
+    /// glass shape inside `commaGlassGroup`, keep `shown: true` while the shapes overlap instead of toggling it off.
     /// `tint` colours the glass, as for a destructive or selected control.
     @ViewBuilder func commaGlass<S: Shape>(in shape: S, interactive: Bool = false, shown: Bool = true,
                                            tint: Color? = nil) -> some View {

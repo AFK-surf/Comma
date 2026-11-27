@@ -7,9 +7,11 @@ defmodule SalixAgent.Tools.MCP do
   through the current session's materialized disclosure.
   """
 
+  alias SalixAgent.{CapabilityRequestStore, Waits}
   alias SalixAgent.IFC.ConnectorLabels
 
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
+  @user_interaction_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.user_interaction_tool_auto_wait_seconds()
 
   @callback provider_state(agent_id :: String.t()) :: {:ok, map()} | {:error, term()}
   @callback dynamic_disclosure_entries(agent_id :: String.t()) ::
@@ -268,6 +270,9 @@ defmodule SalixAgent.Tools.MCP do
     case String.split(rest, ".", parts: 2) do
       [binding_alias, tool_alias] when binding_alias != "" and tool_alias != "" ->
         case seam!().call_tool(ctx_agent_id(ctx), binding_alias, tool_alias, args, ctx) do
+          {:ok, %{"status" => "sign_in_required", "sign_in" => sign_in, "request" => request}} ->
+            await_sign_in("mcp." <> rest, sign_in, request, ctx)
+
           {:ok, %{"content" => content, "status" => "completed"} = result} ->
             present(result, content, ctx)
 
@@ -290,6 +295,56 @@ defmodule SalixAgent.Tools.MCP do
       _ ->
         raise "invalid MCP operation id"
     end
+  end
+
+  # The person who asked is not signed in to a service that runs as them
+  # (SalixMCP.Provider). The call stays open as a capability request until the
+  # sign-in the link starts ends (`SalixAgent.CapabilityRequests.end_sign_in/4`)
+  # or the request expires; the Agent posts the link meanwhile.
+  defp await_sign_in(operation_id, sign_in, request, ctx) do
+    session_id = ctx[:session_id] || ctx["session_id"]
+    tool_call_id = request["tool_call_id"]
+
+    content =
+      Jason.encode!(%{
+        "status" => "sign_in_required",
+        "tool_call_id" => tool_call_id,
+        "service" => sign_in["service"],
+        "link_url" => sign_in["link_url"],
+        "user_code" => sign_in["user_code"],
+        "expires_at" => sign_in["expires_at"],
+        "instructions" =>
+          "#{sign_in["service"]} runs as the person who asked, with their own account, and they are not signed in to it. " <>
+            "Post link_url to them now in this chat, through the current reply path, and ask them to open it and sign in. " <>
+            "Only the person who asked may use the link: whoever signs in with it becomes the account their calls run as. " <>
+            "In a chat with other people, name them and say that nobody else should open it. " <>
+            "This call returns status signed_in once they have; then call the same tool again."
+      })
+
+    wait =
+      Waits.build(
+        "sign-in: " <> to_string(sign_in["service"]),
+        @user_interaction_auto_wait_seconds,
+        "auto_wait",
+        %{"tool_call_id" => tool_call_id, "tool_name" => operation_id}
+      )
+
+    {content,
+     [
+       %{
+         "type" => "async_tool_call_started",
+         "session_id" => session_id,
+         "tool_call_id" => tool_call_id,
+         "tool_name" => operation_id,
+         "input" => "{}",
+         "status" => "running",
+         "completion_mode" => "external_callback",
+         "started_at" => SystemsClock.system_time(:millisecond),
+         "auto_wait_seconds" => @user_interaction_auto_wait_seconds
+       }
+       |> Map.merge(CapabilityRequestStore.execution_fields(request)),
+       Waits.event(session_id, wait)
+     ]}
   end
 
   # An MCP image part reaches the model the way every tool image does: stored

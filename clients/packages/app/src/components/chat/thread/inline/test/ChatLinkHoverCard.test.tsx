@@ -90,8 +90,7 @@ describe("ChatLinkHoverCard", () => {
   });
 
   it("labels the generic card with the link host when the anchor has no text", async () => {
-    // A repository root is not a shape the server can read, so this link keeps
-    // the generic card and never asks for a preview.
+    preview = { status: "missing" };
     const repositoryHref = "https://github.com/AFK-surf/Comma";
     render(
       <ChatLinkHoverCard
@@ -108,6 +107,76 @@ describe("ChatLinkHoverCard", () => {
 
     const card = screen.getByRole("tooltip");
     expect(card.querySelector("strong")).toHaveTextContent("github.com");
-    expect(asked).toEqual([]);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("shows a public page's title, description and image after hover", async () => {
+    const href = "https://www.exxactcorp.com/server";
+    preview = {
+      status: "ready",
+      preview: {
+        kind: "web_page",
+        href,
+        title: "Exxact B300 Server",
+        siteName: "Exxact",
+        description: "Eight GPUs with liquid cooling",
+        image: "data:image/png;base64,aGVsbG8=",
+        icon: null,
+      },
+    };
+    render(
+      <ChatLinkHoverCard
+        anchor={<a href={href}>529,958 USD</a>}
+        href={href}
+        workspaceId="wsp_1"
+      />
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    setInteractionModality("pointer");
+    await user.hover(screen.getByRole("link"));
+    await advance(OPEN_DELAY);
+    const card = screen.getByRole("tooltip");
+    expect(card).toHaveTextContent("Exxact B300 Server");
+    expect(card).toHaveTextContent("Eight GPUs with liquid cooling");
+    expect(card.querySelector("img")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,aGVsbG8="
+    );
+    expect(asked).toHaveLength(1);
+  });
+
+  it("keeps still.fail, Outlook, and Gmail anchors as plain links without inline pill wrappers", () => {
+    const stillfailHref = "https://app.youdid.wtf/o/ws/st-1/chat%3Ac-1";
+    const outlookHref = "https://outlook.live.com/owa/?ItemID=AAMk1";
+    const gmailHref = "https://mail.google.com/mail/u/0/#inbox/198f2ab4";
+    render(
+      <>
+        <ChatLinkHoverCard
+          anchor={<a href={stillfailHref}>John Blow 与合作者关系近况</a>}
+          href={stillfailHref}
+          workspaceId="wsp_1"
+        />
+        <ChatLinkHoverCard
+          anchor={<a href={outlookHref}>打开这封 Outlook 邮件</a>}
+          href={outlookHref}
+          workspaceId="wsp_1"
+        />
+        <ChatLinkHoverCard
+          anchor={<a href={gmailHref}>打开这封 Gmail 邮件</a>}
+          href={gmailHref}
+          workspaceId="wsp_1"
+        />
+      </>
+    );
+
+    for (const name of [
+      "John Blow 与合作者关系近况",
+      "打开这封 Outlook 邮件",
+      "打开这封 Gmail 邮件",
+    ]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).not.toHaveClass("comma-inline-stillfail-link");
+      expect(link.querySelector("svg")).toBeNull();
+    }
   });
 });

@@ -114,7 +114,7 @@ private struct AttachmentTile: View {
         .animation(CommaMotion.stateChange, value: draft.state)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(draft.file.filename))
-        .accessibilityValue(status)
+        .accessibilityValue(accessibilityStatus)
         .accessibilityAction(named: Text("Remove"), remove)
         .accessibilityAction(named: Text("Try Again")) { if failed { retry() } }
     }
@@ -166,6 +166,14 @@ private struct AttachmentTile: View {
         switch draft.state {
         case .uploading: Text("Uploading…")
         case .failed: Text("Couldn’t upload. Tap to retry.")
+        case .ready: Text(Self.detail(of: draft.file))
+        }
+    }
+
+    private var accessibilityStatus: Text {
+        switch draft.state {
+        case .uploading: Text("Uploading…")
+        case .failed(let message): Text(message)
         case .ready: Text(Self.detail(of: draft.file))
         }
     }

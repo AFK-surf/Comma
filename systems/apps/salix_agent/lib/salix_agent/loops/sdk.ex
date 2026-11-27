@@ -147,7 +147,9 @@ defmodule SalixAgent.Loops.Sdk do
     after `agent.notify` returns `queued` or `duplicate`.
   * A Loop with an `every_minutes` or `cron` trigger asks for its next run
     with `loop.next_run`: pass the time of the run it just did as
-    `after_ms` (keep it in the checkpoint), or nothing on the first run.
+    `after_ms`, or nothing when this incarnation has not run yet. Without
+    `after_ms` the host answers from the schedule it keeps, so a restart
+    does not move the next run and no checkpoint is needed for it.
     The host computes the time in the trigger's timezone, so the program
     needs no clock rules. When runs were missed (the Loop was down), the
     answer is the latest missed time, which is already due: run once. Wait

@@ -24,9 +24,10 @@ export type Connection = {
   via(): string | null;
   /// How it runs once that is not `last`: at once when it differs already, else at its next change (the client core reads it).
   nextVia?(last: string | null): Promise<{ via: string | null; closed: boolean }>;
-  /// Every way it can go now (lib.rs `PathState`): the chosen one, its round trip, and of an addon that says them its
-  /// congestion window (bytes), congestion events, UDP datagrams sent and packets lost on it.
-  paths?(): { selected: boolean; via: string; rttMs: number; cwnd?: number; congestionEvents?: number; sentDatagrams?: number; lostPackets?: number }[];
+  /// Every way it can go now (lib.rs `PathState`): the chosen one, its relay's URL when it goes through one, its round
+  /// trip, and of an addon that says them its congestion window (bytes), congestion events, UDP datagrams sent and
+  /// packets lost on it.
+  paths?(): { selected: boolean; via: string; relay?: string | null; rttMs: number; cwnd?: number; congestionEvents?: number; sentDatagrams?: number; lostPackets?: number }[];
   /// What went over it since it opened, both ways (lib.rs `Stats`).
   stats?(): { rxBytes: number; rxPackets?: number; txBytes: number; txPackets: number; lostPackets: number };
   /// Whether the other end is still there: true once anything is heard from it within `withinMs` (lib.rs `answers`,

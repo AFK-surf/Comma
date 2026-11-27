@@ -66,7 +66,7 @@ defmodule Comma.RecommendationMemberSelection do
                 "facts" =>
                   Map.take(
                     record,
-                    ~w(identifier number dueDate priority start end updated_at updatedAt modifiedTime ts messageTimestamp)
+                    ~w(identifier number dueDate priority start end attendeeCount attendeesSummary updated_at updatedAt modifiedTime ts messageTimestamp)
                   )
               }
             ]
@@ -79,11 +79,17 @@ defmodule Comma.RecommendationMemberSelection do
     |> Enum.uniq_by(& &1["id"])
   end
 
+  @max_source_context_bytes 16_384
+  @max_source_excerpt_bytes 196_608
+
   # Same admitted evidence, without duplicate title/excerpt text and empty fields.
   # IDs remain the model's only way to select a source reference. A mail link
   # only repeats the provider's message ID, so mail candidates leave it out.
+  # Per-source context and excerpt budgets apply here for the Routine prompt so
+  # the member source pool keeps each item's independent version intact.
   def model_candidates(context) do
-    Enum.map(candidates(context), fn candidate ->
+    candidates(context)
+    |> Enum.map(fn candidate ->
       mail? = get_in(context, [:sources, candidate["source"], "toolkit"]) in ~w(gmail outlook)
 
       candidate
@@ -98,6 +104,75 @@ defmodule Comma.RecommendationMemberSelection do
         |> Enum.reject(fn {key, value} -> key in ~w(context recipient) and is_nil(value) end)
         |> Map.new()
       end)
+    end)
+    |> budget_source_contexts(@max_source_context_bytes)
+    |> budget_source_excerpts(@max_source_excerpt_bytes)
+  end
+
+  defp budget_source_contexts(candidates, max_bytes) do
+    indexed = Enum.with_index(candidates)
+
+    fitted =
+      indexed
+      |> Enum.filter(&match?({%{"context" => %{"text" => text}}, _} when is_binary(text), &1))
+      |> Enum.group_by(fn {candidate, _index} -> candidate["source"] end)
+      |> Enum.reduce(%{}, fn {_source, group}, acc ->
+        overhead =
+          group
+          |> Enum.map(fn {%{"context" => ctx}, _index} ->
+            ctx |> Map.put("text", "") |> Map.put("truncated", false)
+          end)
+          |> Jason.encode!()
+          |> byte_size()
+
+        allowances =
+          group
+          |> Enum.map(fn {%{"context" => %{"text" => text}}, index} -> {index, text} end)
+          |> Comma.JsonText.water_fill_allowances(max(max_bytes - overhead, 0))
+
+        Enum.reduce(group, acc, fn {%{"context" => %{"text" => text} = ctx}, index}, map ->
+          trimmed = Comma.JsonText.fit(text, allowances[index])
+
+          updated =
+            ctx
+            |> Map.put("text", trimmed)
+            |> Map.update("truncated", trimmed != text, &(&1 or trimmed != text))
+
+          Map.put(map, index, updated)
+        end)
+      end)
+
+    Enum.map(indexed, fn {candidate, index} ->
+      case Map.fetch(fitted, index) do
+        {:ok, ctx} -> Map.put(candidate, "context", ctx)
+        :error -> candidate
+      end
+    end)
+  end
+
+  defp budget_source_excerpts(candidates, max_bytes) do
+    indexed = Enum.with_index(candidates)
+
+    fitted =
+      indexed
+      |> Enum.filter(&match?({%{"excerpt" => text}, _} when is_binary(text), &1))
+      |> Enum.group_by(fn {candidate, _index} -> candidate["source"] end)
+      |> Enum.reduce(%{}, fn {_source, group}, acc ->
+        allowances =
+          group
+          |> Enum.map(fn {%{"excerpt" => text}, index} -> {index, text} end)
+          |> Comma.JsonText.water_fill_allowances(max_bytes)
+
+        Enum.reduce(group, acc, fn {%{"excerpt" => text}, index}, map ->
+          Map.put(map, index, Comma.JsonText.fit(text, allowances[index]))
+        end)
+      end)
+
+    Enum.map(indexed, fn {candidate, index} ->
+      case Map.fetch(fitted, index) do
+        {:ok, excerpt} -> Map.put(candidate, "excerpt", excerpt)
+        :error -> candidate
+      end
     end)
   end
 

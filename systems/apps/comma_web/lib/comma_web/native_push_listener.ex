@@ -5,11 +5,18 @@ defmodule CommaWeb.NativePushListener do
   Shares one Conversation Group owner subscription per Group with APNs targets.
   Recovery pages the address index at 100 rows/step and reconciles bounded Group
   task and Router projections. APNs acceptance does not prove delivery.
+
+  Every Pod runs this process, but only the `Comma.Oban` leader subscribes and
+  recovers: wakeups are cluster-wide Oban jobs, so a pass on each Pod would
+  enqueue the same wakeups once per Pod. A Pod that is not the leader drops its
+  subscriptions at its next pass; the new leader's next pass subscribes again,
+  and each new subscription resynchronizes its Group.
   """
   use SystemsRuntime.Server
   alias Comma.{Notifications, RouterNotifications, Workspaces}
 
-  def start_link(_opts), do: SystemsRuntime.Server.start_link(__MODULE__, nil, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   def child_specs do
     if SystemsRuntime.get_env(:comma_core, :start_repo, false) and
@@ -17,14 +24,18 @@ defmodule CommaWeb.NativePushListener do
   end
 
   @impl true
-  def init(_) do
+  def init(opts) do
     SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:recover, nil})
-    {:ok, %{groups: %{}, cycle: MapSet.new()}}
+    {:ok, %{groups: %{}, cycle: MapSet.new(), leader?: Keyword.get(opts, :leader?, &leader?/0)}}
   end
+
+  defp leader?, do: Oban.Peer.leader?(Comma.Oban)
 
   @impl true
   def handle_info({:native_push_group, group}, state) do
-    state = ensure_group(state, group)
+    # A registration wakes the listener of the Pod that served it. Only the
+    # leader subscribes; any Pod may enqueue the registration's first wakeups.
+    state = if state.leader?.(), do: ensure_group(state, group), else: state
     _ = Notifications.enqueue_activity(group)
     _ = Notifications.enqueue_router(group)
     {:noreply, %{state | cycle: MapSet.put(state.cycle, group)}}
@@ -60,6 +71,26 @@ defmodule CommaWeb.NativePushListener do
   end
 
   def handle_info({:recover, cursor}, state) do
+    if state.leader?.(), do: recover(cursor, state), else: follow(state)
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    groups = Map.reject(state.groups, fn {_group, {_pid, monitor}} -> monitor == ref end)
+    {:noreply, %{state | groups: groups}}
+  end
+
+  def handle_info(_, state), do: {:noreply, state}
+
+  defp follow(state) do
+    Enum.each(state.groups, fn {_group, {pid, _ref}} ->
+      SystemsRuntime.Proc.exit(pid, :shutdown)
+    end)
+
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), {:recover, nil}, 60_000)
+    {:noreply, %{state | groups: %{}, cycle: MapSet.new()}}
+  end
+
+  defp recover(cursor, state) do
     page = Notifications.recovery_page(cursor)
 
     state =
@@ -93,13 +124,6 @@ defmodule CommaWeb.NativePushListener do
       {:noreply, %{state | groups: Map.new(kept), cycle: MapSet.new()}}
     end
   end
-
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    groups = Map.reject(state.groups, fn {_group, {_pid, monitor}} -> monitor == ref end)
-    {:noreply, %{state | groups: groups}}
-  end
-
-  def handle_info(_, state), do: {:noreply, state}
 
   defp ensure_group(state, group) do
     if Map.has_key?(state.groups, group) do

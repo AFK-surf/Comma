@@ -467,6 +467,139 @@ defmodule CommaWeb.TaskShareTest do
            ] = Comma.TaskShares.public_message(widget)
   end
 
+  test "a document link shows one Markdown file of a Task, and moves with its versions" do
+    %{workspace: workspace, session: session, task_id: task_id} = shared_task_fixture("doc")
+    group_id = workspace["default_group_id"]
+    base = "/v1/comma/groups/#{group_id}/conversations/#{task_id}/document-share"
+    named = base <> "?file_name=plan.md"
+    first = send_document!(workspace, task_id, "plan-1", "plan.md", "# Plan\n\nFirst.\n")
+
+    user_req(session["token"], :get, named) |> expect_status(404)
+
+    shared =
+      user_req(session["token"], :put, base, json: %{"message_id" => first.id, "index" => 1})
+      |> expect_status(200)
+
+    assert %{"url" => url, "file_name" => "plan.md", "index" => 1} = shared.body
+    assert shared.body["message_id"] == first.id
+    assert "http://127.0.0.1:5174/s/" <> token = url
+    refute Map.has_key?(shared.body, "token")
+    assert (user_req(session["token"], :get, named) |> expect_status(200)).body["url"] == url
+
+    # The link says it is a document, and gives that file alone.
+    summary = public_req(:get, "/v1/comma/public/shares/#{token}") |> expect_status(200)
+    assert %{"kind" => "document", "file_name" => "plan.md"} = summary.body
+    assert Req.Response.get_header(summary, "cache-control") == ["no-store"]
+    refute inspect(summary.body) =~ "blob_ref"
+    refute inspect(summary.body) =~ task_id
+
+    download =
+      public_req(:get, "/v1/comma/public/shares/#{token}/document") |> expect_status(200)
+
+    assert download.body == "# Plan\n\nFirst.\n"
+    assert Req.Response.get_header(download, "content-security-policy") == ["sandbox"]
+
+    assert Req.Response.get_header(download, "content-disposition") == [
+             "attachment; filename*=UTF-8''plan.md"
+           ]
+
+    # It shows nothing else of the Task: no Message, no other artifact.
+    public_req(:get, "/v1/comma/public/shares/#{token}/messages") |> expect_status(404)
+
+    public_req(:get, "/v1/comma/public/shares/#{token}/attachments/#{first.seq}/1")
+    |> expect_status(404)
+
+    # A later version stays private until the owner moves the link to it. The link stays the same.
+    second = send_document!(workspace, task_id, "plan-2", "plan.md", "# Plan\n\nSecond.\n")
+
+    assert (public_req(:get, "/v1/comma/public/shares/#{token}/document")
+            |> expect_status(200)).body == "# Plan\n\nFirst.\n"
+
+    moved =
+      user_req(session["token"], :put, base, json: %{"message_id" => second.id, "index" => 1})
+      |> expect_status(200)
+
+    assert moved.body["url"] == url
+    assert moved.body["message_id"] == second.id
+
+    assert (public_req(:get, "/v1/comma/public/shares/#{token}/document")
+            |> expect_status(200)).body == "# Plan\n\nSecond.\n"
+
+    # The Group's list names the document and its Task.
+    listed =
+      user_req(session["token"], :get, "/v1/comma/groups/#{group_id}/document-shares")
+      |> expect_status(200)
+
+    assert [%{"url" => ^url, "file_name" => "plan.md", "conversation" => conversation}] =
+             listed.body["data"]
+
+    assert %{"id" => ^task_id, "title" => "Quarterly report"} = conversation
+    assert listed.body["has_more"] == false
+
+    # Reset replaces the link; stopping removes it.
+    reset = user_req(session["token"], :post, base <> "/reset?file_name=plan.md")
+    assert "http://127.0.0.1:5174/s/" <> new_token = expect_status(reset, 200).body["url"]
+    refute new_token == token
+    public_req(:get, "/v1/comma/public/shares/#{token}") |> expect_status(404)
+    public_req(:get, "/v1/comma/public/shares/#{token}/document") |> expect_status(404)
+    public_req(:get, "/v1/comma/public/shares/#{new_token}/document") |> expect_status(200)
+
+    user_req(session["token"], :delete, named) |> expect_status(200)
+    public_req(:get, "/v1/comma/public/shares/#{new_token}") |> expect_status(404)
+    public_req(:get, "/v1/comma/public/shares/#{new_token}/document") |> expect_status(404)
+    user_req(session["token"], :get, named) |> expect_status(404)
+
+    assert (user_req(session["token"], :get, "/v1/comma/groups/#{group_id}/document-shares")
+            |> expect_status(200)).body["data"] == []
+  end
+
+  test "only a Markdown file an Agent sent in the owner's Task has a document link" do
+    %{workspace: workspace, session: session, task_id: task_id} = shared_task_fixture("doc-rules")
+    group_id = workspace["default_group_id"]
+    base = "/v1/comma/groups/#{group_id}/conversations/#{task_id}/document-share"
+    plan = send_document!(workspace, task_id, "plan-1", "plan.md", "# Plan\n")
+    text = send_document!(workspace, task_id, "notes-1", "notes.txt", "notes")
+    share = fn body -> user_req(session["token"], :put, base, json: body) end
+
+    # A file that is no Markdown document, a block that is no file, and a Message that is not there.
+    share.(%{"message_id" => text.id, "index" => 1}) |> expect_status(404)
+    share.(%{"message_id" => plan.id, "index" => 0}) |> expect_status(404)
+    share.(%{"message_id" => plan.id, "index" => 7}) |> expect_status(404)
+    share.(%{"message_id" => "msg_missing", "index" => 1}) |> expect_status(404)
+    share.(%{"index" => 1}) |> expect_status(404)
+
+    # Another account has no way to the Task's documents.
+    %{session: other} = create_workspace_session("doc-other-task-share@example.com", "Other")
+
+    user_req(other["token"], :put, base, json: %{"message_id" => plan.id, "index" => 1})
+    |> expect_status(404)
+
+    # A document link is no Task link: the Task itself stays unshared.
+    shared = share.(%{"message_id" => plan.id, "index" => 1}) |> expect_status(200)
+    assert "http://127.0.0.1:5174/s/" <> token = shared.body["url"]
+
+    user_req(
+      session["token"],
+      :get,
+      "/v1/comma/groups/#{group_id}/conversations/#{task_id}/share"
+    )
+    |> expect_status(404)
+
+    # A Task link of the same Task is its own link, and the document link is no part of it.
+    task_shared =
+      user_req(
+        session["token"],
+        :put,
+        "/v1/comma/groups/#{group_id}/conversations/#{task_id}/share"
+      )
+      |> expect_status(200)
+
+    refute task_shared.body["url"] == shared.body["url"]
+
+    summary = public_req(:get, "/v1/comma/public/shares/#{token}") |> expect_status(200)
+    assert summary.body["kind"] == "document"
+  end
+
   defp shared_task_fixture(prefix) do
     %{workspace: workspace, session: session, user: user} =
       create_workspace_session("#{prefix}-task-share@example.com", "Task Share")
@@ -530,8 +663,11 @@ defmodule CommaWeb.TaskShareTest do
     send_agent_content!(workspace, task_id, "send-" <> name, text_blocks, {name, body})
   end
 
-  # Appends one Agent Message: the given blocks, then an optional VFS file.
-  defp send_agent_content!(workspace, task_id, request_id, blocks, file \\ nil) do
+  # Appends one Agent Message: the given blocks, then an optional VFS file. Its sequence.
+  defp send_agent_content!(workspace, task_id, request_id, blocks, file \\ nil),
+    do: send_agent_message!(workspace, task_id, request_id, blocks, file).seq
+
+  defp send_agent_message!(workspace, task_id, request_id, blocks, file) do
     worker_id = workspace["default_worker_agent_id"]
 
     file_blocks =
@@ -576,7 +712,18 @@ defmodule CommaWeb.TaskShareTest do
                message_id
              )
 
-    message["seq"]
+    %{id: message_id, seq: message["seq"]}
+  end
+
+  # Sends one version of a document: an Agent Message of some words and the file.
+  defp send_document!(workspace, task_id, request_id, name, body) do
+    send_agent_message!(
+      workspace,
+      task_id,
+      request_id,
+      [%{"type" => "text", "text" => "#{name} is ready."}],
+      {name, body}
+    )
   end
 
   defp public_texts(response) do

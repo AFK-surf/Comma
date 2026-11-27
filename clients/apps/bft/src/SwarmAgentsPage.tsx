@@ -305,7 +305,12 @@ function AgentRail({
   const rows: [string, ReactNode, (string | undefined)?][] = [
     [t.detailRole, roleLabel(agent.role)],
     [t.detailStatus, <State key="status" value={agent.lifecycle} />],
-    [t.detailModel, agent.model ?? t.modelDefault],
+    [
+      t.detailModel,
+      agent.model && agent.model_platform_provided
+        ? t.modelPlatformProvided(agent.model)
+        : (agent.model ?? t.modelDefault),
+    ],
     [
       t.detailCreated,
       (agent.created_at && formatRelative(agent.created_at)) || "—",
@@ -513,6 +518,9 @@ function ConfigureDialog({
             models={data.models}
             onChange={setModelKey}
           />
+          {data.platform_provided && chosen !== data.model_key ? (
+            <p className="bft-dialog-note">{t.platformSwitchNote}</p>
+          ) : null}
           <TextAreaField
             disabled={write.busy || !data.prompt_editable}
             {...(data.prompt_editable ? {} : { hint: t.promptOwnerOnly })}

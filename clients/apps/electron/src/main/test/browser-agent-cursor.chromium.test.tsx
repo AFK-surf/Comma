@@ -21,6 +21,35 @@ interface Cursor {
   ): Promise<Point>;
 }
 
+// The overlay's shadow root is closed: a test that looks inside keeps the one it opens.
+function keepShadowRoot() {
+  let root: ShadowRoot | undefined;
+  const attachShadow = Element.prototype.attachShadow;
+  vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (
+    this: Element,
+    init: ShadowRootInit
+  ) {
+    root = attachShadow.call(this, init);
+    return root;
+  });
+  return () => root!;
+}
+
+// Whether the system asks for less motion, as the page's matchMedia answers it.
+function lessMotion(initial: boolean) {
+  let reduced = initial;
+  vi.spyOn(window, "matchMedia").mockImplementation(
+    (query: string) =>
+      ({
+        matches: reduced && query.includes("prefers-reduced-motion: reduce"),
+        media: query,
+      }) as MediaQueryList
+  );
+  return (next: boolean) => {
+    reduced = next;
+  };
+}
+
 function load() {
   // oxlint-disable-next-line no-new-func -- The scripts are page scripts, evaluated as the driver does.
   new Function(pageScript)();
@@ -65,24 +94,52 @@ describe("in-app browser agent cursor", () => {
 
   it("shows its cursor for as long as the agent works on the page, also before it points anywhere", () => {
     vi.useFakeTimers();
-    // The overlay's shadow root is closed: the test keeps the one it opens.
-    let root: ShadowRoot | undefined;
-    const attachShadow = Element.prototype.attachShadow;
-    vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (
-      this: Element,
-      init: ShadowRootInit
-    ) {
-      root = attachShadow.call(this, init);
-      return root;
-    });
+    const root = keepShadowRoot();
     const { cursor } = load();
-    const pointer = () => root!.querySelector("svg")!.parentElement!;
+    const pointer = () => root().querySelector("svg")!.parentElement!;
 
     cursor.activate(1_000);
     expect(pointer().style.opacity).toBe("1");
 
     vi.advanceTimersByTime(1_000);
     expect(pointer().style.opacity).toBe("0");
+  });
+
+  it("shows its edge without turning it while the system asks for less motion", () => {
+    lessMotion(true);
+    const root = keepShadowRoot();
+    const { cursor } = load();
+
+    cursor.activate();
+
+    const edge = root().firstElementChild as HTMLElement;
+    expect(edge.style.opacity).toBe("1");
+    const turns = edge
+      .getAnimations({ subtree: true })
+      .filter((animation) => animation.effect?.getTiming().iterations === Infinity);
+    expect(turns).toHaveLength(2);
+    for (const turn of turns) expect(turn.playState).toBe("paused");
+  });
+
+  it("stops turning its edge when less motion is asked while the agent works", () => {
+    const askLessMotion = lessMotion(false);
+    const root = keepShadowRoot();
+    const { cursor } = load();
+    const edge = () => root().firstElementChild as HTMLElement;
+    const turns = () =>
+      edge()
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.effect?.getTiming().iterations === Infinity);
+
+    cursor.activate();
+    expect(turns()).toHaveLength(2);
+    for (const turn of turns()) expect(turn.playState).toBe("running");
+
+    askLessMotion(true);
+    cursor.activate();
+
+    expect(edge().style.opacity).toBe("1");
+    for (const turn of turns()) expect(turn.playState).toBe("paused");
   });
 
   it("glides in from the corner as the agent starts on the tab, and starts a new page where the last one left it", () => {

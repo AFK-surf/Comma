@@ -343,6 +343,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "comma-station-mesh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "comma-profiles",
+ "fdeflate",
+ "flate2",
+ "futures-core",
+ "hex",
+ "image",
+ "image-webp",
+ "iroh",
+ "iroh-base",
+ "iroh-mainline-address-lookup",
+ "iroh-mdns-address-lookup",
+ "libc",
+ "miniz_oxide 0.8.9",
+ "moxcms",
+ "n0-watcher",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "noq-proto",
+ "noq-udp",
+ "percent-encoding",
+ "png",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thumbhash",
+ "tokio",
+ "url",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -380,16 +419,6 @@ checksum = "5b9ab7e0ca1d179628fa0172b2b97203c7fa0cd81be2448bd446fb9559ca9261"
 dependencies = [
  "loom",
  "tracing",
-]
-
-[[package]]
-name = "core-foundation"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
-dependencies = [
- "core-foundation-sys",
- "libc",
 ]
 
 [[package]]
@@ -576,7 +605,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -1051,24 +1080,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c480823ed7c2c5d0f09c41020cb6b7c28029ce60ec42dc942158dcf22f8e0a4d"
 dependencies = [
  "async-trait",
- "bytes",
  "cfg-if",
  "data-encoding",
  "futures-channel",
  "futures-io",
  "futures-util",
- "h2",
  "hickory-proto",
- "http",
  "idna",
  "ipnet",
  "jni 0.22.4",
  "rand",
- "rustls",
  "thiserror 2.0.21",
  "tinyvec",
- "tokio",
- "tokio-rustls",
  "tracing",
  "url",
 ]
@@ -1103,21 +1126,13 @@ dependencies = [
  "futures-util",
  "hickory-net",
  "hickory-proto",
- "ipconfig",
  "ipnet",
- "jni 0.22.4",
  "moka",
- "ndk-context",
  "once_cell",
  "parking_lot",
  "rand",
- "resolv-conf",
- "rustls",
  "smallvec",
- "system-configuration",
  "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
  "tracing",
 ]
 
@@ -1460,6 +1475,7 @@ dependencies = [
 [[package]]
 name = "iroh"
 version = "1.0.3"
+source = "git+https://github.com/zzj3720/iroh?rev=6ecd06898cadd879c89fc6d917750ccc6a6100a7#6ecd06898cadd879c89fc6d917750ccc6a6100a7"
 dependencies = [
  "backon",
  "blake3",
@@ -1508,9 +1524,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-base"
-version = "1.0.3"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6be73e16ee21c923aca9b3121aaa0db936f7c7ecc156ff47b8dac944c68d59a8"
+checksum = "6ae9092be76c9f5429776ab3394f5a5a78dc19dc2524267e884a5b9781546c3f"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -1527,18 +1543,17 @@ dependencies = [
 
 [[package]]
 name = "iroh-dns"
-version = "1.0.3"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46f6a9b39d18e6345f5c151afd299f2488e2cb5c520fe41b107b6bd3dc4c3349"
+checksum = "80276761b56e904e26ea71d0863beef0bb8d5ab6b639cbd1338e4b615209e3a1"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
  "derive_more",
- "hickory-resolver",
  "iroh-base",
+ "n0-dns-resolver",
  "n0-error",
  "n0-future",
- "ndk-context",
  "portable-atomic",
  "rand",
  "rustls",
@@ -1614,9 +1629,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-relay"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24bd586cf927f7b700f56ec3639b53cb5fa901ce284784051ff71092bfbf8193"
+version = "1.3.0"
+source = "git+https://github.com/zzj3720/iroh?rev=6ecd06898cadd879c89fc6d917750ccc6a6100a7#6ecd06898cadd879c89fc6d917750ccc6a6100a7"
 dependencies = [
  "blake3",
  "bytes",
@@ -1624,7 +1638,6 @@ dependencies = [
  "data-encoding",
  "derive_more",
  "getrandom 0.4.3",
- "hickory-resolver",
  "http",
  "http-body-util",
  "hyper",
@@ -1632,6 +1645,7 @@ dependencies = [
  "iroh-base",
  "iroh-dns",
  "iroh-metrics",
+ "libc",
  "lru",
  "n0-error",
  "n0-future",
@@ -1646,6 +1660,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_bytes",
+ "socket2",
  "strum",
  "tokio",
  "tokio-rustls",
@@ -1896,6 +1911,31 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "n0-dns-resolver"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "535c99c9a786bee714155d2ee4fc2477405c2c43536e1bc6a51de09a0d1448f7"
+dependencies = [
+ "derive_more",
+ "ipconfig",
+ "jni 0.22.4",
+ "lru",
+ "n0-error",
+ "n0-future",
+ "ndk-context",
+ "rand",
+ "reqwest",
+ "rustc-hash",
+ "rustls",
+ "simple-dns",
+ "system-configuration",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -2237,8 +2277,7 @@ dependencies = [
 [[package]]
 name = "noq-proto"
 version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c1e5b6fe668491eca022f745a0a9402585626c73a7b839b3424ace15d6a9c8f"
+source = "git+https://github.com/zzj3720/noq?rev=d578f818ad7580c49691f26d5ccf8cc3afcc026a#d578f818ad7580c49691f26d5ccf8cc3afcc026a"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -2817,12 +2856,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "resolv-conf"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
-
-[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2894,7 +2927,7 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
 dependencies = [
- "core-foundation 0.10.1",
+ "core-foundation",
  "core-foundation-sys",
  "jni 0.22.4",
  "log",
@@ -2975,7 +3008,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
 dependencies = [
  "bitflags",
- "core-foundation 0.10.1",
+ "core-foundation",
  "core-foundation-sys",
  "libc",
  "security-framework-sys",
@@ -3169,9 +3202,9 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-dns"
-version = "0.11.3"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a75cbde1bf934313596a004973e462f9a82caa814dcf1a5f507bdf51597eeb4"
+checksum = "2b6f884fa9a8d48101774bfbd3aeb81e968dd22cffd19a372da69f183db22c1a"
 dependencies = [
  "bitflags",
 ]
@@ -3242,45 +3275,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "comma-station-mesh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "comma-profiles",
- "fdeflate",
- "flate2",
- "futures-core",
- "hex",
- "image",
- "image-webp",
- "iroh",
- "iroh-base",
- "iroh-mainline-address-lookup",
- "iroh-mdns-address-lookup",
- "libc",
- "miniz_oxide 0.8.9",
- "moxcms",
- "n0-watcher",
- "napi",
- "napi-build",
- "napi-derive",
- "noq-proto",
- "noq-udp",
- "percent-encoding",
- "png",
- "pulldown-cmark",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thumbhash",
- "tokio",
- "url",
- "zune-core",
- "zune-jpeg",
-]
 
 [[package]]
 name = "strum"
@@ -3366,12 +3360,12 @@ dependencies = [
 
 [[package]]
 name = "system-configuration"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
+checksum = "501336eb7ba9e417300a6a0fa985721065467aa83a6dcf0422a8e43e4c0328fa"
 dependencies = [
  "bitflags",
- "core-foundation 0.9.4",
+ "core-foundation",
  "system-configuration-sys",
 ]
 

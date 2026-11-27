@@ -76,6 +76,7 @@ defmodule SalixAgent.UnifiedTerminalReplyTest do
           {"imessage", %{"connect_id" => "c", "chat_id" => "chat"}},
           {"wechat", %{"connect_id" => "c", "wechat_id" => "peer"}},
           {"signal", %{"connect_id" => "c", "chat_id" => "group:team"}},
+          {"wecom", %{"connect_id" => "c", "chat_id" => "group:team"}},
           {"internal", %{}}
         ] do
       state = state(provider, destination)
@@ -135,6 +136,27 @@ defmodule SalixAgent.UnifiedTerminalReplyTest do
 
     foreign = put_in(reply, [:args, "conversation_id"], "foreign")
     assert {:error, _} = TerminalReply.authorize(foreign, ctx)
+  end
+
+  test "a WeCom terminal decision settles only on the source connect and chat" do
+    state = state("wecom", %{"connect_id" => "c", "chat_id" => "group:team"})
+
+    assert [%{"tool" => "im_api.wecom.send_message"} = target] =
+             query(state, :terminal_reply_targets)
+
+    assert target["params"] == %{"connect_id" => "c", "chat_id" => "group:team"}
+    ctx = Map.put(context(state), :terminal_decision_outcome, "done")
+    reply = Map.delete(call(target), :reply_intent)
+
+    assert {:ok, prepared} = TerminalReply.authorize(reply, ctx)
+    assert prepared.terminal_reply["outcome"] == "done"
+    assert prepared.terminal_reply["reply_target"] == target
+
+    for {key, value} <- [{"connect_id", "other"}, {"chat_id", "user:someone"}] do
+      foreign = put_in(reply, [:args, key], value)
+      assert {:error, reason} = TerminalReply.authorize(foreign, ctx)
+      assert reason =~ "current accepted source destination"
+    end
   end
 
   test "sealed history permits a source reply without authorizing unrelated context" do

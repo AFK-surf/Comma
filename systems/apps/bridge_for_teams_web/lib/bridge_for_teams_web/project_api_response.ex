@@ -80,6 +80,12 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
     do: send_backend_error(conn, reason, fallback_message)
 
   def send_backend_error(conn, reason, message) do
+    message =
+      if reason == :teams_subscription_required,
+        do:
+          "The Teams subscription has expired. Ask an organization admin to renew it, then try again.",
+        else: message
+
     send_error(conn, error_status(reason), error_code(reason), message, %{
       "reason" => safe_reason(reason)
     })
@@ -238,6 +244,8 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
       do: 400
 
   def error_status(:workers_retired), do: 410
+  def error_status(:teams_subscription_required), do: 402
+  def error_status(:teams_billing_unavailable), do: 503
   def error_status(:model_not_allowed), do: 422
   def error_status(:use_model_choice), do: 400
   def error_status({:bad_request, _}), do: 400

@@ -1,10 +1,11 @@
-# Stripe credits lifecycle model
+# Provider credits lifecycle model
 
 `StripeCredits.tla` models the payment-to-entitlement boundary shared by
-`BillingStripe.Events`, `BillingCommerce.Subscriptions`, and
-`BillingCore.Credits`. The checked contract:
+`BillingStripe.Events`, `BillingCommerce.Subscriptions`,
+`BillingCommerce.PaidCycles`, and `BillingCore.Credits`. Stripe, App Store, and
+Google Play payments use the same boundary. The checked contract:
 
-- Subscription cycles become grantable only after an `invoice.paid` fact.
+- Subscription cycles become grantable only after a confirmed payment fact.
 - Duplicate delivery and scheduler replay cannot issue the same cycle/payment allocation twice.
 - Cancellation changes subscription state but preserves an already-paid grant.
 - Plan changes do not rewrite or revoke credits from an already-paid cycle. The
@@ -12,6 +13,9 @@
 - Partial refunds preserve credits and record only the monetary refund state.
 - Full refunds reduce only this payment's credits, without a negative balance.
 - Disputes suspend spending and issuance. Winning does not recreate spent or refunded credits.
+- A store replacement (`PaidCycles` `payment.replaces`) marks the old payment's
+  unissued cycles `replaced`. A replaced cycle never issues. Issued grants keep
+  their credits. The new period is a new allocation outside the model's `Cycles`.
 
 Each model cycle value is one cycle/payment allocation. Runtime tests cover
 Invoice-to-Grant attribution and upgrade arithmetic.
@@ -20,6 +24,8 @@ Loss is the absence of an input transition. No delivery liveness is claimed.
 Stripe owns webhook retry. The application journals every accepted event and
 returns non-2xx on processing failure so the provider can redeliver. The unsafe
 configuration issues before payment and must violate `NoGrantBeforePayment`.
+`StripeCredits_UnsafeReplacedIssue` issues a replaced cycle and must violate
+`ReplacedNeverIssues`. Runtime tests cover the replacement offset arithmetic.
 
 Run with `make tla-billing`. `make tla-other` runs all three billing models and
 their counterexamples.

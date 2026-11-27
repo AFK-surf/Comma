@@ -152,7 +152,8 @@ internal fun typingExit(previous: List<PreparedChatMessage>, current: List<Prepa
     val anchor = previous.getOrNull(anchorIndex)
     if (anchor != null && current.getOrNull(anchorIndex)?.message?.id != anchor.message.id) return null
     if (anchor == null && previous.size != 1) return null
-    return TypingExit(anchor?.message?.id, bubble.sideMarginPx, bubble.topMarginPx)
+    // Drawn on the list itself, so a Task's avatar gutter is added to where the bubble stood.
+    return TypingExit(anchor?.message?.id, bubble.sideMarginPx + bubble.speakerGutterPx, bubble.topMarginPx)
 }
 
 /** Whether the bubble is new in [current] and should pop in, rather than being found there. */

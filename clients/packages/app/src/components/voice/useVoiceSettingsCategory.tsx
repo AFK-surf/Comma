@@ -549,7 +549,14 @@ export function useVoiceSettingsCategory(
         id: "voice.calls.preview",
         title: m.settings_voice_preview(),
         description: m.settings_voice_preview_description(),
-        ...(preview.failed ? { errorMessage: m.settings_voice_preview_failed() } : {}),
+        ...(preview.failed
+          ? {
+              errorMessage:
+                preview.errorKind === "credits"
+                  ? m.settings_voice_preview_insufficient_credits()
+                  : m.settings_voice_preview_failed(),
+            }
+          : {}),
         control: {
           type: "button",
           label:

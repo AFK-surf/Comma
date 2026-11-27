@@ -88,9 +88,9 @@ describe("a recording's transcript", () => {
       },
     });
     const sent = t.api.seen("POST", PATH).length;
-    expect(await t.transcribe(new Uint8Array(30 * 1024 * 1024 + 1))).toMatchObject({
+    expect(await t.transcribe(new Uint8Array(256 * 1024 * 1024 + 1))).toMatchObject({
       error: {
-        message: expect.stringContaining("30 MiB"),
+        message: expect.stringContaining("256 MiB"),
         detail: { kind: "too_large" },
       },
     });

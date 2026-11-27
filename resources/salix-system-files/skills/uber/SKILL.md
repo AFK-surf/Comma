@@ -35,3 +35,9 @@ checkout. Read subtotal, fees, tip, total, and ETA.
 Request and Place order charge the saved payment method. Show the product or
 items, route or address, and price and wait for confirmation. Cancelling after
 a driver match can cost a fee. The user completes login codes and passkeys.
+
+## Live Activity
+
+After confirming a ride or Uber Eats order, push live ETA and driver/courier
+details with `live_activity.upsert` (`category: "car"` or `"delivery"`), and
+call `live_activity.end` when completed or cancelled.

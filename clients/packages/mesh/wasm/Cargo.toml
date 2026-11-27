@@ -11,7 +11,7 @@ name = "comma_mesh_wasm"
 
 [dependencies]
 iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring", "unstable-custom-transports"] }
-iroh-base = "=1.0.3"
+iroh-base = "=1.3.0"
 n0-watcher = "1"
 noq-proto = { version = "1", default-features = false }
 noq-udp = { version = "1", default-features = false }
@@ -35,7 +35,10 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 
-# The station's vendored crates (systems/station/vendor/README.md): the same iroh as the station and the apps.
+# As the station has them (systems/station/vendor/README.md): its vendored noq-udp, and iroh, iroh-relay and noq-proto
+# from still.fail's forks at one rev, the same iroh as the station and the apps.
 [patch.crates-io]
 noq-udp = { path = "../../../../systems/station/vendor/noq-udp" }
-iroh = { path = "../../../../systems/station/vendor/iroh" }
+noq-proto = { git = "https://github.com/zzj3720/noq", rev = "d578f818ad7580c49691f26d5ccf8cc3afcc026a" }
+iroh = { git = "https://github.com/zzj3720/iroh", rev = "6ecd06898cadd879c89fc6d917750ccc6a6100a7" }
+iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "6ecd06898cadd879c89fc6d917750ccc6a6100a7" }

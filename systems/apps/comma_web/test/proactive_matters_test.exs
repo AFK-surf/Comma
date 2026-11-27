@@ -36,4 +36,35 @@ defmodule CommaWeb.ProactiveMattersTest do
 
     assert length(ProactiveMatters.group(items)) == 8
   end
+
+  test "a busy Slack thread keeps its root and replies in one matter past the shared email limit, while distinct PRs stay apart" do
+    root =
+      item(
+        "root",
+        "https://acme.slack.com/archives/C1/p1795000000000100",
+        "Deploy broke",
+        "1795000000.000100"
+      )
+
+    replies =
+      for n <- 1..8 do
+        item(
+          "r#{n}",
+          "https://acme.slack.com/archives/C1/p17950000#{10 + n}000100?thread_ts=1795000000.000100&cid=C1",
+          "Reply #{n}",
+          "17950000#{10 + n}.000100"
+        )
+      end
+
+    pr_one = item("pr1", "https://github.com/acme/board/pull/101", "cc ops@example.com", "10.0")
+    pr_two = item("pr2", "https://github.com/acme/board/pull/102", "cc ops@example.com", "11.0")
+
+    assert [thread_matter, first_pr, second_pr] =
+             ProactiveMatters.group([root | replies] ++ [pr_one, pr_two])
+
+    assert length(thread_matter["members"]) == 9
+    assert thread_matter["id"] == "r8"
+    assert first_pr["id"] == "pr1"
+    assert second_pr["id"] == "pr2"
+  end
 end

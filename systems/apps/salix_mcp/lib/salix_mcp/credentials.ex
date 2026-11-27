@@ -20,12 +20,30 @@ defmodule SalixMCP.Credentials do
               :ok | {:error, term()}
   @callback mark_remote_oauth_reauthorization_required(binding :: map(), reason :: String.t()) ::
               :ok | {:error, term()}
+  # The server refused the managed OAuth tokens a binding's
+  # `oauth_binding_refs` resolved to.
+  @callback oauth_refs_refused(binding :: map()) :: :ok
+
+  # A binding whose definition runs each call as the person who asked
+  # (`SalixMCP.HostedServices.per_requester?/1`): `requester` is that person's
+  # encoded principal, from the turn's sealed origin.
+  @callback requester_headers(binding :: map(), requester :: String.t()) ::
+              {:ok, %{String.t() => String.t()}} | {:error, :sign_in_required | term()}
+  @callback request_requester_sign_in(binding :: map(), requester :: String.t(), waiter :: map()) ::
+              {:ok, map()} | {:error, term()}
+  @callback requester_sign_in_rejected(binding :: map(), requester :: String.t()) :: :ok
+  @callback binding_deleted(binding :: map()) :: :ok | {:error, term()}
 
   @optional_callbacks resolve_remote_headers: 2,
+                      requester_headers: 2,
+                      request_requester_sign_in: 3,
+                      requester_sign_in_rejected: 2,
+                      binding_deleted: 1,
                       redaction_values: 2,
                       start_remote_authorization: 4,
                       invalidate_remote_oauth_binding: 2,
-                      mark_remote_oauth_reauthorization_required: 2
+                      mark_remote_oauth_reauthorization_required: 2,
+                      oauth_refs_refused: 1
 
   def resolve(%{"mcp_id" => "mcp1_0000000000000000009"} = binding),
     do: resolve_with_owner(binding)
@@ -111,6 +129,36 @@ defmodule SalixMCP.Credentials do
           :ok
         end
     end
+  end
+
+  def oauth_refs_refused(%{"oauth_binding_refs" => refs} = binding)
+      when is_map(refs) and map_size(refs) > 0,
+      do: optional(:oauth_refs_refused, [binding], :ok)
+
+  def oauth_refs_refused(_binding), do: :ok
+
+  def requester_headers(binding, requester),
+    do: optional(:requester_headers, [binding, requester], {:error, :sign_in_required})
+
+  def request_requester_sign_in(binding, requester, waiter),
+    do:
+      optional(
+        :request_requester_sign_in,
+        [binding, requester, waiter],
+        {:error, "personal sign-in is not available on this server"}
+      )
+
+  def requester_sign_in_rejected(binding, requester),
+    do: optional(:requester_sign_in_rejected, [binding, requester], :ok)
+
+  def binding_deleted(binding), do: optional(:binding_deleted, [binding], :ok)
+
+  defp optional(fun, args, default) do
+    mod = resolver_mod()
+
+    if mod && exported?(mod, fun, length(args)),
+      do: apply(mod, fun, args),
+      else: default
   end
 
   defp resolver_mod, do: SystemsRuntime.get_env(:salix_mcp, :credential_resolver_mod)

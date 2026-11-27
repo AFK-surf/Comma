@@ -31,6 +31,9 @@ import {
   type BearerSessionPorts,
   type DesktopPorts,
   type DownloadPorts,
+  type StorePorts,
+  type StorePurchase,
+  type StoreTransaction,
   type HintChannel,
   type ClientIdentity,
   type Host,
@@ -463,6 +466,76 @@ export class FakeHints {
 }
 
 /**
+ * The platform store in memory (`StorePorts`): products by id, a purchase answered as `next` says (paid by default),
+ * each paid transaction unfinished until the core finishes it.
+ */
+export class FakeStore implements StorePorts {
+  readonly provider: StorePorts["provider"];
+  /** The products the store sells, by id: their price as it words it. */
+  readonly prices = new Map<string, string>();
+  /** What the next purchase comes to. */
+  next: StorePurchase["status"] = "purchased";
+  /** Each purchase asked, in order. */
+  readonly purchases: { productId: string; accountToken: string }[] = [];
+  /** The transactions paid and not finished, in order. */
+  readonly open: StoreTransaction[] = [];
+  readonly finished: string[] = [];
+  syncs = 0;
+  manages = 0;
+  #next = 1;
+
+  constructor(provider: StorePorts["provider"] = "apple") {
+    this.provider = provider;
+  }
+
+  products(ids: readonly string[]) {
+    return Effect.sync(() =>
+      ids.flatMap((id) => {
+        const displayPrice = this.prices.get(id);
+        return displayPrice === undefined ? [] : [{ id, displayPrice }];
+      })
+    );
+  }
+
+  purchase(input: { productId: string; accountToken: string }) {
+    return Effect.sync((): StorePurchase => {
+      this.purchases.push(input);
+      if (!this.prices.has(input.productId)) throw new HostError("no such product");
+      if (this.next !== "purchased") return { status: this.next };
+      const transaction = this.deliver(input.productId);
+      return { status: "purchased", transaction };
+    });
+  }
+
+  /** A transaction the store hands the app on its own (a renewal, an approved Ask to Buy). */
+  deliver(productId: string): StoreTransaction {
+    const transaction = { id: String(1000 + this.#next++), productId };
+    this.open.push(transaction);
+    return transaction;
+  }
+
+  get unfinished() {
+    return Effect.sync(() => this.open.map((transaction) => ({ ...transaction })));
+  }
+
+  finish(id: string) {
+    return Effect.sync(() => {
+      const at = this.open.findIndex((transaction) => transaction.id === id);
+      if (at >= 0) this.open.splice(at, 1);
+      this.finished.push(id);
+    });
+  }
+
+  get sync() {
+    return Effect.sync(() => void this.syncs++);
+  }
+
+  get manage() {
+    return Effect.sync(() => void this.manages++);
+  }
+}
+
+/**
  * The host's download storage in memory (`DownloadPorts`): each download is the fake API's answer to its request, kept
  * by path once it is whole.
  */
@@ -593,6 +666,8 @@ export class FakeHost implements Host {
   desktop?: DesktopPorts;
   /** Downloads to the device's storage: a test gives them (`FakeDownloads`). */
   downloads?: DownloadPorts;
+  /** The platform's in-app purchases: a test gives them (`FakeStore`). */
+  store?: StorePorts;
   /** Sends a request's `localFileRef` as its body, when a test says so before the core starts. */
   uploadsLocalFiles = false;
   /** Files a pick left with the app, by ref: read a part at a time (`readLocalFile`). */

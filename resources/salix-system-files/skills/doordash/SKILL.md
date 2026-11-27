@@ -30,3 +30,9 @@ first, then search, add items with options, and open checkout.
 total, address, and ETA from `order preview` or the checkout page, and wait for
 the user to confirm. The Drive API is for merchants; do not use it. Community
 DoorDash MCP servers are unofficial scrapers; prefer `dd-cli`.
+
+## Live Activity
+
+Once an order is submitted, mirror Dasher status and ETA with
+`live_activity.upsert` (`category: "delivery"`), and end it with
+`live_activity.end` on delivery or cancellation.

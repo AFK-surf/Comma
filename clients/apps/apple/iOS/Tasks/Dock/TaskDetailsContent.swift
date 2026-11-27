@@ -68,6 +68,51 @@ struct TaskDetailsContent: View {
                         }
                     }
                 }
+                if pane.workerSessions.count > 1 {
+                    section("Sessions") {
+                        FlowLayout(spacing: 6) {
+                            ForEach(pane.workerSessions) { session in
+                                let hasLiveState = session.subscribed == true || session.state != "stopped" || !session.status.isEmpty || session.updatedAt != nil || session.issue != nil
+                                let dotColor: Color = switch session.state {
+                                case "active": Color.green
+                                case "waiting": Color.orange
+                                case "error": Color.red
+                                default: CommaTheme.textQuaternary
+                                }
+                                let stateText: String = switch session.state {
+                                case "active": String(localized: "Active")
+                                case "waiting": String(localized: "Waiting")
+                                case "error": String(localized: "Error")
+                                default: String(localized: "Idle")
+                                }
+                                let lowerLabel = session.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                let lowerSlot = session.slot.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                let showSlot = lowerLabel != lowerSlot && lowerLabel != "@\(lowerSlot)"
+                                pill {
+                                    if hasLiveState {
+                                        Circle()
+                                            .fill(dotColor)
+                                            .frame(width: 6, height: 6)
+                                            .accessibilityHidden(true)
+                                    }
+                                    Text(session.label)
+                                    if showSlot {
+                                        Text("@\(session.slot)")
+                                            .font(.caption)
+                                            .foregroundStyle(CommaTheme.textTertiary)
+                                    }
+                                    if let model = session.model, !model.isEmpty {
+                                        Text(model)
+                                            .font(.caption)
+                                            .foregroundStyle(CommaTheme.textSecondary)
+                                    }
+                                }
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel([session.label, showSlot ? "@\(session.slot)" : nil, session.model, hasLiveState ? stateText : nil].compactMap { $0 }.joined(separator: ", "))
+                            }
+                        }
+                    }
+                }
                 if pane.state.codingSandbox {
                     section("Code") {
                         Button { codingOpen = true } label: {

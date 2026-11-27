@@ -27,12 +27,21 @@ import type {
   ReplyChainState,
   RowRelationshipProps,
 } from "../../replies/messageRelationships";
+import {
+  showsWorkerSessionSlot,
+  workerSessionName,
+  workerSessionVendor,
+} from "../../../tasks/WorkerSessionsRoster";
 import { MessageTaskCards } from "../../../tasks/MessageTaskCards";
 import { MessageMacAppItemCards } from "../../../mac-apps/MacAppItemCards";
 import { MessageQuestionCards } from "../../../question/QuestionCard";
 import { MessageMiniAppCards } from "../../../../apps/MiniAppMessageCard";
 import { MessageAgentRequestCards } from "../../../requests/useAgentRequests";
-import { ThreadDefaultActorRoleContext } from "../../threadContexts";
+import {
+  ThreadDefaultActorRoleContext,
+  ThreadWorkerNameContext,
+  ThreadWorkerSessionsContext,
+} from "../../threadContexts";
 import { MessageAvatar } from "../MessageAvatar";
 import { MessageBlockExtras } from "../MessageBlockExtras";
 import { MessageCopyAction } from "../MessageCopyAction";
@@ -101,8 +110,23 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   const defaultActorRole = useContext(ThreadDefaultActorRoleContext);
   const actorRole = message?.actorRole ?? defaultActorRole;
   const hideRouterIdentity = hidesRouterIdentity(actorRole, defaultActorRole);
+  const workerName = useContext(ThreadWorkerNameContext);
+  const workerSessions = useContext(ThreadWorkerSessionsContext);
+  const matchedWorkerSession =
+    actorRole === "worker" && message?.participantId
+      ? workerSessions?.find(
+          (session) => session.participantId === message.participantId
+        )
+      : undefined;
+  const showWorkerSessionBadge =
+    Boolean(matchedWorkerSession) &&
+    ((workerSessions?.length ?? 0) > 1 || matchedWorkerSession?.isPrimary === false);
   const actorSourceLabel =
-    actorRole === "router" ? routerName : messagesApi.chat_actor_worker();
+    actorRole === "router"
+      ? routerName
+      : showWorkerSessionBadge && matchedWorkerSession
+        ? workerSessionName(matchedWorkerSession)
+        : (workerName ?? messagesApi.chat_actor_worker());
   // The row marks what it holds (source label, reply preview, widget) so the stylesheet
   // needs no `:has()` anchor, which Chromium re-checked for every streamed node.
   const [holdsWidget, reportWidget] = useWidgetPresence();
@@ -125,7 +149,29 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
     : "";
   const sourceLabel =
     !hideRouterIdentity && actorRole && groupFirst !== false ? (
-      <div className="comma-chat-assistant-source-label">{actorSourceLabel}</div>
+      <div
+        className="comma-chat-assistant-source-label"
+        data-session-slot={
+          showWorkerSessionBadge ? matchedWorkerSession?.slot : undefined
+        }
+      >
+        <span
+          title={
+            showWorkerSessionBadge && matchedWorkerSession
+              ? matchedWorkerSession.label
+              : undefined
+          }
+        >
+          {actorSourceLabel}
+        </span>
+        {showWorkerSessionBadge &&
+        matchedWorkerSession?.slot &&
+        showsWorkerSessionSlot(actorSourceLabel, matchedWorkerSession.slot) ? (
+          <span className="comma-chat-assistant-source-slot">
+            @{matchedWorkerSession.slot}
+          </span>
+        ) : null}
+      </div>
     ) : null;
   const replyPreview =
     replyPreviewTargetId && relationshipId ? (
@@ -205,7 +251,13 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
       data-testid={streaming ? "chat-assistant-draft" : undefined}
     >
       {!hideRouterIdentity && actorRole && groupLast !== false ? (
-        <MessageAvatar actorRole={actorRole} />
+        <MessageAvatar
+          actorRole={actorRole}
+          workerVendor={workerSessionVendor(
+            matchedWorkerSession?.runtime,
+            matchedWorkerSession?.model
+          )}
+        />
       ) : null}
       {replyPreview}
       <div

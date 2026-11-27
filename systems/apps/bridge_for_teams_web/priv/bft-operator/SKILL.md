@@ -1,6 +1,6 @@
 ---
 name: bft-operator
-description: Operate Bridge for Teams through the bft CLI, especially device login, organization context, runner onboarding and lifecycle, runner readiness, and project device operations. Use when a user asks a local agent to configure or inspect BFT.
+description: Operate Comma for Teams through the bft CLI, especially device login, organization context, runner onboarding and lifecycle, runner readiness, and project device operations. Use when a user asks a local agent to configure or inspect BFT.
 ---
 
 # BFT operator

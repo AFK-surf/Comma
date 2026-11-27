@@ -7,6 +7,8 @@ defmodule SalixIM.ConversationArchive do
 
   @max_records 1_000
   @max_bytes 1_000_000
+  @hydrate_concurrency 16
+  @hydrate_timeout_ms 30_000
 
   def delete_objects(keys) do
     Enum.reduce_while(keys, :ok, fn key, :ok ->
@@ -60,16 +62,18 @@ defmodule SalixIM.ConversationArchive do
     do: row |> Map.put_new("request_identity", nil) |> Map.put_new("request_fingerprint", nil)
 
   def hydrate_many(snapshots) do
-    Enum.reduce_while(snapshots, {:ok, [], %{}}, fn snapshot, {:ok, messages, cache} ->
-      case hydrate(snapshot, cache) do
-        {:ok, message, cache} -> {:cont, {:ok, [message | messages], cache}}
-        {:error, :message_deleted} -> {:cont, {:ok, messages, cache}}
-        error -> {:halt, error}
+    with {:ok, cache} <- prefetch_segments(snapshots) do
+      Enum.reduce_while(snapshots, {:ok, [], cache}, fn snapshot, {:ok, messages, cache} ->
+        case hydrate(snapshot, cache) do
+          {:ok, message, cache} -> {:cont, {:ok, [message | messages], cache}}
+          {:error, :message_deleted} -> {:cont, {:ok, messages, cache}}
+          error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, messages, _cache} -> {:ok, Enum.reverse(messages)}
+        error -> error
       end
-    end)
-    |> case do
-      {:ok, messages, _cache} -> {:ok, Enum.reverse(messages)}
-      error -> error
     end
   end
 
@@ -84,8 +88,8 @@ defmodule SalixIM.ConversationArchive do
 
   defp hydrate(%{archive_first_seq: first} = snapshot, cache) when not is_nil(first) do
     with true <- is_binary(snapshot.object_key) and snapshot.encoding == "jsonl",
-         {:ok, rows, cache} <- read_segment(snapshot.object_key, cache),
-         %{} = body <- Enum.find(rows, &(&1["seq"] == snapshot.seq)),
+         {:ok, rows_by_seq, cache} <- read_segment(snapshot.object_key, cache),
+         %{} = body <- Map.get(rows_by_seq, snapshot.seq),
          true <- body["message_id"] == snapshot.message_id do
       {:ok, overlay(body, snapshot), cache}
     else
@@ -109,20 +113,80 @@ defmodule SalixIM.ConversationArchive do
         "request_fingerprint" => snapshot.request_fingerprint
       })
 
+  defp prefetch_segments(snapshots) do
+    with {:ok, keys} <- archived_segment_keys(snapshots) do
+      case keys do
+        [] ->
+          {:ok, %{}}
+
+        [key] ->
+          with {:ok, rows_by_seq} <- fetch_segment(key),
+               do: {:ok, %{key => rows_by_seq}}
+
+        keys ->
+          keys
+          |> SystemsClock.async_stream(&{&1, fetch_segment(&1)},
+            max_concurrency: @hydrate_concurrency,
+            timeout: @hydrate_timeout_ms,
+            on_timeout: :kill_task
+          )
+          |> Enum.reduce_while({:ok, %{}}, fn
+            {:ok, {key, {:ok, rows_by_seq}}}, {:ok, cache} ->
+              {:cont, {:ok, Map.put(cache, key, rows_by_seq)}}
+
+            {:ok, {_key, {:error, _} = error}}, _acc ->
+              {:halt, error}
+
+            {:exit, _reason}, _acc ->
+              {:halt, {:error, :archive_unreadable}}
+          end)
+      end
+    end
+  end
+
+  defp archived_segment_keys(snapshots) do
+    Enum.reduce_while(snapshots, {:ok, [], MapSet.new()}, fn
+      %{tombstone: true}, acc ->
+        {:cont, acc}
+
+      %{archive_first_seq: first, object_key: key, encoding: "jsonl"}, {:ok, keys, seen}
+      when not is_nil(first) and is_binary(key) ->
+        if MapSet.member?(seen, key),
+          do: {:cont, {:ok, keys, seen}},
+          else: {:cont, {:ok, [key | keys], MapSet.put(seen, key)}}
+
+      %{archive_first_seq: first}, _acc when not is_nil(first) ->
+        {:halt, {:error, :archive_incomplete}}
+
+      _snapshot, acc ->
+        {:cont, acc}
+    end)
+    |> case do
+      {:ok, keys, _seen} -> {:ok, Enum.reverse(keys)}
+      error -> error
+    end
+  end
+
   defp read_segment(key, cache) do
     case Map.fetch(cache, key) do
-      {:ok, rows} ->
-        {:ok, rows, cache}
+      {:ok, rows_by_seq} ->
+        {:ok, rows_by_seq, cache}
 
       :error ->
-        with {:ok, %{body: body}} <- S3.get(key),
-             {:ok, rows} <- ConversationMessageCodec.decode_segment(body) do
-          {:ok, rows, Map.put(cache, key, rows)}
-        else
-          {:error, :not_found} -> {:error, :archive_incomplete}
-          {:error, :invalid_message_segment} -> {:error, :archive_incomplete}
-          {:error, _} -> {:error, :archive_unreadable}
+        with {:ok, rows_by_seq} <- fetch_segment(key) do
+          {:ok, rows_by_seq, Map.put(cache, key, rows_by_seq)}
         end
+    end
+  end
+
+  defp fetch_segment(key) do
+    with {:ok, %{body: body}} <- S3.get(key),
+         {:ok, rows} <- ConversationMessageCodec.decode_segment(body) do
+      {:ok, Map.new(rows, &{&1["seq"], &1})}
+    else
+      {:error, :not_found} -> {:error, :archive_incomplete}
+      {:error, :invalid_message_segment} -> {:error, :archive_incomplete}
+      {:error, _} -> {:error, :archive_unreadable}
     end
   end
 

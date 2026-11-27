@@ -218,7 +218,7 @@ it("says why a start was refused", async () => {
   await t.user.click(screen.getByRole("button", { name: "Get code" }));
   expect(
     await screen.findByText(
-      "Comma could not use this account. Check the phone number or email and try again."
+      "Comma could not use this account. Check the email, or enter the phone number with its country code, for example +1 555 010 0100."
     )
   ).toBeVisible();
 });

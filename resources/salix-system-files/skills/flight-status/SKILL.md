@@ -33,3 +33,9 @@ airline or airport page with `web.read_pages`.
 
 Booking is not in this skill. Use `ctrip` or `fliggy` in China and
 `expedia` elsewhere.
+
+## Live Activity
+
+For an upcoming or active flight, surface gate, boarding/departure ETA, and
+delays with `live_activity.upsert` (`category: "flight"`), and call
+`live_activity.end` after landing or cancellation.

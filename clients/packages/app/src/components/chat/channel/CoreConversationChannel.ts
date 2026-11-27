@@ -1,4 +1,5 @@
 import type {
+  ChatDraftEntry,
   ChatConversationFile,
   ChatTaskRunChoice,
   ManualTaskStatus,
@@ -173,12 +174,15 @@ export class CoreConversationChannel implements ChatChannel {
     return this.#state;
   }
 
-  setDraft(draft: string) {
+  setDraft(draft: string, entry?: ChatDraftEntry) {
     const optimistic = this.#draft;
     optimistic.beginEdit();
     this.#state = { ...this.#state, draft };
     this.#emit();
-    const edit = this.#call<Receipt>("chatView.setDraft", { draft });
+    const edit = this.#call<Receipt>("chatView.setDraft", {
+      draft,
+      ...(entry ? { entry } : {}),
+    });
     void edit.then(
       (receipt) => {
         optimistic.acknowledgeEdit(receipt.draftEpoch);

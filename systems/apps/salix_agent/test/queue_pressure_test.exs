@@ -26,8 +26,26 @@ defmodule SalixAgent.QueuePressureTest do
     }
   end
 
-  defp slack, do: %{"provider" => "slack", "source_actor_type" => "provider_user"}
-  defp comma_user, do: %{"provider" => "internal", "source_actor_type" => "user"}
+  defp slack,
+    do: %{
+      "provider" => "slack",
+      "source_actor_type" => "provider_user",
+      "provider_context" => %{
+        "connect_id" => "c1",
+        "channel_id" => "C1",
+        "thread_ts" => "t1",
+        "user_id" => "U1"
+      }
+    }
+
+  defp comma_user,
+    do: %{
+      "provider" => "internal",
+      "source_actor_type" => "user",
+      "conversation_kind" => "user_chat",
+      "conversation_id" => "conv_1",
+      "thread_root_message_id" => "msg_root_1"
+    }
 
   test "a Router with queued human requests receives one message naming them" do
     session = %{
@@ -123,12 +141,15 @@ defmodule SalixAgent.QueuePressureTest do
 
       {:ok, _} =
         SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
+          queue_append.("A2", slack()),
           queue_append.("B", comma_user())
         ])
 
       {:ok, session} = InternalSessionStore.read(agent_id, session_id)
       assert InternalSession.has_unacked_wakeable_input?(session)
 
+      # Same-thread follow-up A2 joins this unanswered activation next round,
+      # so QueuePressure only reports B from the other conversation.
       config = %{role: "router", tool_disclosure: %{"tools" => []}}
       assert {:delta, delta} = ContextProviders.prepare_activation_delta(session, config)
       messages = ContextProviders.model_messages(delta)

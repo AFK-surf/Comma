@@ -360,25 +360,116 @@ defmodule SystemsSimTest do
     assert Enum.map(runs, & &1.result) == List.duplicate({:ok, 20}, 10)
   end
 
-  test "a process started while the scheduler collects a large heap waits for its turn" do
-    # The scheduler takes in each message of the world, in its trace: one of
-    # 200,000 words makes it collect its garbage on a dirty scheduler, while
-    # the process that sent it goes on, starts a task and waits for it.
-    world = fn ->
-      big = Enum.to_list(1..100_000)
-      sink = spawn(fn -> receive do: (:never -> :ok) end)
+  # The scheduler takes in each message of the world, in its trace: one of
+  # 200,000 words makes it collect its garbage on a dirty scheduler, while the
+  # process that sent it goes on, starts a task and waits for it.
+  defp large_messages do
+    big = Enum.to_list(1..100_000)
+    sink = spawn(fn -> receive do: (:never -> :ok) end)
 
-      for n <- 1..20 do
-        send(sink, {:big, big})
-        await(Task.async(fn -> n end))
-      end
-      |> Enum.sum()
+    for n <- 1..20 do
+      send(sink, {:big, big})
+      await(Task.async(fn -> n end))
     end
+    |> Enum.sum()
+  end
 
+  test "a process started while the scheduler collects a large heap waits for its turn" do
     runs =
-      SystemsSim.one_scheduler(fn -> for seed <- 1..5, do: SystemsSim.run(world, seed: seed) end)
+      SystemsSim.one_scheduler(fn ->
+        for seed <- 1..5, do: SystemsSim.run(&large_messages/0, seed: seed)
+      end)
 
     assert Enum.map(runs, & &1.result) == List.duplicate({:ok, 210}, 5)
+  end
+
+  test "dirty CPU jobs outside the world do not keep the world from running" do
+    SystemsSim.one_scheduler(fn ->
+      # Two jobs of a second for the one dirty CPU scheduler left online:
+      # one runs, the other waits in its queue.
+      outside =
+        for _ <- 1..2,
+            do: :erlang.spawn_opt(fn -> :erts_debug.dirty_cpu(:wait, 1_000) end, [:monitor])
+
+      dirty_cpu_busy(Enum.map(outside, &elem(&1, 0)))
+
+      # The second run starts after the first one's scheduler has ended.
+      for _ <- 1..2 do
+        run = SystemsSim.run(fn -> await(Task.async(fn -> :done end)) end, timeout: 150)
+        assert run.result == {:ok, :done}
+      end
+
+      # Both ran while the jobs still held the dirty CPU scheduler.
+      assert Enum.any?(outside, fn {pid, _} -> :erts_internal.is_process_executing_dirty(pid) end)
+
+      for {pid, ref} <- outside do
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        end
+      end
+    end)
+  end
+
+  test "worlds keep their turns while dirty CPU jobs outside them come and go" do
+    load = dirty_cpu_load(4, :normal)
+
+    try do
+      # Each run takes the other schedulers offline and back.
+      runs = for seed <- 1..10, do: SystemsSim.run(&large_messages/0, seed: seed)
+      assert Enum.map(runs, & &1.result) == List.duplicate({:ok, 210}, 10)
+    after
+      stop_dirty_cpu_load(load)
+    end
+  end
+
+  # Processes outside any world, each running a dirty CPU job of a
+  # millisecond after another until stopped. Every tenth job it also
+  # replaces a persistent term: the literal area collector then asks every
+  # process, the worlds' schedulers among them, to check its heap, which a
+  # large heap does on a dirty CPU scheduler, as when SystemsClock resets.
+  defp dirty_cpu_load(count, priority) do
+    stop = :atomics.new(1, [])
+
+    pids =
+      for _ <- 1..count,
+          do:
+            :erlang.spawn_opt(fn -> dirty_cpu_until(stop, 1) end, [:monitor, priority: priority])
+
+    {stop, pids}
+  end
+
+  defp dirty_cpu_until(stop, n) do
+    if :atomics.get(stop, 1) == 0 do
+      :erts_debug.dirty_cpu(:wait, 1)
+
+      if rem(n, 10) == 0 do
+        :persistent_term.put({__MODULE__, :literal_probe, self()}, make_ref())
+        :persistent_term.erase({__MODULE__, :literal_probe, self()})
+      end
+
+      dirty_cpu_until(stop, n + 1)
+    end
+  end
+
+  defp stop_dirty_cpu_load({stop, pids}) do
+    :atomics.put(stop, 1, 1)
+
+    for {pid, ref} <- pids do
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _} -> :ok
+      end
+    end
+  end
+
+  # Waits until one of `pids` runs its dirty CPU job and another waits in the
+  # dirty CPU run queue.
+  defp dirty_cpu_busy(pids) do
+    queued = Enum.at(:erlang.statistics(:run_queue_lengths_all), -2)
+
+    unless queued > 0 and Enum.any?(pids, &:erts_internal.is_process_executing_dirty/1) do
+      :erlang.yield()
+      dirty_cpu_busy(pids)
+    end
   end
 
   test "the clock starts at the same time on every run" do

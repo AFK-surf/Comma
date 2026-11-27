@@ -23,6 +23,8 @@ defmodule CommaWeb.HomeMail do
       {:ok,
        %{
          "automatic_enabled" => MailInteraction.enabled?(conversation, user["id"]),
+         "stillfail_notification_level" =>
+           MailInteraction.stillfail_notification_level(conversation, user["id"]),
          "automatic_budget" =>
            budget(MailInteraction.automatic_budget(conversation, user["id"], now)),
          "notification_budget" =>
@@ -34,6 +36,30 @@ defmodule CommaWeb.HomeMail do
              budget(MailInteraction.reserve_budget(conversation, user["id"], :handoff, now)),
            "notification" =>
              budget(MailInteraction.reserve_budget(conversation, user["id"], :notification, now))
+         },
+         # Dedicated strict budget for non-obligation high-signal insights
+         # (`pool` "signal"), isolated from obligation reminders and reserve.
+         "signal_budget" => %{
+           "handoff" =>
+             budget(MailInteraction.signal_budget(conversation, user["id"], :handoff, now)),
+           "notification" =>
+             budget(MailInteraction.signal_budget(conversation, user["id"], :notification, now))
+         },
+         # Independent pools for owner-initiated agent stops (`station_task` and
+         # owned `task` matters), isolated from passive inbox limits.
+         "agent_budget" => %{
+           "handoff" =>
+             budget(MailInteraction.agent_budget(conversation, user["id"], :handoff, now)),
+           "notification" =>
+             budget(MailInteraction.agent_budget(conversation, user["id"], :notification, now))
+         },
+         "agent_code_budget" => %{
+           "handoff" =>
+             budget(MailInteraction.agent_code_budget(conversation, user["id"], :handoff, now)),
+           "notification" =>
+             budget(
+               MailInteraction.agent_code_budget(conversation, user["id"], :notification, now)
+             )
          },
          "monitors" => Enum.map(monitors, &monitor/1),
          "sources" => entries,
@@ -330,6 +356,7 @@ defmodule CommaWeb.HomeMail do
          {:ok, value, ^owner} <- entry(ctx, home, args["key"]),
          :ok <- expected_generation(value, args),
          true <- value["state"] not in ~w(handled quiet),
+         :ok <- draftable_account(value),
          {:ok, mail} <- source_action(ctx, home, args) do
       if is_binary(value["task_id"]) do
         {:ok, %{"task_id" => value["task_id"]}}
@@ -345,6 +372,16 @@ defmodule CommaWeb.HomeMail do
       error -> error
     end
   end
+
+  defp draftable_account(%{"account_id" => "station_task"}),
+    do: {:error, :station_task_use_send_message}
+
+  defp draftable_account(_value), do: :ok
+
+  defp quietable_account(%{"account_id" => "station_task"}, %{"action" => "quiet"}),
+    do: {:error, :station_task_quiet_forbidden}
+
+  defp quietable_account(_value, _args), do: :ok
 
   defp link_value(value, task_id, key, ctx, home) do
     ConversationServer.mail_interaction(ctx.group_id, home, value["owner_id"], ctx.agent_id, %{
@@ -427,6 +464,7 @@ defmodule CommaWeb.HomeMail do
   defp mutate(ctx, home, args) do
     with {:ok, value, user} <- entry(ctx, home, args["key"]),
          :ok <- expected_generation(value, args),
+         :ok <- quietable_account(value, args),
          {:ok, _} <- resume_pending(ctx, home, user, value) do
       if args["action"] == "resume" do
         with {:ok, current, _} <- entry(ctx, home, args["key"]),

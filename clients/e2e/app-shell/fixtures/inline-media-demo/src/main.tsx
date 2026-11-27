@@ -1,7 +1,7 @@
 import "@comma/ui/styles.css";
 import "@comma/app/styles.css";
 
-import { ChatPanelImage, ChatPanelVideo } from "@comma/ui/components/chat-panel";
+import { ChatPanelImageGroup, ChatPanelVideo } from "@comma/ui/components/chat-panel";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { fixtureSearch } from "../../../support/search";
@@ -28,15 +28,13 @@ function InlineMediaDemo() {
           <p>Here is the run output.</p>
           <div className="comma-chat-attachments" style={{ width: `${width}px` }}>
             <div className="comma-chat-inline-images">
-              <ChatPanelImage
-                alt="panorama.png"
-                className="comma-chat-inline-image"
-                src={panoramaArtwork}
+              <ChatPanelImageGroup
+                align="start"
+                images={[{ alt: "panorama.png", src: panoramaArtwork }]}
               />
-              <ChatPanelImage
-                alt="poster.png"
-                className="comma-chat-inline-image"
-                src={posterArtwork}
+              <ChatPanelImageGroup
+                align="start"
+                images={[{ alt: "poster.png", src: posterArtwork }]}
               />
             </div>
             <div className="comma-chat-inline-video-frame">

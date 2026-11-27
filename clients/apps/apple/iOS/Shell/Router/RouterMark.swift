@@ -4,14 +4,15 @@ import SwiftUI
 struct RouterMark: View {
     let replying: Bool
     let size: CGFloat
+    var ink: Color = CommaTheme.textPrimary
 
     var body: some View {
         ZStack {
             if replying {
-                CommaLogoAnimation(ink: CommaTheme.textPrimary, aperture: CommaTheme.bgPrimary)
+                CommaLogoAnimation(ink: ink, aperture: CommaTheme.bgPrimary)
                     .transition(.opacity)
             } else {
-                CommaMark(size: size).foregroundStyle(CommaTheme.textPrimary).transition(.opacity)
+                CommaMark(size: size).foregroundStyle(ink).transition(.opacity)
             }
         }
         .frame(width: size, height: size)

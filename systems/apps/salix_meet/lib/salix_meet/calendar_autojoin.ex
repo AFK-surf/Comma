@@ -600,22 +600,30 @@ defmodule SalixMeet.CalendarAutojoin do
 
   # A Group that enrolls its members' own calendars is scanned and joined per
   # member calendar. Each unit carries the Group's settings.
-  defp scan_units(%{"calendar_scope" => "members"} = group) do
+  @doc false
+  def scan_units(%{"calendar_scope" => "members"} = group) do
     group
     |> member_units()
     |> Enum.filter(&(List.wrap(&1["calendars"]) != []))
   end
 
-  defp scan_units(group), do: [group]
+  def scan_units(group), do: [group]
 
   defp member_units(%{"calendar_scope" => "members", "units" => units} = group)
        when is_list(units) do
     base =
       group
       |> Map.drop(["units", "calendars", "calendar_id"])
+      # Only a unit with usable calendars counts as a member: an account whose
+      # listing failed or whose authorization expired holds no meetings.
       |> Map.put(
         "member_emails",
-        units |> Enum.map(& &1["account_email"]) |> Enum.filter(&is_binary/1)
+        for(
+          unit <- units,
+          List.wrap(unit["calendars"]) != [],
+          is_binary(unit["account_email"]),
+          do: unit["account_email"]
+        )
       )
 
     Enum.map(units, fn unit ->
@@ -1188,18 +1196,37 @@ defmodule SalixMeet.CalendarAutojoin do
     |> Enum.reduce(%{}, fn entry, results ->
       event = entry["event"]
 
-      Map.put(
-        results,
-        entry["meeting_id"],
-        recovery_event_decision(
-          group,
+      decision =
+        group
+        |> recovery_event_decision(
           event,
           CalendarProjection.dispatch_meeting_ids(projection, entry),
           now
         )
-      )
+        |> release_member_copy(group, event)
+
+      Map.put(results, entry["meeting_id"], decision)
     end)
   end
+
+  # A member's copy that leaves this calendar no longer holds its meeting: the
+  # member gets no reminder for it and, as its preparer, hands it to the next
+  # member calendar that scans it. A failed release keeps the copy, so the
+  # next pass tries again. A meeting already joined or abandoned has no
+  # preparation left to hand over.
+  defp release_member_copy(
+         {:drop, reason} = decision,
+         %{"calendar_scope" => "members"} = group,
+         event
+       )
+       when reason not in [:join_already_claimed, :already_abandoned] do
+    case Ports.CalendarOccurrences.release(group, event) do
+      :ok -> decision
+      {:error, error} -> {:retain, event, {:member_release, error}}
+    end
+  end
+
+  defp release_member_copy(decision, _group, _event), do: decision
 
   defp recovery_event_decision(group, event, dispatch_mids, now) do
     case resolve_dispatch_identity(dispatch_mids) do
@@ -1955,7 +1982,8 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp dispatch_revalidated(group, event, mid, now) do
-    with {:ok, doc, target} <- load_or_create(group, event, mid, now),
+    with :ok <- ensure_no_other_active_google_meet(group, event, mid),
+         {:ok, doc, target} <- load_or_create(group, event, mid, now),
          :ok <- ensure_not_abandoned(doc),
          {:ok, doc} <- claim_member_scope(doc, group, event, mid, now),
          :ok <- validate_scope(doc, group, event, mid),
@@ -2074,6 +2102,13 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp log_join_result(_result), do: :ok
+
+  defp ensure_no_other_active_google_meet(group, event, mid) do
+    case Store.find_active_google_meet(group_id(group), event["meet_url"], except: mid) do
+      {:ok, _existing_id, _existing_state} -> {:already, :already_in_meeting}
+      :not_found -> :ok
+    end
+  end
 
   defp load_or_create(group, event, mid, now) do
     case Store.get(mid) do

@@ -458,6 +458,55 @@ test("a selected model stays selected when an account change stops serving it", 
   ]);
 });
 
+// Prod 2026-11-18 (HyperShell): the org turned off its only Claude account;
+// the default Task model stayed a Claude model and every Task that named no
+// model stopped.
+test("a default model no enabled account serves says so until another is chosen", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 1400 });
+  const opus = {
+    key: "catalog:claude-opus-5-5",
+    choice: { kind: "catalog", model: "claude-opus-5-5", allow_paid: false },
+    label: "Claude Opus 5.5",
+    vendor: "anthropic",
+    served_by: null,
+    plans: [],
+    key_sources: [],
+  };
+  const gpt = {
+    key: "catalog:gpt-5.5",
+    choice: { kind: "catalog", model: "gpt-5.5", allow_paid: false },
+    label: "GPT-5.5",
+    vendor: "openai",
+    served_by: "subscription",
+    plans: ["codex"],
+    key_sources: [],
+  };
+  await openModels(page, (request) =>
+    request.method === "GET" && request.path === base
+      ? ok({
+          ...models,
+          servable_status: "ok",
+          catalog: [opus, gpt],
+          default_task_model: opus,
+          default_options: { router: [opus, gpt], task: [opus, gpt] },
+        })
+      : undefined
+  );
+
+  const field = page.getByRole("button", { name: /Default Task model$/ });
+  await expect(field).toContainText("Claude Opus 5.5 · No account serves it");
+  const note = page.getByText(
+    "No enabled account serves this model, so a Task that names no model cannot run."
+  );
+  await expect(note).toBeVisible();
+
+  await field.click();
+  await page.getByRole("option", { name: /GPT-5.5/ }).click();
+  await expect(note).toHaveCount(0);
+});
+
 test("the page fits 900 px in Chinese", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
   // Phoenix writes the locale into the served page; the dev server does not.

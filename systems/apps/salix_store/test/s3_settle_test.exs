@@ -19,7 +19,6 @@ defmodule SalixStore.S3.SettleTest do
   end
 
   describe "cas_put/4" do
-
     test "an ambiguous-but-landed PUT settles as ok by read-back" do
       {:ok, %{etag: etag}} = S3.put(@key, "base")
       SalixStore.S3.Fake.set_fault({:ambiguous_after, :put, @key})

@@ -218,6 +218,29 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
 
   defp missing_scopes(_unknown), do: nil
 
+  # A meeting on members' calendars also names the members who get its
+  # reminder, each flagged when Slack has no member with that email. A
+  # reminder that reached none of them is not shown as sent.
+  defp public_event(event, %{"calendar_scope" => "members"} = settings) do
+    recipients =
+      for %{"email" => email} = recipient when is_binary(email) <- List.wrap(event["recipients"]),
+          do: %{"email" => email, "slack_unmatched" => recipient["slack_unmatched"] == true}
+
+    status = member_status(event["plan"] || %{}, settings)
+
+    event
+    |> Map.take(~w(meeting_plan_id title start_ms))
+    |> Map.put(
+      "status",
+      if(
+        status == "queued" and recipients != [] and Enum.all?(recipients, & &1["slack_unmatched"]),
+        do: "not_sent",
+        else: status
+      )
+    )
+    |> Map.put("recipients", recipients)
+  end
+
   defp public_event(event, settings) do
     event
     |> Map.take(~w(meeting_plan_id title start_ms))
@@ -232,6 +255,27 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
       plan["status"] != "planned" -> "failed"
       preparation["card_status"] == "sent" -> "queued"
       preparation["card_status"] == "abandoned" -> "not_sent"
+      preparation["report_available"] -> "ready"
+      preparation["deadline_status"] == "diagnostic_only" -> "timed_out"
+      preparation["research_started"] -> "preparing"
+      true -> "scheduled"
+    end
+  end
+
+  # Members' calendars send no channel notice: a meeting's state is the
+  # personal reminder of its preparer's plan (`personal_status`). With
+  # reminders off the bot only joins. A plan that does not prepare (the
+  # preparer is being handed over) is scheduled.
+  defp member_status(plan, settings) do
+    preparation = plan["preparation"] || %{}
+
+    cond do
+      plan["settings_revision"] != settings["settings_revision"] -> "updating"
+      plan["status"] != "planned" -> "failed"
+      settings["personal_preparation"] != true -> "join_only"
+      preparation["personal_status"] == "sent" -> "queued"
+      preparation["personal_status"] == "abandoned" -> "not_sent"
+      plan["personal_preparation"] != true -> "scheduled"
       preparation["report_available"] -> "ready"
       preparation["deadline_status"] == "diagnostic_only" -> "timed_out"
       preparation["research_started"] -> "preparing"

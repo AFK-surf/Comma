@@ -23,7 +23,7 @@ A Subscription keeps one change request, key, and invoice mapping.
 Unknown results block different changes. Expired retries require exact evidence or actionable errors.
 Schedules contain the current phase and one target. Comma handles cancellation where the portal cannot cancel scheduled subscriptions.
 
-Only confirmed Stripe cash grants credits.
+Only confirmed provider cash grants credits.
 Invoices select the positive subscription line, not line order or the latest display plan.
 Cycles keep invoice and PaymentIntent allocations. Each allocation issues one idempotent Grant.
 Upgrades grant the positive tier difference times the remaining cycle seconds, rounded down.
@@ -56,6 +56,7 @@ An Agent holds a model choice (`model`) or follows the Platform Model tier of it
 Following Agents use platform changes on their next round.
 An unset platform role has no model. Its following Agents fail until the platform configures that tier.
 BFT org admins limit choices with an allowed model list and copy per-role org defaults into new Agents ([BFT model settings](bridge-for-teams/design.md#model-settings)).
+[Platform Router](architecture/DOMAIN_CONCEPTS.md) keys: `record` charges 0, `deduct` spends credits.
 
 ## Free Comma Router models
 
@@ -201,7 +202,7 @@ Decision evidence retains the key, configuration revision and complete Model Cho
 `jev` mode asks for one configured candidate. Jev receives no model table or cost facts.
 A route table holds at most 32 entries in 8 KiB. It adds no per-child polling.
 Server-owned Task decisions accept at most 64 KiB of encoded input, including the complete Task command and question configuration.
-All selection failures use `task_model_selection_failed`. An oversized request includes `input_too_large` before inference or Task commit. Shorten the content or routing descriptions, supply an authorized model explicitly, or disable routing.
+All internal selection failures use `{:task_model_selection_failed, message}`. Comma HTTP endpoints map these to client-facing statuses: `402` (`billing_unavailable` with allowlisted `reason`: `insufficient_credits`, `account_inactive`, `missing_account`, or `billing_unavailable`), `429` (`rate_limited`), `400` (`task_model_selection_failed` with `input_too_large` or `invalid_request`), and `503` (`task_model_selection_failed`) for provider/transient outages. An oversized request includes `input_too_large` before inference or Task commit. Shorten the content or routing descriptions, supply an authorized model explicitly, or disable routing.
 The server does not truncate the command. A single-entry table makes no decision call and has no decision-input limit.
 The public `decide` tool keeps its 12 KiB limit.
 

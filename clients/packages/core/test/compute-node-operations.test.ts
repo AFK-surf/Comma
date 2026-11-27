@@ -48,6 +48,9 @@ it("reads Registration status and the independent Shell phase", async () => {
   t.api.on("GET", base, {
     registration: {
       id: "reg1",
+      host_bound: true,
+      device_id: "device-mac-1",
+      connected: false,
       status: "ready",
       work_activity: "idle",
       shell_phase: "failed",
@@ -56,6 +59,9 @@ it("reads Registration status and the independent Shell phase", async () => {
   const read = t.client.call("computeNode.inspect", { ...target, lease });
   await t.time.pass(100);
   await expect(read).resolves.toEqual({
+    hostBound: true,
+    deviceId: "device-mac-1",
+    connected: false,
     status: "ready",
     workActivity: "idle",
     shellPhase: "failed",

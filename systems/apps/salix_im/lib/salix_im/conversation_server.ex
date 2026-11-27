@@ -186,7 +186,9 @@ defmodule SalixIM.ConversationServer do
   # current status of a card. Hidden from Agents and from clients that do not
   # know the event type. Setup cards use the highest offer revision, not the
   # latest Message sequence, because an older publisher may finish later.
-  @product_event_types ~w(device_setup_offer.updated)
+  # `collaboration.member_changed`: a member of a Task together left it or
+  # was taken out, shown to its people as a line in the Task.
+  @product_event_types ~w(device_setup_offer.updated collaboration.member_changed)
 
   def append_product_event(group_id, conversation_id, event_type, data, idempotency_key)
       when event_type in @product_event_types and is_map(data) and is_binary(idempotency_key) and
@@ -256,6 +258,15 @@ defmodule SalixIM.ConversationServer do
           {:ensure_group_conversation_agent_participant, attrs}
         )
 
+  def ensure_group_conversation_agent_participant_with_status(group_id, conversation_id, attrs)
+      when is_map(attrs),
+      do:
+        call(
+          group_id,
+          conversation_id,
+          {:ensure_group_conversation_agent_participant_with_status, attrs}
+        )
+
   def remember_router_read_hint(group_id, agent_id),
     do: call_group(group_id, {:router_read_hint, agent_id})
 
@@ -307,6 +318,119 @@ defmodule SalixIM.ConversationServer do
         group_id,
         conversation_id,
         {:deactivate_group_conversation_participant_if_payload, participant_id, expected_payload}
+      )
+    end
+  end
+
+  def mark_task_participant_bound(group_id, conversation_id, participant_id, bound_session \\ nil) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:mark_task_participant_bound, participant_id, bound_session}
+      )
+    end
+  end
+
+  def mark_task_participant_bound_pending(
+        group_id,
+        conversation_id,
+        participant_id,
+        candidate_token
+      ) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:mark_task_participant_bound_pending, participant_id, candidate_token}
+      )
+    end
+  end
+
+  def commit_task_participant_bound_token(
+        group_id,
+        conversation_id,
+        participant_id,
+        expected_candidate_token,
+        committed_token
+      ) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:commit_task_participant_bound_token, participant_id, expected_candidate_token,
+         committed_token}
+      )
+    end
+  end
+
+  def reconcile_task_participant_bound_token(
+        group_id,
+        conversation_id,
+        participant_id,
+        expected_candidate_token,
+        committed_token
+      ) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:reconcile_task_participant_bound_token, participant_id, expected_candidate_token,
+         committed_token}
+      )
+    end
+  end
+
+  def clear_uncommitted_task_participant_bound(
+        group_id,
+        conversation_id,
+        participant_id,
+        expected_candidate_token
+      ) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:clear_uncommitted_task_participant_bound, participant_id, expected_candidate_token}
+      )
+    end
+  end
+
+  def bind_task_participant_session(group_id, conversation_id, participant_id, join_fun)
+      when is_function(join_fun, 0) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:bind_task_participant_session, participant_id, join_fun}
+      )
+    end
+  end
+
+  def reserve_task_participant_session(group_id, conversation_id, participant_id, reserve_fun)
+      when is_function(reserve_fun, 0) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:reserve_task_participant_session, participant_id, reserve_fun}
+      )
+    end
+  end
+
+  def deactivate_unbound_task_participant(
+        group_id,
+        conversation_id,
+        participant_id,
+        expected_stale_session \\ nil,
+        verify_unbound_fun \\ nil
+      ) do
+    with {:ok, participant_id} <- require_participant_id(participant_id) do
+      call(
+        group_id,
+        conversation_id,
+        {:deactivate_unbound_task_participant, participant_id, expected_stale_session,
+         verify_unbound_fun}
       )
     end
   end
@@ -485,6 +609,14 @@ defmodule SalixIM.ConversationServer do
   def configure_proactive(group_id, conversation_id, owner_id, enabled, request_id),
     do: call(group_id, conversation_id, {:configure_proactive, owner_id, enabled, request_id})
 
+  def configure_stillfail_notifications(group_id, conversation_id, owner_id, level, request_id),
+    do:
+      call(
+        group_id,
+        conversation_id,
+        {:configure_stillfail_notifications, owner_id, level, request_id}
+      )
+
   def desktop_meeting(group_id, conversation_id, owner_id, command, message \\ nil),
     do: call(group_id, conversation_id, {:desktop_meeting, owner_id, command, message})
 
@@ -650,6 +782,39 @@ defmodule SalixIM.ConversationServer do
   def coding_turn_ended(group_id, conversation_id, seq) when is_integer(seq) and seq > 0,
     do: call(group_id, conversation_id, {:coding_turn_ended, seq})
 
+  @doc """
+  Records `pending_review` on a multi-session coding Task when the primary session
+  posts a terminal declaration (`all_done` / `need_help`) without synchronously
+  transitioning while `task.post` is still in flight. Nudges `StationTaskWatch`.
+  """
+  def record_coding_pending_review(group_id, conversation_id, declared_seq)
+      when is_integer(declared_seq) and declared_seq > 0,
+      do: call(group_id, conversation_id, {:record_coding_pending_review, declared_seq})
+
+  @doc """
+  CAS-transitions a multi-session coding Task from `active` to `ready_for_review`
+  iff `pending_review.declared_seq == declared_seq`,
+  `conversation.membership_revision == membership_revision`, and
+  `conversation.message_tail_seq == observed_tail_seq`, clearing `pending_review`
+  atomically.
+  """
+  def coding_turn_ended_multi(
+        group_id,
+        conversation_id,
+        declared_seq,
+        observed_tail_seq,
+        membership_revision
+      )
+      when is_integer(declared_seq) and declared_seq > 0 and is_integer(observed_tail_seq) and
+             observed_tail_seq >= declared_seq and is_integer(membership_revision) and
+             membership_revision >= 0,
+      do:
+        call(
+          group_id,
+          conversation_id,
+          {:coding_turn_ended_multi, declared_seq, observed_tail_seq, membership_revision}
+        )
+
   def replace_task_schedule(group_id, conversation_id, current, replacement)
       when is_map(current) and is_map(replacement),
       do: call(group_id, conversation_id, {:replace_task_schedule, current, replacement})
@@ -698,6 +863,39 @@ defmodule SalixIM.ConversationServer do
         conversation_id,
         {:conversation_api, {:get_agent_participant_identity, agent_id}}
       )
+
+  def get_group_conversation_primary_worker_identity(group_id, conversation_id, agent_id),
+    do:
+      call(
+        group_id,
+        conversation_id,
+        {:conversation_api, {:get_primary_worker_identity, agent_id}}
+      )
+
+  def get_group_conversation_task_worker_identities(group_id, conversation_id),
+    do: call(group_id, conversation_id, {:conversation_api, :get_task_worker_identities})
+
+  def get_group_conversation_participant_by_session(group_id, conversation_id, session_id)
+      when is_binary(session_id) and session_id != "",
+      do:
+        call(
+          group_id,
+          conversation_id,
+          {:conversation_api, {:get_participant_by_session, session_id}}
+        )
+
+  def get_group_conversation_participant_by_session(_group_id, _conversation_id, _session_id),
+    do: {:error, :not_found}
+
+  def acquire_task_run_switch(group_id, conversation_id),
+    do: call(group_id, conversation_id, :acquire_task_run_switch)
+
+  def release_task_run_switch(group_id, conversation_id, token),
+    do: call(group_id, conversation_id, {:release_task_run_switch, token})
+
+  def update_group_conversation_metadata_key(group_id, conversation_id, key, value)
+      when is_binary(key) and key != "",
+      do: call(group_id, conversation_id, {:update_conversation_metadata_key, key, value})
 
   # Whether the Agent is the Task's station Worker; nothing else of it.
   def group_conversation_station_worker?(group_id, conversation_id, agent_id),

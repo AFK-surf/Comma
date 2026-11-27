@@ -102,6 +102,7 @@ defmodule Comma.TaskShares do
   def publish(user, session, group_id, conversation_id) do
     with {:ok, workspace, conversation} <-
            authorize_task(user, session, group_id, conversation_id),
+         :ok <- not_together(conversation),
          through_seq = tail_seq(conversation),
          {:ok, snapshot} <- build_snapshot(workspace, conversation_id, through_seq) do
       snapshot = station_title(snapshot, conversation_id, conversation)
@@ -115,6 +116,13 @@ defmodule Comma.TaskShares do
       end
     end
   end
+
+  # A Task together holds its members' words, which they did not publish: it
+  # gets no public link.
+  defp not_together(%{"metadata" => %{"collaboration" => %{}}}),
+    do: {:error, {:bad_request, "a Task together is not shared publicly"}}
+
+  defp not_together(_conversation), do: :ok
 
   # A concurrent first publish loses the active-share constraint race; it then
   # moves the winner's cutoff instead of failing.

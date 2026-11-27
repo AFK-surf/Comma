@@ -14,9 +14,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmPluginsTest do
   use SystemsClock.Test,
     scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
-  import Ecto.Query, only: [from: 2]
-
-  alias BridgeForTeams.{Memberships, Observability, Repo}
+  alias BridgeForTeams.{Memberships, Observability}
 
   defmodule PluginClient do
     use BridgeForTeams.TestSupport.CanonicalAgentClient
@@ -42,6 +40,8 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmPluginsTest do
       notify(:list_group_plugin_enablements)
       {:ok, [%{"plugin_id" => "tenant.knowledge", "enabled" => true}]}
     end
+
+    def delete_group_im_connects(_tenant_id, _group_id), do: :ok
 
     def group_plugin_runtime_projection(_tenant_id, _group_id) do
       notify(:group_plugin_runtime_projection)
@@ -106,6 +106,14 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmPluginsTest do
 
           "linear-composio" ->
             %{"id" => connection_id, "kind" => "composio", "toolkit" => "linear"}
+
+          "google-colab-oauth" ->
+            %{
+              "id" => connection_id,
+              "kind" => "oauth_code_paste",
+              "provider" => "google_colab",
+              "alias" => "google-colab"
+            }
         end
 
       bindings =
@@ -149,6 +157,60 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmPluginsTest do
 
     def configure_group_plugin_credentials(tenant, group, plugin, connection, values) do
       notify({:configure_credentials, tenant, group, plugin, connection, values})
+      :ok
+    end
+
+    def start_colab_oauth_attempt(tenant_id, group_id, initiator_user_id, opts) do
+      notify({:start_colab_oauth_attempt, tenant_id, group_id, initiator_user_id, opts})
+
+      case env(:swarm_plugins_colab_start_result, nil) do
+        nil ->
+          {:ok,
+           %{
+             attempt_id: "colab_att_1",
+             authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?state=s1",
+             key: "GOOGLE_COLAB_AUTH_CODE",
+             label: "Authorization code",
+             format: "oauth_code",
+             binding_id: Keyword.get(opts, :binding_id)
+           }}
+
+        result ->
+          result
+      end
+    end
+
+    def complete_colab_oauth_attempt(
+          tenant_id,
+          group_id,
+          initiator_user_id,
+          attempt_id,
+          pasted_input,
+          opts
+        ) do
+      notify(
+        {:complete_colab_oauth_attempt, tenant_id, group_id, initiator_user_id, attempt_id,
+         pasted_input, opts}
+      )
+
+      env(
+        :swarm_plugins_colab_complete_result,
+        {:ok, %{binding_id: "colab_acc_1", generation: 1}}
+      )
+    end
+
+    def list_colab_group_accounts(_tenant_id, _group_id) do
+      notify(:list_colab_group_accounts)
+      {:ok, env(:swarm_plugins_colab_accounts, [])}
+    end
+
+    def disconnect_colab_account(tenant_id, group_id, binding_id) do
+      notify({:disconnect_colab_account, tenant_id, group_id, binding_id})
+      env(:swarm_plugins_colab_disconnect_result, {:ok, %{generation: 2}})
+    end
+
+    def retire_group_colab(tenant_id, group_id) do
+      notify({:retire_group_colab, tenant_id, group_id})
       :ok
     end
 
@@ -673,6 +735,306 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmPluginsTest do
     group = project.salix_group_id
     settle_receive({:configure_credentials, ^tenant, ^group, "x-twitter", "x-token", ^values})
     settle_refute_receive({:prepare_group_plugin_setup, _, _})
+  end
+
+  describe "google colab oauth_code_paste" do
+    test "connect two-step, reconnect, accounts display, disconnect 409/200, and archive outbox retirement",
+         %{conn: conn, org: org, project: project, user: user} do
+      put_env(:swarm_plugins_credentials, [
+        %{
+          "plugin_id" => "google-colab",
+          "name" => "Google Colab",
+          "description" => "Run GPU workloads on Google Colab",
+          "owner_scope" => "system",
+          "ui" => %{
+            "brand" => "google-colab",
+            "category" => "Compute",
+            "requires" => ["plugin-oauth-code"]
+          },
+          "setup_status" => %{
+            "type" => "integration",
+            "default_connection" => "google-colab-oauth",
+            "connections" => [
+              %{
+                "id" => "google-colab-oauth",
+                "kind" => "oauth_code_paste",
+                "label" => "Google Colab",
+                "provider" => "google_colab",
+                "state" => "connected"
+              }
+            ],
+            "mcps" => []
+          }
+        }
+      ])
+
+      put_env(:swarm_plugins_colab_accounts, [
+        %{
+          "binding_id" => "colab_acc_1",
+          "alias" => "google-colab",
+          "email" => "alice@gmail.com",
+          "status" => "ok",
+          "state" => "active",
+          "ccu_balance" => 1234.5,
+          "ccu_rate_hourly" => 1.96,
+          "eligible_gpus" => ["T4", "G4"],
+          "active_vm_count" => 1
+        }
+      ])
+
+      # Show exposes connected Colab accounts on the oauth_code_paste connection
+      show =
+        conn
+        |> get(plugins_path(org, project, "/google-colab"))
+        |> json_response(200)
+        |> data()
+
+      [colab_conn] = show["plugin"]["setup"]["connections"]
+      assert colab_conn["kind"] == "oauth_code_paste"
+      assert colab_conn["disconnectable"] == true
+      assert [acc] = colab_conn["accounts"]
+      assert acc["binding_id"] == "colab_acc_1"
+      assert acc["email"] == "alice@gmail.com"
+      assert acc["ccu_balance"] == 1234.5
+      assert acc["active_vm_count"] == 1
+
+      connect_path =
+        connection_path(org, project, "google-colab", "google-colab-oauth", "connect")
+
+      disconnect_path =
+        connection_path(org, project, "google-colab", "google-colab-oauth", "disconnect")
+
+      tenant = org.salix_tenant_id
+      group = project.salix_group_id
+      uid = user.id
+
+      # Step 1: returns configuration with snake_case help_url and attempt_id
+      step1 =
+        conn
+        |> post(connect_path, %{"action" => "connect"})
+        |> json_response(200)
+        |> data()
+
+      assert step1["configuration"] == %{
+               "key" => "GOOGLE_COLAB_AUTH_CODE",
+               "label" => "Authorization code",
+               "help_url" => "https://accounts.google.com/o/oauth2/v2/auth?state=s1",
+               "format" => "oauth_code",
+               "attempt_id" => "colab_att_1",
+               "binding_id" => nil
+             }
+
+      settle_receive(
+        {:start_colab_oauth_attempt, ^tenant, ^group, ^uid,
+         [operation: :install, binding_id: nil]}
+      )
+
+      # Step 2: success returns notice "Connected"
+      step2 =
+        conn
+        |> post(connect_path, %{
+          "action" => "reconnect",
+          "attempt_id" => "colab_att_1",
+          "binding_id" => "colab_acc_1",
+          "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "4/code"}
+        })
+        |> json_response(200)
+        |> data()
+
+      assert step2 == %{"notice" => "Connected"}
+
+      settle_receive(
+        {:complete_colab_oauth_attempt, ^tenant, ^group, ^uid, "colab_att_1", "4/code",
+         [operation: :reconnect, binding_id: "colab_acc_1", sync_plugin_state: false]}
+      )
+
+      # Step 2 malformed paste -> 422
+      put_env(:swarm_plugins_colab_complete_result, {:error, :plugin_credential_rejected})
+
+      assert %{"error" => %{"code" => "credential_rejected"}} =
+               conn
+               |> post(connect_path, %{
+                 "attempt_id" => "colab_att_1",
+                 "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "bad"}
+               })
+               |> json_response(422)
+
+      # Step 2 missing_colaboratory_scope retry -> 200 with explicit permission error
+      put_env(
+        :swarm_plugins_colab_complete_result,
+        {:retry_with_fresh_attempt,
+         %{
+           attempt_id: "colab_att_scope",
+           authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?state=s_scope",
+           key: "GOOGLE_COLAB_AUTH_CODE",
+           label: "Authorization code",
+           format: "oauth_code",
+           binding_id: nil
+         }, :missing_colaboratory_scope}
+      )
+
+      scope_retry =
+        conn
+        |> post(connect_path, %{
+          "attempt_id" => "colab_att_1",
+          "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "4/noscope"}
+        })
+        |> json_response(200)
+        |> data()
+
+      assert scope_retry["configuration"]["attempt_id"] == "colab_att_scope"
+      assert scope_retry["configuration"]["error"] =~ "Google Colab permission was not granted"
+
+      # Step 2 wrong_google_account -> 200 with auto-reissued fresh PKCE attempt
+      put_env(
+        :swarm_plugins_colab_complete_result,
+        {:error, {:wrong_google_account, "alice@gmail.com"}}
+      )
+
+      put_env(
+        :swarm_plugins_colab_start_result,
+        {:ok,
+         %{
+           attempt_id: "colab_att_reissued",
+           authorize_url:
+             "https://accounts.google.com/o/oauth2/v2/auth?state=s_reissued&login_hint=alice%40gmail.com",
+           key: "GOOGLE_COLAB_AUTH_CODE",
+           label: "Authorization code",
+           format: "oauth_code",
+           binding_id: "colab_acc_1"
+         }}
+      )
+
+      wrong_acc =
+        conn
+        |> post(connect_path, %{
+          "action" => "reconnect",
+          "attempt_id" => "colab_att_1",
+          "binding_id" => "colab_acc_1",
+          "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "4/bob"}
+        })
+        |> json_response(200)
+        |> data()
+
+      assert wrong_acc["configuration"]["attempt_id"] == "colab_att_reissued"
+      assert wrong_acc["configuration"]["help_url"] =~ "login_hint=alice%40gmail.com"
+      assert wrong_acc["configuration"]["error"] =~ "alice@gmail.com"
+
+      settle_receive(
+        {:start_colab_oauth_attempt, ^tenant, ^group, ^uid,
+         [operation: :reconnect, binding_id: "colab_acc_1"]}
+      )
+
+      # Step 2 409 already_connected, 409 conflict, and 503 platform_unavailable
+      put_env(:swarm_plugins_colab_complete_result, {:error, :already_connected})
+
+      assert %{"error" => %{"code" => "already_connected"}} =
+               conn
+               |> post(connect_path, %{
+                 "attempt_id" => "colab_att_1",
+                 "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "4/dup"}
+               })
+               |> json_response(409)
+
+      put_env(:swarm_plugins_colab_complete_result, {:error, :conflict})
+
+      assert %{"error" => %{"code" => "conflict"}} =
+               conn
+               |> post(connect_path, %{
+                 "attempt_id" => "colab_att_1",
+                 "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "4/conflict"}
+               })
+               |> json_response(409)
+
+      put_env(:swarm_plugins_colab_complete_result, {:error, :platform_unavailable})
+
+      assert %{"error" => %{"code" => "platform_unavailable"}} =
+               conn
+               |> post(connect_path, %{
+                 "attempt_id" => "colab_att_1",
+                 "config_values" => %{"GOOGLE_COLAB_AUTH_CODE" => "4/unavail"}
+               })
+               |> json_response(503)
+
+      # Disconnect with active VMs -> 409 colab_account_in_use
+      put_env(:swarm_plugins_colab_disconnect_result, {:error, :colab_account_in_use})
+
+      assert %{"error" => %{"code" => "colab_account_in_use"}} =
+               conn
+               |> post(disconnect_path, %{"binding_id" => "colab_acc_1"})
+               |> json_response(409)
+
+      settle_receive({:disconnect_colab_account, ^tenant, ^group, "colab_acc_1"})
+
+      # Disconnect cleanly -> 200
+      put_env(:swarm_plugins_colab_disconnect_result, {:ok, %{generation: 2}})
+
+      assert %{"notice" => "Connection disconnected."} =
+               conn
+               |> post(disconnect_path, %{"binding_id" => "colab_acc_1"})
+               |> json_response(200)
+               |> data()
+
+      # Archiving project enqueues retire_group_colab outbox op
+      assert {:ok, _archived} = BridgeForTeams.Projects.archive_project(project)
+      assert {:ok, _count} = BridgeForTeams.Salix.Reconciler.drain_once()
+      settle_receive({:retire_group_colab, ^tenant, ^group})
+    end
+
+    test "disconnect requires a binding_id and a stale binding_id returns 404 without touching the current account",
+         %{conn: conn, org: org, project: project} do
+      put_env(:swarm_plugins_credentials, [
+        %{
+          "plugin_id" => "google-colab",
+          "name" => "Google Colab",
+          "owner_scope" => "system",
+          "setup_status" => %{
+            "type" => "integration",
+            "default_connection" => "google-colab-oauth",
+            "connections" => [
+              %{
+                "id" => "google-colab-oauth",
+                "kind" => "oauth_code_paste",
+                "label" => "Google Colab",
+                "provider" => "google_colab",
+                "state" => "connected"
+              }
+            ],
+            "mcps" => []
+          }
+        }
+      ])
+
+      disconnect_path =
+        connection_path(org, project, "google-colab", "google-colab-oauth", "disconnect")
+
+      tenant = org.salix_tenant_id
+      group = project.salix_group_id
+
+      # Missing or blank binding_id never reaches Salix (no whole-group fallback).
+      for params <- [%{}, %{"binding_id" => ""}, %{"binding_id" => "   "}] do
+        assert %{"error" => %{"code" => "missing_binding_id", "message" => message}} =
+                 conn
+                 |> post(disconnect_path, params)
+                 |> json_response(422)
+
+        assert message == "binding_id is required to disconnect a Google Colab account."
+      end
+
+      refute_received {:disconnect_colab_account, _, _, _}
+
+      # Account A was replaced by account B: Salix reports A as not found and only A
+      # is addressed, so B and its leases stay untouched.
+      put_env(:swarm_plugins_colab_disconnect_result, {:error, :not_found})
+
+      assert %{"error" => %{"code" => "not_found"}} =
+               conn
+               |> post(disconnect_path, %{"binding_id" => "colab_acc_old_a"})
+               |> json_response(404)
+
+      settle_receive({:disconnect_colab_account, ^tenant, ^group, "colab_acc_old_a"})
+      refute_received {:disconnect_colab_account, _, _, _}
+    end
   end
 
   describe "authorization" do

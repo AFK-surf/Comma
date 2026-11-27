@@ -16,6 +16,19 @@ export type NotificationAuthorizationStatus =
   | "provisional"
   | "unavailable";
 
+/**
+ * macOS `CLAuthorizationStatus` by name (Always and When In Use are both
+ * `authorized`), `servicesOff` when Location Services is off for the whole
+ * Mac, and `unavailable` as above.
+ */
+export type LocationAuthorizationStatus =
+  | "notDetermined"
+  | "restricted"
+  | "denied"
+  | "authorized"
+  | "servicesOff"
+  | "unavailable";
+
 /** What the app icon shows after a badge update; `unavailable` as above. */
 export type NotificationBadgeResult = "shown" | "cleared" | "unavailable";
 
@@ -23,6 +36,8 @@ type NativeNotificationAuthorizationAddon = {
   authorizationStatus(): Promise<NotificationAuthorizationStatus>;
   requestAuthorization(): Promise<NotificationAuthorizationStatus>;
   setBadgeCount(count: number): Promise<NotificationBadgeResult>;
+  locationAuthorizationStatus(): Promise<LocationAuthorizationStatus>;
+  requestLocationAuthorization(): Promise<LocationAuthorizationStatus>;
 };
 
 export type NotificationAuthorizationAddon = {
@@ -43,6 +58,15 @@ export type NotificationAuthorizationAddon = {
    * application icon" off in System Settings the badge is cleared instead.
    */
   setBadgeCount(count: number): Promise<NotificationBadgeResult>;
+  /** Comma's location authorization, read without asking the user anything. */
+  locationAuthorizationStatus(): Promise<LocationAuthorizationStatus>;
+  /**
+   * Shows the system location prompt while macOS has not asked about Comma
+   * and resolves with the status the answer leaves behind. A decided status
+   * answers at once: macOS never asks twice, so a denied app can only be
+   * turned on in System Settings.
+   */
+  requestLocationAuthorization(): Promise<LocationAuthorizationStatus>;
 };
 
 type LoadNotificationAuthorizationAddonOptions = {
@@ -62,7 +86,9 @@ function isNativeAddon(value: unknown): value is NativeNotificationAuthorization
   return (
     typeof addon.authorizationStatus === "function" &&
     typeof addon.requestAuthorization === "function" &&
-    typeof addon.setBadgeCount === "function"
+    typeof addon.setBadgeCount === "function" &&
+    typeof addon.locationAuthorizationStatus === "function" &&
+    typeof addon.requestLocationAuthorization === "function"
   );
 }
 
@@ -130,6 +156,8 @@ function makeUnavailableAddon(error: Error): NotificationAuthorizationAddon {
     authorizationStatus: () => Promise.resolve("unavailable"),
     requestAuthorization: () => Promise.resolve("unavailable"),
     setBadgeCount: () => Promise.resolve("unavailable"),
+    locationAuthorizationStatus: () => Promise.resolve("unavailable"),
+    requestLocationAuthorization: () => Promise.resolve("unavailable"),
   };
 }
 
@@ -182,8 +210,24 @@ export function loadNotificationAuthorizationAddon(
           }
         };
 
+      const guardedLocation =
+        (query: "locationAuthorizationStatus" | "requestLocationAuthorization") =>
+        async (): Promise<LocationAuthorizationStatus> => {
+          try {
+            return await nativeAddon[query]();
+          } catch (error) {
+            options.logger?.warn(
+              `[notification-authorization] ${query} failed`,
+              asError(error)
+            );
+            return "unavailable";
+          }
+        };
+
       return {
         loaded: true,
+        locationAuthorizationStatus: guardedLocation("locationAuthorizationStatus"),
+        requestLocationAuthorization: guardedLocation("requestLocationAuthorization"),
         binaryPath,
         authorizationStatus: guarded("authorizationStatus"),
         requestAuthorization: guarded("requestAuthorization"),

@@ -108,6 +108,37 @@ describe("holdScreenStream", () => {
     watching.release();
   });
 
+  it("tells its holders how its link fares as the station says it, and forgets it once the stream fails", () => {
+    const views: HeldScreenStreamView[] = [];
+    const held = holdScreenStream({ source, ...options }, (view) => views.push(view));
+    const peer = opened[0]!.options;
+    peer.onState("live");
+    expect(views.at(-1)?.linkTone).toBeUndefined();
+    peer.onStats?.({ rtt: 57, loss: 0 });
+    expect(views.at(-1)?.linkTone).toBeUndefined();
+    expect(held.stats()).toMatchObject({ rtt: 57, loss: 0 });
+    // A weak round trip, then most packets lost: the worse decides.
+    peer.onStats?.({ rtt: 420, loss: 0 });
+    expect(views.at(-1)?.linkTone).toBe("warn");
+    peer.onStats?.({ rtt: 57, loss: 28.6 });
+    expect(views.at(-1)?.linkTone).toBe("bad");
+    const told = views.length;
+    // Another figure leaves the tone as it was, and says nothing.
+    peer.onStats?.({ latency: { frame: 40, before: 10 } });
+    expect(views).toHaveLength(told);
+    // Another view's path is not this one's: its figures go until it says them.
+    peer.onStats?.({ rtt: undefined, loss: undefined });
+    expect(views.at(-1)?.linkTone).toBeUndefined();
+    expect(held.stats().rtt).toBeUndefined();
+    peer.onStats?.({ loss: 3.2 });
+    expect(views.at(-1)?.linkTone).toBe("warn");
+    peer.onFailure?.("it went");
+    peer.onState("failed");
+    expect(views.at(-1)).toMatchObject({ state: "failed", linkTone: undefined });
+    expect(held.stats().loss).toBeUndefined();
+    held.release();
+  });
+
   it("opens a failed stream anew for all who hold it, on one's retry", () => {
     const seen: HeldScreenStreamView[][] = [[], []];
     const held = seen.map((views) =>

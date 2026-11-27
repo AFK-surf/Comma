@@ -10,6 +10,7 @@ type BrandMarkProps = SVGProps<SVGSVGElement>;
 export const CommaMark = (props: BrandMarkProps) => (
   <svg
     aria-hidden="true"
+    data-slot="comma-mark"
     focusable="false"
     viewBox="0 0 48 48"
     fill="none"

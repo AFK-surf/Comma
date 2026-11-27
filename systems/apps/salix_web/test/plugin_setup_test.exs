@@ -126,6 +126,71 @@ defmodule Salix.Control.PluginSetupTest do
     end
   end
 
+  # WeCom's hosted MCP for one data ability: it takes any key until a tool
+  # runs, then answers a key other than "good-key" with its own error object
+  # (errcode 850001) inside a successful result. The tool's data may say the
+  # same words, as a mail can.
+  defmodule FakeWeComMCP do
+    @behaviour Elixir.Plug
+    import Elixir.Plug.Conn
+
+    def start do
+      {:ok, bandit} =
+        Bandit.start_link(plug: __MODULE__, port: 0, ip: {127, 0, 0, 1}, startup_log: false)
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+      "http://127.0.0.1:#{port}"
+    end
+
+    @impl true
+    def init(opts), do: opts
+
+    @impl true
+    def call(conn, _opts) do
+      {:ok, body, conn} = read_body(conn)
+      request = Jason.decode!(body)
+      key = conn.query_string |> URI.decode_query() |> Map.get("apikey")
+      respond(conn, request, key)
+    end
+
+    defp respond(conn, %{"id" => id, "method" => "initialize"}, _key),
+      do:
+        json(conn, id, %{
+          "protocolVersion" => "2025-06-18",
+          "capabilities" => %{"tools" => %{}},
+          "serverInfo" => %{"name" => "动态日程 MCP", "version" => "1.0.5"}
+        })
+
+    defp respond(conn, %{"id" => id, "method" => "tools/list"}, _key),
+      do:
+        json(conn, id, %{
+          "tools" => [
+            %{
+              "name" => "meeting_rooms_buildings_list",
+              "description" => "查询企业会议室楼栋信息。",
+              "inputSchema" => %{"type" => "object", "properties" => %{}}
+            }
+          ]
+        })
+
+    defp respond(conn, %{"id" => id, "method" => "tools/call"}, key) do
+      text =
+        if key == "good-key",
+          do: ~s({"errcode": 0, "buildings": [{"name": "invalid api key 大厦"}]}),
+          else: ~s({\n  "errcode": 850001,\n  "errmsg": "invalid api key, hint: [1]"\n})
+
+      json(conn, id, %{"content" => [%{"type" => "text", "text" => text}], "isError" => false})
+    end
+
+    defp respond(conn, _request, _key), do: send_resp(conn, 202, "")
+
+    defp json(conn, id, result) do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "result" => result}))
+    end
+  end
+
   setup do
     previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
     SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
@@ -148,6 +213,114 @@ defmodule Salix.Control.PluginSetupTest do
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Linear"}, tenant["tenant_id"])
 
     %{tenant_id: tenant["tenant_id"], group_id: group["group_id"]}
+  end
+
+  test "a key is taken alone or from exactly its ability's WeCom address" do
+    address = "https://qyapi.weixin.qq.com/mcp/v2/bot/schedule"
+    pasted = address <> "?apikey=abc-DEF_123"
+
+    assert PluginSetup.param_value(pasted, "apikey", address) == {:ok, "abc-DEF_123"}
+    assert PluginSetup.param_value("abc-DEF_123", "apikey", address) == {:ok, "abc-DEF_123"}
+
+    # Another ability's address, another host, plain http or no key is
+    # refused, and the refusal repeats nothing that was pasted.
+    for other <- [
+          "https://qyapi.weixin.qq.com/mcp/v2/bot/mail?apikey=abc-DEF_123",
+          "https://evil.example/mcp/v2/bot/schedule?apikey=abc-DEF_123",
+          "http://qyapi.weixin.qq.com/mcp/v2/bot/schedule?apikey=abc-DEF_123",
+          "https://qyapi.weixin.qq.com:8443/mcp/v2/bot/schedule?apikey=abc-DEF_123",
+          address <> "?key=abc-DEF_123"
+        ] do
+      # The refusal carries nothing that was pasted.
+      assert PluginSetup.param_value(other, "apikey", address) ==
+               {:error, :credential_address_mismatch}
+    end
+
+    # A connection without an address keeps its value as it is.
+    assert PluginSetup.param_value(pasted, nil, nil) == {:ok, pasted}
+  end
+
+  test "a WeCom key is kept only when a tool call with it is answered", context do
+    previous_private_targets = SystemsRuntime.get_env(:salix_mcp, :allow_private_http_targets)
+    SystemsRuntime.put_env(:salix_mcp, :allow_private_http_targets, true)
+
+    on_exit(fn ->
+      if is_nil(previous_private_targets),
+        do: SystemsRuntime.delete_env(:salix_mcp, :allow_private_http_targets),
+        else:
+          SystemsRuntime.put_env(
+            :salix_mcp,
+            :allow_private_http_targets,
+            previous_private_targets
+          )
+    end)
+
+    plugin =
+      Plugins.system_plugins()
+      |> Enum.find(&(&1["plugin_id"] == "wecom-schedule"))
+      |> Map.put("owner_scope", "system")
+
+    [%{"mcp_id" => mcp_id}] = plugin["setup"]["mcps"]
+    {:ok, builtin} = MCPStore.get_definition(mcp_id)
+    [remote] = builtin["server_metadata"]["remotes"]
+    base = FakeWeComMCP.start()
+
+    assert {:ok, _definition, :updated} =
+             MCPStore.upsert_system_definition(
+               put_in(builtin, ["server_metadata", "remotes"], [
+                 %{
+                   remote
+                   | "url" => base <> "/mcp/v2/bot/schedule?apikey={WECOM_SCHEDULE_APIKEY}"
+                 }
+               ])
+             )
+
+    bindings = fn ->
+      context.tenant_id
+      |> MCPStore.list_group_bindings(context.group_id)
+      |> Enum.filter(&(&1["mcp_id"] == mcp_id))
+    end
+
+    # A dead key: WeCom's error object in a successful result. It is refused
+    # and leaves no binding behind.
+    assert {:error, :plugin_credential_rejected} =
+             PluginSetup.configure_credentials(context.tenant_id, context.group_id, plugin, %{
+               "WECOM_SCHEDULE_APIKEY" => "dead-key"
+             })
+
+    assert bindings.() == []
+
+    # A working key is kept, though its data says the same words.
+    assert :ok =
+             PluginSetup.configure_credentials(context.tenant_id, context.group_id, plugin, %{
+               "WECOM_SCHEDULE_APIKEY" => "good-key"
+             })
+
+    assert [binding] = bindings.()
+
+    assert {:ok, %{"status" => "completed", "content" => content}} =
+             Gateway.call_tool(
+               context.tenant_id,
+               context.group_id,
+               binding["binding_id"],
+               "meeting_rooms_buildings_list",
+               %{}
+             )
+
+    assert content =~ "invalid api key 大厦"
+    refute inspect(binding) =~ "good-key"
+  end
+
+  test "each WeCom ability's credential setup names its own address" do
+    for plugin <- Plugins.system_plugins(),
+        String.starts_with?(plugin["plugin_id"], "wecom-") do
+      ability = String.replace_prefix(plugin["plugin_id"], "wecom-", "")
+
+      assert %{"param" => "apikey", "address" => address} =
+               PluginSetup.credential_setup(plugin, nil)
+
+      assert address == "https://qyapi.weixin.qq.com/mcp/v2/bot/" <> ability
+    end
   end
 
   test "seeding built-in MCP definitions is idempotent" do
@@ -262,14 +435,8 @@ defmodule Salix.Control.PluginSetupTest do
     assert {:ok, %{"GITHUB_ACCESS_TOKEN" => "github-plugin-test-token"}} =
              Salix.Bindings.MCPCredentials.resolve(binding)
 
-    assert :ok =
-             SalixStore.OAuth.put(connection_id, %{
-               "connection_id" => connection_id,
-               "provider" => "github",
-               "access_token" => "github-plugin-test-token",
-               "scopes" => required_scopes,
-               "status" => "reauthorization_required"
-             })
+    # The MCP server refused that token (a 401): the grant needs a reconnect.
+    assert :ok = SalixMCP.Credentials.oauth_refs_refused(binding)
 
     assert %{"connections" => connections, "mcps" => [mcp]} =
              plugin_status(context, "github")
@@ -619,6 +786,27 @@ defmodule Salix.Control.PluginSetupTest do
 
     assert Enum.find(connections, &(&1["id"] == "linear-managed"))["state"] == "connected"
     assert mcp_status["state"] == "running"
+
+    # Linear stops taking the managed token (revoked): the tool call is
+    # refused and the grant is marked for a reconnect.
+    assert :ok = MockLinearMCP.expect_authorization(mcp, "Bearer a-newer-token")
+
+    assert {:ok, _refused} =
+             Gateway.call_tool(
+               context.tenant_id,
+               context.group_id,
+               binding["binding_id"],
+               "echo",
+               %{"marker" => "revoked"}
+             )
+
+    assert {:ok, %{"status" => "reauthorization_required"}} =
+             SalixStore.OAuth.get(managed_connection_id)
+
+    assert %{"connections" => connections} = plugin_status(context, "linear")
+
+    assert Enum.find(connections, &(&1["id"] == "linear-managed"))["state"] ==
+             "reauthorization_required"
   end
 
   test "native MCP OAuth disconnect clears the dependency and revokes its connection", context do

@@ -2,7 +2,7 @@ import { spacing } from "@comma/ui/tokens";
 
 /**
  * Shared geometry for pointer-driven row reordering. A list that lifts a row
- * under the pointer (the routine cards, the icon rail) translates it within
+ * under the pointer (the icon rail) translates it within
  * the band its siblings occupy and meets rubber-band resistance past it.
  */
 

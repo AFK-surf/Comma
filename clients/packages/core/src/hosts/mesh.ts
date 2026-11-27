@@ -73,6 +73,12 @@ export function meshStationLinks(
     close: () => client.close(),
     credential: (station, credential) => void credentials.set(station, credential),
     reach: (station, reach) => void reaches.set(station, reach),
+    ...(endpoint.networkChange
+      ? {
+          networkChange: () =>
+            Effect.promise(() => endpoint.networkChange!().catch(() => undefined)),
+        }
+      : {}),
     nextVia: (station, last) =>
       Effect.tryPromise({ try: () => client.nextVia(station, last), catch: failure }),
     connect: (station) =>

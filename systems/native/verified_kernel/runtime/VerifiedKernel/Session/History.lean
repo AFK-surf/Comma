@@ -48,7 +48,7 @@ def historyCompaction (state event : Term) (provider : Bool) : KernelM Term := d
   let sequence ← if baseline.truthy then pure baseline else add (← field state "summary_sequence") (i 1)
   let compacted ← write state [("summary_sequence", sequence), ("compacted_through", through),
     ("compacted_seq", ← compactedSequence state through (← Data.event event "compacted_seq")),
-    ("summary", summary), ("provider_compaction", providerRecord), ("compaction_failure", nil)]
+    ("summary", summary), ("summary_ifc_view_label", ← Data.event event "ifc_view_label"), ("provider_compaction", providerRecord), ("compaction_failure", nil)]
   let timed ← if provider then write compacted [("last_activity_at", metadataSeconds ((← Data.event event "created_at").default (← field state "last_activity_at")))] else pure compacted
   recomputeContext (← pruneCompactResults (← pruneResultRefs timed))
 

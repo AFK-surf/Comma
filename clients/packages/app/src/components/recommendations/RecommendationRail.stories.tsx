@@ -15,7 +15,7 @@ import {
   RecommendationMediaListCard,
   RecommendationRail,
   RecommendationLinkPreviewProvider,
-  RecommendationSummary,
+  RecommendationDocument,
   RecommendationTextListCard,
 } from "./RecommendationRail";
 
@@ -380,7 +380,7 @@ export default {
     docs: {
       description: {
         component:
-          "Comma Center recommendation templates and rail composition. Card examples follow the Comma-App sidebar reference; the summary follows Figma node 929:13114.",
+          "Comma Center recommendation templates and rail composition. Card examples follow the Comma-App sidebar reference; the rail leads with the greeting.",
       },
     },
   },
@@ -408,24 +408,6 @@ export const TextList = {
   ),
 };
 
-export const Summary = {
-  render: () => (
-    <RailStoryCore previewOf={previewOf}>
-      <RecommendationLinkPreviewProvider workspaceId="wsp_story">
-        <div style={{ inlineSize: 350 }}>
-          <RecommendationSummary
-            fallbackTitle="Good morning."
-            onOpenTask={noop}
-            onOpenUrl={noop}
-            parts={summary}
-            sources={envelope.settings.sources}
-          />
-        </div>
-      </RecommendationLinkPreviewProvider>
-    </RailStoryCore>
-  ),
-};
-
 // One inline link per rich preview kind, plus a Gmail link that gets no hover
 // card at all (mail is private). Hover each chip.
 export const LinkPreviews = {
@@ -433,15 +415,11 @@ export const LinkPreviews = {
     <RailStoryCore previewOf={previewOf}>
       <RecommendationLinkPreviewProvider workspaceId="wsp_story">
         <div style={{ inlineSize: 350 }}>
-          <RecommendationSummary
-            fallbackTitle="Good morning."
+          <RecommendationDocument
             onOpenTask={noop}
             onOpenUrl={noop}
             parts={[
-              {
-                kind: "markdown",
-                text: "Good morning.\n\nGitHub needs your review on ",
-              },
+              { kind: "markdown", text: "GitHub needs your review on " },
               {
                 kind: "inline-link",
                 link: {
@@ -637,6 +615,24 @@ export const FullRail = {
         onOpenUrl={noop}
         onUsePrompt={noop}
         workspaceId="storybook-workspace"
+      />
+    </RailFrame>
+  ),
+};
+
+// Every card dismissed or handled: the copy stays until a refresh. The burst
+// plays in the client when the last card is cleared, not on a first read.
+export const Cleared = {
+  render: () => (
+    <RailFrame
+      envelope={{ ...envelope, snapshot: { ...envelope.snapshot, cards: [] } }}
+    >
+      <RecommendationRail
+        greetingName="Zanwei"
+        onOpenTask={noop}
+        onOpenUrl={noop}
+        onUsePrompt={noop}
+        workspaceId="storybook-workspace-cleared"
       />
     </RailFrame>
   ),

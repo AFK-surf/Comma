@@ -43,24 +43,26 @@ object AuthGraph {
         private set
     @Volatile private var repository: AuthRepository? = null
     @Volatile private var runtime: CoreRuntime? = null
+    @Volatile private var installedCore: CoreApi? = null
 
     /** The process's client core, once [get] built it; null in a build without a backend address. */
     fun core(context: Context): CoreApi? {
         get(context)
-        return runtime?.core
+        return runtime?.core ?: installedCore
     }
     fun get(context: Context): AuthRepository = repository ?: synchronized(this) {
         repository ?: create(context.applicationContext).also { repository = it }
     }
 
     /**
-     * Gives the process [repository] in place of the one [get] builds, and [scope] for its work: a test environment's,
-     * before anything asks.
+     * Gives the process [repository] in place of the one [get] builds, [scope] for its work and [core] for the pages
+     * that call the core directly: a test environment's, before anything asks.
      */
-    internal fun install(repository: AuthRepository, scope: CoroutineScope) = synchronized(this) {
+    internal fun install(repository: AuthRepository, scope: CoroutineScope, core: CoreApi? = null) = synchronized(this) {
         this.repository = repository
         this.scope = scope
         runtime = null
+        installedCore = core
     }
 
     private fun create(context: Context): AuthRepository {

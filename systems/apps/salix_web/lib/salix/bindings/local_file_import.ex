@@ -15,6 +15,8 @@ defmodule Salix.Bindings.LocalFileImport do
 
   alias SalixEnv.Protocol
 
+  require Logger
+
   @behaviour SalixIM.Ports.LocalFileImport
 
   @max_bytes 512 * 1024 * 1024
@@ -131,6 +133,7 @@ defmodule Salix.Bindings.LocalFileImport do
           error
       end
     else
+      {:error, :local_file_device_disconnected} = error -> error
       _ -> {:error, :local_file_unavailable}
     end
   end
@@ -248,13 +251,27 @@ defmodule Salix.Bindings.LocalFileImport do
           opts
         )
       else
-        {:error, _} -> {:error, :local_file_unavailable}
+        {:error, :local_file_device_disconnected} = error ->
+          error
+
+        {:error, :disconnected} ->
+          {:error, :local_file_device_disconnected}
+
+        {:error, reason} ->
+          import_failed(message_id, reason)
       end
     end
   rescue
-    _ -> {:error, :local_file_unavailable}
+    exception -> import_failed(message_id, exception.__struct__)
   catch
-    _, _ -> {:error, :local_file_unavailable}
+    kind, _ -> import_failed(message_id, kind)
+  end
+
+  # Only a bare atom or module name reaches the log: a read's error can carry a host path or file data.
+  defp import_failed(message_id, reason) do
+    class = if is_atom(reason), do: reason, else: :other
+    Logger.warning("local file import failed: message=#{message_id} reason=#{inspect(class)}")
+    {:error, :local_file_unavailable}
   end
 
   defp commit_prepared(

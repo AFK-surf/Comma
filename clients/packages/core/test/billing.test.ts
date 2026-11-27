@@ -9,6 +9,7 @@ import type {
 } from "../src/contract.ts";
 import {
   FakeHost,
+  FakeStore,
   inProcessOpener,
   json,
   offline,
@@ -22,6 +23,7 @@ import { comparable, replay } from "../src/testing/replay.ts";
 const WS = "ws-1";
 const plansPath = "/v1/comma/billing/plans";
 const summaryPath = (ws = WS) => `/v1/comma/workspaces/${ws}/billing/summary`;
+const recordPath = (ws = WS) => `/v1/comma/workspaces/${ws}/billing/store/transactions`;
 const plan = {
   plan_key: "monthly",
   package_code: "monthly",
@@ -538,6 +540,215 @@ describe("the usage and billing page", () => {
     // It changed: no more reads.
     await t.time.pass(40_000, 1_000);
     expect(t.api.seen("GET", summaryPath())).toHaveLength(4);
+  });
+});
+
+describe("buying through the app's store", () => {
+  const intentPath = `/v1/comma/workspaces/${WS}/billing/store/intent`;
+  const storePlan = { ...plan, apple_product_id: "monthly" };
+
+  function storeSetup() {
+    const host = new FakeHost();
+    const store = new FakeStore();
+    store.prices.set("monthly", "$12.99");
+    host.store = store;
+    const t = setup(host);
+    t.api.on("GET", plansPath, { data: [storePlan] });
+    t.api.on("GET", summaryPath(), summary(1000));
+    t.api.on("POST", intentPath, {
+      provider: "apple",
+      product_id: "monthly",
+      account_token: "token-1",
+    });
+    t.api.on("POST", recordPath(), { recorded: true });
+    return { ...t, store };
+  }
+
+  it("shows the store's price, and finishes a purchase once the server recorded it", async () => {
+    const t = storeSetup();
+    const page = t.watch<BillingValue>({ topic: "billing" });
+    await t.time.pass(100);
+    expect(page()).toMatchObject({
+      status: "ready",
+      store: { provider: "apple", prices: { monthly: "$12.99" } },
+    });
+
+    const bought = t.client.call("billing.storePurchase", {
+      workspace: WS,
+      plan: "monthly",
+    });
+    await t.time.pass(100);
+    expect(await bought).toEqual({ status: "recorded" });
+    expect(t.api.seen("POST", intentPath)[0]!.body).toEqual({
+      provider: "apple",
+      plan_key: "monthly",
+    });
+    expect(t.store.purchases).toEqual([
+      { productId: "monthly", accountToken: "token-1" },
+    ]);
+    expect(t.api.seen("POST", recordPath())[0]!.body).toEqual({
+      provider: "apple",
+      transaction_id: "1001",
+    });
+    expect(t.store.finished).toEqual(["1001"]);
+    // The balance is read again for the credits.
+    expect(t.api.seen("GET", summaryPath())).toHaveLength(2);
+  });
+
+  it("reports nothing for a purchase given up or waiting for approval", async () => {
+    const t = storeSetup();
+    for (const status of ["cancelled", "pending"] as const) {
+      t.store.next = status;
+      const bought = t.client.call("billing.storePurchase", {
+        workspace: WS,
+        plan: "monthly",
+      });
+      await t.time.pass(100);
+      expect(await bought).toEqual({ status });
+    }
+    expect(t.api.seen("POST", recordPath())).toHaveLength(0);
+    expect(t.store.finished).toEqual([]);
+  });
+
+  it("buys nothing when the server refuses: another channel's subscription runs", async () => {
+    const t = storeSetup();
+    t.api.on("POST", intentPath, json(409, { error: "subscription_active_elsewhere" }));
+    const refused = expect(
+      t.client.call("billing.storePurchase", { workspace: WS, plan: "monthly" })
+    ).rejects.toMatchObject({ code: "subscription_active_elsewhere" });
+    await t.time.pass(100);
+    await refused;
+    expect(t.store.purchases).toEqual([]);
+  });
+
+  it("keeps a paid transaction the server could not record, and records it when the app settles", async () => {
+    const t = storeSetup();
+    t.api.on("POST", recordPath(), json(502, { error: "store_unavailable" }));
+    const bought = t.client.call("billing.storePurchase", {
+      workspace: WS,
+      plan: "monthly",
+    });
+    await t.time.pass(100);
+    expect(await bought).toEqual({ status: "pending" });
+    expect(t.store.open.map((transaction) => transaction.id)).toEqual(["1001"]);
+
+    // At the next launch, with a renewal the store handed over meanwhile: both go through the first workspace.
+    t.store.deliver("monthly");
+    t.api.on("POST", recordPath(), { recorded: true });
+    const settled = t.client.call("billing.storeSettle", {});
+    await t.time.pass(100);
+    expect(await settled).toEqual({ recorded: 2 });
+    expect(t.store.finished).toEqual(["1001", "1002"]);
+    expect(t.store.open).toEqual([]);
+  });
+
+  it("finishes a transaction the server will never record, and reads nothing for it", async () => {
+    const t = storeSetup();
+    t.store.deliver("monthly");
+    t.api.on(
+      "POST",
+      recordPath(),
+      json(422, { error: "store_transaction_not_recordable" })
+    );
+    const settled = t.client.call("billing.storeSettle", { workspace: WS });
+    await t.time.pass(100);
+    expect(await settled).toEqual({ recorded: 0 });
+    expect(t.store.finished).toEqual(["1001"]);
+    expect(t.api.seen("GET", summaryPath())).toHaveLength(0);
+  });
+
+  it("finishes an unrecordable purchase and answers unrecordable", async () => {
+    const t = storeSetup();
+    t.api.on(
+      "POST",
+      recordPath(),
+      json(422, { error: "store_transaction_not_recordable" })
+    );
+    const bought = t.client.call("billing.storePurchase", {
+      workspace: WS,
+      plan: "monthly",
+    });
+    await t.time.pass(100);
+    expect(await bought).toEqual({ status: "unrecordable" });
+    expect(t.store.finished).toEqual(["1001"]);
+    expect(t.api.seen("GET", summaryPath())).toHaveLength(0);
+  });
+
+  it("re-scans when a transaction arrives while a settle is already running", async () => {
+    const t = storeSetup();
+    t.store.deliver("monthly");
+    const release = t.api.hold("POST", recordPath());
+    const first = t.client.call("billing.storeSettle", { workspace: WS });
+    await t.time.pass(100);
+
+    // While the first settle is reporting 1001, another transaction arrives and restore asks to settle.
+    t.store.deliver("monthly");
+    const second = t.client.call("billing.storeRestore", { workspace: WS });
+    await t.time.pass(100);
+
+    release();
+    await t.time.pass(100);
+    expect(await first).toEqual({ recorded: 2 });
+    expect(await second).toEqual({ recorded: 2 });
+    expect(t.store.finished).toEqual(["1001", "1002"]);
+    expect(t.store.open).toEqual([]);
+  });
+
+  it("retries reading store prices on refresh when the first read returned empty", async () => {
+    const t = storeSetup();
+    t.store.prices.clear();
+    const page = t.watch<BillingValue>({ topic: "billing" });
+    await t.time.pass(100);
+    expect(page()).toMatchObject({
+      status: "ready",
+      store: { provider: "apple", prices: {} },
+    });
+
+    t.store.prices.set("monthly", "$12.99");
+    await t.client.call("billing.refresh", {});
+    await t.time.pass(100);
+    expect(page()).toMatchObject({
+      status: "ready",
+      store: { provider: "apple", prices: { monthly: "$12.99" } },
+    });
+  });
+
+  it("restores purchases: asks the store again, then settles what it handed back", async () => {
+    const t = storeSetup();
+    t.store.deliver("monthly");
+    const restored = t.client.call("billing.storeRestore", { workspace: WS });
+    await t.time.pass(100);
+    expect(await restored).toEqual({ recorded: 1 });
+    expect(t.store.syncs).toBe(1);
+    await t.client.call("billing.storeManage", {});
+    expect(t.store.manages).toBe(1);
+  });
+
+  it("refuses a store purchase where the app sells through no store", async () => {
+    const t = setup();
+    const page = t.watch<BillingValue>({ topic: "billing" });
+    t.api.on("GET", summaryPath(), summary(1000));
+    await t.time.pass(100);
+    expect(page()).toMatchObject({ status: "ready", store: null });
+    await expect(
+      t.client.call("billing.storePurchase", { workspace: WS, plan: "monthly" })
+    ).rejects.toMatchObject({ code: "unsupported" });
+    expect(t.api.seen("POST", intentPath)).toHaveLength(0);
+  });
+
+  it("plays a recorded purchase again to the same outputs", async () => {
+    const t = storeSetup();
+    t.watch({ topic: "billing" });
+    await t.time.pass(100);
+    const bought = t.client.call("billing.storePurchase", {
+      workspace: WS,
+      plan: "monthly",
+    });
+    await t.time.pass(100);
+    await bought;
+    const recorded = t.core.recorder!;
+    const again = await replay(recorded, { until: t.time.now() });
+    expect(comparable(again.outputs)).toEqual(comparable(recorded.outputs));
   });
 });
 

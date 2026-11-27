@@ -211,7 +211,12 @@ defmodule CommaWeb.IMessageIntegrationTest do
     # The confirmation went to the relay before handle_event returned.
     assert :ok = IMessageIntegration.handle_event(event("1", pending["command"]))
     assert_received {:relay, "POST", "/v1/messages/text", confirmation}
-    assert Jason.decode!(confirmation)["text"] =~ "connected"
+    # The relay sends no files, so its welcome does not offer them.
+    assert Jason.decode!(confirmation)["text"] ==
+             """
+             iMessage is connected to Comma.
+             Text Comma here like a teammate. Send text or images, and Comma can reply with images.\
+             """
 
     {:ok, ended} = SalixAgent.CapabilityRequests.get(group, request["request_id"], tenant)
     assert ended["status"] == "completed"
@@ -503,8 +508,7 @@ defmodule CommaWeb.IMessageIntegrationTest do
                "connect_id" => link.connect_id,
                "params" => %{
                  "chat_id" => "chat-alice",
-                 "path" => "/result.png",
-                 "caption" => "result"
+                 "path" => "/result.png"
                }
              })
 

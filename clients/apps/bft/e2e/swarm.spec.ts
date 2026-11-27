@@ -652,6 +652,79 @@ test("Settings picks the default place to run Tasks from the swarm's places", as
   ]);
 });
 
+// Prod 2026-11-18 (HyperShell): the swarm's default Task model was a Claude
+// model whose only account the org had turned off; Settings listed it as an
+// ordinary choice and every Task that named no model stopped.
+test("Settings says no enabled account serves the default Task model until another is saved", async ({
+  page,
+}) => {
+  const opus = { kind: "catalog", model: "claude-opus-5-5", allow_paid: false };
+  const platform = { kind: "platform", tier: "worker" };
+  const rows = [
+    {
+      key: "",
+      choice: null,
+      label: "Organization default (Comma)",
+      disabled: false,
+      group: "Platform",
+    },
+    {
+      key: "catalog:claude-opus-5-5",
+      choice: opus,
+      label: "Claude Opus 5.5 (current; no enabled account serves it)",
+      disabled: true,
+      group: "Anthropic",
+    },
+    {
+      key: "platform:worker",
+      choice: platform,
+      label: "Platform model (Comma)",
+      disabled: false,
+      group: "Platform",
+    },
+  ];
+  const modelOf = (key: string, label: string, unserved: boolean) => ({
+    ...settings(),
+    task_model: { status: "ok", key, label, unserved, models: rows },
+  });
+  let current = modelOf(
+    "catalog:claude-opus-5-5",
+    "Claude Opus 5.5; no enabled account serves it",
+    true
+  );
+  const requests = await open(page, `${base}/settings`, (request) => {
+    if (request.path === "/orgs/acme/projects/p-1/settings") return ok(current);
+    if (request.path === "/orgs/acme/projects/p-1/settings/task-model") {
+      current = modelOf("platform:worker", "Platform model (Comma)", false);
+      return ok(current);
+    }
+    return undefined;
+  });
+
+  const section = page.getByRole("region", { name: "Default Task model" });
+  const note = section.getByText("No enabled account serves this model");
+  await expect(note).toBeVisible();
+
+  await section.getByRole("button", { name: /Claude Opus 5.5/ }).click();
+  await expect(page.getByRole("option", { name: /Claude Opus 5.5/ })).toBeDisabled();
+  await page.getByRole("option", { name: "Platform model (Comma)" }).click();
+  // Another choice is not saved yet: the note is about the saved model.
+  await expect(note).toHaveCount(0);
+  await section.getByRole("button", { name: "Save" }).click();
+  await expect(section.getByText("Saved")).toBeVisible();
+  await expect(note).toHaveCount(0);
+
+  expect(
+    writes(requests).map(({ method, path, body }) => ({ method, path, body }))
+  ).toEqual([
+    {
+      method: "PUT",
+      path: "/orgs/acme/projects/p-1/settings/task-model",
+      body: { model: platform },
+    },
+  ]);
+});
+
 test("a swarm member sees the default place to run Tasks by its name", async ({
   page,
 }) => {
@@ -850,4 +923,186 @@ test("pages fit 900px wide without sideways scrolling", async ({ page }) => {
       )
     ).toBeLessThanOrEqual(0);
   }
+});
+
+test("Settings assigns department and per-Swarm search grants in one save", async ({
+  page,
+}) => {
+  let current = {
+    ...settings(),
+    cross_search: {
+      status: "ok",
+      can_manage: true,
+      department_id: "d-ops",
+      department_name: "Customer Operations",
+      inherited_targets: [{ kind: "self", id: "d-ops", name: "Customer Operations" }],
+      explicit_targets: [] as { kind: string; id: string; name: string }[],
+      departments: [
+        { id: "d-ops", name: "Customer Operations" },
+        { id: "d-eng", name: "Engineering" },
+      ],
+      ifc_on: false,
+      catalog_swarms: [
+        { id: "p-core", name: "Core Services", department_id: "d-eng", ifc_on: false },
+        { id: "p-infra", name: "Infra", department_id: "d-eng", ifc_on: true },
+      ],
+    },
+  };
+
+  const requests = await open(page, `${base}/settings`, (request) => {
+    if (request.path === "/orgs/acme/projects/p-1/settings") return ok(current);
+    if (request.path === "/orgs/acme/projects/p-1/settings/search-grants") {
+      current = {
+        ...current,
+        cross_search: {
+          ...current.cross_search,
+          explicit_targets: [{ kind: "project", id: "p-core", name: "Core Services" }],
+        },
+      };
+      return ok(current);
+    }
+    return undefined;
+  });
+
+  const section = page.getByRole("region", {
+    name: "Department & Cross-Swarm search",
+  });
+  await expect(
+    section.getByText("Inherited from Customer Operations: This department")
+  ).toBeVisible();
+
+  await section
+    .getByRole("button", { name: "Show Agent Swarms in Engineering" })
+    .click();
+  // Infra has IFC on and this Swarm does not: it stays selectable, with a note.
+  await expect(
+    section.getByText("IFC is on: only an Agent Swarm with IFC on can search it")
+  ).toHaveCount(1);
+  await section.getByRole("checkbox", { name: "Core Services" }).check({ force: true });
+  await section.getByRole("button", { name: "Save" }).click();
+  await expect(section.getByText("Saved")).toBeVisible();
+
+  expect(
+    writes(requests).map(({ method, path, body, csrf: token }) => ({
+      method,
+      path,
+      body,
+      token,
+    }))
+  ).toEqual([
+    {
+      method: "PUT",
+      path: "/orgs/acme/projects/p-1/settings/search-grants",
+      body: {
+        department_id: "d-ops",
+        targets: [{ kind: "project", id: "p-core" }],
+      },
+      token: csrf,
+    },
+  ]);
+});
+
+test("Settings shows no department and search card to members who are not org admins", async ({
+  page,
+}) => {
+  const current = {
+    ...settings("user"),
+    cross_search: {
+      status: "ok",
+      can_manage: false,
+      department_id: "d-ops",
+      department_name: "Customer Operations",
+      inherited_targets: [],
+      explicit_targets: [],
+      departments: [],
+      catalog_swarms: [],
+    },
+  };
+  await open(page, `${base}/settings`, (request) =>
+    request.path === "/orgs/acme/projects/p-1/settings" ? ok(current) : undefined
+  );
+
+  await expect(page.getByRole("region", { name: "Access" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Department & Cross-Swarm search" })
+  ).toHaveCount(0);
+});
+
+test("Settings shows inherited all_departments as disabled while allowing unassigned Swarms", async ({
+  page,
+}) => {
+  let current = {
+    ...settings(),
+    cross_search: {
+      status: "ok",
+      can_manage: true,
+      department_id: "d-ops",
+      department_name: "Customer Operations",
+      inherited_targets: [
+        { kind: "all_departments", id: "org-acme", name: "All departments" },
+      ],
+      explicit_targets: [] as { kind: string; id: string; name: string }[],
+      departments: [
+        { id: "d-ops", name: "Customer Operations" },
+        { id: "d-eng", name: "Engineering" },
+      ],
+      catalog_swarms: [
+        { id: "p-core", name: "Core Services", department_id: "d-eng" },
+        { id: "p-loose", name: "My Swarm", department_id: null },
+      ],
+    },
+  };
+
+  const requests = await open(page, `${base}/settings`, (request) => {
+    if (request.path === "/orgs/acme/projects/p-1/settings") return ok(current);
+    if (request.path === "/orgs/acme/projects/p-1/settings/search-grants") {
+      current = {
+        ...current,
+        cross_search: {
+          ...current.cross_search,
+          explicit_targets: [{ kind: "project", id: "p-loose", name: "My Swarm" }],
+        },
+      };
+      return ok(current);
+    }
+    return undefined;
+  });
+
+  const section = page.getByRole("region", {
+    name: "Department & Cross-Swarm search",
+  });
+  await expect(
+    section.getByText("Inherited from Customer Operations: All departments")
+  ).toBeVisible();
+  await expect(
+    section.getByRole("checkbox", { name: /All departments/ })
+  ).toBeChecked();
+  await expect(
+    section.getByRole("checkbox", { name: /All departments/ })
+  ).toBeDisabled();
+  await expect(
+    section.getByRole("checkbox", { name: "Select all of Engineering" })
+  ).toBeChecked();
+  await expect(
+    section.getByRole("checkbox", { name: "Select all of Engineering" })
+  ).toBeDisabled();
+
+  await section
+    .getByRole("checkbox", { name: "Select all of Unassigned" })
+    .check({ force: true });
+  await section.getByRole("button", { name: "Save" }).click();
+  await expect(section.getByText("Saved")).toBeVisible();
+
+  expect(
+    writes(requests).map(({ method, path, body }) => ({ method, path, body }))
+  ).toEqual([
+    {
+      method: "PUT",
+      path: "/orgs/acme/projects/p-1/settings/search-grants",
+      body: {
+        department_id: "d-ops",
+        targets: [{ kind: "project", id: "p-loose" }],
+      },
+    },
+  ]);
 });

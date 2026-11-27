@@ -32,7 +32,7 @@ struct AttachmentMenu: View {
         VStack(spacing: 0) {
             ForEach(Choice.allCases.filter { $0 != .drive || showsDrive }, id: \.self, content: row)
         }
-        .padding(8)
+        .padding(10)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { highlight(at: $0.location) }
@@ -41,18 +41,18 @@ struct AttachmentMenu: View {
     }
 
     private func row(_ choice: Choice) -> some View {
-        HStack(spacing: 14) {
-            CentralIcon(choice.icon, size: 20)
-                .frame(width: 40, height: 40)
+        HStack(spacing: 16) {
+            CentralIcon(choice.icon, size: 22)
+                .frame(width: 44, height: 44)
                 .background(CommaTheme.textPrimary.opacity(0.06), in: Circle())
-            Text(choice.title).font(.body)
+            Text(choice.title).font(.title3)
             Spacer(minLength: 0)
         }
         .foregroundStyle(CommaTheme.textPrimary)
-        .padding(.horizontal, 10)
-        .frame(minHeight: 60)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 68)
         .background(CommaTheme.textPrimary.opacity(highlighted == choice ? 0.06 : 0),
-                    in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { rowFrames[choice] = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)

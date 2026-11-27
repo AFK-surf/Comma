@@ -10,10 +10,10 @@ defmodule Salix.Bindings.LarkMeetingPersonalPreparation do
   open_id (`contact/v3/users/batch_get_id`, scope
   `contact:user.id:readonly`), and an email it does not know gets no report.
   Without that scope nobody of a Google meeting gets one; the team notice
-  still goes. A meeting on members' calendars goes to the first of its
-  plan's recipients (the organizer, then the member whose calendar holds it)
-  whom the directory knows. A group attendee is not expanded. A report goes
-  to the person's private chat with the bot, addressed by open_id.
+  still goes. A meeting on members' Google calendars goes to each of its
+  plan's recipients (the members whose own calendars hold it) whom the
+  directory knows. A group attendee is not expanded. A report goes to the
+  person's private chat with the bot, addressed by open_id.
   """
 
   require Logger
@@ -27,14 +27,14 @@ defmodule Salix.Bindings.LarkMeetingPersonalPreparation do
 
   def provider?(plan), do: get_in(plan, ["publication_target", "provider"]) in ["feishu", "lark"]
 
-  # A meeting on members' calendars is prepared once, by the unit that
-  # claims it (`Salix.Bindings.MeetingCalendar`), for its current attendees.
+  # A meeting on members' Google calendars is researched once and names the
+  # members whose calendars hold it (`Salix.Bindings.MeetingCalendar`).
   def roster(%{"personal_recipients" => candidates} = plan) when is_list(candidates) do
     with {:ok, _entry} <- enrollment(plan),
          {:ok, connect} <- connect(plan),
          emails = candidates |> Enum.map(&email/1) |> Enum.reject(&is_nil/1) |> Enum.uniq(),
          {:ok, open_ids} <- lookup_open_ids(connect, emails) do
-      {:ok, emails |> Enum.filter(&Map.has_key?(open_ids, &1)) |> Enum.take(1)}
+      {:ok, Enum.filter(emails, &Map.has_key?(open_ids, &1))}
     else
       {:error, :personal_preparation_not_enrolled} -> {:ok, []}
       {:error, _} = error -> error

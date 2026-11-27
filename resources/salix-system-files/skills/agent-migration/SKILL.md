@@ -1,11 +1,13 @@
 ---
 name: agent-migration
-description: Import memory, persona and skills from another agent platform (OpenClaw, Hermes, Claude Code, Codex, Pi) out of a zip the user uploaded. Use when the user sends such an export or asks to move their agent, memory or skills to Comma.
+description: Import memory, persona and skills from another agent platform (OpenClaw, Hermes, Claude Code, Codex, Pi) out of a .zip, .tar.gz or .tgz archive the user uploaded. Use when the user sends such an export or asks to move their agent, memory or skills to Comma.
 metadata:
   displayName: Agent Migration
   icon: square.and.arrow.down
   color: blue
   visibility: toggled
+roles: router
+prompt_summary: "Migrate an agent from OpenClaw, Claude Code, Codex, OpenCode, or Cursor into Comma by uploading an archive for memory, persona, and skills."
 ---
 
 # Agent Migration
@@ -16,8 +18,8 @@ the export must end with an outcome, or the import is not complete.
 
 ## What the user uploads
 
-A zip of the platform's folder. If they ask how to make one, tell them which
-folder to zip:
+A `.zip`, `.tar.gz` or `.tgz` archive of the platform's folder. If they ask how
+to make one, tell them which folder to archive:
 
 | Platform | Folder |
 |---|---|
@@ -30,13 +32,13 @@ folder to zip:
 Known credential files (auth files, `.env`, keys, tokens), session
 transcripts, logs and databases are left out. Detection goes by file name and
 private-key content, so tell the user to take other secrets out of the folder
-before zipping it. The upload limit
-is 10 MB; a larger folder can be zipped without its `sessions/`, `logs/` and
-cache folders.
+before archiving it. The archive limit is 50 MB (each file inside at most
+10 MB, 100 MB expanded). Archive a larger folder without its `sessions/`,
+`logs/` and cache folders.
 
 ## Steps
 
-1. Call `migration.import` with the zip's workspace path. Pass `platform` only
+1. Call `migration.import` with the archive's workspace path. Pass `platform` only
    when detection fails. The result names the import folder
    (`/imports/<platform>/<stamp>`) and lists the open files.
    - Dated logs are already in `/memory/episodes/`.

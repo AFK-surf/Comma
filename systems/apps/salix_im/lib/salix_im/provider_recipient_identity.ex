@@ -18,7 +18,7 @@ defmodule SalixIM.ProviderRecipientIdentity do
   @owner_field "owner_recipient_im_identity_v1"
   @field_limit 256
   @identity_fields ~w(provider display_name username user_id bot_id app_id status)
-  @providers ~w(slack telegram feishu wechat imessage voice signal qq lark line)
+  @providers ~w(slack telegram feishu wechat imessage voice signal qq lark line wecom)
 
   @spec put(map(), map()) :: map()
   def put(metadata, connect) when is_map(metadata) and is_map(connect) do
@@ -259,6 +259,12 @@ defmodule SalixIM.ProviderRecipientIdentity do
       "username" => connect["bot_username"],
       "user_id" => connect["bot_user_id"]
     }
+  end
+
+  # A WeCom AI bot is known by its Bot ID; WeCom tells the bot nothing else
+  # about itself.
+  defp identity_fields("wecom", connect) do
+    %{"provider" => "wecom", "bot_id" => connect["app_id"]}
   end
 
   # A voice connect has no bot account; the carrier line is per call.

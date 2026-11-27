@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   CORE_START,
+  MAIN_IPC_ACK_EVERY,
+  MAX_UNACKED_MAIN_MESSAGES,
   startCoreUtility,
   type CoreToMain,
   type MainToCore,
@@ -254,5 +256,57 @@ describe("utility stream lifetime", () => {
     expect(request.outcome).toEqual({ value: words });
     expect(t.messages).toContainEqual({ type: "abort", id: request.id });
     await request.done;
+  });
+
+  it("caps unread messages to a suspended Main and recovers once Main acknowledges", async () => {
+    const t = await setup();
+    let refused = 0;
+    for (let i = 0; i < 600; i++) {
+      const before = t.messages.length;
+      const done = t.client
+        .call("recordings.transcribe", { audio, purpose: "dictation" })
+        .then(
+          () => "ok",
+          (error: { message: string }) => error.message
+        );
+      await settle();
+      if (t.messages.length === before) {
+        expect(await done).toContain("unavailable");
+        refused += 1;
+        continue;
+      }
+      await t.advance(10_000);
+      expect(await done).toContain("too long");
+    }
+
+    expect(refused).toBeGreaterThan(500);
+    // Each clock move during the fill phase adds `clock-done` alongside `fetch` + `abort`; total unread IPC stays far
+    // below macOS's 1024-message Mach port queue limit (`MACH_PORT_QLIMIT_LARGE`).
+    const heldWhileSuspended = t.messages.length;
+    expect(heldWhileSuspended).toBeLessThanOrEqual(MAX_UNACKED_MAIN_MESSAGES * 2);
+
+    t.send({ type: "ack", received: heldWhileSuspended });
+    await settle();
+
+    const recovered = await t.transcribe();
+    t.head(recovered.id);
+    t.words(recovered.id);
+    await settle();
+    expect(recovered.outcome).toEqual({ value: words });
+    await recovered.done;
+  });
+
+  it("keeps sending when Main acknowledges aborted requests during an upstream outage", async () => {
+    const t = await setup();
+    for (let i = 0; i < MAX_UNACKED_MAIN_MESSAGES; i++) {
+      const request = await t.transcribe();
+      await t.advance(10_000);
+      await request.done;
+      expect(request.outcome.error?.message).toContain("too long");
+      if (t.messages.length >= MAIN_IPC_ACK_EVERY) {
+        t.send({ type: "ack", received: t.messages.length });
+        await settle();
+      }
+    }
   });
 });

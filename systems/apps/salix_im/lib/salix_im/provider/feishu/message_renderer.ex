@@ -5,8 +5,8 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
 
   MDEx handles images and literal HTML without changing code nodes. Only
   structured mentions can notify. A mention goes where the text places it
-  with `<at user_id="ID">name</at>`, else at the start; an at-tag for an ID
-  not in `mentions` stays plain text. External images become links, without IO.
+  with `<at user_id="ID">name</at>`, else at the start. An at-tag for an ID
+  not in `mentions` rejects the send, so it never shows as text. External images become links, without IO.
   `format: "text"` retains the explicit plain-text transport.
   """
 
@@ -26,6 +26,7 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
   @slack_id ~r/\A(?:[UWCG](?=[A-Z]*[0-9])[A-Z0-9]{8,}|<[@#][^>]+>)\z/
   @at_open ~r/\A<at\s+user_id\s*=\s*"([^"<>]+)"\s*>\z/i
   @at_close ~r/\A<\/at\s*>\z/i
+  @any_at ~r/<at\s+user_id\s*=\s*"([^"<>]+)"\s*>/i
   @text_at ~r/<at\s+user_id\s*=\s*"([^"<>]+)"\s*>([^<]*)<\/at\s*>/i
 
   # Task cards use the Feishu card JSON 2.0 schema with `update_multi`, so a
@@ -176,32 +177,48 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
     end
   end
 
-  # Keep the at-tags of IDs in `mentions` where the text puts them; every
-  # other at-tag shows as typed. Returns the content and the IDs placed.
+  # Keep the at-tags of IDs in `mentions` where the text puts them. An
+  # at-tag for any other ID rejects the send. Returns the content and the IDs placed.
   defp render_text(text, "text", ids) do
-    {parts, placed} =
+    {parts, {placed, unlisted}} =
       Regex.split(@text_at, String.trim(text), include_captures: true)
-      |> Enum.map_reduce(MapSet.new(), fn part, placed ->
+      |> Enum.map_reduce({MapSet.new(), []}, fn part, {placed, unlisted} ->
         case Regex.run(@text_at, part) do
           [^part, id, name] ->
             if MapSet.member?(ids, id),
-              do: {~s(<at user_id="#{id}">#{name}</at>), MapSet.put(placed, id)},
-              else: {literal_text(part), placed}
+              do: {~s(<at user_id="#{id}">#{name}</at>), {MapSet.put(placed, id), unlisted}},
+              else: {part, {placed, [id | unlisted]}}
 
           _ ->
-            {literal_text(part), placed}
+            {literal_text(part), {placed, unlisted}}
         end
       end)
 
-    {:ok, Enum.join(parts), placed}
+    with :ok <- unlisted_tags(unlisted), do: {:ok, Enum.join(parts), placed}
   end
 
   defp render_text(text, "markdown", ids) do
     with {:ok, document} <- MDEx.parse_document(text, @markdown_options) do
-      state = %{changed?: false, ids: ids, open: nil, placed: MapSet.new(), unclosed?: false}
+      state = %{
+        changed?: false,
+        ids: ids,
+        open: nil,
+        placed: MapSet.new(),
+        unclosed?: false,
+        unlisted: [],
+        block_tags: []
+      }
+
       {document, state} = MDEx.traverse_and_update(document, state, &safe_node/2)
 
       cond do
+        state.unlisted != [] ->
+          unlisted_tags(state.unlisted)
+
+        state.block_tags != [] ->
+          {:error,
+           ~s(An <at user_id="..."> tag must sit inside a line of text, with its name and </at> on the same line.)}
+
         state.unclosed? or state.open != nil ->
           {:error, ~s(Close each <at user_id="..."> tag with </at> in the same paragraph)}
 
@@ -260,7 +277,7 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
       {nil, [_, id], _} ->
         if MapSet.member?(state.ids, id),
           do: {node, %{state | open: id}},
-          else: {%MDEx.Text{literal: literal}, changed(state)}
+          else: {node, %{state | unlisted: [id | state.unlisted]}}
 
       {id, _, true} when is_binary(id) ->
         {node, %{state | open: nil, placed: MapSet.put(state.placed, id)}}
@@ -270,10 +287,25 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
     end
   end
 
-  defp safe_node(%MDEx.HtmlBlock{literal: literal}, state),
-    do:
-      {%MDEx.Paragraph{nodes: [%MDEx.Text{literal: String.trim_trailing(literal)}]},
-       changed(block(state))}
+  # An HTML block is shown as text, so an at-tag in it could never mention:
+  # one for an unlisted ID is refused like any other, a listed one must move
+  # inside a line of text.
+  defp safe_node(%MDEx.HtmlBlock{literal: literal}, state) do
+    {listed, unlisted} =
+      @any_at
+      |> Regex.scan(literal, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.split_with(&MapSet.member?(state.ids, &1))
+
+    state = %{
+      state
+      | unlisted: Enum.reverse(unlisted, state.unlisted),
+        block_tags: listed ++ state.block_tags
+    }
+
+    {%MDEx.Paragraph{nodes: [%MDEx.Text{literal: String.trim_trailing(literal)}]},
+     changed(block(state))}
+  end
 
   defp safe_node(%block{} = node, state)
        when block in [MDEx.Paragraph, MDEx.Heading, MDEx.TableCell, MDEx.CodeBlock],
@@ -282,6 +314,20 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
   defp safe_node(node, state), do: {node, state}
 
   defp changed(state), do: %{state | changed?: true}
+
+  # An at-tag outside `mentions` would show its ID as text, so the send fails
+  # and the caller adds the person to `mentions` or drops the tag.
+  defp unlisted_tags([]), do: :ok
+
+  defp unlisted_tags(ids) do
+    ids = ids |> Enum.reverse() |> Enum.uniq() |> Enum.join(", ")
+
+    {:error,
+     ~s(The text has <at user_id="..."> tags for #{ids} that are not in this send's mentions, ) <>
+       "so they would show as text. To mention a person there, add them to mentions " <>
+       "as {user_id, name}; otherwise remove the tag. For all, remove the tag and set " <>
+       "mention_all. An update cannot mention anyone, so remove the tag."}
+  end
 
   # A block starting while an at-tag is open means the tag was never closed.
   defp block(%{open: nil} = state), do: state

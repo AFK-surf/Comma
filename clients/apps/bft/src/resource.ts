@@ -120,13 +120,27 @@ const cachedOrLoading = <T>(cache: ResourceCache | null, key: string): Resource<
  * - `refresh()` reads again while the current data stays on screen; if that
  *   read fails, the data shown stays (only a first read or `retry()` shows
  *   an error).
+ *
+ * - `retryAndWait()` is `retry()` that returns a promise settling once that
+ *   read (or a later one) has ended, whether it succeeded or not, so a write
+ *   can keep its form busy until the page is read again.
  */
 export function useResource<T>(
   key: string,
   load: (signal: AbortSignal) => Promise<T>
-): [Resource<T>, () => void, () => void] {
+): [Resource<T>, () => void, () => void, () => Promise<void>] {
   const cache = useContext(ResourceCacheContext);
   const [attempt, setAttempt] = useState({ count: 0, keep: false });
+  // Callers waiting for a read: each is released when the read of its attempt
+  // or a later one ends, or when the page goes away.
+  const waiting = useRef<{ count: number; release: () => void }[]>([]);
+  const lastCount = useRef(0);
+  const release = useCallback((count: number) => {
+    const done = waiting.current.filter((wait) => wait.count <= count);
+    waiting.current = waiting.current.filter((wait) => wait.count > count);
+    for (const wait of done) wait.release();
+  }, []);
+  useEffect(() => () => release(Number.POSITIVE_INFINITY), [release]);
   const [resource, setResource] = useState<Resource<T> & { key: string }>(() => ({
     key,
     ...cachedOrLoading<T>(cache, key),
@@ -161,6 +175,7 @@ export function useResource<T>(
             ? previous
             : { key, state: "ready", data }
         );
+        release(attempt.count);
       },
       (error: unknown) => {
         if (controller.signal.aborted) return;
@@ -172,6 +187,7 @@ export function useResource<T>(
             ? previous
             : { key, state: "error", error }
         );
+        release(attempt.count);
       }
     );
     return () => controller.abort();
@@ -179,18 +195,29 @@ export function useResource<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, attempt, cache]);
 
-  const retry = useCallback(() => {
+  const again = useCallback((keep: boolean) => {
+    lastCount.current += 1;
+    const count = lastCount.current;
+    setAttempt({ count, keep });
+    return new Promise<void>((resolve) => {
+      waiting.current.push({ count, release: resolve });
+    });
+  }, []);
+  const retryAndWait = useCallback(() => {
     cache?.delete(key);
-    setAttempt(({ count }) => ({ count: count + 1, keep: false }));
-  }, [cache, key]);
-  const refresh = useCallback(
-    () => setAttempt(({ count }) => ({ count: count + 1, keep: true })),
-    []
-  );
+    return again(false);
+  }, [again, cache, key]);
+  const retry = useCallback(() => {
+    void retryAndWait();
+  }, [retryAndWait]);
+  const refresh = useCallback(() => {
+    void again(true);
+  }, [again]);
   return [
     resource.key === key ? resource : cachedOrLoading<T>(cache, key),
     retry,
     refresh,
+    retryAndWait,
   ];
 }
 

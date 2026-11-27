@@ -261,7 +261,7 @@ export function useDeviceSettingsCategory(
   const stillfailCard = (device: ShownDevice) => ({
     id: device.device_id,
     name: device.name,
-    mark: <PluginBrandArtwork brand="stillfail" name="still.fail" />,
+    mark: <PluginBrandArtwork brand="stillfail" name="Monoid" />,
     badge: m.settings_devices_stillfail_station(),
     detail:
       device.status === "connected"
@@ -745,7 +745,7 @@ export function useDeviceSettingsCategory(
                 : []),
               {
                 id: "sandbox",
-                label: m.compute_local_settings(),
+                label: m.compute_sandbox_settings_menu(),
                 onAction: () => compute.setDetail("settings"),
               },
             ]

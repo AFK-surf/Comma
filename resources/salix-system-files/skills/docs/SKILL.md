@@ -6,6 +6,8 @@ metadata:
   icon: doc.text.fill
   color: blue
   placeholder: Upload a document or ask a question
+roles: worker
+prompt_summary: "Read, create, edit, convert, or visually review Word (.docx) documents."
 ---
 
 # DOCX reading, creation, editing, and review guidance

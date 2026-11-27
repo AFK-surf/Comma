@@ -169,8 +169,15 @@ export async function chatPost(hub: Hub, key: string, args: Args): Promise<strin
     }
   } else posted = await chat.post(here, text, files, from);
   const offered = card !== null ? cardSaid(card) : "";
-  const [n] = store.insertMessage({ thread: thread.thread.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared: kind ? declaredStr(kind) : null, card, milestones });
-  if (!only) hub.shared(thread.thread.id, n, key, text);
+  // On multi-session TASK_SURFACE threads, restrict locally-echoed posts to the author's
+  // own slot until the authoritative `task.put` for the same seq updates `visible_to_slots`.
+  let localVisibleToSlots: string[] | null = null;
+  if (thread.thread.surface === TASK_SURFACE && store.taskSlots(thread.thread.id).length > 1) {
+    const selfSlot = store.taskSlotOf(thread.thread.id, key);
+    if (selfSlot) localVisibleToSlots = [selfSlot.slot];
+  }
+  const [n] = store.insertMessage({ thread: thread.thread.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared: kind ? declaredStr(kind) : null, card, milestones, visibleToSlots: localVisibleToSlots });
+  if (!only && thread.thread.surface !== TASK_SURFACE) hub.shared(thread.thread.id, n, key, text);
   const actor = actorOf(hub, key);
   if (need !== null) await actor?.need(need);
   if (kind !== null) {
@@ -265,12 +272,38 @@ export async function threadHistory(hub: Hub, key: string, thread: ThreadRow, co
   const before = typeof args.before === "string" && args.before !== "" ? args.before : null;
   let from: number | null = null;
   if (before !== null) {
-    const m = hub.store.messageAt(thread.id, before);
-    if (!m) throw new Error(`no message ${before} in ${named}`);
-    from = m.n;
+    if (before.startsWith("n:") && /^\d+$/.test(before.slice(2))) {
+      from = Number(before.slice(2));
+    } else if (thread.surface === TASK_SURFACE && hub.store.isThreadArchived(thread.id)) {
+      const foundN = hub.store.entryNByTs(thread.id, before);
+      if (foundN === null) throw new Error(`no message ${before} in ${named}`);
+      from = foundN;
+    } else {
+      const m = hub.store.messageAt(thread.id, before);
+      if (!m) throw new Error(`no message ${before} in ${named}`);
+      from = m.n;
+    }
   }
-  const messages = hub.store.messagesBefore(thread.id, from, limit);
-  if (messages.length === 0) return "No earlier messages.";
+  let messages: ReturnType<typeof hub.store.messagesBefore>;
+  let nextBefore: string | null = null;
+  if (thread.surface === TASK_SURFACE) {
+    const paged = hub.store.messagesBeforeForSlotPaged(
+      thread.id,
+      from,
+      limit,
+      hub.store.taskSlotOf(thread.id, key)?.slot ?? null,
+      500,
+    );
+    messages = paged.messages;
+    nextBefore = paged.nextBefore;
+  } else {
+    messages = hub.store.messagesBefore(thread.id, from, limit);
+  }
+  if (messages.length === 0) {
+    return nextBefore !== null
+      ? `No visible messages in this range; pass before=${nextBefore} to check earlier messages.`
+      : "No earlier messages.";
+  }
   const chat = hub.chatOf(connect);
   const names = new Map<string, string>();
   for (const m of messages.filter((m) => m.authorKind === "person")) {

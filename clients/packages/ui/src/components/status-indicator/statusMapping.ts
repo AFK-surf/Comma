@@ -12,6 +12,7 @@ export const BUCKET_TO_STATUS_ID: Record<VisibleTaskStatusBucket, StatusId> = {
   cancelled: "cancel",
   done: "done",
   in_progress: "in-progress",
+  loops: "loops",
   needs_review: "needs-review",
 };
 

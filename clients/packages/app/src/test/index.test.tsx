@@ -123,6 +123,50 @@ describe("CommaApp", () => {
     expect(screen.getByTestId("home-responsive-layout")).toBeVisible();
   });
 
+  it("redirects /people and saved people home view to Home until Debug People is enabled", async () => {
+    seedCommaSession();
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({
+        ...defaultCommaClientSettings,
+        defaultHomeView: "people",
+        peopleEnabled: false,
+      })
+    );
+    const first = renderCommaApp();
+    await settle();
+    expect(["", "#/"]).toContain(window.location.hash);
+    expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(screen.queryByRole("link", { name: "People" })).toBeNull();
+    first.unmount();
+
+    window.location.hash = "#/people";
+    const second = renderCommaApp();
+    await settle();
+    expect(window.location.hash).toBe("#/");
+    second.unmount();
+
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({
+        ...defaultCommaClientSettings,
+        defaultHomeView: "people",
+        peopleEnabled: true,
+      })
+    );
+    window.location.hash = "#/";
+    renderCommaApp();
+    await settle();
+    expect(window.location.hash).toBe("#/people");
+    expect(screen.getByRole("link", { name: "People" })).toHaveAttribute(
+      "href",
+      "#/people"
+    );
+  });
+
   it("keeps a guest Session on Home when another default home view is saved", async () => {
     seedCommaSession(guestUser);
     localStorage.setItem(
@@ -1134,19 +1178,19 @@ describe("CommaApp", () => {
     expect(previewRequests).toEqual(["cnv-hover-race-first", "cnv-hover-race-second"]);
   });
 
-  it("keeps one-character Task queries local and searches two-character terms", async () => {
+  it("searches one-character Task queries", async () => {
     seedCommaSession();
     const searched = scriptTaskSearch({
-      智能: {
+      安: {
         status: "ready",
         scope: { groupId: "grp-search", workspaceId: "wsp-search" },
         results: [
           {
-            conversation_id: "cnv-ai",
-            highlights: [{ start: 0, end: 2 }],
+            conversation_id: "cnv-airport",
+            highlights: [{ start: 0, end: 1 }],
             matched_field: "title",
-            snippet: "智能路线图",
-            title: "智能路线图",
+            snippet: "安俞真机场照",
+            title: "安俞真机场照",
           },
         ],
       },
@@ -1157,29 +1201,11 @@ describe("CommaApp", () => {
     await user.click(screen.getByTestId("comma-window-bar-search"));
     await settle();
     const input = screen.getByRole("combobox", { name: "Search Comma" });
-    await user.type(input, "智");
+    await user.type(input, "安");
     await settle();
-    expect(
-      screen.getByText("Type at least 2 characters to search tasks")
-    ).toBeVisible();
-    expect(searched()).toEqual([]);
-
-    await user.clear(input);
-    await user.type(input, "é");
-    await settle();
-    expect(
-      screen.getByText("Type at least 2 characters to search tasks")
-    ).toBeVisible();
-    expect(searched()).toEqual([]);
-
-    await user.clear(input);
-    await user.type(input, "智");
-    await settle();
-    await user.type(input, "能");
-    await settle();
-    expect(screen.getByRole("option", { name: /智能路线图/ })).toBeVisible();
-    expect(screen.getByText("智能", { selector: "mark" })).toBeVisible();
-    expect(searched()).toEqual(["智能"]);
+    expect(screen.getByRole("option", { name: /安俞真机场照/ })).toBeVisible();
+    expect(screen.getByText("安", { selector: "mark" })).toBeVisible();
+    expect(searched()).toEqual(["安"]);
   });
 
   it("searches indexed Task content, highlights the match, and opens the Task", async () => {
@@ -1957,7 +1983,7 @@ describe("CommaApp", () => {
     const nav = within(sidebar).getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
 
-    // The web reads the Workspace's Drive too, so its rail has Drive.
+    // The web reads the Workspace's Drive too, so its rail has Drive; People stays hidden until enabled in Debug.
     expect(links).toHaveLength(6);
     ["Home", "Inbox", "Tasks", "Drive", "Apps", "Plugins"].forEach((name, index) => {
       expect(links[index]).toHaveAccessibleName(name);

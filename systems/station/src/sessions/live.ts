@@ -67,6 +67,7 @@ export class TranscriptTail {
     try {
       meta = statSync(disk);
     } catch {
+      this.unreadable = true;
       return [start, []];
     }
     const stamp = `${meta.size}:${meta.mtimeMs}`;
@@ -76,6 +77,7 @@ export class TranscriptTail {
       try {
         unpacked = zstdDecompressSync(readFileSync(disk));
       } catch {
+        this.unreadable = true;
         return [start, []];
       }
     }
@@ -106,6 +108,7 @@ export class TranscriptTail {
           closeSync(file);
         }
       } catch {
+        this.unreadable = true;
         return [start, []];
       }
     }
@@ -120,13 +123,27 @@ export class TranscriptTail {
       if (line === "") continue;
       try {
         records.push(JSON.parse(line));
-      } catch {}
+      } catch {
+        this.unreadable = true;
+      }
     }
     this.addUsage(records);
     const entries: TimelineEntry[] = [];
     for (const r of records) timelineOf(this.runtime, r, this.state, entries);
     this.entries.push(...entries);
     return [start, entries];
+  }
+
+  readonly byModel: Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }> = {};
+  unreadable = false;
+
+  private addModelUsage(model: string | null, input: number, cached: number, output: number) {
+    if (!model || model === "<synthetic>") return;
+    const m = (this.byModel[model] ??= { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 });
+    m.modelCalls++;
+    m.inputTokens += input;
+    m.cachedTokens += cached;
+    m.outputTokens += output;
   }
 
   private addUsage(records: Json[]) {
@@ -139,20 +156,29 @@ export class TranscriptTail {
         this.seen.add(m.id);
         const u = m.usage;
         const cached = n(u?.cache_read_input_tokens) + n(u?.cache_creation_input_tokens);
+        const input = n(u?.input_tokens) + cached;
+        const cachedRead = n(u?.cache_read_input_tokens);
+        const output = n(u?.output_tokens);
         this.usage.modelCalls++;
-        this.usage.inputTokens += n(u?.input_tokens) + cached;
-        this.usage.cachedTokens += n(u?.cache_read_input_tokens);
-        this.usage.outputTokens += n(u?.output_tokens);
-        if (typeof m.model === "string" && m.model !== "<synthetic>") this.usage.model = m.model;
+        this.usage.inputTokens += input;
+        this.usage.cachedTokens += cachedRead;
+        this.usage.outputTokens += output;
+        const model = typeof m.model === "string" && m.model !== "<synthetic>" ? m.model : null;
+        if (model !== null) this.usage.model = model;
+        this.addModelUsage(model ?? this.usage.model, input, cachedRead, output);
       } else {
         const p = r?.payload ?? null;
         if (r?.type === "turn_context" && typeof p?.model === "string") this.usage.model = p.model;
         const last = r?.type === "event_msg" && p?.type === "token_count" ? p?.info?.last_token_usage : undefined;
         if (last === undefined || last === null) continue;
+        const input = n(last.input_tokens);
+        const cachedRead = n(last.cached_input_tokens);
+        const output = n(last.output_tokens);
         this.usage.modelCalls++;
-        this.usage.inputTokens += n(last.input_tokens);
-        this.usage.cachedTokens += n(last.cached_input_tokens);
-        this.usage.outputTokens += n(last.output_tokens);
+        this.usage.inputTokens += input;
+        this.usage.cachedTokens += cachedRead;
+        this.usage.outputTokens += output;
+        this.addModelUsage(this.usage.model, input, cachedRead, output);
       }
     }
   }
@@ -187,6 +213,24 @@ export class ChainTail {
       usage.model = t.usage.model ?? usage.model;
     }
     return usage;
+  }
+
+  get byModel(): Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }> {
+    const models: Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }> = {};
+    for (const t of this.tails) {
+      for (const [model, counts] of Object.entries(t.byModel)) {
+        const m = (models[model] ??= { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 });
+        m.modelCalls += counts.modelCalls;
+        m.inputTokens += counts.inputTokens;
+        m.cachedTokens += counts.cachedTokens;
+        m.outputTokens += counts.outputTokens;
+      }
+    }
+    return models;
+  }
+
+  get partial(): boolean {
+    return this.tails.some((t) => t.unreadable);
   }
 
   /// Goes on with the transcripts given (those it has, then new ones): the new ones are read after what it has.

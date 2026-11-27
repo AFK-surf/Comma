@@ -5,7 +5,7 @@ defmodule SalixIM.Provider.Feishu do
 
   import SalixIM.Provider.Util
 
-  alias SalixIM.IFC.ReadLabels
+  alias SalixIM.IFC.{Projection, ReadLabels}
   alias SalixIM.MessageRenderer.Input
 
   alias SalixIM.Provider.Feishu.{
@@ -93,6 +93,30 @@ defmodule SalixIM.Provider.Feishu do
       case str(message["chat_id"]) do
         "" -> {:error, "Feishu get-message response did not contain a chat_id"}
         chat_id -> {:ok, chat_id}
+      end
+    end
+  end
+
+  @doc """
+  The chat and the thread of one exact message: `"chat_id"`, `"thread_id"`
+  (blank outside a thread) and `"root_id"` (blank for a root message). A
+  thread hand-over checks its address with this read.
+  """
+  @spec message_address(map(), String.t()) :: {:ok, map()} | {:error, term()}
+  def message_address(connect, message_id) do
+    with :ok <- ensure_connected(connect),
+         {:ok, message} <- raw_message(connect, message_id) do
+      case str(message["chat_id"]) do
+        "" ->
+          {:error, "Feishu get-message response did not contain a chat_id"}
+
+        chat_id ->
+          {:ok,
+           %{
+             "chat_id" => chat_id,
+             "thread_id" => str(message["thread_id"]),
+             "root_id" => str(message["root_id"])
+           }}
       end
     end
   end
@@ -204,7 +228,8 @@ defmodule SalixIM.Provider.Feishu do
              :ok <- MessageRenderer.validate_request(body),
              {:ok, response} <-
                API.post(connect, "/im/v1/messages/#{segment(params["message_id"])}/reply", body),
-             :ok <- maybe_record_thread_participation(connect, params, response) do
+             :ok <- maybe_record_thread_participation(connect, params, response),
+             :ok <- maybe_record_reply_message(connect, params, response) do
           {:ok, response}
         end
       else
@@ -214,12 +239,17 @@ defmodule SalixIM.Provider.Feishu do
                rendered
                |> Map.put("receive_id", str(params["receive_id"]))
                |> maybe_put("uuid", message_uuid(api, params)),
-             :ok <- MessageRenderer.validate_request(body) do
-          API.post(
-            connect,
-            "/im/v1/messages?receive_id_type=#{segment(receive_id_type(params))}",
-            body
-          )
+             :ok <- MessageRenderer.validate_request(body),
+             {:ok, response} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages?receive_id_type=#{segment(receive_id_type(params))}",
+                 body
+               ) do
+          if receive_id_type(params) == "chat_id",
+            do: maybe_record_group_send_participation(connect, params["receive_id"], response)
+
+          {:ok, response}
         end
       end
 
@@ -249,17 +279,27 @@ defmodule SalixIM.Provider.Feishu do
         |> maybe_put("uuid", message_uuid(api, params))
 
       if api == "feishu.reply_file" do
-        API.post(
-          connect,
-          "/im/v1/messages/#{segment(params["message_id"])}/reply",
-          Map.put(body, "reply_in_thread", reply_in_thread?(params))
-        )
+        with {:ok, response} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages/#{segment(params["message_id"])}/reply",
+                 Map.put(body, "reply_in_thread", reply_in_thread?(params))
+               ) do
+          maybe_record_group_send_participation(connect, params["chat_id"], response)
+          {:ok, response}
+        end
       else
-        API.post(
-          connect,
-          "/im/v1/messages?receive_id_type=#{segment(receive_id_type(params))}",
-          Map.put(body, "receive_id", str(params["receive_id"]))
-        )
+        with {:ok, response} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages?receive_id_type=#{segment(receive_id_type(params))}",
+                 Map.put(body, "receive_id", str(params["receive_id"]))
+               ) do
+          if receive_id_type(params) == "chat_id",
+            do: maybe_record_group_send_participation(connect, params["receive_id"], response)
+
+          {:ok, response}
+        end
       end
     else
       {:error, reason} -> {:error, control_error(reason)}
@@ -315,6 +355,9 @@ defmodule SalixIM.Provider.Feishu do
                  "/im/v1/messages/#{segment(params["message_id"])}/forward?#{query}",
                  %{"receive_id" => receive_id}
                ) do
+          if id_type == "chat_id",
+            do: maybe_record_group_send_participation(connect, receive_id, sent)
+
           {:ok, target |> sent_to(sent) |> Map.put("message", strip_body(sent))}
         end
       else
@@ -558,8 +601,11 @@ defmodule SalixIM.Provider.Feishu do
 
   defp do_call(_agent_id, connect, "feishu.join_chat", params) do
     with :ok <- require_param(params, "chat_id"),
-         {:ok, chat_id} <- chat_id(connect, params) do
-      API.patch(connect, "/im/v1/chats/#{segment(chat_id)}/members/me_join", %{})
+         {:ok, chat_id} <- chat_id(connect, params),
+         {:ok, joined} <-
+           API.patch(connect, "/im/v1/chats/#{segment(chat_id)}/members/me_join", %{}) do
+      Projection.refresh_for_connect(connect, chat_id)
+      {:ok, joined}
     end
   end
 
@@ -590,12 +636,16 @@ defmodule SalixIM.Provider.Feishu do
         |> maybe_put("uuid", message_uuid("feishu.create_chat", params))
         |> URI.encode_query()
 
-      API.post(connect, "/im/v1/chats?" <> query, %{
-        "name" => str(params["name"]),
-        "user_id_list" => user_ids,
-        "chat_mode" => "group",
-        "chat_type" => "private"
-      })
+      with {:ok, created} <-
+             API.post(connect, "/im/v1/chats?" <> query, %{
+               "name" => str(params["name"]),
+               "user_id_list" => user_ids,
+               "chat_mode" => "group",
+               "chat_type" => "private"
+             }) do
+        created_chat(connect, str(created["chat_id"]))
+        {:ok, created}
+      end
     end
   end
 
@@ -604,11 +654,15 @@ defmodule SalixIM.Provider.Feishu do
          {:ok, chat_id} <- chat_id(connect, params),
          {:ok, user_ids} <- chat_user_ids(params) do
       # Reject the whole request if any member is unavailable.
-      API.post(
-        connect,
-        "/im/v1/chats/#{segment(chat_id)}/members?member_id_type=open_id&succeed_type=2",
-        %{"id_list" => user_ids}
-      )
+      with {:ok, added} <-
+             API.post(
+               connect,
+               "/im/v1/chats/#{segment(chat_id)}/members?member_id_type=open_id&succeed_type=2",
+               %{"id_list" => user_ids}
+             ) do
+        Projection.refresh_for_connect(connect, chat_id)
+        {:ok, added}
+      end
     end
   end
 
@@ -982,20 +1036,70 @@ defmodule SalixIM.Provider.Feishu do
     thread_id = str(response["thread_id"] || params["thread_id"])
     chat_id = str(response["chat_id"] || params["chat_id"])
 
-    if thread_id == "" or chat_id == "" do
-      :ok
-    else
-      case ProviderConnects.record_feishu_thread_participation(connect, chat_id, thread_id) do
-        :ok ->
-          :ok
+    if thread_id == "" or chat_id == "",
+      do: :ok,
+      else: record_feishu_participation(connect, chat_id, thread_id)
+  end
 
-        {:error, reason} ->
-          Logger.warning(
-            "feishu thread participation marker write failed connect_id=#{connect["connect_id"]} reason=#{inspect(reason)}"
-          )
+  # The bot's reply in a group is a message people may quote to answer, like
+  # a message the bot sends unasked.
+  defp maybe_record_reply_message(connect, params, response) do
+    chat_id = str(response["chat_id"] || params["chat_id"])
+    message_id = str(response["message_id"])
 
-          :ok
+    type =
+      case str(params["chat_type"]) do
+        "" -> chat_type(connect, chat_id)
+        type -> type
       end
+
+    if type != "p2p" and chat_id != "" and message_id != "",
+      do: record_feishu_participation(connect, chat_id, message_id),
+      else: :ok
+  end
+
+  # A group the bot made is the bot's conversation: people of it answer the
+  # bot without a mention (`SalixIM.ProviderHTTP`). The group is marked by
+  # its own chat ID, a namespace (`oc_`) no thread (`omt_`) or message
+  # (`om_`) shares. The projection then knows the group before a send to it.
+  defp created_chat(_connect, ""), do: :ok
+
+  defp created_chat(connect, chat_id) do
+    record_feishu_participation(connect, chat_id, chat_id)
+    Projection.refresh_for_connect(connect, chat_id)
+  end
+
+  # A message the bot sends into a group, unasked, starts a conversation:
+  # a quote reply to it, or a thread opened under it, reaches the Router
+  # without a mention. The message and its thread are marked; the chat is
+  # not, so other talk of the group still needs a mention. Best effort: the
+  # message is out.
+  defp maybe_record_group_send_participation(connect, fallback_chat_id, response)
+       when is_map(response) do
+    chat_id = str(response["chat_id"] || fallback_chat_id)
+
+    if chat_id != "" and chat_type(connect, chat_id) != "p2p" do
+      for id <- [str(response["thread_id"]), str(response["message_id"])], id != "" do
+        record_feishu_participation(connect, chat_id, id)
+      end
+    end
+
+    :ok
+  end
+
+  defp maybe_record_group_send_participation(_connect, _fallback_chat_id, _response), do: :ok
+
+  defp record_feishu_participation(connect, chat_id, thread_id) do
+    case ProviderConnects.record_feishu_thread_participation(connect, chat_id, thread_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "feishu thread participation marker write failed connect_id=#{connect["connect_id"]} reason=#{inspect(reason)}"
+        )
+
+        :ok
     end
   end
 
@@ -1275,11 +1379,17 @@ defmodule SalixIM.Provider.Feishu do
   defp post_message(connect, {id_type, receive_id}, params, body) do
     case str(params["reply_to"]) do
       "" ->
-        API.post(
-          connect,
-          "/im/v1/messages?receive_id_type=#{id_type}",
-          Map.put(body, "receive_id", receive_id)
-        )
+        with {:ok, sent} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages?receive_id_type=#{id_type}",
+                 Map.put(body, "receive_id", receive_id)
+               ) do
+          if id_type == "chat_id",
+            do: maybe_record_group_send_participation(connect, receive_id, sent)
+
+          {:ok, sent}
+        end
 
       # A reply is always of a chat: `send_target/2` refuses it for a person.
       message_id ->
@@ -1293,7 +1403,8 @@ defmodule SalixIM.Provider.Feishu do
                    send_reply_in_thread?(connect, receive_id, params)
                  )
                ),
-             :ok <- maybe_record_thread_participation(connect, %{"chat_id" => receive_id}, sent) do
+             :ok <- maybe_record_thread_participation(connect, %{"chat_id" => receive_id}, sent),
+             :ok <- maybe_record_group_send_participation(connect, receive_id, sent) do
           {:ok, sent}
         end
     end

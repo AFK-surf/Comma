@@ -151,11 +151,17 @@ it("lets Main decide which request a new one replaces and uninstalls during a ru
   expect(mock.resume).toHaveBeenCalledExactlyOnceWith({
     requestId: operation.requestId,
   });
-  // While a request runs, only uninstall is offered; Main stops a stuck request first.
+  // While a request runs, uninstall and clear remain enabled so Main can preempt stuck maintenance.
   expect(result.current.blocked).toBe(true);
   expect(result.current.uninstallBlocked).toBe(false);
+  expect(result.current.clearBlocked).toBe(false);
   await act(() => result.current.submit("update"));
   expect(mock.maintain).toHaveBeenCalledTimes(1);
+  await act(() => result.current.submit("clear"));
+  expect(mock.maintain).toHaveBeenLastCalledWith({
+    action: "reinstall",
+    dataPolicy: "reset",
+  });
   await act(() => result.current.submit("uninstall"));
   expect(mock.maintain).toHaveBeenLastCalledWith({
     action: "uninstall",
@@ -163,9 +169,10 @@ it("lets Main decide which request a new one replaces and uninstalls during a ru
   });
   mock.read.mockRejectedValue(new Error("receipt unavailable"));
   await act(() => result.current.refresh());
+  expect(result.current.clearBlocked).toBe(true);
   await act(() => result.current.submit("clear"));
   await act(() => result.current.submit("uninstall"));
-  expect(mock.maintain).toHaveBeenCalledTimes(2);
+  expect(mock.maintain).toHaveBeenCalledTimes(3);
 });
 it("requires a read after an ambiguous response instead of replacing the operation", async () => {
   mock.maintain.mockRejectedValue(new Error("IPC disconnected"));
@@ -179,4 +186,23 @@ it("requires a read after an ambiguous response instead of replacing the operati
   await act(() => result.current.refresh());
   expect(result.current.unfinished).toBe(true);
   expect(mock.resume).not.toHaveBeenCalled();
+});
+it("titles a failed request as preparing while its continuation is submitted", async () => {
+  const failed = { ...operation, phase: "failed" as const, outcome: "failed" as const };
+  mock.read.mockResolvedValue({ ...installed, operation: failed });
+  let finish!: (state: HostMaintenanceState) => void;
+  mock.resume.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+  );
+  const { result } = renderHook(() => useHostMaintenanceCategory(true, 0));
+  await act(async () => {});
+  expect(result.current.title).toBe("Maintenance is incomplete");
+  act(() => result.current.resume());
+  expect(result.current.pending).toBe(true);
+  expect(result.current.title).toBe("Preparing maintenance");
+  await act(async () => finish({ ...installed, operation: failed }));
+  expect(result.current.title).toBe("Maintenance is incomplete");
 });

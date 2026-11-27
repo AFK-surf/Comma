@@ -92,7 +92,6 @@ defmodule SalixIM.SlackMessageMirrorBlockTextTest do
   end
 
   describe "retained blocks" do
-
     # `files/1` refuses to store signed attachment links; a block carrying the
     # same reference is not a different rule. Retaining the payload verbatim
     # would have put them back under a different column.

@@ -40,6 +40,7 @@ import {
   type NotchScenePayload,
   type NotchStatus,
   type SurfaceList,
+  type SystemLocationAuthorization,
   type SystemNotificationsStatus,
   type WindowControlInput,
   type WindowFullScreen,
@@ -102,6 +103,14 @@ export interface AppPreferencesProvider {
    * user yet) and resolves with the status the answer leaves behind.
    */
   requestNotificationAuthorization(input: void): Promise<SystemNotificationsStatus>;
+  /**
+   * Asks the OS to let Comma read the device's position before a window reads
+   * it (macOS prompts while it has not asked yet); where Comma is already off,
+   * opens Location Services in System Settings and resolves `denied`.
+   */
+  requestLocationAuthorization(input: void): Promise<SystemLocationAuthorization>;
+  /** Like location, for the microphone: Quick Chat, voice and meeting capture. */
+  requestMicrophoneAuthorization(input: void): Promise<SystemLocationAuthorization>;
   /**
    * Reads the login item from the OS now; ordinary state reads reuse a
    * readback up to 30 s old. Settings asks for this when it opens.
@@ -264,7 +273,7 @@ export interface ClipboardProvider {
 export class ElectronClipboardService implements ClipboardProvider {
   readonly #readText: () => Promise<string>;
   readonly #readImage: () => Promise<Uint8Array | null>;
-  readonly #writeText: (text: string) => Promise<void>;
+  readonly #writeText: (text: string, html?: string) => Promise<void>;
   /** False when the bytes did not decode, so the renderer can say so. */
   readonly #writeImage: (pngImage: Uint8Array) => Promise<boolean>;
 
@@ -277,7 +286,7 @@ export class ElectronClipboardService implements ClipboardProvider {
     readImage: () => Promise<Uint8Array | null>;
     readText: () => Promise<string>;
     writeImage: (pngImage: Uint8Array) => Promise<boolean>;
-    writeText: (text: string) => Promise<void>;
+    writeText: (text: string, html?: string) => Promise<void>;
   }) {
     this.#readImage = readImage;
     this.#readText = readText;
@@ -293,8 +302,8 @@ export class ElectronClipboardService implements ClipboardProvider {
     return { text: await this.#readText() };
   }
 
-  async writeText({ text }: ClipboardWriteTextInput) {
-    await this.#writeText(text);
+  async writeText({ text, html }: ClipboardWriteTextInput) {
+    await this.#writeText(text, html);
     return { ok: true } as const;
   }
 
@@ -410,6 +419,7 @@ export function createSessionBoundChatProvider(
           ...(sources ? { sources } : {}),
           onDialogClosed: intake.markDialogClosed,
           workspaceId: target.workspaceId,
+          localPathMode: intake.localPathMode,
         });
         let receipt: { draftEpoch?: number | undefined; revision: number } = {
           revision: 0,
@@ -423,7 +433,9 @@ export function createSessionBoundChatProvider(
                   name: item.name,
                   size: item.size,
                 })
-              : await chat.attachLocalFiles({ ...target, files: [item.file] });
+              : item.kind === "local_path"
+                ? await chat.attachLocalPaths({ ...target, files: [{ ...item.file }] })
+                : await chat.attachLocalFiles({ ...target, files: [item.file] });
         }
         outcome = {
           cancelled: picked.cancelled,

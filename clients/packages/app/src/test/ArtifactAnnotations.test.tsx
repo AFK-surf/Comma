@@ -112,6 +112,55 @@ it("sends Markdown quotes the agent can find in the source, not preview offsets"
   expect(sent).not.toMatch(/\[\d+, \d+\]/);
 });
 
+/** The text node and offset of a line's `index`th character; colors split a line into tokens. */
+function textPoint(line: Element, index: number): [Node, number] {
+  const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  let left = index;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const length = node.textContent!.length;
+    if (left <= length) return [node, left];
+    left -= length;
+  }
+  throw new Error(`line has no character ${index}`);
+}
+
+it("sends code quotes and context without the drawn line numbers", async () => {
+  const send = vi.fn();
+  render(
+    <ArtifactAnnotations
+      storageKey="task:a:file:py"
+      fileName="eva_body2.py"
+      onSend={send}
+    >
+      <FilePreviewContent
+        fileName="eva_body2.py"
+        blob={
+          new Blob(["import bpy\nprint('hi')\n"], { type: "application/octet-stream" })
+        }
+        onOpenBrowser={() => {}}
+      />
+    </ArtifactAnnotations>
+  );
+  const [first, second] = await screen.findAllByRole("listitem");
+  const range = document.createRange();
+  range.setStart(...textPoint(first!, 7));
+  range.setEnd(...textPoint(second!, 5));
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  fireEvent.pointerUp(first!);
+  fireEvent.click(screen.getByRole("button", { name: "Annotate selection" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Annotation" }), {
+    target: { value: "Rename" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Send annotations to conversation" })
+  );
+  const sent = send.mock.calls[0]![0] as string;
+  expect(sent).toContain('1. Quote: "bpy\\nprint"');
+  expect(sent).toContain("Context: \"import bpy\\nprint('hi')");
+});
+
 it("does not remeasure highlights when only the parent renders again", () => {
   sessionStorage.setItem(
     "task:a:file:1",

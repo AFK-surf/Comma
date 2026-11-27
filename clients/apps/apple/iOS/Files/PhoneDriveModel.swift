@@ -1,19 +1,30 @@
 import Foundation
 import Observation
+import os
 import CommaCore
 
 struct PhoneDriveFile: Identifiable {
     let id: String
     let name: String
     let folder: String
+    let folderSegments: [String]
     let space: String
     let size: Int
     let system: CoreJSON
     let writable: Bool
     init?(_ json: NSDictionary) {
         guard let id = json.string("id"), let name = json.string("name"), let space = json.string("spaceId") else { return nil }
-        self.id = id; self.name = name; self.space = space; folder = json.string("folderPath") ?? ""
+        let folder = json.string("folderPath") ?? ""
+        self.id = id; self.name = name; self.space = space; self.folder = folder
+        self.folderSegments = folder.split(separator: "/").map(String.init)
         size = json.int("sizeBytes") ?? 0; system = CoreJSON(value: json.object("system")); writable = json.bool("writable")
+    }
+
+    var isImage: Bool {
+        switch (name as NSString).pathExtension.lowercased() {
+        case "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "svg": true
+        default: false
+        }
     }
 }
 
@@ -26,7 +37,7 @@ struct PhoneDriveSpace: Identifiable {
         self.id = id
         let name = json.string("name") ?? ""
         switch id {
-        case "comma-system-files": self.name = name.isEmpty ? String(localized: "System Files") : name
+        case PhoneDriveModel.systemFilesSpaceID: self.name = name.isEmpty ? String(localized: "System Files") : name
         case "comma-task-files": self.name = name.isEmpty ? String(localized: "Task Files") : name
         default: self.name = name.isEmpty ? id : name
         }
@@ -45,51 +56,170 @@ enum PhoneDriveEntry: Identifiable {
     }
 }
 
+struct PhoneDriveSearchResult: Identifiable {
+    let file: PhoneDriveFile
+    /// Relative folder path under the searched directory, joined with " / ", or empty if directly inside it.
+    let relativeFolder: String
+
+    var id: String { file.id }
+}
+
 /// A local index of the shared Core catalog. Folder navigation reads one directory and renders at most 100 rows.
 @MainActor @Observable final class PhoneDriveModel {
+    static let systemFilesSpaceID = "comma-system-files"
+
     let feed: WorkspaceTopic
     var scope: WorkspaceSettingsScope { feed.scope }
     private(set) var spaces: [PhoneDriveSpace] = []
     private(set) var selectedSpaceID = ""
     private(set) var folderPath: [String] = []
-    private(set) var entries: [PhoneDriveEntry] = []
-    private(set) var page = 0
-    private(set) var entryCount = 0
-    var query = "" {
-        didSet { if query != oldValue { rebuildSearch(); page = 0; showDirectory() } }
-    }
+    private(set) var catalogVersion = 0
 
     private struct Directory: Hashable { let space: String; let path: String }
+    private struct SearchKey: Hashable { let spaceID: String; let path: [String]; let query: String }
     private var filesBySpace: [String: [PhoneDriveFile]] = [:]
     private var directories: [Directory: [PhoneDriveEntry]] = [:]
-    private var searchDirectories: [Directory: [PhoneDriveEntry]] = [:]
+    @ObservationIgnored private var searchCache: [SearchKey: [PhoneDriveSearchResult]] = [:]
+    @ObservationIgnored private let followState = OSAllocatedUnfairLock<(id: UUID, task: Task<Void, Never>)?>(initialState: nil)
     private let pageSize = 100
 
     init(store: CommaStore, workspace: Workspace) { feed = WorkspaceTopic(store: store, workspace: workspace, topic: "drive") }
+
+    deinit {
+        followState.withLock { state in
+            state?.task.cancel()
+            state = nil
+        }
+    }
+
     var selectedSpace: PhoneDriveSpace? { spaces.first { $0.id == selectedSpaceID } }
-    var pageCount: Int { max(1, (entryCount + pageSize - 1) / pageSize) }
 
     func follow() async { await feed.follow { [weak self] in self?.update($0) } }
 
+    /// Owns one `drive` subscription across the entire folder navigation stack.
+    /// Pushed folders keep receiving live updates and pull-to-refresh results without re-subscribing.
+    func startFollowing() {
+        guard scope.current else { return }
+        let alreadyRunning = followState.withLock { state in
+            if let state, !state.task.isCancelled { return true }
+            return false
+        }
+        guard !alreadyRunning else { return }
+        let id = UUID()
+        let feed = self.feed
+        let task = Task { [weak self] in
+            await feed.follow { [weak self] value in
+                self?.update(value)
+            }
+            self?.followState.withLock { state in
+                if state?.id == id { state = nil }
+            }
+        }
+        followState.withLock { $0 = (id, task) }
+    }
+
+    func stopFollowing() {
+        followState.withLock { state in
+            state?.task.cancel()
+            state = nil
+        }
+    }
+
     func selectSpace(_ id: String) {
         guard scope.current, id != selectedSpaceID, spaces.contains(where: { $0.id == id }) else { return }
-        selectedSpaceID = id; folderPath = []; page = 0; query = ""
-        showDirectory()
+        selectedSpaceID = id
+        folderPath = []
     }
 
     func openFolder(_ name: String) {
-        guard scope.current, entries.contains(where: { if case .folder(let folder) = $0 { return folder == name }; return false }) else { return }
-        folderPath.append(name); page = 0; showDirectory()
+        openFolder(name, in: selectedSpaceID, from: folderPath)
     }
 
-    func navigate(to depth: Int) {
-        guard scope.current, depth >= 0, depth < folderPath.count else { return }
-        folderPath = Array(folderPath.prefix(depth)); page = 0; showDirectory()
+    func openFolder(_ name: String, in spaceID: String, from path: [String]) {
+        guard scope.current, spaceID == selectedSpaceID else { return }
+        let nextPath = path + [name]
+        guard directoryExists(in: spaceID, path: nextPath) else { return }
+        folderPath = nextPath
     }
 
-    func movePage(by delta: Int) {
-        guard scope.current else { return }
-        page = min(max(0, page + delta), pageCount - 1); showDirectory()
+    func popFolder(toDepth depth: Int) {
+        let clamped = min(max(0, depth), folderPath.count)
+        if clamped < folderPath.count {
+            folderPath = Array(folderPath.prefix(clamped))
+        }
+    }
+
+    func directoryExists(in spaceID: String, path: [String]) -> Bool {
+        guard spaces.contains(where: { $0.id == spaceID }) else { return false }
+        if path.isEmpty { return true }
+        return directories[Directory(space: spaceID, path: path.joined(separator: "/"))] != nil
+    }
+
+    func entryCount(in spaceID: String, path: [String]) -> Int {
+        allEntries(in: spaceID, path: path).count
+    }
+
+    func pageCount(in spaceID: String, path: [String]) -> Int {
+        let total = entryCount(in: spaceID, path: path)
+        return max(1, (total + pageSize - 1) / pageSize)
+    }
+
+    static func clampedPage(_ page: Int, pageCount: Int) -> Int {
+        min(max(0, page), max(0, pageCount - 1))
+    }
+
+    /// Prefills only memory directories accepted by `SalixAgent.Tools.Memory.allowed_write_path?/1`
+    /// (`/memory/scoped/...` or `/memory/episodes/`); top-level `/memory/` defaults to `/memory/scoped/`.
+    static func initialMemoryPath(for folderPath: [String]) -> String {
+        if folderPath == ["memory", "episodes"] { return "/memory/episodes/" }
+        if folderPath.count >= 2, folderPath[0] == "memory", folderPath[1] == "scoped" {
+            return "/" + folderPath.joined(separator: "/") + "/"
+        }
+        return "/memory/scoped/"
+    }
+
+    func entries(in spaceID: String, path: [String], page: Int = 0) -> [PhoneDriveEntry] {
+        let rows = allEntries(in: spaceID, path: path)
+        let pages = max(1, (rows.count + pageSize - 1) / pageSize)
+        let clamped = Self.clampedPage(page, pageCount: pages)
+        return Array(rows.dropFirst(clamped * pageSize).prefix(pageSize))
+    }
+
+    func searchFiles(in spaceID: String, under path: [String] = [], query: String,
+                     page: Int = 0) -> (results: [PhoneDriveSearchResult], total: Int, pageCount: Int) {
+        // Read the observed catalog version so SwiftUI invalidates search views when the catalog updates.
+        _ = catalogVersion
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return ([], 0, 1) }
+        let key = SearchKey(spaceID: spaceID, path: path, query: trimmed)
+        let matched: [PhoneDriveSearchResult]
+        if let cached = searchCache[key] {
+            matched = cached
+        } else {
+            let computed = (filesBySpace[spaceID] ?? []).compactMap { file -> PhoneDriveSearchResult? in
+                guard file.folderSegments.starts(with: path) else { return nil }
+                let relativeSegments = Array(file.folderSegments.dropFirst(path.count))
+                let relativePath = relativeSegments.joined(separator: "/")
+                let haystack = relativePath.isEmpty ? file.name : relativePath + "/" + file.name
+                guard haystack.localizedStandardContains(trimmed) else { return nil }
+                return PhoneDriveSearchResult(file: file, relativeFolder: relativeSegments.joined(separator: " / "))
+            }.sorted { lhs, rhs in
+                let nameOrder = lhs.file.name.localizedStandardCompare(rhs.file.name)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return lhs.relativeFolder.localizedStandardCompare(rhs.relativeFolder) == .orderedAscending
+            }
+            if searchCache.count >= 16 { searchCache.removeAll(keepingCapacity: true) }
+            searchCache[key] = computed
+            matched = computed
+        }
+        let total = matched.count
+        let pages = max(1, (total + pageSize - 1) / pageSize)
+        let clamped = Self.clampedPage(page, pageCount: pages)
+        return (Array(matched.dropFirst(clamped * pageSize).prefix(pageSize)), total, pages)
+    }
+
+    private func allEntries(in spaceID: String, path: [String]) -> [PhoneDriveEntry] {
+        directories[Directory(space: spaceID, path: path.joined(separator: "/"))] ?? []
     }
 
     private func update(_ value: CoreJSON) {
@@ -101,37 +231,23 @@ enum PhoneDriveEntry: Identifiable {
         }
         filesBySpace = Dictionary(grouping: files, by: \.space)
         directories = Self.index(files)
+        searchCache.removeAll(keepingCapacity: true)
+        catalogVersion &+= 1
         if !spaces.contains(where: { $0.id == selectedSpaceID }) {
-            selectedSpaceID = spaces.first { !["comma-system-files", "comma-task-files"].contains($0.id) }?.id ?? spaces.first?.id ?? ""
-            folderPath = []; page = 0; query = ""
+            selectedSpaceID = spaces.first { ![Self.systemFilesSpaceID, "comma-task-files"].contains($0.id) }?.id ?? spaces.first?.id ?? ""
+            folderPath = []
         }
         // A removed directory returns to its nearest surviving parent. Empty spaces keep their root.
-        while !folderPath.isEmpty, directories[Directory(space: selectedSpaceID, path: folderPath.joined(separator: "/"))] == nil {
-            folderPath.removeLast(); page = 0
+        while !folderPath.isEmpty, !directoryExists(in: selectedSpaceID, path: folderPath) {
+            folderPath.removeLast()
         }
-        rebuildSearch(); showDirectory()
-    }
-
-    private func rebuildSearch() {
-        guard !query.isEmpty else { searchDirectories = [:]; return }
-        let files = (filesBySpace[selectedSpaceID] ?? []).filter { ($0.folder + "/" + $0.name).localizedStandardContains(query) }
-        searchDirectories = Self.index(files)
-    }
-
-    private func showDirectory() {
-        let key = Directory(space: selectedSpaceID, path: folderPath.joined(separator: "/"))
-        let rows = (query.isEmpty ? directories[key] : searchDirectories[key]) ?? []
-        entryCount = rows.count
-        page = min(page, pageCount - 1)
-        entries = Array(rows.dropFirst(page * pageSize).prefix(pageSize))
     }
 
     private static func index(_ files: [PhoneDriveFile]) -> [Directory: [PhoneDriveEntry]] {
         var folders: [Directory: Set<String>] = [:], documents: [Directory: [PhoneDriveEntry]] = [:]
         for file in files {
-            let path = file.folder.split(separator: "/").map(String.init)
             var parent = ""
-            for name in path {
+            for name in file.folderSegments {
                 let key = Directory(space: file.space, path: parent)
                 folders[key, default: []].insert(name)
                 parent = parent.isEmpty ? name : parent + "/" + name
@@ -146,13 +262,14 @@ enum PhoneDriveEntry: Identifiable {
         }
         return result
     }
+
     func refresh() async { _ = await scope.perform("drive.refresh", workspaceParameter: false) }
 }
 
 @MainActor @Observable final class PhoneDriveDocument {
     let scope: WorkspaceSettingsScope
     let file: PhoneDriveFile?
-    var path = "/memory/scoped/"
+    var path: String
     var text = ""
     private(set) var saved: String?
     private(set) var hash: String?
@@ -161,7 +278,11 @@ enum PhoneDriveEntry: Identifiable {
     private(set) var mediaType = "text/plain"
     private var bytes: Data?
 
-    init(scope: WorkspaceSettingsScope, file: PhoneDriveFile? = nil) { self.scope = scope; self.file = file }
+    init(scope: WorkspaceSettingsScope, file: PhoneDriveFile? = nil, initialPath: String = "/memory/scoped/") {
+        self.scope = scope
+        self.file = file
+        self.path = initialPath
+    }
     var editable: Bool { file == nil || file?.writable == true && ["vfs", "instructions"].contains(file?.system.object?.string("kind") ?? "") }
 
     func load() async {

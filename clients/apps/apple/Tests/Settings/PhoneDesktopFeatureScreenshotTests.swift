@@ -59,12 +59,58 @@ import CommaCore
         try await capture("15-instructions-conflict", view: PhoneRouterInstructionsView(model: router)) { router.instructionsChanged }
     }
 
+    func testMonoidPluginScreenshots() async throws {
+        let harness = try StoreHarness()
+        PhoneFeatureFixtures.configure(harness.core)
+        harness.core.serve("plugins") { _ in
+            ["status": "ready", "workspace": "w1", "plugins": [Self.monoid()], "installed": ["stillfail"], "categories": []]
+        }
+        harness.core.serve("pluginSources") { _ in ["sources": []] }
+        harness.core.serve("pluginStations") { _ in
+            ["stations": [
+                ["id": "st-1", "name": "Core · studio-0", "workspace": "Core", "emoji": "🚀", "station": "tokyo-mac-studio-0",
+                 "stationCount": 3, "connected": true, "connectedAt": "2026-11-25T01:00:00Z"],
+                ["id": "st-2", "name": "Lab · mini-1", "workspace": "Research Lab", "emoji": NSNull(), "station": "office-mini-1",
+                 "stationCount": 1, "connected": false, "connectedAt": "2026-11-24T22:00:00Z"],
+                ["id": "st-3", "workspace": NSNull(), "connected": false, "connectedAt": NSNull()],
+            ], "notificationLevel": "issues", "notificationPending": false, "pending": NSNull(), "error": NSNull()]
+        }
+        harness.core.on("plugin.notice.claim") { _ in true }
+        await harness.start()
+        let plugins = PhonePluginsModel(store: harness.store, workspace: try XCTUnwrap(harness.store.workspace))
+        let catalog = Task { await plugins.follow() }
+        await until { plugins.loaded }
+        catalog.cancel()
+        let core = harness.core
+        let page = { PhonePluginDetailView(model: plugins, pluginID: "stillfail") }
+        try await capture("16-monoid-workspaces", view: page(), height: 1400) { !core.topics("pluginStations").isEmpty }
+        try await capture("17-monoid-workspaces-dark", view: page(), dark: true, height: 1400) { !core.topics("pluginStations").isEmpty }
+        try await capture("18-monoid-workspaces-large-text", view: page(), textSize: .accessibility2, height: 2000) { !core.topics("pluginStations").isEmpty }
+        await plugins.receiveNotice(CoreJSON(value: [
+            "id": 7, "kind": "configure", "workspace": "w1", "plugin": "stillfail", "origin": "plugins",
+            "configuration": ["workspace": "w1", "plugin": ["id": "stillfail", "name": "Monoid"], "operation": "install",
+                              "setup": ["key": "STILLFAIL_CONNECT_LINE", "label": "Connect line", "format": "show",
+                                        "value": "comma https://salix.comma.surf tok_9f2c1e7a4b8d6035e1a2c9f7"]],
+        ]))
+        try await capture("19-monoid-connect-line", view: page(), height: 1400) { plugins.configurationPlugin == "stillfail" }
+    }
+
+    private nonisolated static func monoid() -> [String: Any] {
+        var monoid = PhoneFeatureFixtures.plugin("stillfail")
+        monoid["name"] = "Monoid"; monoid["brand"] = "stillfail"; monoid["stations"] = true; monoid["toolGroups"] = false
+        monoid["description"] = "Connect Monoid workspaces so Comma can follow their chats and answer their cards."
+        monoid["mcps"] = [Any](); monoid["skills"] = [Any]()
+        monoid["credentialSetup"] = ["key": "STILLFAIL_CONNECT_LINE", "label": "Connect line", "format": "show"]
+        return monoid
+    }
+
     private func capture<V: View>(_ name: String, view: V, dark: Bool = false, textSize: DynamicTypeSize = .large,
-                                  ready: @escaping @MainActor () -> Bool) async throws {
+                                  height: CGFloat? = nil, ready: @escaping @MainActor () -> Bool) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let original = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
         window.frame = scene.coordinateSpace.bounds
+        if let height { window.frame.size.height = height }
         window.overrideUserInterfaceStyle = dark ? .dark : .light
         let controller = UIHostingController(rootView: NavigationStack { view }.id(name)
             .environment(\.colorScheme, dark ? .dark : .light)

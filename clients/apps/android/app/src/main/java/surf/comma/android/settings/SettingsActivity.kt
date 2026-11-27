@@ -50,6 +50,7 @@ internal class SettingsActivity : ComponentActivity() {
         } else {
             keys.mapNotNull(::pageFor).forEach(settings::restore)
             if (settings.host.top == null) settings.restore(RootPage(settings))
+            settings.restoreListState(savedInstanceState)
         }
 
         lifecycleScope.launch {
@@ -74,6 +75,7 @@ internal class SettingsActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putStringArrayList(STATE_PAGES, ArrayList(settings.host.keys.filter { it in RESTORABLE || it == AddDevicePage.KEY || DeveloperSettings.restores(it) }))
+        settings.saveListState(outState)
     }
 
     /** Pages that can be rebuilt from their key alone. */

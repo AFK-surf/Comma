@@ -147,13 +147,14 @@ defmodule SalixAgent.InternalAgentRuntime do
   end
 
   @doc false
-  def project_session_activity(agent_id, session) do
+  def project_session_activity(agent_id, session, opts \\ []) do
     activity =
       agent_id
       |> session_json(session)
       |> Map.put("wait", InternalSession.wait(session))
       |> put_funding(session)
       |> put_failure_trigger(session)
+      |> put_compacting(Keyword.get(opts, :compacting, false))
       |> SessionActivity.project()
 
     Map.put(
@@ -163,10 +164,17 @@ defmodule SalixAgent.InternalAgentRuntime do
     )
   end
 
+  defp put_compacting(json, true), do: Map.put(json, "compacting", true)
+  defp put_compacting(json, _compacting), do: json
+
   # The Profile named by the latest provider-funding refusal, so the member can
   # see which of their own keys or subscriptions ran out (and when a
   # subscription refills). Only the newest model failure counts.
-  @funding_issues ["provider_quota_exhausted", "quota_exhausted"]
+  @funding_issues [
+    "provider_quota_exhausted",
+    "quota_exhausted",
+    "subscription_authentication_required"
+  ]
   defp put_funding(%{"issue" => issue} = json, session) when issue in @funding_issues,
     do: Map.put(json, "funding", funding_failure(session, issue))
 

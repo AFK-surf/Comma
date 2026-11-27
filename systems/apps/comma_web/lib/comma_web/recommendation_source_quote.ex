@@ -120,7 +120,7 @@ defmodule CommaWeb.RecommendationSourceQuote do
       {:ok, nodes} ->
         nodes
         |> Floki.traverse_and_update(fn
-          {tag, attributes, _children} = node ->
+          {tag, attributes, _children} = node when is_binary(tag) and is_list(attributes) ->
             if mail_quoted?(tag, attributes), do: {"hr", [], ["__________"]}, else: node
 
           node ->
@@ -191,19 +191,22 @@ defmodule CommaWeb.RecommendationSourceQuote do
   defp html(nodes) when is_list(nodes), do: Enum.map_join(nodes, &html/1)
   defp html(text) when is_binary(text), do: escape(text)
   defp html({:comment, _text}), do: ""
+  defp html({:pi, _name, _attributes}), do: ""
   defp html({tag, _attributes, _children}) when tag in @html_hidden, do: ""
   defp html({"li", _attributes, children}), do: "\n• " <> html(children) <> "\n"
 
-  defp html({"a", attributes, children}),
+  defp html({"a", attributes, children}) when is_list(attributes),
     do: link(attribute(attributes, "href"), html(children))
 
-  defp html({"img", attributes, _children}),
+  defp html({"img", attributes, _children}) when is_list(attributes),
     do: link(attribute(attributes, "src"), escape(attribute(attributes, "alt") || ""))
 
   defp html({tag, _attributes, children}) when tag in @html_blocks,
     do: "\n" <> html(children) <> "\n"
 
-  defp html({_tag, _attributes, children}), do: html(children)
+  defp html({tag, _attributes, children}) when is_binary(tag) and is_list(children),
+    do: html(children)
+
   defp html(_node), do: ""
 
   defp attribute(attributes, name),

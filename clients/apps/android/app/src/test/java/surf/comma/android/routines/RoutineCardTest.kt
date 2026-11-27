@@ -49,4 +49,29 @@ class RoutineCardTest {
         assertNull(row.objective)
         assertNull(row.quote)
     }
+
+    @Test fun `continued cards from one connection merge into one platform with unique item ids`() {
+        val parsed = RecommendationFeed.parse(JSONObject("""
+            {"state":"fresh","settings":{"sources":[
+              {"appId":"linear","appName":"Linear","connectionId":"oauth-linear","enabled":true,"kind":"managed_oauth","label":"Comma"},
+              {"appId":"github","appName":"GitHub","connectionId":"gh-1","enabled":true,"kind":"managed_oauth","label":"zan"},
+              {"appId":"github","appName":"GitHub","connectionId":"gh-2","enabled":true,"kind":"managed_oauth","label":"acme"}]},
+             "snapshot":{"generation":2,
+              "cards":[
+                {"id":"linear","title":"Linear","template":"text-list@1","sourceIds":["oauth-linear"],"items":[
+                  {"id":"item-1","parts":[{"kind":"markdown","text":"Issue 1"}]},
+                  {"id":"item-2","parts":[{"kind":"markdown","text":"Issue 2"}]}]},
+                {"id":"linear-2","title":"Linear","template":"text-list@1","sourceIds":["oauth-linear"],"items":[
+                  {"id":"item-1","parts":[{"kind":"markdown","text":"Issue 3"}]},
+                  {"id":"item-2","parts":[{"kind":"markdown","text":"Issue 4"}]}]}]}}
+        """.trimIndent()))
+        val platforms = parsed.platforms
+        assertEquals(listOf("oauth-linear", "gh-1", "gh-2"), platforms.map { it.id })
+        assertNull(platforms[0].connectionLabel)
+        assertEquals("zan", platforms[1].connectionLabel)
+        assertEquals("acme", platforms[2].connectionLabel)
+        val items = platforms[0].preTasks { null }
+        assertEquals(listOf("item-1", "item-2", "linear-2:item-1", "linear-2:item-2"), items.map { it.id })
+        assertEquals(listOf("Issue 1", "Issue 2", "Issue 3", "Issue 4"), items.map { it.text })
+    }
 }

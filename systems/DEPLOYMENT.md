@@ -466,7 +466,11 @@ Coding and sandbox Tasks run on L4ES ([compute and devices](../docs/compute-devi
    x86_64 images have make, GCC/G++, headers, Go, the `systems` CI build packages, rustup and elan (Rust and Lean install on first use).
    FFmpeg/ffprobe use Debian snapshots.
    They also have Chromium (`CHROMIUM_BIN`), fonts for Latin, CJK and emoji text, and an Xvfb display (`DISPLAY=:99`, 1280×720) for programs that need a window.
-   No person can view that display: the sandbox's Station is not a Device, so it opens no device mesh and does not offer `screen_view`.
+   The Station gives Claude Code and Codex the Playwright MCP server (`COMMA_BROWSER_MCP_CONFIG`, `browser-mcp.json`): browser tools that open this Chromium as a window on the display, with a profile kept in memory.
+   The sandbox's Station can serve that display on the device mesh to the owner of the Task, and to no other person, to look at: no view drives the display.
+   Nothing runs for this until the owner asks to see the screen. Salix then tells the Station whom to admit, and again each time the owner's client asks while it views.
+   The Station stops three minutes after the last word. Salix keeps no state, timer or subscription for it.
+   This is not a boundary between members: a member who opens the sandbox's terminal can reach the display from inside the sandbox.
    From l4h v2026.10.32, [kemu](https://github.com/losfair/kemu) runs arm64 Linux programs directly, without QEMU or binfmt: integer code near native speed, NEON slower, no io_uring.
 
 ## CI

@@ -9,7 +9,6 @@ defmodule Salix.Bindings.MeetingOwnerAttributionTest do
   end
 
   describe "bounded prompt context" do
-
     test "valid ids are limited to roster candidates actually included in the prompt" do
       roster =
         for idx <- 1..20 do

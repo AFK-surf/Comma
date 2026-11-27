@@ -186,14 +186,25 @@ defmodule SalixIM.ConversationInput do
              attrs,
              opts
            ) do
-      {:ok,
-       attrs
-       |> Map.put("agent_id", agent_id)
-       |> Map.put_new("agent_name", agent["name"])
-       |> Map.put("payload", payload)
-       |> Map.merge(
-         AgentDeliveryPayload.participant_delivery_defaults(group, agent, conversation)
-       )}
+      target_key =
+        SalixIM.TaskSessionSlots.normalize_target_key(attrs["target_key"] || attrs[:target_key])
+
+      prepared =
+        attrs
+        |> Map.delete(:target_key)
+        |> Map.put("agent_id", agent_id)
+        |> Map.put_new("agent_name", agent["name"])
+        |> Map.put("payload", payload)
+        |> Map.merge(
+          AgentDeliveryPayload.participant_delivery_defaults(group, agent, conversation)
+        )
+
+      prepared =
+        if is_binary(target_key),
+          do: Map.put(prepared, "target_key", target_key),
+          else: Map.delete(prepared, "target_key")
+
+      {:ok, prepared}
     else
       false ->
         {:error,

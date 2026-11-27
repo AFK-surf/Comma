@@ -15,7 +15,7 @@ export const RadioBase = ({ className, isSelected, isDisabled }: RadioBaseProps)
   <span
     aria-hidden="true"
     className={cx(
-      "relative flex size-4 shrink-0 items-center justify-center rounded-full border border-menu-primary bg-main-panel-bg shadow-xs",
+      "relative flex size-4 shrink-0 items-center justify-center rounded-full border border-menu-primary bg-main-panel-bg shadow-xs transition-[background-color,border-color,box-shadow] duration-[var(--motion-duration-feedback-in)] ease-[var(--motion-easing-smooth-out)] motion-reduce:transition-none",
       isSelected && "border-transparent bg-brand-solid",
       isDisabled && "border-disabled bg-disabled",
       className
@@ -24,8 +24,10 @@ export const RadioBase = ({ className, isSelected, isDisabled }: RadioBaseProps)
   >
     <span
       className={cx(
-        "size-1.5 rounded-full",
-        isSelected ? (isDisabled ? "bg-fg-disabled" : "bg-white") : "bg-transparent"
+        "size-1.5 rounded-full transition-[opacity,scale,background-color] duration-[var(--motion-duration-press-recoil)] ease-[var(--motion-easing-press-recoil)] motion-reduce:transition-none",
+        isSelected
+          ? cx("scale-100 opacity-100", isDisabled ? "bg-fg-disabled" : "bg-white")
+          : "scale-0 bg-transparent opacity-0"
       )}
     />
   </span>

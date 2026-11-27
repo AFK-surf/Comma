@@ -20,7 +20,7 @@ import {
   type Value,
   topicKey,
 } from "@comma/core-kernel";
-import { Effect, Fiber, Option } from "effect";
+import { DateTime, Effect, Fiber, Option } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
@@ -54,6 +54,7 @@ import type {
   PluginStationsValue,
   PluginToolGroupsValue,
   PluginsValue,
+  StillfailNotificationLevel,
 } from "./contract.ts";
 import { API_LANE, type Ctx, Live } from "./ctx.ts";
 import {
@@ -156,12 +157,20 @@ const params = {
       throw CoreError.invalid(`${name} is required`);
     return v;
   },
+  optionalString(raw: unknown, name: string, max = 256): string | undefined {
+    const value = (raw as Record<string, unknown> | null)?.[name];
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || !value.trim() || value.length > max)
+      throw CoreError.invalid(`${name} must be a non-empty string`);
+    return value.trim();
+  },
 };
 
 /** Why an install or reconnect failed, from the server's code or status; a code with no wording of its own is general. */
 export function failureReason(error: CoreError): PluginFailureReason {
   switch (error.code) {
     case "plugin_credential_rejected":
+    case "wrong_google_account":
       return "credential_rejected";
     case "authorization_callback_in_progress":
     case "stale_plugin_operation":
@@ -436,19 +445,35 @@ export class Plugins {
             origin,
             undefined,
             params.configValues(p),
-            params.deviceId(p)
+            params.deviceId(p),
+            params.optionalString(p, "attemptId"),
+            params.optionalString(p, "mode")
           );
         },
       },
       "plugin.reauthorize": {
-        run: (p, call) =>
-          this.#start(
+        run: (p, call) => {
+          const connection = params.optionalString(p, "connection");
+          const bindingId = params.optionalString(p, "bindingId");
+          if (!connection && !bindingId)
+            throw CoreError.invalid("connection is required");
+          const origin =
+            (p as { origin?: unknown }).origin === "onboarding"
+              ? "onboarding"
+              : "plugins";
+          return this.#start(
             call.client,
             params.target(p),
             "reauthorize",
-            "plugins",
-            params.string(p, "connection")
-          ),
+            origin,
+            connection,
+            params.configValues(p),
+            undefined,
+            params.optionalString(p, "attemptId"),
+            undefined,
+            bindingId
+          );
+        },
       },
       "plugin.uninstall": {
         doing: true,
@@ -532,6 +557,23 @@ export class Plugins {
         doing: true,
         run: (p) =>
           this.#disconnectStation(params.target(p), params.string(p, "station")),
+      },
+      "plugin.station.notificationLevel.set": {
+        doing: true,
+        run: (p) => {
+          const level = params.string(p, "level");
+          if (
+            level !== "off" &&
+            level !== "action_needed" &&
+            level !== "issues" &&
+            level !== "all"
+          ) {
+            throw CoreError.invalid(
+              "level must be one of off, action_needed, issues, or all"
+            );
+          }
+          return this.#setStationNotificationLevel(params.target(p), level);
+        },
       },
       "plugin.sources.refresh": {
         run: (p) => {
@@ -798,20 +840,28 @@ export class Plugins {
     origin: PluginInstallOrigin,
     connection?: string,
     configValues?: Record<string, string>,
-    deviceId?: string
+    deviceId?: string,
+    attemptId?: string,
+    mode?: string,
+    bindingId?: string
   ): Effect.Effect<PluginInstallAnswer, CoreError> {
     const key = targetKey(target.workspace, target.plugin);
-    // The same install asked again (a second press) is the one under way.
-    if (operation === "install" && this.#requests.get(key)?.operation === "install")
+    // The same install or reconnect asked again (a second press) is the one under way.
+    if (
+      (operation === "install" && this.#requests.get(key)?.operation === "install") ||
+      (operation === "reauthorize" &&
+        this.#requests.get(key)?.operation === "reauthorize")
+    )
       return Effect.succeed(configValues ? { failure: "busy" } : {});
     // One authorization at a time: a new one replaces what was under way.
     this.#stopAuthorization();
     return this.#ctx.session.account().pipe(
       Effect.flatMap((account) => {
+        const reauthTarget = connection ?? bindingId;
         const request: Request = {
           ...target,
           operation,
-          ...(connection ? { connection } : {}),
+          ...(reauthTarget ? { connection: reauthTarget } : {}),
           fiber: null,
         };
         const work = this.#ask(
@@ -822,7 +872,11 @@ export class Plugins {
           null,
           REQUEST_TIMEOUT_MS,
           configValues,
-          deviceId
+          deviceId,
+          undefined,
+          attemptId,
+          mode,
+          bindingId
         ).pipe(
           Effect.ensuring(
             Effect.sync(() => {
@@ -868,6 +922,9 @@ export class Plugins {
                   configuration: {
                     workspace: target.workspace,
                     plugin: answer.plugin,
+                    operation,
+                    ...(connection ? { connectionId: connection } : {}),
+                    ...(bindingId ? { bindingId } : {}),
                     setup: answer.configuration,
                   },
                 });
@@ -895,7 +952,28 @@ export class Plugins {
             Effect.sync((): PluginInstallAnswer => {
               if (account.closed) return {};
               // The credential form shows its failure in place and retains no core-side secret.
-              if (configValues) return { failure: failureReason(error) };
+              if (configValues) {
+                const detailMessage = (
+                  error.detail as { message?: unknown } | undefined
+                )?.message;
+                const safeDetailCodes = new Set([
+                  "wrong_google_account",
+                  "missing_colaboratory_scope",
+                  "already_connected",
+                  "conflict",
+                  "platform_unavailable",
+                ]);
+                const detail =
+                  safeDetailCodes.has(error.code) &&
+                  typeof detailMessage === "string" &&
+                  detailMessage.trim().length > 0
+                    ? detailMessage
+                    : undefined;
+                return {
+                  failure: failureReason(error),
+                  ...(detail ? { message: detail } : {}),
+                };
+              }
               if (error.code === "member_account_not_personal")
                 this.#notice(owner, {
                   kind: "not_personal",
@@ -945,7 +1023,10 @@ export class Plugins {
     timeoutMs: number,
     configValues?: Record<string, string>,
     deviceId?: string,
-    registration?: string
+    registration?: string,
+    attemptId?: string,
+    mode?: string,
+    bindingId?: string
   ): Effect.Effect<InstallAnswer, CoreError> {
     const { api } = this.#ctx;
     const path = route`/v1/comma/workspaces/${target.workspace}/plugins/${target.plugin}`;
@@ -960,7 +1041,13 @@ export class Plugins {
         "POST",
         `${path}/reauthorize`,
         pluginInstallResultSchema,
-        { ...(connection ? { connection_id: connection } : {}), ...verify },
+        {
+          ...(connection ? { connection_id: connection } : {}),
+          ...(bindingId ? { binding_id: bindingId } : {}),
+          ...(attemptId ? { attempt_id: attemptId } : {}),
+          ...(configValues ? { config_values: configValues } : {}),
+          ...verify,
+        },
         timeoutMs
       );
     return api
@@ -973,6 +1060,8 @@ export class Plugins {
           contract: "unified_v1",
           ...verify,
           ...(configValues ? { config_values: configValues } : {}),
+          ...(attemptId ? { attempt_id: attemptId } : {}),
+          ...(mode ? { mode } : {}),
           ...(deviceId ? { device_id: deviceId } : {}),
         },
         timeoutMs
@@ -1709,6 +1798,8 @@ export class Plugins {
     return (
       this.#stations.get(targetKey(workspace, plugin)) ?? {
         stations: null,
+        notificationLevel: "action_needed",
+        notificationPending: false,
         error: null,
         pending: null,
       }
@@ -1733,12 +1824,28 @@ export class Plugins {
   }
 
   #stationsOf(answer: z.infer<typeof pluginStationsSchema>) {
-    return answer.stations.map((s) => ({
-      id: s.id,
-      name: s.name ?? null,
-      connected: s.connected,
-      connectedAt: s.connected_at ?? null,
-    }));
+    return answer.stations.map((s) => {
+      const name = s.name ?? null;
+      // A station from before it said its workspace connected as `<workspace> · <station>`.
+      const parts = s.workspace ? null : (name?.split(" · ") ?? null);
+      const said = parts && parts.length > 1 ? parts : null;
+      return {
+        id: s.id,
+        name,
+        connected: s.connected,
+        connectedAt:
+          typeof s.connected_at === "number"
+            ? DateTime.formatIso(DateTime.makeUnsafe(s.connected_at))
+            : (s.connected_at ?? null),
+        workspace: s.workspace?.name ?? said?.[0] ?? name,
+        emoji: s.workspace?.emoji ?? null,
+        station: s.workspace
+          ? (s.workspace.station ?? null)
+          : (said?.slice(1).join(" · ") ?? null),
+        stationCount: s.workspace?.station_count ?? null,
+        ...(s.task_models !== undefined ? { taskModels: s.task_models } : {}),
+      };
+    });
   }
 
   /** Reads the still.fail stations a plugin connected. */
@@ -1764,6 +1871,7 @@ export class Plugins {
                 if (current())
                   this.#setStations(workspace, plugin, {
                     stations: this.#stationsOf(answer),
+                    notificationLevel: answer.notification_level ?? "action_needed",
                     error: null,
                   });
               })
@@ -1807,6 +1915,9 @@ export class Plugins {
                 if (!account.closed)
                   this.#setStations(workspace, plugin, {
                     stations: this.#stationsOf(answer),
+                    notificationLevel:
+                      answer.notification_level ??
+                      this.#stationsValue(workspace, plugin).notificationLevel,
                     pending: null,
                   });
               })
@@ -1821,6 +1932,65 @@ export class Plugins {
                 });
                 // It may have gone all the same: what a page shows is read again.
                 this.#stationsChanged(workspace, plugin);
+              })
+            )
+          )
+      ),
+      Effect.as(null)
+    );
+  }
+
+  /** Sets the owner's proactive notification level for connected still.fail chats. */
+  #setStationNotificationLevel(
+    target: Target,
+    level: StillfailNotificationLevel
+  ): Effect.Effect<null, CoreError> {
+    const { workspace, plugin } = target;
+    const current = this.#stationsValue(workspace, plugin);
+    if (current.notificationPending) return Effect.succeed(null);
+    const previous = current.notificationLevel;
+    const key = targetKey(workspace, plugin);
+    const fence = () =>
+      this.#stationWrites.set(key, (this.#stationWrites.get(key) ?? 0) + 1);
+    fence();
+    this.#setStations(workspace, plugin, {
+      notificationLevel: level,
+      notificationPending: true,
+      error: null,
+    });
+    const ctx = this.#ctx;
+    return ctx.session.account().pipe(
+      Effect.flatMap((account) =>
+        ctx.api
+          .request(
+            account,
+            "PUT",
+            route`/v1/comma/workspaces/${workspace}/plugins/${plugin}/stillfail-notifications`,
+            pluginStationsSchema,
+            { level }
+          )
+          .pipe(
+            Effect.tap((answer) =>
+              Effect.sync(() => {
+                fence();
+                if (!account.closed)
+                  this.#setStations(workspace, plugin, {
+                    stations: this.#stationsOf(answer),
+                    notificationLevel: answer.notification_level ?? level,
+                    notificationPending: false,
+                    error: null,
+                  });
+              })
+            ),
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                fence();
+                if (account.closed) return;
+                this.#setStations(workspace, plugin, {
+                  notificationLevel: previous,
+                  notificationPending: false,
+                  error: "notification_save_failed",
+                });
               })
             )
           )

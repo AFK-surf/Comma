@@ -469,6 +469,7 @@ html[data-comma-window-role="side-chat"] #root {
 }
 
 .comma-side-chat-task-card-button {
+  --button-press-scale: 0.99;
   width: 100%;
   border: 0;
   background: transparent;

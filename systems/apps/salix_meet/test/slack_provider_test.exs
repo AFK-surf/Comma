@@ -960,6 +960,115 @@ defmodule SalixMeet.SlackProviderTest do
 
       assert MockSlack.requests("conversations.history") == []
       assert MockSlack.requests("conversations.replies") == []
+
+      # recent_meetings checks visibility before and after reading and returns channel source_label
+      SalixStore.Repo.query!("TRUNCATE meeting_group_projections")
+      :ok = SalixStore.MeetingGroupProjections.mark_ready(%{"mode" => "test"})
+      :ok = SalixStore.MeetingGroupProjectionReadiness.refresh()
+
+      assert {:ok, _doc, _etag} =
+               SalixMeet.Store.create_once(
+                 "mtg-public-recent",
+                 state: %{
+                   "group_id" => plan["group_id"],
+                   "provider" => "slack",
+                   "connect_id" => "meeting-public-sources",
+                   "title" => "Intervening Stand-up",
+                   "status" => "done",
+                   "start_at" => 1_786_900_000,
+                   "slack_ref" => %{
+                     "channel_id" => "CPUBLIC01",
+                     "thread_ts" => "1786900000.000100"
+                   },
+                   "delivery" => %{
+                     "status" => "published",
+                     "published_at" => 1_786_901_800,
+                     "artifacts" => %{"transcript" => %{"file_id" => "F0TRANS1"}}
+                   }
+                 },
+                 now: 1_786_900_000_000
+               )
+
+      MockSlack.respond("conversations.info", %{"ok" => true, "channel" => channel})
+      info_before = length(MockSlack.requests("conversations.info"))
+
+      assert {:ok, recent_res} =
+               SalixMeet.PreparationSources.read(plan, %{
+                 "operation" => "recent_meetings",
+                 "channel" => "CPUBLIC01"
+               })
+
+      assert recent_res["operation"] == "recent_meetings"
+      assert recent_res["source_label"] == ["scope|meeting-public-sources|CPUBLIC01"]
+      assert recent_res["status"] == "complete"
+
+      assert [%{"title" => "Intervening Stand-up", "transcript_file_id" => "F0TRANS1"}] =
+               recent_res["meetings"]
+
+      assert length(MockSlack.requests("conversations.info")) == info_before + 2
+
+      # Channel turned private mid-scan discards pointers
+      mid_scan_base = length(MockSlack.requests("conversations.info"))
+
+      MockSlack.respond("conversations.info", fn _params ->
+        turned_private? = length(MockSlack.requests("conversations.info")) > mid_scan_base + 1
+        %{"ok" => true, "channel" => Map.put(channel, "is_private", turned_private?)}
+      end)
+
+      assert {:error, :meeting_shared_source_required} =
+               SalixMeet.PreparationSources.read(plan, %{
+                 "operation" => "recent_meetings",
+                 "channel" => "CPUBLIC01"
+               })
+
+      # history stamps operation, request_cursor, and unexpanded_threads
+      MockSlack.respond("conversations.info", %{"ok" => true, "channel" => channel})
+
+      MockSlack.respond("conversations.history", %{
+        "ok" => true,
+        "messages" => [
+          %{"ts" => "1787019100.000100", "text" => "Thread parent", "reply_count" => 3},
+          %{"ts" => "1787019200.000100", "text" => "Plain msg", "reply_count" => 0}
+        ],
+        "has_more" => false
+      })
+
+      assert {:ok, history_res} =
+               SalixMeet.PreparationSources.read(plan, %{
+                 "operation" => "history",
+                 "channel" => "CPUBLIC01"
+               })
+
+      assert history_res["operation"] == "history"
+      assert history_res["request_cursor"] == nil
+      assert history_res["unexpanded_threads"] == ["1787019100.000100"]
+
+      # replies preserves query_scope when oldest/latest bounds are given
+      MockSlack.respond("conversations.replies", %{
+        "ok" => true,
+        "messages" => [%{"ts" => "1787019100.000100", "text" => "Thread parent"}],
+        "has_more" => false
+      })
+
+      assert {:ok, bounded_replies} =
+               SalixMeet.PreparationSources.read(plan, %{
+                 "operation" => "replies",
+                 "channel" => "CPUBLIC01",
+                 "ts" => "1787019100.000100",
+                 "latest" => "1787019150"
+               })
+
+      assert bounded_replies["operation"] == "replies"
+      assert bounded_replies["query_scope"] == %{"latest" => "1787019150"}
+
+      assert {:ok, unbounded_replies} =
+               SalixMeet.PreparationSources.read(plan, %{
+                 "operation" => "replies",
+                 "channel" => "CPUBLIC01",
+                 "ts" => "1787019100.000100"
+               })
+
+      refute Map.has_key?(unbounded_replies, "query_scope")
     end
 
     test "a channel made private during the read discards its fetched content", %{
@@ -1715,12 +1824,28 @@ defmodule SalixMeet.SlackProviderTest do
     assert length(RuntimeDriver.calls()) == 1
     assert length(RecordingLarkDirectDelivery.records()) == 1
 
-    # Another thread of the chat, and the same thread on another connect, are
-    # meetings of their own.
+    # Another thread of the same Group asking for the same active Meet link gets
+    # `already_in_meeting` without dispatching a second bot; another Meet link
+    # in that thread, or on another connect, makes a meeting of its own.
+    elsewhere_same =
+      in_thread.(
+        "om_elsewhere_same",
+        "join https://meet.google.com/abc-defg-hij",
+        "om_other_root",
+        "omt_elsewhere"
+      )
+
+    assert {:ok,
+            %{"meeting_id" => ^meeting_id, "status" => "already_in_meeting", "provider" => "lark"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, elsewhere_same, %{})
+
+    assert length(RuntimeDriver.calls()) == 1
+    assert length(RecordingLarkDirectDelivery.records()) == 1
+
     elsewhere =
       in_thread.(
         "om_elsewhere",
-        "join https://meet.google.com/abc-defg-hij",
+        "join https://meet.google.com/def-ghij-klm",
         "om_other_root",
         "omt_elsewhere"
       )
@@ -1739,12 +1864,130 @@ defmodule SalixMeet.SlackProviderTest do
     assert {:ok, %{"meeting_id" => other_connect_meeting, "status" => "joining"}} =
              SalixMeet.ProviderDispatcher.join_from_router(
                other_connect,
-               %{again | "connect_id" => other_connect["connect_id"]},
+               %{
+                 again
+                 | "connect_id" => other_connect["connect_id"],
+                   "text" => "join https://meet.google.com/mno-pqrs-tuv"
+               },
                %{}
              )
 
     refute other_connect_meeting in [meeting_id, other_thread_meeting]
     assert length(RuntimeDriver.calls()) == 3
+  end
+
+  test "joining a Google Meet already active in another thread of the Group returns already_in_meeting across Slack, Feishu, and Lark",
+       %{tenant_id: tenant_id, group_id: group_id} do
+    slack_connect =
+      seed_done_meeting_connect(tenant_id, group_id, "slack-dup-1")
+
+    feishu_connect =
+      seed_feishu_connect(group_id, %{
+        "tenant_id" => tenant_id,
+        "connect_id" => "feishu-dup-1",
+        "app_id" => "cli_feishu_dup_1",
+        "bot_open_id" => "ou_feishu_bot_1"
+      })
+
+    lark_connect =
+      seed_lark_connect(group_id, %{
+        "tenant_id" => tenant_id,
+        "connect_id" => "lark-dup-1"
+      })
+
+    meet_url = "https://meet.google.com/kqg-khon-gxg"
+
+    # Simulate an active calendar autojoin meeting already running in a DM thread.
+    cal_id = "mtg-cal-active-group-dedup"
+
+    {:ok, _, _} =
+      Store.create_once(cal_id,
+        state: %{
+          "tenant_id" => tenant_id,
+          "group_id" => group_id,
+          "connect_id" => slack_connect["connect_id"],
+          "provider" => "slack",
+          "meet_url" => meet_url,
+          "status" => "active",
+          "joined_at" => SystemsClock.system_time(:second),
+          "slack_ref" => %{"channel_id" => "D_CAL_DM", "thread_ts" => "1795744705.948649"},
+          "join_dispatch" => %{"status" => "dispatched", "attempt_count" => 1}
+        }
+      )
+
+    assert {:ok, ^cal_id, _} = Store.find_active_google_meet(group_id, meet_url)
+    assert :not_found = Store.find_active_google_meet(group_id, meet_url, except: cal_id)
+
+    slack_source = %{
+      "provider" => "slack",
+      "connect_id" => slack_connect["connect_id"],
+      "source_message_id" => "im_provider:slack:Ev-dup-1",
+      "text" => "join #{meet_url}",
+      "metadata" => %{
+        "event_id" => "Ev-dup-1",
+        "event_type" => "app_mention",
+        "channel_id" => "C_OTHER_CHAN",
+        "thread_ts" => "1795744994.413869",
+        "message_ts" => "1795744999.000100",
+        "event_ts" => "1795744999.000100",
+        "user_id" => "U_HUMAN"
+      }
+    }
+
+    assert {:ok,
+            %{"meeting_id" => ^cal_id, "status" => "already_in_meeting", "provider" => "slack"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(slack_connect, slack_source, %{})
+
+    assert {:error, :not_found} =
+             SalixMeet.SlackThreadIndex.fetch(slack_connect, "C_OTHER_CHAN", "1795744994.413869")
+
+    feishu_source = %{
+      "provider" => "feishu",
+      "connect_id" => feishu_connect["connect_id"],
+      "source_message_id" => "im_provider:feishu:om-dup-1",
+      "text" => "join #{meet_url}",
+      "metadata" => %{
+        "chat_id" => "oc_feishu_dup",
+        "chat_type" => "group",
+        "message_id" => "om_feishu_dup_1",
+        "sender_open_id" => "ou_feishu_human",
+        "tenant_key" => "tenant-feishu"
+      }
+    }
+
+    assert {:ok,
+            %{"meeting_id" => ^cal_id, "status" => "already_in_meeting", "provider" => "feishu"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(feishu_connect, feishu_source, %{})
+
+    lark_source = %{
+      "provider" => "lark",
+      "connect_id" => lark_connect["connect_id"],
+      "source_message_id" => "im_provider:lark:om-dup-1",
+      "text" => "join #{meet_url}",
+      "metadata" => %{
+        "chat_id" => "oc_lark_dup",
+        "chat_type" => "group",
+        "message_id" => "om_lark_dup_1",
+        "sender_open_id" => "ou_lark_human",
+        "tenant_key" => "tenant-lark"
+      }
+    }
+
+    assert {:ok,
+            %{"meeting_id" => ^cal_id, "status" => "already_in_meeting", "provider" => "lark"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(lark_connect, lark_source, %{})
+
+    assert RuntimeDriver.calls() == []
+    assert {:ok, [^cal_id]} = Store.list()
+
+    # Once the original meeting ends, joining the same Meet URL works normally.
+    {:ok, _, _} = Store.update_state_retrying(cal_id, &Map.put(&1, "status", "done"))
+
+    assert {:ok, %{"meeting_id" => new_id, "status" => "joining", "provider" => "slack"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(slack_connect, slack_source, %{})
+
+    refute new_id == cal_id
+    assert length(RuntimeDriver.calls()) == 1
   end
 
   test "a Lark join without a link reads the one link of the thread of the message",

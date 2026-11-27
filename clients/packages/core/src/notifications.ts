@@ -14,6 +14,8 @@ import type { Account } from "./account.ts";
 import { route } from "./api.ts";
 import { taskConversationSchema } from "./comma/schemas.ts";
 import type {
+  LiveStatusItem,
+  LiveStatuses,
   NotificationRegistration,
   RouterUnread,
   TaskActivity,
@@ -36,6 +38,47 @@ const routerUnreadSchema = lazySchema(() =>
 );
 const activitySchema = lazySchema(() =>
   z.object({ data: z.array(taskConversationSchema).max(2) })
+);
+const liveStatusItemSchema = lazySchema(() =>
+  z.object({
+    key: z.string().min(1).max(256),
+    workspace_id: z.string().min(1).max(256),
+    group_id: z.string().min(1).max(256),
+    conversation_id: z.string().min(1).max(256).nullable().optional(),
+    category: z.enum([
+      "car",
+      "delivery",
+      "flight",
+      "train",
+      "transit",
+      "package",
+      "order",
+      "timer",
+      "progress",
+    ]),
+    status: z.enum(["active", "attention", "done", "cancelled", "failed"]),
+    accent: z
+      .enum(["auto", "brand", "green", "amber", "blue", "red", "neutral"])
+      .default("auto"),
+    title: z.string().min(1).max(256),
+    subtitle: z.string().max(512).nullable().optional(),
+    compact_label: z.string().max(64).nullable().optional(),
+    eta_epoch_seconds: z.number().int().nullable().optional(),
+    progress: z.number().min(0).max(1).nullable().optional(),
+    step_current: z.number().int().nonnegative().nullable().optional(),
+    step_total: z.number().int().positive().nullable().optional(),
+    step_label: z.string().max(128).nullable().optional(),
+    detail_left: z.string().max(256).nullable().optional(),
+    detail_right: z.string().max(256).nullable().optional(),
+    stale_epoch_seconds: z.number().int().nullable().optional(),
+    expires_epoch_seconds: z.number().int().nullable().optional(),
+    started_at_epoch_seconds: z.number().int().nullable().optional(),
+    dismiss_at_epoch_seconds: z.number().int().nullable().optional(),
+    updated_at_epoch_seconds: z.number().int(),
+  })
+);
+const liveStatusesSchema = lazySchema(() =>
+  z.object({ data: z.array(z.unknown()).max(32) })
 );
 
 const REASONS = [
@@ -188,6 +231,98 @@ export class Notifications {
                   })),
               })
             )
+          );
+        },
+      },
+      "notifications.registerLiveStatus": {
+        run: (p) => {
+          const activity = params.optional(p, "activity");
+          const liveKey = params.optional(p, "liveKey");
+          if ((activity === undefined) !== (liveKey === undefined))
+            throw CoreError.invalid("activity and liveKey must be provided together");
+          const body = {
+            ...target(p),
+            registration_id: params.string(p, "registration"),
+            activity_schema: "live_status_v1",
+            ...(activity && liveKey
+              ? { activity_id: activity, live_key: liveKey }
+              : {}),
+          };
+          const path =
+            activity && liveKey
+              ? "/v1/comma/notifications/live-statuses/tokens"
+              : "/v1/comma/notifications/live-statuses/push-to-start";
+          return this.#for(params.string(p, "session"), (account) =>
+            api.request(account, "POST", path, registrationSchema, body)
+          ).pipe(Effect.flatMap(active));
+        },
+      },
+      "notifications.unregisterLiveStatus": {
+        run: (p) => {
+          const id = params.string(p, "id");
+          const reason = params.optional(p, "reason");
+          if (reason !== undefined && !(REASONS as readonly string[]).includes(reason))
+            throw CoreError.invalid("reason is not one the server takes");
+          const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+          return ctx.session.account().pipe(
+            Effect.flatMap((account) =>
+              api.request(
+                account,
+                "DELETE",
+                `${route`/v1/comma/notifications/live-statuses/registrations/${id}`}${query}`,
+                z.unknown()
+              )
+            ),
+            Effect.as(null)
+          );
+        },
+      },
+      "notifications.liveStatuses": {
+        run: (p) => {
+          const group = params.string(p, "group");
+          return ctx.session.account().pipe(
+            Effect.flatMap((account) =>
+              api.request(
+                account,
+                "GET",
+                route`/v1/comma/groups/${group}/live-activities`,
+                liveStatusesSchema
+              )
+            ),
+            Effect.map((answer): LiveStatuses => {
+              const items: LiveStatusItem[] = [];
+              for (const raw of answer.data) {
+                const parsed = liveStatusItemSchema.safeParse(raw);
+                if (!parsed.success) continue;
+                const item = parsed.data;
+                if (item.group_id !== group) continue;
+                items.push({
+                  key: item.key,
+                  workspaceId: item.workspace_id,
+                  groupId: item.group_id,
+                  conversationId: item.conversation_id ?? null,
+                  category: item.category,
+                  status: item.status,
+                  accent: item.accent,
+                  title: item.title,
+                  subtitle: item.subtitle ?? null,
+                  compactLabel: item.compact_label ?? null,
+                  etaEpochSeconds: item.eta_epoch_seconds ?? null,
+                  progress: item.progress ?? null,
+                  stepCurrent: item.step_current ?? null,
+                  stepTotal: item.step_total ?? null,
+                  stepLabel: item.step_label ?? null,
+                  detailLeft: item.detail_left ?? null,
+                  detailRight: item.detail_right ?? null,
+                  staleEpochSeconds: item.stale_epoch_seconds ?? null,
+                  expiresEpochSeconds: item.expires_epoch_seconds ?? null,
+                  startedAtEpochSeconds: item.started_at_epoch_seconds ?? null,
+                  dismissAtEpochSeconds: item.dismiss_at_epoch_seconds ?? null,
+                  updatedAtEpochSeconds: item.updated_at_epoch_seconds,
+                });
+              }
+              return { items };
+            })
           );
         },
       },

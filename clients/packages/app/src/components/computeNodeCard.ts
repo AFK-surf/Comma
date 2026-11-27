@@ -36,6 +36,8 @@ export interface ComputeCard {
   actions: ComputeCardAction[];
   /** One information line beside the state, such as Main's automatic erase and reinstall. */
   notice?: string | undefined;
+  /** The row shows the reason in neutral text beside its action. */
+  showReason?: boolean;
 }
 
 export interface ComputeCardInput {
@@ -44,6 +46,8 @@ export interface ComputeCardInput {
     state: HostMaintenanceState | undefined;
     /** A request is in flight or Main has an unfinished receipt. */
     active: boolean;
+    /** This client is submitting a request, which replaces a failed one on the card. */
+    pending?: boolean | undefined;
     title: string;
   };
   /** The last read of the node failed. */
@@ -100,7 +104,10 @@ function describe(input: ComputeCardInput, m: Messages): ComputeCard {
       m.compute_reason_record_unreadable(),
       action("check_status", m.compute_check_status())
     );
-  if (input.maintenance.state?.operation?.outcome === "failed")
+  if (
+    !input.maintenance.pending &&
+    input.maintenance.state?.operation?.outcome === "failed"
+  )
     return attention(
       maintenanceFailureReason(input.maintenance.state.operation, m),
       maintenanceNeedsReset(input.maintenance.state.operation)
@@ -120,6 +127,21 @@ function describe(input: ComputeCardInput, m: Messages): ComputeCard {
       kind: "preparing",
       label: m.compute_preparing(),
       reason: m.compute_loading(),
+    };
+  // The person uninstalled Agent VMM: nothing is wrong, and reinstalling it brings back the saved setup.
+  if (
+    state.status === "action_required" &&
+    state.problem === "host_uninstalled" &&
+    input.maintenance.state?.installation === "not_installed"
+  )
+    return {
+      kind: "not_enabled",
+      label: m.compute_host_uninstalled(),
+      reason: m.compute_host_uninstalled_note(),
+      showReason: true,
+      actions: [
+        action("update_host", reinstallLabel(input.maintenance.state.operation, m)),
+      ],
     };
   if (state.status === "action_required") {
     const primary = state.primaryAction;

@@ -78,8 +78,10 @@ defmodule SalixIM.Application do
       conversation_archive_children() ++
       conversation_search_children() ++
       task_files_children() ++
+      task_feed_children() ++
       provider_runtime_children() ++
       lark_socket_children() ++
+      wecom_socket_children() ++
       slack_message_mirror_children() ++
       feishu_message_mirror_children() ++
       qq_message_record_children() ++
@@ -202,6 +204,12 @@ defmodule SalixIM.Application do
     if enabled? and repo?, do: [SalixIM.TaskFilesBackfill], else: []
   end
 
+  defp task_feed_children do
+    enabled? = SystemsRuntime.get_env(:salix_im, :task_feed_backfill, true) != false
+    repo? = SystemsRuntime.get_env(:salix_store, :start_repo, false)
+    if enabled? and repo?, do: [SalixIM.TaskFeedBackfill], else: []
+  end
+
   defp conversation_archive_children do
     enabled? = SystemsRuntime.get_env(:salix_im, :conversation_archive_worker, true) != false
     repo? = SystemsRuntime.get_env(:salix_store, :start_repo, false)
@@ -260,6 +268,36 @@ defmodule SalixIM.Application do
         start:
           {Supervisor, :start_link,
            [sockets ++ runtime, [strategy: :rest_for_one, name: SalixIM.LarkSocketRoot]]}
+      }
+    ]
+  end
+
+  # The long connections of WeCom AI bots. The `:pg` scope, the registry and
+  # the task supervisor always run, so a send reaches a socket on any node
+  # and a test can start a socket by hand; the runtime that opens them
+  # follows `:wecom_socket_runtime`.
+  defp wecom_socket_children do
+    sockets = [
+      %{id: SalixIM.WeComPG, start: {:pg, :start_link, [SalixIM.WeComPG]}},
+      {SystemsRuntime.Registry, keys: :unique, name: SalixIM.WeComSocketRegistry},
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixIM.WeComSocketSupervisor, strategy: :one_for_one},
+      {SystemsRuntime.TaskSupervisor, name: SalixIM.WeComSocketTaskSupervisor}
+    ]
+
+    runtime =
+      case SystemsRuntime.get_env(:salix_im, :wecom_socket_runtime, true) do
+        false -> []
+        opts when is_list(opts) -> [{SalixIM.WeComSocketRuntime, opts}]
+        _ -> [SalixIM.WeComSocketRuntime]
+      end
+
+    [
+      %{
+        id: SalixIM.WeComSocketSupervisor.Root,
+        start:
+          {Supervisor, :start_link,
+           [sockets ++ runtime, [strategy: :rest_for_one, name: SalixIM.WeComSocketRoot]]}
       }
     ]
   end

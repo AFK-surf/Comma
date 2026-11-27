@@ -165,8 +165,8 @@ msgstr "无法更新组织。"
 msgid "Couldn't update role."
 msgstr "无法更新角色。"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:231
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:318
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:247
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:393
 msgid "Create organization"
 msgstr "创建组织"
 
@@ -216,7 +216,7 @@ msgstr "模拟登录用户"
 msgid "Integrations"
 msgstr "集成"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:247
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:294
 msgid "Invite code"
 msgstr "邀请码"
 
@@ -248,7 +248,7 @@ msgstr "名称"
 msgid "Only Agent Swarm admins can manage access."
 msgstr "只有 Agent Swarm 管理员才能管理访问权限。"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:261
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:308
 msgid "Organization name"
 msgstr "组织名称"
 
@@ -258,7 +258,7 @@ msgstr "未找到组织。"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:66
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:135
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:275
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:328
 msgid "Organization slug"
 msgstr "组织标识 (slug)"
 
@@ -280,7 +280,7 @@ msgstr "Salix 超时，请稍后重试。"
 msgid "Sign in"
 msgstr "登录"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:324
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:413
 msgid "Sign in with SSO"
 msgstr "使用 SSO 登录"
 
@@ -298,8 +298,8 @@ msgid ""
 msgstr "已创建 Slack 连接。打开安装 URL 以完成 OAuth 安装。"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:6
-msgid "Switch your dashboard session to another Bridge For Teams user."
-msgstr "将你的仪表盘会话切换为另一个 Bridge For Teams 用户。"
+msgid "Switch your dashboard session to another Comma for Teams user."
+msgstr "将你的仪表盘会话切换为另一个 Comma for Teams 用户。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4869
 msgid "That IM provider is not supported."
@@ -322,12 +322,12 @@ msgstr "服务方拒绝了此连接设置。请检查应用凭据后重试。"
 msgid "The runtime is not ready yet. Retry shortly."
 msgstr "运行时尚未就绪，请稍后重试。"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:233
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:249
 msgid "Use your invite code to create your organization and owner account."
 msgstr "使用你的邀请码创建组织和所有者账号。"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:151
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:290
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:344
 msgid "Work email"
 msgstr "工作邮箱"
 
@@ -335,7 +335,7 @@ msgstr "工作邮箱"
 msgid "You"
 msgstr "你"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:309
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:365
 msgid "Your name"
 msgstr "你的姓名"
 
@@ -623,12 +623,6 @@ msgstr "尚未观测到检查结果"
 
 msgid "No gates recorded"
 msgstr "未记录检查项"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-msgid ""
-"Only one Feishu app can be enabled for the group bot right now. Disable the "
-"existing bot app before enabling another."
-msgstr "目前只能为群机器人启用一个飞书应用。请先停用现有的机器人应用，再启用其他应用。"
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:734
 #, fuzzy
@@ -1777,6 +1771,29 @@ msgid "%{model} (current; unavailable for selection)"
 msgstr "%{model}（当前选择；不可再选）"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen
+msgid "%{model} (current; no enabled account serves it)"
+msgstr "%{model}（当前选择；没有已启用的账户能提供它）"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen
+msgid "%{model}; no enabled account serves it"
+msgstr "%{model}；没有已启用的账户能提供它"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen
+msgid "%{model} (pay-per-use)"
+msgstr "%{model}（按量计费）"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen
+msgid "Tasks · %{model}; no enabled account serves it"
+msgstr "任务 · %{model}；没有已启用的账户能提供它"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "The binding changed. Reopen the form and try again."
 msgstr "绑定已变更。请重新打开表单后再试。"
 
@@ -2050,7 +2067,7 @@ msgstr "Lark 拒绝了这组凭证。请检查 App ID 和 App Secret，并确认
 msgid "Could not run Lark checks."
 msgstr "无法运行 Lark 检查。"
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:80
 #, elixir-autogen, elixir-format
 msgid "Sign in with Lark"
 msgstr "使用 Lark 登录"
@@ -2291,3 +2308,602 @@ msgstr "请检查字段名：由字母、数字和 _ 组成，以字母开头，
 #, elixir-autogen, elixir-format
 msgid "A member already keeps a key under this name. Choose another name."
 msgstr "已有成员用这个名字保存了密钥，请换一个名字。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "%{model} (provided by the platform)"
+msgstr "%{model}（由平台提供）"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Choose whether this workspace's people are your organization's or external."
+msgstr "选择这个工作区的人是组织的人还是外部的人。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Access granted."
+msgstr "已授权。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Access removed."
+msgstr "已取消授权。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Choose 1, 7 or 30 days, or no expiry."
+msgstr "请选择 1 天、7 天、30 天或不过期。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "People of this workspace are your organization's people now."
+msgstr "这个工作区的人现在是组织的人。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "People of this workspace are external now. Only people you grant can use stations."
+msgstr "这个工作区的人现在是外部的人。只有你授权的人可以使用工作站。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "That person could not be found in this workspace. Search again."
+msgstr "在这个工作区找不到这个人，请重新搜索。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "A connect can have at most 100 people granted. Remove one first."
+msgstr "一个连接最多授权 100 人，请先移除一人。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Only organization owners and admins can assign a department."
+msgstr "只有组织所有者和管理员可以指定部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Choose an existing department."
+msgstr "请选择一个已有的部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "is invalid"
+msgstr "无效"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Could not create the department."
+msgstr "无法创建部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "An organization can have at most %{count} departments."
+msgstr "一个组织最多可以有 %{count} 个部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Could not update the department."
+msgstr "无法更新部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Could not delete the department."
+msgstr "无法删除部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "An Agent Swarm can search at most %{count} other Agent Swarms. Remove some departments or Agent Swarms and try again."
+msgstr "一个 Agent Swarm 最多可以搜索 %{count} 个其他 Agent Swarm。请移除部分部门或 Agent Swarm 后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Department not found."
+msgstr "找不到该部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Choose existing departments or Agent Swarms in this organization."
+msgstr "请选择本组织中已有的部门或 Agent Swarm。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Organization default (%{model})"
+msgstr "组织默认（%{model}）"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only organization owners and admins can change the department."
+msgstr "只有组织所有者和管理员可以更改部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Choose an existing department in this organization."
+msgstr "请选择本组织中已有的部门。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only organization owners and admins can change cross-Swarm search permissions."
+msgstr "只有组织所有者和管理员可以更改跨 Swarm 搜索权限。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Could not save cross-Swarm search permissions."
+msgstr "无法保存跨 Swarm 搜索权限。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it."
+msgstr "企业微信机器人已连接。在企业微信里给它发消息，或把它拉进群并 @ 它。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Updated the WeCom bot's credentials."
+msgstr "已更新企业微信机器人的凭证。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This WeCom bot is already connected to another Agent Swarm. One WeCom bot serves one Agent Swarm; delete the existing connect or use a different bot."
+msgstr "这个企业微信机器人已连接到另一个 Agent Swarm。一个企业微信机器人只能服务一个 Agent Swarm；请删除已有连接，或换一个机器人。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "WeCom rejected these credentials. Check the Bot ID and Secret and retry."
+msgstr "企业微信拒绝了这组凭证。请检查 Bot ID 和 Secret 后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
+#, elixir-autogen, elixir-format
+msgid "Paste the key, or this ability's own address."
+msgstr "请粘贴 key，或这一项能力自己的地址。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "The still.fail station was disconnected."
+msgstr "已断开这个 still.fail station。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "This Agent Swarm has no such still.fail station."
+msgstr "这个 Agent Swarm 没有这个 still.fail station。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "device_id must be a station's id."
+msgstr "device_id 必须是一个 station 的 id。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Feishu / Lark triage enabled for this connection."
+msgstr "已为这个连接开启飞书 / Lark 分诊。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Feishu / Lark triage paused for this connection."
+msgstr "已暂停这个连接的飞书 / Lark 分诊。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "The group chats could not be added."
+msgstr "群聊未能添加。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Group chat resumed."
+msgstr "群聊已恢复值守。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Group chat paused."
+msgstr "群聊已暂停值守。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This group chat is already watched by another Agent Swarm. Pause it there first."
+msgstr "这个群聊已由另一个 Agent Swarm 值守。请先在那边暂停，再在这里添加。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "“%{chat}” is already watched by the Agent Swarm “%{swarm}”. Pause it there first."
+msgstr "“%{chat}”已由 Agent Swarm“%{swarm}”值守。请先在那边暂停，再在这里添加。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This group chat is already watched by the Agent Swarm “%{swarm}”. Pause it there first."
+msgstr "这个群聊已由 Agent Swarm“%{swarm}”值守。请先在那边暂停，再在这里添加。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This organization is still being set up."
+msgstr "这个组织仍在初始化。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Feishu / Lark triage"
+msgstr "飞书 / Lark 分诊"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "That item is no longer available."
+msgstr "这一项已不可用。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "The request is not valid."
+msgstr "请求无效。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This connection is missing its bot identity and cannot watch group chats. Reconnect the app first."
+msgstr "这个连接缺少机器人身份信息，无法开启群聊值守。请先重新连接该应用。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "1 group chat added."
+msgid_plural "%{count} group chats added."
+msgstr[0] "已添加 %{count} 个群聊。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:222
+msgid "Your organization is created after payment is confirmed. Refresh this page to check again. Payment does not sign you in."
+msgstr "付款确认后将创建你的组织。请刷新此页查询进度。付款后仍需登录。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:224
+msgid "Back to checkout"
+msgstr "返回结账"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:223
+msgid "Check payment"
+msgstr "查询付款状态"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:221
+msgid "Checkout cancelled"
+msgstr "结账已取消"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:221
+msgid "Confirming your payment"
+msgstr "正在确认付款"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:393
+msgid "Continue to payment"
+msgstr "继续付款"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:398
+msgid "Buy Teams and create an organization"
+msgstr "购买 Teams 并创建组织"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:279
+msgid "Payment channel"
+msgstr "支付渠道"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:287
+msgid "Local payment"
+msgstr "当地支付"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:255
+msgid "Pay for three months in your local currency. Model subscriptions and API usage are paid separately."
+msgstr "以当地货币支付三个月的费用。模型订阅与 API 用量另行付费。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:466
+msgid "Billing country"
+msgstr "账单所在国家"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:498
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:513
+msgid "Payment method"
+msgstr "支付方式"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:446
+msgid "Online banking"
+msgstr "网上银行"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:447
+msgid "Debit card"
+msgstr "借记卡"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:448
+msgid "Credit card"
+msgstr "信用卡"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:449
+msgid "Cash"
+msgstr "现金"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:525
+msgid "First name"
+msgstr "名"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:526
+msgid "Last name"
+msgstr "姓"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:529
+msgid "Phone number"
+msgstr "手机号"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:531
+msgid "6–9 local digits, without +593 or a leading zero."
+msgstr "输入 6–9 位本地号码，开头请省略 +593 或 0。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:536
+msgid "CPF number"
+msgstr "CPF 号码"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:542
+msgid "Document type"
+msgstr "证件类型"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:555
+msgid "Document number"
+msgstr "证件号码"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:563
+msgid "Estimated quarterly total: %{amount}"
+msgstr "季度预估总额：%{amount}"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:241
+msgid "Local payment is unavailable for this country. Choose another country or use Stripe."
+msgstr "该国家暂无法使用当地支付。请选择其他国家或使用 Stripe。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:246
+msgid "A checkout is already in progress. Check your payment before starting a new checkout."
+msgstr "已有一笔结账正在进行。请先查询付款状态，再开始新一笔结账。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:251
+msgid "We could not confirm that checkout started. Check your payment before trying again."
+msgstr "暂时无法确认是否已开始结账。请先查询付款状态，再重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:256
+msgid "Local checkout could not start. Check your details and try again."
+msgstr "无法开始当地支付。请检查填写的信息后重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:267
+msgid "Enter 6–9 local digits, without +593 or a leading zero."
+msgstr "请输入 6–9 位本地号码，开头请省略 +593 或 0。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:269
+msgid "Enter a valid phone number."
+msgstr "请输入有效的手机号。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:270
+msgid "Enter the payer’s first name."
+msgstr "请输入付款人的名。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:271
+msgid "Enter the payer’s last name."
+msgstr "请输入付款人的姓。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:272
+msgid "Enter a valid work email address."
+msgstr "请输入有效的工作邮箱。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:273
+msgid "Enter an 11-digit CPF number."
+msgstr "请输入 11 位 CPF 号码。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:276
+msgid "Choose a document type for this country."
+msgstr "请选择适用于该国家的证件类型。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:279
+msgid "Enter a valid number for the selected document type."
+msgstr "请输入所选证件类型的有效号码。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:283
+msgid "Choose a payment method available for this document type."
+msgstr "请选择支持该证件类型的支付方式。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:285
+msgid "Check the payer details and try again."
+msgstr "请检查付款人信息后重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:252
+msgid "$80 per seat per month, billed quarterly. Model subscriptions and API usage are paid separately."
+msgstr "每席位每月 $80，按季度计费。模型订阅与 API 用量另计。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:432
+msgid "Pay with a local method in Latin America"
+msgstr "使用拉美当地方式支付"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:391
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:503
+msgid "Seats"
+msgstr "席位数"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:271
+msgid "This payment session has expired. Re-enter the payment page to continue."
+msgstr "本次支付会话已过期。请重新进入支付页面后继续。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:273
+msgid "Re-enter payment page"
+msgstr "重新进入支付页面"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:403
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:284
+msgid "Enter at least %{min} seats."
+msgstr "请输入不少于 %{min} 个席位。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:483
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:281
+msgid "Enter between %{min} and %{max} seats."
+msgstr "请输入 %{min}–%{max} 之间的席位数。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:292
+msgid "Enter a valid seat count."
+msgstr "请输入有效的席位数。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:295
+msgid "This total exceeds the local payment limits. Choose fewer seats."
+msgstr "此金额超出当地支付限额。请选择更少的席位。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:321
+msgid "Checkout could not start. Check your details and try again."
+msgstr "无法开始结账。请检查填写的信息后重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Email"
+msgstr "邮箱"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Forgot your organization slug? Sign in with email"
+msgstr "忘记组织标识？使用邮箱登录"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Buy Comma for Teams"
+msgstr "购买 Comma for Teams"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Enter your work email and we'll send sign-in links for your Comma for Teams organizations."
+msgstr "输入您的工作邮箱，我们将发送您所属 Comma for Teams 组织的登录链接。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Send sign-in links"
+msgstr "发送登录链接"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Your Teams organizations"
+msgstr "您的 Teams 组织"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Signed in as %{email}"
+msgstr "当前登录账号：%{email}"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Ask an organization owner or admin to manage seats."
+msgstr "请联系组织所有者或管理员管理席位。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Open"
+msgstr "打开"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Manage billing & seats"
+msgstr "管理账单与席位"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Previous"
+msgstr "上一页"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Next"
+msgstr "下一页"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Create a new organization"
+msgstr "创建新组织"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Creates a separate organization and does not add seats to existing ones."
+msgstr "这将创建一个独立的新组织，不会为已有组织增加席位。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Sign out and use another account"
+msgstr "退出登录并切换账号"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Owner"
+msgstr "所有者"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Admin"
+msgstr "管理员"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Member"
+msgstr "成员"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Billing status unavailable"
+msgstr "账单状态暂不可用"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Contract or invite-managed"
+msgstr "合同或邀请管理"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Active: %{seats} seats (valid through %{date})"
+msgstr "已生效：%{seats} 个席位（有效期至 %{date}）"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Active: %{seats} seats"
+msgstr "已生效：%{seats} 个席位"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Subscription inactive"
+msgstr "订阅未生效"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Checkout session not found"
+msgstr "未找到结账会话"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "This payment confirmation link does not match your current browser session. If you already completed payment, check your email for your organization sign-in link."
+msgstr "此支付确认链接与当前浏览器会话不匹配。如果您已完成支付，请查收邮件中的组织登录链接。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Organization %{name} was created, but its Teams subscription is not active. Sign in to manage billing for this organization."
+msgstr "组织 %{name} 已创建，但其 Teams 订阅未生效。请登录以管理该组织的账单。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Sign in to organization"
+msgstr "登录到组织"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Payment status is temporarily unavailable. Refresh this page shortly to check again."
+msgstr "支付状态暂不可用。请稍后刷新此页面重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Already have a Teams organization?"
+msgstr "已有 Teams 组织？"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "You are creating a separate new organization. This will not add seats to your existing organizations."
+msgstr "您正在创建一个独立的新组织，不会为已有组织增加席位。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Manage existing organizations"
+msgstr "管理已有组织"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "$80 per seat per month, billed quarterly. Creates a standalone Comma for Teams organization separate from personal Comma accounts. Model subscriptions and API usage are paid separately."
+msgstr "每席位每月 80 美元，按季计费。将创建独立的 Comma for Teams 组织（与个人版 Comma 账户隔离）。模型订阅与 API 用量另行计费。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Pay for three months in your local currency. Creates a standalone Comma for Teams organization separate from personal Comma accounts. Model subscriptions and API usage are paid separately."
+msgstr "使用当地货币支付三个月费用。将创建独立的 Comma for Teams 组织（与个人版 Comma 账户隔离）。模型订阅与 API 用量另行计费。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Your original checkout stays locked until %{expires_at} UTC."
+msgstr "您的原始结账单将锁定至 %{expires_at} UTC。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Open original checkout"
+msgstr "打开原结账页面"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Check payment status"
+msgstr "查看支付状态"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Quarterly total: $%{total} USD before tax ($240 / seat × %{seats} seats)"
+msgstr "税前季度总计：$%{total} USD（$240 / 席位 × %{seats} 席位）"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Sign in to an existing organization"
+msgstr "登录到已有组织"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "Unable to verify your previous checkout status right now. Please refresh and try again."
+msgstr "暂时无法确认您之前的结账状态。请刷新页面后重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "Teams checkout is temporarily unavailable. Please try again later."
+msgstr "Teams 结账暂不可用，请稍后重试。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "Organization %{name} was created for another account. Sign out to sign in as the new organization owner."
+msgstr "组织 %{name} 已为其他账号创建。请退出登录后使用新组织所有者账号登录。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "If that email matches any organizations, we sent sign-in links. Magic links expire in 15 minutes."
+msgstr "如果该邮箱匹配任何组织，我们已发送登录链接。邮件登录链接 15 分钟内有效。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_onboarding_wizard.ex
+msgid "You do not have access to that organization."
+msgstr "您无权访问该组织。"

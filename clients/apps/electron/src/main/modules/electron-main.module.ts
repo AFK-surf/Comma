@@ -45,6 +45,7 @@ import {
   appPreferencesChangedEvent,
   voiceCallAudioEvent,
   browserSidebarChangedEvent,
+  browserSidebarCloseTabRequestedEvent,
   browserSidebarOpenTabRequestedEvent,
   connectorRuntimeStateChangedEvent,
   macAppsStateChangedEvent,
@@ -63,7 +64,7 @@ import {
   type CommaOperatingSystem,
 } from "@comma/native-bridge";
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rename as renameFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { baseLocale, type CommaLocale } from "@comma/i18n";
 import {
@@ -126,6 +127,12 @@ import {
   openSystemNotificationSettings,
   systemNotificationsMayPost,
 } from "../system-notification-settings";
+import {
+  authorizeSystemPermission,
+  MACOS_LOCATION_SETTINGS_URL,
+  MACOS_MICROPHONE_SETTINGS_URL,
+  type SystemPermissionAuthorizer,
+} from "../system-permission-authorization";
 import { SecureSessionStore, type SecureSessionInput } from "../secure-store";
 import type { DesktopGoogleAuthProvider } from "../google-desktop-auth";
 import { DownloadsService, type FilesProvider } from "./files/downloads";
@@ -295,6 +302,11 @@ export interface ElectronMainRuntimeDeps {
   /** Starts both AirDrop helpers. Absent, the binaries above run as processes. */
   spawnAirDropHelper?: SpawnAirDropHelper | undefined;
   getAirDropSurfaceId?: () => string | undefined;
+  /**
+   * Opens or brings forward the main window, which shows a nearby invite's
+   * connect card, and returns its registration id.
+   */
+  presentNearbyOffer?: () => string | undefined;
   /** Node's HTTP and mDNS for nearby connect on the local network. Absent: AirDrop only. */
   lanNearbyPlatform?: (LanNearbyPlatform & { close(): void }) | undefined;
   /**
@@ -310,6 +322,8 @@ export interface ElectronMainRuntimeDeps {
   connectorRuntimeNamespace?: string | undefined;
   /** Electron-owned runtime root given to the station's connections. */
   connectorRuntimeRoot?: string | undefined;
+  /** Chromium's proxy answer for a URL: the station's connections follow the system's proxy. */
+  connectorSystemProxy?: ((url: string) => Promise<string>) | undefined;
   /**
    * E2E-only override: resolve registration targets from this legacy status
    * file instead of supervising real connector processes.
@@ -421,7 +435,8 @@ export interface ElectronMainRuntimeDeps {
   browserInspectionComposerUrl?: string | undefined;
   readClipboardImage: () => Promise<Uint8Array | null>;
   readClipboardText: () => Promise<string>;
-  writeClipboardText: (text: string) => Promise<void>;
+  /** Writes text to the clipboard, with `html` beside it as the same content for rich editors. */
+  writeClipboardText: (text: string, html?: string) => Promise<void>;
   /** False when the PNG bytes did not decode, so nothing was put on the clipboard. */
   writeClipboardImage: (pngImage: Uint8Array) => Promise<boolean>;
   openExternalUrl: (url: string) => Promise<void>;
@@ -609,11 +624,38 @@ export async function createElectronMainContext(
   let airdrop: AirDropService | undefined;
   let airDropShown: boolean | undefined;
   let airDropSavedName: string | null | undefined;
-  const applyNotchPreferences = (preferences: AppPreferences) =>
+  let computerUsePreferencesTail: Promise<void> = Promise.resolve();
+  let lastComputerUseNotchPreference: boolean | undefined;
+  const syncComputerUsePreferences = (showInNotch: boolean) => {
+    const runtimeRoot = deps.connectorRuntimeRoot;
+    if (!runtimeRoot || lastComputerUseNotchPreference === showInNotch) return;
+    lastComputerUseNotchPreference = showInNotch;
+    const directory = join(runtimeRoot, "computer-use");
+    const targetPath = join(directory, "preferences.json");
+    const temporaryPath = `${targetPath}.tmp`;
+    const payload = `${JSON.stringify({ showInNotch })}\n`;
+    computerUsePreferencesTail = computerUsePreferencesTail
+      .then(async () => {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(temporaryPath, payload, { mode: 0o600 });
+        await renameFile(temporaryPath, targetPath);
+      })
+      .catch((error: unknown) => {
+        if (lastComputerUseNotchPreference === showInNotch) {
+          lastComputerUseNotchPreference = undefined;
+        }
+        deps.logger?.warn("Computer Use preferences write failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  const applyNotchPreferences = (preferences: AppPreferences) => {
     deps.notch.setPresentation({
       sideWidth: preferences.notchSideWidth,
       visible: preferences.showInNotch,
     });
+    syncComputerUsePreferences(preferences.showComputerUseInNotch);
+  };
   let statusTrayTasks: StatusTrayInProgressTasks | undefined;
   let statusTrayUsage: StatusTrayUsage | undefined;
   let statusTrayPreferences: AppPreferences | undefined;
@@ -728,6 +770,34 @@ export async function createElectronMainContext(
         );
       });
   };
+  // Location and the microphone are read back the same way, so Settings ›
+  // Permissions follows a grant made in System Settings on the next focus.
+  const refreshSystemPermissions = () =>
+    appPreferencesService.refreshSystemPermissions().catch((error: unknown) => {
+      deps.logger?.warn(
+        `System permissions readback failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { source: "app-preferences" }
+      );
+    });
+  // Asks (or opens System Settings), then publishes what macOS now says.
+  const authorize = async (
+    authorizer: SystemPermissionAuthorizer | undefined,
+    settingsUrl: string
+  ) => {
+    try {
+      return await authorizeSystemPermission({
+        authorizer,
+        openExternalUrl: deps.openExternalUrl,
+        settingsUrl,
+      });
+    } finally {
+      // Published before the answer, as notifications are: the row never
+      // shows its old state after the prompt closes.
+      await refreshSystemPermissions();
+    }
+  };
   const appPreferencesRuntime: AppPreferencesRuntime = {
     close: () => appPreferencesService.close(),
     initializeClientSettings: (settings) =>
@@ -749,10 +819,21 @@ export async function createElectronMainContext(
     },
     requestNotificationAuthorization: () =>
       appPreferencesService.requestSystemNotificationsAuthorization(),
+    requestLocationAuthorization: () =>
+      authorize(
+        deps.appPreferencesPlatform.locationAuthorization,
+        MACOS_LOCATION_SETTINGS_URL
+      ),
+    requestMicrophoneAuthorization: () =>
+      authorize(
+        deps.appPreferencesPlatform.microphoneAuthorization,
+        MACOS_MICROPHONE_SETTINGS_URL
+      ),
     refreshLaunchAtLogin: () => appPreferencesService.refreshLaunchAtLogin(),
     state: () => {
       refreshSystemNotificationsStatus();
       refreshKeepAwakeWhenLidClosedStatus();
+      void refreshSystemPermissions();
       return appPreferencesService.state();
     },
     update: (patch) => appPreferencesService.update(patch),
@@ -972,6 +1053,7 @@ export async function createElectronMainContext(
       connectorsRootDir,
       runtimeNamespace: deps.connectorRuntimeNamespace,
       runtimeRoot: deps.connectorRuntimeRoot,
+      systemProxy: deps.connectorSystemProxy,
       synchBinaryPath: deps.synchronicity?.binaryPath,
       synchDataDir: synchronicityDataDir,
       core: () => coreHost?.client(),
@@ -1191,6 +1273,7 @@ export async function createElectronMainContext(
     clock,
     loadNative: loadNativeAudio,
     encoder: new HelperRecordingEncoder(deps.microphoneHostPath),
+    logger: deps.logger,
     onSaved: (recording, target, sourcePath) =>
       recordingTranscription.process(recording, target, sourcePath),
     onStateChanged: (state) => {
@@ -1303,6 +1386,15 @@ export async function createElectronMainContext(
   const computeNodeFilePath =
     deps.computeNodeFilePath ??
     join(dirname(deps.secureSessionFilePath), "compute-node-intent.json");
+  const sharedHostPreparation = new AgentVMMHostPreparation(
+    hostConfiguration.sourcePath ? resolveHostConfiguration("prod") : hostConfiguration,
+    runComputeCommand,
+    fetch,
+    clock
+  );
+  const hostPreparation = hostConfiguration.sourcePath
+    ? new AgentVMMHostPreparation(hostConfiguration, runComputeCommand, fetch, clock)
+    : sharedHostPreparation;
   const computeNode = new AccountComputeNodeService(
     {
       adapter:
@@ -1313,12 +1405,7 @@ export async function createElectronMainContext(
         ),
       ...(!deps.computeNodeAdapter && !deps.computeNodeLifecyclePath
         ? {
-            preparation: new AgentVMMHostPreparation(
-              hostConfiguration,
-              runComputeCommand,
-              fetch,
-              clock
-            ),
+            preparation: hostPreparation,
           }
         : {}),
       clock,
@@ -1331,18 +1418,14 @@ export async function createElectronMainContext(
     session.state(),
     localCompute,
     new LocalHostMaintenance(
-      new AgentVMMHostPreparation(
-        resolveHostConfiguration("prod"),
-        runComputeCommand,
-        fetch,
-        clock
-      ),
+      sharedHostPreparation,
       join(homedir(), "Library", "Application Support", "Agent VMM Maintenance"),
       runComputeCommand,
       deps.confirmHostMaintenance,
       localCompute,
       undefined,
-      clock
+      clock,
+      (line) => deps.logger?.warn(line, { source: "compute-node-maintenance" })
     )
   );
   computeNodeSession = computeNode;
@@ -1375,6 +1458,10 @@ export async function createElectronMainContext(
           : undefined,
         createComposerView: deps.createBrowserInspectionComposerView,
         composerUrl: deps.browserInspectionComposerUrl,
+        onClientCloseTabRequested: (windowId, request) =>
+          nativeEventBus.emit(browserSidebarCloseTabRequestedEvent, request, {
+            target: { type: "window", windowId },
+          }) > 0,
         onClientOpenTabRequested: (windowId, request) =>
           nativeEventBus.emit(browserSidebarOpenTabRequestedEvent, request, {
             target: { type: "window", windowId },
@@ -1436,6 +1523,7 @@ export async function createElectronMainContext(
     ? new LanNearby({
         clock,
         platform: lanNearbyPlatform,
+        log: { warn: (message) => deps.logger?.warn(message, { source: "airdrop" }) },
         onInvite: async (invite, signal) => nearby?.lanInvite(invite, signal) ?? false,
       })
     : undefined;
@@ -1460,11 +1548,14 @@ export async function createElectronMainContext(
   };
   nearby = new NearbyService({
     lan: lanNearby,
-    log: { warn: (message) => deps.logger?.warn(message, { source: "airdrop" }) },
+    log: {
+      info: (message) => deps.logger?.info?.(message, { source: "airdrop" }),
+      warn: (message) => deps.logger?.warn(message, { source: "airdrop" }),
+    },
     publish: (state) => nativeEventBus.emit(nearbyStateChangedEvent, state),
     sender: airdropSender,
     senderName: resolveAirDropName,
-    surfaceId: () => deps.getAirDropSurfaceId?.(),
+    present: () => deps.presentNearbyOffer?.(),
   });
   airdrop = new AirDropService({
     clock,
@@ -1475,7 +1566,7 @@ export async function createElectronMainContext(
     onOffer: async (offer, signal) =>
       sessionAdmissionGuard.runOwned(async () => {
         // An invite from someone nearby is the connect card's, not a chat's.
-        const invite = nearby?.offer(offer, signal, deps.getAirDropSurfaceId?.());
+        const invite = nearby?.offer(offer, signal);
         if (invite) return invite;
         if (!deps.airDropPresentation) return undefined;
         const boundary = createCurrentMainSessionApiBinding({ session });
@@ -1588,6 +1679,8 @@ export async function createElectronMainContext(
           throw new Error("Device permission change was not acknowledged.");
         return { allows_operations: state.scope === "" };
       },
+      // The relaunch the Settings page uses (appPreferences.relaunch).
+      relaunch: () => appPreferences.relaunch(),
     }),
     token: clientControlToken,
     // Salix reaches the Mac apps through the station's client_mcp.
@@ -1684,6 +1777,7 @@ export async function createElectronMainContext(
       // Seal admission and drain every accepted preference mutation before
       // teardown can complete.
       await appPreferences.close();
+      await computerUsePreferencesTail;
       await airdrop?.close();
       airDropReception.close();
       await airdropSender?.close();
@@ -1890,6 +1984,9 @@ const unavailableAirDropPresentation: AirDropPresentationPlatform = {
 const unavailableClientControlBrowser: ClientControlBrowser = {
   captureClientScreenshot() {
     throw new Error("In-app browser capture is unavailable in this runtime.");
+  },
+  closeClientTab() {
+    throw new Error("Closing an in-app browser tab is unavailable in this runtime.");
   },
   listClientTargets() {
     return [];

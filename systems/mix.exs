@@ -140,6 +140,7 @@ defmodule Comma.MixProject do
       billing_core: :load,
       billing_commerce: :load,
       billing_stripe: :load,
+      billing_apple: :load,
       comma_core: :load,
       comma_web: :load,
       comma_tui: :load,

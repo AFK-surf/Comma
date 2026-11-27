@@ -51,19 +51,22 @@
 // `task` connect, which this is the surface of), holding what it was given of it, so its Sessions hear and answer it as
 // they do any conversation.
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { Effect } from "effect";
 import { parseThreadAddress, threadAddress } from "../agents/instructions.ts";
+import { Fibers } from "../ops/fibers.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
+import { arrivalTargetSlots } from "../store/schema.ts";
 import { type Attachment, type AuthorKind, type EntryRow, type NewMessage, COMMA_STATION_SURFACE, type ThreadRow, milestoneTitles, onlyMilestones } from "../store/store.ts";
+import { canonicalUsagePerson } from "../store/usage.ts";
 import type { ChatSurface, PostFrom, ThreadRef } from "../sessions/chat.ts";
 import type { Runtime } from "../sessions/config.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { INTERNAL_CHANNEL } from "../sessions/internal.ts";
 import { imageSize } from "../sessions/image-size.ts";
-import { newSession } from "../sessions/lifecycle.ts";
+import { newSessionAtomic } from "../sessions/lifecycle.ts";
 import { Refused, Unreachable } from "../sessions/neighbours.ts";
 import { TASK_CHANNEL, TASK_CONNECT, TASK_SURFACE } from "./names.ts";
 import { type Repo, repoOf } from "./coding.ts";
@@ -134,16 +137,28 @@ export const PUT_AGAIN_MAX_MS = 60_000;
 const DECLARED = ["all_done", "need_help", "waiting"];
 
 /// What a Station asked to start a Session for a Task is told of it.
-export type TaskStart = { runtime?: Runtime | null; model?: string | null; effort?: string | null; title?: string | null; requester: string; repo?: Repo | null };
+export type TaskStart = {
+  runtime?: Runtime | null;
+  model?: string | null;
+  effort?: string | null;
+  title?: string | null;
+  requester: string;
+  person?: string | null;
+  slot?: string | null;
+  is_primary?: boolean;
+  roster?: Json[] | null;
+  repo?: Repo | null;
+};
 
 /// A Message as task.put gives it. `author.session`: the Session of the receiver's that posted it, one it has now or
 /// one a Session there took the place of since.
 /// `id`: the Message's own id at the host, where it has one (Salix), which task.file names it by with its seq. `files`:
 /// what it brings, each by its `index` among the Message's parts. `milestones`: the key steps its agent recorded with
 /// it; a Message of milestones alone has empty text, and no Session is handed it.
+/// `deliver_to_slots`: for multi-session Tasks, the exact slots to deliver this message to (undefined = legacy broadcast).
 export type TaskMessage = {
   seq: number; author: { kind: AuthorKind; id: string; session?: string }; text: string; declared: string | null; at: number;
-  id?: string; files?: TaskFile[]; milestones?: string[];
+  id?: string; files?: TaskFile[]; milestones?: string[]; deliver_to_slots?: string[]; visible_to_slots?: string[];
 };
 
 /// A file of a Task's Message, as task.put names it.
@@ -213,10 +228,43 @@ export class Tasks implements ChatSurface {
   /// The files of the Sessions' posts a Salix has not answered yet, by the post's key: it reads them (task.posted_file)
   /// before it answers.
   private readonly posting = new Map<string, { task: string; session: string; files: Attachment[] }>();
+  /// Per-host coalesced `task.hello` retry state driven by `hub.clock` (no wall-clock setTimeout).
+  private readonly fibers: Fibers;
+  private readonly helloState = new Map<string, { generation: number; cancel: (() => void) | null }>();
+
+  /// Records a persistent multi-holder claim in SQLite (`task_session_claims` + `claim_committed`)
+  /// so concurrent creates sharing a session survive Station restarts, and if ALL sharers fail,
+  /// the last rollback cleans up the session cleanly.
+  private recordSlotClaim(thread: number, slot: string, session: string, claimToken: string, isNew: boolean): void {
+    if (isNew) {
+      this.db.prepare("DELETE FROM task_session_claims WHERE thread = ? AND slot = ?").run(thread, slot);
+      if (claimToken !== "") {
+        this.db
+          .prepare("UPDATE task_session_slots SET claim_committed = 0, claim_token = ?, claim_shared = 0 WHERE thread = ? AND slot = ?")
+          .run(claimToken, thread, slot);
+        this.db
+          .prepare("INSERT OR IGNORE INTO task_session_claims (thread, slot, session, claim_token) VALUES (?, ?, ?, ?)")
+          .run(thread, slot, session, claimToken);
+      } else {
+        this.db
+          .prepare("UPDATE task_session_slots SET claim_committed = 1, claim_token = NULL, claim_shared = 0 WHERE thread = ? AND slot = ?")
+          .run(thread, slot);
+      }
+      return;
+    }
+    if (claimToken !== "") {
+      this.db
+        .prepare("INSERT OR IGNORE INTO task_session_claims (thread, slot, session, claim_token) VALUES (?, ?, ?, ?)")
+        .run(thread, slot, session, claimToken);
+    } else {
+      this.db.prepare("UPDATE task_session_slots SET claim_committed = 1 WHERE thread = ? AND slot = ?").run(thread, slot);
+    }
+  }
 
   constructor(hub: Hub, call: () => Call | null) {
     this.hub = hub;
     this.call = call;
+    this.fibers = new Fibers("tasks", hub.clock);
   }
 
   private get db() {
@@ -233,9 +281,19 @@ export class Tasks implements ChatSurface {
     this.arriveAll();
   }
 
-  end(): void {
+  end(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    for (const state of this.helloState.values()) {
+      state.cancel?.();
+    }
+    this.helloState.clear();
+    return this.fibers.close();
+  }
+
+  /// Whether a `task.hello` retry wait is currently pending for `host`.
+  hasPendingHelloRetry(host: string): boolean {
+    return (this.helloState.get(host)?.cancel ?? null) !== null;
   }
 
   /// This Station is on the station transport again (its roster is current): the hosts of Tasks Sessions here take
@@ -251,6 +309,7 @@ export class Tasks implements ChatSurface {
   /// is not connected. Once connected, it is told so.
   attachHost(host: string, ask: ((request: Json) => Promise<Json>) | null): void {
     this.hosts.set(host, ask);
+    this.clearHelloRetry(host);
     if (ask !== null) {
       this.hello(host);
       this.arriveAll();
@@ -262,13 +321,58 @@ export class Tasks implements ChatSurface {
     return this.hosts.get(host) ?? null;
   }
 
+  private clearHelloRetry(host: string): number {
+    const prev = this.helloState.get(host);
+    prev?.cancel?.();
+    const generation = (prev?.generation ?? 0) + 1;
+    this.helloState.set(host, { generation, cancel: null });
+    return generation;
+  }
+
   /// Tells `host` this Station is here, and how far it has each of its Tasks that Sessions here still take part in: it
   /// gives what they have not had, and tells to leave those that run elsewhere now. A Task they left is named no more.
-  private hello(host: string): void {
-    const tasks = this.db
-      .prepare("SELECT task, fetched FROM tasks_elsewhere te WHERE station = ? AND EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = te.thread) ORDER BY thread")
-      .all(host) as { task: string; fetched: number }[];
-    this.via()(host, { method: HELLO, tasks: tasks.map(({ task, fetched }) => ({ task, fetched })) }).catch((error) => log.info("tasks", "a host was not told this station is here", { host, error: (error as Error).message }));
+  /// Retries with capped 15s backoff on `hub.clock` within the same connection generation until success or disconnect.
+  private hello(host: string, attempt = 0, expectedGen?: number): void {
+    let gen: number;
+    if (expectedGen === undefined) {
+      gen = this.clearHelloRetry(host);
+    } else {
+      const current = this.helloState.get(host);
+      if (!current || current.generation !== expectedGen) return;
+      current.cancel = null;
+      gen = expectedGen;
+    }
+    if (this.hosts.has(host) && this.hosts.get(host) === null) return;
+    let callPromise: Promise<Json>;
+    try {
+      const tasks = this.db
+        .prepare("SELECT task, fetched FROM tasks_elsewhere te WHERE station = ? AND EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = te.thread) ORDER BY thread")
+        .all(host) as { task: string; fetched: number }[];
+      callPromise = this.via()(host, { method: HELLO, tasks: tasks.map(({ task, fetched }) => ({ task, fetched })) });
+    } catch (error) {
+      callPromise = Promise.reject(error);
+    }
+    callPromise
+      .then(() => {
+        const state = this.helloState.get(host);
+        if (state && state.generation === gen && state.cancel !== null) {
+          state.cancel();
+          state.cancel = null;
+        }
+      })
+      .catch((error) => {
+        log.info("tasks", "a host was not told this station is here", { host, attempt, error: (error as Error).message });
+        const state = this.helloState.get(host);
+        if (!state || state.generation !== gen) return;
+        if (this.hosts.has(host) && this.hosts.get(host) === null) return;
+        // Offline mesh peer (not a direct host connection): wait for next roster `connected()` instead of polling.
+        if (!this.hosts.has(host) && error instanceof Unreachable) return;
+        const delayMs = Math.min(15_000, 1_000 * 2 ** Math.min(attempt, 4));
+        state.cancel?.();
+        state.cancel = this.fibers.after(delayMs, () => {
+          this.hello(host, attempt + 1, gen);
+        });
+      });
   }
 
   /// How `station` is asked: over its own connection when it has one, else the station transport.
@@ -281,6 +385,16 @@ export class Tasks implements ChatSurface {
       }
       return call ? call(station, request) : Promise.reject(new Unreachable("other stations cannot be reached from this one yet"));
     };
+  }
+
+  /// Whether a Session here is using a browser on the machine's display now, and when that may have changed
+  /// (sessions/hub.ts): a Task's sandbox says it to Salix, so its Task's owner is shown the screen while there is
+  /// something on it.
+  browsing(): boolean {
+    return this.hub.browsing();
+  }
+  onBrowsing(changed: () => void): () => void {
+    return this.hub.onBrowsing(changed);
   }
 
   /// The models Sessions here can run, by runtime: what the profiles have enabled, each once. For a desktop connection's
@@ -707,43 +821,280 @@ export class Tasks implements ChatSurface {
 
   // ── a Station taking part ──────────────────────────────────────────────────────────────────────────────────────
 
-  /// task.invite from the host `peer`: a Session for the Task (one per Task), or why not. `answered` (an invite made
-  /// again, to a Station that lost the Task) is kept with the Task's thread, as a put's is. With `replace` (the Task
-  /// now runs another model here), a new Session takes the part of those taking part, which leave the thread with what
-  /// was pending for them; the host then gives the new one what they had not answered. A thread of the Task kept here
-  /// without Sessions (they left it) is taken up by the new Session.
+  /// task.invite from the host `peer`: a Session for the Task, or why not.
+  /// - Default (`join !== true`): starts or returns the primary session (default slot `"lead"`). With `replace: true`,
+  ///   replaces the sessions in the thread.
+  /// - Multi-session (`join: true`): joins `slot` to an existing Task thread without restarting existing slots.
+  ///   If the thread has an active legacy single session with no `task_session_slots` row yet, atomically backfills
+  ///   `(slot: "lead", session: existing, is_primary: 1)` in place. Refuses `join: true` if the thread has no active
+  ///   primary session.
   private async invited(peer: string, request: Json): Promise<Json> {
     const task = text(request, "task");
     if (task === "") throw new Error("task is required");
     const start = request?.start;
     if (start === null || typeof start !== "object" || Array.isArray(start)) throw new Error("start is required");
+    const join = request?.join === true;
+    const replace = request?.replace === true;
+    const slot = text(request, "slot") || text(start, "slot") || "lead";
+    const inviteId = text(request, "invite_id");
+
+    if (inviteId !== "") {
+      const prior = this.db
+        .prepare("SELECT decision, reason FROM task_invite_decisions WHERE invite_id = ?")
+        .get(inviteId) as { decision: string; reason: string } | undefined;
+      if (prior && prior.decision === "refused") {
+        throw new Error(prior.reason);
+      }
+    }
+
+    try {
+      return await this.invitedInner(peer, request, task, start, join, replace, slot);
+    } catch (err) {
+      if (inviteId !== "" && err instanceof Error && isPermanentInviteRefusal(err.message)) {
+        try {
+          this.db
+            .prepare(
+              `INSERT OR IGNORE INTO task_invite_decisions
+                 (invite_id, group_id, conversation_id, slot, decision, reason, created_at)
+               VALUES (?, ?, ?, ?, 'refused', ?, ?)`,
+            )
+            .run(inviteId, peer, task, slot, err.message, Date.now());
+        } catch (persistErr) {
+          const detail = persistErr instanceof Error ? persistErr.message : String(persistErr);
+          throw new Error(`SQLITE_BUSY: failed to persist invite decision: ${detail}`);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async invitedInner(
+    peer: string,
+    request: Json,
+    task: string,
+    start: Json,
+    join: boolean,
+    replace: boolean,
+    slot: string,
+  ): Promise<Json> {
+    const reqClaimToken = text(request, "claim_token");
+    const reqInviteIdTop = text(request, "invite_id");
+    if (
+      (reqClaimToken !== "" && this.hub.store.isClaimRevoked(peer, task, slot, reqClaimToken)) ||
+      (reqInviteIdTop !== "" &&
+        reqInviteIdTop !== reqClaimToken &&
+        this.hub.store.isClaimRevoked(peer, task, slot, reqInviteIdTop))
+    ) {
+      const revokedToken = reqClaimToken || reqInviteIdTop;
+      throw new Error(`claim_revoked: slot ${slot} claim ${revokedToken} was already revoked`);
+    }
+
     const thread = this.elsewhere(peer, task);
     const before = thread !== null ? this.hub.store.threadSessions(thread).map((m) => m.session) : [];
-    if (before.length > 0 && request?.replace !== true) return { session: before[0] };
+    const person = canonicalUsagePerson(text(start, "person"));
+
+    if (join) {
+      if (thread === null) throw new Error("no_active_primary: task has no active primary session");
+      const activeSet = new Set(before);
+      // Legacy in-place upgrade in one transaction: backfill ("lead", existing, is_primary=1) without restarting it.
+      this.db.exec("BEGIN");
+      let existingSlotSession: string | null = null;
+      let existingSlotInviteId = "";
+      let existingSlotCommitted = 1;
+      try {
+        const existingSlots = this.db.prepare("SELECT slot, session, is_primary FROM task_session_slots WHERE thread = ?").all(thread) as {
+          slot: string;
+          session: string;
+          is_primary: number;
+        }[];
+        if (existingSlots.length === 0) {
+          const primarySession = before[0];
+          if (!primarySession) throw new Error("no_active_primary: task has no active primary session");
+          const threadAnswered = (this.db.prepare("SELECT answered FROM tasks_elsewhere WHERE thread = ?").get(thread) as { answered: number } | undefined)?.answered ?? 0;
+          this.db
+            .prepare("INSERT OR IGNORE INTO task_session_slots (thread, slot, session, is_primary, answered, claim_token, claim_shared, claim_committed) VALUES (?, ?, ?, 1, ?, NULL, 1, 1)")
+            .run(thread, "lead", primarySession, threadAnswered);
+        } else {
+          const primaryRow = existingSlots.find((s) => s.is_primary === 1 && activeSet.has(s.session));
+          if (!primaryRow) throw new Error("no_active_primary: task has no active primary session");
+        }
+        const currentForSlot = this.db
+          .prepare("SELECT session, invite_id, claim_committed FROM task_session_slots WHERE thread = ? AND slot = ?")
+          .get(thread, slot) as { session: string; invite_id: string | null; claim_committed: number } | undefined;
+        if (currentForSlot && activeSet.has(currentForSlot.session)) {
+          existingSlotSession = currentForSlot.session;
+          existingSlotInviteId = currentForSlot.invite_id ?? "";
+          existingSlotCommitted = currentForSlot.claim_committed;
+        }
+        this.db.exec("COMMIT");
+      } catch (e) {
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {}
+        throw e;
+      }
+
+      const claimToken = text(request, "claim_token");
+      const reqInviteId = text(request, "invite_id");
+      if (existingSlotSession !== null && !replace) {
+        if (existingSlotCommitted === 0 && reqInviteId !== "" && existingSlotInviteId !== "" && existingSlotInviteId !== reqInviteId) {
+          // Existing session belongs to a different uncommitted invite_id: NEVER stop or remove it
+          // and NEVER record a permanent refusal; return a transient error so the caller retries
+          // once the original invite settles or fence-revokes its orphan.
+          throw new Error(`slot_invite_pending: slot ${slot} has uncommitted session awaiting settlement`);
+        }
+        const existingRow = this.hub.store.getSession(existingSlotSession);
+        if (existingRow) {
+          const reqModel = text(start, "model");
+          if (reqModel !== "" && (existingRow.model ?? "") !== reqModel) {
+            throw new Error(`slot_config_conflict: slot ${slot} already bound to model ${existingRow.model ?? "default"}, requested ${reqModel}`);
+          }
+          const reqRuntime = text(start, "runtime");
+          if (reqRuntime !== "" && (existingRow.runtime ?? "") !== reqRuntime) {
+            throw new Error(`slot_config_conflict: slot ${slot} already bound to runtime ${existingRow.runtime ?? "default"}, requested ${reqRuntime}`);
+          }
+          const reqEffort = text(start, "effort");
+          if (reqEffort !== "" && (existingRow.effort ?? "") !== reqEffort) {
+            throw new Error(`slot_config_conflict: slot ${slot} already bound to effort ${existingRow.effort ?? "default"}, requested ${reqEffort}`);
+          }
+          const reqProfile = text(start, "profile");
+          if (reqProfile !== "" && (existingRow.profile ?? "") !== reqProfile) {
+            throw new Error(`slot_config_conflict: slot ${slot} already bound to profile ${existingRow.profile ?? "default"}, requested ${reqProfile}`);
+          }
+        }
+        const ans = count(request?.answered);
+        if (ans !== null && ans > 0) this.answeredSlotThrough(thread, slot, ans);
+        if (existingSlotCommitted === 1 && reqInviteId !== "" && existingSlotInviteId !== reqInviteId) {
+          this.db.prepare("UPDATE task_session_slots SET claim_shared = 1, claim_committed = 1 WHERE thread = ? AND slot = ?").run(thread, slot);
+        }
+        this.recordSlotClaim(thread, slot, existingSlotSession, claimToken, false);
+        if (Array.isArray(start?.roster)) this.saveRoster(thread, start.roster);
+        this.maybeRecoverCheckout(existingSlotSession, start);
+        const kept = this.hub.store.getThread(thread);
+        return { session: existingSlotSession, slot, ...(kept ? { thread: threadAddress(kept.channel, kept.threadTs) } : {}) };
+      }
+      const requester = text(start, "requester");
+      if (requester === "") throw new Error("start needs its requester");
+      const runtimes = this.hub.config().profiles.flatMap((p) => p.runtimes);
+      const runtime = (text(start, "runtime") || (runtimes.includes("claude") ? "claude" : runtimes[0])) as Runtime;
+      if (runtime === undefined) throw new Error("this station runs no agents");
+      const title = text(start, "title") || null;
+      const kept = this.hub.store.getThread(thread);
+      if (!kept) throw new Error("cannot join: task thread missing");
+      const [session] = newSessionAtomic(
+        this.hub,
+        { runtime, model: text(start, "model") || null, effort: text(start, "effort") || null, title, createdBy: requester, host: peer },
+        (prepared) =>
+          this.hub.store.openTaskSessionAtomic({
+            session: prepared,
+            existingThreadId: kept.id,
+            connect: TASK_CONNECT,
+            slot,
+            isPrimary: false,
+            answered: count(request?.answered) ?? 0,
+            claimToken,
+            inviteId: reqInviteId,
+          }),
+      );
+      if (person !== null) this.hub.store.setSessionPerson(session, person);
+      if (Array.isArray(start?.roster)) this.saveRoster(kept.id, start.roster);
+      if (replace && existingSlotSession !== null && existingSlotSession !== session) this.quit(kept.id, existingSlotSession);
+      log.info("tasks", "a secondary session joined a task of another station", { station: peer, task, slot, session });
+      this.checkout(session, start);
+      return { session, slot, thread: threadAddress(kept.channel, kept.threadTs) };
+    }
+
+    // Consistent primary-identity check BEFORE any writes when `join: false` on an existing thread:
+    // - If `slot` matches an existing secondary slot (regardless of `replace`), reject.
+    // - If a primary slot exists (including a custom primary alias) and differs from `slot`, reject.
+    // - If no slot rows exist yet (legacy thread) and `slot !== "lead"` without `replace`, reject.
+    const existingSlots = before.length > 0 && thread !== null ? this.hub.store.taskSlots(thread) : [];
+    const existingSecondarySessions = new Set(existingSlots.filter((s) => !s.isPrimary).map((s) => s.session));
+    if (before.length > 0 && thread !== null) {
+      const existingTarget = existingSlots.find((s) => s.slot === slot);
+      const existingPrimary = existingSlots.find((s) => s.isPrimary);
+      if (existingTarget && !existingTarget.isPrimary) {
+        throw new Error(`cannot invite secondary slot ${slot} without join: true`);
+      }
+      if (existingPrimary && existingPrimary.slot !== slot) {
+        throw new Error(`cannot invite non-primary slot ${slot} without join: true (primary is ${existingPrimary.slot})`);
+      }
+      if (existingSlots.length === 0 && slot !== "lead") {
+        throw new Error(`cannot invite non-lead slot ${slot} without join: true`);
+      }
+    }
+
+    const primaryClaimToken = text(request, "claim_token");
+    if (before.length > 0 && !replace) {
+      if (thread !== null) {
+        const existingSlot = this.db.prepare("SELECT session FROM task_session_slots WHERE thread = ? AND slot = ?").get(thread, slot) as { session: string } | undefined;
+        if (existingSlot && before.includes(existingSlot.session)) {
+          const ans = count(request?.answered);
+          if (ans !== null && ans > 0) this.answeredSlotThrough(thread, slot, ans);
+          this.recordSlotClaim(thread, slot, existingSlot.session, primaryClaimToken, false);
+          if (Array.isArray(start?.roster)) this.saveRoster(thread, start.roster);
+          this.maybeRecoverCheckout(existingSlot.session, start);
+          return { session: existingSlot.session, slot };
+        }
+        // Only reuse `before[0]` on legacy threads that have NO slot rows yet.
+        // If secondary slots exist (`existingSlots.length > 0`) without an active primary,
+        // fall through to create a fresh primary session without adopting or quitting secondaries.
+        if (existingSlots.length === 0) {
+          const primarySession = before[0]!;
+          const threadAnswered = (this.db.prepare("SELECT answered FROM tasks_elsewhere WHERE thread = ?").get(thread) as { answered: number } | undefined)?.answered ?? 0;
+          this.db
+            .prepare("INSERT OR IGNORE INTO task_session_slots (thread, slot, session, is_primary, answered, claim_token, claim_shared, claim_committed) VALUES (?, ?, ?, 1, ?, NULL, 1, 1)")
+            .run(thread, slot, primarySession, threadAnswered);
+          if (Array.isArray(start?.roster)) this.saveRoster(thread, start.roster);
+          this.maybeRecoverCheckout(primarySession, start);
+          return { session: primarySession, slot };
+        }
+      } else {
+        return { session: before[0], slot };
+      }
+    }
     const requester = text(start, "requester");
     if (requester === "") throw new Error("start needs its requester");
     const runtimes = this.hub.config().profiles.flatMap((p) => p.runtimes);
     const runtime = (text(start, "runtime") || (runtimes.includes("claude") ? "claude" : runtimes[0])) as Runtime;
     if (runtime === undefined) throw new Error("this station runs no agents");
     const title = text(start, "title") || null;
-    let made: ThreadRow | null = null;
     // What it cannot run (no profile with the model, say) throws here: the host is told why, and nothing is made.
-    const [session] = newSession(
+    const [session, made] = newSessionAtomic(
       this.hub,
       { runtime, model: text(start, "model") || null, effort: text(start, "effort") || null, title, createdBy: requester, host: peer },
-      undefined,
-      (key) => {
-        const kept = thread !== null ? this.hub.store.getThread(thread) : null;
-        made = kept ?? this.hub.store.openThreadOf(TASK_SURFACE, TASK_CHANNEL, this.hub.nextTs(), title, requester, key);
-        this.hub.store.joinThread(made.id, key, TASK_CONNECT);
-        this.db.prepare("INSERT OR IGNORE INTO tasks_elsewhere (thread, station, task, answered) VALUES (?, ?, ?, ?)").run(made.id, peer, task, count(request?.answered) ?? 0);
-        return made;
-      },
+      (prepared) =>
+        this.hub.store.openTaskSessionAtomic({
+          session: prepared,
+          existingThreadId: thread,
+          newThread: { surface: TASK_SURFACE, channel: TASK_CHANNEL, threadTs: this.hub.nextTs(), title, createdBy: requester },
+          connect: TASK_CONNECT,
+          slot,
+          isPrimary: true,
+          answered: count(request?.answered) ?? 0,
+          claimToken: primaryClaimToken,
+          taskElsewhere: { station: peer, task },
+        }),
     );
-    for (const old of before) this.quit(made!.id, old);
-    log.info("tasks", "a session takes part in a task of another station", { station: peer, task, session, replaced: before });
+    if (person !== null) this.hub.store.setSessionPerson(session, person);
+    if (Array.isArray(start?.roster)) this.saveRoster(made.id, start.roster);
+    // Never quit existing secondary sessions when creating or recovering the primary slot.
+    const toQuit = before.filter((old) => !existingSecondarySessions.has(old));
+    for (const old of toQuit) this.quit(made.id, old);
+    log.info("tasks", "a session takes part in a task of another station", { station: peer, task, slot, session, replaced: toQuit });
     this.checkout(session, start);
-    return { session, thread: threadAddress(made!.channel, made!.threadTs) };
+    return { session, slot, thread: threadAddress(made.channel, made.threadTs) };
+  }
+
+  private saveRoster(thread: number, roster: Json[]): void {
+    this.db.prepare("UPDATE tasks_elsewhere SET roster = ? WHERE thread = ?").run(JSON.stringify(roster), thread);
+  }
+
+  private maybeRecoverCheckout(session: string, start: Json): void {
+    if (repoOf(start) === null || this.hub.coding === null) return;
+    const row = this.hub.store.getSession(session);
+    if (!row || this.hub.coding.get(row.workspace) !== null) return;
+    this.checkout(session, start);
   }
 
   /// A coding Session (`start.repo`) works in a checkout of its repository: made now, its turns held until it is. One
@@ -779,10 +1130,51 @@ export class Tasks implements ChatSurface {
   private async left(peer: string, request: Json): Promise<Json> {
     const task = text(request, "task");
     if (task === "") throw new Error("task is required");
+    const targetSession = text(request, "session");
+    const targetSlot = text(request, "slot");
+    const claimToken = text(request, "claim_token");
+    if (claimToken !== "" && targetSession === "" && targetSlot === "") {
+      throw new Error("slot or session is required when claim_token is set");
+    }
+    const isFenced = targetSession !== "" || targetSlot !== "";
     const thread = this.elsewhere(peer, task);
-    if (thread === null) return {};
+    if (thread === null) {
+      if (isFenced) {
+        if (claimToken !== "" && targetSlot !== "") {
+          this.hub.store.recordRevokedClaim(peer, task, targetSlot, claimToken);
+        }
+        return { ok: true, removed: false, kept: false };
+      }
+      return {};
+    }
+    if (isFenced) {
+      const outcome = this.hub.store.leaveTaskSlotFenced(thread, targetSession, targetSlot, claimToken, peer, task);
+      if (outcome.kept) {
+        log.info("tasks", "keeping shared or committed session on fenced task.leave", {
+          station: peer,
+          task,
+          slot: outcome.resolvedSlot,
+          session: outcome.resolvedSession,
+          remainingClaims: outcome.remainingClaims,
+        });
+        return { ok: true, removed: false, kept: true };
+      }
+      if (outcome.sessionToStop !== null) {
+        this.hub.stop(outcome.sessionToStop).catch((error) =>
+          log.warn("tasks", "a session that left a task was not stopped", { session: outcome.sessionToStop, error: (error as Error).message }),
+        );
+      }
+      log.info("tasks", "a single session left a task", {
+        station: peer,
+        task,
+        slot: outcome.resolvedSlot,
+        session: outcome.sessionToStop ?? targetSession,
+      });
+      return { ok: true, removed: outcome.removed, kept: false };
+    }
     const sessions = this.hub.store.threadSessions(thread).map((m) => m.session);
     for (const session of sessions) this.quit(thread, session);
+    this.db.prepare("DELETE FROM task_invite_decisions WHERE group_id = ? AND conversation_id = ?").run(peer, task);
     log.info("tasks", "sessions left a task that runs elsewhere now", { station: peer, task, sessions });
     return {};
   }
@@ -804,8 +1196,40 @@ export class Tasks implements ChatSurface {
     const thread = part.thread;
     const sessions = this.hub.store.threadSessions(thread).map((m) => m.session);
     if (sessions.length === 0) return { gone: true };
+    if (Array.isArray(request?.roster)) this.saveRoster(thread, request.roster);
+    const answeredBySlot =
+      request?.answered_by_slot !== null &&
+      typeof request?.answered_by_slot === "object" &&
+      !Array.isArray(request.answered_by_slot)
+        ? (request.answered_by_slot as Record<string, unknown>)
+        : null;
     const answered = Math.max(part.answered, count(request?.answered) ?? 0);
-    if (answered > part.answered) this.answeredThrough(thread, answered);
+    if (answered > part.answered) this.answeredThrough(thread, answered, answeredBySlot === null);
+    if (answeredBySlot !== null) {
+      for (const [slotName, seqVal] of Object.entries(answeredBySlot)) {
+        const seqNum = count(seqVal);
+        if (seqNum !== null && seqNum > 0) this.answeredSlotThrough(thread, slotName, seqNum);
+      }
+    }
+    // Only commit uncommitted slot claims via exact {slot, session, claim_token} proof
+    // matching either the slot creator or any valid holder in task_session_claims,
+    // BEFORE delivering messages — never by bare slot name or local delivery target.
+    const acceptedClaims: { slot: string; session: string; claim_token: string }[] = [];
+    if (Array.isArray(request?.confirmed_claims)) {
+      for (const claim of request.confirmed_claims as Json[]) {
+        const cSlot = text(claim, "slot");
+        const cSession = text(claim, "session");
+        const cToken = text(claim, "claim_token");
+        if (
+          cSlot !== "" &&
+          cSession !== "" &&
+          cToken !== "" &&
+          this.hub.store.confirmTaskSlotClaim(peer, task, thread, cSlot, cSession, cToken)
+        ) {
+          acceptedClaims.push({ slot: cSlot, session: cSession, claim_token: cToken });
+        }
+      }
+    }
     let waiting = this.db.prepare("SELECT 1 FROM task_arrivals WHERE thread = ? LIMIT 1").get(thread) !== undefined;
     for (const m of Array.isArray(request?.messages) ? (request.messages as TaskMessage[]) : []) {
       if (count(m?.seq) === null || typeof m.text !== "string") continue;
@@ -813,33 +1237,198 @@ export class Tasks implements ChatSurface {
       if (m.text === "" && files(m).length === 0 && givenMilestones(m.milestones) === null) continue;
       // One with files is written once they are here, and those after it after it: kept until then.
       if (waiting || files(m).length > 0) {
-        if (this.hub.store.messageAt(thread, seqTs(m.seq)) !== null) continue;
-        this.db.prepare("INSERT OR IGNORE INTO task_arrivals (thread, seq, message) VALUES (?, ?, ?)").run(thread, m.seq, JSON.stringify(m));
+        this.enqueueArrival(thread, m);
         waiting = true;
       } else this.write(peer, thread, m, []);
     }
     const through = count(request?.through);
     if (through !== null) this.db.prepare("UPDATE tasks_elsewhere SET fetched = MAX(fetched, ?) WHERE thread = ?").run(through, thread);
     if (waiting) this.arrive(thread);
-    return { through };
+    const active = this.activeSlots(thread);
+    return {
+      through,
+      present_slots: active.map((s) => ({ slot: s.slot, session: s.session })),
+      committed_slots: active
+        .filter((s) => s.claimCommitted)
+        .map((s) => ({ slot: s.slot, session: s.session })),
+      confirmed_claims: acceptedClaims,
+    };
+  }
+
+  /// Active slots for `thread`, ordered primary-first; falls back to `thread_sessions` if no slot rows exist yet.
+  private activeSlots(thread: number): { slot: string; session: string; isPrimary: boolean; answered: number; claimCommitted: boolean }[] {
+    const members = this.hub.store.threadSessions(thread).map((s) => s.session);
+    const memberSet = new Set(members);
+    const rows = this.hub.store.taskSlots(thread).filter((r) => memberSet.has(r.session));
+    if (rows.length > 0) return rows;
+    const threadAnswered = (this.db.prepare("SELECT answered FROM tasks_elsewhere WHERE thread = ?").get(thread) as { answered: number } | undefined)?.answered ?? 0;
+    return members.map((session, i) => ({
+      slot: i === 0 ? "lead" : `slot-${i}`,
+      session,
+      isPrimary: i === 0,
+      answered: threadAnswered,
+      claimCommitted: true,
+    }));
+  }
+
+  /// Resolves the target slots for Message `m` in `thread`, excluding `own` session, uncommitted secondary claims,
+  /// and already-answered messages. Legacy format (without `deliver_to_slots`) preserves single-session broadcast behavior.
+  private targetSlotsFor(
+    thread: number,
+    m: TaskMessage,
+    own: string | null,
+  ): { slot: string; session: string }[] {
+    const slots = this.activeSlots(thread).filter((s) => s.claimCommitted);
+    const threadAnswered = (this.db.prepare("SELECT answered FROM tasks_elsewhere WHERE thread = ?").get(thread) as { answered: number } | undefined)?.answered ?? 0;
+    const visible = Array.isArray(m.visible_to_slots)
+      ? new Set(m.visible_to_slots.filter((s): s is string => typeof s === "string" && s !== ""))
+      : null;
+    if (Array.isArray(m.deliver_to_slots)) {
+      const wanted = new Set(m.deliver_to_slots.filter((s): s is string => typeof s === "string" && s !== ""));
+      return slots
+        .filter((s) => wanted.has(s.slot) && (visible === null || visible.has(s.slot)) && s.session !== own && m.seq > s.answered)
+        .map(({ slot, session }) => ({ slot, session }));
+    }
+    if (m.seq <= threadAnswered) return [];
+    return slots
+      .filter((s) => (visible === null || visible.has(s.slot)) && s.session !== own)
+      .map(({ slot, session }) => ({ slot, session }));
+  }
+
+  private slotAlreadyDelivered(thread: number, seq: number, slot: string, session: string): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM task_slot_deliveries WHERE thread = ? AND seq = ? AND slot = ? AND session = ?")
+        .get(thread, seq, slot, session) !== undefined
+    );
+  }
+
+  private recordSlotDelivered(thread: number, seq: number, slot: string, session: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO task_slot_deliveries (thread, seq, slot, session, delivered_at) VALUES (?, ?, ?, ?, ?)")
+      .run(thread, seq, slot, session, this.hub.now());
+  }
+
+  private resolveOwnSession(sessions: string[], m: TaskMessage): string | null {
+    if (typeof m.author?.session !== "string") return null;
+    if (sessions.includes(m.author.session)) return m.author.session;
+    // Only fall back to sessions[0] for legacy single-session broadcast messages;
+    // in multi-session Tasks a retired secondary's session must never hijack the primary.
+    if (sessions.length === 1 && !Array.isArray(m.deliver_to_slots)) return sessions[0] ?? null;
+    return null;
+  }
+
+  private enqueueArrival(thread: number, m: TaskMessage): void {
+    const slots = arrivalTargetSlots(m);
+    this.db.exec("BEGIN");
+    try {
+      const inserted = this.db
+        .prepare("INSERT OR IGNORE INTO task_arrivals (thread, seq, message) VALUES (?, ?, ?)")
+        .run(thread, m.seq, JSON.stringify(m));
+      if (inserted.changes > 0) {
+        const insSlot = this.db.prepare("INSERT OR IGNORE INTO task_arrival_slots (thread, seq, slot) VALUES (?, ?, ?)");
+        const incCount = this.db.prepare(
+          `INSERT INTO task_arrival_counts (thread, slot, pending_count) VALUES (?, ?, 1)
+           ON CONFLICT (thread, slot) DO UPDATE SET pending_count = pending_count + 1`,
+        );
+        for (const s of slots) {
+          const r = insSlot.run(thread, m.seq, s);
+          if (r.changes > 0) incCount.run(thread, s);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw e;
+    }
+  }
+
+  private dequeueArrival(thread: number, seq: number): void {
+    this.db.exec("BEGIN");
+    try {
+      const slots = this.db
+        .prepare("SELECT slot FROM task_arrival_slots WHERE thread = ? AND seq = ?")
+        .all(thread, seq) as { slot: string }[];
+      this.db.prepare("DELETE FROM task_arrivals WHERE thread = ? AND seq = ?").run(thread, seq);
+      this.db.prepare("DELETE FROM task_arrival_slots WHERE thread = ? AND seq = ?").run(thread, seq);
+      const dec = this.db.prepare(
+        "UPDATE task_arrival_counts SET pending_count = MAX(0, pending_count - 1) WHERE thread = ? AND slot = ?",
+      );
+      for (const { slot } of slots) dec.run(thread, slot);
+      this.db.prepare("DELETE FROM task_arrival_counts WHERE thread = ? AND pending_count <= 0").run(thread);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw e;
+    }
+  }
+
+  private clearArrivalSlotsThrough(thread: number, slot: string | null, seq: number): void {
+    this.db.exec("BEGIN");
+    try {
+      if (slot === null) {
+        const removed = this.db
+          .prepare("SELECT slot, COUNT(*) AS cnt FROM task_arrival_slots WHERE thread = ? AND seq <= ? GROUP BY slot")
+          .all(thread, seq) as { slot: string; cnt: number }[];
+        if (removed.length > 0) {
+          this.db.prepare("DELETE FROM task_arrival_slots WHERE thread = ? AND seq <= ?").run(thread, seq);
+          const dec = this.db.prepare(
+            "UPDATE task_arrival_counts SET pending_count = MAX(0, pending_count - ?) WHERE thread = ? AND slot = ?",
+          );
+          for (const r of removed) dec.run(r.cnt, thread, r.slot);
+          this.db.prepare("DELETE FROM task_arrival_counts WHERE thread = ? AND pending_count <= 0").run(thread);
+        }
+      } else {
+        const del = this.db
+          .prepare("DELETE FROM task_arrival_slots WHERE thread = ? AND slot = ? AND seq <= ?")
+          .run(thread, slot, seq);
+        if (del.changes > 0) {
+          this.db
+            .prepare("UPDATE task_arrival_counts SET pending_count = MAX(0, pending_count - ?) WHERE thread = ? AND slot = ?")
+            .run(del.changes, thread, slot);
+          this.db.prepare("DELETE FROM task_arrival_counts WHERE thread = ? AND pending_count <= 0").run(thread);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw e;
+    }
+  }
+
+  private authorOf(peer: string, own: string | null, m: TaskMessage): string {
+    if (own !== null) return own;
+    const rawEmail = m.author?.kind === "person" ? (m.author as unknown as { email?: unknown }).email : undefined;
+    if (typeof rawEmail === "string" && rawEmail.trim() !== "") return rawEmail.trim();
+    return typeof m.author?.id === "string" && m.author.id !== "" ? m.author.id : peer;
   }
 
   /// Writes Message `m` of the Task elsewhere that `thread` is, with its files fetched here, and hands it to the
-  /// Sessions here, unless they answered it already.
+  /// target Sessions here, unless they answered or received it already.
   private write(peer: string, thread: number, m: TaskMessage, attachments: Attachment[]): void {
     const sessions = this.hub.store.threadSessions(thread).map((s) => s.session);
-    const answered = (this.db.prepare("SELECT answered FROM tasks_elsewhere WHERE thread = ?").get(thread) as { answered: number } | undefined)?.answered ?? 0;
-    const own = typeof m.author?.session === "string" ? (sessions.includes(m.author.session) ? m.author.session : (sessions[0] ?? null)) : null;
+    const own = this.resolveOwnSession(sessions, m);
     const kind: AuthorKind = own !== null ? "agent" : m.author?.kind === "person" || m.author?.kind === "agent" ? m.author.kind : "ember";
-    const author = own ?? (typeof m.author?.id === "string" && m.author.id !== "" ? m.author.id : peer);
+    const author = this.authorOf(peer, own, m);
+    const deliverToSlots = Array.isArray(m.deliver_to_slots) ? m.deliver_to_slots : null;
+    const visibleToSlots = Array.isArray(m.visible_to_slots) ? m.visible_to_slots : null;
     const said: NewMessage = {
       thread, ts: seqTs(m.seq), authorKind: kind, author, text: m.text, attachments, declared: own !== null ? m.declared : null,
-      milestones: givenMilestones(m.milestones),
+      milestones: givenMilestones(m.milestones), deliverToSlots, visibleToSlots,
     };
-    const [n] = this.hub.store.insertMessage(said);
-    // Handed over again when given again: a Session that had it already is not given it twice. Milestones alone are
-    // handed to no one.
-    if (m.seq > answered && !onlyMilestones(said)) this.hub.deliver(thread, n, sessions.filter((s) => s !== own), m.text);
+    const [n, inserted] = this.hub.store.insertMessage(said);
+    if (!inserted) this.hub.store.updateEntryVisibility(thread, seqTs(m.seq), visibleToSlots);
+    if (onlyMilestones(said)) return;
+    for (const target of this.targetSlotsFor(thread, m, own)) {
+      this.hub.deliver(thread, n, [target.session], m.text);
+      this.recordSlotDelivered(thread, m.seq, target.slot, target.session);
+    }
   }
 
   /// Every Task elsewhere with Messages waiting for their files goes on fetching them.
@@ -902,38 +1491,106 @@ export class Tasks implements ChatSurface {
       const where = this.where(thread);
       if (!next || !where) return;
       const m = JSON.parse(next.message) as TaskMessage;
-      // A crash after delivery can leave the arrival queued. The runtime may have edited its files.
-      if (this.hub.store.messageAt(thread, seqTs(m.seq)) !== null) {
-        this.db.prepare("DELETE FROM task_arrivals WHERE thread = ? AND seq = ?").run(thread, m.seq);
-        continue;
-      }
-      const attachments: Attachment[] = [];
+      const sessions = this.hub.store.threadSessions(thread).map((s) => s.session);
+      const own = this.resolveOwnSession(sessions, m);
+      const existingMsg = this.hub.store.messageAt(thread, seqTs(m.seq));
+      let cachedAttachments: Attachment[] = [];
+      let entryAttachments: Attachment[] = existingMsg ? existingMsg.attachments : [];
       const missing: string[] = [];
-      for (const file of files(m)) {
-        try {
-          attachments.push(await this.fetchFile(thread, where, m, file));
-        } catch (error) {
-          if (!(error instanceof Missing)) throw error;
-          log.warn("tasks", "a file of a task is not fetched", { thread, seq: m.seq, file: file.name, error: error.message });
-          missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: file.name, error: error.message }));
+      if (existingMsg === null) {
+        for (const file of files(m)) {
+          try {
+            cachedAttachments.push(await this.fetchFile(thread, where, m, file));
+          } catch (error) {
+            if (!(error instanceof Missing)) throw error;
+            log.warn("tasks", "a file of a task is not fetched", { thread, seq: m.seq, file: file.name, error: error.message });
+            missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: file.name, error: error.message }));
+          }
+        }
+        // Persist canonical `<data>/task-files/<thread>/...` cache paths on the thread entry
+        // so `actor.ts:format` deterministically rewrites `/task-files/` to each receiving
+        // session's own `<workspace>/uploads/<basename>` regardless of primary replacement.
+        entryAttachments = cachedAttachments;
+      } else {
+        // Re-locate (or seed for same-station posts) cached read-only files under a unique
+        // `task-<seq>-<index>-<safeName>` key so same-second same-name same-size files
+        // from different sessions never collide in the shared cache or receiver uploads.
+        const cacheDir = join(this.hub.config().dataDir, "task-files", String(thread));
+        cachedAttachments = existingMsg.attachments.map((a, idx) => {
+          const cached = join(cacheDir, `task-${m.seq}-${idx}-${safeName(a.name)}`);
+          if (!existsSync(cached) && existsSync(a.path)) {
+            mkdirSync(cacheDir, { recursive: true });
+            try {
+              copyFileSync(a.path, cached, constants.COPYFILE_FICLONE);
+            } catch {
+              copyFileSync(a.path, cached);
+            }
+            try {
+              chmodSync(cached, 0o444);
+            } catch {}
+          }
+          return existsSync(cached) ? { ...a, path: cached } : a;
+        });
+      }
+      const saidText = [m.text, ...missing].filter((t) => t !== "").join("\n\n");
+      const kind: AuthorKind = own !== null ? "agent" : m.author?.kind === "person" || m.author?.kind === "agent" ? m.author.kind : "ember";
+      const author = this.authorOf(where.station, own, m);
+      const deliverToSlots = Array.isArray(m.deliver_to_slots) ? m.deliver_to_slots : null;
+      const visibleToSlots = Array.isArray(m.visible_to_slots) ? m.visible_to_slots : null;
+      const said: NewMessage = {
+        thread, ts: seqTs(m.seq), authorKind: kind, author, text: saidText, attachments: entryAttachments, declared: own !== null ? m.declared : null,
+        milestones: givenMilestones(m.milestones), deliverToSlots, visibleToSlots,
+      };
+      const [n] = existingMsg !== null ? [existingMsg.n] : this.hub.store.insertMessage(said);
+      if (existingMsg !== null) {
+        this.hub.store.updateEntryVisibility(thread, seqTs(m.seq), visibleToSlots);
+        if (cachedAttachments.length > 0 && cachedAttachments.some((a, i) => existingMsg.attachments[i]?.path !== a.path)) {
+          this.hub.store.updateEntryAttachments(thread, seqTs(m.seq), cachedAttachments);
         }
       }
-      const said = { ...m, text: [m.text, ...missing].filter((t) => t !== "").join("\n\n") };
-      if (this.hub.store.messageAt(thread, seqTs(m.seq)) === null) this.write(where.station, thread, said, attachments);
-      this.db.prepare("DELETE FROM task_arrivals WHERE thread = ? AND seq = ?").run(thread, m.seq);
+      if (!onlyMilestones(said)) {
+        const targets = this.targetSlotsFor(thread, m, own);
+        for (const target of targets) {
+          if (this.slotAlreadyDelivered(thread, m.seq, target.slot, target.session)) continue;
+          if (cachedAttachments.length > 0) await this.copyAttachmentsForSession(target.session, cachedAttachments);
+          this.hub.deliver(thread, n, [target.session], saidText);
+          this.recordSlotDelivered(thread, m.seq, target.slot, target.session);
+        }
+      }
+      this.dequeueArrival(thread, m.seq);
     }
   }
 
-  /// Fetches `file` of Message `m` from the host into the uploads of the Session here, from as much of it as it has
-  /// already (a fetch cut off goes on from there). Missing when the host no longer has it or it is too large.
+  /// Copies cached read-only thread attachments into `session`'s `<workspace>/uploads/` after its workspace is prepared.
+  private async copyAttachmentsForSession(session: string, attachments: Attachment[]): Promise<void> {
+    const row = this.hub.store.getSession(session);
+    if (!row) return;
+    // A coding Session's checkout is made into its workspace only while it is empty: copies come after it.
+    await this.hub.prepared(session);
+    const uploads = join(row.workspace, "uploads");
+    mkdirSync(uploads, { recursive: true });
+    for (const att of attachments) {
+      if (!existsSync(att.path)) continue;
+      const dest = join(uploads, basename(att.path));
+      if (existsSync(dest) && statSync(dest).size === att.size) continue;
+      try {
+        copyFileSync(att.path, dest, constants.COPYFILE_FICLONE);
+      } catch {
+        copyFileSync(att.path, dest);
+      }
+      try {
+        chmodSync(dest, 0o644);
+      } catch {}
+    }
+  }
+
+  /// Fetches `file` of Message `m` ONCE from the host into the read-only thread cache `<data>/task-files/<thread>/...`
+  /// (`0444`), from as much of it as is already cached. Missing when the host no longer has it or it is too large.
   private async fetchFile(thread: number, where: { station: string; task: string }, m: TaskMessage, file: TaskFile): Promise<Attachment> {
     if (file.size > MAX_TASK_FILE) throw new Missing(`over ${MAX_TASK_FILE / 1024 / 1024} MB`);
-    const session = this.hub.store.threadSessions(thread)[0]?.session;
-    const row = session ? this.hub.store.getSession(session) : null;
-    if (!session || !row) throw new Missing("no Session here to give it to");
-    // A coding Session's checkout is made into its workspace only while it is empty: the file comes after it.
-    await this.hub.prepared(session);
-    const dir = join(row.workspace, "uploads");
+    const session = this.activeSlots(thread)[0]?.session ?? this.hub.store.threadSessions(thread)[0]?.session;
+    if (!session) throw new Missing("no Session here to give it to");
+    const dir = join(this.hub.config().dataDir, "task-files", String(thread));
     const path = join(dir, `task-${m.seq}-${file.index}-${safeName(file.name)}`);
     const part = join(dir, `.part-task-${thread}-${m.seq}-${file.index}`);
     if (!existsSync(path) || statSync(path).size !== file.size) {
@@ -953,6 +1610,9 @@ export class Tasks implements ChatSurface {
       }
       if (statSync(part).size !== file.size) throw new Error(`download of ${file.name} does not match its announced size`);
       renameSync(part, path);
+      try {
+        chmodSync(path, 0o444);
+      } catch {}
     }
     const attachment: Attachment = { name: file.name, path, size: statSync(path).size };
     if (attachment.size !== file.size) throw new Error(`download of ${file.name} does not match its announced size`);
@@ -961,10 +1621,14 @@ export class Tasks implements ChatSurface {
     return attachment;
   }
 
-  /// The host said the Sessions of this Station answered Task `thread` through `seq`: kept, and what was handed to a
-  /// Session through it and waits to be heard (this Station was restored from before it was answered) waits no more.
-  private answeredThrough(thread: number, seq: number): void {
+  /// The host said the Sessions of this Station answered Task `thread` through `seq`: kept, and (for legacy single-session
+  /// puts without `answered_by_slot`) marks waiting deliveries through `seq` as delivered. When `answered_by_slot` is
+  /// present, per-slot delivery cleanup is performed strictly by `answeredSlotThrough` so other slots' pending messages
+  /// are never wiped.
+  private answeredThrough(thread: number, seq: number, markThreadDeliveries = true): void {
     this.db.prepare("UPDATE tasks_elsewhere SET answered = ? WHERE thread = ?").run(seq, thread);
+    if (!markThreadDeliveries) return;
+    this.clearArrivalSlotsThrough(thread, null, seq);
     const waiting = this.db
       .prepare(
         "SELECT d.session, d.n FROM deliveries d JOIN entries e ON e.thread = d.thread AND e.n = d.n WHERE d.thread = ? AND d.delivered_at IS NULL AND e.ts IS NOT NULL AND CAST(e.ts AS INTEGER) <= ?",
@@ -973,8 +1637,32 @@ export class Tasks implements ChatSurface {
     for (const { session, n } of waiting) this.hub.store.markDelivered(session, [[thread, n]]);
   }
 
-  /// task.status from the host `peer`: where the Session here taking part in its Task stands (`session`, or the one
-  /// taking part when it names none). `gone` when there is no thread here of the Task, or no such Session takes part.
+  private answeredSlotThrough(thread: number, slot: string, seq: number): void {
+    this.db.prepare("UPDATE task_session_slots SET answered = MAX(answered, ?) WHERE thread = ? AND slot = ?").run(seq, thread, slot);
+    this.clearArrivalSlotsThrough(thread, slot, seq);
+    const row = this.db.prepare("SELECT session FROM task_session_slots WHERE thread = ? AND slot = ?").get(thread, slot) as { session: string } | undefined;
+    if (!row) return;
+    const waiting = this.db
+      .prepare(
+        "SELECT d.n FROM deliveries d JOIN entries e ON e.thread = d.thread AND e.n = d.n WHERE d.thread = ? AND d.session = ? AND d.delivered_at IS NULL AND e.ts IS NOT NULL AND CAST(e.ts AS INTEGER) <= ?",
+      )
+      .all(thread, row.session, seq) as { n: number }[];
+    for (const { n } of waiting) this.hub.store.markDelivered(row.session, [[thread, n]]);
+  }
+
+  private async codingStanding(workspace: string): Promise<Record<string, unknown> | null> {
+    if (!this.hub.coding || this.hub.coding.get(workspace) === null) return null;
+    try {
+      return (await this.hub.coding.standing(workspace)) ?? null;
+    } catch {
+      return { standing_unknown: true };
+    }
+  }
+
+  /// task.status from the host `peer`: where the Session(s) here taking part in its Task stand.
+  /// - `all: true`: returns every active slot's status + aggregated state/pending/for_ms/dirty/unpushed/unmerged/standing_unknown.
+  /// - `slot`: resolves the Session bound to that slot.
+  /// - `session` (or omitted): resolves that Session or the primary Session.
   /// A read: it starts no turn and changes nothing.
   private async statusHere(peer: string, request: Json): Promise<Json> {
     const task = text(request, "task");
@@ -982,24 +1670,101 @@ export class Tasks implements ChatSurface {
     const gone = { state: "gone", pending: 0, for_ms: null, last_failure: null };
     const thread = this.elsewhere(peer, task);
     if (thread === null) return gone;
-    const sessions = this.hub.store.threadSessions(thread).map((m) => m.session);
-    const asked = text(request, "session");
-    const session = asked !== "" ? (sessions.includes(asked) ? asked : null) : (sessions[0] ?? null);
+    const active = this.activeSlots(thread);
+    if (active.length === 0) return gone;
+
+    if (request?.all === true) {
+      // O(active_slots) primary-key lookup on task_arrival_counts (no GROUP BY, no temp B-tree, no JSON scan).
+      const pendingArrivalsBySlot = new Map<string, number>();
+      const counts = this.db
+        .prepare("SELECT slot, pending_count FROM task_arrival_counts WHERE thread = ?")
+        .all(thread) as { slot: string; pending_count: number }[];
+      for (const c of counts) pendingArrivalsBySlot.set(c.slot, c.pending_count);
+      const wildcardPending = pendingArrivalsBySlot.get("*") ?? 0;
+      const slotStatuses = await Promise.all(
+        active.map(async (entry) => {
+          const status = this.hub.sessionStatus(entry.session);
+          const arrivalPending = (pendingArrivalsBySlot.get(entry.slot) ?? 0) + wildcardPending;
+          const row = this.hub.store.getSession(entry.session);
+          const standing = row ? await this.codingStanding(row.workspace) : null;
+          return {
+            slot: entry.slot,
+            session: entry.session,
+            is_primary: entry.isPrimary,
+            ...status,
+            pending: (status.pending ?? 0) + arrivalPending,
+            ...(standing ?? {}),
+          };
+        }),
+      );
+      const stateOrder = (s: string) =>
+        s === "running" ? 4 : s === "waiting" ? 3 : s === "cannot_start" ? 2 : s === "idle" ? 1 : 0;
+      const aggState = slotStatuses.reduce((best, s) => (stateOrder(s.state) > stateOrder(best) ? s.state : best), "idle");
+      const pending = slotStatuses.reduce((sum, s) => sum + (s.pending ?? 0), 0);
+      const forMsValues = slotStatuses.map((s) => s.for_ms);
+      const for_ms = forMsValues.every((v): v is number => typeof v === "number") ? Math.min(...forMsValues) : null;
+      const last_failure = slotStatuses.find((s) => typeof s.last_failure === "string" && s.last_failure !== "")?.last_failure ?? null;
+      const dirty = slotStatuses.some((s) => (s as Json).dirty === true);
+      const unpushed = slotStatuses.some((s) => (s as Json).unpushed === true);
+      const unmerged = slotStatuses.some((s) => (s as Json).unmerged === true);
+      const standing_unknown = slotStatuses.some((s) => (s as Json).standing_unknown === true);
+      return {
+        state: aggState,
+        pending,
+        for_ms,
+        last_failure,
+        dirty,
+        unpushed,
+        unmerged,
+        ...(standing_unknown ? { standing_unknown: true } : {}),
+        slots: slotStatuses,
+      };
+    }
+
+    const askedSlot = text(request, "slot");
+    const askedSession = text(request, "session");
+    let session: string | null = null;
+    if (askedSlot !== "") {
+      session = active.find((s) => s.slot === askedSlot)?.session ?? null;
+    } else if (askedSession !== "") {
+      session = active.some((s) => s.session === askedSession) ? askedSession : null;
+    } else {
+      session = (active.find((s) => s.isPrimary) ?? active[0])?.session ?? null;
+    }
     if (session === null) return gone;
     const status = this.hub.sessionStatus(session);
     const row = this.hub.store.getSession(session);
-    const standing = row && this.hub.coding ? await this.hub.coding.standing(row.workspace).catch(() => null) : null;
+    const standing = row ? await this.codingStanding(row.workspace) : null;
     return standing === null ? status : { ...status, ...standing };
   }
 
-  /// task.history from a Salix host: the entries of the execution history of the Session taking part in `task` before
-  /// entry `before` (all), the latest `limit` (HISTORY_PAGE, at most HISTORY_PAGE_MAX) of them that fit a page, with the
-  /// index of the first (`start`), how many there are (`total`), and the tokens its model calls used.
+  /// task.history from a Salix host: the entries of the execution history of the requested Session (or primary),
+  /// plus `task_usage` aggregated across all active sessions of the Task (`by_slot` + `models`).
   private executionHistory(peer: string, request: Json): Json {
     const thread = this.hosts.has(peer) ? this.elsewhere(peer, text(request, "task")) : null;
-    const session = thread === null ? undefined : this.hub.store.threadSessions(thread)[0]?.session;
-    if (session === undefined) return { start: 0, total: 0, entries: [], usage: null };
-    const { entries, usage } = this.hub.history(session);
+    const active = thread === null ? [] : this.activeSlots(thread);
+    if (active.length === 0) return { start: 0, total: 0, entries: [], usage: null };
+    const askedSlot = text(request, "slot");
+    const askedSession = text(request, "session");
+    const chosen =
+      (askedSlot !== "" ? active.find((s) => s.slot === askedSlot) : undefined) ??
+      (askedSession !== "" ? active.find((s) => s.session === askedSession) : undefined) ??
+      active.find((s) => s.isPrimary) ??
+      active[0]!;
+    let entries: { text: string }[] = [];
+    let usage: Json = null;
+    let chosenByModel: Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }> | undefined;
+    let chosenPartial = false;
+    let chosenUnreadable = false;
+    try {
+      const h = this.hub.history(chosen.session);
+      entries = h.entries;
+      usage = h.usage ?? null;
+      chosenByModel = h.byModel;
+      chosenPartial = h.partial === true;
+    } catch {
+      chosenUnreadable = true;
+    }
     const end = Math.min(count(request?.before) ?? entries.length, entries.length);
     const limit = Math.min(Math.max(count(request?.limit) ?? HISTORY_PAGE, 1), HISTORY_PAGE_MAX);
     let start = Math.max(0, end - limit);
@@ -1012,14 +1777,99 @@ export class Tasks implements ChatSurface {
         break;
       }
     }
-    return { start, total: entries.length, entries: entries.slice(start, end), usage };
+    if (active.length === 1) {
+      return { start, total: entries.length, entries: entries.slice(start, end), usage };
+    }
+    // Aggregate usage across all active slots of the Task (camelCase TranscriptUsage).
+    const by_slot: Record<string, Json> = {};
+    const models: Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }> = {};
+    let totalCalls = 0;
+    let totalInput = 0;
+    let totalCached = 0;
+    let totalOutput = 0;
+    let partial = false;
+    let primaryModel: string | null = null;
+    for (const entry of active) {
+      let u: Json = null;
+      let slotByModel: Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }> | undefined;
+      let slotPartial = false;
+      let unreadable = false;
+      if (entry.session === chosen.session) {
+        u = usage;
+        slotByModel = chosenByModel;
+        slotPartial = chosenPartial;
+        unreadable = chosenUnreadable;
+      } else {
+        try {
+          const h = this.hub.history(entry.session);
+          u = h.usage ?? null;
+          slotByModel = h.byModel;
+          slotPartial = h.partial === true;
+        } catch {
+          unreadable = true;
+        }
+      }
+      if (unreadable) {
+        partial = true;
+        by_slot[entry.slot] = { session: entry.session, is_primary: entry.isPrimary, usage: null, unreadable: true };
+        continue;
+      }
+      if (slotPartial) partial = true;
+      if (u === null || typeof u !== "object") {
+        by_slot[entry.slot] = { session: entry.session, is_primary: entry.isPrimary, usage: null, ...(slotPartial ? { unreadable: true } : {}) };
+        continue;
+      }
+      const slotUsage =
+        slotByModel && Object.keys(slotByModel).length > 0 ? { ...u, models: slotByModel } : u;
+      by_slot[entry.slot] = { session: entry.session, is_primary: entry.isPrimary, usage: slotUsage, ...(slotPartial ? { unreadable: true } : {}) };
+      if (entry.isPrimary && typeof u.model === "string") primaryModel = u.model;
+      const calls = typeof u.modelCalls === "number" ? u.modelCalls : 0;
+      const input = typeof u.inputTokens === "number" ? u.inputTokens : 0;
+      const cached = typeof u.cachedTokens === "number" ? u.cachedTokens : 0;
+      const output = typeof u.outputTokens === "number" ? u.outputTokens : 0;
+      totalCalls += calls;
+      totalInput += input;
+      totalCached += cached;
+      totalOutput += output;
+      if (slotByModel && Object.keys(slotByModel).length > 0) {
+        for (const [modelName, counts] of Object.entries(slotByModel)) {
+          const m = (models[modelName] ??= { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 });
+          m.modelCalls += counts.modelCalls;
+          m.inputTokens += counts.inputTokens;
+          m.cachedTokens += counts.cachedTokens;
+          m.outputTokens += counts.outputTokens;
+        }
+      } else if (typeof u.model === "string" && u.model !== "") {
+        const m = (models[u.model] ??= { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 });
+        m.modelCalls += calls;
+        m.inputTokens += input;
+        m.cachedTokens += cached;
+        m.outputTokens += output;
+      }
+    }
+    const task_usage: Json = {
+      modelCalls: totalCalls,
+      inputTokens: totalInput,
+      cachedTokens: totalCached,
+      outputTokens: totalOutput,
+      model: primaryModel ?? (usage && typeof usage.model === "string" ? usage.model : null),
+      by_slot,
+      models,
+      ...(partial ? { partial: true } : {}),
+    };
+    return { start, total: entries.length, entries: entries.slice(start, end), usage, task_usage };
   }
 
   /// task.diff and task.pull_request from Salix: about the coding Session taking part in its Task.
   private async coding(peer: string, method: string, request: Json): Promise<Json> {
     const thread = this.elsewhere(peer, text(request, "task"));
-    const session = thread === null ? undefined : this.hub.store.threadSessions(thread)[0]?.session;
-    const row = session === undefined ? undefined : this.hub.store.getSession(session);
+    const active = thread === null ? [] : this.activeSlots(thread);
+    const askedSlot = text(request, "slot");
+    const chosen =
+      (askedSlot !== "" ? active.find((s) => s.slot === askedSlot) : undefined) ??
+      active.find((s) => s.isPrimary) ??
+      active[0];
+    const row = chosen === undefined ? undefined : this.hub.store.getSession(chosen.session);
     const coding = this.hub.coding;
     if (!row || coding === null || coding.get(row.workspace) === null) throw new Error("no coding session takes part in this task here");
     if (method === DIFF) {
@@ -1134,8 +1984,11 @@ export class Tasks implements ChatSurface {
     const milestones = from?.milestones ?? null;
     // The station's word that its Session's turn did not start: the host offers another model with it.
     const cannotStart = from?.cannotStart ? { cannot_start: { error: from.cannotStart } } : {};
+    const isOnlyMilestones = message.trim() === "" && files.length === 0 && Array.isArray(milestones) && milestones.length > 0;
+    const answeredThrough = !isOnlyMilestones && row ? this.hub.store.lastDeliveredSeq(row.id, session) : null;
     const request = {
       method: POST, task: where.task, session, text: message, key: randomUUID(), declared: from?.declared ?? null, ...(milestones ? { milestones } : {}), ...cannotStart,
+      ...(answeredThrough !== null ? { answered_through_seq: answeredThrough } : {}),
       ...(files.length > 0 ? { files: files.map((f, index) => ({ index, name: f.name, size: f.size })) } : {}),
     };
     // A Salix reads a post's files from here while the post waits (task.posted_file); another station is given them
@@ -1288,6 +2141,16 @@ export class Tasks implements ChatSurface {
     const host = this.ofSalix(session);
     return await this.via()(host.station, { method: LOGIN_RESTORE, task: host.task, session, program });
   }
+}
+
+function isPermanentInviteRefusal(message: string): boolean {
+  if (!message) return false;
+  if (message.includes("no_active_primary")) return false;
+  if (message.includes("slot_invite_pending")) return false;
+  if (message.includes("SQLITE_BUSY") || message.includes("SQLITE_LOCKED") || message.includes("database is locked")) {
+    return false;
+  }
+  return true;
 }
 
 /// Asks `station`; a request that did not get through (neither refused nor unreachable) is asked once more, the same

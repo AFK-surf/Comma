@@ -63,6 +63,11 @@ class Engine {
   /** The loop, on the calling thread, until `stop`. */
   void run();
 
+  /** Turns per-task timing of the core loop on or off (for the device's performance record). */
+  static void setPerfTiming(bool enabled);
+  /** What the core's thread spent its time on since last asked, over `spanMs` (empty if nothing ran). */
+  static std::string takePerfSummary(double spanMs);
+
  private:
   struct State;
   std::unique_ptr<State> state_;

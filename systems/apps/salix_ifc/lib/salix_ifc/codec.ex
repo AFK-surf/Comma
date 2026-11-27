@@ -45,6 +45,7 @@ defmodule SalixIFC.Codec do
   @spec encode_atom(SalixIFC.Atom.t()) :: {:ok, binary} | :error
   def encode_atom(:public), do: {:ok, "public"}
   def encode_atom(:agent_private), do: {:ok, "agent_private"}
+  def encode_atom(:unclassified_non_im), do: {:ok, "unclassified_non_im"}
   def encode_atom({:space, c}), do: join(["space", c])
   def encode_atom({:scope, c, id}), do: join(["scope", c, id])
   def encode_atom({:tag, name}), do: join(["tag", name])
@@ -68,6 +69,7 @@ defmodule SalixIFC.Codec do
     case String.split(value, @separator) do
       ["public"] -> {:ok, :public}
       ["agent_private"] -> {:ok, :agent_private}
+      ["unclassified_non_im"] -> {:ok, :unclassified_non_im}
       ["space", c] -> present({:space, c}, [c])
       ["scope", c, id] -> present({:scope, c, id}, [c, id])
       ["tag", name] -> present({:tag, name}, [name])

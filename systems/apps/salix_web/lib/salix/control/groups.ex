@@ -13,18 +13,21 @@ defmodule Salix.Control.Groups do
     hidden
     router_agent_id
     billing_owner
-    owner_emails
     memory_ask_worker_enabled
     control_command_vfs_enabled
     condensed_workspace_enabled
     task_model_selection
     ifc
+    memory_writers
+    search_group_ids
   )
+
+  @search_group_ids_max 64
 
   # Information-flow integrity is per Group and off until someone sets it
   # (docs/verification.md). The group record owns the
   # mode, so this is where it is written and where it is validated.
-  @ifc_modes ~w(off audit enforce)
+  @ifc_modes ~w(off audit enforce hard easy)
 
   # The runtime composes rule A's refusal, rule B's footer and the
   # confirmation card itself, so it cannot follow the model's instruction to
@@ -36,6 +39,11 @@ defmodule Salix.Control.Groups do
   # (docs/verification.md). They are provider users, named by principal key.
   @ifc_settings ~w(mode language supervisors)
   @ifc_max_supervisors 50
+
+  # Who may make the Router change /memory (`SalixAgent.Tools.Memory`):
+  # anyone until `restricted` is true, then only the provider users named in
+  # `writers`. The list is kept while the switch is off.
+  @memory_writers_max 50
 
   def list(tenant_id) do
     if Ids.valid_tenant_id?(tenant_id) do
@@ -58,6 +66,17 @@ defmodule Salix.Control.Groups do
     end
   end
 
+  @doc """
+  The ids of the Tenant's Groups with information-flow control on. A caller
+  Group with it off cannot search these (`SalixIM.GroupConversationSearch`).
+  """
+  def ifc_on_group_ids(tenant_id) do
+    tenant_id
+    |> list()
+    |> Enum.filter(&SalixIM.IFC.Ingress.enabled?/1)
+    |> Enum.map(& &1["group_id"])
+  end
+
   def get(id) do
     if Ids.valid_group_id?(id) do
       case Store.get_record(Keys.ctl_group(id)) do
@@ -78,6 +97,26 @@ defmodule Salix.Control.Groups do
     with true <- Ids.valid_group_id_for_tenant?(id, tenant_id),
          {:ok, group} <- get(id),
          true <- group["tenant_id"] == tenant_id and visible_group?(group) do
+      {:ok, group}
+    else
+      false -> {:error, :not_found}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
+  Loads a group for runtime billing and metering inside `tenant_id`.
+
+  Hidden Collaborative Task Groups (`purpose: "collaboration"`, `hidden: true`)
+  stay absent from public tenant catalogs (`get/2`) while still resolving their
+  host `billing_owner` for LLM proxy and station metering.
+  """
+  def get_for_runtime(id, tenant_id) do
+    with true <- Ids.valid_group_id_for_tenant?(id, tenant_id),
+         {:ok, group} <- get(id),
+         true <-
+           group["tenant_id"] == tenant_id and
+             (visible_group?(group) or group["purpose"] == "collaboration") do
       {:ok, group}
     else
       false -> {:error, :not_found}
@@ -121,8 +160,10 @@ defmodule Salix.Control.Groups do
          :ok <- validate_boolean(attrs, "condensed_workspace_enabled"),
          :ok <- SalixIM.TaskModelSelection.validate(attrs["task_model_selection"]),
          :ok <- validate_ifc(attrs),
+         :ok <- validate_memory_writers(attrs),
          :ok <- validate_group_agent_refs(attrs, group["tenant_id"], group["group_id"]),
-         {:ok, attrs} <- normalize_owner_emails(attrs) do
+         {:ok, attrs} <-
+           normalize_search_group_ids(attrs, group["tenant_id"], group["group_id"]) do
       update_group_record(id, attrs)
     end
   end
@@ -222,6 +263,7 @@ defmodule Salix.Control.Groups do
                   :ok <- SalixAgent.DeviceSecrets.delete_group_data(id),
                   :ok <- SalixAgent.Tailnet.delete_group_data(id),
                   :ok <- SalixStore.TaskRoutingLearning.delete_group(id),
+                  :ok <- SalixAgent.Colab.Account.retire_group_in_tx(group["tenant_id"], id),
                   do: Store.delete_record(Keys.ctl_group(id))
            end) do
       _ = PluginCatalogCache.invalidate_group(id)
@@ -237,41 +279,41 @@ defmodule Salix.Control.Groups do
     end
   end
 
-  # `owner_emails` is the platform-managed recipient list for the group's
-  # `email.send_to_owners` agent tool (synced from the BridgeForTeams swarm
-  # owner list). It is control-plane state only and is never disclosed to
-  # agents — the tool reads it server-side at send time.
-  defp normalize_owner_emails(attrs) when is_map(attrs) do
-    case Map.fetch(attrs, "owner_emails") do
+  defp normalize_search_group_ids(attrs, tenant_id, group_id) when is_map(attrs) do
+    case Map.fetch(attrs, "search_group_ids") do
       :error ->
         {:ok, attrs}
 
-      {:ok, value} ->
-        case sanitize_owner_emails(value) do
-          {:ok, emails} ->
-            {:ok, Map.put(attrs, "owner_emails", emails)}
+      {:ok, value} when is_list(value) ->
+        if Enum.all?(value, &is_binary/1) do
+          ids =
+            value
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == "" or &1 == group_id))
+            |> Enum.uniq()
+            |> Enum.sort()
 
-          :error ->
-            {:error, {:bad_request, "owner_emails must be a list of email address strings"}}
+          cond do
+            length(ids) > @search_group_ids_max ->
+              {:error,
+               {:bad_request,
+                "search_group_ids accepts at most #{@search_group_ids_max} group ids"}}
+
+            not Enum.all?(ids, &Ids.valid_group_id_for_tenant?(&1, tenant_id)) ->
+              {:error,
+               {:bad_request, "search_group_ids must belong to the same tenant as this group"}}
+
+            true ->
+              {:ok, Map.put(attrs, "search_group_ids", ids)}
+          end
+        else
+          {:error, {:bad_request, "search_group_ids must be a list of group id strings"}}
         end
+
+      {:ok, _invalid} ->
+        {:error, {:bad_request, "search_group_ids must be a list of group id strings"}}
     end
   end
-
-  defp sanitize_owner_emails(value) when is_list(value) do
-    if Enum.all?(value, &is_binary/1) do
-      emails =
-        value
-        |> Enum.map(&String.trim/1)
-        |> Enum.reject(&(&1 == ""))
-        |> Enum.uniq()
-
-      if Enum.all?(emails, &String.contains?(&1, "@")), do: {:ok, emails}, else: :error
-    else
-      :error
-    end
-  end
-
-  defp sanitize_owner_emails(_value), do: :error
 
   defp validate_group_agent_refs(attrs, tenant_id, group_id) do
     case attrs["router_agent_id"] do
@@ -348,7 +390,7 @@ defmodule Salix.Control.Groups do
          :ok <- validate_boolean(attrs, "condensed_workspace_enabled"),
          :ok <- SalixIM.TaskModelSelection.validate(attrs["task_model_selection"]),
          :ok <- validate_group_agent_refs(attrs, tenant_id, group_id),
-         {:ok, attrs} <- normalize_owner_emails(attrs) do
+         {:ok, attrs} <- normalize_search_group_ids(attrs, tenant_id, group_id) do
       rec =
         %{
           "group_id" => group_id,
@@ -370,7 +412,7 @@ defmodule Salix.Control.Groups do
           "agent_management_owner",
           if(get_in(attrs, ["billing_owner", "surface"]) == "bridge", do: "bridge", else: "salix")
         )
-        |> Store.put_optional("owner_emails", attrs["owner_emails"])
+        |> Store.put_optional("search_group_ids", attrs["search_group_ids"])
 
       Store.put_new(Keys.ctl_group(group_id), rec)
     end
@@ -413,6 +455,7 @@ defmodule Salix.Control.Groups do
     |> Map.put_new("control_command_vfs_enabled", false)
     |> Map.put_new("condensed_workspace_enabled", false)
     |> Map.delete("cloud_vm_enabled")
+    |> Map.delete("owner_emails")
   end
 
   # A Group created where sandboxes are set up never has a Cloud VM: a sandbox
@@ -479,6 +522,28 @@ defmodule Salix.Control.Groups do
     end
   end
 
+  defp validate_memory_writers(attrs) do
+    case Map.fetch(attrs, "memory_writers") do
+      :error ->
+        :ok
+
+      {:ok, %{"restricted" => restricted, "writers" => writers} = settings}
+      when is_boolean(restricted) and is_list(writers) and map_size(settings) == 2 and
+             length(writers) <= @memory_writers_max ->
+        if Enum.all?(writers, &provider_user_key?/1),
+          do: :ok,
+          else: {:error, {:bad_request, "memory_writers.writers must be provider user keys"}}
+
+      {:ok, _invalid} ->
+        {:error,
+         {:bad_request,
+          "memory_writers must be {restricted: boolean, writers: at most #{@memory_writers_max} provider user keys}"}}
+    end
+  end
+
+  defp provider_user_key?(key),
+    do: match?({:ok, {:provider_user, _, _}}, SalixIFC.Codec.decode_principal(key))
+
   defp valid_setting?(settings, key, allowed) do
     case Map.fetch(settings, key) do
       :error -> true
@@ -511,7 +576,9 @@ defmodule Salix.Control.Groups do
   end
 
   defp normalize_attrs(attrs, operation) do
-    attrs = stringify_keys(attrs)
+    # BridgeForTeams outbox rows written before the owner email tool was
+    # removed still carry `owner_emails`; nothing reads it any more.
+    attrs = attrs |> stringify_keys() |> Map.delete("owner_emails")
     unknown = Map.keys(attrs) -- @writable_fields
 
     if unknown == [] do

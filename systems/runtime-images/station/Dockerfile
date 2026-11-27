@@ -7,7 +7,7 @@
 # Shared tools serve the Shell and Station images. `comma-station` also serves
 # the amd64 coding sandbox; `vmm-station` adds the meeting bot and browser.
 # The `meetnative` context contains its locked source revision.
-ARG GO_IMAGE=golang:1.26.10-bookworm
+ARG GO_IMAGE=golang:1.26.11-bookworm
 ARG STATION_IMAGE=node:24.22.1-bookworm-slim
 # The Debian release of STATION_IMAGE (the coding sandbox builds this image on
 # trixie: runtime-images/coding-sandbox/build.sh).
@@ -20,15 +20,23 @@ ARG SILK_V3_DECODER_TARBALL
 ARG SILK_V3_DECODER_INTEGRITY
 RUN set -eu; \
     apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl g++ gcc make openssl \
-    && curl --fail --location --silent --show-error "${SILK_V3_DECODER_TARBALL}" --output /tmp/silk.tgz \
-    && printf '%s' "${SILK_V3_DECODER_INTEGRITY#sha512-}" | base64 --decode >/tmp/silk.expected \
-    && openssl dgst -sha512 -binary /tmp/silk.tgz >/tmp/silk.actual && cmp /tmp/silk.expected /tmp/silk.actual \
-    && mkdir /tmp/silk && tar -xzf /tmp/silk.tgz -C /tmp/silk --strip-components=1 \
-    && make -C /tmp/silk/silk lib decoder \
-    && install -D -m 0755 /tmp/silk/silk/decoder /out/silk-v3-decoder
+    && mkdir -p /out \
+    && if [ -n "${SILK_V3_DECODER_TARBALL:-}" ]; then \
+         apt-get install -y --no-install-recommends ca-certificates curl g++ gcc make openssl \
+         && curl --fail --location --silent --show-error "${SILK_V3_DECODER_TARBALL}" --output /tmp/silk.tgz \
+         && printf '%s' "${SILK_V3_DECODER_INTEGRITY#sha512-}" | base64 --decode >/tmp/silk.expected \
+         && openssl dgst -sha512 -binary /tmp/silk.tgz >/tmp/silk.actual && cmp /tmp/silk.expected /tmp/silk.actual \
+         && mkdir /tmp/silk && tar -xzf /tmp/silk.tgz -C /tmp/silk --strip-components=1 \
+         && make -C /tmp/silk/silk lib decoder \
+         && install -D -m 0755 /tmp/silk/silk/decoder /out/silk-v3-decoder; \
+       else \
+         apt-get install -y --no-install-recommends binutils; \
+       fi \
+    && cp /usr/local/bin/node /out/node \
+    && strip --strip-unneeded /out/node
 
 FROM ${STATION_IMAGE} AS shared-tools
+COPY --from=silk-build /out/node /usr/local/bin/node
 
 ARG NPM_VERSION
 ARG NPM_TARBALL
@@ -92,7 +100,11 @@ RUN --mount=type=bind,source=systems/runtime-images/station/apt-package-recovery
     && test "$(node -p "require('$npm_modules/undici/package.json').version")" = "${NPM_UNDICI_VERSION}" \
     && rm -rf /root/.npm /root/.claude /root/.claude.json \
               /tmp/npm-cache /tmp/node-compile-cache \
-              /tmp/*.tgz /tmp/*.expected /tmp/*.actual
+              /tmp/*.tgz /tmp/*.expected /tmp/*.actual \
+    && find /usr/share/doc -mindepth 2 -type f ! -name 'copyright' -delete \
+    && find /usr/share/doc -mindepth 2 -type l -delete \
+    && find /usr/share/doc -type d -empty -delete \
+    && rm -rf /usr/share/man/* /usr/share/info/* /var/cache/apt/*
 
 # Remove the bundle's duplicate Node before its files reach a final image layer.
 # Desktop bundles retain their own Node; only these image targets use base Node.
@@ -130,7 +142,11 @@ RUN --mount=type=bind,source=systems/runtime-images/station/apt-package-recovery
     && codex --version \
     && rm -rf /root/.npm /root/.claude /root/.claude.json \
               /tmp/npm-cache /tmp/node-compile-cache \
-              /tmp/*.tgz /tmp/*.expected /tmp/*.actual
+              /tmp/*.tgz /tmp/*.expected /tmp/*.actual \
+    && find /usr/share/doc -mindepth 2 -type f ! -name 'copyright' -delete \
+    && find /usr/share/doc -mindepth 2 -type l -delete \
+    && find /usr/share/doc -type d -empty -delete \
+    && rm -rf /usr/share/man/* /usr/share/info/* /var/cache/apt/*
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir --only-binary :all: --require-hashes \
       -r /tmp/file-tools-requirements.txt \
@@ -171,18 +187,37 @@ COPY systems/runtime-images/go.mod ./go.mod
 COPY systems/runtime-images/cmd/comma-shell-runtime ./cmd/comma-shell-runtime
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o /out/comma-shell-runtime ./cmd/comma-shell-runtime
 
-FROM shared-tools AS shell
+FROM shared-tools AS shell-rootfs
+ARG PACKAGE_SNAPSHOT
 RUN --mount=type=bind,source=systems/runtime-images/station/apt-package-recovery.mjs,target=/tmp/apt-package-recovery.mjs \
+    set -eu; \
     apt-get update \
     && node /tmp/apt-package-recovery.mjs "$PACKAGE_SNAPSHOT" install -y --no-install-recommends build-essential pkg-config pandoc python3-virtualenv python-is-python3 \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/lib/*-linux-gnu/dri \
+              /usr/lib/*-linux-gnu/libLLVM* \
+              /usr/lib/*-linux-gnu/libz3* \
+              /usr/bin/*lto-dump* \
+              /usr/share/man/* /usr/share/info/* /var/cache/apt/* \
+    && find /usr/share/doc -mindepth 2 -type f ! -name 'copyright' -delete \
+    && find /usr/share/doc -mindepth 2 -type l -delete \
+    && find /usr/share/doc -type d -empty -delete \
+    && strip --strip-unneeded /usr/bin/pandoc \
+    && ffmpeg -version >/dev/null \
+    && ffprobe -version >/dev/null \
+    && pandoc --version >/dev/null \
     && groupadd --gid 10001 runtime \
     && useradd --uid 10001 --gid runtime --home-dir /workspace --create-home runtime
 COPY --from=shell-build /out/comma-shell-runtime /usr/local/bin/comma-shell-runtime
+
+FROM scratch AS shell
+COPY --from=shell-rootfs / /
 ENV HOME=/workspace \
     PYTHONUSERBASE=/workspace/.local \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_USER=1 \
     NPM_CONFIG_PREFIX=/workspace/.local \
-    PATH=/workspace/.local/bin:$PATH
+    PATH=/workspace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /workspace
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/comma-shell-runtime"]

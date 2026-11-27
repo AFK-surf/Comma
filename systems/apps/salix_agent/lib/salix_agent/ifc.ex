@@ -30,11 +30,19 @@ defmodule SalixAgent.IFC do
     * `:audit` — the decision runs and is archived; the effect executes
       regardless. This is how a Group measures would-be denials before anyone
       is blocked.
-    * `:enforce` — a denied effect becomes a `guidance` result and never
+    * `:easy` — checks IM sources against the requester’s reading rights.
+      Supervisor clearance still applies.
+    * `:enforce` (Hard) — a denied effect becomes a `guidance` result and never
       reaches `Tools.execute/2`.
   """
 
-  @modes %{"off" => :off, "audit" => :audit, "enforce" => :enforce}
+  @modes %{
+    "off" => :off,
+    "audit" => :audit,
+    "enforce" => :enforce,
+    "hard" => :enforce,
+    "easy" => :easy
+  }
   @languages %{"zh" => :zh, "en" => :en}
 
   @typedoc "The language the runtime composes its own user-facing sentences in."
@@ -117,7 +125,7 @@ defmodule SalixAgent.IFC do
   unknown Group, or a resolver fault all read as `:off`, because a Group that
   has not opted in must never be blocked by this design.
   """
-  @spec mode_for(String.t() | nil, String.t() | nil) :: :off | :audit | :enforce
+  @spec mode_for(String.t() | nil, String.t() | nil) :: :off | :audit | :enforce | :easy
   def mode_for(tenant_id, group_id) do
     with mod when not is_nil(mod) <- facts_mod(),
          true <- text(group_id) != "" do
@@ -139,11 +147,13 @@ defmodule SalixAgent.IFC do
   precedes the declaration the check reads: nothing has authorized it yet. The
   refusal that would stop the completed send arrives after the text has been
   seen, and clearing a draft does not unsee it — so under `enforce` the draft
-  waits and the reply appears once it is allowed. `audit` streams as before,
-  because audit may never change what happens, and `off` is untouched.
+  waits and the reply appears once it is allowed. Easy also waits for its
+  permission decision. Audit and off keep incremental drafts. Under audit,
+  completed calls still require valid declarations, so a draft can be shown
+  before a parameter error requires the model to correct its call.
   """
   @spec draft_before_decision?(term()) :: boolean()
-  def draft_before_decision?(mode), do: mode(mode) != :enforce
+  def draft_before_decision?(mode), do: mode(mode) in [:off, :audit]
 
   @doc """
   The sealed origin one schedule fire delivers with, or `nil` when the
@@ -309,10 +319,11 @@ defmodule SalixAgent.IFC do
   def facts_mod, do: SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
 
   @doc "Reads a mode out of a resolver reply or a group record."
-  @spec mode(term()) :: :off | :audit | :enforce
+  @spec mode(term()) :: :off | :audit | :enforce | :easy
   def mode(%{} = reply), do: mode(reply["mode"] || reply[:mode])
   def mode(value) when is_binary(value), do: Map.get(@modes, value, :off)
-  def mode(value) when value in [:off, :audit, :enforce], do: value
+  def mode(value) when value in [:off, :audit, :enforce, :easy], do: value
+  def mode(:hard), do: :enforce
   def mode(_value), do: :off
 
   @doc """

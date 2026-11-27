@@ -29,6 +29,7 @@ import notify
     @State private var geometry = ProcessInfo.processInfo.arguments.contains("--transcript-probe") ? TranscriptGeometryProbe() : nil
     @MainActor private static var started = false
     init() {
+        TouchIndicator.shared.watch()
         let metrics = Metrics()
         let perf = PerfOptions()
         let server = FixtureServer(metrics: metrics, perf: perf)

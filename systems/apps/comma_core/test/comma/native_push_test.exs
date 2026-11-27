@@ -607,8 +607,9 @@ defmodule Comma.NativePushTest do
              "type" => "router_message",
              "aps" => %{
                "badge" => 2,
-               "alert" => %{"title" => "Comma", "body" => "Router 有新消息。"},
-               "sound" => "default"
+               "alert" => %{"title" => "Comma", "body" => "Private WeChat reply"},
+               "sound" => "default",
+               "thread-id" => "router:" <> ctx.workspace.id
              },
              "session_id" => ctx.session["id"],
              "workspace_id" => ctx.workspace.id,
@@ -617,31 +618,76 @@ defmodule Comma.NativePushTest do
              "message_id" => mirror["message_id"]
            }
 
+    # Non-text replies fall back to the localized generic banner.
+    image_only = %{
+      "message_id" => Ids.new_message_id(),
+      "seq" => 4,
+      "actor_type" => "agent",
+      "agent_id" => ctx.workspace.salix_router_agent_id,
+      "content" => [%{"type" => "image", "url" => "https://example.test/chart.png"}]
+    }
+
+    Process.put(:native_push_router, %{
+      "conversation_id" => id,
+      "messages" => [historical, reply, mirror, image_only]
+    })
+
+    assert :delivered = Notifications.deliver_router(registration["id"])
+
+    assert_received {:router_push,
+                     %{
+                       "type" => "router_message",
+                       "aps" => %{
+                         "badge" => 3,
+                         "alert" => %{"title" => "Comma", "body" => "Router 有新消息。"},
+                         "thread-id" => "router:" <> _
+                       }
+                     }}
+
     assert :current = Notifications.deliver_router(registration["id"])
     refute_received {:router_push, _}
 
     # Enrollment on another phone synchronizes the existing unread count only.
     {:ok, other} = Accounts.create_session(ctx.user["id"])
-    {:ok, next} = Notifications.register(ctx.user, other, "device", ctx.attrs)
+
+    {:ok, next} =
+      Notifications.register(
+        ctx.user,
+        other,
+        "device",
+        Map.put(ctx.attrs, "token", String.duplicate("b", 64))
+      )
+
     assert :delivered = Notifications.deliver_router(next["id"])
-    assert_receive {:router_push, %{"type" => "router_counter", "aps" => %{"badge" => 2}}}
+    assert_receive {:router_push, %{"type" => "router_counter", "aps" => %{"badge" => 3}}}
 
     put_task(%{ctx.task | "status" => "completed"})
     assert :delivered = Notifications.deliver(registration["id"], ctx.task["conversation_id"])
-    assert_receive {:router_push, %{"task_id" => _, "aps" => %{"badge" => 2}}}
+    assert_receive {:router_push, %{"task_id" => _, "aps" => %{"badge" => 3}}}
 
     assert {:ok, %{"unread_count" => 0}} =
              Comma.RouterNotifications.read(
                ctx.user,
                ctx.session,
                ctx.attrs["group_id"],
-               mirror["message_id"]
+               image_only["message_id"]
              )
 
     assert :delivered = Notifications.deliver_router(registration["id"])
     assert_receive {:router_push, %{"type" => "router_counter", "aps" => %{"badge" => 0}}}
     assert :delivered = Notifications.deliver_router(next["id"])
     assert_receive {:router_push, %{"type" => "router_counter", "aps" => %{"badge" => 0}}}
+  end
+
+  test "re-registering the same device token under a new session retires stale session targets",
+       ctx do
+    {:ok, stale} = Notifications.register(ctx.user, ctx.session, "device", ctx.attrs)
+    {:ok, next_session} = Accounts.create_session(ctx.user["id"])
+    {:ok, active} = Notifications.register(ctx.user, next_session, "device", ctx.attrs)
+
+    assert stale["id"] != active["id"]
+    assert Repo.get(Target, stale["id"]) == nil
+    assert %Target{} = Repo.get(Target, active["id"])
   end
 
   test "a concurrent delivery cannot send while another holds the address lease", ctx do

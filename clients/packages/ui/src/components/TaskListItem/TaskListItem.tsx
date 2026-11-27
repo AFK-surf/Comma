@@ -34,6 +34,7 @@ import {
   taskListItemRootByLayout,
   taskListItemSelected,
   taskListItemChecked,
+  taskListItemSidebarBadges,
   taskListItemSidebarMain,
   taskListItemTailByLayout,
   taskListItemTailContents,
@@ -392,7 +393,10 @@ export const TaskListItem = ({
               />
             </div>
             {badges ? (
-              <span className={taskListItemBadges} data-slot="task-list-item-badges">
+              <span
+                className={taskListItemSidebarBadges}
+                data-slot="task-list-item-badges"
+              >
                 {badges}
               </span>
             ) : null}

@@ -238,14 +238,14 @@ defmodule SalixWeb.SSELiveTest do
 
     {data, _frame} =
       assert_update_matching(fn data, _frame ->
-        get_in(data, ["session", "message_count"]) == 4
+        get_in(data, ["session", "message_count"]) == 3
       end)
 
-    assert data["session"]["message_count"] == 4
+    assert data["session"]["message_count"] == 3
     {:ok, persisted} = SalixAgent.InternalSessionStore.read(a, session_id)
     persisted_messages = SalixAgent.InternalSession.get(persisted, :messages)
-    assert length(persisted_messages) == 4
-    assert Enum.count(persisted_messages, &(&1[:content_kind] == "model_context")) == 2
+    assert length(persisted_messages) == 3
+    assert Enum.count(persisted_messages, &(&1[:content_kind] == "model_context")) == 1
     assert List.last(persisted_messages).content == "tiny"
     refute_received {:sse_client_error, _}
   end

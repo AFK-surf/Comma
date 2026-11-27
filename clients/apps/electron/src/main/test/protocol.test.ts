@@ -569,6 +569,34 @@ describe("Electron app protocol", () => {
     expect(init.headers.get(sessionPresenceExpectationHeader)).toBeNull();
   });
 
+  it("tells the server that an account session request from the core carries a bearer", async () => {
+    const { authority } = fakeCredentialAuthority();
+    electronMocks.fetch.mockImplementation(() =>
+      Promise.resolve(new Response("{}", { status: 200 }))
+    );
+
+    // The server refuses a bearer on its session endpoints unless the request names the transport.
+    await proxyCommaApiRequest(
+      commaApiRequest({}, { "x-comma-session-transport": "cookie" }),
+      new URL("assets://./v1/comma/auth/raycast/pairing"),
+      authority,
+      electronMocks.fetch
+    );
+    await proxyCommaApiRequest(
+      commaApiRequest({}, { "x-comma-session-transport": "cookie" }),
+      new URL("assets://./v1/comma/workspaces"),
+      authority,
+      electronMocks.fetch
+    );
+
+    const sent = electronMocks.fetch.mock.calls.map(
+      (call) => (call[1] as { headers: Headers }).headers
+    );
+    expect(sent[0]?.get("x-comma-session-transport")).toBe("bearer");
+    expect(sent[0]?.get("authorization")).toBe("Bearer main_secret");
+    expect(sent[1]?.get("x-comma-session-transport")).toBeNull();
+  });
+
   it("keeps Agent VMM install descriptors on the Main-only transport", async () => {
     const { authority } = fakeCredentialAuthority();
     registerAppProtocol(undefined, {

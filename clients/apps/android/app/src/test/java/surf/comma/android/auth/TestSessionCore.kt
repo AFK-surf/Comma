@@ -45,6 +45,8 @@ internal class TestSessionCore(
      * `chat-<user>`.
      */
     @Volatile var workspaceChat: ((user: String?) -> JSONObject)? = null
+    /** A topic's one value, for a topic the core here does not say itself; null for none. */
+    @Volatile var topics: (topic: JSONObject) -> Any? = { null }
     /** Who a sign-in through the core signs in. */
     @Volatile var user: String = USER
     private val host = Executors.newSingleThreadExecutor { Thread(it, "test-core-host").apply { isDaemon = true } }
@@ -164,7 +166,8 @@ internal class TestSessionCore(
         "workspaceChat" -> ticks.map { TopicValue.Value(read(chatValue())) }
         "workspace" -> flowOf(TopicValue.Value(read(JSONObject().put("status", "ready").put("workspace", JSONObject()
             .put("id", topic.optString("prefer")).put("groupId", "g").put("name", "W")))))
-        else -> emptyFlow()
+        "miniApps" -> flowOf(TopicValue.Value(read(JSONObject().put("status", "ready").put("apps", org.json.JSONArray()))))
+        else -> topics(topic)?.let { flowOf(TopicValue.Value(read(it))) } ?: emptyFlow()
     }
 
     override fun savedAccount(): Account? = store.value?.user

@@ -23,6 +23,15 @@ const SNAPSHOTS_KEPT = 32;
 // The agent cursor in the brand blue (clients/apps/electron/native/windows/cua-driver).
 const CURSOR_THEME = "comma.brand";
 
+/**
+ * The note a state carries when its screenshot was not stored (here and in computer-use.ts). After an action, the
+ * action already ran and must not be repeated; a state read alone changed nothing.
+ */
+export const screenshotNotKept = (reason: string, acted: boolean) =>
+  acted
+    ? `The action completed, but its screenshot was not kept (${reason}). Do not repeat the action; check its effect in the accessibility tree or capture again later.`
+    : `The state was read, but its screenshot was not kept (${reason}). Use the accessibility tree, or capture again later.`;
+
 export type WindowsComputerUseDeps = {
   /** The driver's executable. */
   executable: string;
@@ -95,8 +104,8 @@ export function makeWindowsComputerUse(deps: WindowsComputerUseDeps, connect: ()
     return result;
   };
 
-  /** Reads one window: its elements become a snapshot, its screenshot a device image. */
-  const state = async (pid: number, windowId: number): Promise<Result> => {
+  /** Reads one window: its elements become a snapshot, its screenshot a device image. `acted`: after an action. */
+  const state = async (pid: number, windowId: number, acted: boolean): Promise<Result> => {
     const read = await tool("get_window_state", {
       pid,
       window_id: windowId,
@@ -126,15 +135,21 @@ export function makeWindowsComputerUse(deps: WindowsComputerUseDeps, connect: ()
       const width = Number(s.screenshot_width) || undefined;
       const height = Number(s.screenshot_height) || undefined;
       if (width && height) lines.push(`ScreenshotSize: ${width}x${height}`);
-      const stored = await Effect.runPromise(
-        deps.storeImage({
-          ok: true,
-          imageData: Buffer.from(read.image.data, "base64"),
-          imageContentType: read.image.mimeType,
-          ...(width ? { imageWidth: width } : {}),
-          ...(height ? { imageHeight: height } : {}),
-        }),
-      );
+      let stored: Result;
+      try {
+        stored = await Effect.runPromise(
+          deps.storeImage({
+            ok: true,
+            imageData: Buffer.from(read.image.data, "base64"),
+            imageContentType: read.image.mimeType,
+            ...(width ? { imageWidth: width } : {}),
+            ...(height ? { imageHeight: height } : {}),
+          }),
+        );
+      } catch (error) {
+        // A state after an action that already ran must not report that action as failed.
+        return { ok: true, text: [...lines, "", screenshotNotKept((error as Error).message, acted)].join("\n") };
+      }
       return { ...stored, text: lines.join("\n") };
     }
     return { ok: true, text: lines.join("\n") };
@@ -173,7 +188,7 @@ export function makeWindowsComputerUse(deps: WindowsComputerUseDeps, connect: ()
       await tool(name, { ...args, delivery_mode: "foreground" });
       foreground = true;
     }
-    const next = await state(snapshot.pid, snapshot.windowId);
+    const next = await state(snapshot.pid, snapshot.windowId, true);
     return foreground
       ? { ...next, text: `The app did not take this in the background; it was sent in the foreground (the window came to the front for it).\n${String(next.text)}` }
       : next;
@@ -193,7 +208,7 @@ export function makeWindowsComputerUse(deps: WindowsComputerUseDeps, connect: ()
       (title ? undefined : [...windows].sort((a, b) => Number(a.z_index ?? 0) - Number(b.z_index ?? 0))[0]);
     if (!window || typeof window.window_id !== "number")
       throw new Error(title ? `no window of ${text(app.name)} is titled ${JSON.stringify(text(args.window_title))}` : `${text(app.name)} has no open window`);
-    return state(app.pid, window.window_id);
+    return state(app.pid, window.window_id, false);
   };
 
   const listApps = async (): Promise<Result> => {

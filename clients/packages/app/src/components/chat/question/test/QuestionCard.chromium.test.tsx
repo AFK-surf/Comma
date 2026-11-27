@@ -85,3 +85,39 @@ it("narrows to a chat narrower than the card, and no further", async () => {
   expect(width()).toBe(narrow);
   expect(card.getBoundingClientRect().right).toBeLessThanOrEqual(host.right);
 });
+
+it("smoothly folds from the open card's height into its receipt when answered", async () => {
+  const view = render(
+    <div style={{ width: 600 }}>
+      <QuestionCardActionsContext.Provider value={actions}>
+        <QuestionCard live part={part} />
+      </QuestionCardActionsContext.Provider>
+    </div>
+  );
+  const openHeight = view.container
+    .querySelector<HTMLElement>(".comma-agent-card")!
+    .getBoundingClientRect().height;
+  expect(openHeight).toBeGreaterThan(150);
+
+  view.rerender(
+    <div style={{ width: 600 }}>
+      <QuestionCardActionsContext.Provider value={actions}>
+        <QuestionCard
+          live
+          part={{ ...part, state: { status: "answered", choiceIds: ["c1"] } }}
+        />
+      </QuestionCardActionsContext.Provider>
+    </div>
+  );
+
+  const receipt = view.container.querySelector<HTMLElement>(".comma-agent-receipt")!;
+  const running = receipt
+    .getAnimations()
+    .filter((anim) => anim.playState === "running");
+  expect(running.length).toBeGreaterThan(0);
+
+  for (const anim of receipt.getAnimations({ subtree: true })) anim.finish();
+  const settledHeight = receipt.getBoundingClientRect().height;
+  expect(settledHeight).toBeGreaterThan(30);
+  expect(settledHeight).toBeLessThan(openHeight - 60);
+});

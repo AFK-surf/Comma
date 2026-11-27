@@ -150,10 +150,9 @@ defmodule Salix.Bindings.MeetingCalendar do
               :calendar_event_cancelled,
               :calendar_event_changed
             ] do
-    case MeetingPlan.cancel(group["group_id"], event["occurrence_ref"]) do
-      {:ok, _plan} -> result
-      {:error, _} = error -> error
-    end
+    with {:ok, _plan} <- MeetingPlan.cancel(group["group_id"], event["occurrence_ref"]),
+         :ok <- leave_holders(group, event),
+         do: result
   end
 
   defp cancel_invalid_plan(result, _group, _event), do: result
@@ -328,6 +327,10 @@ defmodule Salix.Bindings.MeetingCalendar do
 
   defp selected_series?(_group, _item), do: true
 
+  # A member unit's copy that stops qualifying here (cancelled, declined, no
+  # meeting link) names no meeting link, so this unit leaves the meeting's
+  # holders when the scan finds the copy gone (`SalixMeet.CalendarAutojoin`
+  # calls release/2 with the indexed copy).
   defp prepare_selected_event(group, item, occurrence, source_ids) do
     object = item["object"] || %{}
     qualification = OccurrenceQualification.evaluate(item, occurrence)
@@ -384,73 +387,223 @@ defmodule Salix.Bindings.MeetingCalendar do
     end
   end
 
-  # A meeting on members' calendars is prepared once: by the organizer's own
-  # calendar when the organizer is a member, otherwise by the first member
-  # calendar that claims it. The report goes by direct message to the
-  # organizer, or to that member when the organizer is not in the Slack
-  # workspace (MeetingPersonalPreparation.roster/1).
-  defp preparation(%{"calendar_scope" => "members"} = group, item, occurrence, qualification) do
-    me = trim(group["account_email"]) |> String.downcase()
+  # A meeting on members' calendars is researched once, by one preparer, and
+  # every member whose own calendar holds it gets a direct message. One record
+  # per meeting names the preparer (its member and its copy) and the holders.
+  # Each unit that sees the meeting adds its member to the holders. The
+  # preparer stays while it is a member with usable calendars; otherwise the
+  # unit that scans now takes over and first cancels the former preparer's
+  # plan, so that plan sends no second reminder. The preparer's plan names the
+  # current holders as its recipients (MeetingPersonalPreparation.roster/1).
+  # A Feishu/Lark meeting names its people by open_id: its preparer reminds
+  # every current attendee, as a team calendar's meeting does.
+  defp preparation(%{"calendar_scope" => "members"} = group, _item, occurrence, qualification) do
+    me = member_email(group["account_email"])
 
     open_id_attendees? =
       group["provider"] in ["feishu", "lark"] and group["calendar_source"] != "google"
 
-    organizer = organizer_email(item)
-    members = group["member_emails"] |> List.wrap() |> Enum.map(&String.downcase(trim(&1)))
+    if me == "" or group["personal_preparation"] != true do
+      {:ok, [personal_preparation: false, research_enabled: false]}
+    else
+      case hold_preparation(group, me, usable_members(group, me), qualification, occurrence) do
+        {:ok, true, _holders} when open_id_attendees? ->
+          {:ok, [personal_preparation: true]}
 
-    preparer? =
-      cond do
-        me == "" or group["personal_preparation"] != true -> {:ok, false}
-        organizer == me -> {:ok, true}
-        organizer in members -> {:ok, false}
-        true -> claim_preparation(group, me, qualification, occurrence)
+        {:ok, true, holders} ->
+          {:ok, [personal_preparation: true, personal_recipients: holders]}
+
+        {:ok, false, _holders} ->
+          {:ok, [personal_preparation: false, research_enabled: false]}
+
+        {:error, _} = error ->
+          error
       end
-
-    case preparer? do
-      # A Feishu/Lark meeting names its people by open_id: the claiming unit
-      # reminds every current attendee, as a team calendar's meeting does.
-      # A Google meeting names them by email, also for a Feishu/Lark bot.
-      {:ok, true} when open_id_attendees? ->
-        {:ok, [personal_preparation: true]}
-
-      {:ok, true} ->
-        {:ok,
-         [
-           personal_preparation: true,
-           personal_recipients: Enum.uniq(Enum.reject([organizer, me], &(&1 == "")))
-         ]}
-
-      {:ok, false} ->
-        {:ok, [personal_preparation: false, research_enabled: false]}
-
-      {:error, _} = error ->
-        error
     end
   end
 
   defp preparation(_group, _item, _occurrence, _qualification), do: {:ok, []}
 
-  defp claim_preparation(group, me, %Result{meet_url: meet_url}, occurrence)
+  # Members whose units have usable calendars (`member_emails`), and this
+  # unit's own member, which is scanning now.
+  defp usable_members(group, me) do
+    group["member_emails"]
+    |> List.wrap()
+    |> Enum.map(&member_email/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Kernel.++([me])
+    |> Enum.uniq()
+  end
+
+  # Returns whether this copy prepares the meeting, and the holders.
+  defp hold_preparation(group, me, members, %Result{meet_url: meet_url}, occurrence)
        when is_binary(meet_url) do
-    key =
-      Keys.ctl_meet_member_preparer(
-        group["group_id"],
-        Crypto.hex(meet_url <> "|" <> to_string(occurrence["start_ms"]))
-      )
+    key = preparation_key(meet_url, group, occurrence["start_ms"])
+    ref = JSON.stringify(occurrence["occurrence_ref"])
 
-    case CasRecord.create(key, %{"account_email" => me}) do
-      {:ok, _record} ->
-        {:ok, true}
+    with {:ok, current} <- read_preparation(key),
+         replaced = replaced_preparer(preparation_record(current), members),
+         :ok <- stop_preparer(group, replaced),
+         {:ok, record} <-
+           CasRecord.update(key, fn current ->
+             record = preparation_record(current)
 
-      {:error, :exists} ->
-        with {:ok, record} <- CasRecord.get(key), do: {:ok, record["account_email"] == me}
-
-      {:error, _} = error ->
-        error
+             if replaced_preparer(record, members) == replaced do
+               next = hold(record, me, ref, members)
+               if next == current, do: {:unchanged, next}, else: next
+             else
+               # Another unit changed the preparer since the read: the next
+               # scan pass decides again.
+               {:error, :member_preparer_changed}
+             end
+           end) do
+      {:ok, record["preparer"] == me and record["preparer_ref"] == ref, record["holders"]}
     end
   end
 
-  defp claim_preparation(_group, _me, _qualification, _occurrence), do: {:ok, false}
+  defp hold_preparation(_group, _me, _members, _qualification, _occurrence),
+    do: {:ok, false, []}
+
+  defp hold(record, me, ref, members) do
+    preparer = record["preparer"]
+
+    {preparer, preparer_ref} =
+      cond do
+        # A record written before copies were named: the member's copy that
+        # scans first is its preparer's copy.
+        preparer == me and is_nil(record["preparer_ref"]) -> {me, ref}
+        preparer in members -> {preparer, record["preparer_ref"]}
+        true -> {me, ref}
+      end
+
+    %{
+      "preparer" => preparer,
+      "preparer_ref" => preparer_ref,
+      "holders" =>
+        (Enum.filter(record["holders"], &(&1 in members)) ++ [me]) |> Enum.uniq() |> Enum.sort()
+    }
+  end
+
+  # The preparer this scan replaces: one that is set and no longer a member
+  # with usable calendars.
+  defp replaced_preparer(%{"preparer" => preparer} = record, members)
+       when is_binary(preparer) do
+    if preparer in members, do: nil, else: {preparer, record["preparer_ref"]}
+  end
+
+  defp replaced_preparer(_record, _members), do: nil
+
+  # The replaced preparer's unit may not scan again (its calendars are not
+  # usable): its plan is cancelled here. A record written before copies were
+  # named does not name that plan.
+  defp stop_preparer(group, {_preparer, ref}) when is_map(ref) do
+    case MeetingPlan.cancel(group["group_id"], ref) do
+      {:ok, _plan} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp stop_preparer(_group, _replaced), do: :ok
+
+  defp read_preparation(key) do
+    case CasRecord.get(key) do
+      {:ok, record} -> {:ok, record}
+      {:error, :not_found} -> {:ok, nil}
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc """
+  The copy that prepares a meeting on members' calendars: the occurrence ref
+  (string keys) the meeting's preparer record names, or nil when there is no
+  record or it was written before copies were named. One read.
+  """
+  @spec preparer_ref(String.t(), String.t(), integer()) :: {:ok, map() | nil} | {:error, term()}
+  def preparer_ref(group_id, meet_url, start_ms)
+      when is_binary(meet_url) and is_integer(start_ms) do
+    with {:ok, current} <-
+           read_preparation(preparation_key(meet_url, %{"group_id" => group_id}, start_ms)),
+         do: {:ok, preparation_record(current)["preparer_ref"]}
+  end
+
+  def preparer_ref(_group_id, _meet_url, _start_ms), do: {:ok, nil}
+
+  @doc """
+  This member unit's copy of a meeting left its calendar or stopped
+  qualifying: its plan is cancelled, the member is no longer a holder, and as
+  preparer it hands the meeting to the next unit that scans it.
+  """
+  @impl true
+  def release(group, event) do
+    group = JSON.stringify(group)
+    event = JSON.stringify(event)
+
+    with "members" <- group["calendar_scope"],
+         ref when is_map(ref) <- event["occurrence_ref"],
+         {:ok, _plan} <- MeetingPlan.cancel(group["group_id"], ref) do
+      leave_holders(group, event)
+    else
+      {:error, _} = error -> error
+      _ -> :ok
+    end
+  end
+
+  defp leave_holders(group, event) do
+    me = member_email(group["account_email"])
+    ref = event["occurrence_ref"]
+
+    with "members" <- group["calendar_scope"],
+         true <- me != "",
+         meet_url when is_binary(meet_url) <- event["meet_url"],
+         start_ms when is_integer(start_ms) <- event["start_ms"] do
+      meet_url
+      |> preparation_key(group, start_ms)
+      |> CasRecord.update(
+        fn current ->
+          record = preparation_record(current)
+          mine? = record["preparer"] == me and record["preparer_ref"] in [nil, ref]
+
+          next = %{
+            "preparer" => if(mine?, do: nil, else: record["preparer"]),
+            "preparer_ref" => if(mine?, do: nil, else: record["preparer_ref"]),
+            "holders" => List.delete(record["holders"], me)
+          }
+
+          if next == current, do: {:unchanged, next}, else: next
+        end,
+        create: false
+      )
+      |> case do
+        {:ok, _record} -> :ok
+        {:error, :not_found} -> :ok
+        {:error, _} = error -> error
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp preparation_key(meet_url, group, start_ms),
+    do:
+      Keys.ctl_meet_member_preparer(
+        group["group_id"],
+        Crypto.hex(meet_url <> "|" <> to_string(start_ms))
+      )
+
+  # A record written before holders were kept names only its preparer.
+  defp preparation_record(%{"account_email" => email}) when is_binary(email),
+    do: %{"preparer" => email, "preparer_ref" => nil, "holders" => [email]}
+
+  defp preparation_record(%{} = record),
+    do: %{
+      "preparer" => if(is_binary(record["preparer"]), do: record["preparer"]),
+      "preparer_ref" => if(is_map(record["preparer_ref"]), do: record["preparer_ref"]),
+      "holders" => record["holders"] |> List.wrap() |> Enum.filter(&is_binary/1)
+    }
+
+  defp preparation_record(nil), do: %{"preparer" => nil, "preparer_ref" => nil, "holders" => []}
+
+  defp member_email(value), do: value |> trim() |> String.downcase()
 
   defp publication_target(group) do
     provider = trim(group["provider"])

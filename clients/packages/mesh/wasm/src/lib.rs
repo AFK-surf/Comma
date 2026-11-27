@@ -102,6 +102,10 @@ pub fn bind(options: JsValue) -> Promise {
             let (transport, queues) = salix::transport(key.public());
             builder = builder.add_custom_transport(transport);
             relay = Some(queues);
+            // `salix-first`: the relay only while neither Salix nor a direct path has a round trip.
+            if options.route_policy.as_deref() != Some("relay-first") {
+                builder = builder.relay_last();
+            }
         }
         let endpoint = builder.bind().await.map_err(failed)?;
         Ok(Endpoint { inner: endpoint, key, relay }.into())

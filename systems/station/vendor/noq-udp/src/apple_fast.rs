@@ -168,6 +168,11 @@ pub(crate) fn recv_via_recvmsg_x(
     let msg_count = retry_if_interrupted(|| unsafe {
         recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0)
     })?;
+    if msg_count == 0 {
+        // ember: XNU returns 0 from `recvmsg_x` on `SS_CANTRCVMORE` without `EWOULDBLOCK`;
+        // report `WouldBlock` so tokio clears readiness instead of spinning on `Ok(0)`.
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize)?;
     }

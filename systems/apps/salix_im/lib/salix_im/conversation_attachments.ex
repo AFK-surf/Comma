@@ -246,7 +246,10 @@ defmodule SalixIM.ConversationAttachments do
         with {:ok, ref} <- ref(source_agent_id, source_path, block["blob_ref"]),
              target_path = target_path(message_id, index, block),
              {:ok, _file} <-
-               AgentWorkspace.put_ref(agent_id, target_path, ref, preserve_error: true) do
+               AgentWorkspace.put_ref(agent_id, target_path, ref,
+                 preserve_error: true,
+                 ifc_label: AgentWorkspace.label_for_ref(source_agent_id, source_path, ref)
+               ) do
           {:ok, block |> put_path(target_path) |> Map.delete("blob_ref")}
         else
           {:error, _reason} when not immutable_ref? ->

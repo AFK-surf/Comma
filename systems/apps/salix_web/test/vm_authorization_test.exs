@@ -69,7 +69,7 @@ defmodule SalixWeb.VMAuthorizationTest do
 
   test "denied VM authorization emits observable fee-control projection rows" do
     assert {:error, {:billing_unavailable, decision}} =
-             SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.BillingCore.authorize_vm(%{
+             SalixWeb.VMAuthorization.BillingCore.authorize_vm(%{
                typed_sink: __MODULE__.ProjectionSink,
                source_key: "vm-denied-1",
                action: :resume,
@@ -102,7 +102,7 @@ defmodule SalixWeb.VMAuthorizationTest do
     issue_unlimited_grant(account_id)
 
     assert :ok =
-             SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.BillingCore.authorize_vm(%{
+             SalixWeb.VMAuthorization.BillingCore.authorize_vm(%{
                typed_sink: __MODULE__.ProjectionSink,
                source_key: "vm-unlimited-1",
                action: :resume,
@@ -135,7 +135,7 @@ defmodule SalixWeb.VMAuthorizationTest do
     issue_unlimited_grant(account_id)
 
     assert :ok =
-             SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.BillingCore.authorize_vm(%{
+             SalixWeb.VMAuthorization.BillingCore.authorize_vm(%{
                typed_sink: __MODULE__.ProjectionSink,
                source_key: "vm-revoked-warm-1",
                action: :resume,
@@ -147,7 +147,7 @@ defmodule SalixWeb.VMAuthorizationTest do
     revoke_default_entitlement(account_id)
 
     assert {:error, {:billing_unavailable, decision}} =
-             SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.BillingCore.authorize_vm(%{
+             SalixWeb.VMAuthorization.BillingCore.authorize_vm(%{
                typed_sink: __MODULE__.ProjectionSink,
                source_key: "vm-revoked-1",
                action: :resume,

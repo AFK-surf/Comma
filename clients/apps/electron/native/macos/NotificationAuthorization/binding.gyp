@@ -11,6 +11,8 @@
         "MACOSX_DEPLOYMENT_TARGET": "13.0"
       },
       "libraries": [
+        "-framework AppKit",
+        "-framework CoreLocation",
         "-framework Foundation",
         "-framework UserNotifications"
       ]

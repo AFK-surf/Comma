@@ -141,6 +141,16 @@ function OrgSwitcher({ context }: { context: BftOrgContext | undefined }) {
               </span>
             </MenuItem>
           ))}
+          {context.orgs.length > 0 ? <MenuSeparator /> : null}
+          <MenuItem
+            href="/signup/teams?mode=new&from=dashboard"
+            id="create-org"
+            textValue={t.createOrg}
+          >
+            <span className="bft-menu-row">
+              <span className="bft-truncate">{t.createOrg}</span>
+            </span>
+          </MenuItem>
         </Menu>
       </MenuPopover>
     </MenuTrigger>

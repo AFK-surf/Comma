@@ -6,7 +6,7 @@ import Foundation
 extension TaskListFilter {
     /// Every status in display order, the desktop board's column order; each list of statuses follows it.
     /// Archived Tasks are listed apart.
-    static let statusBuckets: [TaskBucket] = [.inProgress, .needsReview, .done, .cancelled]
+    static let statusBuckets: [TaskBucket] = [.inProgress, .needsReview, .done, .cancelled, .loops]
 
     /// The option ids `field` offers, in menu order: every status; the catalog's labels, then No label; Scheduled,
     /// On updates, Other trigger while a loaded Task has that kind or it is selected, then No loop; the platforms and

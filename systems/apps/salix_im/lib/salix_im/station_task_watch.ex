@@ -161,7 +161,8 @@ defmodule SalixIM.StationTaskWatch do
     idle_no_reply_ms: :timer.minutes(10),
     cannot_start_ms: :timer.minutes(10),
     recheck_ms: :timer.minutes(10),
-    stale_ms: :timer.hours(24)
+    stale_ms: :timer.hours(24),
+    pending_review_poll_ms: 2_000
   ]
   @thresholds %{
     vm_not_ready: :vm_not_ready_ms,
@@ -193,6 +194,8 @@ defmodule SalixIM.StationTaskWatch do
             # Set while the Task is a station's and active.
             worker_agent_id: nil,
             worker_participant_id: nil,
+            worker_participant_ids: [],
+            worker_obligations: %{},
             delegator_agent_id: nil,
             # Where the Task runs (`:cloud_vm` or `:device`): from the Task
             # record's `runs_on`, or, for a Task from before it was kept
@@ -208,7 +211,10 @@ defmodule SalixIM.StationTaskWatch do
             # A Worker result the Router has not decided the Task's status
             # on: its `result_seq`, `at` (ms), `timer`, `token` and
             # failed `attempts` at the Message.
-            review: nil
+            review: nil,
+            # Multi-session coding Task async `ready_for_review` settlement:
+            # %{declared_seq, membership_revision, timer, token}.
+            pending_review: nil
 
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
@@ -293,6 +299,18 @@ defmodule SalixIM.StationTaskWatch do
     {:noreply, guarded_review(state, fn -> review_check(state) end)}
   end
 
+  def handle_info(
+        {:station_task_pending_review, declared_seq, membership_revision, token},
+        %{
+          pending_review:
+            %{declared_seq: declared_seq, membership_revision: membership_revision, token: token} =
+              pr
+        } = state
+      ) do
+    state = %{state | pending_review: %{pr | timer: nil, token: nil}}
+    {:noreply, guarded_pending_review(state, fn -> pending_review_check(state) end)}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   # An observer's failure is its own: logged, and the delegation is checked
@@ -341,27 +359,81 @@ defmodule SalixIM.StationTaskWatch do
   defp watch(state, conversation) do
     with worker_agent_id when is_binary(worker_agent_id) and worker_agent_id != "" <-
            conversation["task_worker_agent_id"],
-         {:ok, worker} <- ConversationActor.get_agent_participant(state.owner, worker_agent_id),
-         true <- TaskConversationInput.station_worker?(worker) do
+         {:ok, primary, worker_pids} <- resolve_station_workers(state.owner, worker_agent_id) do
       %{
         state
         | worker_agent_id: worker_agent_id,
-          worker_participant_id: worker["participant_id"],
+          worker_participant_id: primary["participant_id"],
+          worker_participant_ids: worker_pids,
+          worker_obligations:
+            active_worker_obligations(
+              get_in(conversation, ["metadata", "worker_obligations"]),
+              worker_pids
+            ),
           delegator_agent_id: conversation["created_by_agent_id"],
           place:
             device_place(get_in(conversation, ["runs_on", "device_id"]), state) || state.place
       }
+      |> sync_pending_review(conversation)
       |> observe()
     else
       _ -> unwatch(state)
     end
   end
 
+  defp resolve_station_workers(owner, worker_agent_id) do
+    case ConversationActor.task_worker_identities(owner) do
+      {:ok, %{"workers" => [_ | _] = workers} = roster} ->
+        primary =
+          roster["primary"] ||
+            Enum.find(workers, &SalixIM.TaskSessionSlots.primary_worker?/1) ||
+            hd(workers)
+
+        station_identity? = fn p ->
+          TaskConversationInput.station_worker?(
+            Map.merge(%{"actor_type" => "agent", "role_label" => "worker"}, p)
+          )
+        end
+
+        if station_identity?.(primary) do
+          pids =
+            workers
+            |> Enum.filter(station_identity?)
+            |> Enum.map(& &1["participant_id"])
+            |> Enum.filter(&(is_binary(&1) and &1 != ""))
+            |> Enum.uniq()
+
+          pids =
+            if is_binary(primary["participant_id"]) and primary["participant_id"] != "",
+              do: Enum.uniq([primary["participant_id"] | pids]),
+              else: pids
+
+          {:ok, primary, pids}
+        else
+          :not_station
+        end
+
+      _ ->
+        with {:ok, worker} <- ConversationActor.get_agent_participant(owner, worker_agent_id),
+             true <- TaskConversationInput.station_worker?(worker) do
+          pid = worker["participant_id"]
+          pids = if is_binary(pid) and pid != "", do: [pid], else: []
+          {:ok, worker, pids}
+        else
+          _ -> :not_station
+        end
+    end
+  end
+
   defp unwatch(state),
     do: %{
-      cancel(end_review(state))
+      (state
+       |> end_pending_review()
+       |> end_review()
+       |> cancel())
       | worker_agent_id: nil,
         worker_participant_id: nil,
+        worker_participant_ids: [],
         delegator_agent_id: nil,
         place: nil,
         pending: nil
@@ -391,22 +463,136 @@ defmodule SalixIM.StationTaskWatch do
   defp apply_message(state, _message), do: observe(state)
 
   defp apply_to_pending(state, message, seq) do
+    state = update_live_obligations(state, message, seq)
+
     cond do
       worker_reply?(message, state) ->
         case state.pending do
-          %{epoch: epoch, at: at} when seq > epoch -> answered(state, epoch, at, message)
-          _ -> state
+          %{epoch: epoch, at: at} = pending when seq > epoch ->
+            # Only clear pending if this reply satisfies it AND no other active worker
+            # still holds a persisted unanswered obligation.
+            if reply_satisfies_pending?(message, pending, state) and
+                 map_size(state.worker_obligations) == 0,
+               do: answered(state, epoch, at, message),
+               else: state
+
+          _ ->
+            state
         end
 
       delegation?(message, state) ->
         case state.pending do
-          %{epoch: epoch} when seq <= epoch -> state
-          _ -> ensure_pending(state, seq, timestamp_ms(message["created_at"]) || now())
+          %{epoch: epoch} when seq <= epoch ->
+            state
+
+          _ ->
+            ensure_pending(
+              state,
+              seq,
+              timestamp_ms(message["created_at"]) || now(),
+              message["message_id"],
+              obligated_worker_pids(message, state)
+            )
         end
 
       true ->
         state
     end
+  end
+
+  defp update_live_obligations(state, message, seq) do
+    worker_pids = state_worker_pids(state)
+
+    if length(worker_pids) <= 1 do
+      state
+    else
+      obs = state.worker_obligations || %{}
+      author_pid = message["participant_id"]
+
+      obs =
+        if worker_reply?(message, state) and is_binary(author_pid) do
+          case Map.get(obs, author_pid) do
+            nil ->
+              obs
+
+            existing_ob ->
+              case normalize_obligation(existing_ob) do
+                %{"seq" => ob_seq} ->
+                  if reply_clears_obligation?(message, ob_seq, state),
+                    do: Map.delete(obs, author_pid),
+                    else: obs
+
+                nil ->
+                  Map.delete(obs, author_pid)
+              end
+          end
+        else
+          obs
+        end
+
+      obs =
+        if delegation?(message, state) do
+          case obligated_worker_pids(message, state) do
+            [_ | _] = targets ->
+              record = %{
+                "seq" => seq,
+                "at" => timestamp_ms(message["created_at"]) || now(),
+                "message_id" => message["message_id"]
+              }
+
+              Enum.reduce(targets, obs, &Map.put(&2, &1, record))
+
+            _ ->
+              obs
+          end
+        else
+          obs
+        end
+
+      %{state | worker_obligations: obs}
+    end
+  end
+
+  defp active_worker_obligations(%{} = obs, worker_pids) when is_list(worker_pids) do
+    allowed = MapSet.new(worker_pids)
+
+    obs
+    |> Enum.reduce(%{}, fn {pid, raw}, acc ->
+      if MapSet.member?(allowed, pid) do
+        case normalize_obligation(raw) do
+          %{} = normalized -> Map.put(acc, pid, normalized)
+          nil -> acc
+        end
+      else
+        acc
+      end
+    end)
+  end
+
+  defp active_worker_obligations(_obs, _worker_pids), do: %{}
+
+  defp normalize_obligation(%{"seq" => seq} = map) when is_integer(seq) and seq > 0 do
+    %{
+      "seq" => seq,
+      "at" => map["at"],
+      "message_id" => map["message_id"]
+    }
+  end
+
+  defp normalize_obligation(seq) when is_integer(seq) and seq > 0 do
+    %{"seq" => seq, "at" => nil, "message_id" => nil}
+  end
+
+  defp normalize_obligation(_), do: nil
+
+  defp reply_clears_obligation?(message, ob_seq, state) do
+    multi? = length(state_worker_pids(state)) > 1
+
+    seq(message) > ob_seq and worker_reply?(message, state) and
+      case get_in(message, ["metadata", "answered_through_seq"]) do
+        n when is_integer(n) -> ob_seq <= n
+        _ -> not multi?
+      end
   end
 
   # A Worker result is checked on; a newer delegation asks for a new one.
@@ -440,20 +626,26 @@ defmodule SalixIM.StationTaskWatch do
 
   defp settle(state, messages) do
     case decide(messages, state) do
-      :none -> beyond_window(state, messages)
-      {:answered, epoch, at, reply} -> answered(state, epoch, at, reply)
-      {:unanswered, epoch, at} -> ensure_pending(state, epoch, at)
+      :none ->
+        beyond_window(state, messages)
+
+      {:answered, epoch, at, reply} ->
+        answered(state, epoch, at, reply)
+
+      {:unanswered, epoch, at, message_id} ->
+        delegation = Enum.find(messages, &(seq(&1) == epoch))
+        ensure_pending(state, epoch, at, message_id, obligated_worker_pids(delegation, state))
     end
   end
 
   # No delegation in the window. One waited for that is older than the
   # window is answered by a Worker Message in it, or still waited for; with
   # the window reaching its seq, there is none to wait for.
-  defp beyond_window(%{pending: %{epoch: epoch, at: at}} = state, messages) do
+  defp beyond_window(%{pending: %{epoch: epoch, at: at} = pending} = state, messages) do
     oldest = messages |> Enum.map(&seq/1) |> Enum.min(fn -> nil end)
 
     if is_integer(oldest) and oldest > epoch do
-      case first_worker_reply(messages, epoch, state) do
+      case first_worker_reply(messages, epoch, state, Map.get(pending, :obligated_pids)) do
         nil -> state
         reply -> answered(state, epoch, at, reply)
       end
@@ -465,33 +657,118 @@ defmodule SalixIM.StationTaskWatch do
   defp beyond_window(state, _messages), do: %{cancel(state) | pending: nil}
 
   @doc false
-  # `:none` (no delegation in the window), `{:unanswered, epoch, at_ms}` or
+  # `:none` (no delegation in the window), `{:unanswered, epoch, at_ms, message_id}` or
   # `{:answered, epoch, at_ms, reply}` for the Task's recent Messages.
+  # Evaluates EVERY delegation in the window against its frozen obligated worker(s)
+  # so a newer delegation to another slot never masks an unanswered obligation.
   def decide(messages, state) when is_list(messages) do
-    delegation =
+    delegations =
       messages
       |> Enum.filter(&delegation?(&1, state))
-      |> Enum.max_by(&seq/1, fn -> nil end)
+      |> Enum.sort_by(&seq/1, :desc)
 
-    case delegation do
-      nil ->
+    persisted_unanswered =
+      (Map.get(state, :worker_obligations) || %{})
+      |> active_worker_obligations(state_worker_pids(state))
+      |> Enum.reject(fn {pid, %{"seq" => ob_seq}} ->
+        Enum.any?(messages, fn m ->
+          m["participant_id"] == pid and reply_clears_obligation?(m, ob_seq, state)
+        end)
+      end)
+      |> Enum.max_by(fn {_pid, %{"seq" => ob_seq}} -> ob_seq end, fn -> nil end)
+
+    case {delegations, persisted_unanswered} do
+      {[], nil} ->
         :none
 
-      delegation ->
-        epoch = seq(delegation)
-        at = timestamp_ms(delegation["created_at"]) || now()
+      {[], {_pid, %{"seq" => ob_seq, "at" => ob_at, "message_id" => ob_mid}}} ->
+        {:unanswered, ob_seq, timestamp_ms(ob_at) || now(), ob_mid}
 
-        case first_worker_reply(messages, epoch, state) do
-          nil -> {:unanswered, epoch, at}
-          reply -> {:answered, epoch, at, reply}
+      {[latest | _], _} ->
+        case Enum.find(delegations, &(not delegation_answered?(messages, &1, state))) do
+          nil ->
+            case persisted_unanswered do
+              {_pid, %{"seq" => ob_seq, "at" => ob_at, "message_id" => ob_mid}} ->
+                {:unanswered, ob_seq, timestamp_ms(ob_at) || now(), ob_mid}
+
+              nil ->
+                epoch = seq(latest)
+                at = timestamp_ms(latest["created_at"]) || now()
+                obligated = obligated_worker_pids(latest, state)
+                reply = first_worker_reply(messages, epoch, state, obligated)
+                {:answered, epoch, at, reply}
+            end
+
+          unanswered ->
+            epoch = seq(unanswered)
+            at = timestamp_ms(unanswered["created_at"]) || now()
+            {:unanswered, epoch, at, unanswered["message_id"]}
         end
     end
   end
 
-  defp first_worker_reply(messages, epoch, state) do
+  defp delegation_answered?(messages, delegation, state) do
+    epoch = seq(delegation)
+
+    case obligated_worker_pids(delegation, state) do
+      [_ | _] = obligated ->
+        Enum.all?(obligated, fn pid ->
+          Enum.any?(messages, fn m ->
+            m["participant_id"] == pid and reply_clears_obligation?(m, epoch, state)
+          end)
+        end)
+
+      _ ->
+        not is_nil(first_worker_reply(messages, epoch, state, nil))
+    end
+  end
+
+  defp first_worker_reply(messages, epoch, state, obligated_pids) do
     messages
-    |> Enum.filter(&(seq(&1) > epoch and worker_reply?(&1, state)))
+    |> Enum.filter(fn m ->
+      seq(m) > epoch and worker_reply?(m, state) and
+        reply_matches_obligated?(m, obligated_pids, state)
+    end)
     |> Enum.min_by(&seq/1, fn -> nil end)
+  end
+
+  # Returns the list of worker participant_ids obligated to answer `delegation`:
+  # - `wake_reason == "all_sessions"` obligates ONLY the primary worker.
+  # - Targeted `wake_targets` obligates only the targeted worker(s).
+  # - Otherwise any active worker satisfies the delegation (`nil`).
+  defp obligated_worker_pids(nil, _state), do: nil
+
+  defp obligated_worker_pids(delegation, state) do
+    worker_pids = state_worker_pids(state)
+    wake_reason = get_in(delegation, ["metadata", "wake_reason"])
+    wake_targets = get_in(delegation, ["metadata", "wake_targets"])
+
+    cond do
+      worker_pids == [] ->
+        nil
+
+      wake_reason == "all_sessions" and is_binary(state.worker_participant_id) and
+          state.worker_participant_id != "" ->
+        [state.worker_participant_id]
+
+      is_list(wake_targets) ->
+        targeted = Enum.filter(wake_targets, &(&1 in worker_pids))
+        if targeted != [], do: targeted, else: nil
+
+      true ->
+        nil
+    end
+  end
+
+  defp reply_satisfies_pending?(message, pending, state),
+    do: reply_matches_obligated?(message, Map.get(pending, :obligated_pids), state)
+
+  defp reply_matches_obligated?(_message, nil, _state), do: true
+  defp reply_matches_obligated?(_message, [], _state), do: true
+
+  defp reply_matches_obligated?(message, obligated_pids, _state) when is_list(obligated_pids) do
+    pid = message["participant_id"]
+    is_binary(pid) and pid != "" and pid in obligated_pids
   end
 
   defp seq(message), do: if(is_integer(message["seq"]), do: message["seq"], else: 0)
@@ -502,16 +779,49 @@ defmodule SalixIM.StationTaskWatch do
       by_worker?(message, state) and
         not SalixIM.ConversationMilestone.only_milestones?(message["content"])
 
-  defp by_worker?(message, %{worker_participant_id: pid, worker_agent_id: agent}) do
-    (pid != nil and message["participant_id"] == pid) or
-      (agent != nil and message["agent_id"] == agent)
+  defp by_worker?(message, state) do
+    msg_pid = message["participant_id"]
+    worker_pids = state_worker_pids(state)
+
+    cond do
+      is_binary(msg_pid) and msg_pid != "" and worker_pids != [] ->
+        msg_pid in worker_pids
+
+      true ->
+        state.worker_agent_id != nil and message["agent_id"] == state.worker_agent_id
+    end
   end
 
-  # Given to the Worker, written by someone else, and not a watch Message.
-  defp delegation?(message, %{worker_participant_id: pid} = state) do
-    (pid == nil or ConversationMessage.addressed_to?(pid, message)) and
-      not by_worker?(message, state) and not watch_message?(message)
+  # Given to a Station Worker, written by someone else, not passive context, and not a watch Message.
+  # `wake_reason == "all_sessions"` obligates ONLY the primary worker.
+  defp delegation?(message, state) do
+    worker_pids = state_worker_pids(state)
+    wake_reason = get_in(message, ["metadata", "wake_reason"])
+
+    addressed? =
+      cond do
+        worker_pids == [] ->
+          true
+
+        wake_reason == "all_sessions" ->
+          primary_pid = state.worker_participant_id
+          primary_pid == nil or ConversationMessage.addressed_to?(primary_pid, message)
+
+        true ->
+          Enum.any?(worker_pids, &ConversationMessage.addressed_to?(&1, message))
+      end
+
+    addressed? and
+      not by_worker?(message, state) and not watch_message?(message) and
+      get_in(message, ["metadata", "context_only"]) != true
   end
+
+  defp state_worker_pids(%{worker_participant_ids: [_ | _] = pids}), do: pids
+
+  defp state_worker_pids(%{worker_participant_id: pid}) when is_binary(pid) and pid != "",
+    do: [pid]
+
+  defp state_worker_pids(_state), do: []
 
   defp watch_message?(message), do: message_type(message) in watch_types()
 
@@ -581,21 +891,53 @@ defmodule SalixIM.StationTaskWatch do
       device_place(get_in(reply, ["metadata", "device_id"]), state) || state.pending.place ||
         state.place || :other
 
-  defp ensure_pending(%{pending: %{epoch: epoch, timer: timer}} = state, epoch, _at)
+  defp ensure_pending(state, epoch, at, message_id, obligated_pids \\ nil)
+
+  defp ensure_pending(
+         %{pending: %{epoch: epoch, timer: timer}} = state,
+         epoch,
+         _at,
+         _message_id,
+         _obligated_pids
+       )
        when is_reference(timer),
        do: state
 
-  defp ensure_pending(%{pending: %{epoch: epoch, stale: true}} = state, epoch, _at), do: state
+  defp ensure_pending(
+         %{pending: %{epoch: epoch, stale: true}} = state,
+         epoch,
+         _at,
+         _message_id,
+         _obligated_pids
+       ),
+       do: state
 
-  defp ensure_pending(%{pending: %{epoch: epoch} = pending} = state, epoch, _at),
-    do: arm(state, pending, config()[:recheck_ms])
+  defp ensure_pending(
+         %{pending: %{epoch: epoch} = pending} = state,
+         epoch,
+         _at,
+         message_id,
+         obligated_pids
+       ),
+       do:
+         arm(
+           state,
+           %{
+             pending
+             | message_id: Map.get(pending, :message_id) || message_id,
+               obligated_pids: Map.get(pending, :obligated_pids) || obligated_pids
+           },
+           config()[:recheck_ms]
+         )
 
   # A delegation found already older than `stale_ms` (an actor restarted long
   # after it) was reported by the actor that waited for it, if it stalled: it
   # is not reported again.
-  defp ensure_pending(state, epoch, at) do
+  defp ensure_pending(state, epoch, at, message_id, obligated_pids) do
     pending = %{
       epoch: epoch,
+      message_id: message_id,
+      obligated_pids: obligated_pids,
       at: at,
       reported: [],
       place: nil,
@@ -675,8 +1017,13 @@ defmodule SalixIM.StationTaskWatch do
            ConversationActor.get_conversation(state.owner),
          {:ok, messages} <- read_messages(state) do
       case decide(messages, state) do
-        {:unanswered, ^waited, at} ->
-          assess(state, at, messages)
+        {:unanswered, ^waited, at, message_id} ->
+          pending = %{
+            state.pending
+            | message_id: Map.get(state.pending, :message_id) || message_id
+          }
+
+          assess(%{state | pending: pending}, at, messages)
 
         :none ->
           case beyond_window(state, messages) do
@@ -709,7 +1056,8 @@ defmodule SalixIM.StationTaskWatch do
   defp settle_decision(state, {:answered, epoch, at, reply}),
     do: answered(state, epoch, at, reply)
 
-  defp settle_decision(state, {:unanswered, epoch, at}), do: ensure_pending(state, epoch, at)
+  defp settle_decision(state, {:unanswered, epoch, at, message_id}),
+    do: ensure_pending(state, epoch, at, message_id)
 
   # A port that raises is a failure of this actor's (`guarded/2`): logged, and
   # the standing is asked for again.
@@ -736,7 +1084,7 @@ defmodule SalixIM.StationTaskWatch do
   defp stage(state, standing, epoch) do
     case given_stage(standing, epoch) do
       :given_no_reply ->
-        case TaskStations.session_status(state.group_id, state.conversation_id) do
+        case TaskStations.session_statuses(state.group_id, state.conversation_id) do
           {:ok, session} -> {session_stage(session), session}
           :unknown -> {:given_no_reply, nil}
         end
@@ -857,7 +1205,8 @@ defmodule SalixIM.StationTaskWatch do
         "task-worker-watch:nudge:#{epoch}",
         TaskWorkerWatch.nudge_type(),
         TaskWorkerWatch.nudge_content(nil),
-        %{"epoch_seq" => epoch, "issue" => nil, "station_state" => Atom.to_string(session.state)}
+        %{"epoch_seq" => epoch, "issue" => nil, "station_state" => Atom.to_string(session.state)},
+        reply_to_message_id: Map.get(pending, :message_id)
       )
 
     case result do
@@ -1167,10 +1516,12 @@ defmodule SalixIM.StationTaskWatch do
     end
   end
 
-  # `:idle` once the station's Session is not running and holds nothing for
-  # the Worker; a station that cannot say, once the result is old enough.
+  # `:idle` once ALL active station Sessions are not running and hold nothing
+  # for the Worker; on single-session Tasks a station that cannot say counts as
+  # idle once the result is old enough, whereas on multi-session Tasks `:unknown`
+  # is NEVER treated as `:idle` so active secondaries are never cut short.
   defp worker_settled(state, review) do
-    case TaskStations.session_status(state.group_id, state.conversation_id) do
+    case TaskStations.session_statuses(state.group_id, state.conversation_id) do
       {:ok, %{state: session_state}} when session_state in [:running, :waiting] ->
         :running
 
@@ -1181,7 +1532,219 @@ defmodule SalixIM.StationTaskWatch do
         :idle
 
       _cannot_say ->
-        if now() - review.at >= config()[:idle_no_reply_ms], do: :idle, else: :running
+        if length(state_worker_pids(state)) > 1 do
+          :running
+        else
+          if now() - review.at >= config()[:idle_no_reply_ms], do: :idle, else: :running
+        end
+    end
+  end
+
+  # -- multi-session coding async `ready_for_review` settlement ----------------
+  # Bounded exponential backoff for `pending_review` polling (2s -> 4s -> 8s -> 16s -> 30s max).
+  @pending_review_max_poll_ms 30_000
+
+  defp sync_pending_review(state, %{
+         "kind" => "agent_task",
+         "runs_on" => %{"kind" => "sandbox"},
+         "status" => "active",
+         "metadata" => %{
+           "pending_review" => %{
+             "declared_seq" => declared_seq,
+             "membership_revision" => membership_revision
+           }
+         }
+       })
+       when is_integer(declared_seq) and is_integer(membership_revision) do
+    case state.pending_review do
+      %{declared_seq: ^declared_seq, membership_revision: ^membership_revision, timer: timer}
+      when is_reference(timer) ->
+        state
+
+      _ ->
+        pr = %{
+          declared_seq: declared_seq,
+          membership_revision: membership_revision,
+          attempts: 0,
+          timer: nil,
+          token: nil
+        }
+
+        arm_pending_review(%{end_pending_review(state) | pending_review: pr}, 0)
+    end
+  end
+
+  defp sync_pending_review(state, _conversation), do: end_pending_review(state)
+
+  defp end_pending_review(%{pending_review: %{timer: timer}} = state) when is_reference(timer) do
+    SystemsClock.cancel_timer(timer)
+    %{state | pending_review: nil}
+  end
+
+  defp end_pending_review(state), do: %{state | pending_review: nil}
+
+  defp pending_review_backoff_ms(attempts) do
+    base = config()[:pending_review_poll_ms]
+    cap = max(base, @pending_review_max_poll_ms)
+    min(base * Integer.pow(2, min(attempts, 4)), cap)
+  end
+
+  defp arm_pending_review_backoff(%{pending_review: pr} = state) do
+    attempts = Map.get(pr, :attempts, 0)
+    delay = pending_review_backoff_ms(attempts)
+    arm_pending_review(%{state | pending_review: %{pr | attempts: attempts + 1}}, delay)
+  end
+
+  defp arm_pending_review(%{pending_review: pr} = state, delay) do
+    token = Proc.make_ref()
+
+    timer =
+      SystemsClock.send_after(
+        Proc.self(),
+        {:station_task_pending_review, pr.declared_seq, pr.membership_revision, token},
+        delay
+      )
+
+    %{state | pending_review: %{pr | timer: timer, token: token}}
+  end
+
+  defp guarded_pending_review(state, fun) do
+    fun.()
+  rescue
+    error -> pending_review_failed(state, Exception.message(error))
+  catch
+    kind, reason -> pending_review_failed(state, Exception.format_banner(kind, reason))
+  end
+
+  defp pending_review_failed(state, what) do
+    Logger.warning(
+      "station task watch #{state.conversation_id}: pending_review check failed and runs again: #{what}"
+    )
+
+    case state.pending_review do
+      %{timer: nil} -> arm_pending_review_backoff(state)
+      _ -> state
+    end
+  end
+
+  defp pending_review_check(%{pending_review: pr} = state) do
+    with {:ok,
+          %{
+            "kind" => "agent_task",
+            "runs_on" => %{"kind" => "sandbox"},
+            "status" => "active",
+            "metadata" =>
+              %{
+                "pending_review" => %{
+                  "declared_seq" => declared_seq,
+                  "membership_revision" => membership_revision
+                }
+              } = conv_meta
+          }}
+         when declared_seq == pr.declared_seq and membership_revision == pr.membership_revision <-
+           ConversationActor.get_conversation(state.owner),
+         {:ok, messages} <- read_messages(state) do
+      worker_pids = state_worker_pids(state)
+
+      persisted_obligation =
+        active_worker_obligations(conv_meta["worker_obligations"], worker_pids)
+        |> Enum.reduce(:none, fn {pid, %{"seq" => ob_seq}}, acc ->
+          replied? =
+            Enum.any?(messages, fn m ->
+              m["participant_id"] == pid and reply_clears_obligation?(m, ob_seq, state)
+            end)
+
+          cond do
+            replied? -> acc
+            ob_seq > declared_seq -> :superseded
+            acc == :none -> :still_open
+            true -> acc
+          end
+        end)
+
+      unanswered_obligation =
+        Enum.reduce(messages, persisted_obligation, fn m, acc ->
+          m_seq = seq(m)
+
+          unanswered? =
+            cond do
+              watch_message?(m) or get_in(m, ["metadata", "context_only"]) == true ->
+                false
+
+              delegation?(m, state) ->
+                not delegation_answered?(messages, m, state)
+
+              # Sibling worker handoff (e.g. secondary posting `@lead ...`): check if
+              # wake_targets hits any active worker that has not replied after m_seq.
+              is_list(get_in(m, ["metadata", "wake_targets"])) ->
+                targets =
+                  get_in(m, ["metadata", "wake_targets"])
+                  |> Enum.filter(&(&1 in worker_pids and &1 != m["participant_id"]))
+
+                Enum.any?(targets, fn target_pid ->
+                  not Enum.any?(messages, fn r ->
+                    seq(r) > m_seq and r["participant_id"] == target_pid and
+                      not SalixIM.ConversationMilestone.only_milestones?(r["content"])
+                  end)
+                end)
+
+              true ->
+                false
+            end
+
+          cond do
+            not unanswered? -> acc
+            m_seq > declared_seq -> :superseded
+            acc == :none -> :still_open
+            true -> acc
+          end
+        end)
+
+      case unanswered_obligation do
+        :superseded ->
+          end_pending_review(state)
+
+        :still_open ->
+          arm_pending_review_backoff(state)
+
+        :none ->
+          case TaskStations.session_statuses(state.group_id, state.conversation_id) do
+            {:ok, %{state: :idle, pending: 0}} ->
+              observed_tail_seq = messages |> Enum.map(&seq/1) |> Enum.max(fn -> declared_seq end)
+
+              case SalixIM.ConversationServer.coding_turn_ended_multi(
+                     state.group_id,
+                     state.conversation_id,
+                     declared_seq,
+                     observed_tail_seq,
+                     membership_revision
+                   ) do
+                {:ok, "ready_for_review"} ->
+                  end_pending_review(state)
+
+                {:ok, _other} ->
+                  arm_pending_review_backoff(state)
+
+                {:error, _reason} ->
+                  arm_pending_review_backoff(state)
+              end
+
+            _not_all_idle ->
+              arm_pending_review_backoff(state)
+          end
+      end
+    else
+      {:ok, %{"status" => status}} when status != "active" ->
+        unwatch(state)
+
+      {:error, :not_found} ->
+        unwatch(state)
+
+      {:error, _reason} ->
+        arm_pending_review_backoff(state)
+
+      _cleared_or_superseded ->
+        end_pending_review(state)
     end
   end
 

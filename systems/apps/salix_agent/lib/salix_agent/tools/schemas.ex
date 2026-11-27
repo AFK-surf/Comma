@@ -66,7 +66,7 @@ defmodule SalixAgent.Tools.Schemas do
         "vision_query" => %{
           "type" => "string",
           "description" =>
-            "For images, ask the configured auxiliary vision model this question and return its text answer. Without an auxiliary model, return the image to the image-capable active model. Image input requires declared image support or a configured vision describer."
+            "Optional visual question for an image file. Omit vision_query on an image-capable model to receive the native image directly. When a vision describer is configured and vision_query is provided, the image and this question are sent to the auxiliary vision model and its text answer is returned: ask the exact question you need answered (such as exact text, UI state, object/brand/work/public-figure recognition, or specific visual details) rather than requesting only a generic appearance summary, and follow up with another vision_query if a needed visual detail is still missing. Omit vision_query on a text-only model for a general visual description. Image input requires declared image support or a configured vision describer."
         },
         "start_line" => %{
           "type" => "integer",
@@ -633,7 +633,10 @@ defmodule SalixAgent.Tools.Schemas do
         "dispatch_revision" => %{"type" => "string"},
         # A Slack channel (`C…`) or a Feishu/Lark chat (`oc_…`).
         "channel" => %{"type" => "string", "pattern" => "^(C[A-Z0-9]+|oc_[A-Za-z0-9_-]+)$"},
-        "operation" => %{"type" => "string", "enum" => ["history", "replies", "search", "file"]},
+        "operation" => %{
+          "type" => "string",
+          "enum" => ["history", "replies", "search", "file", "recent_meetings"]
+        },
         "file_id" => %{"type" => "string", "pattern" => "^F[A-Z0-9]+$"},
         "query" => %{"type" => "string", "maxLength" => 2000},
         "ts" => %{"type" => "string"},
@@ -677,6 +680,14 @@ defmodule SalixAgent.Tools.Schemas do
         "mode" => %{"type" => "string", "enum" => ["add", "remove"]}
       },
       "required" => ["term", "mode"]
+    },
+    "daily_brief.set_github" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "login" => %{"type" => "string", "maxLength" => 40}
+      },
+      "required" => ["login"]
     },
     "meeting.settings.get_destination" => %{
       "type" => "object",
@@ -1323,7 +1334,7 @@ defmodule SalixAgent.Tools.Schemas do
           "type" => "array",
           "maxItems" => 8,
           "description" =>
-            "provider secret: for a system that needs several values (an app id and its secret, a user and a password, a tenant id or base URL), one credential with a field each. The person fills in all of them on one form. In credential_env, value is the field's name. Omit for a single value (value access_token).",
+            "provider secret: for a system that needs several values (an app id and its secret, a user and a password, a tenant id or base URL), one credential with a field each. Ask only for the values the system's own documentation says it needs; do not guess. The person fills them in on one form. In credential_env, value is the field's name. Omit for a single value (value access_token).",
           "items" => %{
             "type" => "object",
             "properties" => %{
@@ -1340,6 +1351,11 @@ defmodule SalixAgent.Tools.Schemas do
                 "type" => "boolean",
                 "description" =>
                   "Default true: the form masks the value. Set false for every value that is not confidential, such as an app id, tenant id or code, account or user name, or base URL: the person then sees what they type, and it stays readable in command output. Only real secrets (passwords, API keys, app secrets, tokens) stay true."
+              },
+              "optional" => %{
+                "type" => "boolean",
+                "description" =>
+                  "Default false: the person must fill it in. True for a value the system works without: the person may leave it empty, and the credential then has no such field."
               }
             },
             "required" => ["name"]
@@ -1520,23 +1536,6 @@ defmodule SalixAgent.Tools.Schemas do
       },
       "required" => ["tool_slug"]
     },
-    # ---- owner email (tools/owner_email.ex) ----
-    "email.send_to_owners" => %{
-      "type" => "object",
-      "properties" => %{
-        "subject" => %{
-          "type" => "string",
-          "description" => "Email subject line. Keep it short and specific."
-        },
-        "body" => %{
-          "type" => "string",
-          "description" =>
-            "Plain-text email body. Delivered as-is to every configured owner of this agent group."
-        }
-      },
-      "required" => ["subject", "body"]
-    },
-
     # ---- stations (tools/stations.ex) ----
     "station.list" => %{
       "type" => "object",
@@ -1708,7 +1707,7 @@ defmodule SalixAgent.Tools.Schemas do
         "path" => %{
           "type" => "string",
           "description" =>
-            "Absolute VFS path to an audio or video file of at most 30 MiB in the current Agent workspace. For a Task attachment, use the reader-local path returned by im_api.internal.read_conversation."
+            "Absolute path to an audio or video file of at most 256 MiB and 4 hours in the current Agent workspace or its Drive. For a Task attachment, use the reader-local path returned by im_api.internal.read_conversation."
         },
         "output_path" => %{
           "type" => "string",
@@ -1755,6 +1754,46 @@ defmodule SalixAgent.Tools.Schemas do
         }
       },
       "required" => []
+    },
+    "group.search_conversations" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "query" => %{
+          "type" => "string",
+          "description" => "Keywords to search across authorized Groups' conversations."
+        },
+        "group_ids" => %{
+          "type" => "array",
+          "items" => %{"type" => "string"},
+          "description" =>
+            "Optional subset of authorized target group_ids to restrict the search to."
+        },
+        "limit" => %{
+          "type" => "integer",
+          "minimum" => 1,
+          "maximum" => 50,
+          "description" => "Optional maximum number of hits to return (default 20, max 50)."
+        }
+      },
+      "required" => ["query"]
+    },
+    "group.read_conversation" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "hit_id" => %{
+          "type" => "string",
+          "description" => "Opaque hit_id returned by group.search_conversations."
+        },
+        "limit" => %{
+          "type" => "integer",
+          "minimum" => 1,
+          "maximum" => 50,
+          "description" => "Optional maximum number of messages to read (default 30, max 50)."
+        }
+      },
+      "required" => ["hit_id"]
     }
   }
 

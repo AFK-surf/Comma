@@ -595,6 +595,7 @@ defmodule SalixAgent.LLM do
 
         _ ->
           started = SystemsClock.monotonic_time(:millisecond)
+          llm_opts = put_platform_admit(llm_opts, context)
 
           try do
             result = SalixAgent.AccountPool.dispatch(llm_opts, call, started?, identity)
@@ -753,10 +754,25 @@ defmodule SalixAgent.LLM do
     }
   end
 
+  # A platform Router's request (`SalixAgent.PlatformRouter`) in `deduct`
+  # billing asks the fee check again before a platform key serves it, as that
+  # key spends the organization's credits. The check runs in the dispatch.
+  defp put_platform_admit(llm_opts, context) do
+    admit = fn -> LLMMetering.platform_admit(context) end
+
+    cond do
+      not SalixAgent.AccountPool.platform_route?(llm_opts) -> llm_opts
+      is_map(llm_opts) -> Map.put(llm_opts, :platform_admit, admit)
+      Keyword.keyword?(llm_opts) -> Keyword.put(llm_opts, :platform_admit, admit)
+      true -> llm_opts
+    end
+  end
+
   defp dispatch_meter_result(context, result, duration_ms) do
     meta = response_meta(result)
 
     context
+    |> LLMMetering.served_by(meta)
     |> Map.merge(%{
       status: dispatch_status(result),
       duration_ms: duration_ms,
@@ -842,9 +858,14 @@ defmodule SalixAgent.LLM do
   # stop reports the model as unavailable rather than as a connection failure
   # that invites another send. Round does not pass its billing context here, so
   # ownership is read from the route itself rather than from the surface.
+  # A failed platform key on a platform Router's route (`"funding"` source
+  # `platform`) is platform-funded, whatever the route's scope.
   defp exhausted_provider_account({:error, %{} = meta} = result, llm_opts) do
-    if opt(llm_opts, :credential_scope) == "tenant" or
-         SalixAgent.AccountPool.owns_route?(llm_opts) do
+    platform? = match?(%{"funding" => %{"source" => "platform"}}, meta)
+
+    if not platform? and
+         (opt(llm_opts, :credential_scope) == "tenant" or
+            SalixAgent.AccountPool.owns_route?(llm_opts)) do
       SalixAgent.LLM.Error.provider_quota(result)
     else
       count_platform_account_failure(meta, llm_opts)

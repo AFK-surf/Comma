@@ -23,13 +23,15 @@ import { dialogComposeShell, dialogModal, dialogOverlay, dialogShell } from "./s
 import type { DialogPanelProps, DialogProps } from "./types";
 
 const dialogOverlayMotion = {
-  enter: "duration-200 ease-out animate-in fade-in",
-  exit: "duration-150 ease-in animate-out fade-out",
+  enter:
+    "duration-[var(--motion-duration-dialog-enter)] ease-[var(--motion-easing-surface-smooth-out)] animate-in fade-in",
+  exit: "duration-[var(--motion-duration-dialog-exit)] ease-[var(--motion-easing-sharp-in)] animate-out fade-out",
 } as const;
 
 const dialogModalMotion = {
-  enter: "duration-200 ease-out animate-in fade-in zoom-in-95 slide-in-from-top-1",
-  exit: "duration-150 ease-in animate-out fade-out zoom-out-95 slide-out-to-top-1",
+  enter:
+    "duration-[var(--motion-duration-dialog-enter)] ease-[var(--motion-easing-surface-smooth-out)] animate-in fade-in zoom-in-[0.97]",
+  exit: "duration-[var(--motion-duration-dialog-exit)] ease-[var(--motion-easing-sharp-in)] animate-out fade-out zoom-out-[0.97]",
 } as const;
 
 const dialogEnterOwnerSelector = [

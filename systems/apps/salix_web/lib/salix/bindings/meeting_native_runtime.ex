@@ -17,6 +17,9 @@ defmodule Salix.Bindings.MeetingNativeRuntime do
          {:ok, pid, started} <- SalixMeetNative.join(payload, opts),
          {:ok, _doc, _etag} <- record_node(meeting_id, node(pid)) do
       {:ok, %{"meeting_id" => meeting_id, "status" => Atom.to_string(started)}}
+    else
+      {:error, :meet_in_use} -> {:abandoned, {:already_in_meeting, nil}}
+      other -> other
     end
   end
 

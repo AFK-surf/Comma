@@ -14,6 +14,7 @@ import type { FileRange } from "@comma/core/contract";
 import { sessionPresenceExpectationHeader } from "@comma/session-contract";
 import {
   CORE_START,
+  MAIN_IPC_ACK_EVERY,
   type AppRelease,
   type AppUpdateStatus,
   type ChatPickAnswer,
@@ -272,7 +273,15 @@ export class CoreHostService {
       stdio: "inherit",
     });
     this.#child = child;
-    child.on("message", (message: CoreToMain) => this.#receive(child, message));
+    let received = 0;
+    child.on("message", (message: CoreToMain) => {
+      if (this.#child !== child) return;
+      received += 1;
+      if (received % MAIN_IPC_ACK_EVERY === 0) {
+        this.#post({ type: "ack", received }, child);
+      }
+      this.#receive(child, message);
+    });
     child.on("exit", (code) => {
       if (this.#child !== child) return;
       this.#deviceSetup.close();

@@ -163,17 +163,33 @@ defmodule SalixWeb.PluginSystemE2ETest do
 
     check = fn enabled ->
       for {agent, session} <- agents,
-          {tool, expected} <- [
-            {"compute.workloads.list", "compute_workspace_unavailable"},
-            {"process.list", "workload_target_required"}
+          {tool, args, expected} <- [
+            {"compute.workloads.list", %{}, {:error_class, "compute_workspace_unavailable"}},
+            {"process.list", %{"workload_id" => "shell-a"},
+             {:error_class, "compute_workspace_unavailable"}},
+            {"process.list", %{}, {:guidance, "invalid_params"}}
           ] do
         assert {:ok, result, [], _, _} =
-                 SalixAgent.SessionToolExecution.execute(agent, session, :internal, [], tool, %{})
+                 SalixAgent.SessionToolExecution.execute(
+                   agent,
+                   session,
+                   :internal,
+                   [],
+                   tool,
+                   args
+                 )
 
         if enabled do
           # This Salix-only Group has no Comma Workspace. Passing disclosure
           # must still reach, and fail, the product authorization boundary.
-          assert result.error_class == expected
+          case expected do
+            {:error_class, error_class} ->
+              assert result.error_class == error_class
+
+            {:guidance, reason} ->
+              assert result.status == "guidance"
+              assert Jason.decode!(result.content)["guidance_reason"] == reason
+          end
         else
           assert result.status == "guidance"
           assert Jason.decode!(result.content)["guidance_reason"] == "not_callable"

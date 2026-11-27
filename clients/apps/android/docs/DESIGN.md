@@ -65,8 +65,20 @@
 - 循环的加载指示，例如匀速无限循环的转圈。
 - 由系统逐帧驱动的位置，例如跟随键盘动画（`WindowInsetsAnimationCompat`）时输入框的位置。
 - `:scroll` 自带的滚动、惯性和越界回弹物理。
+- router 聊天从 tab 栏圆按钮展开和收回（`RouterLayer`）：容器变形的交叉淡化跟随形状进度，不用时长。设 f 为聊天展开的形状进度（0 在圆按钮，1 全屏）。圆按钮的透明度是 `min(1, (1 − f) / 0.65)`，取自 iOS 系统 zoom 的实测。聊天页内容的透明度是 1 减去它，所以靠近圆按钮时内容已经看不见，不留残影。小尺寸时由圆按钮代表聊天，所以聊天页也不用 §6 的 `seenAt`：圆按钮看得见时，形状就是圆按钮，圆角至少是宽度的一半，带圆按钮的描边和 mark。转场中形状的底色是不透明的玻璃色。形状比全屏小时有投影，变回圆按钮时投影也变回圆按钮自己的。
 
 Android 用 `androidx.dynamicanimation` 的 `SpringForce`（质量为 1）。Mac 的 `response / dampingRatio` 换算成 `stiffness = (2π / response)²`，`dampingRatio` 不变。弹簧 token 在 `DesignMotion.kt`。`springScale` 和 `springRotation` 是暂定值，需要在真机上调。
+
+router 聊天开合的弹簧来自 iOS 系统 zoom 转场的逐帧实测：
+
+| token              | stiffness | dampingRatio | 用途                                     |
+| ------------------ | --------- | ------------ | ---------------------------------------- |
+| `zoomOpen`         | 357       | 1.00         | 打开，形状的所有量共用                   |
+| `zoomClose`        | 339       | 0.92         | 程序关闭：关闭按钮、返回键、换 Workspace |
+| `zoomSpringBack`   | 576       | 0.96         | 下拉或侧滑返回没有关闭，松手后弹回       |
+| `zoomReleaseMove`  | 182       | 0.81         | 松手关闭：形状中心，初速度是手指速度     |
+| `zoomReleaseScale` | 210       | 0.80         | 松手关闭：缩放                           |
+| `zoomReleaseShape` | 240       | 0.99         | 松手关闭：高宽比、圆角和交叉淡化         |
 
 **用法约定**：
 

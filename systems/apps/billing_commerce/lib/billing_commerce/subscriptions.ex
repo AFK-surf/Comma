@@ -10,8 +10,10 @@ defmodule BillingCommerce.Subscriptions do
   alias BillingCommerce.Projection
   alias BillingCore.Entitlements.Policy
 
-  @subscription_sources ~w(stripe_subscription internal_subscription license_subscription manual_subscription)
-  @purchase_sources ~w(stripe_checkout top_up internal_top_up redeem_one_time)
+  @subscription_sources ~w(stripe_subscription apple_subscription google_subscription m2square_term internal_subscription license_subscription manual_subscription)
+  @purchase_sources ~w(stripe_checkout apple_purchase google_purchase top_up internal_top_up redeem_one_time)
+  # Store-owned subscriptions whose status follows a provider read.
+  @provider_subscription_sources ~w(stripe_subscription apple_subscription google_subscription)
 
   @spec create_subscription(map()) :: {:ok, map()} | {:error, term()}
   def create_subscription(attrs) when is_map(attrs) do
@@ -179,44 +181,59 @@ defmodule BillingCommerce.Subscriptions do
   the update prevents delayed or concurrent webhook snapshots from restoring
   an older status or plan. Modeled in `tla/billing/SubscriptionReconcile.tla`.
   """
-  @spec reconcile_provider_subscription(binary(), (-> {:ok, map()} | {:error, term()})) ::
-          {:ok, map()} | {:error, term()}
-  def reconcile_provider_subscription(source_id, read_current)
+  @spec reconcile_provider_subscription(
+          binary(),
+          (-> {:ok, map()} | {:error, term()}),
+          binary()
+        ) :: {:ok, map()} | {:error, term()}
+  def reconcile_provider_subscription(
+        source_id,
+        read_current,
+        source_type \\ "stripe_subscription"
+      )
       when is_function(read_current, 0) do
     repo = repo(%{})
 
-    repo.transaction(fn ->
-      result =
-        sql(%{}).query!(
-          repo,
-          "SELECT billing_account_id, id FROM billing_subscriptions WHERE source_type = 'stripe_subscription' AND source_id = $1",
-          [source_id]
-        )
+    with :ok <- validate_source(source_type, @provider_subscription_sources) do
+      repo.transaction(fn ->
+        result =
+          sql(%{}).query!(
+            repo,
+            "SELECT billing_account_id, id FROM billing_subscriptions WHERE source_type = $2 AND source_id = $1",
+            [source_id, source_type]
+          )
 
-      case result.rows do
-        [] ->
-          # An invoice arriving later creates the paid subscription and also
-          # reads current provider state; an early cancellation is not lost.
-          %{ignored: true, reason: :subscription_not_recorded}
+        case result.rows do
+          [] ->
+            # An invoice arriving later creates the paid subscription and also
+            # reads current provider state; an early cancellation is not lost.
+            %{ignored: true, reason: :subscription_not_recorded}
 
-        [[account_id, subscription_id]] ->
-          sql(%{}).query!(repo, "SELECT id FROM billing_accounts WHERE id = $1 FOR UPDATE", [
-            account_id
-          ])
+          [[account_id, subscription_id]] ->
+            sql(%{}).query!(repo, "SELECT id FROM billing_accounts WHERE id = $1 FOR UPDATE", [
+              account_id
+            ])
 
-          sql(%{}).query!(repo, "SELECT id FROM billing_subscriptions WHERE id = $1 FOR UPDATE", [
-            subscription_id
-          ])
+            sql(%{}).query!(
+              repo,
+              "SELECT id FROM billing_subscriptions WHERE id = $1 FOR UPDATE",
+              [subscription_id]
+            )
 
-          with {:ok, attrs} <- read_current.(),
-               {:ok, subscription} <-
-                 set_provider_subscription_status(Map.put(attrs, :source_id, source_id)) do
-            subscription
-          else
-            {:error, reason} -> repo.rollback(reason)
-          end
-      end
-    end)
+            with {:ok, attrs} <- read_current.(),
+                 {:ok, subscription} <-
+                   set_provider_subscription_status(
+                     attrs
+                     |> Map.put(:source_id, source_id)
+                     |> Map.put(:source_type, source_type)
+                   ) do
+              subscription
+            else
+              {:error, reason} -> repo.rollback(reason)
+            end
+        end
+      end)
+    end
   end
 
   @spec set_provider_subscription_status(map()) :: {:ok, map()} | {:error, term()}
@@ -227,25 +244,31 @@ defmodule BillingCommerce.Subscriptions do
     status = required(attrs, :status)
     package_code = attrs[:package_code] || attrs["package_code"]
     package_version = attrs[:package_version] || attrs["package_version"]
+    source_type = attrs[:source_type] || attrs["source_type"] || "stripe_subscription"
 
-    if (is_nil(package_code) and not is_nil(package_version)) or
-         (not is_nil(package_code) and is_nil(package_version)) do
-      {:error, :invalid_subscription_package_change}
-    else
-      repo.transaction(fn ->
-        {:ok, result} =
-          update_provider_subscription_status(
-            repo,
-            sql,
-            attrs,
-            source_id,
-            status,
-            package_code,
-            package_version
-          )
+    cond do
+      validate_source(source_type, @provider_subscription_sources) != :ok ->
+        {:error, :invalid_source_type}
 
-        result
-      end)
+      (is_nil(package_code) and not is_nil(package_version)) or
+          (not is_nil(package_code) and is_nil(package_version)) ->
+        {:error, :invalid_subscription_package_change}
+
+      true ->
+        repo.transaction(fn ->
+          {:ok, result} =
+            update_provider_subscription_status(
+              repo,
+              sql,
+              attrs,
+              {source_type, source_id},
+              status,
+              package_code,
+              package_version
+            )
+
+          result
+        end)
     end
   end
 
@@ -253,7 +276,7 @@ defmodule BillingCommerce.Subscriptions do
          repo,
          sql,
          attrs,
-         source_id,
+         {source_type, source_id},
          status,
          package_code,
          package_version
@@ -261,8 +284,8 @@ defmodule BillingCommerce.Subscriptions do
     metadata =
       case sql.query!(
              repo,
-             "SELECT source_metadata FROM billing_subscriptions WHERE source_type = 'stripe_subscription' AND source_id = $1 FOR UPDATE",
-             [source_id]
+             "SELECT source_metadata FROM billing_subscriptions WHERE source_type = $2 AND source_id = $1 FOR UPDATE",
+             [source_id, source_type]
            ).rows do
         [[existing]] ->
           Map.merge(
@@ -285,7 +308,7 @@ defmodule BillingCommerce.Subscriptions do
             package_code = COALESCE($5, package_code),
             package_version = COALESCE($6, package_version),
             updated_at = now()
-        WHERE source_type = 'stripe_subscription' AND source_id = $1
+        WHERE source_type = $7 AND source_id = $1
         RETURNING id, billing_account_id, surface, product_owner_type, product_owner_id,
           package_code, package_version, source_type, source_id, source_event_id,
           idempotency_key, source_metadata, status
@@ -296,7 +319,8 @@ defmodule BillingCommerce.Subscriptions do
           required(attrs, :source_event_id),
           metadata,
           package_code,
-          package_version
+          package_version,
+          source_type
         ]
       )
 

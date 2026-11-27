@@ -255,7 +255,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
                }),
              else: import_image(allocation, workload, image_metadata)
            ) do
-      {:ok, %{outcome: :pending, resource: allocation}}
+      {:ok, %{outcome: :pending, resource: allocation, image_imported: true}}
     end
   end
 
@@ -339,7 +339,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
         with {:ok, allocation} <- import_image(allocation, workload, image_metadata),
              {:ok, allocation} <-
                create_container(allocation, workload, image_metadata["reference"]) do
-          {:ok, %{outcome: :pending, resource: allocation}}
+          {:ok, %{outcome: :pending, resource: allocation, image_imported: true}}
         end
     end
   end

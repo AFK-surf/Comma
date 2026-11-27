@@ -78,6 +78,99 @@ defmodule SalixAgent.LoopsTest do
     def deliver(_row, _content, _dedup, _origin), do: {:ok, :created}
   end
 
+  defmodule AuditFacts do
+    def mode(_, _), do: "audit"
+    def resolve(_), do: {:ok, %{"destination" => %{"label" => ["public"], "writers" => "any"}}}
+  end
+
+  test "a Collaborative Task Worker's Loop reaches no tool its Worker may not call", %{
+    ctx: ctx,
+    sha: sha
+  } do
+    previous = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    private = SystemsRuntime.get_env(:salix_agent, :http_request_allow_private_hosts)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, AuditFacts)
+    SystemsRuntime.put_env(:salix_agent, :http_request_allow_private_hosts, true)
+
+    on_exit(fn ->
+      restore(:salix_agent, :ifc_facts_mod, previous)
+      restore(:salix_agent, :http_request_allow_private_hosts, private)
+    end)
+
+    owner = self()
+
+    plug = fn conn ->
+      send(owner, :loop_http_sent)
+      Plug.Conn.send_resp(conn, 200, "ok")
+    end
+
+    server = start_supervised!({Bandit, plug: {LoopHttpPlug, plug}, port: 0, startup_log: false})
+    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    args = %{"url" => "http://127.0.0.1:#{port}/"}
+
+    worker = SalixAgent.TestSupport.new_agent_id()
+
+    SalixAgent.TestSupport.create_control_agent!(worker, %{
+      "role" => "worker",
+      "purpose" => SalixAgent.CollaborationPolicy.purpose()
+    })
+
+    collaboration = SalixAgent.CollaborationPolicy.purpose()
+    assert {:ok, %{"purpose" => ^collaboration}} = SalixAgent.Control.get(worker)
+    :ok = put_file!(worker, "/loops/main.elf", <<0x7F, ?E, ?L, ?F, 1, 2, 3>>)
+    loop = create!(%{ctx | agent_id: worker}, sha) |> loop_ref()
+    assert loop.agent_id == worker
+
+    # `web.http_request` is a Loop capability, but not one of the Worker's: the
+    # Loop is told it cannot call it, and nothing is sent.
+    assert {:ok, %{"content" => refused}} = Capabilities.call(loop, "web.http_request", args)
+    assert refused =~ "not callable"
+    refute_received :loop_http_sent
+
+    # The same call from an ordinary Agent's Loop goes out.
+    ordinary = create!(ctx, sha) |> loop_ref()
+    assert {:ok, _} = Capabilities.call(ordinary, "web.http_request", args)
+    assert_received :loop_http_sent
+  end
+
+  test "a program Loop defaults missing sources but preserves an invalid explicit declaration", %{
+    ctx: ctx,
+    sha: sha
+  } do
+    previous = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    private = SystemsRuntime.get_env(:salix_agent, :http_request_allow_private_hosts)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, AuditFacts)
+    SystemsRuntime.put_env(:salix_agent, :http_request_allow_private_hosts, true)
+
+    on_exit(fn ->
+      restore(:salix_agent, :ifc_facts_mod, previous)
+      restore(:salix_agent, :http_request_allow_private_hosts, private)
+    end)
+
+    owner = self()
+
+    plug = fn conn ->
+      send(owner, :loop_http_sent)
+      Plug.Conn.send_resp(conn, 200, "ok")
+    end
+
+    server = start_supervised!({Bandit, plug: {LoopHttpPlug, plug}, port: 0, startup_log: false})
+    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    loop = create!(ctx, sha) |> loop_ref()
+    args = %{"url" => "http://127.0.0.1:#{port}/"}
+
+    assert {:ok, _} = Capabilities.call(loop, "web.http_request", args)
+    assert_received :loop_http_sent
+
+    for declaration <- [%{"sources" => "context"}, "invalid declaration"] do
+      assert {:ok, guidance} =
+               Capabilities.call(loop, "web.http_request", Map.put(args, "ifc", declaration))
+
+      assert Jason.decode!(guidance["content"])["guidance_reason"] == "invalid_params"
+      refute_received :loop_http_sent
+    end
+  end
+
   setup do
     SalixAgent.TestSupport.stop_all_agents()
     put_probes!()
@@ -863,6 +956,9 @@ defmodule SalixAgent.LoopsTest do
     assert :ok = Loops.put_checkpoint(id, 1, %{"counter" => 1})
     assert {:error, :stale_incarnation} = Loops.put_checkpoint(id, 0, %{"counter" => 9})
     assert {:ok, %{"counter" => 1}} = Loops.get_checkpoint(id)
+    # A checkpoint is any JSON value, a bare number included.
+    assert :ok = Loops.put_checkpoint(id, 1, 1_794_556_770_000)
+    assert {:ok, 1_794_556_770_000} = Loops.get_checkpoint(id)
     assert Loops.current_incarnation?(id, 1)
     refute Loops.current_incarnation?(id, 0)
     assert :ok = Loops.end_incarnation(id, 1)

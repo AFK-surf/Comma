@@ -1,3 +1,4 @@
+import { CommaMark } from "../login/BrandMarks";
 import {
   OpenAiIcon,
   ClaudeAiIcon,
@@ -19,6 +20,7 @@ import {
 } from "../icons";
 
 const icons = {
+  comma: CommaMark,
   openai: OpenAiIcon,
   anthropic: AnthropicBrandIcon,
   codex: CodexBrandIcon,

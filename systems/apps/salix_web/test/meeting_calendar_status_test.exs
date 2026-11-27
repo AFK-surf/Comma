@@ -199,6 +199,67 @@ defmodule Salix.Bindings.MeetingCalendarStatusTest do
            }
   end
 
+  # A meeting that is only joined has a planned plan without a Task; the
+  # bft CLI's calendar diagnostic still reports it.
+  test "a planned plan without a Task passes the calendar diagnostic contract", context do
+    plan_id = Ids.new_meeting_plan_id()
+    start_ms = SystemsClock.system_time(:millisecond) + :timer.hours(1)
+
+    occurrence_ref = %{
+      "calendar_id" => context.calendar_id,
+      "instance" => start_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+    }
+
+    group = %{
+      "tenant_id" => context.tenant_id,
+      "group_id" => context.group_id,
+      "calendar_id" => context.calendar_id
+    }
+
+    assert {:ok, empty} = CalendarProjection.load(group, now: start_ms - 1_000)
+
+    assert {:ok, projection, %{partial_errors: []}} =
+             CalendarProjection.reconcile(
+               empty,
+               [
+                 %{
+                   "event_id" => "event-join-only",
+                   "calendar_id" => context.calendar_id,
+                   "calendar_item_id" => Ids.new_calendar_item_id(),
+                   "occurrence_ref" => occurrence_ref,
+                   "meeting_plan_id" => plan_id,
+                   "start_ms" => start_ms,
+                   "end_ms" => start_ms + 30 * 60 * 1_000,
+                   "meet_url" => "https://meet.google.com/abc-defg-hij",
+                   "title" => "Join only"
+                 }
+               ],
+               %{},
+               max_events: 50,
+               now: start_ms
+             )
+
+    assert {:ok, _} = CalendarProjection.checkpoint(projection)
+
+    assert {:ok, _} =
+             CasRecord.create(Keys.ctl_meeting_plan(context.group_id, plan_id), %{
+               "meeting_plan_id" => plan_id,
+               "group_id" => context.group_id,
+               "occurrence_ref" => occurrence_ref,
+               "conversation_id" => nil,
+               "status" => "planned",
+               "revision" => 2,
+               "updated_at" => start_ms,
+               "preparation" => %{"research_decision" => "not_required"}
+             })
+
+    assert {:ok, status} = MeetingCalendarStatus.get(context.agent_id, context.connect_id, 10)
+
+    public = BridgeForTeams.RunChecks.CalendarStatusContract.normalize(status, 10)
+    assert public["health"] == "ok"
+    assert [%{"plan" => %{"status" => "planned", "conversation_id" => nil}}] = public["events"]
+  end
+
   test "rejects a connect outside the agent's active Slack scope", context do
     assert {:error, :not_found} =
              MeetingCalendarStatus.get(context.agent_id, Ids.new_connect_id(), 20)

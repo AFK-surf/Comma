@@ -238,6 +238,7 @@ defmodule BillingCore.FeeControl do
         Map.get(snapshot, "entitlement_mode", Policy.usage_mode(entitlement_policy))
       )
       |> normalize_entitlement_mode()
+      |> settle(settlement(attrs))
 
     reason = reason(account_status, entitlement_mode, balance_snapshot, estimated_credits)
     would_block = reason in ["missing_account", "account_inactive", "insufficient_credits"]
@@ -266,21 +267,47 @@ defmodule BillingCore.FeeControl do
     }
   end
 
+  @doc """
+  An explicit settlement overrides the account's entitlement mode for one
+  call (a platform Router's platform key, `BillingCore.LLMMetering`):
+  `"deduct"` is metered, so admission checks the real balance and the charge
+  spends credits, even under an `unlimited_metered` grant; `"record"` is
+  `unlimited_metered`, a ledger row that charges 0, even without one.
+  """
+  def settle(_mode, "deduct"), do: :metered
+  def settle(_mode, "record"), do: :unlimited_metered
+  def settle(mode, _settlement), do: mode
+
+  @doc false
+  def settlement(attrs) do
+    case attrs[:settlement] || attrs["settlement"] do
+      settlement when settlement in ["record", "deduct"] -> settlement
+      _ -> nil
+    end
+  end
+
   @doc false
   def cache_key(attrs) do
-    if Map.has_key?(attrs, :resource_kind) or Map.has_key?(attrs, :action) or
-         Map.has_key?(attrs, :mode) do
-      {
-        Map.fetch!(attrs, :billing_account_id),
-        Map.get(attrs, :resource_kind, :unknown),
-        Map.get(attrs, :action, :unknown),
-        Map.get(attrs, :provider),
-        Map.get(attrs, :sku),
-        normalize_mode(Map.get(attrs, :mode, :shadow)),
-        Map.get(attrs, :policy_cache_version, 0)
-      }
-    else
-      {Map.fetch!(attrs, :billing_account_id), Map.get(attrs, :provider), Map.get(attrs, :sku)}
+    key =
+      if Map.has_key?(attrs, :resource_kind) or Map.has_key?(attrs, :action) or
+           Map.has_key?(attrs, :mode) do
+        {
+          Map.fetch!(attrs, :billing_account_id),
+          Map.get(attrs, :resource_kind, :unknown),
+          Map.get(attrs, :action, :unknown),
+          Map.get(attrs, :provider),
+          Map.get(attrs, :sku),
+          normalize_mode(Map.get(attrs, :mode, :shadow)),
+          Map.get(attrs, :policy_cache_version, 0)
+        }
+      else
+        {Map.fetch!(attrs, :billing_account_id), Map.get(attrs, :provider), Map.get(attrs, :sku)}
+      end
+
+    # A settled call never shares a cache entry with the account's own mode.
+    case settlement(attrs) do
+      nil -> key
+      settlement -> {key, {:settlement, settlement}}
     end
   end
 

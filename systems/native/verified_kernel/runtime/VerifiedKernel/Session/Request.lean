@@ -34,9 +34,7 @@ def conversationHeader (message : Term) : KernelM Term := do
   let header := "[conversation ".toUTF8 ++ conversation ++ "] ".toUTF8
   -- A request annotates each message more than once, and a source marker can
   -- come first, so any earlier header counts.
-  let present := (List.range (content.size + 1 - header.size)).any (fun start =>
-    content.extract start (start + header.size) == header)
-  if content.size ≥ header.size && present then return message
+  if Session.containsBytes content header then return message
   return message.put (if message.has (a "content") then a "content" else b "content")
     (.binary (header ++ content))
 
@@ -53,8 +51,13 @@ def annotate (message : Term) : KernelM Term := do
   let .binary content := valueOf message "content" | return message
   let header := "[".toUTF8 ++ ref ++ "]".toUTF8
   if content.extract 0 header.size == header then return message
+  let integrity := valueOf label "integrity"
+  let hint := if role != b "user" then "" else
+    if integrity == b "command" || integrity == a "command" then
+      "IFC: command input; use this ref as request when acting on it.\n"
+    else ""
   return message.put (if message.has (a "content") then a "content" else b "content")
-    (.binary (header ++ "\n".toUTF8 ++ content))
+    (.binary (header ++ "\n".toUTF8 ++ hint.toUTF8 ++ content))
 
 def modelMessages (delta : Term) : KernelM Term := do
   if delta == nil then return list []
@@ -131,11 +134,22 @@ def prefetch (state : Term) : KernelM (List (Term × Term)) := do
     !watermark.isInteger || (id.isInteger && integerValue id > integerValue watermark)
   Attachments.prefetch fresh watermark
 
-def dispatch (state args : Term) (prefetched : List (Term × Term) := []) : KernelM Term := do
+def projectionInput (state : Term) : KernelM Term := do
+  return list ((← asList (← CompactionQuery.contextPrefix state)) ++
+    (← asList (← CompactionQuery.requestLiveMessages state)))
+
+def dispatch (state args : Term) (prefetched : List (Term × Term) := [])
+    (projection : Term := nil) : KernelM Term := do
   let .tuple [delta, protocol, cfg, tools, mode] := args | fail "function_clause"
   let .tuple [_, prompt] ← ReplyQuery.promptSnapshot state nil | fail "badarg"
-  let messages ← build state (.tuple [← context state, delta, prompt])
-  let messages ← Attachments.inline messages ((valueOf state "last_ack_message_id").default (i 0)) true prefetched
+  let messages ← if projection.isMap then do
+      let raw ← asList (projection.get (a "messages"))
+      let clean ← Presentation.sanitizeContext raw
+      let annotated ← (← asList clean).mapM fun message => RequestPage.fit annotate message >>= annotate
+      asList (← prepend (list annotated) (projection.get (a "prompt")))
+    else build state (.tuple [← context state, delta, prompt])
+  let watermark := if projection.isMap then i 0 else (valueOf state "last_ack_message_id").default (i 0)
+  let messages ← Attachments.inline messages watermark true prefetched
   if protocol == a "neutral" then return list messages
   let .binary name := protocol | fail "badarg"
   Provider.Request.encodedBody (String.fromUTF8! name) cfg messages (← asList tools) (String.fromUTF8! (Provider.bytes mode))
@@ -153,7 +167,8 @@ def part (_state args : Term) : KernelM Term := do
   | .tuple [.atom "platform_reminder", disclosure] => platformReminder disclosure
   | _ => fail "function_clause"
 
-def table : OpTable := [("provider_request_part", part),
+def table : OpTable := [("ifc_projection_input", fun state _ => projectionInput state),
+  ("provider_request_part", part),
   ("provider_dispatch", fun state args => dispatch state args),
   ("provider_context", fun state _ => context state),
   ("provider_context_where", contextWhere)]

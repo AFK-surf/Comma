@@ -28,7 +28,10 @@ defmodule SalixIM.ConversationStore do
   def update_with_previous(pid, fun), do: call(pid, {:update_with_previous, fun})
   def tombstone(pid, record), do: call(pid, {:tombstone, record})
   def reserve_message(pid, message), do: call(pid, {:reserve_message, message})
-  def append_message(pid, message), do: call(pid, {:append_message, message})
+
+  def append_message(pid, message, conversation_updates \\ %{}),
+    do: call(pid, {:append_message, message, conversation_updates})
+
   def message_by_id(pid, id), do: call(pid, {:message_by_id, id})
 
   def message_by_request_identity(pid, identity),
@@ -36,6 +39,9 @@ defmodule SalixIM.ConversationStore do
 
   def identity_by_request_identity(pid, identity),
     do: call(pid, {:identity_by_request_identity, identity})
+
+  def recent_hot_messages(pid, limit),
+    do: call(pid, {:recent_hot_messages, limit})
 
   def identity_by_id(pid, id), do: call(pid, {:identity_by_id, id})
   def recover_log(pid, target), do: call(pid, {:recover_log, target})
@@ -108,6 +114,9 @@ defmodule SalixIM.ConversationStore do
   defp execute({:identity_by_request_identity, identity}, state),
     do: {ConversationPGStore.identity_by_request_identity(state.scope, identity), state}
 
+  defp execute({:recent_hot_messages, limit}, state),
+    do: {ConversationPGStore.recent_hot_messages(state.scope, limit), state}
+
   defp execute({:identity_by_id, id}, state),
     do: {ConversationPGStore.identity_by_id(state.scope, id), state}
 
@@ -175,10 +184,15 @@ defmodule SalixIM.ConversationStore do
     end
   end
 
-  defp execute({:append_message, message}, state) do
+  defp execute({:append_message, message, conversation_updates}, state) do
     with {:ok, previous, revision} <- ConversationPGStore.read(state.scope),
          {:ok, pending} <-
-           ConversationPGStore.prepare_append(state.scope, {previous, revision}, message) do
+           ConversationPGStore.prepare_append(
+             state.scope,
+             {previous, revision},
+             message,
+             conversation_updates
+           ) do
       commit(pending, state)
     else
       error -> {error, state}

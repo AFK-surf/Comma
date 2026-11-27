@@ -7,25 +7,35 @@ import { useEffect, useRef, useState } from "react";
 import { useWorkspacePreference } from "../activeWorkspace";
 import {
   NearbyConnectCard,
+  type NearbyInviteRead,
   type NearbyPeer,
   type NearbyPhase,
 } from "./NearbyConnectCard";
+import { nearbyOwnerName } from "./nearbyName";
 
 type Offer = NearbyState["offers"][number];
 
-/** Whose invite an offer is and what accepting it here gives them, as `taskRequests.invitePreview` reads it. */
-interface Read {
-  requestId: string;
-  peer: NearbyPeer;
-  /** The workspace accepting it in lets them send back to; absent, they cannot. */
-  back: string | undefined;
-}
+/**
+ * Whose invite an offer is and what accepting it here gives them, as
+ * `taskRequests.invitePreview` reads it, or that it could not be read.
+ */
+type Read =
+  | {
+      requestId: string;
+      peer: NearbyPeer;
+      /** The workspace accepting it in lets them send back to; absent, they cannot. */
+      back: string | undefined;
+    }
+  | { requestId: string; unreadable: true };
 
 /**
- * The connect card for an invite someone nearby sent this Mac over AirDrop
- * (`nearby` in Main). The card shows whose invite it is once the core read it;
- * Connect accepts it in the core, then answers the held offer, so the sender's
- * row turns connected. Closing the card declines the offer.
+ * The connect card for an invite someone nearby sent this computer, over
+ * AirDrop or the local network (`nearby` in Main, which holds it for the main
+ * window). The card comes up at once under the name the sender's computer
+ * gave, and shows whose invite it is once the core read it; Connect waits for
+ * that read, accepts it in the core, then answers the held offer, so the
+ * sender's row turns connected. An invite the core could not read says so and
+ * only closes. Closing the card declines the offer.
  */
 export function NearbyInvites() {
   const bridge = getNativeBridge();
@@ -71,7 +81,9 @@ export function NearbyInvites() {
         if (!live) return;
         // Their own invite comes back from another of their Macs: nothing to connect.
         if (from.own) {
-          void bridge.nearby.answer({ accept: false, requestId: offerId });
+          void bridge.nearby
+            .answer({ accept: false, requestId: offerId })
+            .catch(() => undefined);
           return;
         }
         const owner = from.workspace.owner;
@@ -79,14 +91,18 @@ export function NearbyInvites() {
           requestId: offerId,
           peer: {
             name:
-              owner?.name || owner?.email || from.workspace.name || senderName || "",
+              owner?.name ||
+              owner?.email ||
+              from.workspace.name ||
+              (senderName ? nearbyOwnerName(senderName) : ""),
             email: owner?.email ?? "",
           },
           back: from.back?.workspace.id,
         });
       },
       () => {
-        if (live) void bridge.nearby.answer({ accept: false, requestId: offerId });
+        // The card stays and says so; closing it declines the offer.
+        if (live) setRead({ requestId: offerId, unreadable: true });
       }
     );
     return () => {
@@ -94,7 +110,8 @@ export function NearbyInvites() {
     };
   }, [bridge, call, invite, offerId, prefer, senderName]);
 
-  const shown = read && read.requestId === offerId ? read : undefined;
+  const current = read && read.requestId === offerId ? read : undefined;
+  const shown = current && !("unreadable" in current) ? current : undefined;
   const accept = () => {
     if (!shown || !invite || busy) return;
     setBusy(true);
@@ -119,22 +136,37 @@ export function NearbyInvites() {
     // While Connect is accepting, its answer is the offer's; closing waits for it.
     if (busy) return;
     if (connected) setConnected(undefined);
-    else if (shown)
+    else if (offerId)
       void bridge.nearby
-        .answer({ accept: false, requestId: shown.requestId })
+        .answer({ accept: false, requestId: offerId })
         .catch(() => undefined);
   };
 
-  const peer = connected?.peer ?? shown?.peer;
+  /** Until the core read the invite: the name the sender's computer gave. */
+  const named: NearbyPeer | undefined = offerId
+    ? { name: senderName ? nearbyOwnerName(senderName) : "", email: "" }
+    : undefined;
+  const peer = connected?.peer ?? shown?.peer ?? named;
+  const reading: NearbyInviteRead | undefined = connected
+    ? undefined
+    : current === undefined
+      ? "reading"
+      : "unreadable" in current
+        ? "unreadable"
+        : undefined;
   // The card rises a frame after it mounts and sinks with the last person on it.
-  const last = useRef<{ peer: NearbyPeer; phase: NearbyPhase; oneWay: boolean }>(
-    undefined
-  );
+  const last = useRef<{
+    peer: NearbyPeer;
+    phase: NearbyPhase;
+    oneWay: boolean;
+    read: NearbyInviteRead | undefined;
+  }>(undefined);
   if (peer)
     last.current = {
       peer,
       phase: connected ? "connected" : "invited",
       oneWay: connected?.reciprocal === false,
+      read: reading,
     };
   const [open, setOpen] = useState(false);
   const present = peer !== undefined;
@@ -159,6 +191,7 @@ export function NearbyInvites() {
       open={open && present}
       peer={last.current.peer}
       phase={last.current.phase}
+      read={last.current.read}
     />
   );
 }

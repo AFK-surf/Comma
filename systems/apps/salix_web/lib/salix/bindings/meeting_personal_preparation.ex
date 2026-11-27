@@ -10,14 +10,14 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
 
   alias SalixIM.Provider.Slack.API
   alias SalixIM.ProviderConnects
-  alias SalixMeet.{CalendarEnrollmentCache, PersonalPreparation}
+  alias SalixMeet.{CalendarEnrollmentCache, MeetingPlan, PersonalPreparation}
   alias SalixStore.MeetingPersonalPreparation, as: Store
 
   @batch_size 20
 
-  # A meeting on members' calendars is prepared once, for the first of its
-  # plan's recipients (the organizer, then the member whose calendar holds it)
-  # who has an account in the Slack workspace.
+  # A meeting on members' calendars names its recipients: the members whose
+  # own calendars hold it (`Salix.Bindings.MeetingCalendar`). Each of them
+  # with an account in the Slack workspace gets a direct message.
   # A Feishu/Lark plan has its own recipients (`LarkMeetingPersonalPreparation`).
   @impl true
   def roster(plan) when is_map(plan) do
@@ -31,18 +31,26 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
          {:ok, connect} <- connect(plan) do
       token = API.installation(connect)
 
+      # A member with no active full Slack account under the same email
+      # (another email, a guest, deactivated) gets no message. The plan
+      # records who, so the dashboard does not show them as reminded.
       candidates
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.downcase(String.trim(&1)))
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.uniq()
-      |> Enum.reduce_while({:ok, []}, fn email, acc ->
+      |> named_recipients()
+      |> Enum.reduce_while({:ok, [], []}, fn email, {:ok, found, unmatched} ->
         case lookup(token, connect, email) do
-          {:ok, _recipient} -> {:halt, {:ok, [email]}}
-          {:error, :slack_attendee_not_found} -> {:cont, acc}
+          {:ok, _recipient} -> {:cont, {:ok, [email | found], unmatched}}
+          {:error, :slack_attendee_not_found} -> {:cont, {:ok, found, [email | unmatched]}}
           {:error, _} = error -> {:halt, error}
         end
       end)
+      |> case do
+        {:ok, found, unmatched} ->
+          with :ok <- MeetingPlan.record_personal_unmatched(plan, Enum.reverse(unmatched)),
+               do: {:ok, Enum.reverse(found)}
+
+        error ->
+          error
+      end
     else
       {:error, :personal_preparation_not_enrolled} -> {:ok, []}
       {:error, _} = error -> error
@@ -84,6 +92,18 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
       else: slack_current_recipients(plan, pending)
   end
 
+  # Named recipients stay current while the plan names them; recipients/2
+  # looks each pending one up again.
+  defp slack_current_recipients(%{"personal_recipients" => candidates} = plan, pending)
+       when is_list(candidates) do
+    named = MapSet.new(named_recipients(candidates))
+
+    recipients(
+      plan,
+      pending |> Enum.map(& &1["email"]) |> Enum.filter(&MapSet.member?(named, &1))
+    )
+  end
+
   defp slack_current_recipients(plan, pending) do
     with {:ok, emails} <- roster(plan),
          {:ok, sources} <- Store.group_sources(identity(plan), Enum.map(pending, & &1["email"])),
@@ -98,6 +118,14 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
       recipients(plan, requested)
     end
   end
+
+  defp named_recipients(candidates),
+    do:
+      candidates
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.downcase(String.trim(&1)))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
 
   defp current_group_members(plan, pending, emails, sources) do
     current = MapSet.new(emails)

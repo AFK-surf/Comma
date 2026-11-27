@@ -103,6 +103,144 @@ defmodule SalixIFCTest do
   defp assert_allow({:allow, %Evidence{} = evidence}), do: evidence
   defp assert_deny({:deny, %Reason{clause: clause}}, expected), do: assert(clause == expected)
 
+  describe "easy IM policy" do
+    test "a member shares a private channel and their DM without a receipt" do
+      request = item("q", @shared, :command, @a)
+      items = [request, item("room", @legal), item("dm", @dm_a)]
+      act = activation(@a, @shared, ["q"])
+      send = effect(@public, "q", sources: ["room", "dm"], writers: :unknown)
+
+      assert {:allow, evidence} = SalixIFC.decide_easy(send, act, items, facts())
+      assert evidence.requester == @a
+      assert Enum.map(evidence.sources, &elem(&1, 0)) == ["room", "dm"]
+      assert {:deny, _} = SalixIFC.decide(send, act, items, facts())
+    end
+
+    test "sealed does not restrict an accessible source in Easy" do
+      items = [item("q", @public, :command, @a), item("private", @legal)]
+      act = activation(@a, @public, ["q"])
+      send = effect(@public, "q", sources: ["private"])
+      sealed = facts(policy: Policy.new(sealed_atoms: MapSet.new([{:scope, @w, "legal"}])))
+      assert {:allow, _} = SalixIFC.decide_easy(send, act, items, sealed)
+      assert {:deny, %Reason{clause: :sealed}} = SalixIFC.decide(send, act, items, sealed)
+    end
+
+    test "a nonmember cannot disclose a channel or somebody else's DM even back to itself" do
+      request = item("q", @public, :command, @b)
+      act = activation(@b, @public, ["q"])
+
+      for source <- [@legal, @dm_a] do
+        items = [request, item("private", source)]
+        send = effect(source, "q", sources: ["private"])
+
+        assert {:deny, %Reason{clause: :flow_denied}} =
+                 SalixIFC.decide_easy(send, act, items, facts())
+      end
+    end
+
+    test "supervisor clearance remains effective without channel membership" do
+      request = item("q", @public, :command, @b)
+      items = [request, item("private", @dm_a)]
+      act = activation(@b, @public, ["q"])
+      send = effect(@public, "q", sources: ["private"])
+      supervised = facts(cleared: %{{:scope, @w, "D_a"} => [@b]})
+      assert {:allow, _} = SalixIFC.decide_easy(send, act, items, supervised)
+    end
+
+    test "unknown membership and forged request authority cannot authorize IM disclosure" do
+      items = [item("q", @public, :command, @b), item("private", @legal)]
+      send = effect(@public, "q", sources: ["private"])
+
+      assert {:deny, %Reason{clause: :membership_unknown}} =
+               SalixIFC.decide_easy(
+                 send,
+                 activation(@b, @public, ["q"]),
+                 items,
+                 facts(membership: %{})
+               )
+
+      assert {:deny, %Reason{clause: :request_principal_mismatch}} =
+               SalixIFC.decide_easy(send, activation(@a, @public, ["q"]), items, facts())
+    end
+
+    test "tags, destination writers and the external guest policy do not block members" do
+      request = item("q", @shared, :command, @g)
+      source = Label.join(@shared, Label.new([{:tag, "blocked"}, {:task, "other"}]))
+      items = [request, item("data", source)]
+      send = effect(@public, "q", sources: ["data"], writers: MapSet.new())
+
+      assert {:allow, _} =
+               SalixIFC.decide_easy(
+                 send,
+                 activation(@g, @shared, ["q"]),
+                 items,
+                 facts(
+                   policy:
+                     Policy.new(
+                       external_principals: :deny,
+                       public_egress: :deny,
+                       declassification: :none
+                     )
+                 )
+               )
+    end
+
+    test "an unchecked non-IM read is usable in Easy but does not become public in Hard" do
+      source = Label.new([:unclassified_non_im])
+      items = [item("q", @public, :command, @a), item("document", source)]
+      send = effect(@public, "q", sources: ["document"])
+      act = activation(@a, @public, ["q"])
+      refute SalixIFC.easy_protected?(items, ["document"])
+      assert {:allow, _} = SalixIFC.decide_easy(send, act, items, facts())
+
+      assert {:deny, %Reason{clause: :membership_unknown}} =
+               SalixIFC.decide(send, act, items, facts())
+    end
+
+    test "an old workspace-wide label cannot prove membership of a specific channel" do
+      refute SalixIFC.easy_reader?(@a, @space, facts()) == true
+      assert SalixIFC.easy_reader?(@a, @space, facts()) == :unknown
+
+      assert SalixIFC.easy_reader?(@b, @space, facts(cleared: %{{:space, @w} => [@b]})) ==
+               :unknown
+    end
+
+    test "a Comma Conversation reaches only its participants" do
+      chat = Label.new([{:conversation, "c1"}])
+      act = activation(@b, @public, ["q"])
+      items = [item("q", @public, :command, @b), item("chat", chat)]
+      send = effect(@public, "q", sources: ["chat"])
+      assert SalixIFC.easy_protected?(items, ["chat"])
+
+      assert {:deny, %Reason{clause: :flow_denied}} =
+               SalixIFC.decide_easy(
+                 send,
+                 act,
+                 items,
+                 facts(membership: %{{:conversation, "c1"} => {:members, [@a], 1}})
+               )
+
+      assert {:allow, _} =
+               SalixIFC.decide_easy(
+                 send,
+                 act,
+                 items,
+                 facts(membership: %{{:conversation, "c1"} => {:members, [@a, @b], 1}})
+               )
+
+      assert {:deny, %Reason{clause: :membership_unknown}} =
+               SalixIFC.decide_easy(send, act, items, facts())
+    end
+
+    test "non-IM sources need no IFC gate, but unknown references do" do
+      items = [item("im", @dm_a), item("non-im", Label.new([{:group, "g"}, {:tag, "secret"}]))]
+      refute SalixIFC.easy_protected?(items, ["non-im"])
+      refute SalixIFC.easy_protected?(items, [])
+      assert SalixIFC.easy_protected?(items, :context)
+      assert SalixIFC.easy_protected?(items, ["missing"])
+    end
+  end
+
   describe "cleared readers" do
     @dm_c Label.new([{:scope, @w, "D_c"}])
 

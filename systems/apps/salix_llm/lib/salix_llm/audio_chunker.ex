@@ -5,7 +5,12 @@ defmodule SalixLlm.AudioChunker do
 
   @segment_seconds 300
   @max_chunks 48
-  @max_audio_bytes 30 * 1024 * 1024
+  # The source is streamed to a temporary file and re-encoded into 16 kHz mono
+  # MP3 chunks, so its size only bounds disk and copy time; the duration limit
+  # (`@segment_seconds * @max_chunks`, four hours) bounds the work. 256 MiB
+  # holds four hours of desktop M4A (about 50 kbps) and an 86-minute 16-bit
+  # 48 kHz mono WAV. At 30 MiB an 86-minute desktop meeting (30.3 MiB) failed.
+  @max_audio_bytes 256 * 1024 * 1024
   @timeout_ms 300_000
   @probe_timeout_ms 30_000
   @stderr_limit 8_192
@@ -38,6 +43,10 @@ defmodule SalixLlm.AudioChunker do
           optional(:voiced_seconds) => float(),
           optional(:speech_end_seconds) => float()
         }
+
+  @doc "The largest source file, in bytes, that a transcription accepts."
+  @spec max_audio_bytes() :: pos_integer()
+  def max_audio_bytes, do: @max_audio_bytes
 
   @spec with_mp3_chunks(binary(), String.t(), ([chunk()] -> term()), keyword()) :: term()
   def with_mp3_chunks(audio, source_filename, callback, opts \\ [])

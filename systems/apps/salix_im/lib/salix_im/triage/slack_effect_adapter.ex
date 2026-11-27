@@ -626,12 +626,32 @@ defmodule SalixIM.Triage.SlackEffectAdapter.Freshness do
           {:ok, %{status: :stale, reason: :new_source_message}}
 
         true ->
+          message_roots =
+            Map.new(page.messages, fn msg ->
+              # SlackMirror.Reader rows carry `thread_ts` (empty string for thread roots);
+              # accept `root_thread_ts` too for normalized test fixtures.
+              root =
+                cond do
+                  is_binary(msg["thread_ts"]) and msg["thread_ts"] != "" ->
+                    msg["thread_ts"]
+
+                  is_binary(msg["root_thread_ts"]) and msg["root_thread_ts"] != "" ->
+                    msg["root_thread_ts"]
+
+                  true ->
+                    msg["message_ts"]
+                end
+
+              {msg["message_ts"], root}
+            end)
+
           {:ok,
            %{
              status: :fresh,
              authority_ref: authority_ref,
              route_scope: route.scope,
-             route_claim_identity: route.claim_identity
+             route_claim_identity: route.claim_identity,
+             message_roots: message_roots
            }}
       end
     else

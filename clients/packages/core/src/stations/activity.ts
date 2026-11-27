@@ -1,8 +1,9 @@
 // What happens on a workspace's stations, as the Stations area lists it: the viewer's chats (`stationChats`), the
 // cards and questions waiting for them (`stationDecisions`) and the jobs that have run long (`stationJobs`). While one
-// of these is shown, each station of the workspace is followed: its chats and open jobs are read when its event stream
-// opens (a station replays nothing), then each `chat` event replaces a row and each job event reads the jobs again. A
-// station's chats are kept on this device, so the list shows at once next time.
+// of these is shown, each station of the workspace the control plane says is online is followed: its chats and open
+// jobs are read when its event stream opens (a station replays nothing), then each `chat` event replaces a row and each
+// job event reads the jobs again. A station's chats are kept on this device, so the list shows at once next time; an
+// offline station is not dialled, and its presence coming online starts following it.
 //
 // Answering a card sends a message that quotes it (the station takes that as the answer) or, for an option that closes
 // it, closes it; dismissing it is the station's too. Setting it aside is this device's only.
@@ -31,7 +32,7 @@ import type {
 import { TOPIC_SPECS } from "../contract.ts";
 import { type Ctx, Live } from "../ctx.ts";
 import { readEvents } from "../sse.ts";
-import type { Stations } from "./index.ts";
+import { type Stations, wantedOf } from "./index.ts";
 import {
   chatRowSchema,
   chatRowsSchema,
@@ -114,8 +115,8 @@ export class StationActivity {
   readonly #ctx: Ctx;
   readonly #stations: Stations;
   readonly #live: Live;
-  /** Workspaces shown, and by which topics. */
-  readonly #shown = new Map<string, Set<string>>();
+  /** Workspaces shown, by which holders, with the stations each follows (null: every one). */
+  readonly #shown = new Map<string, Map<string, ReadonlySet<string> | null>>();
   /** Stations followed, by id. */
   readonly #followed = new Map<string, Followed>();
   /** Each topic's value as last made, its lists matched as the topic keys them. */
@@ -233,21 +234,31 @@ export class StationActivity {
     this.unhold(topic.workspace as string, topic.topic);
   }
 
-  /** Follows `workspace`'s stations for `holder` (a topic shown, an open chat): the first holder starts it. */
-  hold(workspace: string, holder: string): void {
+  /**
+   * Follows `workspace`'s stations for `holder` (a topic shown, an open chat): each the control plane says is online,
+   * or only those of them `only` names (always.ts). The first holder starts it; holding again changes the stations.
+   */
+  hold(
+    workspace: string,
+    holder: string,
+    only: ReadonlySet<string> | null = null
+  ): void {
     let by = this.#shown.get(workspace);
-    if (!by) this.#shown.set(workspace, (by = new Set()));
-    by.add(holder);
-    this.#stations.retain(workspace, "activity");
+    if (!by) this.#shown.set(workspace, (by = new Map()));
+    by.set(holder, only);
+    this.#stations.retain(workspace, "activity", wantedOf(by));
     this.#follow();
   }
 
   /** `holder` lets `workspace`'s stations go: the last one stops following them. */
   unhold(workspace: string, holder: string): void {
     const by = this.#shown.get(workspace);
-    if (!by) return;
-    by.delete(holder);
-    if (by.size > 0) return;
+    if (!by?.delete(holder)) return;
+    if (by.size > 0) {
+      this.#stations.retain(workspace, "activity", wantedOf(by));
+      this.#follow();
+      return;
+    }
     this.#shown.delete(workspace);
     this.#stations.release(workspace, "activity");
     this.#follow();
@@ -449,9 +460,13 @@ export class StationActivity {
   /** Follows each station of the shown workspaces, and stops following the others. */
   #follow(): void {
     const wanted = new Map<string, string>();
-    for (const workspace of this.#shown.keys())
+    for (const [workspace, by] of this.#shown) {
+      const only = wantedOf(by);
+      // An offline station is not dialled: what was read of it stays kept until it comes online.
       for (const station of this.#stations.named(workspace))
-        wanted.set(station.id, workspace);
+        if (station.online && (only === null || only.has(station.id)))
+          wanted.set(station.id, workspace);
+    }
     for (const [id, followed] of this.#followed) {
       if (wanted.get(id) === followed.workspace) continue;
       this.#ctx.runner.close(followed.scoped);

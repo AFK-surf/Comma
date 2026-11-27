@@ -37,6 +37,17 @@ defmodule SalixIM.Ports.TaskCreate do
   @callback personal_computers(scope :: map()) :: {:ok, [map()]} | {:error, term()}
 
   @doc """
+  Recent human and Router reply messages from the Router's session for the same
+  external IM conversation as `origin`, newest first, bounded by `limit`
+  (`SalixIM.ComputerChoice`).
+  """
+  @callback external_choice_messages(
+              scope :: map(),
+              origin :: map(),
+              limit :: pos_integer()
+            ) :: {:ok, [map()]} | {:error, term()}
+
+  @doc """
   The Worker a Task takes when the Router names none. `scope` carries
   `tenant_id` and `group_id`.
   """
@@ -58,6 +69,7 @@ defmodule SalixIM.Ports.TaskCreate do
   @optional_callbacks session_model: 2,
                       runs_on: 2,
                       personal_computers: 1,
+                      external_choice_messages: 3,
                       task_worker: 1,
                       default_task_model: 1,
                       platform_routing: 0,
@@ -96,6 +108,17 @@ defmodule SalixIM.Ports.TaskCreate do
     if SystemsRuntime.Proc.ensure_loaded?(impl) and
          function_exported?(impl, :personal_computers, 1),
        do: impl.personal_computers(scope),
+       else: {:ok, []}
+  end
+
+  @spec external_choice_messages(map(), map(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def external_choice_messages(scope, origin, limit)
+      when is_map(scope) and is_map(origin) and is_integer(limit) and limit > 0 do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and
+         function_exported?(impl, :external_choice_messages, 3),
+       do: impl.external_choice_messages(scope, origin, limit),
        else: {:ok, []}
   end
 

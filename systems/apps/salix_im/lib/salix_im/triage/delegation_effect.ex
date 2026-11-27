@@ -64,42 +64,57 @@ defmodule SalixIM.Triage.DelegationEffect do
          port_opts
        )
        when is_binary(task) and task != "" do
-    request_id = "triage-delegation:#{claim.obligation_id}:#{index}"
-    # Only the materializer's domain-assignment marker permits current-source
-    # intake. Public effects and historical model decisions keep strict checks.
-    port_opts = Keyword.put(port_opts, :purpose, :worker_intake)
+    case delegation_anchor_status(claim, delegation) do
+      :unanchored ->
+        {:ok, suppressed(index, delegation, :unanchored_delegation)}
 
-    with {:ok, %{status: :fresh} = first} <- freshness_port.check(claim, port_opts),
-         {:ok, prepared} <- delegation_port.prepare(claim, delegation, request_id),
-         {:ok, %{status: :fresh} = second} <- freshness_port.check(claim, port_opts),
-         true <- same_authority?(first, second),
-         {:ok, receipt} <- delegation_port.commit(prepared) do
-      delegation_receipt(receipt, request_id, index, delegation)
-    else
-      {:ok, %{status: :stale, reason: reason}} ->
-        {:ok, suppressed(index, delegation, reason)}
+      anchor_status ->
+        request_id = "triage-delegation:#{claim.obligation_id}:#{index}"
+        # Only the materializer's domain-assignment marker permits current-source
+        # intake. Public effects and historical model decisions keep strict checks.
+        port_opts = Keyword.put(port_opts, :purpose, :worker_intake)
 
-      false ->
-        {:ok, suppressed(index, delegation, :authority_changed_during_prepare)}
+        with {:ok, %{status: :fresh} = first} <- freshness_port.check(claim, port_opts),
+             :ok <- verify_live_anchor(anchor_status, claim, delegation, first),
+             {:ok, prepared} <- delegation_port.prepare(claim, delegation, request_id),
+             {:ok, %{status: :fresh} = second} <- freshness_port.check(claim, port_opts),
+             :commit <-
+               SalixVerifiedKernel.Proactive.decide_delegation_effect(
+                 {:fresh, authority_bytes(first)},
+                 :prepared,
+                 {:fresh, authority_bytes(second)}
+               ),
+             {:ok, receipt} <- delegation_port.commit(prepared) do
+          delegation_receipt(receipt, request_id, index, delegation)
+        else
+          {:error, :unanchored_delegation} ->
+            {:ok, suppressed(index, delegation, :unanchored_delegation)}
 
-      {:error, reason, retryable?} when is_boolean(retryable?) ->
-        result = blocked(index, delegation, reason, retryable?)
+          {:ok, %{status: :stale, reason: reason}} ->
+            {:ok, suppressed(index, delegation, reason)}
 
-        if retryable?,
-          do: {:error, reason, true, result},
-          else: {:ok, result}
+          :suppress_authority_drift ->
+            {:ok, suppressed(index, delegation, :authority_changed_during_prepare)}
 
-      {:error, reason} ->
-        retryable? = retryable_error?(reason)
-        result = blocked(index, delegation, reason, retryable?)
+          {:error, reason, retryable?} when is_boolean(retryable?) ->
+            result = blocked(index, delegation, reason, retryable?)
 
-        if retryable?,
-          do: {:error, reason, true, result},
-          else: {:ok, result}
+            if retryable?,
+              do: {:error, reason, true, result},
+              else: {:ok, result}
 
-      _other ->
-        {:error, :delegation_unavailable, true,
-         blocked(index, delegation, :delegation_unavailable, true)}
+          {:error, reason} ->
+            retryable? = retryable_error?(reason)
+            result = blocked(index, delegation, reason, retryable?)
+
+            if retryable?,
+              do: {:error, reason, true, result},
+              else: {:ok, result}
+
+          _other ->
+            {:error, :delegation_unavailable, true,
+             blocked(index, delegation, :delegation_unavailable, true)}
+        end
     end
   rescue
     _exception ->
@@ -113,6 +128,110 @@ defmodule SalixIM.Triage.DelegationEffect do
 
   defp execute_one(_claim, delegation, index, _freshness, _port, _opts),
     do: {:ok, blocked(index, delegation, :invalid_delegation, false)}
+
+  # Protects against historical persisted obligations whose delegation cited only
+  # retained cross-thread context or a sibling ChannelBatch thread rather than
+  # the current Slack target thread or a due scheduled recheck ref. Ordinary
+  # domain-owned intake assignments are already bound to the current target and
+  # verified by freshness checks. Suppresses in place without shifting sibling
+  # ordinals.
+  defp delegation_anchor_status(%{payload: %{"ordinary_worker_assignment" => true}}, _delegation),
+    do: :anchored
+
+  defp delegation_anchor_status(%{payload: payload}, %{"source_refs" => refs})
+       when is_map(payload) and is_list(refs) do
+    recheck_refs =
+      payload
+      |> Map.get("recheck_context_refs", [])
+      |> List.wrap()
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new()
+
+    target = payload["target"]
+
+    statuses =
+      Enum.map(refs, fn
+        "slack://" <> _rest = ref ->
+          slack_ref_anchor_status(ref, target)
+
+        ref when is_binary(ref) ->
+          if MapSet.member?(recheck_refs, ref), do: :anchored, else: :unanchored
+
+        _other ->
+          :unanchored
+      end)
+
+    cond do
+      :anchored in statuses -> :anchored
+      :check_live_roots in statuses -> :check_live_roots
+      true -> :unanchored
+    end
+  end
+
+  defp delegation_anchor_status(_claim, _delegation), do: :unanchored
+
+  defp verify_live_anchor(:anchored, _claim, _delegation, _fresh), do: :ok
+
+  defp verify_live_anchor(
+         :check_live_roots,
+         %{payload: %{"target" => %{"thread_ts" => target_thread_ts} = target}},
+         %{"source_refs" => refs},
+         %{message_roots: %{} = roots}
+       )
+       when is_binary(target_thread_ts) and target_thread_ts != "" and is_list(refs) do
+    anchored? =
+      Enum.any?(refs, fn
+        "slack://" <> rest ->
+          case String.split(rest, "/") do
+            [ws, ch, "channel", msg_ts] ->
+              target["workspace_id"] in [nil, "", ws] and
+                target["channel_id"] in [nil, "", ch] and
+                Map.get(roots, msg_ts) == target_thread_ts
+
+            _other ->
+              false
+          end
+
+        _other ->
+          false
+      end)
+
+    if anchored?, do: :ok, else: {:error, :unanchored_delegation}
+  end
+
+  defp verify_live_anchor(:check_live_roots, _claim, _delegation, _fresh),
+    do: {:error, :unanchored_delegation}
+
+  defp slack_ref_anchor_status("slack://" <> rest, target) do
+    case String.split(rest, "/") do
+      [ws, ch, scope, msg_ts] when ws != "" and ch != "" and scope != "" and msg_ts != "" ->
+        cond do
+          not is_map(target) ->
+            :anchored
+
+          target["workspace_id"] not in [nil, "", ws] or
+              target["channel_id"] not in [nil, "", ch] ->
+            :unanchored
+
+          target["thread_ts"] in [nil, ""] ->
+            :anchored
+
+          scope == target["thread_ts"] ->
+            :anchored
+
+          scope == "channel" ->
+            if msg_ts == target["thread_ts"], do: :anchored, else: :check_live_roots
+
+          true ->
+            :unanchored
+        end
+
+      _other ->
+        :unanchored
+    end
+  end
+
+  defp slack_ref_anchor_status(_ref, _target), do: :unanchored
 
   defp reverse_success({:ok, results}), do: {:ok, Enum.reverse(results)}
   defp reverse_success(other), do: other
@@ -173,7 +292,7 @@ defmodule SalixIM.Triage.DelegationEffect do
   defp source_count(%{"source_refs" => refs}) when is_list(refs), do: length(refs)
   defp source_count(_delegation), do: 0
 
-  defp same_authority?(left, right), do: left.authority_ref == right.authority_ref
+  defp authority_bytes(check), do: :erlang.term_to_binary(Map.get(check, :authority_ref))
 
   defp retryable_error?(reason),
     do:

@@ -12,9 +12,6 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.text.SpannableStringBuilder
 import android.text.Spanned
-import android.text.TextPaint
-import android.text.method.LinkMovementMethod
-import android.text.style.ClickableSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.ImageSpan
 import android.text.style.StyleSpan
@@ -29,6 +26,10 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.view.children
 import androidx.core.view.isVisible
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import surf.comma.android.R
 import surf.comma.android.routines.PlatformRoutine
 import surf.comma.android.routines.ProviderMarks
@@ -40,6 +41,7 @@ import surf.comma.android.routines.RecommendationSource
 import surf.comma.android.routines.RemoteImages
 import surf.comma.android.routines.RoutineQuote
 import surf.comma.android.scroll.widget.LinearLayoutManager
+import surf.comma.android.scroll.widget.PageSnap
 import surf.comma.android.scroll.widget.RecyclerView
 import surf.comma.android.scroll.widget.ScrollContainer
 import surf.comma.android.ui.ActionMenu
@@ -50,7 +52,9 @@ import surf.comma.android.ui.kit.pressedFill
 import surf.comma.android.ui.kit.rounded
 import surf.comma.android.ui.kit.tactile
 import surf.comma.android.ui.theme.DesignFonts
+import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignTypography.Level
+import surf.comma.android.workspace.WorkspaceStore.RoutinesFailure
 import surf.comma.android.workspace.WorkspaceStore
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -173,7 +177,6 @@ class PlatformCarousel(private val activity: ComponentActivity, private val stor
         layoutManager = LinearLayoutManager(activity, LinearLayoutManager.HORIZONTAL, false)
         clipToPadding = false
         setPadding(activity.dp(MARGIN_DP), 0, activity.dp(MARGIN_DP), 0)
-        overScrollMode = OVER_SCROLL_NEVER
     }
     private val indicator = Indicator(activity)
     private val unavailable = LinearLayout(activity).apply {
@@ -401,7 +404,7 @@ internal fun preTaskRow(context: Context, item: RecommendationItem, feed: Recomm
     } else {
         item.title?.let { words.addView(context.label(Level.REGULAR, R.color.token_text_primary, DesignFonts.medium, lines = 0).apply { text = it }) }
         if (item.parts.isNotEmpty()) {
-            words.addView(prose(context, item.parts, feed, lead = false, home = source?.appId), LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
+            words.addView(prose(context, item.parts, feed, home = source?.appId), LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
         } else item.detail?.let {
             words.addView(context.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply { text = it },
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
@@ -502,45 +505,32 @@ private fun quote(context: Context, quote: RoutineQuote): View = LinearLayout(co
 }
 
 /**
- * Briefing prose: in a row, a step under the page's body, with links and Tasks as mentions a weight heavier; as the
- * briefing's summary, a lead paragraph, with links and Tasks in the app's blue after their source's mark, which open
- * what they name.
+ * A row's prose, a step under the page's body, with links and Tasks as mentions a weight heavier after their source's
+ * mark. A mention of the row's own platform ([home]) leaves out the mark its title or caption shows.
  */
-internal fun prose(context: Context, parts: List<RecommendationPart>, feed: RecommendationFeed, lead: Boolean, home: String? = null,
-                   openTask: (String) -> Unit = {}, openUrl: (String) -> Unit = {}): TextView {
+internal fun prose(context: Context, parts: List<RecommendationPart>, feed: RecommendationFeed, home: String? = null): TextView {
     val text = SpannableStringBuilder()
-    val link = context.getColor(R.color.token_bg_brand_solid)
-    val markSize = context.dp(if (lead) 17 else 15)
-    fun reference(label: String, sourceId: String?, click: (() -> Unit)?) {
+    val markSize = context.dp(15)
+    fun mention(label: String, sourceId: String?) {
         val app = feed.source(sourceId)?.appId
-        if (!(lead.not() && app == home) && app != null && ProviderMarks.hasArtwork(app)) {
+        if (app != home && app != null && ProviderMarks.hasArtwork(app)) {
             val start = text.length
-            text.append("￼ ")
+            text.append("￼ ")
             val mark = ProviderMarks.drawable(context, app).apply { setBounds(0, 0, markSize, markSize) }
             text.setSpan(ImageSpan(mark, ImageSpan.ALIGN_BASELINE), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         val start = text.length
         text.append(label)
-        if (lead && click != null) {
-            text.setSpan(object : ClickableSpan() {
-                override fun onClick(widget: View) = click()
-                override fun updateDrawState(ds: TextPaint) { ds.color = link; ds.isUnderlineText = false }
-            }, start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
         text.setSpan(StyleSpan(Typeface.BOLD), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
     parts.forEach { part ->
         when (part) {
             is RecommendationPart.Text -> appendInlineMarkdown(text, part.text)
-            is RecommendationPart.Link -> reference(part.label, part.sourceId) { openUrl(part.url) }
-            is RecommendationPart.Task -> reference(part.label, part.sourceId) { openTask(part.conversationId) }
+            is RecommendationPart.Link -> mention(part.label, part.sourceId)
+            is RecommendationPart.Task -> mention(part.label, part.sourceId)
         }
     }
-    return context.label(if (lead) Level.LARGE else Level.REGULAR, R.color.token_text_primary, lines = 0).apply {
-        this.text = text
-        if (lead) setLineSpacing(context.dp(5).toFloat(), 1f)
-        if (lead) movementMethod = LinkMovementMethod.getInstance()
-    }
+    return context.label(Level.REGULAR, R.color.token_text_primary, lines = 0).apply { this.text = text }
 }
 
 /** The model writes light Markdown: bold and code. It is rendered; everything else stays literal. */
@@ -565,7 +555,7 @@ internal fun preTaskGroup(context: Context, platform: PlatformRoutine, items: Li
                           showsOrigin: Boolean = false, dismiss: ((RecommendationItem) -> Unit)? = null,
                           choose: (RecommendationItem) -> Unit): View = cardColumn(context).apply {
     val cards = mutableListOf<View>()
-    platform.card?.fallbackText?.let { cards += context.label(Level.REGULAR, R.color.token_text_primary, lines = 0).apply {
+    platform.fallbackTexts.forEach { cards += context.label(Level.REGULAR, R.color.token_text_primary, lines = 0).apply {
         text = it
         background = rounded(context.getColor(R.color.token_bg_tertiary), context.dp(CARD_RADIUS_DP).toFloat())
         setPadding(context.dp(14), context.dp(12), context.dp(14), context.dp(12))
@@ -583,8 +573,9 @@ private fun cardColumn(context: Context) = LinearLayout(context).apply {
 
 /**
  * A platform's pre-tasks: the app's mark and name as the title, then its suggestions, each a card of its own. A
- * sideways swipe pages to the previous or next platform in the carousel's order, over page dots, and the title
- * follows the page; it opens on the card that was tapped. Choosing a row closes the sheet, then acts.
+ * sideways swipe pages to the previous or next platform in the carousel's order, one page at a time, over page dots
+ * held at the sheet's visible bottom, and the title follows the page; it opens on the card that was tapped. A tap on
+ * either side of the current dot steps a page that way. Choosing a row closes the sheet, then acts.
  */
 class PreTaskSheet(activity: ComponentActivity, private val store: WorkspaceStore, start: PlatformRoutine,
                    private val actions: RoutineActions) : CommaSheet(activity, start.heading) {
@@ -592,6 +583,18 @@ class PreTaskSheet(activity: ComponentActivity, private val store: WorkspaceStor
     private val titleMark = ImageView(activity)
     private var chosen: RecommendationItem? = null
     private var page = pages.indexOfFirst { it.id == start.id }.coerceAtLeast(0)
+    private val dots = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        setBackgroundColor(activity.getColor(R.color.token_card_primary))
+        pages.indices.forEach { _ ->
+            addView(View(activity), LinearLayout.LayoutParams(activity.dp(7), activity.dp(7)).apply {
+                marginStart = activity.dp(4); marginEnd = activity.dp(4)
+            })
+        }
+        isVisible = pages.size > 1
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
 
     init {
         val pager = RecyclerView(activity).apply {
@@ -601,33 +604,52 @@ class PreTaskSheet(activity: ComponentActivity, private val store: WorkspaceStor
         pager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             override fun getItemCount() = pages.size
             override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = object : RecyclerView.ViewHolder(FrameLayout(parent.context).apply {
-                layoutParams = RecyclerView.LayoutParams(parent.width, RecyclerView.LayoutParams.MATCH_PARENT)
+                layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.MATCH_PARENT)
             }) {}
             override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
                 val frame = holder.itemView as FrameLayout
-                frame.layoutParams.width = pager.width
                 frame.removeAllViews()
-                frame.addView(pageView(pages[position], position))
+                frame.addView(pageView(pages[position]))
             }
         }
-        pager.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
-                if (newState != RecyclerView.SCROLL_STATE_IDLE || pager.width == 0) return
-                val offset = pager.computeHorizontalScrollOffset()
-                val target = (offset.toFloat() / pager.width).roundToInt().coerceIn(0, pages.lastIndex)
-                if (abs(target * pager.width - offset) > 1) pager.smoothScrollBy(target * pager.width - offset, 0)
-                if (target != page) { page = target; showTitle() }
+        // One page per swipe; the title and the dots follow the page under the finger, then the one it settles on.
+        val snap = PageSnap(pager, DesignMotion.springSpatial.stiffness, DesignMotion.springSpatial.dampingRatio) { target ->
+            page = target
+            showPage()
+        }
+        snap.show(page)
+        dots.isClickable = true
+        dots.setOnTouchListener { view, event ->
+            if (event.actionMasked == android.view.MotionEvent.ACTION_UP) {
+                val current = dots.getChildAt(page)
+                snap.go(if (event.x < current.left + current.width / 2f) page - 1 else page + 1)
+                view.performClick()
             }
-        })
-        pager.post { pager.scrollToPosition(page) }
-        setContent(pager)
+            true
+        }
+        val body = FrameLayout(activity).apply {
+            addView(pager, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(dots, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, activity.dp(DOTS_DP), Gravity.BOTTOM))
+        }
+        // The sheet moves by translation and is as tall as the screen at every height, so the dots rise by however
+        // much of the body is below the screen's bottom, past the navigation bar, to stay in sight as on iOS.
+        val screen = IntArray(2)
+        body.viewTreeObserver.addOnPreDrawListener {
+            body.getLocationInWindow(screen)
+            val frame = body.parent as? View
+            val visibleBottom = body.rootView.height - (frame?.paddingBottom ?: 0)
+            val lift = (screen[1] + body.height - visibleBottom).coerceAtLeast(0).toFloat()
+            if (dots.translationY != -lift) dots.translationY = -lift
+            true
+        }
+        setContent(body)
         val titleRow = titleView.parent as FrameLayout
         titleRow.addView(titleMark, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
-        showTitle()
+        showPage()
         onDismissed = { chosen?.let(actions::perform) }
     }
 
-    private fun showTitle() {
+    private fun showPage() {
         val platform = pages[page]
         titleView.text = platform.heading
         titleMark.setImageDrawable(ProviderMarks.drawable(activity, platform.source?.appId))
@@ -635,34 +657,32 @@ class PreTaskSheet(activity: ComponentActivity, private val store: WorkspaceStor
             val width = titleView.width
             titleMark.translationX = -(width / 2f + activity.dp(14))
         }
+        dots.children.forEachIndexed { index, dot ->
+            dot.background = rounded(activity.getColor(if (index == page) R.color.token_text_primary else R.color.token_text_placeholder),
+                activity.dp(4).toFloat())
+        }
     }
 
-    private fun pageView(platform: PlatformRoutine, index: Int): View {
+    private fun pageView(platform: PlatformRoutine): View {
         val feed = store.routines.feed.value
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(activity.dp(16), activity.dp(8), activity.dp(16), activity.dp(16))
+            // The last row scrolls clear of the dots.
+            setPadding(activity.dp(16), activity.dp(8), activity.dp(16), activity.dp(16) + if (pages.size > 1) activity.dp(DOTS_DP) else 0)
         }
         if (feed != null && platform.hasPreTasks(store::task)) {
-            column.addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed, dismiss = store.routines::dismiss) { item ->
+            column.addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed, dismiss = { store.routines.dismiss(it) }) { item ->
                 chosen = item
                 dismiss()
             })
         } else {
             column.addView(emptyLine(activity, platform))
         }
-        // The page dots under the rows, where a medium sheet still shows them.
-        if (pages.size > 1) column.addView(LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            pages.indices.forEach { dot ->
-                addView(View(activity).apply {
-                    background = rounded(activity.getColor(if (dot == index) R.color.token_text_primary else R.color.token_text_placeholder),
-                        activity.dp(4).toFloat())
-                }, LinearLayout.LayoutParams(activity.dp(7), activity.dp(7)).apply { marginStart = activity.dp(4); marginEnd = activity.dp(4) })
-            }
-        }, LinearLayout.LayoutParams(-1, activity.dp(28)).apply { topMargin = activity.dp(8) })
         return ScrollContainer(activity).apply { addView(column) }
+    }
+
+    private companion object {
+        const val DOTS_DP = 28
     }
 }
 
@@ -681,57 +701,173 @@ private fun emptyLine(context: Context, platform: PlatformRoutine): View = conte
 }
 
 /**
- * The whole briefing in one sheet, opened from Home's greeting: the summary as plain prose, then every pre-task as a
- * card of its own that names its platform under its words, in the carousel's order, as the desktop's Routines do.
- * Platforms with nothing fold into one quiet line.
+ * The whole briefing in one sheet, opened from Home's greeting: how many cards need the member beside the refresh,
+ * then every pre-task as a card of its own that names its platform under its words, in the carousel's order, as the
+ * desktop's Routines do. Platforms with nothing fold into one quiet line. With every card cleared, the cleared line
+ * takes their place until a refresh brings cards; the member who clears the last card here sees it celebrated. The
+ * line counts, and the sheet clears, by the briefing the server answers and the Tasks' state: a card the member
+ * stops leaves at once, and comes back when the server refuses.
  */
-class RoutineSheet(activity: ComponentActivity, private val store: WorkspaceStore, private val actions: RoutineActions,
-                   private val openTask: (String) -> Unit) : CommaSheet(activity, activity.getString(R.string.routines_title)) {
+class RoutineSheet(activity: ComponentActivity, private val store: WorkspaceStore, private val actions: RoutineActions)
+    : CommaSheet(activity, activity.getString(R.string.routines_title)) {
     private var after: (() -> Unit)? = null
+    private var following: Job? = null
+    /** The briefing (its Workspace and generation) and the cards drawn from it. One that names the same cards is not drawn again. */
+    private var drawn: Pair<Pair<String?, Long>?, List<String>>? = null
+    /** The cards the member stopped whose answer has yet to come: off the page, and counted until the briefing drops them. */
+    private val leaving = mutableSetOf<String>()
+
+    private val status = activity.label(Level.SMALL, R.color.token_text_tertiary).apply { isAccessibilityHeading = true }
+    private val refresh = FrameLayout(activity).apply {
+        id = R.id.routines_refresh
+        contentDescription = activity.getString(R.string.routines_refresh)
+        addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_arrow_rotate_cw)
+            imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_secondary))
+        }, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
+        tactile(0.9f)
+        setOnClickListener { store.routines.refresh() }
+    }
+    private val refused = activity.label(Level.MINI, R.color.token_text_quaternary, lines = 0).apply {
+        text = activity.getString(R.string.routines_rate_limited)
+    }
+    private val cards = cardColumn(activity)
+    private val foot = FrameLayout(activity)
+    private val confetti = RoutineConfettiView(activity)
 
     init {
-        val feed = store.routines.feed.value
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(activity.dp(16), activity.dp(8), activity.dp(16), activity.dp(24))
+            // The status and the refresh on one line, the refresh at its end.
+            addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(activity.dp(4), 0, 0, 0)
+                addView(status, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(refresh, LinearLayout.LayoutParams(activity.dp(44), activity.dp(44)))
+            }, LinearLayout.LayoutParams(-1, -2))
+            addView(refused, LinearLayout.LayoutParams(-1, -2).apply { marginStart = activity.dp(4) })
+            addView(cards, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(4) })
+            addView(foot, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(24) })
         }
-        if (feed != null) {
-            if (feed.summaryBody.isNotEmpty()) {
-                column.addView(prose(activity, feed.summaryBody, feed, lead = true,
-                    openTask = { id -> after = { openTask(id) }; dismiss() },
-                    openUrl = actions::openUrl).apply { setPadding(activity.dp(4), 0, activity.dp(4), 0) })
-            }
-            val platforms = feed.platforms
-            val busy = platforms.filter { it.hasPreTasks(store::task) }
-            if (busy.isNotEmpty()) column.addView(cardColumn(activity).apply {
-                busy.forEach { platform ->
-                    addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed, showsOrigin = true,
-                        dismiss = store.routines::dismiss) { item ->
-                        after = { actions.perform(item) }
-                        dismiss()
-                    }, LinearLayout.LayoutParams(-1, -2))
-                }
-            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(24) })
-            val quiet = platforms.filterNot { it.hasPreTasks(store::task) }
-            if (quiet.isNotEmpty()) column.addView(LinearLayout(activity).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(activity.dp(4), 0, activity.dp(4), 0)
-                addView(LinearLayout(activity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(LogoStack(activity, quiet.map { it.source?.appId }))
-                    addView(activity.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply {
-                        text = activity.getString(R.string.routines_nothing_from, quiet.joinToString(", ") { it.heading })
-                    }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = activity.dp(8) })
-                })
-                quiet.filter { it.source?.needsReconnect == true }.forEach { platform ->
-                    addView(activity.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply {
-                        text = activity.getString(R.string.routines_reconnect, platform.name)
-                    }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(8) })
-                }
-            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(24) })
-        }
-        setContent(ScrollContainer(activity).apply { addView(column) })
+        setContent(FrameLayout(activity).apply {
+            addView(ScrollContainer(activity).apply { addView(column) }, FrameLayout.LayoutParams(-1, -1))
+            // The burst has the whole sheet, over the page, and takes no touch.
+            addView(confetti, FrameLayout.LayoutParams(-1, -1))
+        })
         onDismissed = { after?.invoke() }
+        render()
+    }
+
+    override fun onShown() {
+        following = activity.lifecycleScope.launch {
+            // The cards count pre-tasks by their linked Tasks' state, which the briefing does not carry.
+            combine(store.routines.feed, store.routines.failure, store.routines.requesting, store.tasks.state) { _, _, _, _ -> }
+                .collect { render() }
+        }
+    }
+
+    override fun onRemoved() {
+        following?.cancel()
+    }
+
+    /** The cards the briefing shows, by id: a card's own words where this app can't draw its template, then its rows. */
+    private fun shownCards(feed: RecommendationFeed): List<String> = feed.platforms.flatMap { platform ->
+        platform.cards.filter { it.fallbackText != null }.map { "card:" + it.id } +
+            platform.preTasks(store::task).map { it.id }
+    }
+
+    private fun render() {
+        val feed = store.routines.feed.value
+        val shown = feed?.let(::shownCards).orEmpty()
+        renderStatus(feed, shown.size)
+        val before = drawn
+        val next = feed?.generation?.let { store.workspace?.id to it } to shown
+        if (next == before) return
+        drawn = next
+        // Another briefing owes the member's earlier requests nothing; this one keeps those it still names.
+        if (next.first != before?.first) leaving.clear() else leaving.retainAll(shown.toSet())
+        cards.removeAllViews()
+        foot.removeAllViews()
+        if (feed == null) return
+        val platforms = feed.platforms
+        platforms.forEach { platform ->
+            val items = platform.preTasks(store::task).filterNot { it.id in leaving }
+            if (platform.fallbackTexts.isEmpty() && items.isEmpty()) return@forEach
+            cards.addView(preTaskGroup(activity, platform, items, feed, showsOrigin = true, dismiss = ::stop) { item ->
+                after = { actions.perform(item) }
+                dismiss()
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+        val quiet = platforms.filterNot { it.hasPreTasks(store::task) }
+        // The last card of the briefing on screen went: celebrated. One read already cleared, or another briefing, is not.
+        val clearedHere = before != null && before.first != null && before.first == next.first && before.second.isNotEmpty()
+        if (feed.hasSnapshot && shown.isEmpty()) showCleared(feed, celebrate = clearedHere)
+        else if (quiet.isNotEmpty()) foot.addView(quietLine(quiet, namesIdle = true))
+    }
+
+    /**
+     * The member stopped a card's suggestions. The card has left the page; the line counts it until the server
+     * answers the briefing without it. A refusal brings the card back, as the briefing still has it.
+     */
+    private fun stop(item: RecommendationItem) {
+        leaving += item.id
+        store.routines.dismiss(item) {
+            leaving -= item.id
+            drawn = null
+            render()
+        }
+    }
+
+    private fun renderStatus(feed: RecommendationFeed?, left: Int) {
+        val routines = store.routines
+        status.isVisible = feed?.hasSnapshot == true
+        refresh.isVisible = feed?.hasSnapshot == true
+        status.text = if (left > 0) activity.resources.getQuantityString(R.plurals.routines_status_count, left, left)
+            else activity.getString(R.string.routines_status_cleared)
+        val canRefresh = !routines.isRefreshing && feed?.canRefresh == true
+        refresh.isEnabled = canRefresh
+        refresh.alpha = if (canRefresh) 1f else 0.3f
+        refused.isVisible = routines.failure.value == RoutinesFailure.RATE_LIMITED
+    }
+
+    /** The cleared line in place of the quiet one, over the platforms Routines can't read, which still need the member. */
+    private fun showCleared(feed: RecommendationFeed, celebrate: Boolean) {
+        val cleared = RoutinesClearedView(activity)
+        val unread = feed.platforms.filter { it.source?.needsReconnect == true }
+        foot.removeAllViews()
+        foot.addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(cleared, LinearLayout.LayoutParams(-1, -2))
+            if (unread.isNotEmpty()) addView(quietLine(unread, namesIdle = false), LinearLayout.LayoutParams(-1, -2))
+        })
+        if (!celebrate) return
+        cleared.pop()
+        // Thrown from the cleared line, once the page has placed it.
+        cleared.post {
+            val line = IntArray(2).also(cleared::getLocationInWindow)
+            val stage = IntArray(2).also(confetti::getLocationInWindow)
+            confetti.burst(originY = (line[1] - stage[1] + cleared.height - cleared.paddingBottom).toFloat())
+        }
+    }
+
+    /** The platforms with nothing for the member in one footnote; one Routines can't read says so on its own line. */
+    private fun quietLine(platforms: List<PlatformRoutine>, namesIdle: Boolean): View = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(activity.dp(4), 0, activity.dp(4), 0)
+        if (namesIdle) addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(LogoStack(activity, platforms.map { it.source?.appId }))
+            addView(activity.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply {
+                text = activity.getString(R.string.routines_nothing_from, platforms.joinToString(", ") { it.heading })
+            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = activity.dp(8) })
+        })
+        platforms.filter { it.source?.needsReconnect == true }.forEach { platform ->
+            addView(activity.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply {
+                text = activity.getString(R.string.routines_reconnect, platform.name)
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(8) })
+        }
     }
 }

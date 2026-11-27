@@ -7,6 +7,7 @@ import WidgetKit
 struct CommaActivityWidgets: WidgetBundle {
     var body: some Widget {
         CommaTaskLiveActivity()
+        CommaLiveStatusActivity()
         CommaCallLiveActivity()
     }
 }
@@ -44,15 +45,20 @@ struct CommaTaskLiveActivity: Widget {
                         .padding(.bottom, 6)
                 }
             } compactLeading: {
-                CommaMark(size: 16)
+                DynamicIslandCompactMark()
             } compactTrailing: {
-                if context.isStale { Image(systemName: "clock") }
-                else {
+                if context.isStale {
+                    DynamicIslandCompactSymbol(systemName: "clock")
+                        .accessibilityLabel("Last known state")
+                } else {
                     TaskActivityCount(count: context.state.tasks.count, short: true)
+                        .font(.footnote.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                         .foregroundStyle(context.state.needsAttention ? CommaTheme.attention : .white)
                 }
             } minimal: {
-                CommaMark(size: 16)
+                DynamicIslandCompactMark()
             }
             .widgetURL(context.state.tasks.first.flatMap { context.attributes.taskURL(id: $0.id) })
             .keylineTint(context.state.needsAttention ? CommaTheme.attention : .white)

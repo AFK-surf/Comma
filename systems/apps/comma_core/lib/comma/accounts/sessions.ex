@@ -11,6 +11,7 @@ defmodule Comma.Accounts.Sessions do
   # must never be accepted by a server without the panel route restriction.
   @task_panel_token_prefix "comma_panel_"
   @default_ttl_seconds 30 * 24 * 60 * 60
+  @pairing_methods AuthSession.pairing_methods()
   @last_seen_interval_seconds 5 * 60
   # A desktop App reports use at most this often while its user is at the
   # computer; the owner counts as present for twice that long.
@@ -436,8 +437,9 @@ defmodule Comma.Accounts.Sessions do
 
   # Pairing grants authority once; this bounded parent read preserves explicit
   # revocation during races with grant exchange, without making parent expiry
-  # or phone connectivity a requirement for the Watch's independent session.
-  defp active_pairing_parent(%{auth_method: "watch_pairing"} = session, repo) do
+  # or the parent's connectivity a requirement for the paired session.
+  defp active_pairing_parent(%{auth_method: method} = session, repo)
+       when method in @pairing_methods do
     case repo.get(AuthSession, session.parent_session_id) do
       %{user_id: user_id, revoked_at: nil, restricted: false, parent_session_id: nil} = parent
       when user_id == session.user_id ->
@@ -510,7 +512,7 @@ defmodule Comma.Accounts.Sessions do
     sort = Keyword.get(opts, :sort) || "created_at"
 
     if status in ~w(all active expired revoked) and
-         client_kind in ~w(all unknown web electron android ios watch api ssh) and
+         client_kind in ~w(all unknown web electron android ios watch raycast api ssh) and
          sort in ~w(created_at last_seen_at) do
       {:ok,
        %{

@@ -784,15 +784,38 @@ describe("Login", () => {
       <Login mode="email" onContinueWithGoogle={() => undefined} />
     );
 
+    // The first step is whole in its first frame: it does not fade in.
     expect(container.querySelectorAll("[data-stage-state]")).toHaveLength(1);
-    expect(container.querySelector('[data-stage-state="enter"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-stage-state="rest"]')).toHaveTextContent(
+      "Welcome to Comma"
+    );
+    expect(container.querySelector('[data-stage-state="enter"]')).toBeNull();
+
+    // Updating props within the first step keeps it at rest.
+    rerender(
+      <Login
+        mode="email"
+        email="person@comma.ai"
+        onContinueWithGoogle={() => undefined}
+      />
+    );
+    expect(container.querySelector('[data-stage-state="rest"]')).toHaveTextContent(
+      "Welcome to Comma"
+    );
+    expect(container.querySelector('[data-stage-state="enter"]')).toBeNull();
 
     rerender(<Login mode="verification" email="person@comma.ai" />);
 
+    expect(container.querySelector('[data-stage-state="enter"]')).toHaveTextContent(
+      "Check your email"
+    );
     const ghost = container.querySelector('[data-stage-state="exit"]');
     expect(container.querySelectorAll("[data-stage-state]")).toHaveLength(2);
     expect(ghost).toHaveAttribute("aria-hidden", "true");
     expect(ghost).toHaveAttribute("inert");
+    expect(ghost?.querySelector<HTMLInputElement>('input[type="email"]')).toHaveValue(
+      "person@comma.ai"
+    );
     // The ghost keeps the old step visible for the exit animation but out of
     // the accessibility tree, so queries resolve only the entering step.
     expect(
@@ -804,6 +827,10 @@ describe("Login", () => {
 
     expect(container.querySelectorAll("[data-stage-state]")).toHaveLength(1);
     expect(container.querySelector('[data-stage-state="exit"]')).toBeNull();
+    // Clearing the shorter exit ghost leaves the longer enter animation intact.
+    expect(container.querySelector('[data-stage-state="enter"]')).toHaveTextContent(
+      "Check your email"
+    );
   });
 
   it("replaces the ghost when steps flip again mid-transition", () => {

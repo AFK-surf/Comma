@@ -5,9 +5,19 @@ defmodule SalixIM.ProviderAttachments do
 
   alias SalixIM.Ports.AgentWorkspace
 
-  def stage(agent_id, attachments) do
+  # Only provider ingress callers supply this metadata, never tool arguments.
+  def ingress_label(group_id, metadata) do
+    with {:ok, group} <- SalixIM.GroupDirectory.get_group(group_id),
+         %{"label" => label} <- SalixIM.IFC.Ingress.provider_block(group, metadata, nil) do
+      label
+    else
+      _ -> nil
+    end
+  end
+
+  def stage(agent_id, attachments, label \\ nil) do
     with {:ok, prepared, prepare_failures} <- prepare(agent_id, attachments),
-         {:ok, staged, publish_failures} <- publish(agent_id, prepared) do
+         {:ok, staged, publish_failures} <- publish(agent_id, prepared, label) do
       {:ok, staged, prepare_failures ++ publish_failures}
     end
   end
@@ -44,15 +54,17 @@ defmodule SalixIM.ProviderAttachments do
     end)
   end
 
-  def publish(agent_id, prepared_attachments) do
+  def publish(agent_id, prepared_attachments, label \\ nil) do
     prepared_attachments
     |> Enum.reduce({[], []}, fn prepared, {staged, failed} ->
       attachment = prepared["attachment"] || %{}
       ref = prepared["ref"] || %{}
 
-      case AgentWorkspace.put_ref(agent_id, attachment["path"], ref) do
+      case AgentWorkspace.put_ref(agent_id, attachment["path"], ref, ifc_label: label) do
+        # The staged file keeps its immutable body, so Home can show an image
+        # without reading the Agent's workspace again.
         {:ok, _} ->
-          {[attachment | staged], failed}
+          {[Map.put(attachment, "blob_ref", ref) | staged], failed}
 
         {:error, reason} ->
           log_stage_failed(agent_id, attachment["path"], reason)

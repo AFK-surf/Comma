@@ -42,7 +42,16 @@ import {
 import { CONVERSATION_TURN_WINDOW } from "../../thread/navigation/conversationTurnWindow";
 import { ThreadWorkerVendorContext } from "../../thread/threadContexts";
 import { ConversationView, type ConversationViewActions } from "../ConversationView";
+import { StaleChatSessionError } from "../../ChatProvider";
+import {
+  ChatSidebarProvider,
+  useChatSidebar,
+  useRegisterChatSidebarHost,
+} from "../../../chat-sidebar/ChatSidebarContext";
+import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { fixedDraftSource } from "../../composer/conversationDraft";
+import { savedDocumentEdits } from "../../../chat-sidebar/savedDocumentEdits";
+import { conversationFileSourceKey } from "../../../../runtime-files/fileSources";
 import {
   DraftSelectionsProvider,
   pictureDataUrl,
@@ -78,6 +87,23 @@ const { markdownRenderSpy } = vi.hoisted(() => ({
   markdownRenderSpy: vi.fn(),
 }));
 const analytics = vi.hoisted(() => ({ begin: vi.fn(), finish: vi.fn() }));
+// (the live picture has its own test: here, only when the conversation shows it and for which Task)
+vi.mock("../../tasks/CodingScreenInline", () => ({
+  CodingScreenInline: ({
+    coding,
+    owner,
+    device,
+  }: {
+    coding: { taskId: string };
+    owner: string;
+    device: string;
+  }) => (
+    <div
+      data-task={`${coding.taskId} ${owner} ${device}`}
+      data-testid="coding-screen-inline"
+    />
+  ),
+}));
 vi.mock("../../../../analytics/client", () => ({
   commaAnalyticsIdentity: () => "test-user",
   captureCommaExperience: vi.fn(),
@@ -511,7 +537,7 @@ describe("ConversationView", () => {
     expect(await screen.findByTestId("task-panel-schedule")).toHaveTextContent(
       "Every hour"
     );
-    fireEvent.click(await screen.findByRole("button", { name: "In progress" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Automated" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Done" }));
     await waitFor(() => expect(setTaskStatus).toHaveBeenLastCalledWith("completed", 5));
   });
@@ -859,7 +885,9 @@ describe("ConversationView", () => {
       expect(actions.retry).toHaveBeenCalledWith("req_billing");
       expect(actions.discard).toHaveBeenCalledWith("req_billing");
       fireEvent.click(within(notice).getByRole("button", { name: "Add credits" }));
-      expect(window.location.hash).toBe("#/settings?category=usage-billing");
+      expect(window.location.hash).toBe(
+        "#/settings?category=usage-billing&from=out_of_credits"
+      );
     } finally {
       window.location.hash = previousHash;
     }
@@ -911,6 +939,86 @@ describe("ConversationView", () => {
 
     act(() => control.setStatus?.({ state: "active", status: "thinking" }));
     await waitFor(() => expect(screen.queryByTestId("provider-quota")).toBeNull());
+  });
+
+  it("only surfaces the sync-warning toast while the surface is active", async () => {
+    const actions = createActions();
+    const control: { setSurfaceActive?: (active: boolean) => void } = {};
+    function Harness() {
+      const [surfaceActive, setSurfaceActive] = useState(false);
+      control.setSurfaceActive = setSurfaceActive;
+      return (
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({ syncWarning: "stale" })}
+          surfaceActive={surfaceActive}
+        />
+      );
+    }
+
+    renderConversation(<Harness />);
+    await act(async () => {
+      await flush();
+    });
+    expect(screen.queryByTestId("chat-sync-warning")).toBeNull();
+
+    act(() => control.setSurfaceActive?.(true));
+    const notice = await screen.findByTestId("chat-sync-warning");
+    expect(notice).toBeVisible();
+    fireEvent.click(within(notice).getByRole("button", { name: "Retry now" }));
+    expect(actions.refresh).toHaveBeenCalledTimes(1);
+
+    act(() => control.setSurfaceActive?.(false));
+    await waitFor(() => expect(screen.queryByTestId("chat-sync-warning")).toBeNull());
+  });
+
+  it("dismisses the sync-warning toast without throwing when retry hits a stale session", async () => {
+    const actions = {
+      ...createActions(),
+      refresh: vi.fn(() => {
+        throw new StaleChatSessionError();
+      }),
+    };
+
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({ syncWarning: "stale" })}
+      />
+    );
+
+    const notice = await screen.findByTestId("chat-sync-warning");
+    expect(() => {
+      fireEvent.click(within(notice).getByRole("button", { name: "Retry now" }));
+    }).not.toThrow();
+    await waitFor(() => expect(screen.queryByTestId("chat-sync-warning")).toBeNull());
+  });
+
+  it("keeps the sync-warning toast up when only its wording changes", async () => {
+    const actions = createActions();
+    const control: {
+      setSyncWarning?: (warning: "stale" | "suspect-empty") => void;
+    } = {};
+    function Harness() {
+      const [syncWarning, setSyncWarning] = useState<"stale" | "suspect-empty">(
+        "stale"
+      );
+      control.setSyncWarning = setSyncWarning;
+      return (
+        <ConversationViewWithDraft actions={actions} state={state({ syncWarning })} />
+      );
+    }
+
+    renderConversation(<Harness />);
+    const stale = (await screen.findByTestId("chat-sync-warning")).textContent;
+
+    act(() => control.setSyncWarning?.("suspect-empty"));
+    await waitFor(() =>
+      expect(screen.getByTestId("chat-sync-warning").textContent).not.toBe(stale)
+    );
+    // A dismissal from the previous wording would land a couple of frames later.
+    await advance(1000);
+    expect(screen.getByTestId("chat-sync-warning")).toBeVisible();
   });
 
   it("names what ran out and how to fix it, once per stop, in the toast and under the status line", async () => {
@@ -1892,6 +2000,141 @@ describe("ConversationView", () => {
     expect(slot).toHaveTextContent("Worker is thinking");
   });
 
+  it("shows a coding Task's sandbox's screen under the Worker's activity while something is on the screen", async () => {
+    const task = (run: Partial<ConversationChannelState>) =>
+      state({
+        conversation: {
+          id: "cnv_task",
+          kind: "agent_task",
+          status: "in_progress",
+          title: "Task",
+          group_id: "grp_1",
+        },
+        messages: [message("msg_task_start", "assistant", "Task started")],
+        ...run,
+      });
+    const working = [
+      {
+        conversationId: "cnv_task",
+        participantId: "ptp_worker",
+        actorRole: "worker" as const,
+        name: "Worker",
+        state: "active" as const,
+        status: "is thinking...",
+        updatedAt: 1,
+      },
+    ];
+    const show = (run: Partial<ConversationChannelState>) =>
+      renderConversation(
+        <ConversationViewWithDraft
+          actions={createActions()}
+          state={task(run)}
+          workspaceId="wsp_1"
+        />
+      );
+
+    // Its browser is open and the Worker works: the screen, after the Worker's status.
+    const rendered = show({
+      participantStatuses: working,
+      taskRun: sandboxPlace({ screenActive: true }),
+    });
+    const slot = await screen.findByTestId("participant-status-slot");
+    expect(screenInline()).toHaveAttribute(
+      "data-task",
+      "cnv_task usr_ada dev-sbx-cnv_task"
+    );
+    expect(
+      slot.compareDocumentPosition(screenInline()!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    rendered.unmount();
+
+    // A sandbox Worker that reports no activity while its browser is open: the screen still shows.
+    const quiet = show({
+      participantStatuses: [],
+      taskRun: sandboxPlace({ screenActive: true }),
+    });
+    await screen.findByText("Task started");
+    expect(screenInline()).toHaveAttribute(
+      "data-task",
+      "cnv_task usr_ada dev-sbx-cnv_task"
+    );
+    quiet.unmount();
+
+    // The Worker's message that ends its turn takes the screen away as it appears, though the station still says
+    // something is on the screen (it says the screen ended when the turn does). It stays away while the Router
+    // speaks. A person's new message, the Worker's next input, lets it show again: a client that missed the
+    // station's "ended" would otherwise hide the whole next turn.
+    const result = message("msg_task_result", "assistant", "All three pages pass.", {
+      endsTurn: true,
+    });
+    const started = task({}).messages;
+    const actions = createActions();
+    const turnState: { set?: (run: Partial<ConversationChannelState>) => void } = {};
+    const now = (run: Partial<ConversationChannelState>) =>
+      act(() => turnState.set!(run));
+    function Turn() {
+      const [run, setRun] = useState<Partial<ConversationChannelState>>({
+        taskRun: sandboxPlace({ screenActive: true }),
+      });
+      turnState.set = setRun;
+      return (
+        <ConversationViewWithDraft
+          actions={actions}
+          state={task(run)}
+          workspaceId="wsp_1"
+        />
+      );
+    }
+    const turn = renderConversation(<Turn />);
+    await screen.findByText("Task started");
+    expect(screenInline()).not.toBeNull();
+    now({
+      messages: [...started, result],
+      taskRun: sandboxPlace({ screenActive: true }),
+    });
+    await screen.findByText("All three pages pass.");
+    expect(screenInline()).toBeNull();
+    const delivered = message(
+      "msg_task_delivered",
+      "assistant",
+      "The Worker checked all three pages.",
+      { actorRole: "router" }
+    );
+    now({
+      messages: [...started, result, delivered],
+      taskRun: sandboxPlace({ screenActive: true }),
+    });
+    await screen.findByText("The Worker checked all three pages.");
+    expect(screenInline()).toBeNull();
+    const follow = message("msg_task_next", "user", "Now check the fourth page.");
+    now({
+      messages: [...started, result, delivered, follow],
+      taskRun: sandboxPlace({ screenActive: true }),
+    });
+    await screen.findByText("Now check the fourth page.");
+    expect(screenInline()).not.toBeNull();
+    const shown = [...started, result, delivered, follow];
+    now({ messages: shown, taskRun: sandboxPlace({}) });
+    expect(screenInline()).toBeNull();
+    now({ messages: shown, taskRun: sandboxPlace({ screenActive: true }) });
+    expect(screenInline()).not.toBeNull();
+    turn.unmount();
+
+    // Nothing on the screen, or the sandbox stopped: no screen.
+    for (const run of [
+      { participantStatuses: working, taskRun: sandboxPlace({}) },
+      {
+        participantStatuses: working,
+        taskRun: sandboxPlace({ screenActive: true, state: "stopped" }),
+      },
+    ]) {
+      const next = show(run);
+      await screen.findByText("Task started");
+      expect(screenInline()).toBeNull();
+      next.unmount();
+    }
+  });
+
   it("keeps a timed-out accepted send visible without a running participant", async () => {
     const participantState: Partial<ConversationChannelState> = {
       awaitingReply: true,
@@ -2171,6 +2414,127 @@ describe("ConversationView", () => {
       title: "核对上线清单",
     });
     expect(screen.queryByTestId("routed-conversation")).toBeNull();
+  });
+
+  it("opens a document an Agent sends while the reader is in the chat, and none the chat already held", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    const document = (messageId: string, seq: number) =>
+      message(messageId, "assistant", "The plan is attached.", {
+        seq,
+        attachments: [
+          {
+            attachmentIndex: 0,
+            blockType: "file",
+            fileName: "plan.md",
+            mimeType: "text/markdown",
+          },
+        ],
+      });
+    const held = [document("msg_old", 1)];
+    let deliver: ((messages: ChatMessage[]) => void) | undefined;
+    function Chat() {
+      const [messages, setMessages] = useState(held);
+      deliver = setMessages;
+      return (
+        <ConversationViewWithDraft
+          actions={createActions()}
+          groupId="grp_1"
+          state={state({ messages, serverMessages: messages })}
+          workspaceId="wsp_1"
+        />
+      );
+    }
+    renderConversation(<Chat />, (ui) => (
+      <ChatSidebarProvider>
+        <DocumentTabsProbe />
+        {ui}
+      </ChatSidebarProvider>
+    ));
+    await screen.findAllByText("The plan is attached.");
+    expect(screen.getByTestId("document-tabs").textContent).toBe("[]");
+
+    // The next version arrives: one tab, on that version, written by Comma.
+    act(() => deliver?.([...held, document("msg_new", 2)]));
+    expect(screen.getByTestId("document-tabs").textContent).toBe(
+      JSON.stringify([["msg_new", "Comma", true]])
+    );
+    act(() => deliver?.([...held, document("msg_new", 2), document("msg_newer", 3)]));
+    expect(screen.getByTestId("document-tabs").textContent).toBe(
+      JSON.stringify([["msg_newer", "Comma", true]])
+    );
+  });
+
+  it("shows a document an Agent sent as a card with its first lines, and opens it beside the chat", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    const core = createScriptedCore({
+      calls: (name) =>
+        name === "files.readRange"
+          ? {
+              bytes: new TextEncoder().encode("# 接入方案\n\n插件只和桌面端通信。\n"),
+              size: 48,
+              type: "text/markdown",
+            }
+          : null,
+    });
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={createActions()}
+        live
+        groupId="grp_1"
+        state={state({
+          messages: [
+            message("msg_plan", "assistant", "方案写好了。", {
+              attachments: [
+                {
+                  attachmentIndex: 0,
+                  blockType: "file",
+                  fileName: "plan.md",
+                  mimeType: "text/markdown",
+                  size: 48,
+                },
+                {
+                  attachmentIndex: 1,
+                  blockType: "file",
+                  fileName: "data.csv",
+                  size: 9,
+                },
+              ],
+            }),
+          ],
+        })}
+        workspaceId="wsp_1"
+      />,
+      (ui) =>
+        core.wrap(
+          <ChatSidebarProvider>
+            <DocumentTabsProbe />
+            {ui}
+          </ChatSidebarProvider>
+        )
+    );
+    // The card has Open once the chat's sidebar is there to open it in.
+    const card = await waitFor(() => {
+      const shown = screen.getByTestId("chat-attachment-file-msg_plan-0");
+      expect(shown).toHaveClass("chat-panel-preview-card");
+      return shown;
+    });
+    expect(card).toHaveTextContent("plan.md");
+    expect(card).toHaveTextContent(/MD · 48\s?B/u);
+    // The picture is the document's own text, read as its first bytes only.
+    await waitFor(() => expect(card).toHaveTextContent("插件只和桌面端通信。"));
+    expect(core.sentTo("files.readRange")).toEqual([
+      expect.objectContaining({ offset: 0, length: 1536 }),
+    ]);
+    // A file the sidebar does not read as a page stays a row.
+    expect(screen.getByTestId("chat-attachment-file-msg_plan-1")).toHaveClass(
+      "chat-panel-file"
+    );
+
+    // Open is the card's one control here.
+    fireEvent.click(within(card).getByRole("button"));
+    expect(screen.getByTestId("document-tabs").textContent).toBe(
+      JSON.stringify([["msg_plan", null, true]])
+    );
   });
 
   it("opens an external markdown link in Comma's browser sidebar", async () => {
@@ -2799,6 +3163,58 @@ describe("ConversationView", () => {
     expect(options?.files).toEqual([
       { bytes: new Uint8Array([2, 3]), name: "inspected-element.png", size: 2 },
     ]);
+  });
+
+  it("sends a person's saved edits of a document with their next message, and shows no tile for them", async () => {
+    // Comma sent the document; the person edited it, and the edits are saved on the device.
+    const version = conversationFileSourceKey({
+      groupId: "grp_1",
+      conversationId: "cnv_1",
+      messageId: "msg_plan",
+      attachmentIndex: 1,
+      fileName: "plan.md",
+    });
+    const transcript = [
+      message("msg_plan", "assistant", "Here is the plan.", {
+        attachments: [
+          { attachmentIndex: 1, blockType: "file", fileName: "plan.md" },
+        ] as ChatMessage["attachments"],
+      }),
+    ];
+    savedDocumentEdits.set(version, "# Plan\n\nMine.\n");
+    // With nothing typed the edits are nothing to send, and the composer shows nothing of them.
+    const idle = renderConversation(
+      <ConversationViewWithDraft
+        actions={createActions()}
+        state={state({ messages: transcript })}
+      />,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    expect(await screen.findByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(document.querySelector('[data-slot="selection-attachment"]')).toBeNull();
+    idle.unmount();
+
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({ draft: "Make the summary shorter", messages: transcript })}
+      />,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    await act(async () => {
+      await accepted;
+    });
+    const [text, options] = vi.mocked(actions.send).mock.calls[0]!;
+    expect(decodeUserMessage(text).body).toBe("Make the summary shorter");
+    expect(text).toContain("The person edited this document.");
+    expect(options?.files?.map((file) => file.name)).toEqual(["plan.md"]);
+    // The message carried them: the next one does not carry them again.
+    expect(savedDocumentEdits.sent(version)).toBe(true);
+    savedDocumentEdits.delete(version);
   });
 
   it("counts a selection with what the composer has attached: one over a message's files is not staged", async () => {
@@ -3802,6 +4218,53 @@ describe("ConversationView", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("User"));
   });
 
+  it("offers Share separated by a divider in the right-click menu for selected text and opens the share image dialog", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          messages: [
+            message(
+              "msg_user_forward_selection",
+              "user",
+              "Before text Selected passage After text"
+            ),
+          ],
+        })}
+      />
+    );
+
+    const output = await screen.findByTestId("chat-user-bubble-content");
+    const textNode = output.firstChild;
+    if (!textNode) throw new Error("expected user bubble text node");
+    const range = document.createRange();
+    range.setStart(textNode, 12);
+    range.setEnd(textNode, 28);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent(
+      output,
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 120,
+        clientY: 80,
+      })
+    );
+
+    const shareItem = await screen.findByRole("menuitem", { name: "Share" });
+    expect(screen.getByRole("separator")).toBeInTheDocument();
+    await user.click(shareItem);
+
+    expect(await screen.findByTestId("text-share-image-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("text-share-image-canvas")).toBeInTheDocument();
+  });
+
   it("copies the visible user bubble body without attachment protocol text", async () => {
     const user = userEvent.setup();
     const actions = createActions();
@@ -3860,6 +4323,63 @@ describe("ConversationView", () => {
     expect(screen.queryByText("Attached files in your workspace:")).toBeNull();
     expect(screen.getByTestId("chat-attachment-pill-msg_file-0")).toHaveTextContent(
       "report.txt"
+    );
+  });
+
+  it("shows a file named by its path with its folder and size, its full path on hover, and its folder once sent", async () => {
+    const actions = createActions();
+    const drafted = renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          draft: "",
+          draftAttachments: [
+            {
+              error: undefined,
+              id: "att_zip",
+              isImage: false,
+              localPath: "/Users/me/Downloads/project-assets.zip",
+              name: "project-assets.zip",
+              path: undefined,
+              size: 40 * 1024 * 1024,
+              status: "uploaded",
+            },
+          ],
+        })}
+      />
+    );
+    // The folder alone (its middle gives way when it is too wide); hovered, the full path and the size.
+    expect(
+      (await screen.findByTitle("/Users/me/Downloads/project-assets.zip (40 MB)"))
+        .textContent
+    ).toBe("project-assets.zip~/Downloads");
+    expect(screen.queryByText("Uploading…")).toBeNull();
+    drafted.unmount();
+
+    const text = composeMessageWithAttachments("解压一下", [
+      {
+        name: "project-assets.zip",
+        path: "/Users/me/Downloads/project-assets.zip",
+        local: true,
+      },
+      { name: "shot.png", path: "/Users/me/shot.png", local: true },
+    ]);
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({ messages: [message("msg_local", "user", text)] })}
+        groupId="grp_1"
+        workspaceId="wsp_1"
+      />
+    );
+    expect(await screen.findByText("解压一下")).toBeInTheDocument();
+    expect(screen.queryByText(/local path:/)).toBeNull();
+    const zip = screen.getByTestId("chat-attachment-pill-msg_local-0");
+    expect(zip).toHaveTextContent("project-assets.zip~/Downloads");
+    expect(zip).toHaveAttribute("title", "/Users/me/Downloads/project-assets.zip");
+    // A picture on the sender's computer is a file chip: there is nothing here to draw it from.
+    expect(screen.getByTestId("chat-attachment-pill-msg_local-1")).toHaveTextContent(
+      "shot.png"
     );
   });
 
@@ -8007,7 +8527,7 @@ describe("Composer", () => {
     const sections = within(list)
       .getAllByRole("group")
       .map((group) => group.firstElementChild?.textContent);
-    expect(sections).toEqual(["Add", "Tasks", "Routines", "Plugins", "Drive"]);
+    expect(sections).toEqual(["Add", "Tasks", "Briefing", "Plugins", "Drive"]);
   });
 
   it("answers / with the panel's No results state when no skills exist", () => {
@@ -8305,11 +8825,13 @@ function ComposerHarness({
   onAttachFiles,
   onSend,
   skills,
+  workerMention,
 }: {
   mentionSources?: ComposerMentionSources;
   onAttachFiles?: (files: AttachmentUploadInput[]) => void;
   onSend: (draft: string, options: { skills: { location: string }[] }) => void;
   skills: CommaSkill[];
+  workerMention?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   return (
@@ -8317,6 +8839,7 @@ function ComposerHarness({
       draftSource={fixedDraftSource(draft)}
       {...(mentionSources ? { mentionSources } : {})}
       {...(onAttachFiles ? { onAttachFiles } : {})}
+      {...(workerMention ? { workerMention } : {})}
       onDraftChange={setDraft}
       onSend={onSend}
       skills={skills}
@@ -8618,9 +9141,48 @@ function renderConversation(
   );
 }
 
+function DocumentTabs() {
+  const sidebar = useChatSidebar();
+  return (
+    <output data-testid="document-tabs">
+      {JSON.stringify(
+        [...(sidebar.activeSession?.filePreviews ?? [])].map((preview) => [
+          preview.source.messageId,
+          preview.writer,
+          sidebar.isOpen,
+        ])
+      )}
+    </output>
+  );
+}
+// One object, as a route's memoized host is: a new one each render registers the host again.
+const documentTabsHost = {
+  workspaceId: "wsp_1",
+  groupId: "grp_1",
+  conversationId: "cnv_1",
+};
+/** The chat's host, and the document tabs its sidebar holds. */
+function DocumentTabsProbe() {
+  useRegisterChatSidebarHost(documentTabsHost);
+  return <DocumentTabs />;
+}
+
 function TargetConversationRoute() {
   return <div data-testid="routed-conversation">cnv_task</div>;
 }
+
+/** A ready sandbox that shows `usr_ada` its screen, as a Task's run says it. */
+const sandboxPlace = (more: object) => ({
+  place: {
+    kind: "sandbox" as const,
+    state: "ready",
+    screenOwner: "usr_ada",
+    screenDevice: "dev-sbx-cnv_task",
+    ...more,
+  },
+  model: undefined,
+});
+const screenInline = () => screen.queryByTestId("coding-screen-inline");
 
 function renderStatefulConversation(
   initialState: ConversationChannelState,
@@ -9188,6 +9750,45 @@ describe("Composer Drive mentions", () => {
     // Attaching leaves no trigger text and no token behind.
     expect(textbox).toHaveTextContent("");
     expect(screen.queryByRole("listbox", { name: "Mentions" })).toBeNull();
+  });
+
+  it("offers only Add and Comma in a shared task's @ menu, not the account's own Drive", () => {
+    const file = {
+      contentsHash: "hash-report",
+      deviceId: "this-mac",
+      id: "drive-file-report",
+      modifiedAt: 30,
+      name: "report.pdf",
+      sizeBytes: 6,
+      spaceId: "space-a",
+    };
+    render(
+      <ComposerHarness
+        mentionSources={{
+          models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
+          drive: {
+            items: [
+              { file, location: "Folder A", read: () => Promise.resolve(new Blob()) },
+            ],
+            status: "ready",
+          },
+          plugins: { items: [{ id: "codex", name: "Codex" }], status: "ready" },
+          routines: { items: [], status: "ready" },
+          tasks: { items: [], status: "ready" },
+        }}
+        onAttachFiles={() => {}}
+        onSend={() => {}}
+        skills={[]}
+        workerMention
+      />
+    );
+    const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+    typeIntoComposerRichEditor(textbox, "@");
+    const options = within(screen.getByRole("listbox", { name: "Mentions" }))
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(options).toEqual(["Add files or folders", "Comma"]);
   });
 
   it("keeps the Drive section out when nothing can be attached", () => {

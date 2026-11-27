@@ -284,6 +284,40 @@ describe("TaskDetailsPanel labels", () => {
     );
   });
 
+  it("lets a Task together's host close it with no labels, and shows a member no Properties", async () => {
+    const onSetStatus = vi.fn();
+    const { unmount } = render(
+      <TaskDetailsPanel
+        conversation={{ ...conversation, status: "active" }}
+        groupId={GROUP}
+        labeled={false}
+        onSetStatus={onSetStatus}
+        open
+      />
+    );
+    await user.click(screen.getByRole("button", { name: "In progress" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "In progress",
+      "Done",
+      "Cancelled",
+    ]);
+    expect(screen.queryByTestId("task-panel-labels")).toBeNull();
+    await user.keyboard("{Escape}");
+    unmount();
+
+    render(
+      <TaskDetailsPanel
+        conversation={{ ...conversation, status: "active" }}
+        groupId={GROUP}
+        labeled={false}
+        open
+        properties={false}
+      />
+    );
+    expect(screen.queryByTestId("task-panel-properties")).toBeNull();
+    expect(screen.queryByTestId("task-conversation-status")).toBeNull();
+  });
+
   it("keeps the status read-only without a status action", () => {
     render(
       <TaskDetailsPanel

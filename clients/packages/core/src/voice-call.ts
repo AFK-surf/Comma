@@ -24,12 +24,16 @@ const START = JSON.stringify({
   client: "comma-desktop/1",
 });
 
-const idle = (available: boolean): VoiceCallValue => ({
+const idle = (
+  available: boolean,
+  lastEnd: VoiceCallValue["lastEnd"] = null
+): VoiceCallValue => ({
   available,
   phase: "idle",
   workspace: null,
   muted: false,
   connectedAt: null,
+  lastEnd,
 });
 
 const unavailable = () =>
@@ -45,6 +49,7 @@ export function registerNoVoiceCall(ctx: Ctx): void {
   ctx.kernel.calls({
     "voiceCall.start": { run: unavailable },
     "voiceCall.end": { run: () => Effect.succeed(null) },
+    "voiceCall.dismissEnd": { run: () => Effect.succeed(null) },
     "voiceCall.setMuted": { run: unavailable },
   });
 }
@@ -57,6 +62,10 @@ export class VoiceCall {
   #key: { workspace: string; id: string } | null = null;
   /** Each call's number: work of a call that ended does nothing to the next. */
   #generation = 0;
+  /** The end reason sent on a `session.ended` frame before the socket closes. */
+  #lastReason: string | null = null;
+  /** Monotonic counter for unexpected call endings reported in `lastEnd`. */
+  #endSeq = 0;
 
   constructor(ctx: Ctx, ports: VoiceCallPorts) {
     this.#ctx = ctx;
@@ -82,6 +91,14 @@ export class VoiceCall {
       },
       "voiceCall.end": {
         run: () => Effect.sync(() => this.#hangUp()).pipe(Effect.as(null)),
+      },
+      "voiceCall.dismissEnd": {
+        run: (p) =>
+          Effect.sync(() => {
+            const id = (p as { id?: unknown } | null)?.id;
+            if (typeof id === "number" && this.#value.lastEnd?.id === id)
+              this.#set({ ...this.#value, lastEnd: null });
+          }).pipe(Effect.as(null)),
       },
       "voiceCall.setMuted": {
         run: (p) =>
@@ -113,6 +130,7 @@ export class VoiceCall {
     if (this.#value.phase !== "idle")
       return Effect.fail(new CoreError("busy", "A call is already in progress."));
     const generation = ++this.#generation;
+    this.#lastReason = null;
     this.#set({ ...idle(true), phase: "calling", workspace });
     const ctx = this.#ctx;
     const expiresAt = DateTime.formatIso(
@@ -156,34 +174,48 @@ export class VoiceCall {
         this.#ports.command({ op: "send", text: START });
         return;
       case "message": {
-        const type = messageType(event.text);
-        if (type === "session.started" && this.#value.phase === "calling")
+        const message = parseMessage(event.text);
+        if (message?.type === "session.started" && this.#value.phase === "calling")
           this.#set({
             ...this.#value,
             phase: "connected",
             connectedAt: this.#ctx.now(),
           });
+        else if (message?.type === "session.ended" && message.reason)
+          this.#lastReason = message.reason;
         return;
       }
-      case "closed":
-        this.#finish();
+      case "closed": {
+        const previousPhase = this.#value.phase;
+        const reason = this.#lastReason ?? (event.reason || null);
+        const lastEnd =
+          reason && shouldReportEnd(previousPhase, reason)
+            ? { id: ++this.#endSeq, phase: previousPhase, reason }
+            : null;
+        this.#finish(lastEnd);
         return;
+      }
     }
   }
 
   /** The person hung up: the socket closes (Salix ends the call), or the key being made is given up. */
   #hangUp(): void {
-    if (this.#value.phase === "idle") return;
+    if (this.#value.phase === "idle") {
+      if (this.#value.lastEnd !== null && this.#value.lastEnd !== undefined)
+        this.#set(idle(true, null));
+      return;
+    }
     this.#ports.command({ op: "close" });
-    this.#finish();
+    this.#finish(null);
   }
 
-  #finish(): void {
+  #finish(lastEnd: VoiceCallValue["lastEnd"]): void {
     this.#generation++;
+    this.#lastReason = null;
     const key = this.#key;
     this.#key = null;
     if (key) this.#deleteKey(key);
-    this.#set(idle(true));
+    this.#set(idle(true, lastEnd));
   }
 
   #deleteKey(key: { workspace: string; id: string }): void {
@@ -210,10 +242,26 @@ export class VoiceCall {
   }
 }
 
-function messageType(text: string): string | null {
+const NORMAL_END_REASONS = new Set([
+  "completed",
+  "caller_hangup",
+  "agent_hangup",
+  "max_duration",
+]);
+
+function shouldReportEnd(phase: "calling" | "connected", reason: string): boolean {
+  if (reason === "billing_unavailable") return true;
+  return phase === "calling" && !NORMAL_END_REASONS.has(reason);
+}
+
+function parseMessage(text: string): { type: string; reason: string | null } | null {
   try {
-    const message = JSON.parse(text) as { type?: unknown } | null;
-    return typeof message?.type === "string" ? message.type : null;
+    const message = JSON.parse(text) as { type?: unknown; reason?: unknown } | null;
+    if (typeof message?.type !== "string") return null;
+    return {
+      type: message.type,
+      reason: typeof message.reason === "string" ? message.reason : null,
+    };
   } catch {
     return null;
   }

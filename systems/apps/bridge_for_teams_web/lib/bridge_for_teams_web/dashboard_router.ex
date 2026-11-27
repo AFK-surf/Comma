@@ -73,6 +73,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     plug(BridgeForTeamsWeb.Dashboard.Locale)
   end
 
+  pipeline :browser_json do
+    plug(:accepts, ["json"])
+    plug(:fetch_session)
+    plug(:put_secure_browser_headers)
+  end
+
   scope "/", BridgeForTeamsWeb do
     get("/live", HealthController, :live)
     get("/ready", HealthController, :ready)
@@ -89,6 +95,9 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/login", AuthController, :login)
     get("/signup", AuthController, :signup)
     post("/signup", AuthController, :create_from_invite)
+    get("/signup/teams", AuthController, :teams_signup)
+    post("/signup/teams", AuthController, :buy_teams)
+    get("/signup/payment", AuthController, :teams_payment)
     post("/auth/start", AuthController, :start)
     get("/auth/callback", AuthController, :callback)
     get("/auth/recovery", AuthController, :recover)
@@ -104,12 +113,19 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/dev/login", AuthController, :dev_login)
   end
 
+  scope "/", BridgeForTeamsWeb.Dashboard do
+    pipe_through(:browser_json)
+
+    get("/signup/payment/status", AuthController, :teams_payment_status)
+  end
+
   # Public product bootstrap endpoints that do not require an authenticated CLI
   # or dashboard session.
   scope "/v1", BridgeForTeamsWeb do
     get("/cli/install.sh", BFTCLIInstallController, :show)
     get("/cli/release", BFTCLIInstallController, :release)
     get("/orgs/:org_id/runners/install.sh", MacMiniInstallController, :show)
+    post("/billing/m2square/webhook", M2squareWebhookController, :webhook)
   end
 
   # JSON API for the React dashboard; same browser session and locale as the pages.
@@ -151,6 +167,9 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/orgs/:org/audit", DashboardAPIController, :audit)
     get("/orgs/:org/projects", DashboardAPIController, :projects)
     post("/orgs/:org/projects", DashboardAPIController, :create_project)
+    post("/orgs/:org/departments", DashboardAPIController, :create_department)
+    patch("/orgs/:org/departments/:department_id", DashboardAPIController, :update_department)
+    delete("/orgs/:org/departments/:department_id", DashboardAPIController, :delete_department)
     get("/orgs/:org/projects/:id/overview", DashboardAPIController, :project_overview)
 
     # One Agent Swarm's React pages: Agents (with the agent detail rail),
@@ -163,6 +182,13 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       get("/stillfail", DashboardAPIController, :project_stillfail)
       post("/stillfail/line", DashboardAPIController, :connect_project_stillfail)
       delete("/stillfail/stations", DashboardAPIController, :disconnect_project_stillfail)
+
+      delete(
+        "/stillfail/stations/:device_id",
+        DashboardAPIController,
+        :disconnect_project_stillfail_station
+      )
+
       get("/agents", DashboardAPIController, :project_agents)
       post("/agents", DashboardAPIController, :create_project_agent)
       get("/agents/targets", DashboardAPIController, :project_agent_targets)
@@ -232,6 +258,7 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       post("/connections/feishu/checks", DashboardAPIController, :run_project_feishu_checks)
       post("/connections/qq", DashboardAPIController, :create_project_qq_connect)
       post("/connections/telegram", DashboardAPIController, :create_project_telegram_connect)
+      post("/connections/wecom", DashboardAPIController, :create_project_wecom_connect)
 
       put(
         "/connections/telegram/:connect_id/chats",
@@ -289,6 +316,32 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
         "/connections/slack/:connect_id/auto-join",
         DashboardAPIController,
         :update_project_slack_auto_join
+      )
+
+      # Whose people a Slack, Feishu or Lark connect's people are, and the
+      # people granted by name on an external one.
+      put(
+        "/connections/:provider/:connect_id/member-scope",
+        DashboardAPIController,
+        :update_project_connect_member_scope
+      )
+
+      post(
+        "/connections/:provider/:connect_id/member-grants",
+        DashboardAPIController,
+        :grant_project_connect_member
+      )
+
+      delete(
+        "/connections/:provider/:connect_id/member-grants/:subject",
+        DashboardAPIController,
+        :revoke_project_connect_member
+      )
+
+      get(
+        "/connections/:provider/:connect_id/people",
+        DashboardAPIController,
+        :project_connect_people
       )
 
       put(
@@ -362,6 +415,8 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       delete("/schedules/:schedule_id", DashboardAPIController, :delete_project_schedule)
       get("/settings", DashboardAPIController, :project_settings)
       patch("/settings", DashboardAPIController, :update_project_settings)
+      put("/settings/department", DashboardAPIController, :put_project_department)
+      put("/settings/search-grants", DashboardAPIController, :put_project_search_grants)
       put("/settings/task-model", DashboardAPIController, :put_project_task_model)
       delete("/settings/task-model", DashboardAPIController, :delete_project_task_model)
       put("/settings/task-place", DashboardAPIController, :put_project_task_place)
@@ -378,8 +433,15 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     # Meetings and Data policy: owner/admin pages of one Agent Swarm.
     get("/orgs/:org/daily-brief", DashboardAPIController, :daily_brief)
+    get("/orgs/:org/daily-brief/channels", DashboardAPIController, :daily_brief_channels)
     put("/orgs/:org/daily-brief/settings", DashboardAPIController, :save_daily_brief)
     post("/orgs/:org/daily-brief/members/sync", DashboardAPIController, :sync_daily_brief_members)
+
+    put(
+      "/orgs/:org/daily-brief/members/:member",
+      DashboardAPIController,
+      :update_daily_brief_member
+    )
 
     post(
       "/orgs/:org/daily-brief/members/:member/send",
@@ -417,6 +479,23 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       delete("/clearances", DashboardAPIController, :withdraw_data_policy_clearance)
 
       put("/placements/:user_id", DashboardAPIController, :place_data_policy_principal)
+    end
+
+    # Feishu / Lark triage: owner/admin pages for one router Agent (`agent` param).
+    scope "/orgs/:org/lark-triage" do
+      get("/", DashboardAPIController, :lark_triage)
+      get("/chats", DashboardAPIController, :lark_triage_chats)
+      put("/sources/:connect_id", DashboardAPIController, :set_lark_triage_source)
+      post("/sources/:connect_id/chats", DashboardAPIController, :add_lark_triage_chats)
+
+      put(
+        "/sources/:connect_id/chats/:chat_id",
+        DashboardAPIController,
+        :set_lark_triage_chat
+      )
+
+      get("/activity", DashboardAPIController, :lark_triage_activity)
+      post("/reveal", DashboardAPIController, :reveal_lark_triage_text)
     end
 
     # Slack triage: owner/admin pages for one router Agent (`agent` param).
@@ -463,6 +542,8 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     get("/orgs/:org/settings/general", DashboardAPIController, :settings_general)
     patch("/orgs/:org/settings/general", DashboardAPIController, :update_settings_general)
+    post("/orgs/:org/settings/billing/portal", DashboardAPIController, :teams_billing_portal)
+    post("/orgs/:org/settings/billing/renew", DashboardAPIController, :teams_billing_renew)
 
     delete(
       "/orgs/:org/settings/cli-sessions/:id",
@@ -804,6 +885,8 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     post("/qq/connect", CLIController, :qq_connect)
     get("/qq/status", CLIController, :qq_status)
     post("/qq/menu", CLIController, :qq_menu)
+    post("/wecom/connect", CLIController, :wecom_connect)
+    get("/wecom/status", CLIController, :wecom_status)
     post("/telegram/connect", CLIController, :telegram_connect)
     get("/telegram/status", CLIController, :telegram_status)
     post("/telegram/chats", CLIController, :telegram_chats)
@@ -911,11 +994,16 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       get("/orgs/:org/triage/#{page}", SPAController, :index)
     end
 
+    # Feishu / Lark triage: Overview and Timeline.
+    get("/orgs/:org/lark-triage", SPAController, :index)
+    get("/orgs/:org/lark-triage/timeline", SPAController, :index)
+
     # The Runners page keeps the URL of the retired Fin page.
     get("/orgs/:org/fin", SPAController, :index)
     # Settings: General, AI models, Single sign-on and Integrations. The
     # retired OAuth, Signal and Feishu tab URLs open the Integrations page.
     get("/orgs/:org/settings", SPAController, :index)
+    get("/orgs/:org/settings/general", SPAController, :settings_general)
     get("/orgs/:org/settings/models", SPAController, :index)
     get("/orgs/:org/settings/sso", SPAController, :index)
     get("/orgs/:org/settings/oauth", SPAController, :index)

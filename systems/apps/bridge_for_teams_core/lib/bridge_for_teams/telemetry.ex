@@ -56,9 +56,24 @@ defmodule BridgeForTeams.Telemetry do
         tags: [:operation, :outcome],
         tag_values: &sweeper_tags/1,
         reporter_options: [prometheus_type: :counter]
+      ),
+      # Comma for Teams funnel export: PostHog acceptance, and events lost to a
+      # full queue or exhausted retries. No purchase or person identifiers.
+      counter("cft.analytics.batch.total",
+        event_name: [:bridge_for_teams, :cft_analytics, :batch],
+        tags: [:outcome],
+        tag_values: &outcome_tags/1
+      ),
+      sum("cft.analytics.export.dropped",
+        event_name: [:bridge_for_teams, :cft_analytics, :export],
+        measurement: :dropped,
+        reporter_options: [prometheus_type: :counter]
       )
     ]
   end
+
+  defp outcome_tags(metadata),
+    do: %{outcome: if(metadata[:outcome] == "ok", do: "ok", else: "error")}
 
   def emit_operation(operation, outcome, duration, metadata \\ %{}) do
     SystemsRuntime.Telemetry.execute(

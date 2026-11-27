@@ -451,6 +451,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -637,6 +638,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -658,6 +660,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -675,6 +678,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       sideChatEnabled: false,
       systemNotifications: true,
@@ -693,6 +697,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -710,6 +715,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -729,6 +735,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -770,6 +777,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -787,6 +795,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -874,6 +883,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -890,6 +900,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       sideChatEnabled: false,
       systemNotifications: true,
@@ -907,6 +918,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -950,6 +962,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -999,6 +1012,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1016,6 +1030,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1054,6 +1069,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1070,6 +1086,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1086,6 +1103,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1102,6 +1120,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       sideChatEnabled: false,
       systemNotifications: true,
@@ -1211,6 +1230,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1231,6 +1251,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1247,6 +1268,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       sideChatEnabled: false,
       systemNotifications: true,
@@ -1319,10 +1341,71 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
+      showComputerUseInNotch: true,
       showInNotch: true,
       sideChatEnabled: false,
       systemNotifications: false,
     });
+  });
+
+  it("publishes macOS's location and microphone answers on each re-read without persisting them", async () => {
+    const filePath = await temporaryPreferencesPath();
+    let location: "notDetermined" | "authorized" | "servicesOff" = "notDetermined";
+    const platform = {
+      ...createPlatform(),
+      locationAuthorization: {
+        request: vi.fn(async () => location),
+        status: vi.fn(async () => location),
+      },
+      microphoneAuthorization: {
+        request: vi.fn(async () => "denied" as const),
+        status: vi.fn(async () => "denied" as const),
+      },
+    };
+    const onStateChanged = vi.fn();
+    const service = await AppPreferencesService.open({
+      filePath,
+      onStateChanged,
+      platform,
+    });
+    expect(service.state()).toMatchObject({
+      revision: 0,
+      systemLocationStatus: "notDetermined",
+      systemMicrophoneStatus: "denied",
+    });
+
+    // The same answers again are no change: no revision, no event.
+    await service.refreshSystemPermissions();
+    expect(onStateChanged).not.toHaveBeenCalled();
+
+    // Allowed in System Settings, then Location Services turned off for the
+    // whole Mac: each re-read publishes what macOS says now.
+    location = "authorized";
+    await expect(service.refreshSystemPermissions()).resolves.toMatchObject({
+      revision: 1,
+      systemLocationStatus: "authorized",
+    });
+    location = "servicesOff";
+    await expect(service.refreshSystemPermissions()).resolves.toMatchObject({
+      revision: 2,
+      systemLocationStatus: "denied",
+    });
+    expect(onStateChanged).toHaveBeenCalledTimes(2);
+
+    await service.update({ systemNotifications: false });
+    const saved = JSON.parse(await readFile(filePath, "utf8"));
+    expect(saved).not.toHaveProperty("systemLocationStatus");
+    expect(saved).not.toHaveProperty("systemMicrophoneStatus");
+  });
+
+  it("has no location or microphone status where nothing can read them", async () => {
+    const service = await AppPreferencesService.open({
+      filePath: await temporaryPreferencesPath(),
+      platform: createPlatform(),
+    });
+    const state = service.state();
+    expect(state).not.toHaveProperty("systemLocationStatus");
+    expect(state).not.toHaveProperty("systemMicrophoneStatus");
   });
 
   it("keeps the mesh choice the app started with while a new one waits for a restart", async () => {
@@ -1464,6 +1547,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
@@ -1480,6 +1564,7 @@ describe("AppPreferencesService", () => {
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: false,
+      showComputerUseInNotch: true,
       showInNotch: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",

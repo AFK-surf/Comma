@@ -1,0 +1,256 @@
+{
+  "appPolicies": {
+    "eula": "",
+    "policies": [
+      {
+        "locale": "en_US",
+        "policyText": "",
+        "policyURL": ""
+      }
+    ]
+  },
+  "identifier": "D00D0144-D2E1-4253-931A-AF22864C3ECD",
+  "nonRenewingSubscriptions": [],
+  "products": [
+    {
+      "displayPrice": "5.99",
+      "familyShareable": false,
+      "internalID": "38FA35DD-CD6C-4BAD-A8D7-DA4A830E117B",
+      "localizations": [
+        {
+          "description": "One-time credits until the end of the month",
+          "displayName": "Comma 4M Credit Pack",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "comma_addon_4m_v1",
+      "referenceName": "Comma 4M Credit Pack",
+      "type": "Consumable"
+    },
+    {
+      "displayPrice": "11.99",
+      "familyShareable": false,
+      "internalID": "33A07E26-48D8-4D5B-9822-195EEA0D6F50",
+      "localizations": [
+        {
+          "description": "One-time credits until the end of the month",
+          "displayName": "Comma 8M Credit Pack",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "comma_addon_8m_v1",
+      "referenceName": "Comma 8M Credit Pack",
+      "type": "Consumable"
+    },
+    {
+      "displayPrice": "23.99",
+      "familyShareable": false,
+      "internalID": "D764EB29-DD42-4476-840A-1C1F44C66D0E",
+      "localizations": [
+        {
+          "description": "One-time credits until the end of the month",
+          "displayName": "Comma 20M Credit Pack",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "comma_addon_20m_v1",
+      "referenceName": "Comma 20M Credit Pack",
+      "type": "Consumable"
+    }
+  ],
+  "settings": {
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": []
+  },
+  "subscriptionGroups": [
+    {
+      "id": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+      "localizations": [],
+      "name": "Comma",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "234.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "C2E6D4A4-13FA-43F4-AB05-3B08EBD6CF0B",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "500M credits per month",
+              "displayName": "Comma Max",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_max_v1",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Comma Max",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "2349.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "F1C46B15-B09D-442A-AEAB-3FA05886A584",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "500M credits per month",
+              "displayName": "Comma Max Yearly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_max_annual_v1",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Comma Max Yearly",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "94.99",
+          "familyShareable": false,
+          "groupNumber": 2,
+          "internalID": "AE3E40C5-7E85-4A39-AEF1-009E445A7839",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "80M credits per month",
+              "displayName": "Comma Pro Plus",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_pro_plus_v1",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Comma Pro Plus",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "939.99",
+          "familyShareable": false,
+          "groupNumber": 2,
+          "internalID": "C3FFA149-A1AA-4716-8890-ECF11B5114D6",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "80M credits per month",
+              "displayName": "Comma Pro Plus Yearly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_pro_plus_annual_v1",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Comma Pro Plus Yearly",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "69.99",
+          "familyShareable": false,
+          "groupNumber": 3,
+          "internalID": "A34EE7BD-2AFA-40A8-830A-C1855676A0AC",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "60M credits per month",
+              "displayName": "Comma Pro",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_pro_v1",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Comma Pro",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "699.99",
+          "familyShareable": false,
+          "groupNumber": 3,
+          "internalID": "2A8CD837-A0BA-450F-B9C0-FB567E2E2D11",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "60M credits per month",
+              "displayName": "Comma Pro Yearly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_pro_annual_v1",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Comma Pro Yearly",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "23.99",
+          "familyShareable": false,
+          "groupNumber": 4,
+          "internalID": "3B9419ED-2E43-4C35-BA97-410605FB781A",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "20M credits per month",
+              "displayName": "Comma Value",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_value_v1",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Comma Value",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "234.99",
+          "familyShareable": false,
+          "groupNumber": 4,
+          "internalID": "CB4A6EED-C332-4C1C-BBA1-76B1CD580AD7",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "20M credits per month",
+              "displayName": "Comma Value Yearly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "comma_value_annual_v1",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Comma Value Yearly",
+          "subscriptionGroupID": "82AA489D-9E19-45A6-A32B-DD96ACB47039",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 4,
+    "minor": 0
+  }
+}

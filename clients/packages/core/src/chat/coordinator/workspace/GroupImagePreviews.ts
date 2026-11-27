@@ -7,6 +7,7 @@ import {
 import { Effect } from "effect";
 import { ChatError } from "../../api";
 import type { AttachmentUploadInput } from "../../model/conversationChannel";
+import { isTaskFilePath, taskFileTask } from "../../model/protocol";
 import type { ChatSessionBoundary } from "../entries/sessionBoundary";
 import type {
   ChatCoordinatorOptions,
@@ -61,13 +62,23 @@ export class GroupImagePreviews {
         mediaType = heldType;
         fileName = held.name;
       } else {
-        image = yield* validated.source === "agent-blob"
-          ? boundary.api.fetchAgentBlob(
-              validated.groupId,
-              validated.agentId,
-              validated.blobRef
-            )
-          : boundary.api.fetchGroupFile(validated.groupId, validated.path);
+        if (validated.source === "agent-blob") {
+          image = yield* boundary.api.fetchAgentBlob(
+            validated.groupId,
+            validated.agentId,
+            validated.blobRef
+          );
+        } else {
+          const taskId = isTaskFilePath(validated.path)
+            ? (taskFileTask(validated.path) ?? validated.conversationId)
+            : undefined;
+          if (isTaskFilePath(validated.path) && !taskId) {
+            return yield* new ChatError("Workspace image response is unavailable.");
+          }
+          image = yield* taskId
+            ? boundary.api.fetchGroupFile(validated.groupId, validated.path, { taskId })
+            : boundary.api.fetchGroupFile(validated.groupId, validated.path);
+        }
         mediaType =
           validated.source === "agent-blob" ? validated.mediaType : image.type;
         fileName =

@@ -34,6 +34,39 @@ defmodule BillingCommerce.ProviderCustomers do
     end
   end
 
+  @doc "Finds the active Billing Account mapping of one provider customer id."
+  @spec get_customer_by_provider_id(map()) :: {:ok, map()} | {:error, :not_found}
+  def get_customer_by_provider_id(attrs) when is_map(attrs) do
+    repo = repo(attrs)
+    sql = sql(attrs)
+
+    result =
+      sql.query!(
+        repo,
+        """
+        SELECT id, billing_account_id, surface, product_owner_type, product_owner_id,
+          provider, provider_context, provider_customer_id, status,
+          billing_email_snapshot, display_name_snapshot, created_by_actor_type,
+          created_by_actor_id, source_type, source_event_id, metadata,
+          inserted_at, updated_at
+        FROM billing_provider_customers
+        WHERE provider = $1 AND provider_context = $2 AND provider_customer_id = $3
+          AND status = 'active'
+        LIMIT 1
+        """,
+        [
+          required(attrs, :provider),
+          provider_context(attrs),
+          required(attrs, :provider_customer_id)
+        ]
+      )
+
+    case result.rows do
+      [row | _] -> {:ok, row_to_customer(row)}
+      [] -> {:error, :not_found}
+    end
+  end
+
   @spec bind_customer(map()) :: {:ok, map()} | {:error, term()}
   def bind_customer(attrs) when is_map(attrs) do
     repo = repo(attrs)

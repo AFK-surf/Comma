@@ -2,8 +2,10 @@ defmodule BridgeForTeams.FeishuAppBindings do
   @moduledoc """
   Org-level Feishu app bindings.
 
-  A binding is the single org-level record of a customer's Feishu custom app,
-  reusable across the SSO and bot capabilities. The binding holds only
+  A binding is the org-level record of one of a customer's Feishu custom apps,
+  reusable across the SSO and bot capabilities. An org may enable the group bot
+  on several apps (one per department Agent Swarm); dashboard login stays on
+  one app. The binding holds only
   non-secret posture (app_id, capability flags, and `*_configured` flags);
   verification status comes from live Run checks. Secret bytes remain in their
   owning store — the SSO secret in `org_sso_connections` (BFT), the bot secret
@@ -82,19 +84,21 @@ defmodule BridgeForTeams.FeishuAppBindings do
   end
 
   @doc """
-  The org's binding enabled for the group bot, or nil. Saving allows one
-  bot-enabled binding per org; should an older build have left more, the most
-  recently saved one wins.
+  The org's apps a Feishu connect can use: bot enabled with its App Secret
+  configured, oldest first. `:limit` caps the rows.
   """
-  @spec latest_bot_binding(Ecto.UUID.t()) :: FeishuAppBinding.t() | nil
-  def latest_bot_binding(org_id) do
-    Repo.one(
+  @spec list_configured_bot_bindings(Ecto.UUID.t(), keyword()) :: [FeishuAppBinding.t()]
+  def list_configured_bot_bindings(org_id, opts \\ []) do
+    query =
       from(b in FeishuAppBinding,
-        where: b.org_id == ^org_id and b.bot_enabled == true,
-        order_by: [desc: coalesce(b.updated_at, b.created_at), desc: b.id],
-        limit: 1
+        where: b.org_id == ^org_id and b.bot_enabled == true and b.app_secret_configured == true,
+        order_by: [asc: b.created_at, asc: b.id]
       )
-    )
+
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> query |> limit(^limit) |> Repo.all()
+      _ -> Repo.all(query)
+    end
   end
 
   @doc "Fetch one binding scoped to its org."
@@ -131,9 +135,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
       with {:ok, existing} <- binding_for_upsert(org_id, attrs),
            attrs = keep_existing_app_id(attrs, existing),
            attrs = inherit_missing_capability_flags(attrs, existing),
-           app_id = attrs["app_id"],
            :ok <- maybe_delete_bot_store_before_disable(org_id, existing, attrs),
-           :ok <- ensure_single_bot_binding(org_id, app_id, existing, attrs),
            :ok <- ensure_sso_provider_available(org_id, attrs),
            :ok <- ensure_bot_secret_available(org_id, existing, attrs) do
         posture =
@@ -570,9 +572,11 @@ defmodule BridgeForTeams.FeishuAppBindings do
 
   defp delete_bot_store_if_needed(_org_id, %{bot_enabled: false}), do: :ok
 
-  defp delete_bot_store_if_needed(org_id, _binding) do
+  # Only this binding's app leaves the Salix store: the org's other bot apps
+  # keep their secrets.
+  defp delete_bot_store_if_needed(org_id, binding) do
     with {:ok, %Organization{} = org} <- Orgs.get_org(org_id),
-         :ok <- client().delete_feishu_tenant_app(org.salix_tenant_id) do
+         :ok <- client().delete_feishu_tenant_app(org.salix_tenant_id, binding.app_id) do
       :ok
     else
       {:error, reason} ->
@@ -629,27 +633,6 @@ defmodule BridgeForTeams.FeishuAppBindings do
       true ->
         :skip
     end
-  end
-
-  defp ensure_single_bot_binding(org_id, app_id, existing, attrs) do
-    if truthy?(attrs["bot_enabled"]) and present?(app_id) and
-         other_bot_binding?(org_id, app_id, existing) do
-      {:error, :bot_app_already_enabled}
-    else
-      :ok
-    end
-  end
-
-  defp other_bot_binding?(org_id, app_id, existing) do
-    existing_id = (existing && existing.id) || SystemsRuntime.Proc.uuid()
-
-    Repo.exists?(
-      from(b in FeishuAppBinding,
-        where:
-          b.org_id == ^org_id and b.bot_enabled == true and b.app_id != ^app_id and
-            b.id != ^existing_id
-      )
-    )
   end
 
   defp ensure_bot_secret_available(org_id, existing, attrs) do

@@ -9,7 +9,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import androidx.activity.ComponentActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -22,6 +21,7 @@ import org.json.JSONObject
 import surf.comma.android.R
 import surf.comma.android.tasks.list.FlowLayout
 import surf.comma.android.tasks.tools.ToolPage
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.widget.GlassSurface
 import surf.comma.android.ui.widget.glassControl
 import surf.comma.android.ui.ActionMenu
@@ -53,9 +53,15 @@ internal class NewTaskSheet(
         cloud = activity.getString(R.string.new_task_cloud), code = activity.getString(R.string.new_task_code),
         sandbox = activity.getString(R.string.coding_sandbox), defaultModel = activity.getString(R.string.new_task_default_model),
         modelsUnavailable = activity.getString(R.string.new_task_models_unavailable),
+        builtinModel = activity.getString(R.string.new_task_builtin_model),
     ))
     private val environment = activity.label(Level.SMALL, R.color.token_text_primary, DesignFonts.medium).apply {
         compoundDrawablePadding = activity.dp(6)
+        // The chevron says the capsule opens a menu, as the iOS app's and the model capsule's.
+        setCompoundDrawablesRelative(null, null, activity.getDrawable(R.drawable.ic_chevron_down_small)?.mutate()?.apply {
+            setBounds(0, 0, activity.dp(12), activity.dp(12))
+            setTint(activity.getColor(R.color.token_text_primary))
+        }, null)
         gravity = Gravity.CENTER
         minHeight = activity.dp(44)
         maxWidth = activity.dp(240)
@@ -74,7 +80,7 @@ internal class NewTaskSheet(
             setImageResource(R.drawable.ic_composer_arrow_up)
             imageTintList = ColorStateList.valueOf(android.graphics.Color.WHITE)
         }, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
-        addView(ProgressBar(activity).apply { isVisible = false }, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
+        addView(ActivityIndicator(activity).apply { color = android.graphics.Color.WHITE; isVisible = false }, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
         val press = glassControl(R.color.token_card_primary, tint = R.color.token_glass_tint_brand)
         if (press == null) {
             background = rounded(activity.getColor(R.color.token_bg_brand_solid), activity.dpf(22f))
@@ -255,7 +261,7 @@ internal class NewTaskSheet(
         minimumHeight = activity.dp(44)
         setPadding(activity.dp(12), 0, activity.dp(12), 0)
         glassOver(R.color.token_card_primary) { glass(elevated = false) }
-        if (loading) addView(ProgressBar(activity), LinearLayout.LayoutParams(activity.dp(16), activity.dp(16)))
+        if (loading) addView(ActivityIndicator(activity), LinearLayout.LayoutParams(activity.dp(16), activity.dp(16)))
         else addView(ImageView(activity).apply {
             setImageResource(icon)
             if (tint) imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_primary))

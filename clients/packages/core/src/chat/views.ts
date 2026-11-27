@@ -12,6 +12,7 @@
 import { lazySchema } from "@comma/chat-contract";
 import {
   chatConversationFileSchema,
+  chatDraftEntrySchema,
   chatLocalFileSchema,
   chatRetainInputSchema,
   chatTaskRunChoiceSchema,
@@ -76,6 +77,7 @@ export type ConversationHolder = Pick<
   | "attach"
   | "attachQuestion"
   | "attachLocalFiles"
+  | "attachLocalPaths"
   | "attachConversationFiles"
   | "removeAttachment"
   | "removeQuestionAttachment"
@@ -103,6 +105,8 @@ export interface HostedConversations extends ConversationHolder, HostedFiles {
   projection(target: HostedTarget): ConversationProjection;
   /** What a pick may add to the draft now; null when it is full. */
   room(target: HostedTarget): PickRoom | null;
+  /** Whether the Task runs on the station of device `deviceId` (this computer's), not elsewhere. */
+  runsOnDevice(target: HostedTarget, deviceId: string | undefined): boolean;
   /** The messages around `messageId` (`chat.messageContext`). */
   messageContext(
     group: string,
@@ -511,8 +515,15 @@ export class ChatViews {
       questionMessageId: z.string().min(1).optional(),
     });
     return Object.fromEntries([
-      on("chatView.setDraft", withDraft, (v, i) =>
-        c(v).setDraft({ ...leased(v), draft: i.draft })
+      on(
+        "chatView.setDraft",
+        withDraft.extend({ entry: chatDraftEntrySchema.optional() }),
+        (v, i) =>
+          c(v).setDraft({
+            ...leased(v),
+            draft: i.draft,
+            ...(i.entry ? { entry: i.entry } : {}),
+          })
       ),
       on("chatView.prefillDraft", withDraft, (v, i) =>
         c(v).prefillDraft({ ...leased(v), draft: i.draft })

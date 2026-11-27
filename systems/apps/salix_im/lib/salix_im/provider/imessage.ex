@@ -114,7 +114,13 @@ defmodule SalixIM.Provider.IMessage do
     end
   end
 
-  defp send_message(_agent_id, connect, "imessage.send_message", %{"text" => text}, parent_id)
+  defp send_message(
+         _agent_id,
+         connect,
+         "imessage.send_message",
+         %{"text" => text} = params,
+         parent_id
+       )
        when is_binary(text) and byte_size(text) > 0 and byte_size(text) <= 65_536 do
     case transport(connect) do
       "photon" ->
@@ -122,7 +128,8 @@ defmodule SalixIM.Provider.IMessage do
           connect["bot_user_id"],
           connect["managed_chat_id"],
           text,
-          parent_id
+          parent_id,
+          params["resend_token"]
         )
 
       "relay" ->
@@ -138,7 +145,6 @@ defmodule SalixIM.Provider.IMessage do
             connect["bot_user_id"],
             connect["managed_chat_id"],
             upload,
-            params["caption"] || "",
             parent_id
           )
 
@@ -146,8 +152,7 @@ defmodule SalixIM.Provider.IMessage do
           IMessageRelay.send_image(
             connect["managed_peer_id"],
             connect["managed_chat_id"],
-            upload,
-            params["caption"] || ""
+            upload
           )
       end
     end
@@ -161,7 +166,6 @@ defmodule SalixIM.Provider.IMessage do
             connect["bot_user_id"],
             connect["managed_chat_id"],
             file,
-            params["caption"] || "",
             parent_id
           )
         end

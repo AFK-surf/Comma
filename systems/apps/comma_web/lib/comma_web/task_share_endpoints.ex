@@ -1,6 +1,8 @@
 defmodule CommaWeb.TaskShareEndpoints do
   @moduledoc """
-  HTTP surface for Task Shares (`Comma.TaskShares`).
+  HTTP surface for Task Shares (`Comma.TaskShares`) and Document Shares
+  (`Comma.DocumentShares`), which share the public link space: a link's token
+  names a Task or one document, and its summary says which.
 
   Owner routes live under `/v1/comma/groups` and use the normal Comma session. Public
   routes live under `/v1/comma/public/shares/`: the link token is the only authority,
@@ -49,8 +51,31 @@ defmodule CommaWeb.TaskShareEndpoints do
 
   def summary(conn, token) do
     with_rate_limit(conn, token, fn conn ->
-      case Comma.TaskShares.public_summary(token) do
+      case public_summary(token) do
         {:ok, summary} -> send_public_json(conn, 200, summary)
+        {:error, reason} -> public_error(conn, reason)
+      end
+    end)
+  end
+
+  # A token that names no Task may name a document.
+  defp public_summary(token) do
+    case Comma.TaskShares.public_summary(token) do
+      {:error, :not_found} -> Comma.DocumentShares.public_summary(token)
+      result -> result
+    end
+  end
+
+  @doc "The file a document link shares."
+  def document(conn, token) do
+    with_rate_limit(conn, token, fn conn ->
+      with {:ok, attachment} <- Comma.DocumentShares.public_file(token),
+           {:ok, conn} <-
+             conn
+             |> put_public_headers()
+             |> CommaWeb.AttachmentDownload.send(attachment) do
+        conn
+      else
         {:error, reason} -> public_error(conn, reason)
       end
     end)

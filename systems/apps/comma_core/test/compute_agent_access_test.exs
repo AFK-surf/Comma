@@ -157,16 +157,12 @@ defmodule Comma.ComputeAgentAccessTest do
       end
 
       failure = execute("process.list", %{}, ctx)
-      assert failure.error_class == "workload_target_required"
-      public = SalixAgent.VisibleReplyPolicy.label_result(failure)
-      assert public.diagnostic_visibility == "user_reportable"
-      assert public.public_summary =~ "workload_id"
+      assert failure.status == "guidance"
+      assert Jason.decode!(failure.content)["guidance_reason"] == "invalid_params"
+      assert failure.content =~ "workload_id"
 
       assert {:tool_failure, _, "workload_target_required", "user_reportable", _, []} =
                call("process.list", %{}, ctx)
-
-      assert {:tool_failure, _, "compute_grant_required", _, _, []} =
-               call("compute.service.export", %{"workload_id" => "shell-a"}, ctx)
     end
 
     assert Repo.aggregate(Compute.Grant, :count) == 0

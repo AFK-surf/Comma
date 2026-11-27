@@ -16,7 +16,7 @@ func TestCopyReusesOnlyUnchangedApprovedInputs(t *testing.T) {
 	approvedDir := t.TempDir()
 	outputDir := t.TempDir()
 	inputs := runtimeinputs.Manifest{SchemaVersion: 1}
-	manifest := approvedManifest{SchemaVersion: 3}
+	manifest := approvedManifest{SchemaVersion: 4}
 	for index, class := range []string{"station", "meeting", "shell"} {
 		inputDigest := digest(strings.Repeat(string(rune('a'+index)), 3))
 		body := []byte(class + "-approved-archive")
@@ -29,7 +29,7 @@ func TestCopyReusesOnlyUnchangedApprovedInputs(t *testing.T) {
 		}
 		inputs.Images = append(inputs.Images, runtimeinputs.Image{Class: class, InputDigest: inputDigest})
 		manifest.Images = append(manifest.Images, image)
-		if err := os.WriteFile(filepath.Join(approvedDir, class+".oci.tar"), body, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(approvedDir, class+".erofs.zst"), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,11 +44,11 @@ func TestCopyReusesOnlyUnchangedApprovedInputs(t *testing.T) {
 		t.Fatalf("reused = %v", reused)
 	}
 	for _, class := range reused {
-		if _, err := os.Stat(filepath.Join(outputDir, class+".oci.tar")); err != nil {
+		if _, err := os.Stat(filepath.Join(outputDir, class+".erofs.zst")); err != nil {
 			t.Fatalf("reused archive %s: %v", class, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(outputDir, "meeting.oci.tar")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outputDir, "meeting.erofs.zst")); !os.IsNotExist(err) {
 		t.Fatalf("changed meeting archive should not be reused: %v", err)
 	}
 }
@@ -58,13 +58,13 @@ func TestCopyTreatsChangedApprovedBytesAsACacheMiss(t *testing.T) {
 	outputDir := t.TempDir()
 	inputDigest := digest("input")
 	writeManifest(t, approvedDir, approvedManifest{
-		SchemaVersion: 3,
+		SchemaVersion: 4,
 		Images: []approvedImage{{
 			Class: "shell", InputDigest: inputDigest, ArchiveSize: 4,
 			ArchiveSHA256: strings.Repeat("0", 64),
 		}},
 	})
-	if err := os.WriteFile(filepath.Join(approvedDir, "shell.oci.tar"), []byte("evil"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(approvedDir, "shell.erofs.zst"), []byte("evil"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reused, err := Copy(runtimeinputs.Manifest{
@@ -77,14 +77,16 @@ func TestCopyTreatsChangedApprovedBytesAsACacheMiss(t *testing.T) {
 }
 
 func TestCopySkipsLegacyBundleWithoutInputIdentity(t *testing.T) {
-	approvedDir := t.TempDir()
-	outputDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(approvedDir, "manifest.json"), []byte(`{"schemaVersion":2}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	reused, err := Copy(runtimeinputs.Manifest{SchemaVersion: 1}, approvedDir, outputDir)
-	if err != nil || len(reused) != 0 {
-		t.Fatalf("reused = %v, error = %v", reused, err)
+	for _, version := range []string{"2", "3"} {
+		approvedDir := t.TempDir()
+		outputDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(approvedDir, "manifest.json"), []byte(`{"schemaVersion":`+version+`}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reused, err := Copy(runtimeinputs.Manifest{SchemaVersion: 1}, approvedDir, outputDir)
+		if err != nil || len(reused) != 0 {
+			t.Fatalf("schemaVersion %s: reused = %v, error = %v", version, reused, err)
+		}
 	}
 }
 

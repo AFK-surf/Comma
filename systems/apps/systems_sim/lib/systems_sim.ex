@@ -183,10 +183,34 @@ defmodule SystemsSim do
         schedulers = :erlang.system_flag(:schedulers_online, 1)
 
         try do
+          one_dirty_cpu_scheduler()
           fun.()
         after
           :erlang.system_flag(:schedulers_online, schedulers)
         end
+    end
+  end
+
+  # Taking schedulers offline returns before the dirty CPU schedulers it
+  # takes along have suspended. One of them still among the dirty CPU run
+  # queue's sleepers can take the wake-up of a job queued meanwhile and then
+  # suspend, and the job waits while the one dirty CPU scheduler left online
+  # sleeps. Each of them counts itself offline as it suspends: once they all
+  # have, a job still queued is woken for again, by queueing one more. That
+  # one is a process's of its own: the caller does not wait behind the jobs
+  # queued before it.
+  defp one_dirty_cpu_scheduler do
+    if :erlang.system_info(:dirty_cpu_schedulers_online) > 1 do
+      :erlang.yield()
+      one_dirty_cpu_scheduler()
+    else
+      # The run queues' lengths: the normal ones', then the dirty CPU one's,
+      # then the dirty I/O one's.
+      # ast-grep-ignore: ex-harness-real-clock -- decides only whether to wake a dirty CPU scheduler, never what a world does
+      if Enum.at(:erlang.statistics(:run_queue_lengths_all), -2) > 0,
+        do: :erlang.spawn_opt(fn -> :erts_debug.dirty_cpu(:wait, 0) end, priority: :high)
+
+      :ok
     end
   end
 

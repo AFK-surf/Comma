@@ -68,10 +68,60 @@ defmodule SalixMeet.Store do
 
     with :ok <- ensure_group_projection(doc) do
       case S3.put(Keys.meet_state(id), Jason.encode!(doc), if_none_match: "*") do
-        {:ok, %{etag: etag}} -> {:ok, doc, etag}
-        {:error, :precondition_failed} -> {:error, :exists}
-        other -> other
+        {:ok, %{etag: etag}} ->
+          record_active_google_meet(doc)
+          {:ok, doc, etag}
+
+        {:error, :precondition_failed} ->
+          {:error, :exists}
+
+        other ->
+          other
       end
+    end
+  end
+
+  @doc "Extract the canonical lowercased Google Meet code (e.g. `abc-defg-hij`) from a Meet URL."
+  @spec google_meet_code(term()) :: String.t() | nil
+  def google_meet_code(url) when is_binary(url) do
+    case URI.parse(String.trim(url)) do
+      %URI{scheme: scheme, host: host, userinfo: nil, port: port, path: path}
+      when port in [nil, 443] and is_binary(path) ->
+        if String.downcase(to_string(scheme || "")) == "https" and
+             String.downcase(to_string(host || "")) == "meet.google.com" do
+          case Regex.run(~r|^/([a-z]{3}-[a-z]{4}-[a-z]{3})/?$|i, path) do
+            [_, code] -> String.downcase(code)
+            _ -> nil
+          end
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def google_meet_code(_url), do: nil
+
+  @doc """
+  Return `{:ok, meeting_id, state}` when `group_id` already has an active Google
+  Meet session for the same Meet code, or `:not_found`.
+  """
+  @spec find_active_google_meet(String.t() | nil, String.t() | nil, keyword()) ::
+          {:ok, String.t(), map()} | :not_found
+  def find_active_google_meet(group_id, meet_url, opts \\ []) do
+    group_id = trim(group_id)
+    code = google_meet_code(meet_url)
+    except = Keyword.get(opts, :except)
+
+    with true <- group_id != "" and is_binary(code),
+         {:ok, %{body: body}} <- S3.get(active_google_meet_key(group_id, code)),
+         {:ok, %{"meeting_id" => meeting_id}} <- Jason.decode(body),
+         true <- is_binary(meeting_id) and meeting_id != "" and meeting_id != except,
+         {:ok, doc, _etag} <- get(meeting_id),
+         true <- active_google_meet_doc?(doc, group_id, code) do
+      {:ok, meeting_id, stringify(doc["state"] || %{})}
+    else
+      _ -> :not_found
     end
   end
 
@@ -1220,6 +1270,7 @@ defmodule SalixMeet.Store do
 
               case cas_put(id, Map.put(doc, "state", next_state), etag) do
                 {:ok, claimed_doc, claimed_etag} ->
+                  record_active_google_meet(claimed_doc)
                   {:ok, :claimed, claimed_doc, claimed_etag, claimed}
 
                 {:error, :lost} ->
@@ -1245,6 +1296,7 @@ defmodule SalixMeet.Store do
 
               case cas_put(id, Map.put(doc, "state", next_state), etag) do
                 {:ok, converged_doc, converged_etag} ->
+                  record_active_google_meet(converged_doc)
                   {:ok, :dispatched, converged_doc, converged_etag, converged}
 
                 {:error, :lost} ->
@@ -1299,6 +1351,7 @@ defmodule SalixMeet.Store do
 
           case cas_put(id, next_doc, etag) do
             {:ok, claimed_doc, claimed_etag} ->
+              record_active_google_meet(claimed_doc)
               {:ok, :claimed, claimed_doc, claimed_etag, claimed}
 
             {:error, :lost} ->
@@ -1626,6 +1679,45 @@ defmodule SalixMeet.Store do
   end
 
   defp ensure_group_projection(_doc), do: :ok
+
+  defp record_active_google_meet(%{"id" => meeting_id} = doc) when is_binary(meeting_id) do
+    state = stringify(doc["state"] || %{})
+    group_id = trim(state["group_id"])
+    code = google_meet_code(state["meet_url"])
+
+    if group_id != "" and is_binary(code) and active_google_meet_doc?(doc, group_id, code) do
+      payload =
+        Jason.encode!(%{
+          "meeting_id" => meeting_id,
+          "group_id" => group_id,
+          "meet_code" => code,
+          "updated_at" => now_ms()
+        })
+
+      _ = S3.put(active_google_meet_key(group_id, code), payload)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp record_active_google_meet(_doc), do: :ok
+
+  defp active_google_meet_key(group_id, code),
+    do: "meet/active/google_meet/#{group_id}/#{code}.json"
+
+  defp active_google_meet_doc?(doc, group_id, code) do
+    state = stringify(doc["state"] || %{})
+    dispatch = stringify(state["join_dispatch"] || %{})
+    status = state["status"]
+
+    trim(state["group_id"]) == group_id and
+      google_meet_code(state["meet_url"]) == code and
+      status not in @terminal_statuses and
+      not join_abandoned?(state, dispatch) and
+      (status in ~w(active processing) or dispatch["status"] in ~w(dispatching dispatched))
+  end
 
   defp project_existing(%{"id" => meeting_id, "state" => %{"group_id" => group_id}})
        when is_binary(meeting_id) and meeting_id != "" and is_binary(group_id) and group_id != "" do

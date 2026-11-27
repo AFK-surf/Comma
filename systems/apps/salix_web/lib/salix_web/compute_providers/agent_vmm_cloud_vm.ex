@@ -11,7 +11,7 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
   confirms it is quiet and stays parked (`cloud_runtime_quiesce`, then
   `cloud_runtime_release`), as before a Cloudflare archive. A station that is
   busy or not connected keeps the VM ready; a busy one makes the next try wait
-  longer (`SalixWeb.ComputeProviders.Cloudflare.refused_idle_archive/2`).
+  longer (`SalixWeb.GroupStationLifecycle.refused_idle_archive/2`).
 
   `opts` may name the container provider (`:vmm`, default
   `SalixEnv.ComputeProviders.AgentVMM`) and the station's connection
@@ -19,7 +19,7 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
   """
 
   alias SalixStore.Compute, as: GroupCompute
-  alias SalixWeb.ComputeProviders.Cloudflare
+  alias SalixWeb.GroupStationLifecycle
 
   @quiesce_ms 100_000
   @release_ms 20_000
@@ -113,7 +113,7 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
 
   defp ready(rec, allocation, workload, opts) do
     cond do
-      Cloudflare.idle_eligible(rec, opts) == :ok ->
+      GroupStationLifecycle.idle_eligible(rec, opts) == :ok ->
         sleep_idle(rec, allocation, workload, opts)
 
       station(opts).connected?(rec) ->
@@ -130,7 +130,8 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
     operation = "sleep-" <> SystemsRuntime.Proc.uuid()
 
     case update(rec["group_id"], fn current ->
-           if current["status"] == "ready" and Cloudflare.idle_eligible(current, opts) == :ok do
+           if current["status"] == "ready" and
+                GroupStationLifecycle.idle_eligible(current, opts) == :ok do
              current
              |> Map.put("status", "archiving")
              |> Map.put("archive_operation_id", operation)
@@ -249,7 +250,7 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
   end
 
   defp wait_before_next_sleep(current, :not_quiet, opts),
-    do: Cloudflare.refused_idle_archive(current, opts)
+    do: GroupStationLifecycle.refused_idle_archive(current, opts)
 
   defp wait_before_next_sleep(current, :unreachable, _opts),
     do: Map.put(current, "archive_retry_at", now_ms() + 60_000)

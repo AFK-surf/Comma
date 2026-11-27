@@ -106,7 +106,25 @@ defmodule CommaWeb.SalixClient do
     tenant_id = workspace["salix_tenant_id"]
     group_id = workspace["default_group_id"]
 
-    with {:ok, group} <- Salix.Control.Groups.get(group_id, tenant_id),
+    with true <- SalixStore.Ids.valid_group_id_for_tenant?(group_id, tenant_id),
+         {:ok, %{"tenant_id" => ^tenant_id} = group} <- Salix.Control.Groups.get(group_id) do
+      if group["purpose"] == "collaboration" and group["router_agent_id"] in [nil, ""] do
+        {:ok,
+         workspace
+         |> Map.put("router_agent_id", nil)
+         |> Map.put("router_conversation_id", nil)}
+      else
+        resolve_visible_router_scope(workspace, group, tenant_id, group_id)
+      end
+    else
+      false -> {:error, :not_found}
+      {:ok, _other_tenant} -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp resolve_visible_router_scope(workspace, group, tenant_id, group_id) do
+    with true <- group["hidden"] != true,
          {:ok, router_conversation_id} <- SalixIM.ConversationIds.group_router(group),
          router_agent_id when is_binary(router_agent_id) and router_agent_id != "" <-
            group["router_agent_id"],
@@ -199,14 +217,17 @@ defmodule CommaWeb.SalixClient do
            # sandboxes (`SalixAgent.Sandboxes`): there a sandbox is a place to
            # offer; `cloud_vm_retired` whether the Workspace's Cloud VM is one
            # no more; `cloud_vm_station` the device id that names it as a
-           # station where it is on an Agent VMM Host.
-           "task_place" => %{
-             "place" => task_place || TaskPlace.salix(),
-             "sandboxes" => SalixAgent.Sandboxes.enabled?(),
-             "cloud_vm_retired" =>
-               SalixAgent.Sandboxes.cloud_vm_retired?(resolved_workspace["default_group_id"]),
-             "cloud_vm_station" => cloud_vm_station(resolved_workspace["default_group_id"])
-           },
+           # station where it is on an Agent VMM Host; `sandbox_runtimes` the
+           # runtimes a new sandbox can run, for the New task window to offer.
+           "task_place" =>
+             %{
+               "place" => task_place || TaskPlace.salix(),
+               "sandboxes" => SalixAgent.Sandboxes.enabled?(),
+               "cloud_vm_retired" =>
+                 SalixAgent.Sandboxes.cloud_vm_retired?(resolved_workspace["default_group_id"]),
+               "cloud_vm_station" => cloud_vm_station(resolved_workspace["default_group_id"])
+             }
+             |> maybe_put("sandbox_runtimes", sandbox_runtimes(resolved_workspace)),
            # Kept only for old clients: desktop apps already shipped require
            # this page and no longer get any Worker in it.
            "workers" => empty_worker_page(),
@@ -219,6 +240,22 @@ defmodule CommaWeb.SalixClient do
          }}
       end
     end)
+  end
+
+  # The runtimes a new sandbox of the Workspace can run on the accounts it
+  # lends one (`SalixAgent.Sandboxes.runtimes/2`): a read of at most 50 of its
+  # accounts, and of the platform's `worker` model for Codex. Not listed where
+  # there are no sandboxes or the accounts cannot be read: the window then
+  # limits none, and placement still refuses the rest. A platform model that
+  # cannot be read lists no Codex, as placement then refuses it too.
+  defp sandbox_runtimes(workspace) do
+    with true <- SalixAgent.Sandboxes.enabled?(),
+         tenant_id when is_binary(tenant_id) <- workspace["salix_tenant_id"],
+         {:ok, runtimes} <- SalixAgent.Sandboxes.runtimes(tenant_id) do
+      runtimes
+    else
+      _ -> nil
+    end
   end
 
   # The Group's own VM on its Agent VMM Host is named as that Host's station
@@ -605,16 +642,71 @@ defmodule CommaWeb.SalixClient do
     with :ok <-
            connects_retired(
              SalixIM.ProviderConnects.delete_group_im_connects(tenant_id, group_id)
-           ) do
-      case Salix.Control.Groups.retire_cloud_vm(group_id, tenant_id) do
+           ),
+         :ok <- cloud_vm_retired(Salix.Control.Groups.retire_cloud_vm(group_id, tenant_id)) do
+      SalixAgent.Colab.Account.retire_tenant(tenant_id)
+    end
+  end
+
+  @impl true
+  def retire_collaboration_group(%{"salix_tenant_id" => tenant_id, "group_id" => group_id})
+      when is_binary(tenant_id) and is_binary(group_id) do
+    with :ok <- archive_collaboration_group_agents(tenant_id, group_id, nil) do
+      case Salix.Control.Groups.delete(group_id) do
+        :ok -> :ok
         {:error, :not_found} -> :ok
-        result -> result
+        {:error, _reason} = error -> error
       end
+    end
+  end
+
+  def retire_collaboration_group(_group), do: :ok
+
+  defp archive_collaboration_group_agents(tenant_id, group_id, cursor) do
+    case SalixStore.AgentPGStore.page_configs(
+           %{tenant_id: tenant_id, group_id: group_id},
+           limit: 200,
+           cursor: cursor
+         ) do
+      {:ok, %{items: agents, next: next}} ->
+        result =
+          Enum.reduce_while(agents, :ok, fn agent, :ok ->
+            if Map.has_key?(agent, "archived_at") do
+              {:cont, :ok}
+            else
+              case SalixAgent.Control.delete(agent["agent_id"], tenant_id) do
+                :ok -> {:cont, :ok}
+                {:ok, _} -> {:cont, :ok}
+                {:error, :not_found} -> {:cont, :ok}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
+            end
+          end)
+
+        case {result, next} do
+          {:ok, nil} ->
+            :ok
+
+          {:ok, next_cursor} ->
+            archive_collaboration_group_agents(tenant_id, group_id, next_cursor)
+
+          {{:error, _} = error, _} ->
+            error
+        end
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   defp connects_retired({:error, :not_found}), do: :ok
   defp connects_retired(result), do: result
+
+  defp cloud_vm_retired({:error, :not_found}), do: :ok
+  defp cloud_vm_retired(result), do: result
 
   # A deployment that names its one model (`llm.default_template`: a local or
   # self-hosted installation) runs it as the platform model of every role not
@@ -733,6 +825,102 @@ defmodule CommaWeb.SalixClient do
     end)
   end
 
+  # A Collaborative Task (`Comma.Collaborations`): each Collaborative Task runs
+  # inside its own dedicated, hidden, router-less Salix Group
+  # (`purpose: "collaboration"`, `hidden: true`, `router_agent_id: nil`) with a
+  # dedicated Worker (`SalixAgent.CollaborationPolicy`). Both group and worker
+  # IDs are derived from `client_request_id` so retries are idempotent.
+  @impl true
+  def create_collaborative_task(workspace, attrs) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace),
+           tenant_id = workspace["salix_tenant_id"],
+           collab_group_id = collaboration_group_id(tenant_id, attrs["client_request_id"]),
+           billing_owner = %{
+             "surface" => "comma",
+             "vm_profile_key" => "cf-standard-1",
+             "product_owner_type" => "workspace",
+             "product_owner_id" => workspace["id"],
+             "billing_account_id" => workspace["billing_account_id"],
+             "salix_tenant_id" => tenant_id,
+             "salix_group_id" => collab_group_id,
+             "home_group_id" => workspace["default_group_id"],
+             "router_agent_id" => nil,
+             "charge_policy" => "platform_paid"
+           },
+           {:ok, _group} <-
+             Salix.Control.Groups.create_preallocated(
+               %{
+                 "name" => attrs["title"] || "Task together",
+                 "purpose" => "collaboration",
+                 "hidden" => true,
+                 "router_agent_id" => nil,
+                 "billing_owner" => billing_owner
+               },
+               tenant_id,
+               collab_group_id
+             ),
+           {:ok, %{"agent_id" => worker}} <-
+             SalixAgent.Control.create_owned_preallocated(
+               %{
+                 "group_id" => collab_group_id,
+                 "role" => "worker",
+                 "name" => "Task together",
+                 "purpose" => SalixAgent.CollaborationPolicy.purpose(),
+                 "management_purpose" => "Run one Collaborative Task",
+                 "management_creation_audit" => %{"kind" => "collaboration_worker"},
+                 "runtime_config" => %{"kind" => "internal"}
+               },
+               tenant_id,
+               collaboration_worker_id(collab_group_id, attrs["client_request_id"])
+             ),
+           task =
+             %{
+               "title" => attrs["title"],
+               "content" => attrs["content"],
+               "client_request_id" => attrs["client_request_id"],
+               "owner_user_id" => attrs["owner_user_id"],
+               "initial_author" => "owner",
+               "collaboration" => attrs["collaboration"],
+               "conversation_metadata" => %{"origin" => %{"provider" => "collaboration"}}
+             },
+           {:ok, created} <-
+             SalixIM.TaskPlacement.create_collaborative_task_conversation(
+               collab_group_id,
+               nil,
+               worker,
+               task
+             ) do
+        {:ok, %{"group_id" => collab_group_id, "conversation_id" => created["conversation_id"]}}
+      else
+        {:ok, _group} -> {:error, :temporarily_unavailable}
+        {:error, _reason} = error -> error
+      end
+    end)
+  end
+
+  defp collaboration_group_id(tenant_id, client_request_id) when is_binary(client_request_id) do
+    <<number::unsigned-64, _::binary>> =
+      :crypto.hash(:sha256, "collaboration-group:" <> client_request_id)
+
+    body =
+      "9" <>
+        String.pad_leading(Integer.to_string(rem(number, 1_000_000_000_000_000_000)), 18, "0")
+
+    SalixStore.Ids.group_id_prefix_for_tenant!(tenant_id) <> body
+  end
+
+  defp collaboration_worker_id(group_id, client_request_id) when is_binary(client_request_id) do
+    <<number::unsigned-64, _::binary>> =
+      :crypto.hash(:sha256, "collaboration:" <> client_request_id)
+
+    body =
+      "9" <>
+        String.pad_leading(Integer.to_string(rem(number, 1_000_000_000_000_000_000)), 18, "0")
+
+    SalixStore.Ids.agent_id_prefix_for_group!(group_id) <> body
+  end
+
   defp requested_task_place(_group, _group_id, _task, true), do: :ok
 
   defp requested_task_place(group, group_id, task, false) do
@@ -804,6 +992,27 @@ defmodule CommaWeb.SalixClient do
   end
 
   @impl true
+  def list_station_tasks(workspace, member_scope)
+      when is_map(workspace) and is_map(member_scope) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+        group_id = workspace["default_group_id"]
+
+        device_emails =
+          if member_scope[:is_owner] == true,
+            do: SalixEnv.StillfailDevices.owner_emails_by_device(group_id),
+            else: %{}
+
+        {:ok,
+         SalixWeb.StationTaskIndex.list(group_id, %{
+           email: member_scope[:email],
+           device_emails: device_emails
+         })}
+      end
+    end)
+  end
+
+  @impl true
   def read_station_task(workspace, station_id, thread, opts)
       when is_map(workspace) and is_binary(station_id) and is_binary(thread) and is_map(opts) do
     observe_salix(:salix_boundary, fn ->
@@ -813,6 +1022,21 @@ defmodule CommaWeb.SalixClient do
           station_id,
           thread,
           opts
+        )
+      end
+    end)
+  end
+
+  @impl true
+  def subscribe_task_run(workspace, conversation_id, subscriber)
+      when is_map(workspace) and is_binary(conversation_id) and
+             SystemsRuntime.Proc.is_process(subscriber) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+        SalixWeb.CodingSandboxes.subscribe_station(
+          workspace["salix_tenant_id"],
+          conversation_id,
+          subscriber
         )
       end
     end)
@@ -917,6 +1141,18 @@ defmodule CommaWeb.SalixClient do
                  ),
                do: {:ok, %{"files" => files, "next_cursor" => nil}}
       end
+    end)
+  end
+
+  @impl true
+  def list_task_feed(workspace, opts) when is_map(workspace) and is_list(opts) do
+    group_id = workspace["default_group_id"]
+
+    observe_salix(:salix_boundary, fn ->
+      SalixIM.TaskFeed.list_group(
+        group_id,
+        Keyword.take(opts, [:limit, :cursor, :attention, :conversation_id])
+      )
     end)
   end
 
@@ -1286,6 +1522,147 @@ defmodule CommaWeb.SalixClient do
   end
 
   @impl true
+  def write_task_file(workspace, conversation_id, name, body)
+      when is_map(workspace) and is_binary(name) and is_binary(body) do
+    name = task_file_name(name)
+    folder = "/task/" <> conversation_id <> "/uploads/"
+    path = folder <> SalixStore.Ids.new_message_id() <> "-" <> name
+
+    with {:ok, worker} <- task_worker(workspace, conversation_id),
+         :ok <- task_folder_room(worker, folder),
+         {:ok, _} <- SalixAgent.Workspace.write(worker, path, body) do
+      {:ok, %{"path" => path, "name" => name, "size" => byte_size(body)}}
+    end
+  end
+
+  @impl true
+  def read_task_file(workspace, conversation_id, path) when is_map(workspace) do
+    with :ok <- valid_task_file_path(path),
+         {:ok, worker} <- task_worker(workspace, conversation_id) do
+      SalixAgent.Workspace.read(worker, path)
+    end
+  end
+
+  @impl true
+  def open_task_file(workspace, conversation_id, path) when is_map(workspace) do
+    with :ok <- valid_task_file_path(path),
+         {:ok, worker} <- task_worker(workspace, conversation_id),
+         {:ok, %{"ref" => %{} = ref} = entry} <- SalixAgent.AgentWorkspace.entry(worker, path) do
+      {:ok,
+       %{
+         agent_id: worker,
+         ref: ref,
+         size: entry["size"] || 0,
+         path: path
+       }}
+    else
+      {:ok, _entry} -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp valid_task_file_path(path) do
+    if is_binary(path) and String.starts_with?(path, "/task/") and
+         not String.contains?(path, ["\\", <<0>>]) and
+         not Enum.member?(String.split(path, "/"), "..") do
+      :ok
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # What a Task together's people and its Worker put in its folder, newest
+  # upload first: the Task's shared files, at most 400.
+  @task_folder_max 400
+  @impl true
+  def list_task_folder(workspace, conversation_id) when is_map(workspace) do
+    # The Worker's whole folder: its workspace is this Task's alone, and it
+    # may write anywhere under `/task/` (`SalixAgent.CollaborationPolicy`).
+    folder = "/task/"
+    uploads = "/task/" <> conversation_id <> "/uploads/"
+
+    with {:ok, worker} <- task_worker(workspace, conversation_id),
+         {:ok, entries} <- SalixAgent.AgentWorkspace.entries(worker, folder) do
+      {:ok,
+       entries
+       |> Enum.reverse()
+       |> Enum.take(@task_folder_max)
+       |> Enum.map(fn {path, size} ->
+         %{
+           "path" => path,
+           "name" => task_file_display_name(path),
+           "size" => size,
+           "uploaded" => String.starts_with?(path, uploads)
+         }
+       end)}
+    end
+  end
+
+  # An upload's name without the id it was stored under.
+  defp task_file_display_name(path) do
+    base = Path.basename(path)
+
+    if String.contains?(Path.dirname(path), "/uploads"),
+      do: base |> String.split("-", parts: 2) |> List.last(),
+      else: base
+  end
+
+  # The most files people put in one Task together.
+  @task_uploads_max 200
+
+  defp task_folder_room(worker, folder) do
+    if length(SalixAgent.AgentWorkspace.list(worker, folder)) >= @task_uploads_max,
+      do: {:error, {:bad_request, "A Task together holds at most #{@task_uploads_max} files."}},
+      else: :ok
+  end
+
+  # A Task together's own Worker: its workspace is the Task's folder.
+  defp task_worker(workspace, conversation_id) do
+    case SalixIM.Conversations.get_group_conversation_record(
+           workspace["default_group_id"],
+           conversation_id
+         ) do
+      {:ok,
+       %{
+         "kind" => "agent_task",
+         "metadata" => %{"collaboration" => %{}},
+         "task_worker_agent_id" => worker
+       }}
+      when is_binary(worker) and worker != "" ->
+        {:ok, worker}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp task_file_name(name) do
+    name
+    |> Path.basename()
+    # The characters a message's file line names a path with.
+    |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
+    |> String.slice(0, 120)
+    |> case do
+      "" -> "file"
+      clean -> clean
+    end
+  end
+
+  @impl true
+  def append_product_event(workspace, conversation_id, event_type, data, idempotency_key)
+      when is_map(workspace) do
+    observe_salix(:deliver, fn ->
+      SalixIM.ConversationServer.append_product_event(
+        workspace["default_group_id"],
+        conversation_id,
+        event_type,
+        data,
+        idempotency_key
+      )
+    end)
+  end
+
+  @impl true
   def set_task_archived(workspace, conversation_id, action, version) do
     observe_salix(:salix_boundary, fn ->
       SalixIM.ConversationServer.set_task_archived(
@@ -1454,34 +1831,22 @@ defmodule CommaWeb.SalixClient do
   @impl true
   def task_activity_participants(workspace, conversation_id) do
     observe_salix(:salix_boundary, fn ->
-      with {:ok, %{"kind" => "agent_task"} = conversation} <-
+      with {:ok, %{"kind" => "agent_task"}} <-
              SalixIM.Conversations.get_group_conversation(
                workspace["default_group_id"],
                conversation_id
+             ),
+           {:ok, roster} <-
+             SalixIM.ConversationServer.get_group_conversation_task_worker_identities(
+               workspace["default_group_id"],
+               conversation_id
              ) do
-        # Exactly two product-owned roles, resolved through the owner's existing
-        # membership index. Never page participants or inspect private Sessions.
+        # Strictly [router, primary] in PR 1 (safe with client .max(2) / Enum.take(2)).
         participants =
-          [conversation["created_by_agent_id"], conversation["task_worker_agent_id"]]
-          |> Enum.filter(&(is_binary(&1) and &1 != ""))
-          |> Enum.uniq()
-          |> Enum.flat_map(fn agent_id ->
-            case SalixIM.ConversationServer.get_group_conversation_agent_participant_identity(
-                   workspace["default_group_id"],
-                   conversation_id,
-                   agent_id
-                 ) do
-              {:ok, participant} ->
-                [
-                  participant
-                  |> Map.take(["participant_id", "name"])
-                  |> Map.put("agent_id", agent_id)
-                ]
-
-              {:error, _reason} ->
-                []
-            end
-          end)
+          [roster["router"], roster["primary"]]
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq_by(& &1["participant_id"])
+          |> Enum.map(&Map.take(&1, ["participant_id", "name", "agent_id"]))
 
         {:ok, participants}
       else
@@ -1490,6 +1855,121 @@ defmodule CommaWeb.SalixClient do
       end
     end)
   end
+
+  @impl true
+  def task_worker_sessions(workspace, conversation_id) do
+    group_id = workspace["default_group_id"]
+    tenant_id = workspace["salix_tenant_id"]
+
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, %{"kind" => "agent_task"}} <-
+             SalixIM.Conversations.get_group_conversation(group_id, conversation_id),
+           {:ok, roster} <-
+             SalixIM.ConversationServer.get_group_conversation_task_worker_identities(
+               group_id,
+               conversation_id
+             ) do
+        stations =
+          case SalixStore.StationTaskSessions.of_task(group_id, conversation_id) do
+            {:ok, rows} when is_list(rows) -> rows
+            _ -> []
+          end
+
+        station_by_pid =
+          Map.new(stations, fn row ->
+            {get_in(row.start || %{}, ["participant_id"]), row.start || %{}}
+          end)
+
+        station_by_slot =
+          Map.new(stations, fn row ->
+            {get_in(row.start || %{}, ["slot"]), row.start || %{}}
+          end)
+
+        workers =
+          (roster["workers"] || [])
+          |> Enum.take(6)
+          |> Enum.map(fn worker ->
+            pid = worker["participant_id"]
+            slot = worker["session_slot"] || worker["target_key"] || "lead"
+            label = worker["session_label"] || worker["name"] || slot
+            start = station_by_pid[pid] || station_by_slot[slot] || %{}
+            {model_name, runtime} = worker_session_model_and_runtime(worker, start, tenant_id)
+
+            %{
+              "participant_id" => pid,
+              "agent_id" => worker["agent_id"],
+              "name" => worker["name"] || label,
+              "slot" => slot,
+              "label" => label,
+              "is_primary" => worker["primary"] == true
+            }
+            |> maybe_put_non_empty("model", model_name)
+            |> maybe_put_non_empty("runtime", runtime)
+          end)
+
+        {:ok, workers}
+      else
+        {:error, _} = error -> error
+        _ -> {:error, :not_found}
+      end
+    end)
+  end
+
+  defp worker_session_model_and_runtime(worker, start, tenant_id) do
+    choice = worker["session_model"]
+
+    cond do
+      is_map(choice) ->
+        case public_task_model(choice, tenant_id) do
+          %{"kind" => "runtime", "provider" => provider, "name" => name} ->
+            {name, provider}
+
+          %{"kind" => "catalog", "name" => name} ->
+            {name, "salix"}
+
+          %{"kind" => "platform"} ->
+            {"platform", "salix"}
+
+          _ ->
+            worker_session_from_start(start, tenant_id)
+        end
+
+      true ->
+        worker_session_from_start(start, tenant_id)
+    end
+  end
+
+  defp worker_session_from_start(start, tenant_id) when is_map(start) do
+    runtime =
+      case start["runtime"] do
+        r when is_binary(r) and r != "" -> r
+        _ -> nil
+      end
+
+    model =
+      case start["model"] do
+        m when is_binary(m) and m != "" ->
+          case public_task_model(
+                 %{"kind" => "runtime", "provider" => runtime, "model" => m},
+                 tenant_id
+               ) do
+            %{"name" => name} when is_binary(name) and name != "" -> name
+            _ -> m
+          end
+
+        _ ->
+          nil
+      end
+
+    {model, runtime}
+  end
+
+  defp worker_session_from_start(_start, _tenant_id), do: {nil, nil}
+
+  defp maybe_put_non_empty(map, key, value) when is_binary(value) and value != "",
+    do: Map.put(map, key, value)
+
+  defp maybe_put_non_empty(map, _key, _value), do: map
 
   @doc """
   Where a Task runs and the model it runs, which Task panels show instead of
@@ -1526,8 +2006,14 @@ defmodule CommaWeb.SalixClient do
             {:ok,
              %{"place" => TaskPlace.salix(), "model" => salix_task_model(workspace, conversation)}}
 
-          {_conversation, [station | _]} ->
-            {:ok, station_task_run(workspace, station)}
+          {_conversation, [_ | _]} ->
+            case select_primary_station_row(group_id, conversation_id, stations) do
+              nil ->
+                {:ok, station_task_run_without_primary(workspace, hd(stations))}
+
+              primary_station ->
+                {:ok, station_task_run(workspace, primary_station)}
+            end
         end
       else
         {:ok, _not_a_task} -> {:error, :not_found}
@@ -1624,11 +2110,30 @@ defmodule CommaWeb.SalixClient do
     %{"place" => place, "model" => model}
   end
 
+  defp station_task_run_without_primary(workspace, %{device_id: device_id}) do
+    group_id = workspace["default_group_id"]
+    cloud_vm? = device_id == SalixStore.RuntimeIds.cloud_vm_device_id(group_id)
+
+    place =
+      if cloud_vm?,
+        do: TaskPlace.cloud_vm(),
+        else: %{
+          "kind" => "station",
+          "device_id" => device_id,
+          "name" => station_name(workspace, device_id)
+        }
+
+    %{"place" => place, "model" => nil}
+  end
+
   # A sandbox Task runs on its own sandbox (`SalixStore.CodingSandboxes`): the
   # place carries the sandbox's state and, for a coding Task, its repository
   # and session branch; a Task without a repository sends no `repo`. Its
   # model is what its station's Session was started with: the Session taking
   # part now (`stations`, a switch replaces it), else the sandbox's own start.
+  # A start that names no model runs its runtime's default: for Codex, the
+  # platform's `worker` model when the sandbox is lent no workspace Codex
+  # account (`SalixWeb.StationProfiles.sandbox_codex_platform?/2`).
   defp coding_task_run(workspace, conversation, stations) do
     tenant_id = workspace["salix_tenant_id"]
     group_id = workspace["default_group_id"]
@@ -1643,9 +2148,9 @@ defmodule CommaWeb.SalixClient do
       end
 
     start =
-      case Enum.find(stations, &is_map(&1.start)) do
-        %{start: start} -> start
-        nil -> if is_map(sandbox["start"]), do: sandbox["start"], else: %{}
+      case select_primary_station_row(group_id, conversation["conversation_id"], stations) do
+        %{start: start} when is_map(start) -> start
+        _ -> if is_map(sandbox["start"]), do: sandbox["start"], else: %{}
       end
 
     repo = conversation["repo"] || sandbox["repo"] || %{}
@@ -1661,6 +2166,9 @@ defmodule CommaWeb.SalixClient do
 
         start["runtime"] == "claude" ->
           %{"kind" => "runtime", "provider" => "claude", "name" => nil, "vendor" => "anthropic"}
+
+        SalixWeb.StationProfiles.sandbox_codex_platform?(tenant_id, sandbox["account_id"]) ->
+          %{"kind" => "platform"}
 
         true ->
           %{"kind" => "runtime", "provider" => "codex", "name" => nil, "vendor" => "openai"}
@@ -1680,30 +2188,59 @@ defmodule CommaWeb.SalixClient do
             do: Map.put(place, "reason", sandbox["reason"]),
             else: place
         end)
-        |> then(fn place ->
-          case sandbox_task_models(tenant_id, group_id, device_id) do
-            %{} = models -> Map.put(place, "task_models", models)
-            nil -> place
-          end
-        end),
+        |> Map.merge(
+          sandbox_station(
+            tenant_id,
+            group_id,
+            device_id,
+            SalixWeb.CodingSandboxes.screen_owner(sandbox, conversation)
+          )
+        ),
       "model" => model,
       "facts" => coding_facts(sandbox["facts"])
     }
   end
 
-  # The models the sandbox's station runs, by runtime, as it last said
-  # (`task_models`), while it is connected: what a switch of the Task's model
-  # may name, checked the same way (`Salix.Bindings.AgentConversations`).
-  defp sandbox_task_models(tenant_id, group_id, device_id) do
+  # What the sandbox's station last said of itself, while it is connected, in
+  # the one read of its Device. `task_models`: the models it runs, by runtime,
+  # which a switch of the Task's model may name, checked the same way
+  # (`Salix.Bindings.AgentConversations`). `screen_owner`: it can show its
+  # display, and to whom: the Task's owner
+  # (`SalixWeb.CodingSandboxes.show_screen/4`), so that person's client offers
+  # the screen and no one else's does. A display fact; it grants nothing.
+  # `screen_device`: the Device the sandbox runs as, whose display a client
+  # views (`SalixWeb.CodingSandboxes.show_screen/4` answers the same).
+  # `screen_active`: something is on that display now (a Session's browser is
+  # open on it in the turn under way), so the owner's client shows the screen
+  # in the conversation while `screen_active` stands.
+  defp sandbox_station(tenant_id, group_id, device_id, owner) do
     case SalixEnv.Registry.get_device(tenant_id, group_id, device_id) do
       {:ok, %{"status" => "connected"} = device} ->
-        case get_in(device, ["meta", "capabilities", "task_models"]) do
-          %{} = models -> Map.take(models, ~w(claude codex))
-          _none -> nil
+        capabilities = get_in(device, ["meta", "capabilities"]) || %{}
+
+        models =
+          case capabilities["task_models"] do
+            %{} = models -> %{"task_models" => Map.take(models, ~w(claude codex))}
+            _none -> %{}
+          end
+
+        cond do
+          not (is_binary(owner) and SalixWeb.CodingSandboxes.serves_screen?(device)) ->
+            models
+
+          SalixWeb.CodingSandboxes.screen_active?(device) ->
+            Map.merge(models, %{
+              "screen_owner" => owner,
+              "screen_device" => device_id,
+              "screen_active" => true
+            })
+
+          true ->
+            Map.merge(models, %{"screen_owner" => owner, "screen_device" => device_id})
         end
 
       _ ->
-        nil
+        %{}
     end
   end
 
@@ -1712,10 +2249,57 @@ defmodule CommaWeb.SalixClient do
     for {part, %{"value" => value}} <- facts,
         part in ~w(usage changes pull_request),
         into: %{},
-        do: {part, value}
+        do: {part, sanitize_coding_fact(part, value)}
   end
 
   defp coding_facts(_facts), do: %{}
+
+  defp sanitize_coding_fact("usage", value), do: CommaWeb.Coding.Usage.public_usage(value)
+  defp sanitize_coding_fact(_part, value), do: value
+
+  @doc false
+  def select_primary_station_row(_group_id, _conversation_id, []), do: nil
+
+  def select_primary_station_row(group_id, conversation_id, stations) when is_list(stations) do
+    primary_info =
+      case SalixIM.ConversationServer.get_group_conversation_task_worker_identities(
+             group_id,
+             conversation_id
+           ) do
+        {:ok, %{"primary" => %{} = primary}} -> primary
+        _ -> nil
+      end
+
+    pick_primary_station_row(stations, primary_info)
+  end
+
+  @doc false
+  def pick_primary_station_row([], _primary_info), do: nil
+
+  def pick_primary_station_row(stations, primary_info) when is_list(stations) do
+    primary_pid = primary_info && primary_info["participant_id"]
+    primary_slot = primary_info && (primary_info["session_slot"] || "lead")
+
+    Enum.find(stations, fn row ->
+      is_binary(primary_pid) and primary_pid != "" and
+        get_in(row.start || %{}, ["participant_id"]) == primary_pid
+    end) ||
+      Enum.find(stations, fn row ->
+        get_in(row.start || %{}, ["is_primary"]) == true
+      end) ||
+      Enum.find(stations, fn row ->
+        slot = get_in(row.start || %{}, ["slot"])
+        is_binary(slot) and slot != "" and slot == (primary_slot || "lead")
+      end) ||
+      Enum.find(stations, &untagged_legacy_lead_row?/1)
+  end
+
+  defp untagged_legacy_lead_row?(row) do
+    start = row.start || %{}
+    slot = start["slot"]
+    is_primary = start["is_primary"]
+    is_primary != false and (is_nil(slot) or slot == "" or slot == "lead")
+  end
 
   # The maker of the models a runtime runs by default.
   defp runtime_vendor("claude"), do: "anthropic"
@@ -2040,13 +2624,19 @@ defmodule CommaWeb.SalixClient do
     end
   end
 
+  # Every Tenant Comma ensures, a Workspace's or the guest Tenant, is
+  # Comma's: the record and the Tenant directory say so.
   defp ensure_salix_tenant(id, attrs) do
     case Salix.Control.Tenants.get(id) do
-      {:ok, tenant} ->
-        ensure_salix_tenant_config(id, attrs["config"], tenant)
+      {:ok, _tenant} ->
+        with {:ok, tenant} <- Salix.Control.Tenants.ensure_product(id, "comma") do
+          ensure_salix_tenant_config(id, attrs["config"], tenant)
+        end
 
       {:error, :not_found} ->
-        attrs = attrs |> encode_config() |> Map.delete("tenant_id")
+        attrs =
+          attrs |> encode_config() |> Map.delete("tenant_id") |> Map.put("product", "comma")
+
         normalize_created(Salix.Control.Tenants.create_preallocated(attrs, id))
 
       {:error, reason} ->

@@ -58,6 +58,24 @@ defmodule SalixAgent.LLMFailureStreakTest do
     end
   end
 
+  defmodule SubscriptionAuthLLM do
+    @behaviour SalixAgent.LLM
+    def complete(_messages, _tools), do: fail()
+    def complete_stream(_messages, _tools, _on_delta), do: fail()
+
+    defp fail do
+      {:error, meta} = SalixAgent.LLM.Error.http("codex", 401, "auth_unavailable")
+
+      {:error,
+       Map.merge(meta, %{
+         "error_class" => "billing_unavailable",
+         "reason" => "subscription_authentication_required",
+         "retryable" => false,
+         "funding" => %{"source" => "codex"}
+       })}
+    end
+  end
+
   defmodule CrashingLLM do
     @moduledoc """
     Kills the LLM task outright (uncatchable, so the in-round retry wrapper
@@ -366,6 +384,22 @@ defmodule SalixAgent.LLMFailureStreakTest do
 
     assert activity["state"] == "error"
     assert activity["issue"] == "model_unavailable"
+  end
+
+  test "subscription authentication failures stop the input and name the subscription in durable activity",
+       %{agent: agent} do
+    SystemsRuntime.put_env(:salix_agent, :llm, SubscriptionAuthLLM)
+    {:ok, _pid} = InternalSessionFleet.ensure_started(agent, @session_id)
+    assert eventually(fn -> failure_count(agent, @session_id) == 1 end)
+    assert eventually(fn -> InternalSession.status(read_session!(agent)) == :idle end)
+    :ok = InternalSessionActor.wake(agent, @session_id)
+    settle_after(300)
+    assert failure_count(agent, @session_id) == 1
+    {:ok, activity} = SalixAgent.InternalAgentRuntime.get_session_activity(agent, @session_id)
+    assert activity["state"] == "error"
+    assert activity["issue"] == "subscription_authentication_required"
+    assert activity["issue_detail"] == %{"source" => "codex"}
+    refute InternalSession.has_unprocessed_stable_work?(read_session!(agent))
   end
 
   test "failure events without a position marker never trip the breaker", %{agent: agent} do

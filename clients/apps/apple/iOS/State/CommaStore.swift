@@ -1,6 +1,7 @@
 import CommaCore
 import Foundation
 import Observation
+import UIKit
 
 /**
  * The phone's account, Workspace and task list, as the client core shows them. The core runs the session, the
@@ -79,12 +80,16 @@ final class CommaStore {
     }
     /// The Tasks the Live Activity follows, as the core last read them.
     var taskActivity: [TaskActivityTask]?
+    /// The generalized Live Status items, as the core last read them.
+    var liveStatuses: [LiveStatusItem]?
 
     @ObservationIgnored let configuration: AppConfiguration
     /// The client core: the process's (`CoreRuntime`), or a test's.
     @ObservationIgnored let core: any CoreAPI
     /// This phone's own answers to location requests, while the app is open.
     @ObservationIgnored let locationAnswers: AgentLocationAnswers
+    /// Settings › Share location: this phone's position with each message, while the person shares it.
+    let locationSharing: LocationSharing
     /// Where the core keeps the bearer, whose account shows while the core checks it.
     @ObservationIgnored let custody: SessionCustody
     /// The file a core download names (`download` topic's `path`) in its download directory; nil for one outside it.
@@ -106,8 +111,11 @@ final class CommaStore {
     @ObservationIgnored var connected: String?
     @ObservationIgnored var profileWatch: Task<Void, Never>?
     @ObservationIgnored var activityRequest = 0
+    @ObservationIgnored var liveStatusesRequest = 0
     @ObservationIgnored var onActivitySnapshot: (([TaskActivityTask], Workspace) -> Void)?
     @ObservationIgnored var onActivityFailure: ((String) -> Void)?
+    @ObservationIgnored var onLiveStatusesSnapshot: (([LiveStatusItem], Workspace) -> Void)?
+    @ObservationIgnored var onLiveStatusesFailure: ((String) -> Void)?
     @ObservationIgnored var onAuthBoundaryChanged: (() -> Void)?
     @ObservationIgnored var onSessionChanged: ((CommaSession?) -> Void)?
     @ObservationIgnored var onWorkspaceChanged: ((Workspace) -> Void)?
@@ -117,6 +125,8 @@ final class CommaStore {
     @ObservationIgnored var onWorkAccepted: (() -> Void)?
     /// Runs before sign-out revokes the session, while it can still authorize cleanup requests.
     @ObservationIgnored var beforeLogout: (() async -> Void)?
+    /// Runs before switching to another backend, while the current backend's session can still retire its push tokens.
+    @ObservationIgnored var beforeBackendSwitch: (() async -> Void)?
     @ObservationIgnored private var started = false
     /// The app is in the foreground: a conversation opened now follows its stream (a background launch opens none).
     @ObservationIgnored private(set) var foreground = true
@@ -126,7 +136,11 @@ final class CommaStore {
          downloadedFile: @escaping @Sendable (String) -> URL? = { _ in nil }, localFiles: HostLocalFiles? = nil) {
         self.configuration = configuration
         self.core = core
-        locationAnswers = AgentLocationAnswers(core: core)
+        let sharing = LocationSharing(core: core)
+        let answers = AgentLocationAnswers(core: core, shared: { [weak sharing] in sharing?.enabled == true })
+        sharing.onChange = { [weak answers] in answers?.sharingChanged() }
+        locationSharing = sharing
+        locationAnswers = answers
         self.custody = custody
         self.downloadedFile = downloadedFile
         self.localFiles = localFiles
@@ -155,10 +169,17 @@ final class CommaStore {
     /// The member's email as the profile, else the session, has it.
     var memberEmail: String { profile?.email ?? session?.user.email ?? "" }
 
+    /// The language the core words chat messages in, matching this app's active localization.
+    static func coreLocale(for identifier: String? = Bundle.main.preferredLocalizations.first ?? Locale.preferredLanguages.first) -> String {
+        guard let identifier else { return "en" }
+        return Locale(identifier: identifier).language.languageCode?.identifier == "zh" ? "zh-CN" : "en"
+    }
+
     /// Starts following the core's session. Safe to call again.
     func start() async {
         guard !started else { return }
         started = true
+        _ = try? await core.call("chat.locale", ["locale": Self.coreLocale()])
         let updates = core.subscribe(["topic": "session"], read: SessionSnapshot.init)
         Task { [weak self] in
             for await value in updates {
@@ -174,11 +195,19 @@ final class CommaStore {
     // MARK: Conversations
 
     /// Opens a Task in its own pane. The router chat keeps its transcript and draft.
-    func openTask(id: String) async {
-        guard let workspace else { return }
+    /// `group`: the Group of a Collaborative Task another person hosts, which the member reads through that Task's
+    /// own routes (the core picks them by its Group); nil for a Task of the member's own Group.
+    func openTask(id: String, group: String? = nil) async {
+        // A still.fail chat opens at its page in still.fail: no app reaches its station.
+        if let url = taskSummary(id: id)?.url {
+            _ = await UIApplication.shared.open(url)
+            return
+        }
+        guard let own = workspace else { return }
+        let workspace = group.map { Workspace(id: own.id, groupID: $0, name: own.name, status: own.status) } ?? own
         router.setObscured("task", true)
         taskRevealRequest += 1
-        if task?.taskID == id, task?.closed == false { return }
+        if task?.taskID == id, task?.workspace.groupID == workspace.groupID, task?.closed == false { return }
         task?.close()
         let pane = ConversationPane(kind: .task(id), workspace: workspace, conversationID: id, store: self)
         task = pane
@@ -219,6 +248,7 @@ final class CommaStore {
     func suspend() {
         foreground = false
         locationAnswers.setForeground(false)
+        locationSharing.setForeground(false)
         for session in miniAppSessions.values { session.suspend() }
         for pane in panes { pane.setForeground(false) }
     }
@@ -228,7 +258,11 @@ final class CommaStore {
         foreground = true
         guard initialized else { return }
         locationAnswers.setForeground(true)
+        locationSharing.setForeground(true)
         for pane in panes { pane.setForeground(true) }
+        // The system may have taken the mesh's sockets while the app was away: one that only fails kept a core busy
+        // (a hot phone, no station reached). The core has a bound endpoint bind them anew.
+        _ = try? await core.call("stations.wake", [:])
         if lifecycle?.phase == "signed_in" {
             _ = try? await core.call("session.reconcile", ["reason": "focus"])
         } else if lifecycle?.phase == "indeterminate" {
@@ -257,6 +291,8 @@ final class CommaStore {
         profile = nil; profileRead = false; avatarData = nil
         taskActivity = nil
         activityRequest += 1
+        liveStatuses = nil
+        liveStatusesRequest += 1
         pushRegistrationError = nil
         toasts.clear()
     }

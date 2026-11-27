@@ -59,4 +59,9 @@
     <string name="composer_attachment_remove">Remove attachment</string>
     <string name="composer_attachment_retry">Upload failed. Tap to retry</string>
     <string name="composer_uploads_failed">An attachment failed to upload. Retry or remove it before sending.</string>
+    <string name="activity_indicator_loading">Loading</string>
+    <string name="task_worker_session_state_active">Active</string>
+    <string name="task_worker_session_state_waiting">Waiting</string>
+    <string name="task_worker_session_state_error">Error</string>
+    <string name="task_worker_session_state_idle">Idle</string>
 </resources>

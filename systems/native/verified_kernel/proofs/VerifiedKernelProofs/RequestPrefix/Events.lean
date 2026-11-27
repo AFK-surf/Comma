@@ -29,7 +29,7 @@ set_option maxHeartbeats 1000000
 compaction prefix and watermark, and the watermark of attachment inlining. -/
 def PrefixKept (s t : Term) : Prop :=
   t.isMap = s.isMap ∧ SameKey s t "system_prompt" ∧ SameKey s t "provider_compaction" ∧
-    SameKey s t "summary" ∧ SameKey s t "compacted_through" ∧ SameKey s t "last_ack_message_id"
+    SameKey s t "summary" ∧ SameKey s t "compacted_through" ∧ SameKey s t "last_ack_message_id" ∧ SameKey s t "summary_ifc_view_label"
 
 theorem same_key_refl (s : Term) (k : String) : SameKey s s k := ⟨rfl, rfl, rfl⟩
 
@@ -38,13 +38,14 @@ theorem same_key_trans {s t u : Term} {k : String} (first : SameKey s t k) (seco
   ⟨second.1.trans first.1, second.2.1.trans first.2.1, second.2.2.trans first.2.2⟩
 
 theorem prefix_kept_refl (s : Term) : PrefixKept s s :=
-  ⟨rfl, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _⟩
+  ⟨rfl, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _, same_key_refl _ _⟩
 
 theorem prefix_kept_trans {s t u : Term} (first : PrefixKept s t) (second : PrefixKept t u) :
     PrefixKept s u :=
   ⟨second.1.trans first.1, same_key_trans first.2.1 second.2.1, same_key_trans first.2.2.1 second.2.2.1,
     same_key_trans first.2.2.2.1 second.2.2.2.1, same_key_trans first.2.2.2.2.1 second.2.2.2.2.1,
-    same_key_trans first.2.2.2.2.2 second.2.2.2.2.2⟩
+    same_key_trans first.2.2.2.2.2.1 second.2.2.2.2.2.1,
+    same_key_trans first.2.2.2.2.2.2 second.2.2.2.2.2.2⟩
 
 /-! ### `write` keeps the fields it does not name -/
 
@@ -122,9 +123,10 @@ theorem write_prefix_kept {s t : Term} {entries : List (String × Term)} {j r : 
     (compaction : entries.all (fun e => e.1 != "provider_compaction") = true)
     (summary : entries.all (fun e => e.1 != "summary") = true)
     (compacted : entries.all (fun e => e.1 != "compacted_through") = true)
-    (ack : entries.all (fun e => e.1 != "last_ack_message_id") = true) : PrefixKept s t :=
+    (ack : entries.all (fun e => e.1 != "last_ack_message_id") = true)
+    (view : entries.all (fun e => e.1 != "summary_ifc_view_label") = true) : PrefixKept s t :=
   ⟨write_isMap h, write_same_key h prompt, write_same_key h compaction, write_same_key h summary,
-    write_same_key h compacted, write_same_key h ack⟩
+    write_same_key h compacted, write_same_key h ack, write_same_key h view⟩
 
 theorem write_prefix_kept_step {s t : Term} {entries : List (String × Term)} {j r : List Term} :
     write s entries j = .ok (t, r) ↔ Except.ok (t, r) = write s entries j ∧
@@ -132,7 +134,8 @@ theorem write_prefix_kept_step {s t : Term} {entries : List (String × Term)} {j
         entries.all (fun e => e.1 != "provider_compaction") = true →
         entries.all (fun e => e.1 != "summary") = true →
         entries.all (fun e => e.1 != "compacted_through") = true →
-        entries.all (fun e => e.1 != "last_ack_message_id") = true → PrefixKept s t) :=
+        entries.all (fun e => e.1 != "last_ack_message_id") = true →
+        entries.all (fun e => e.1 != "summary_ifc_view_label") = true → PrefixKept s t) :=
   step_iff write_prefix_kept
 
 /-! ### Walking a reducer -/
@@ -143,7 +146,7 @@ macro_rules
     `(tactic| first
       | (head_is $h [write]; simp only [write_prefix_kept_step] at $h:ident; obtain ⟨_, kept⟩ := $h
          refine prefix_kept_trans
-           (kept (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)) ?_)
+           (kept (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)) ?_)
       | (head_step $h "_prefix_kept_step"; obtain ⟨_, kept⟩ := $h; refine prefix_kept_trans kept ?_))
 
 syntax "prefix_kept_walk" ident : tactic
@@ -253,7 +256,7 @@ theorem runtimeAppend_prefix_kept {s e t : Term} {j r : List Term} (h : runtimeA
     PrefixKept s t := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
   exact prefix_kept_trans (appendFields_prefix_kept appended) (prefix_kept_trans
-    (write_prefix_kept written (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
+    (write_prefix_kept written (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
     (prefix_kept_trans (bumpHwm_prefix_kept bumped) (resetFresh_prefix_kept reset)))
 
 theorem runtimeAppend_prefix_kept_step {s e t : Term} {j r : List Term} :
@@ -269,7 +272,7 @@ theorem transcriptDelivery_prefix_kept {s e t : Term} {j r : List Term}
     appended, written, obligated, bumped, reset⟩
   · exact prefix_kept_refl _
   · exact prefix_kept_trans (appendFields_prefix_kept appended) (prefix_kept_trans
-      (write_prefix_kept written (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
+      (write_prefix_kept written (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
       (prefix_kept_trans (addObligation_prefix_kept obligated)
         (prefix_kept_trans (bumpHwm_prefix_kept bumped) (resetFresh_prefix_kept reset))))
 
@@ -282,8 +285,8 @@ theorem transcriptSeed_prefix_kept {s e t : Term} {j r : List Term} (h : transcr
     PrefixKept s t := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops h
   exact prefix_kept_trans
-    (write_prefix_kept seeded (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
-    (write_prefix_kept bytes (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
+    (write_prefix_kept seeded (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
+    (write_prefix_kept bytes (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
 
 theorem transcriptSeed_prefix_kept_step {s e t : Term} {j r : List Term} :
     transcriptSeed s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptSeed s e j ∧ PrefixKept s t :=
@@ -303,7 +306,7 @@ theorem sessionEvent_prefix_kept {s e t : Term} {j r : List Term} (h : sessionEv
   repeat' first
     | (execution_head_is h "VerifiedKernel.Data.write"
        exact prefix_kept_trans kept
-         (write_prefix_kept h (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)))
+         (write_prefix_kept h (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)))
     | (execution_head_is h "Bind.bind"
        have bound := bind_ok h
        clear h
@@ -312,7 +315,7 @@ theorem sessionEvent_prefix_kept {s e t : Term} {j r : List Term} (h : sessionEv
          | (execution_head_is prior "VerifiedKernel.Data.write"
             replace kept := prefix_kept_trans kept
               (write_prefix_kept prior (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)
-                (by keys_absent)))
+                (by keys_absent) (by keys_absent)))
          | (execution_head_is prior "Pure.pure"; have same := pure_ok prior; subst value)
          | skip)
     | dsimp only at h
@@ -416,9 +419,10 @@ theorem PrefixKept.window {s s' : Term} (h : PrefixKept s s') : RequestPrefix.Sa
   refine ⟨h.1, ?_⟩
   intro k member
   simp only [List.mem_cons, List.not_mem_nil, or_false] at member
-  rcases member with rfl | rfl | rfl
+  rcases member with rfl | rfl | rfl | rfl
   · exact h.2.2.1
   · exact h.2.2.2.1
+  · exact h.2.2.2.2.2.2
   · exact h.2.2.2.2.1
 
 theorem PrefixKept.prompt {s s' : Term} (h : PrefixKept s s') :
@@ -426,7 +430,7 @@ theorem PrefixKept.prompt {s s' : Term} (h : PrefixKept s s') :
 
 theorem PrefixKept.watermark {s s' : Term} (h : PrefixKept s s') :
     RequestPrefix.watermark s' = RequestPrefix.watermark s := by
-  obtain ⟨map, -, -, -, -, has, get, binary⟩ := h
+  obtain ⟨map, -, -, -, -, ⟨has, get, binary⟩, -⟩ := h
   simp only [RequestPrefix.watermark, RoundQuery.valueOf, map, has, get, binary]
 
 end VerifiedKernel.Session.PrefixEvents
@@ -444,9 +448,9 @@ theorem runs_share_prefix {s s' delta delta' cfg tools mode body body' : Term} {
     (hJ : HostAnswers host J) (hJ' : HostAnswers host J') (hpre : PrefetchSound host pre)
     (hpre' : PrefetchSound host pre')
     (runs : PrefixRuns s s') (msgs : s.get (a "messages") = list xs)
-    (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode]) pre J =
+    (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode]) pre nil J =
       .ok (body, K))
-    (h' : Session.Request.dispatch s' (.tuple [delta', .binary name, cfg, tools, mode]) pre' J' =
+    (h' : Session.Request.dispatch s' (.tuple [delta', .binary name, cfg, tools, mode]) pre' nil J' =
       .ok (body', K')) :
     let pr := String.fromUTF8! name
     let md := String.fromUTF8! (Provider.bytes mode)

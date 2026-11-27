@@ -65,6 +65,14 @@ defmodule BridgeForTeams.SkillsAuthorizationTest do
       })
       |> Repo.insert!()
 
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        billing_account_id: org.billing_account_id,
+        surface: "bridge",
+        product_owner_type: "organization",
+        product_owner_id: org.id
+      })
+
     project =
       %Project{}
       |> Project.changeset(%{

@@ -47,6 +47,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     DashboardSwarmStillfail,
     DashboardSwarmTaskDetail,
     DashboardSwarmTasks,
+    DashboardLarkSuiteTriage,
     DashboardTriage,
     JSON
   }
@@ -61,6 +62,135 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   def session(conn, _params) do
     user = conn.assigns.current_user
     send_ok(conn, %{"user" => public_user(user), "orgs" => public_orgs(user)})
+  end
+
+  def teams_billing_portal(conn, %{"org" => slug}) do
+    admin_action(conn, slug, fn org, _user ->
+      base =
+        SystemsRuntime.fetch_env!(:bridge_for_teams_web, :public_base_url)
+        |> String.trim_trailing("/")
+
+      case BridgeForTeams.PaidSignup.portal(
+             org,
+             base <> "/orgs/" <> URI.encode_www_form(org.slug) <> "/settings/general"
+           ) do
+        {:ok, portal} ->
+          {:ok, Map.take(portal, ["url"])}
+
+        {:error, _} ->
+          {:error, 503, "teams_billing_unavailable", "Billing is unavailable. Try again later.",
+           %{}}
+      end
+    end)
+  end
+
+  def teams_billing_renew(conn, %{"org" => slug} = params) do
+    admin_action(conn, slug, fn org, _user ->
+      base =
+        SystemsRuntime.fetch_env!(:bridge_for_teams_web, :public_base_url)
+        |> String.trim_trailing("/")
+
+      case BridgeForTeams.PaidSignup.renew_with_quote(org, params, params["quote_token"], base) do
+        {:ok, checkout} ->
+          {:ok, Map.take(checkout, ["url"])}
+
+        {:error, :teams_seats_below_members} ->
+          teams_renew_seat_error(
+            {:invalid_seats_min, max(100, Memberships.count_org_members(org.id))}
+          )
+
+        {:error, reason} ->
+          teams_renew_error(reason)
+      end
+    end)
+  end
+
+  defp teams_renew_error(reason)
+       when reason in [:quote_expired, :invalid_quote_token, :quote_signing_unconfigured] do
+    {:error, 422, "quote_expired",
+     "This payment session has expired. Re-open this page to start payment again.", %{}}
+  end
+
+  defp teams_renew_error({:invalid_seats_range, _, _} = reason),
+    do: teams_renew_seat_error(reason)
+
+  defp teams_renew_error({:invalid_seats_min, _} = reason), do: teams_renew_seat_error(reason)
+
+  defp teams_renew_error(:subscription_already_exists) do
+    {:error, 409, "subscription_already_exists",
+     "A subscription already exists. Use Manage billing to update its payment method.", %{}}
+  end
+
+  defp teams_renew_error(:future_cycle_already_paid) do
+    {:error, 409, "future_cycle_already_paid", "The next billing period is already paid.", %{}}
+  end
+
+  defp teams_renew_error(:subscription_checkout_pending) do
+    {:error, 409, "subscription_checkout_pending",
+     "A checkout session is already in progress. Finish or wait for it to expire before starting another.",
+     %{}}
+  end
+
+  defp teams_renew_error(:m2square_country_unavailable) do
+    {:error, 422, "m2square_country_unavailable",
+     "Local payment is not available for this country.",
+     %{"fields" => %{"country" => ["Local payment is not available for this country."]}}}
+  end
+
+  defp teams_renew_error(:invalid_seats) do
+    {:error, 422, "invalid_seats", "Choose between 30 and 48 seats.",
+     %{"fields" => %{"seats" => ["Choose between 30 and 48 seats."]}}}
+  end
+
+  defp teams_renew_error(:teams_seats_below_minimum) do
+    {:error, 422, "teams_seats_below_minimum",
+     "Seat count must cover all current members and licensed seats.",
+     %{
+       "fields" => %{"seats" => ["Seat count must cover all current members and licensed seats."]}
+     }}
+  end
+
+  defp teams_renew_error(:amount_out_of_bounds) do
+    {:error, 422, "amount_out_of_bounds",
+     "Selected seat count exceeds the local payment transaction limit for this country.",
+     %{
+       "fields" => %{
+         "seats" => ["Exceeds the local payment transaction limit for this country."]
+       }
+     }}
+  end
+
+  defp teams_renew_error({:payer_invalid, field_reason}) do
+    {field, message} =
+      case field_reason do
+        :invalid_firstname -> {"firstname", "Enter a valid first name."}
+        :invalid_lastname -> {"lastname", "Enter a valid last name."}
+        :invalid_email -> {"email", "Enter a valid email address."}
+        :invalid_phone -> {"phone", "Enter a valid phone number."}
+        :invalid_doc_number -> {"doc_number", "Enter a valid 11-digit CPF."}
+        :unsupported_payment_type -> {"payment_type", "Choose a supported payment method."}
+        :passport_requires_net_banking -> {"payment_type", "Passport requires online banking."}
+        :invalid_beneficiary_type -> {"beneficiary_type", "Choose a supported document type."}
+        :invalid_beneficiary_id -> {"beneficiary_id", "Enter a valid document number."}
+        _ -> {nil, "Check your payment details and try again."}
+      end
+
+    details = if field, do: %{"fields" => %{field => [message]}}, else: %{}
+    {:error, 422, Atom.to_string(field_reason), message, details}
+  end
+
+  defp teams_renew_error(_other) do
+    {:error, 503, "teams_billing_unavailable", "Checkout is unavailable. Try again later.", %{}}
+  end
+
+  defp teams_renew_seat_error({:invalid_seats_range, min, max}),
+    do: invalid_renew_seats("Enter between #{min} and #{max} seats.")
+
+  defp teams_renew_seat_error({:invalid_seats_min, min}),
+    do: invalid_renew_seats("Enter at least #{min} seats.")
+
+  defp invalid_renew_seats(message) do
+    {:error, 422, "invalid_seats", message, %{"fields" => %{"seats" => [message]}}}
   end
 
   def context(conn, %{"org" => slug}) do
@@ -316,14 +446,27 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   def project_devices(conn, %{"org" => slug, "id" => id}),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.page/4)
 
-  def project_stillfail(conn, %{"org" => slug, "id" => id}),
-    do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.page/4)
+  def project_stillfail(conn, %{"org" => slug, "id" => id} = params),
+    do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.page(&1, &2, &3, &4, params))
 
   def connect_project_stillfail(conn, %{"org" => slug, "id" => id} = params),
     do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.connect(&1, &2, &3, &4, params))
 
   def disconnect_project_stillfail(conn, %{"org" => slug, "id" => id}),
     do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.disconnect/4)
+
+  def disconnect_project_stillfail_station(conn, %{
+        "org" => slug,
+        "id" => id,
+        "device_id" => device_id
+      }),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmStillfail.disconnect_one(&1, &2, &3, &4, device_id)
+        )
 
   def project_device_runners(conn, %{"org" => slug, "id" => id}),
     do:
@@ -456,14 +599,15 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def disconnect_project_plugin(
         conn,
-        %{"org" => slug, "id" => id, "plugin_id" => plugin, "connection_id" => connection}
+        %{"org" => slug, "id" => id, "plugin_id" => plugin, "connection_id" => connection} =
+          params
       ),
       do:
         swarm_action(
           conn,
           slug,
           id,
-          &DashboardSwarmPlugins.disconnect(&1, &2, &3, &4, plugin, connection)
+          &DashboardSwarmPlugins.disconnect(&1, &2, &3, &4, plugin, connection, params)
         )
 
   def project_connections(conn, %{"org" => slug, "id" => id}),
@@ -545,6 +689,16 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         &DashboardSwarmConnections.create_qq(&1, &2, &3, &4, params)
       )
 
+  def create_project_wecom_connect(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmConnections.create_wecom(&1, &2, &3, &4, params)
+      )
+
   def create_project_telegram_connect(conn, %{"org" => slug, "id" => id} = params),
     do:
       swarm_action(
@@ -589,6 +743,68 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
           slug,
           id,
           &DashboardSwarmConnections.update_slack_auto_join(&1, &2, &3, &4, connect, params)
+        )
+
+  def update_project_connect_member_scope(
+        conn,
+        %{"org" => slug, "id" => id, "provider" => provider, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.update_member_scope(
+            &1,
+            &2,
+            &3,
+            &4,
+            provider,
+            connect,
+            params
+          )
+        )
+
+  def grant_project_connect_member(
+        conn,
+        %{"org" => slug, "id" => id, "provider" => provider, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.grant_member(&1, &2, &3, &4, provider, connect, params)
+        )
+
+  def revoke_project_connect_member(
+        conn,
+        %{
+          "org" => slug,
+          "id" => id,
+          "provider" => provider,
+          "connect_id" => connect,
+          "subject" => subject
+        }
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.revoke_member(&1, &2, &3, &4, provider, connect, subject)
+        )
+
+  def project_connect_people(
+        conn,
+        %{"org" => slug, "id" => id, "provider" => provider, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.people(&1, &2, &3, &4, provider, connect, params)
         )
 
   def create_project_slack_connect(conn, %{"org" => slug, "id" => id} = params),
@@ -826,23 +1042,63 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def project_settings(conn, %{"org" => slug, "id" => id}),
     do:
-      swarm_action(conn, slug, id, fn org, _user, project, role ->
-        DashboardSwarmSettings.page(org, project, role)
+      swarm_org_action(conn, slug, id, fn org, _user, project, role, org_role ->
+        DashboardSwarmSettings.page(org, project, role, org_role)
       end)
 
   def update_project_settings(conn, %{"org" => slug, "id" => id} = params),
-    do: swarm_action(conn, slug, id, &DashboardSwarmSettings.rename(&1, &2, &3, &4, params))
+    do:
+      swarm_org_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmSettings.rename(&1, &2, &3, &4, params, &5)
+      )
+
+  def put_project_department(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_org_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmSettings.set_department(&1, &2, &3, &4, &5, params)
+      )
+
+  def put_project_search_grants(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_org_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmSettings.set_search_grants(&1, &2, &3, &4, &5, params)
+      )
 
   def put_project_task_model(conn, %{"org" => slug, "id" => id} = params),
     do:
-      swarm_action(conn, slug, id, &DashboardSwarmSettings.set_task_model(&1, &2, &3, &4, params))
+      swarm_org_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmSettings.set_task_model(&1, &2, &3, &4, params, &5)
+      )
 
   def put_project_task_place(conn, %{"org" => slug, "id" => id} = params),
     do:
-      swarm_action(conn, slug, id, &DashboardSwarmSettings.set_task_place(&1, &2, &3, &4, params))
+      swarm_org_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmSettings.set_task_place(&1, &2, &3, &4, params, &5)
+      )
 
   def delete_project_task_model(conn, %{"org" => slug, "id" => id}),
-    do: swarm_action(conn, slug, id, &DashboardSwarmSettings.clear_task_model(&1, &2, &3, &4))
+    do:
+      swarm_org_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmSettings.clear_task_model(&1, &2, &3, &4, &5)
+      )
 
   def archive_project(conn, %{"org" => slug, "id" => id}),
     do: swarm_action(conn, slug, id, &DashboardSwarmSettings.archive(&1, &2, &3, &4))
@@ -854,19 +1110,21 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
       end)
 
   def grant_project_access(conn, %{"org" => slug, "id" => id} = params),
-    do: swarm_action(conn, slug, id, &DashboardSwarmSettings.grant(&1, &2, &3, &4, params))
+    do:
+      swarm_org_action(conn, slug, id, &DashboardSwarmSettings.grant(&1, &2, &3, &4, params, &5))
 
   def update_project_access(conn, %{"org" => slug, "id" => id, "user_id" => target} = params),
     do:
-      swarm_action(
+      swarm_org_action(
         conn,
         slug,
         id,
-        &DashboardSwarmSettings.change_role(&1, &2, &3, &4, target, params)
+        &DashboardSwarmSettings.change_role(&1, &2, &3, &4, target, params, &5)
       )
 
   def remove_project_access(conn, %{"org" => slug, "id" => id, "user_id" => target}),
-    do: swarm_action(conn, slug, id, &DashboardSwarmSettings.remove(&1, &2, &3, &4, target))
+    do:
+      swarm_org_action(conn, slug, id, &DashboardSwarmSettings.remove(&1, &2, &3, &4, target, &5))
 
   # A read or write inside one Agent Swarm the caller can see; anyone else gets
   # the same 404 as an unknown swarm.
@@ -884,13 +1142,27 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     end
   end
 
+  defp swarm_org_action(conn, slug, project_id, status \\ 200, action) do
+    user = conn.assigns.current_user
+
+    with {:ok, org, org_role} <- member_org(slug, user),
+         {:ok, project, role} <- visible_project(org, project_id, user),
+         {:ok, data} <- action.(org, user, project, role, org_role) do
+      send_ok(conn, data, status)
+    else
+      :not_found -> org_not_found(conn)
+      :project_not_found -> project_not_found(conn)
+      {:error, status, code, message, details} -> send_error(conn, status, code, message, details)
+    end
+  end
+
   # ---- Agent Swarms ----
 
   def projects(conn, %{"org" => slug} = params) do
     user = conn.assigns.current_user
 
-    with {:ok, org, _role} <- member_org(slug, user) do
-      send_ok(conn, DashboardProjects.page(org, user, params))
+    with {:ok, org, role} <- member_org(slug, user) do
+      send_ok(conn, DashboardProjects.page(org, user, params, role))
     else
       :not_found -> org_not_found(conn)
     end
@@ -900,6 +1172,26 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     org_action(conn, slug, 201, fn org, user, _role ->
       DashboardProjects.create(org, user, params)
     end)
+  end
+
+  def create_department(conn, %{"org" => slug} = params) do
+    user = conn.assigns.current_user
+
+    with {:ok, org} <- admin_org(slug, user),
+         {:ok, data} <- DashboardProjects.create_department(org, user, params) do
+      send_ok(conn, data, 201)
+    else
+      :not_found -> org_not_found(conn)
+      {:error, status, code, message, details} -> send_error(conn, status, code, message, details)
+    end
+  end
+
+  def update_department(conn, %{"org" => slug, "department_id" => dept_id} = params) do
+    admin_action(conn, slug, &DashboardProjects.update_department(&1, &2, dept_id, params))
+  end
+
+  def delete_department(conn, %{"org" => slug, "department_id" => dept_id} = params) do
+    admin_action(conn, slug, &DashboardProjects.delete_department(&1, &2, dept_id, params))
   end
 
   # ---- Plugins ----
@@ -962,8 +1254,14 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   # ---- Daily brief (owner/admin) ----
 
-  def daily_brief(conn, %{"org" => slug}),
-    do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.overview(org) end)
+  def daily_brief(conn, %{"org" => slug} = params),
+    do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.overview(org, params) end)
+
+  def daily_brief_channels(conn, %{"org" => slug} = params),
+    do:
+      admin_action(conn, slug, fn org, _user ->
+        DashboardDailyBrief.channels(org, params)
+      end)
 
   def save_daily_brief(conn, %{"org" => slug} = params),
     do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.save(org, params) end)
@@ -974,8 +1272,44 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         DashboardDailyBrief.request_brief(org, member_id)
       end)
 
-  def sync_daily_brief_members(conn, %{"org" => slug}),
-    do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.sync_members(org) end)
+  def sync_daily_brief_members(conn, %{"org" => slug} = params),
+    do:
+      admin_action(conn, slug, fn org, _user ->
+        DashboardDailyBrief.sync_members(org, params)
+      end)
+
+  def update_daily_brief_member(conn, %{"org" => slug, "member" => member_id} = params),
+    do:
+      admin_action(conn, slug, fn org, _user ->
+        DashboardDailyBrief.update_member(org, member_id, params)
+      end)
+
+  # ---- Feishu / Lark triage (owner/admin; members get the non-member 404) ----
+
+  def lark_triage(conn, %{"org" => slug}),
+    do: admin_action(conn, slug, fn org, _user -> DashboardLarkSuiteTriage.overview(org) end)
+
+  def lark_triage_chats(conn, %{"org" => slug} = params),
+    do: admin_action(conn, slug, fn org, _user -> DashboardLarkSuiteTriage.chats(org, params) end)
+
+  def set_lark_triage_source(conn, %{"org" => slug, "connect_id" => id} = params),
+    do: admin_action(conn, slug, &DashboardLarkSuiteTriage.set_source(&1, &2, id, params))
+
+  def add_lark_triage_chats(conn, %{"org" => slug, "connect_id" => id} = params),
+    do: admin_action(conn, slug, &DashboardLarkSuiteTriage.add_chats(&1, &2, id, params))
+
+  def set_lark_triage_chat(
+        conn,
+        %{"org" => slug, "connect_id" => id, "chat_id" => chat} = params
+      ),
+      do: admin_action(conn, slug, &DashboardLarkSuiteTriage.set_chat(&1, &2, id, chat, params))
+
+  def lark_triage_activity(conn, %{"org" => slug} = params),
+    do:
+      admin_action(conn, slug, fn org, _user -> DashboardLarkSuiteTriage.activity(org, params) end)
+
+  def reveal_lark_triage_text(conn, %{"org" => slug} = params),
+    do: admin_action(conn, slug, &DashboardLarkSuiteTriage.reveal(&1, &2, params))
 
   # ---- Slack triage (owner/admin; members get the non-member 404) ----
 
@@ -1141,8 +1475,24 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   # ---- Settings (owner/admin) ----
 
-  def settings_general(conn, %{"org" => slug}),
-    do: settings_read(conn, slug, &DashboardSettings.general/2)
+  def settings_general(conn, %{"org" => slug} = params) do
+    cf_country =
+      case conn |> get_req_header("cf-ipcountry") |> List.first() do
+        value when is_binary(value) ->
+          normalized = value |> String.trim() |> String.upcase()
+          if normalized in ["", "XX", "T1"], do: nil, else: normalized
+
+        _ ->
+          nil
+      end
+
+    settings_read(conn, slug, fn org, user ->
+      DashboardSettings.general(org, user,
+        detected_country: cf_country,
+        m2_order: params["m2_order"]
+      )
+    end)
+  end
 
   def update_settings_general(conn, %{"org" => slug} = params) do
     settings_write(conn, slug, "org.settings.updated", fn org, user ->
@@ -1342,11 +1692,15 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   # ---- First-run onboarding wizard (outside any organization) ----
 
-  def onboarding_wizard(conn, _params),
-    do: wizard_reply(conn, DashboardOnboardingWizard.show(conn.assigns.current_user))
+  def onboarding_wizard(conn, params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.show(conn.assigns.current_user, params))
 
-  def onboarding_wizard_integrations(conn, _params),
-    do: wizard_reply(conn, DashboardOnboardingWizard.integrations(conn.assigns.current_user))
+  def onboarding_wizard_integrations(conn, params),
+    do:
+      wizard_reply(
+        conn,
+        DashboardOnboardingWizard.integrations(conn.assigns.current_user, params)
+      )
 
   def save_onboarding_capabilities(conn, params),
     do:
@@ -1355,8 +1709,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         DashboardOnboardingWizard.save_capabilities(conn.assigns.current_user, params)
       )
 
-  def save_onboarding_profile(conn, _params),
-    do: wizard_reply(conn, DashboardOnboardingWizard.save_profile(conn.assigns.current_user))
+  def save_onboarding_profile(conn, params),
+    do:
+      wizard_reply(
+        conn,
+        DashboardOnboardingWizard.save_profile(conn.assigns.current_user, params)
+      )
 
   def connect_onboarding_toolkit(conn, params),
     do:
@@ -1369,11 +1727,11 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         )
       )
 
-  def complete_onboarding(conn, _params),
-    do: wizard_reply(conn, DashboardOnboardingWizard.complete(conn.assigns.current_user))
+  def complete_onboarding(conn, params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.complete(conn.assigns.current_user, params))
 
-  def skip_onboarding(conn, _params),
-    do: wizard_reply(conn, DashboardOnboardingWizard.skip(conn.assigns.current_user))
+  def skip_onboarding(conn, params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.skip(conn.assigns.current_user, params))
 
   defp wizard_reply(conn, {:ok, data}), do: send_ok(conn, data)
 

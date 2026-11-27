@@ -1,0 +1,1140 @@
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+
+\usepackage[a4paper,margin=2.35cm]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{fancyvrb}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{xcolor}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\usepackage[most]{tcolorbox}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{dirtree}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,decorations.pathreplacing,shapes.geometric}
+
+
+\definecolor{CommaBlue}{HTML}{2563EB}
+\definecolor{CommaGray}{HTML}{374151}
+\definecolor{NoteBg}{HTML}{EFF6FF}
+\definecolor{WarnBg}{HTML}{FFF7ED}
+\definecolor{WarnLine}{HTML}{EA580C}
+\definecolor{CGreen}{HTML}{059669}
+\definecolor{COrange}{HTML}{EA580C}
+\definecolor{CPurple}{HTML}{7C3AED}
+\definecolor{CSlate}{HTML}{6B7280}
+\definecolor{CRed}{HTML}{DC2626}
+
+\tikzset{
+  box/.style={draw=#1, fill=#1!7, rounded corners=3pt, line width=0.7pt,
+    align=flush center, font=\sffamily\small, inner sep=5pt},
+  box/.default=CommaBlue,
+  adv/.style={dash pattern=on 3pt off 2pt},
+  arr/.style={-{Stealth[length=2.2mm,width=1.8mm]}, line width=0.7pt, draw=CommaGray},
+  darr/.style={{Stealth[length=2.2mm,width=1.8mm]}-{Stealth[length=2.2mm,width=1.8mm]}, line width=0.7pt, draw=CommaGray},
+  lbl/.style={font=\sffamily\scriptsize, text=CommaGray, fill=white, inner sep=1.5pt},
+  cell/.style={draw=white, line width=0.6pt},
+}
+\captionsetup{font=small, labelfont=bf, labelsep=quad}
+\renewcommand*\DTstyle{\ttfamily\small}
+\renewcommand*\DTstylecomment{\rmfamily\small\color{CSlate}}
+\setlength{\DTbaselineskip}{15pt}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=CommaBlue,
+  urlcolor=CommaBlue,
+  pdftitle={Comma 记忆系统使用手册},
+  pdfauthor={AFK AI, Inc.}
+}
+
+% Identifiers, paths and tool names. Breaks long paths at / and .
+\DeclareUrlCommand\code{\urlstyle{tt}}
+
+\newtcolorbox{note}[1][提示]{
+  colback=NoteBg, colframe=CommaBlue, boxrule=0.5pt, arc=2pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fonttitle=\bfseries, title=#1, breakable
+}
+\newtcolorbox{warn}[1][注意]{
+  colback=WarnBg, colframe=WarnLine, boxrule=0.5pt, arc=2pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fonttitle=\bfseries, title=#1, breakable
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Comma 记忆系统使用手册}
+\rhead{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\headheight}{14pt}
+
+\setlist[itemize]{leftmargin=2em}
+\setlist[enumerate]{leftmargin=2em}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+\sloppy
+
+\title{\Huge Comma 记忆系统使用手册}
+\author{AFK AI, Inc.}
+\date{2026 年 11 月 13 日}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\vfill
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+文档版本 & 1.0 \\
+适用产品 & Comma（Web、桌面、iOS、Android）与 Comma for Teams \\
+读者 & 专业用户、企业管理员 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vfill
+
+\newpage
+\tableofcontents
+\newpage
+
+% ---------------------------------------------------------------------------
+\section{概览}
+
+Comma 的 Agent 会在多次对话之间保留信息。本手册说明 Agent 保留哪些信息、在哪里保存、何时读取，以及你如何查看、修改和关闭这些信息。
+
+本手册面向两类读者：
+
+\begin{itemize}
+  \item \textbf{专业用户：} 希望了解 Agent 如何记住偏好、如何找回历史内容，以便更有效地与 Agent 协作。
+  \item \textbf{企业管理员：} 负责 Comma for Teams 组织和 Agent Swarm，需要了解记忆保存在哪里、谁可以看到、如何控制跨会话的信息流动，以及开启高级功能的影响。
+\end{itemize}
+
+Comma 中的“工作区”和 Comma for Teams 中的“Agent Swarm”在记忆系统中是同一个概念，本手册统称为 \textbf{Group}。
+
+记忆系统由多个独立部分组成。每个部分有自己的存储位置、作用范围和开关。本手册分两部分：
+
+\begin{itemize}
+  \item \textbf{第一部分：正式功能（GA）。} 默认开启，所有工作区都可以使用：记忆文件、记录检索和上下文学习（单一持续会话）。
+  \item \textbf{第二部分：高级功能。} 默认关闭，需要工作区 owner 显式开启，或联系 Comma 支持为 Agent Swarm 开启：精简工作区（Condensed Workspace）、Worker 记忆咨询和 Slack 工作区索引（向量嵌入与多模态）。
+\end{itemize}
+
+\begin{note}[基本原则]
+历史记录和记忆是\textbf{证据}，不是新的指令。Agent 读取记忆后，仍然以当前用户的请求为准。
+\end{note}
+
+\subsection{记忆层次一览}
+
+\begin{longtable}{P{2.5cm}P{4.4cm}P{2.3cm}P{2.6cm}P{1.9cm}}
+\toprule
+功能 & 保存的内容 & 作用范围 & 自动进入上下文 & 默认状态 \\
+\midrule
+\endhead
+记忆文件 & 用户偏好、人物、术语、环境、每日日志 & 一个 Router & 否，按需读取 & 开启 \\
+记录检索 & 任务、会话和 Session 的历史消息 & Group 或当前 Session & 否，按需检索 & 开启 \\
+上下文学习 & 用户在所有渠道告诉 Router 的内容（单一持续会话），以及成员画像、术语表、会议纪要 & 一个 Router & 是（会话内容跨压缩保留） & 开启 \\
+精简工作区 & 少量当前事实 & 整个 Group & 是 & 关闭 \\
+Worker 记忆咨询 & 过去 Worker 的记忆 & 一个 Group & 否，按需提问 & 关闭 \\
+Slack 工作区索引 & Slack 消息与文件 & 整个 Group & 否，按需检索 & 尚未正式开放 \\
+\bottomrule
+\end{longtable}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+% inputs
+\foreach \t [count=\i] in {Comma 首页, Slack · 飞书 · QQ 等, 邮件, 定时任务 · 主动提醒, Worker 报告}{
+  \node[box=CSlate, minimum width=3.3cm, font=\sffamily\footnotesize] (in\i) at (-5.7,{2.4-0.8*\i}) {\t};
+}
+\node[font=\sffamily\footnotesize\bfseries, text=CSlate] at (-5.7,2.25) {输入渠道};
+% session
+\node[box=CommaBlue, minimum width=4.4cm, minimum height=2.3cm, line width=1.2pt] (s) at (0,0)
+  {\textbf{\normalsize Router 标准会话}\\[3pt]\footnotesize 模型上下文\\\footnotesize 跨压缩保留};
+\foreach \i in {1,...,5}{
+  \draw[arr] (in\i.east) to[out=0,in=180] ($(s.west)+(0,{(3-\i)*0.32})$);
+}
+% stores
+\node[font=\sffamily\footnotesize\bfseries, text=CSlate] at (5.5,2.35) {按需读取};
+\node[box=CGreen, minimum width=3.7cm] (mem) at (5.5,1.5) {记忆文件\\\footnotesize\ttfamily /memory};
+\node[box=CGreen, minimum width=3.7cm] (idx) at (5.5,0) {记录检索\\\footnotesize 任务 · Session 历史};
+\node[box=CPurple, adv, minimum width=3.7cm] (slk) at (5.5,-1.5) {Slack 工作区索引\\\footnotesize 向量 · 多模态};
+\draw[darr] ($(s.east)+(0,0.55)$) to[out=0,in=180] node[lbl,above,pos=0.55]{读写} (mem.west);
+\draw[arr] (s.east) -- node[lbl,above]{检索} (idx.west);
+\draw[arr, adv] ($(s.east)+(0,-0.55)$) to[out=0,in=180] node[lbl,below,pos=0.55]{检索} (slk.west);
+% condensed workspace
+\node[box=COrange, adv, minimum width=4.4cm] (cw) at (0,2.75) {精简工作区\\\footnotesize Group 共享的当前事实};
+\draw[arr, adv, draw=COrange] (cw.south) -- node[lbl,left,text=COrange,align=right]{自动注入 Router\\与所有 Worker} (s.north);
+% workers
+\foreach \t/\x [count=\i] in {任务 A/-2.7, 任务 B/0, 任务 C/2.7}{
+  \node[box=CSlate, minimum width=2.4cm, font=\sffamily\footnotesize] (w\i) at (\x,-3.0) {Worker Session\\\t};
+}
+\foreach \i in {1,2,3}{ \draw[arr] (s.south) -- (w\i.north); }
+\node[lbl] at (1.05,-1.75) {委派任务};
+% legend
+\begin{scope}[shift={(-2.4,-4.25)}]
+  \draw[CommaGray, line width=0.7pt, rounded corners=1pt] (0,0) rectangle (0.5,0.28);
+  \node[font=\sffamily\scriptsize, anchor=west] at (0.6,0.14) {默认开启};
+  \draw[CommaGray, line width=0.7pt, adv, rounded corners=1pt] (2.4,0) rectangle (2.9,0.28);
+  \node[font=\sffamily\scriptsize, anchor=west] at (3.0,0.14) {默认关闭（高级功能）};
+\end{scope}
+\end{tikzpicture}
+\caption{记忆系统全景。所有渠道的消息进入同一个 Router 会话；其他存储按需读取或自动注入。}
+\label{fig:overview}
+\end{figure}
+
+\subsection{核心概念}
+
+\begin{longtable}{P{3.2cm}P{10.6cm}}
+\toprule
+概念 & 说明 \\
+\midrule
+\endhead
+Group & 一个团队或个人的协作空间：Comma 中的工作区，或 Comma for Teams 中的 Agent Swarm。Agent、任务、连接和记忆都属于一个 Group。 \\
+Router & Group 的主 Agent（Comma for Teams 中称为 Router Agent）。它接收请求、分配任务，并拥有 \code{/memory} 记忆文件。每个 Router 只有一个持续存在的标准会话。 \\
+Worker & 执行单个任务的 Agent。普通 Worker 不能读写 Router 的记忆文件，只能从任务指令中获得上下文。 \\
+Session & Agent 的运行上下文。上下文过长时，系统会把较早的内容压缩（compaction）为摘要，原文仍然保存。 \\
+任务（Task） & 交给 Agent 的一项工作。任务的消息记录可以被搜索。 \\
+数据策略与受众标签 & 每条信息带有“谁可以看到”的受众标签（信息流控制，IFC）。Comma for Teams 管理员在 \textbf{数据策略} 页面决定 Agent 能否把信息带到原本看不到它的人面前。 \\
+\bottomrule
+\end{longtable}
+
+
+% ===========================================================================
+\clearpage
+\part{正式功能}
+
+% ---------------------------------------------------------------------------
+\section{记忆文件}
+
+记忆文件是 Router 的长期私有记忆。它保存在 Router 虚拟文件系统的 \code{/memory} 目录下，跨 Session 保留。
+
+\begin{warn}[记忆不会自动加载]
+记忆文件不会自动放进 Agent 的上下文。Router 需要时用 \code{memory.search} 或 \code{memory.get} 读取。用户在对话中说过的内容本来就保留在 Router 的标准会话中（见第 \ref{sec:single-session} 节）；记忆文件用于在开始新会话后仍需保留的长期信息。
+\end{warn}
+
+\subsection{目录结构}
+
+\code{memory.write} 只接受下列路径。写入其他路径会失败，并返回 \texttt{Unsupported memory path}。
+
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.86\textwidth}
+\dirtree{%
+.1 {/memory}.
+.2 {index.md}\DTcomment{记忆索引}.
+.2 {semantic/}.
+.3 {user.md}\DTcomment{用户事实与偏好（含成员画像）}.
+.3 {agent.md}\DTcomment{Agent 的工作经验}.
+.3 {people.md}\DTcomment{其他人的信息}.
+.3 {glossary.md}\DTcomment{团队术语表}.
+.3 {environments/<alias>.md}\DTcomment{机器、帐号、环境}.
+.2 {scoped/<name>.md}\DTcomment{受众受限的笔记}.
+.2 {episodes/YYYY-MM-DD.md}\DTcomment{每日日志（只追加）}.
+.2 {meetings/<meeting-id>.md}\DTcomment{会议纪要（系统写入，只读）}.
+}
+\end{minipage}
+\caption{Router 记忆文件的目录结构。}
+\label{fig:memory-tree}
+\end{figure}
+
+\begin{longtable}{P{5.6cm}P{8.2cm}}
+\toprule
+路径 & 内容 \\
+\midrule
+\endhead
+\code{/memory/index.md} & 记忆索引：列出各文件中有哪些内容。 \\
+\code{/memory/semantic/user.md} & 关于用户本人的事实和长期偏好。 \\
+\code{/memory/semantic/agent.md} & Agent 对自身工作方式的经验。 \\
+\code{/memory/semantic/people.md} & 关于其他人的事实。 \\
+\code{/memory/semantic/glossary.md} & 团队术语表：人名、产品名和术语的正确写法（见第 \ref{sec:glossary} 节）。 \\
+\code{/memory/semantic/environments/<alias>.md} & 机器、帐号和运行环境，每个环境一个文件。 \\
+\code{/memory/scoped/<name>.md} & 受众受限的笔记（见第 \ref{sec:memory-ifc} 节）。 \\
+\code{/memory/episodes/YYYY-MM-DD.md} & 每日日志。日期必须是有效的 ISO 日期。 \\
+\bottomrule
+\end{longtable}
+
+Comma 还会写入两类 Router 自己不能写的文件：
+
+\begin{itemize}
+  \item \code{/memory/meetings/<meeting-id>.md}：会议纪要（见第 \ref{sec:meeting-memory} 节）。
+  \item \code{/memory/meetings/.glossary}：术语表处理标记。
+\end{itemize}
+
+\subsection{Agent 工具}
+
+记忆工具只提供给 Router。系统没有 \code{memory.list} 或 \code{memory.delete} 工具。
+
+\begin{longtable}{P{3.0cm}P{4.2cm}P{6.6cm}}
+\toprule
+工具 & 参数 & 行为 \\
+\midrule
+\endhead
+\code{memory.get} & \code{path}（必填，须在 \code{/memory/} 下）、\code{start_line}、\code{num_lines} & 读取一个文件，返回带行号的内容。文件不存在时返回 \code{exists:false}。 \\
+\code{memory.search} & \code{query}（必填）、\code{limit} & 在所有 \code{/memory/**/*.md} 中搜索，不区分大小写。每个词单独匹配，命中词越多排名越靠前。每条结果附带前后各一行。\code{limit} 默认 10，最大 50；结果更多时返回 \code{truncated}。 \\
+\code{memory.write} & \code{path}、\code{content}（必填）、\code{mode} & \code{mode} 为 \code{write}（默认）时替换整个文件；为 \code{append} 时追加到今天的日志末尾。单个文件最大 10 MB。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{Agent 何时写入记忆}
+
+Router 只在下列情况写入记忆：
+
+\begin{enumerate}
+  \item 用户明确要求“记住”某件事。
+  \item 用户表达了长期有效的偏好。
+  \item 需要保存交接或等待中的状态。
+  \item 有人纠正了人名、产品名或术语。这时 Router 在术语表中添加一条记录。
+\end{enumerate}
+
+Agent 自己搭建的工具和流程不写入记忆，而是保存为 Group 技能（\code{skill.create}）。
+
+\subsection{每日日志}
+
+\begin{itemize}
+  \item 日志文件是只追加的日记：\code{/memory/episodes/YYYY-MM-DD.md}。
+  \item Agent 不能用 \code{write} 模式写任何日志文件。
+  \item Agent 只能用 \code{append} 模式追加到\textbf{今天}的日志。“今天”按服务器节点的本地日期计算。
+  \item 工作区 owner 可以在系统文件中修改任何日期的日志（见第 \ref{sec:system-files} 节）。
+\end{itemize}
+
+\subsection{权限与受众}\label{sec:memory-ifc}
+
+\begin{itemize}
+  \item 读取（\code{memory.get}、\code{memory.search}）是读操作。每条搜索结果带有它所在文件的受众标签。
+  \item 普通写入是 Group 记忆写入：整个 Group 都可以读取。来自私聊或私有频道的信息写入普通记忆文件时，按数据策略处理（见下表）。
+  \item 写入 \code{/memory/scoped/<name>.md} 时，文件的受众是本次写入所引用的全部信息的受众之和，只有这些人可以看到。这种写入不需要人工确认。
+  \item \code{append} 保留已有内容的受众；完整 \code{write} 替换受众。
+\end{itemize}
+
+\textbf{数据策略（企业管理员）：} 在 Comma for Teams 管理后台打开 \textbf{数据策略}（Data policy），为每个 Agent Swarm 选择检查模式：
+
+\begin{longtable}{P{2.6cm}P{11.2cm}}
+\toprule
+模式 & 对记忆写入的影响 \\
+\midrule
+\endhead
+关闭 & 不做检查，也不记录受众标签。 \\
+审计 & 像强制模式一样判断并记录，但不拒绝任何写入。适合在启用强制前观察结果。 \\
+强制 & 拒绝把私有来源的信息写入全 Group 可读的记忆，并告诉用户原因。 \\
+\bottomrule
+\end{longtable}
+
+同一页面的 \textbf{审阅人}（Supervisors）可以向助手查询 Agent Swarm 中的所有内容，包括私有频道、私聊、已封存的会话和 Group 记忆。请把审阅人名单告知成员。
+
+\subsection{查看和编辑记忆：云盘 › 系统文件}\label{sec:system-files}
+
+工作区 owner 可以在 Comma 中直接查看和修改 Router 的记忆。
+
+\begin{enumerate}
+  \item 打开 \textbf{云盘}。
+  \item 选择 \textbf{系统文件}。
+  \item 打开 \code{memory} 目录，选择要查看的文件。
+\end{enumerate}
+
+\begin{longtable}{P{4.2cm}P{9.6cm}}
+\toprule
+位置 & 可做的操作 \\
+\midrule
+\endhead
+\code{/memory/**} & 可查看。凡是 \code{memory.write} 接受的路径（含任何日期的日志），owner 都可以新建、替换或删除。 \\
+\code{/memory/meetings/*.md} & 只读。 \\
+\code{/imports/**} & 只读。迁移导入的原始文件（见第 \ref{sec:migration} 节）。 \\
+\code{/Comma/**} & 只读，例如 \code{Notebook.md}。 \\
+技能 & 只读。 \\
+\code{Instructions.md} & 可编辑。保存后成为 Router 的系统指令。 \\
+\bottomrule
+\end{longtable}
+
+\begin{itemize}
+  \item 只有工作区 owner 可以打开系统文件。Comma for Teams 管理后台不提供记忆文件浏览；管理员可以在对话中让 Router 读取或修改记忆，并在 \textbf{Agents} 页面查看 Router Agent 的系统提示词。
+  \item 单次读写最多 1,000,000 字节。路径最长 1,024 字节。文件列表每页最多 500 个文件。
+  \item 用户无权读取的受限笔记（\code{/memory/scoped}）不会显示。
+\end{itemize}
+
+\begin{warn}[并发编辑]
+保存时，Comma 用文件的哈希值检查冲突。这项检查不是原子操作：如果 Router 在同一时刻写入同一个文件，你的修改或 Router 的修改之一可能被覆盖。请在 Agent 空闲时编辑记忆文件。
+\end{warn}
+
+% ---------------------------------------------------------------------------
+\section{记录检索}
+
+记录检索让用户和 Agent 找到过去的对话内容。Comma 有几条独立的检索路径，每条有自己的索引和限制。
+
+\begin{note}[匹配方式]
+本章的所有检索都按\textbf{字面子串}或关键词匹配，不使用语义（向量）排序。语义检索只用于 Slack 数据，见第 \ref{sec:slack} 节。
+\end{note}
+
+\subsection{用户搜索任务}
+
+\textbf{打开搜索：}
+
+\begin{itemize}
+  \item \textbf{Web 与桌面：} 按 \texttt{Cmd/Ctrl + K}（或导航栏中的 \textbf{搜索}）打开命令面板，输入关键词。面板提示为“搜索任务或操作”。
+  \item \textbf{iOS 与 Android：} 在首页点击搜索按钮。
+\end{itemize}
+
+从搜索结果打开任务后，任务顶部显示查找栏，例如“2 / 5”。用查找栏在匹配的消息之间向前或向后跳转。
+
+\textbf{搜索范围与规则：}
+
+\begin{itemize}
+  \item 只搜索任务（Task）类会话。
+  \item 每个任务索引其标题（最多 16 KiB）和\textbf{最新 64 条消息}。每条消息最多 32 KiB，整个窗口最多 256 KiB。更早的消息不在这个索引中。
+  \item 查询长度为 2 到 128 个字符。两个字符的查询（如“AI”或中文双字词）可以使用。
+  \item 标题命中排在内容命中之前，再按时间从新到旧排列。每个任务最多返回一条结果。
+  \item 每次最多 50 条结果（客户端默认请求 20 条）。没有分页。
+  \item 摘要保留匹配位置前 48 个字符和后 80 个字符。
+  \item 也可以按文件名搜索任务中的文件。
+\end{itemize}
+
+\textbf{权限：} 搜索只返回你有权访问的 Group 中的任务。只能访问单个会话的受限会话，只能搜到该会话。
+
+\begin{note}
+如果搜索索引不可用，搜索会返回错误，而不是返回不完整的结果。
+\end{note}
+
+\subsection{Agent 检索自己的 Session 历史}
+
+上下文被压缩后，Agent 仍然可以检索压缩前的原始内容。以下工具只作用于 Agent \textbf{当前的 Session}，不能跨 Session 检索。
+
+\begin{longtable}{P{3.0cm}P{10.8cm}}
+\toprule
+工具 & 行为 \\
+\midrule
+\endhead
+\code{history.search} & 按空格分词，每个词按字面子串匹配，不区分大小写，命中的记录包含全部词（顺序不限，最多 8 个词）。查询长度 2 到 128 个字符。\code{limit} 为 1 到 20（默认 10），从新到旧排列。摘要 400 个字符。用 \code{next_cursor} 翻页。结果只含原始记录。第一页另附最多 3 条\textbf{经历}（episodes）：以往压缩时写下、已被后续压缩替换的摘要，含任一查询词即可，命中词数多的排前。 \\
+\code{history.list} & 从新到旧列出记录，每条附带 160 个字符的预览。 \\
+\code{history.get} & 按序号（\code{seq}）读取一条旧记录，每页 8,000 个字符，用 \code{next_offset} 继续读取。 \\
+\bottomrule
+\end{longtable}
+
+\begin{itemize}
+  \item 结果包含原始消息和工具结果，但不包含历史工具自身的结果。
+  \item 索引可能尚未覆盖最新内容。索引未完成时，“没有命中”不能证明内容不存在。
+  \item 每条结果带有原记录的受众标签。
+\end{itemize}
+
+\subsection{Agent 检索 Group 会话}
+
+\begin{longtable}{P{4.6cm}P{9.2cm}}
+\toprule
+工具 & 行为 \\
+\midrule
+\endhead
+\code{im_api.internal.search_conversations} & 搜索 Group 中最近 200 个会话，每个会话最近 200 条消息，匹配标题和可见文本，不区分大小写。结果按时间排列，默认 20 条，最多 100 条，不分页。 \\
+\code{im_api.internal.read_conversation} & 读取会话中的一段消息记录。可以按 \code{message_id}、\code{after_seq} 定位，或用 \code{tail} 读取最新消息。默认 200 条，最多 1,000 条。Worker 不指定会话时读取自己的任务。 \\
+\bottomrule
+\end{longtable}
+
+用户发来简短回复（如“就按上次那样”）时，Agent 应该先用这些工具或 \code{history.search} 查找上下文，而不是直接追问用户。
+
+% ---------------------------------------------------------------------------
+\section{上下文学习}
+
+Comma 不通过重新训练模型来学习。上下文学习的核心是\textbf{单一会话设计}：每个 Router 只使用一个持续存在的 Session。用户告诉 Router 的内容会一直留在这个 Session 中，压缩后也会继续保留。本章先说明这个设计，再说明作为补充的其他学习机制。
+
+\subsection{单一持续会话}\label{sec:single-session}
+
+每个工作区有一个 Router，每个 Router 只有一个\textbf{标准会话}（canonical Router Session）。无论消息来自哪个渠道，系统都把它送入同一个 Session。
+
+\begin{longtable}{P{3.6cm}P{10.2cm}}
+\toprule
+输入来源 & 说明 \\
+\midrule
+\endhead
+Comma 首页对话 & 用户在 Comma 中与 Router 的对话。 \\
+消息平台 & Slack、飞书、Telegram、微信、QQ、LINE、Signal 等平台中发给 Router 的消息。 \\
+邮件 & 首页邮件中交给 Router 的内容。 \\
+定时任务与主动提醒 & 计划任务、主动关注和例程。 \\
+语音通话 & 通话开始和结束事件；结束事件包含通话记录。 \\
+Worker 报告 & Worker 完成或推进任务时发回的任务消息。 \\
+\bottomrule
+\end{longtable}
+
+这个设计带来的效果：
+
+\begin{itemize}
+  \item \textbf{无需重复说明。} 用户在任何渠道告诉 Router 的偏好、纠正和背景，Router 在之后的所有对话中都能看到。例如，在 Slack 中说过的要求，在 Comma 首页中同样有效。
+  \item \textbf{连续的工作状态。} Router 同时看到所有渠道的对话、任务进展和 Worker 报告，可以把它们联系起来。
+  \item \textbf{即时生效。} 用户的纠正立即进入上下文，不需要等待训练或配置变更。
+\end{itemize}
+
+Worker 不同：每个任务使用一个全新的 Worker Session，只能看到被分配的任务对话，看不到 Router 的会话历史。Router 需要在任务指令中写明 Worker 需要的背景。
+
+\textbf{示例：}
+
+\begin{enumerate}
+  \item 周一，用户在 Slack 中告诉 Router：“以后周报都用表格，不要用长段落。”
+  \item 这条消息进入 Router 的标准会话。
+  \item 周五，用户在 Comma 首页中要周报。Router 在同一个 Session 中看到周一的要求，直接按表格格式输出。
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\draw[line width=9pt, CommaBlue!18, line cap=round] (0,0) -- (14.6,0);
+\node[font=\sffamily\scriptsize\bfseries, text=CommaBlue, anchor=south west] at (1.65,0.14) {Router 标准会话（同一个上下文）};
+\tikzset{chip/.style={box=#1, text width=2.35cm, font=\sffamily\scriptsize, inner sep=4pt}}
+\node[chip=CPurple] (m1) at (1.4,1.35)  {\textbf{周一 · Slack}\\“周报都用表格”};
+\node[chip=CGreen]  (m2) at (4.2,-1.35) {\textbf{周二 · 飞书}\\“帮我订会议室”};
+\node[chip=CSlate]  (m3) at (7.0,1.35)  {\textbf{周三 · Worker}\\“任务 A 已完成”};
+\node[chip=COrange] (m4) at (9.8,-1.35) {\textbf{周四 · 邮件}\\客户来信};
+\node[chip=CommaBlue] (m5) at (12.8,1.35) {\textbf{周五 · Comma}\\“发我这周的周报”};
+\foreach \m in {m1,m3,m5}{ \draw[CommaGray, line width=0.6pt] (\m.south) -- (\m.south |- 0,0.16); \fill[CommaGray] (\m.south |- 0,0) circle (1.6pt); }
+\foreach \m in {m2,m4}{ \draw[CommaGray, line width=0.6pt] (\m.north) -- (\m.north |- 0,-0.16); \fill[CommaGray] (\m.north |- 0,0) circle (1.6pt); }
+\draw[arr, draw=CommaBlue, adv] (m1.north) to[bend left=12] node[lbl, above, text=CommaBlue]{周一的要求仍在上下文中} (m5.north);
+\node[box=CommaBlue, font=\sffamily\scriptsize, text width=2.35cm, fill=CommaBlue!15] (out) at (12.8,-1.35) {Router 回复：\\按表格输出周报};
+\draw[arr] (12.8,-0.16) -- (out.north);
+\end{tikzpicture}
+\caption{单一持续会话：不同渠道、不同时间的消息进入同一个会话，之前的要求自动生效。}
+\label{fig:single-session}
+\end{figure}
+
+\subsection{跨压缩保留}
+
+模型的上下文窗口有限。Session 变长后，系统会\textbf{压缩}（compaction）较早的内容，而不是丢弃它们或开启新会话。
+
+\begin{itemize}
+  \item \textbf{自动压缩：} 当模型报告的提示词长度超过上下文窗口的 90\% 时触发。
+  \item \textbf{摘要链：} 压缩时，模型把较早的内容总结为一段摘要，要求保留关键事实、决定、文件路径、工具结果和继续工作所需的状态，并逐字保留所有尚未得到回答的问题。下一次压缩时，上一次的摘要和之后的新消息一起被重新总结。因此，信息可以跨任意多次压缩延续下去。
+  \item \textbf{新输入不受影响：} 正在处理的这一轮和尚未处理的新消息不参与压缩，保持原样。
+  \item \textbf{原文不删除：} 压缩只改变模型看到的上下文。完整的原始记录永久保存在 Session 日志中。Router 可以用 \code{history.search} 查找、用 \code{history.get} 读取压缩前的原文。
+  \item \textbf{摘要留档：} 每次压缩写下的摘要另存一份为 Session 记录（\code{compaction\_summary}），存之前把看起来像密钥、令牌的值替换为 \code{[redacted]}。下一次压缩替换上下文中的摘要后，旧摘要仍可被 \code{history.search} 作为经历找到。每一份摘要（包括仍在上下文中的那一份）都可用 \code{history.list} 列出、用 \code{history.get} 按序号读取全文。摘要记录带有它所概括内容的受众标签。
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\def\W{11}
+\def\H{0.55}
+\tikzset{
+  msg/.style={cell, fill=CommaBlue!28},
+  cur/.style={cell, fill=CGreen!45},
+  sum/.style={cell, fill=COrange!40},
+}
+% row labels
+\node[font=\sffamily\footnotesize, anchor=east] at (-0.2,{\H/2}) {压缩前};
+\node[font=\sffamily\footnotesize, anchor=east] at (-0.2,{-1.6+\H/2}) {第 1 次压缩后};
+\node[font=\sffamily\footnotesize, anchor=east] at (-0.2,{-3.2+\H/2}) {第 2 次压缩后};
+% window frames
+\foreach \y in {0,-1.6,-3.2}{ \draw[CommaGray!50, line width=0.5pt] (0,\y) rectangle (\W,\y+\H); }
+% row 1
+\foreach \i in {0,...,13}{ \fill[msg] ({0.7*\i},0) rectangle ({0.7*\i+0.7},\H); \draw[white,line width=0.6pt] ({0.7*\i},0) -- ({0.7*\i},\H); }
+\fill[cur] (9.8,0) rectangle (10.5,\H);
+% row 2
+\fill[sum] (0,-1.6) rectangle (1.6,{-1.6+\H}); \node[font=\sffamily\scriptsize] at (0.8,{-1.6+\H/2}) {摘要 1};
+\fill[cur] (1.6,-1.6) rectangle (2.3,{-1.6+\H});
+\foreach \i in {0,...,10}{ \fill[msg] ({2.3+0.7*\i},-1.6) rectangle ({3.0+0.7*\i},{-1.6+\H}); \draw[white,line width=0.6pt] ({2.3+0.7*\i},-1.6) -- ({2.3+0.7*\i},{-1.6+\H}); }
+% row 3
+\fill[sum] (0,-3.2) rectangle (1.8,{-3.2+\H}); \node[font=\sffamily\scriptsize] at (0.9,{-3.2+\H/2}) {摘要 2};
+\fill[cur] (1.8,-3.2) rectangle (2.5,{-3.2+\H});
+\foreach \i in {0,...,3}{ \fill[msg] ({2.5+0.7*\i},-3.2) rectangle ({3.2+0.7*\i},{-3.2+\H}); \draw[white,line width=0.6pt] ({2.5+0.7*\i},-3.2) -- ({2.5+0.7*\i},{-3.2+\H}); }
+\node[font=\sffamily\scriptsize, text=CSlate, anchor=west] at (5.4,{-3.2+\H/2}) {继续对话……};
+% braces + arrows
+\draw[decorate, decoration={brace, mirror, amplitude=4pt}, CommaGray] (0,-0.08) -- (9.8,-0.08)
+  coordinate[midway] (b1);
+\draw[arr, draw=COrange] ($(b1)+(0,-0.15)$) to[out=-90,in=60] node[lbl, right, pos=0.35]{总结} (0.9,{-1.6+\H+0.04});
+\draw[decorate, decoration={brace, mirror, amplitude=4pt}, CommaGray] (0,{-1.6-0.08}) -- (10.0,{-1.6-0.08})
+  coordinate[midway] (b2);
+\draw[arr, draw=COrange] ($(b2)+(0,-0.15)$) to[out=-90,in=60] node[lbl, right, pos=0.35]{摘要 1 + 新消息再总结} (1.0,{-3.2+\H+0.04});
+% threshold
+\draw[CRed, line width=0.8pt, adv] (9.9,{\H+0.35}) -- (9.9,-3.35);
+\node[font=\sffamily\scriptsize, text=CRed, anchor=south] at (9.9,{\H+0.35}) {90\%：触发压缩};
+\draw[CommaGray, line width=0.8pt] (\W,{\H+0.35}) -- (\W,-3.35);
+\node[font=\sffamily\scriptsize, text=CommaGray, anchor=south west] at (\W,{\H+0.35}) {窗口上限};
+% log
+\begin{scope}[shift={(0,-4.9)}]
+  \foreach \i in {0,...,43}{ \fill[CSlate!35] ({0.25*\i},0) rectangle ({0.25*\i+0.22},0.32); }
+  \node[font=\sffamily\footnotesize, anchor=east] at (-0.2,0.16) {Session 日志};
+  \node[font=\sffamily\scriptsize, text=CSlate, anchor=north west] at (0,-0.05) {全部原文永久保存，不随压缩删除};
+\end{scope}
+\draw[darr, adv, draw=CGreen] (4.0,-3.3) -- node[lbl, right, text=CGreen, font=\ttfamily\scriptsize]{history.search / history.get 读取原文} (4.0,-4.55);
+% legend
+\begin{scope}[shift={(0.2,-6.0)}]
+  \fill[CommaBlue!28] (0,0) rectangle (0.4,0.25); \node[font=\sffamily\scriptsize, anchor=west] at (0.45,0.12) {消息};
+  \fill[CGreen!45] (1.6,0) rectangle (2.0,0.25); \node[font=\sffamily\scriptsize, anchor=west] at (2.05,0.12) {当前一轮与新输入（不压缩）};
+  \fill[COrange!40] (6.0,0) rectangle (6.4,0.25); \node[font=\sffamily\scriptsize, anchor=west] at (6.45,0.12) {摘要（链式延续）};
+\end{scope}
+\end{tikzpicture}
+\caption{压缩摘要链。每次压缩都把上一次的摘要和之后的消息一起重新总结，信息因此跨多次压缩延续；原文始终保存在 Session 日志中。}
+\label{fig:compaction}
+\end{figure}
+
+\textbf{手动压缩：} 发送 \code{compact} 命令，可以立即压缩 Router 会话。在 Comma 首页、Slack 和飞书中，命令必须包裹在 \texttt{salix-command} 标签中，例如 \texttt{<salix-command>compact</salix-command>}；只写 \texttt{compact} 会被当作普通消息交给 Router。
+
+\begin{itemize}
+  \item Comma 首页：在输入框的 Agent 命令菜单中选择 \texttt{/compact}（“压缩会话上下文”）。菜单会自动插入带标签的命令。
+  \item Slack：提及机器人，并在同一条消息中发送 \texttt{<salix-command>compact</salix-command>}。
+  \item 飞书：发送 \texttt{<salix-command>compact</salix-command>}。
+  \item QQ：输入 \texttt{/}，在命令面板中选择 \texttt{/compact}。
+\end{itemize}
+
+\textbf{查看会话状态：} 用同样的方式发送 \code{status} 命令（Comma 首页和 QQ 为 \texttt{/status}，Slack 和飞书为 \texttt{<salix-command>status</salix-command>}），可以看到当前模型、上下文 token 用量及其占窗口的百分比、消息数（含“compacted through \#N”）和 Session ID。
+
+\begin{note}[摘要与原文]
+摘要由模型生成，较早细节在多次压缩后可能被概括。Router 不确定时，应该用 \code{history.search} 查找原文，而不是凭摘要猜测。对于需要在\textbf{开始新会话后}仍然有效的长期偏好，可以让 Router“记住”，它会写入记忆文件（见第 \ref{sec:learn-memory} 节）。
+\end{note}
+
+\subsection{开始新会话}\label{sec:new-session}
+
+需要时，可以让 Router 放弃当前上下文，从一个空的标准会话重新开始。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\node[box=CSlate, minimum width=4.2cm, minimum height=1.5cm] (old) at (0,0) {旧 Session\\\footnotesize 只读，记录可查看};
+\node[box=CommaBlue, minimum width=4.2cm, minimum height=1.5cm, line width=1.2pt] (new) at (8,0) {新 Session\\\footnotesize 空上下文};
+\draw[arr, line width=1pt] (old.east) -- node[lbl, above]{\ttfamily clear} node[lbl, below]{或“开始新会话”} (new.west);
+\node[box=CSlate, font=\sffamily\footnotesize, minimum width=2.6cm] (in) at (8,2.0) {所有渠道的新消息};
+\draw[arr] (in.south) -- (new.north);
+\node[box=CGreen, minimum width=12.2cm, font=\sffamily\footnotesize] (keep) at (4,-2.1)
+  {\textbf{保留：} 记忆文件 \quad · \quad 技能与系统指令 \quad · \quad 精简工作区 \quad · \quad Worker 任务 \quad · \quad 计划任务};
+\draw[arr, draw=CGreen] ($(keep.north)+(4,0)$) -- node[lbl, right]{按需读取 / 自动注入} ($(new.south)$);
+\node[lbl, text=CRed, anchor=north] at (old.south) {上下文中的对话与摘要不再可用};
+\end{tikzpicture}
+\caption{开始新会话：旧上下文被丢弃，持久存储继续可用。}
+\label{fig:new-session}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{聊天命令：} 在 Comma 首页或飞书中发送 \texttt{<salix-command>clear</salix-command>}；在 Slack 中还需要在同一条消息中提及机器人。Router 回复“Started a new Router session”。这会影响所有使用该 Router 的对话。QQ 不能执行 \code{clear}。
+  \item \textbf{Comma for Teams 管理后台：} 打开 \textbf{Agents}，点击 Router Agent 打开详情，在 \textbf{Router 标准会话} 中点击 \textbf{Start new session}（开始新会话）。需要 Agent Swarm 管理员权限。
+\end{itemize}
+
+\begin{longtable}{P{6.6cm}P{7.2cm}}
+\toprule
+丢失 & 保留 \\
+\midrule
+\endhead
+Router 上下文中的对话和摘要 & 旧 Session 的完整记录（只读） \\
+旧 Session 中正在进行的工作 & 各渠道中可见的会话消息 \\
+\code{history.*} 对旧 Session 的检索（只检索当前 Session） & 记忆文件、技能和系统指令 \\
+ & 精简工作区（开启时，新 Session 收到完整列表） \\
+ & Worker 任务 Session 和计划任务 \\
+\bottomrule
+\end{longtable}
+
+\begin{warn}
+开始新会话后，Router 不再记得只存在于旧会话上下文中的内容。如有需要，先让 Router 把重要的偏好和背景写入记忆文件。
+\end{warn}
+
+\subsection{查看 Router 会话}
+
+工作区 owner 可以在 Comma 中查看 Agent 的执行历史：
+
+\begin{enumerate}
+  \item 打开 \textbf{设置 › 高级 › 调试}。
+  \item 打开 \textbf{显示 Session 历史}。
+  \item 在会话侧栏中打开参与者的 Session 历史标签页。
+\end{enumerate}
+
+\subsection{写入长期记忆}\label{sec:learn-memory}
+
+记忆文件是单一会话的补充。会话中的内容在开始新会话后不再出现在上下文中；记忆文件则一直保留，直到被修改。
+
+\begin{itemize}
+  \item 用户说“记住……”或表达长期偏好时，Router 写入 \code{/memory/semantic/user.md} 等文件。
+  \item 有人纠正名字或术语时，Router 写入术语表。
+  \item Router 需要时用 \code{memory.search} 找到这些内容。
+\end{itemize}
+
+\subsection{团队术语表}\label{sec:glossary}
+
+术语表是记忆文件 \code{/memory/semantic/glossary.md}。它记录名字和术语的正确写法，以及常见的误听或误写形式。
+
+\textbf{条目格式：}
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+- Akme / 阿克米 -> Acme Cloud（客户名）
+- -> Comma
+\end{Verbatim}
+
+\begin{itemize}
+  \item 箭头左侧是误听形式，可以有多个，用 \texttt{/} 分隔；右侧是正确形式。箭头可以写 \texttt{->} 或 $\rightarrow$。
+  \item 末尾可以加括号注释。
+  \item 没有已知误听形式的名字写成 \texttt{- -> 正确形式}。
+  \item 误听形式至少 2 个字符。拉丁字母形式只匹配完整单词。
+  \item 系统只读取文件的前 64,000 字节和前 500 个条目。
+\end{itemize}
+
+\textbf{术语表的用途：}
+
+\begin{itemize}
+  \item 正确形式会加入会议录音语音识别（ASR）的提示，提高识别准确率。
+  \item 纠正规则会替换会议转写和会议记忆中的误识别文字。
+  \item 术语表变化后，系统最多修正 200 个较早的会议纪要文件。
+\end{itemize}
+
+\textbf{每日自动整理：} 在单成员工作区中，Comma 每天从 owner 自己的消息中整理术语，写在 \texttt{<!-{}- comma:glossary} 标记之间。
+
+\begin{itemize}
+  \item 只有当误写形式和正确形式都出现在同一个桌面会议任务中 owner 自己的消息里时，才会保留一条纠正。纠正不会过期。
+  \item 名字在 \code{people.md} 中存在时一直保留；否则在 owner 的消息最后一次提到它 60 天后过期。
+  \item Router 自己写的条目保持不变。
+  \item 编辑术语表时，请保留 \texttt{comma:glossary} 标记。
+\end{itemize}
+
+\subsection{成员画像}
+
+在单成员工作区中，Comma 在 \code{/memory/semantic/user.md} 中维护一段成员画像，位于 \texttt{<!-{}- comma:portrait -{}->} 标记之间。
+
+\begin{itemize}
+  \item 每条事实一行，带日期。类型包括：别名、职责、进行中的工作、地点、偏好、兴趣和排除项。
+  \item 一条事实可以附加关注对象：最多 8 个 Slack 频道、3 个 GitHub 仓库和 5 个专有关键词（\code{term:<名称>}；工作关键词优先，兴趣关键词仅用于邮箱促销捞回，不触发开放网页扫网或 Slack 工作频道排序）。
+  \item 每条事实必须有证据来源。除偏好、排除项与最多 5 条个人兴趣外，60 天内未被确认的事实会过期。
+  \item 整段最多 3,072 字节（最多 18 条），每天最多刷新一次。刷新时读取 owner 最近 30 天的 Slack 消息、其他工作、有界的近期个人邮件信号、Router 记忆笔记、近期任务和首页历史。
+  \item 只有 owner 开启了主动消息（自动消息）时，画像才会刷新。从未修改过该设置时，视为开启。
+\end{itemize}
+
+\subsection{会议记忆}\label{sec:meeting-memory}
+
+\begin{itemize}
+  \item 每次会议结束并生成纪要后，系统把纪要写入 \code{/memory/meetings/<meeting-id>.md}，并应用术语表纠正。
+  \item Router 撰写会议纪要时，会读取 \code{people.md} 和 \code{glossary.md}，使纪要中的人名和术语正确。
+  \item 会议记忆默认开启。
+\end{itemize}
+
+\subsection{按消息自动选择技能}
+
+技能（Skill）是可复用的工作方法。在技能的 \code{SKILL.md} 头部设置 \texttt{activation:~per-message} 后，系统在每条用户消息到达时判断是否需要该技能。
+
+\begin{itemize}
+  \item 判断依据：当前消息和最多 6 条之前的消息（每条最多 2 KiB），以及最多 48 KiB 的技能目录。
+  \item 得分不低于 0.65 的技能会附加到上下文中，最多 5 个。
+  \item 判断时限为 1 秒。超时或出错时不附加任何技能。
+  \item 没有设置 \code{activation} 的技能是普通技能，由 Agent 自己决定是否加载。
+\end{itemize}
+
+\subsection{从其他 Agent 平台迁移记忆}\label{sec:migration}
+
+你可以把其他 Agent 平台（如 OpenClaw、Hermes、Claude Code、Codex、Pi）的导出文件导入 Comma。
+
+\begin{enumerate}
+  \item 在 Comma 中把导出的 zip 文件发给 Router，并要求迁移。
+  \item Router 用 \code{migration.import} 解压文件。凭据文件、对话记录、日志和数据库不会导入。其他文件原样保存在 \code{/imports/<platform>/<stamp>/files/}。
+  \item 带日期的日志复制到 \code{/memory/episodes/}。
+  \item Router 把其余内容分别写入 \code{user}、\code{people}、\code{environments} 和 \code{agent} 记忆文件；私有内容写入 \code{/memory/scoped}。可复用的流程保存为技能。原平台的人设指令追加到 Router 的系统指令中（最多 20,000 字节）。
+  \item 每个文件都必须标记为“已映射”或“已归档”。所有文件处理完成且 \code{/memory/index.md} 已更新后，Router 生成 \code{REPORT.md}。
+\end{enumerate}
+
+\textbf{限制：} 建议上传不超过 10 MB 的 zip 文件。系统上限为：压缩包 25 MB、2,000 个条目、解压后 100 MB、单个文件 10 MB。
+
+% ===========================================================================
+\clearpage
+\part{高级功能（默认关闭）}
+
+\begin{warn}[开启前请阅读]
+本部分的功能默认关闭。开启后，Agent 会把更多信息带入上下文，或对更多数据建立索引，这会增加模型调用量和存储量。请由工作区 owner 或企业管理员评估后再开启。
+\end{warn}
+
+% ---------------------------------------------------------------------------
+\section{精简工作区（Condensed Workspace）}
+
+\subsection{作用}
+
+精简工作区是每个 Group 的一份简短、有序的“当前事实”列表。开启后，该 Group 的\textbf{每个} Router 和 Worker Session 都在上下文中保留最新的列表。
+
+精简工作区和记忆文件的区别：
+
+\begin{longtable}{P{3.0cm}P{5.2cm}P{5.6cm}}
+\toprule
+ & 记忆文件 & 精简工作区 \\
+\midrule
+\endhead
+所有者 & 一个 Router & 整个 Group \\
+加载方式 & 按需读取 & 自动保留在每个 Session 的上下文中 \\
+大小 & 无总量限制 & 建议 4 KiB，上限 16 KiB \\
+适合内容 & 偏好、人物、历史、日志 & 决定、负责人、状态、约束、截止时间、位置等所有 Agent 都需要的当前事实 \\
+\bottomrule
+\end{longtable}
+
+列表中的事实只是共享信息，\textbf{不授予任何权限}。关闭功能后，已有事实会保留。
+
+\subsection{开启精简工作区}
+
+\textbf{方法一：在 Comma 中开启（工作区 owner）}
+
+\begin{enumerate}
+  \item 打开 \textbf{设置 › 高级 › 调试}。
+  \item 打开 \textbf{显示精简工作区设置}。
+  \item 打开 \textbf{设置 › 工作 › 精简工作区}。
+  \item 打开 \textbf{与所有 Agent 共享当前事实}。
+\end{enumerate}
+
+同一页面列出所有事实，并提供 \textbf{添加事实}、\textbf{编辑事实} 和 \textbf{删除}。页面显示当前大小，例如“3120 字节。建议不超过 4096 字节。”只有工作区 owner 可以开关和编辑。
+
+\textbf{方法二：Comma for Teams（企业管理员）}
+
+Comma for Teams 管理后台目前不提供此开关。如需为某个 Agent Swarm 开启，请联系 Comma 支持，并说明 Agent Swarm 名称。开启后，Agent 自动维护列表。
+
+\subsection{事实的格式和限制}
+
+每条事实有一个编号（\code{s1}、\code{s2}……），在上下文中显示为一行：\texttt{- [s1] 事实内容}。
+
+\begin{longtable}{P{4.6cm}P{9.2cm}}
+\toprule
+项目 & 限制 \\
+\midrule
+\endhead
+单条事实 & 最多 2 KiB。换行会变成空格。不能为空。 \\
+建议总大小 & 4 KiB。超过时写入仍然成功，但返回警告，提示合并或删除事实。 \\
+硬上限 & 16 KiB。超过时，系统按顺序保留事实，从末尾删除超出部分，并返回被删除的编号。 \\
+单次操作数 & 1 到 32 个（添加、替换、删除）。 \\
+事实条数 & 不单独限制，只受字节数限制。 \\
+\bottomrule
+\end{longtable}
+
+一次写入中的所有操作同时生效或同时失败。替换或删除不存在的编号时，整次写入失败，并返回当前列表。
+
+\subsection{Agent 如何更新}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\tikzset{st/.style={box=#1, text width=3.0cm, font=\sffamily\footnotesize, minimum height=1.25cm}}
+\node[font=\sffamily\footnotesize\bfseries, anchor=west, text=CommaGray] at (-1.6,1.15) {A. 写入};
+\node[st=CommaBlue] (u)  at (0,0)    {Agent 调用\\\ttfamily\scriptsize condensed\_workspace\\.update};
+\node[st=COrange]   (c)  at (3.75,0) {写入检查\\每条事实得分 $\geq$ 15\%？};
+\node[st=CGreen]    (ok) at (7.5,0)  {保存\\版本号 + 1};
+\node[st=CommaBlue] (d)  at (11.25,0){下一轮送达所有\\Router 与 Worker};
+\node[st=CRed]      (r)  at (3.75,-2.0) {拒绝\\返回拒绝编号};
+\draw[arr] (u) -- (c);
+\draw[arr] (c) -- node[lbl, above]{是} (ok);
+\draw[arr] (ok) -- (d);
+\draw[arr] (c) -- node[lbl, right]{否} (r);
+\draw[arr, adv] (r.west) -| (u.south);
+\node[lbl, align=center, anchor=north] at (0.9,-2.1) {\ttfamily force\_override\\\sffamily 重新提交};
+\node[lbl, text=CSlate, align=center] at (7.5,-1.3) {检查无法运行时直接保存\\Comma 中的编辑不检查};
+\begin{scope}[shift={(0,-4.3)}]
+\node[font=\sffamily\footnotesize\bfseries, anchor=west, text=CommaGray] at (-1.6,1.15) {B. 轮次检查};
+\node[st=CommaBlue] (a)  at (0,0)     {模型回复\\包含工具调用};
+\node[st=COrange]   (k)  at (3.75,0)  {并行检查\\列表 + 最新 16 条消息 + 工具调用};
+\node[st=CRed]      (t)  at (7.5,0.75)  {off\_track $\geq$ 70\%\\提醒重新考虑方向};
+\node[st=CGreen]    (n)  at (7.5,-0.85) {needs\_update $\geq$ 50\%\\提醒更新列表};
+\node[st=CSlate]    (no) at (11.25,0) {都不满足\\不发送提醒};
+\draw[arr] (a) -- (k);
+\draw[arr] (k.east) -- ++(0.3,0) |- (t.west);
+\draw[arr] (k.east) -- ++(0.3,0) |- (n.west);
+\draw[arr] (t.east) -- ++(0.35,0) |- ($(no.west)+(0,0.2)$);
+\draw[arr] (n.east) -- ++(0.35,0) |- ($(no.west)+(0,-0.2)$);
+\node[lbl, text=CSlate] at (11.25,0.95) {同时满足时只发前者};
+\end{scope}
+\end{tikzpicture}
+\caption{精简工作区的写入流程（A）和轮次检查（B）。}
+\label{fig:condensed}
+\end{figure}
+
+Agent 用 \code{condensed_workspace.update} 工具更新列表。只有功能开启时，Agent 才能看到这个工具。
+
+\textbf{写入检查：} Agent 每添加或替换一条事实，系统都会让判断模型回答：这是否是 Group 中其他 Agent 需要的一条简短的当前事实？
+
+\begin{itemize}
+  \item 适合的内容：决定、负责人、状态、约束、截止时间、偏好、位置。
+  \item 不适合的内容：工作记录、计划步骤、只与当前 Session 有关的状态、问题、给 Agent 的指令、原始数据、问候、重复内容。
+  \item 任何一条得分低于 15\% 时，整次更新被拒绝，并返回一个拒绝编号。Agent 确认内容确实需要时，可以用该编号（\code{force_override}）重新提交完全相同的内容，跳过检查。
+  \item 检查无法运行（无模型、预算不足、超时或出错）时，写入直接生效。
+  \item 用户在 Comma 中的编辑不经过检查。
+\end{itemize}
+
+\subsection{送达和提醒}
+
+\textbf{送达：}
+
+\begin{itemize}
+  \item 新建、刚压缩或看到的版本已过期的 Session，在下一轮收到完整列表。新列表替换上下文中旧的列表。
+  \item 最近一次写入的 Session 直接采用新版本，不再收到消息。
+  \item 列表更新不会唤醒空闲的 Session。
+  \item 关闭功能时，每个看到过列表的 Session 收到一条“已停用”通知。
+  \item 运行中的 Session 在后台刷新配置后采用开关变化。
+\end{itemize}
+
+\textbf{轮次检查：} 当模型的回复包含工具调用时，系统在工具运行的同时检查两件事：
+
+\begin{itemize}
+  \item \textbf{偏离方向（off\_track）：} 得分不低于 70\% 时，提醒 Agent 重新考虑方向。两项都达标时，只发这一条。
+  \item \textbf{需要更新（needs\_update）：} 得分不低于 50\% 时，提醒 Agent 更新精简工作区。
+\end{itemize}
+
+检查依据是当前列表、最新 16 条带文字的用户和 Agent 消息（每条截取 1,500 字节）以及本次工具调用（每个截取 1,000 字节），总计最多 32 KiB。
+
+\begin{itemize}
+  \item 下一轮最多等待到检查开始后 5 秒。
+  \item 检查失败、超时或得分不够时，不发送提醒。
+  \item 同一种提醒只在列表版本变化或经过 3 次检查后才会再次发送。
+  \item 检查结果 10 分钟后或服务重启后失效。
+\end{itemize}
+
+\begin{warn}[信息流]
+轮次检查读取的消息不按数据策略过滤。精简工作区的写入按 Group 记忆写入处理，但开启后列表会进入 Group 中所有 Agent 的上下文。请不要在其中写入只有部分成员可以看到的信息。
+\end{warn}
+
+检查失败或预算不足时不发送提醒，写入照常进行。
+
+% ---------------------------------------------------------------------------
+\section{Worker 记忆咨询}
+
+Worker 完成任务后，它的 Session 仍然记得任务细节。开启本功能后，Router 可以用 \code{memory.ask_worker} 向过去的 Worker 提问。
+
+\begin{enumerate}
+  \item Router 提供问题，以及关键词或会话引用。
+  \item 系统按关键词在 Group 的任务会话中查找相关 Worker（最多 16 个关键词、100 个候选）。
+  \item 系统向最多 10 个 Worker 提问，每个最多等待 25 秒，整个工具最多 30 秒。
+  \item Router 汇总各 Worker 的回答。
+\end{enumerate}
+
+\textbf{开启方法：} Comma 和 Comma for Teams 的设置中目前都没有此开关。如需开启，请联系 Comma 支持。关闭时，Router 看不到这个工具。
+
+\textbf{注意：} Worker 的回答可能包含其他任务中的细节。开启前，请确认同一 Group 中的任务内容可以在 Router 中共享。
+
+% ---------------------------------------------------------------------------
+\section{Slack 工作区索引}\label{sec:slack}
+
+\subsection{作用}
+
+Slack 工作区索引为 Group 连接的 Slack 工作区建立可检索的索引，包括消息文本和文件内容。Agent 可以用自然语言检索 Slack 历史，例如“为什么上次部署回滚了？”。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\tikzset{st/.style={box=#1, text width=2.35cm, font=\sffamily\footnotesize, minimum height=1.1cm}}
+\node[font=\sffamily\footnotesize\bfseries, anchor=west, text=CommaGray] at (-1.4,1.55) {建立索引（后台）};
+\node[st=CSlate]   (sl) at (0,0)     {Slack 消息\\与文件};
+\node[st=CSlate]   (mi) at (3.15,0)  {消息镜像};
+\node[st=CommaBlue](tx) at (6.3,0.85) {文本切片\\\scriptsize 400 字符，重叠 40};
+\node[st=CPurple]  (fi) at (6.3,-0.85){文件提取\\\scriptsize OCR · 语音识别\\视频帧 · 文档};
+\node[st=COrange]  (em) at (9.45,0)  {向量嵌入\\\scriptsize 文本与图片};
+\node[st=CGreen]   (ix) at (12.6,0)  {检索索引\\\scriptsize 按 Group 隔离};
+\draw[arr] (sl) -- (mi);
+\draw[arr] (mi.east) -- ++(0.3,0) |- (tx.west);
+\draw[arr] (mi.east) -- ++(0.3,0) |- (fi.west);
+\draw[arr] (tx.east) -- ++(0.3,0) |- ($(em.west)+(0,0.2)$);
+\draw[arr] (fi.east) -- ++(0.3,0) |- ($(em.west)+(0,-0.2)$);
+\draw[arr] (em) -- (ix);
+\begin{scope}[shift={(0,-4.0)}]
+\node[font=\sffamily\footnotesize\bfseries, anchor=west, text=CommaGray] at (-1.4,1.55) {检索（查询时）};
+\node[st=CommaBlue](q)  at (0,0)      {Agent 查询\\\scriptsize 自然语言};
+\node[st=CSlate]   (kw) at (3.15,0.75) {关键词\\\scriptsize 字面子串};
+\node[st=COrange]  (se) at (3.15,-0.75){语义\\\scriptsize 余弦距离};
+\node[st=CPurple]  (hy) at (6.3,0)    {混合排序\\\scriptsize RRF，$\leq$ 200 候选};
+\node[st=CRed]     (au) at (9.45,0)   {权限复查\\\scriptsize 消息 · Group\\连接};
+\node[st=CGreen]   (re) at (12.6,0)   {结果页\\\scriptsize 每页 $\leq$ 20 条\\游标 15 分钟};
+\draw[arr] (q.east) -- ++(0.3,0) |- (kw.west);
+\draw[arr] (q.east) -- ++(0.3,0) |- (se.west);
+\draw[arr] (kw.east) -- ++(0.3,0) |- ($(hy.west)+(0,0.2)$);
+\draw[arr] (se.east) -- ++(0.3,0) |- ($(hy.west)+(0,-0.2)$);
+\draw[arr] (hy) -- (au);
+\draw[arr] (au) -- (re);
+\end{scope}
+\draw[arr, adv, draw=CGreen] (ix.south) -- ++(0,-1.45) -| node[lbl, pos=0.25, above, text=CGreen]{读取索引} ($(kw.north)+(0.6,0)$);
+\end{tikzpicture}
+\caption{Slack 工作区索引：后台建立文本与多模态索引，查询时排序并重新检查权限。}
+\label{fig:slack}
+\end{figure}
+
+\subsection{启用条件}
+
+\begin{warn}[当前可用范围]
+本功能目前只在 Comma 的预览环境中提供，\textbf{正式环境尚未开放}。它没有用户开关，也没有管理界面。本节内容供企业管理员提前评估。
+\end{warn}
+
+功能开放后，需要满足以下条件：
+
+\begin{enumerate}
+  \item Agent Swarm 已在 \textbf{Connections} 中连接 Slack 工作区。
+  \item Slack 机器人已加入要索引的频道。
+\end{enumerate}
+
+功能不可用时，检索工具返回“Message search is unavailable”。
+
+\subsection{索引范围}
+
+\begin{itemize}
+  \item 索引覆盖 Group 的 Slack 连接所镜像的频道。
+  \item 公开频道、私有频道、多人私信和私信都可以被索引，前提是机器人是成员。
+  \item 新增或重新启用连接，或更换连接的工作区时，系统分批初始化该工作区的频道。
+  \item 实时消息优先于历史数据。历史数据在后台逐步补齐。
+\end{itemize}
+
+\subsection{向量嵌入}
+
+\begin{itemize}
+  \item 文本和图片使用同一个多模态嵌入模型，生成可以互相比较的向量。因此，文字查询也可以找到相关的图片和视频片段。
+  \item 消息文本按 400 个字符切片，相邻切片重叠 40 个字符。
+  \item 检索请求优先于后台索引任务。系统繁忙时，检索返回“Message search is busy; retry shortly.”，稍后重试即可。
+\end{itemize}
+
+\subsection{多模态文件}
+
+系统从 Slack 下载文件并提取可检索的内容。文件只从 Slack 官方文件域名下载，且机器人必须仍在频道中。
+
+\begin{longtable}{P{3.4cm}P{3.6cm}P{6.8cm}}
+\toprule
+文件类型 & 索引单元 & 处理方式 \\
+\midrule
+\endhead
+图片 & \code{image}、\code{ocr_text} & 直接生成图片向量；同时识别图片中的文字（OCR）。 \\
+视频 & \code{video_segment}、\code{asr_transcript} & 每 30 秒取 8 帧生成向量；音轨做语音识别。 \\
+音频 & \code{asr_transcript} & 语音识别，生成文字记录。 \\
+PDF 与文本 & \code{document_text} & 提取文本；扫描页做 OCR。 \\
+Slack 文档（Canvas） & \code{document_text} & 去掉脚本和样式后提取文本。 \\
+\bottomrule
+\end{longtable}
+
+\textbf{文件限制：} 单个文件最大 512 MiB；每个文件最多 1,024 个索引单元；PDF 最多 500 页；音视频最长 3 小时；单个文件处理最长 1,200 秒；每个单元最多 1,600 字节文本。系统不生成图片描述（caption）。
+
+可编辑的文件、帖子、代码片段和 Slack 文档，在上次索引超过 1 小时后会重新提取。
+
+\subsection{Agent 检索工具}
+
+\begin{longtable}{P{4.4cm}P{2.0cm}P{7.4cm}}
+\toprule
+工具 & 默认模式 & 说明 \\
+\midrule
+\endhead
+\code{slack.message_search} & 混合 & 在 Group 所有已连接的 Slack 工作区中检索消息和已处理的文件。 \\
+\code{slack.semantic_search} & 语义 & 同一索引，默认使用语义模式。 \\
+\bottomrule
+\end{longtable}
+
+\textbf{参数：}
+
+\begin{itemize}
+  \item \code{query}：查询，1 到 4,096 字节，可以用自然语言。
+  \item \code{mode}：\code{keyword}（关键词）、\code{semantic}（语义）或 \code{hybrid}（混合）。
+  \item \code{count}：结果数，1 到 20，默认 10。
+  \item 可选过滤：\code{channel}（频道 ID）、\code{workspace}、\code{sender}、\code{kind}、\code{oldest}、\code{latest}。
+  \item 翻页时只传 \code{cursor}。
+\end{itemize}
+
+\textbf{排序方式：}
+
+\begin{itemize}
+  \item \textbf{关键词：} 不区分大小写的字面子串匹配。
+  \item \textbf{语义：} 按向量余弦距离排序。
+  \item \textbf{混合：} 分别取关键词和语义的前 100 名，用倒数排名融合（RRF）合并；分数相同时，较新的消息在前。
+  \item 每次最多对 200 条候选消息排序。检索覆盖全部保留历史，没有固定的天数窗口。
+\end{itemize}
+
+文件命中会返回定位信息（页码、时间点等）。打开原始消息或文件时，需要通过各自的读取操作，单独检查权限。
+
+\subsection{权限检查}
+
+每次检索和每次翻页，系统都会重新检查：
+
+\begin{enumerate}
+  \item 消息仍然存在，且内容没有变化；已删除或已修改的消息不会返回旧内容。
+  \item 索引内容已经正式发布，且没有待处理的写入。
+  \item Agent 当前所属的租户和 Group 没有变化。
+  \item 消息所属的 Slack 连接仍然有效，且属于同一租户、Group 和工作区。
+  \item 只为通过检查的当前页读取摘要（匹配位置附近最多 1,024 个字符）。
+\end{enumerate}
+
+\begin{itemize}
+  \item 整次检索最多 10 秒。翻页游标 15 分钟后失效。
+  \item 检索不使用个人 Slack 身份，也不逐频道调用 Slack 的权限接口。Group 中的所有 Agent 使用相同的检索范围。
+  \item 检索结果带有读取受众标签。
+\end{itemize}
+
+\subsection{数据时效与删除}
+
+\begin{itemize}
+  \item 索引覆盖是尽力而为的。\textbf{没有结果不能证明内容不存在。}
+  \item 文件快照可能落后于编辑，大约每小时刷新一次。
+  \item 新消息进入索引的速度取决于后台处理能力。
+  \item Slack 中删除的消息和文件在检索时会被排除。
+  \item 轮换 Slack 凭据不会重建或撤销已有索引。只有停用或删除连接，或更换连接的工作区时，才会撤销相应数据。
+\end{itemize}
+
+% ===========================================================================
+\clearpage
+\part{参考}
+
+\section{隐私与权限汇总}
+
+\begin{longtable}{P{3.4cm}P{10.4cm}}
+\toprule
+功能 & 谁可以看到或修改 \\
+\midrule
+\endhead
+记忆文件 & Router 可读写。工作区 owner 在系统文件中可查看和编辑。普通 Worker 不能访问。数据策略为“强制”时，私有来源的信息只能写入 \code{/memory/scoped}。 \\
+任务搜索 & 有权访问该 Group 的用户；受限会话只能搜到自己的会话。 \\
+Router 标准会话 & 所有渠道的消息进入同一个会话。消息的受众标签在压缩后仍然保留，摘要不会放宽信息的可见范围。 \\
+Session 历史工具 & 只有该 Session 的 Agent。 \\
+精简工作区 & Group 中所有 Agent 都能看到。只有工作区 owner 能在 Comma 中编辑。轮次检查读取的消息不按数据策略过滤。 \\
+Worker 记忆咨询 & Router 向同一 Group 的过去 Worker 提问。 \\
+Slack 索引 & Group 中所有 Agent 使用相同范围，包括机器人所在的私有频道和私信；每次检索重新检查连接和 Group。 \\
+审阅人 & Comma for Teams 数据策略中的审阅人可以向助手查询 Agent Swarm 中的所有内容，包括 Group 记忆。 \\
+\bottomrule
+\end{longtable}
+
+\section{常见问题}
+
+\textbf{我让 Agent 记住了一件事，但它下次没有用到。}
+
+先确认是否有人开始过新会话：开始新会话后，旧会话中的内容不再出现在上下文中。较早的内容也可能已被压缩为摘要；可以提示 Router 查找原话，例如“按我上周说的周报格式”。需要长期保留的信息，让 Router 写入记忆文件，并在 \textbf{云盘 › 系统文件} 中确认。如果某件事 Worker 也必须始终知道，考虑使用精简工作区。
+
+\textbf{我想删除 Agent 记住的某条信息。}
+
+工作区 owner 打开 \textbf{云盘 › 系统文件}，编辑对应的记忆文件，删除该行后保存。也可以直接要求 Router 修改记忆。
+
+\textbf{搜索找不到一个很早的任务消息。}
+
+任务搜索只索引每个任务最新的 64 条消息。请改用任务标题中的词搜索，或打开任务后让 Agent 读取更早的消息。
+
+\textbf{Agent 会把私聊中的信息写进全 Group 可见的记忆吗？}
+
+取决于 Agent Swarm 的数据策略。模式为“强制”时，这类写入会被拒绝，信息只能写入受众受限的 \code{/memory/scoped} 笔记。模式为“审计”时，系统只记录不拒绝；为“关闭”时不检查。企业管理员可以先用“审计”观察，再切换到“强制”。
+
+\textbf{作为企业管理员，我想让 Router 忘掉之前的所有对话。}
+
+在 Comma for Teams 管理后台的 \textbf{Agents} 页面为 Router Agent 开始新会话（见第 \ref{sec:new-session} 节）。这只清空会话上下文，不删除记忆文件。需要删除记忆中的具体内容时，在对话中要求 Router 修改记忆。
+
+\textbf{设置中找不到“精简工作区”。}
+
+先在 \textbf{设置 › 高级 › 调试} 中打开 \textbf{显示精简工作区设置}。只有工作区 owner 可以看到和修改该设置。Comma for Teams 的 Agent Swarm 需要联系 Comma 支持开启。
+
+\textbf{精简工作区提示超过建议大小。}
+
+合并相近的事实，删除已经过时的事实。超过 16 KiB 时，系统会从末尾删除事实。
+
+\textbf{Slack 检索返回“unavailable”。}
+
+该功能尚未在正式环境开放（见第 \ref{sec:slack} 节）。
+
+\section{限制速查表}
+
+\begin{longtable}{P{4.6cm}P{5.4cm}P{3.8cm}}
+\toprule
+功能 & 项目 & 限制 \\
+\midrule
+\endhead
+Router 会话 & 自动压缩阈值 & 上下文窗口的 90\% \\
+记忆文件 & 单个文件 & 10 MB \\
+记忆文件 & \code{memory.search} 结果数 & 默认 10，最大 50 \\
+系统文件 & 单次读写 & 1,000,000 字节 \\
+任务搜索 & 每个任务索引的消息 & 最新 64 条 \\
+任务搜索 & 查询长度 & 2--128 个字符 \\
+任务搜索 & 结果数 & 最多 50 \\
+Session 历史 & \code{history.search} 结果数 & 1--20，默认 10 \\
+Session 历史 & \code{history.get} 每页 & 8,000 个字符 \\
+Group 会话检索 & 扫描范围 & 最近 200 个会话 × 200 条消息 \\
+术语表 & 读取范围 & 前 64,000 字节、500 条 \\
+成员画像 & 大小 & 3,072 字节 \\
+按消息选择技能 & 每条消息 & 最多 5 个技能，阈值 0.65 \\
+迁移导入 & 压缩包 & 25 MB（建议 10 MB） \\
+精简工作区 & 单条事实 & 2 KiB \\
+精简工作区 & 总大小 & 建议 4 KiB，上限 16 KiB \\
+精简工作区 & 单次操作 & 1--32 个 \\
+Worker 记忆咨询 & 每次提问 & 最多 10 个 Worker \\
+Slack 索引 & 单个文件 & 512 MiB \\
+Slack 索引 & 检索结果 & 每页最多 20 条 \\
+Slack 索引 & 翻页游标 & 15 分钟 \\
+\bottomrule
+\end{longtable}
+
+\end{document}

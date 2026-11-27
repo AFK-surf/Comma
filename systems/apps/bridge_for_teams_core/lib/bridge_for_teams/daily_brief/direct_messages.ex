@@ -8,6 +8,9 @@ defmodule BridgeForTeams.DailyBrief.DirectMessages do
   written and stores none of them; only the written brief is kept. Turning it
   off stops reading at once and revokes the grant. A grant Slack reports as
   revoked turns it off too.
+
+  Only a Slack member can turn it on: a Feishu or Lark brief reads public
+  groups only, and its members' reading stays off.
   """
 
   alias BridgeForTeams.DailyBrief.Members
@@ -22,7 +25,8 @@ defmodule BridgeForTeams.DailyBrief.DirectMessages do
   @spec start_connect(DailyBriefSetting.t(), DailyBriefMember.t(), String.t()) ::
           {:ok, %{authorization_url: String.t(), state: String.t()}} | {:error, term()}
   def start_connect(%DailyBriefSetting{} = settings, %DailyBriefMember{} = member, return_url) do
-    with :ok <- not_on(member),
+    with :ok <- slack_member(member),
+         :ok <- not_on(member),
          {:ok, source} <- Members.source(settings),
          {:ok, %{"authorization_url" => url, "state" => state}} <-
            Salix.impl().daily_brief_dm_start(%{
@@ -85,11 +89,17 @@ defmodule BridgeForTeams.DailyBrief.DirectMessages do
 
   @doc """
   The member's direct and group direct messages in `window`, as the shared
-  stream's message maps with `kind` set to "im" or "mpim". Empty when reading
-  is off. A grant Slack reports as revoked turns reading off.
+  stream's message maps with `kind` set to "im" or "mpim", and the member's
+  own messages in channels shared with another company, with `kind`
+  "shared" and the channel's `channel_name`. Empty when reading is off. A
+  grant Slack reports as revoked turns reading off.
   """
   @spec read(DailyBriefSetting.t(), DailyBriefMember.t(), map()) ::
           {:ok, %{messages: [map()], complete?: boolean()}} | {:error, term()}
+  def read(_settings, %DailyBriefMember{provider: provider}, _window)
+      when provider in ["feishu", "lark"],
+      do: {:ok, %{messages: [], complete?: true}}
+
   def read(settings, %DailyBriefMember{dm_status: "on"} = member, %{after: from, before: to}) do
     with {:ok, source} <- Members.source(settings) do
       case Salix.impl().daily_brief_direct_messages(%{
@@ -125,7 +135,9 @@ defmodule BridgeForTeams.DailyBrief.DirectMessages do
       actor_id: m.author,
       subtype: nil,
       text: m.text,
-      permalink: m.permalink
+      permalink: m.permalink,
+      channel_name: Map.get(m, :channel_name),
+      reactions: Map.get(m, :reactions, [])
     }
   end
 
@@ -143,6 +155,11 @@ defmodule BridgeForTeams.DailyBrief.DirectMessages do
     |> DailyBriefMember.dm_changeset(%{dm_status: "off", oauth_connection_id: nil})
     |> Repo.update()
   end
+
+  defp slack_member(%DailyBriefMember{provider: provider}) when provider in ["feishu", "lark"],
+    do: {:error, :direct_messages_slack_only}
+
+  defp slack_member(_member), do: :ok
 
   defp not_on(%DailyBriefMember{dm_status: "on"}), do: {:error, :dm_enabled}
   defp not_on(_member), do: :ok

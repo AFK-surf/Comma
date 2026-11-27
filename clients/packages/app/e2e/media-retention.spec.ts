@@ -142,6 +142,12 @@ test("sixty sequentially viewed images remain available without repeat loads and
 }) => {
   await page.goto(new URL("/media-retention.html?images=60", mediaBaseURL).href);
   const viewport = page.locator('[data-slot="scroll-area-viewport"]').first();
+  // Wait for the initial tail media and scroll edge state to settle before wheeling,
+  // otherwise an early upward wheel lands while maxScrollTop is still 0 and is ignored.
+  await expect(
+    page.getByRole("img", { name: "image-59.png", exact: true })
+  ).toBeVisible();
+  await expect(viewport).toHaveAttribute("data-edge-transition", "true");
   await viewport.hover();
   await page.mouse.wheel(0, -600);
   await expect

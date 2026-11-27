@@ -642,10 +642,10 @@ test("Settings API returns pre-populated OAuth app creation links", async ({
   expect(url.searchParams.get("distribution")).toBe("private");
   expect(url.searchParams.get("developer.name")).toBe("Comma");
   expect(url.searchParams.get("display.description")).toBe(
-    "Connect Linear to Comma Bridge for Teams agents.",
+    "Connect Linear to Comma for Teams agents.",
   );
   expect(url.searchParams.get("oauth.client_name")).toBe(
-    "Comma Bridge for Teams",
+    "Comma for Teams",
   );
   expect(url.searchParams.get("oauth.client_uri")).toBe(
     "http://127.0.0.1:4101",
@@ -666,7 +666,7 @@ test("Settings API returns pre-populated OAuth app creation links", async ({
   const slackManifest = JSON.parse(
     slackUrl.searchParams.get("manifest_json") || "{}",
   );
-  expect(slackManifest.display_information.name).toBe("Comma Bridge for Teams");
+  expect(slackManifest.display_information.name).toBe("Comma for Teams");
   expect(slackManifest.oauth_config.redirect_urls).toEqual([
     "http://127.0.0.1:4000/v1/oauth/slack/callback",
   ]);
@@ -679,7 +679,7 @@ test("Settings API returns pre-populated OAuth app creation links", async ({
   expect(githubUrl.origin + githubUrl.pathname).toBe(
     "https://github.com/settings/apps/new",
   );
-  expect(githubUrl.searchParams.get("name")).toBe("Comma Bridge for Teams");
+  expect(githubUrl.searchParams.get("name")).toBe("Comma for Teams");
   expect(githubUrl.searchParams.get("url")).toBe("http://127.0.0.1:4101");
   expect(githubUrl.searchParams.get("callback_urls[]")).toBe(
     "http://127.0.0.1:4000/v1/oauth/github/callback",

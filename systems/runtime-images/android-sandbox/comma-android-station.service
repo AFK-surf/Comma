@@ -1,0 +1,20 @@
+[Unit]
+Description=Comma Station of an Android sandbox
+After=sbx-firstboot.service systemd-udev-trigger.service network-online.target comma-display.service
+Wants=network-online.target comma-display.service
+
+[Service]
+User=comma
+Group=comma
+SupplementaryGroups=kvm
+WorkingDirectory=/home/comma
+Environment=HOME=/home/comma DISPLAY=:99 CHROMIUM_BIN=/usr/bin/chromium
+Environment=COMMA_BROWSER_MCP_CONFIG=/etc/comma/browser-mcp.json
+ExecStart=/usr/local/bin/comma-android-station run
+# The Station owner can leave an emulator running across Station restarts.
+KillMode=process
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -212,15 +212,36 @@ defmodule SalixMeet.CalendarProjection do
   @doc "Read a bounded, non-mutating diagnostic view of one group's durable projection."
   @spec status(String.t(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def status(group_id, limit \\ 20) do
-    with true <- Ids.valid_group_id?(group_id),
-         true <- is_integer(limit) and limit in 1..@max_status_events do
-      case S3.get(key(group_id)) do
+    if Ids.valid_group_id?(group_id),
+      do: read_status(key(group_id), group_id, limit),
+      else: {:error, :invalid_calendar_projection_status_query}
+  end
+
+  @doc """
+  The same bounded view of one member calendar's projection, in a Group that
+  enrolls every member's own calendars.
+  """
+  @spec member_status(String.t(), String.t(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def member_status(group_id, calendar_id, limit \\ 20) do
+    case projection_key(%{
+           "calendar_scope" => "members",
+           "group_id" => group_id,
+           "calendar_id" => calendar_id
+         }) do
+      {:ok, key} -> read_status(key, group_id, limit)
+      {:error, _} -> {:error, :invalid_calendar_projection_status_query}
+    end
+  end
+
+  defp read_status(key, group_id, limit) do
+    if is_integer(limit) and limit in 1..@max_status_events do
+      case S3.get(key) do
         {:ok, %{body: body}} -> decode_status(body, group_id, limit)
         {:error, :not_found} -> {:ok, empty_status("not_scanned", limit)}
         {:error, reason} -> {:error, {:calendar_projection_read, reason}}
       end
     else
-      false -> {:error, :invalid_calendar_projection_status_query}
+      {:error, :invalid_calendar_projection_status_query}
     end
   end
 

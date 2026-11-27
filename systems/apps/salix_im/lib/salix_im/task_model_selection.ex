@@ -218,13 +218,18 @@ defmodule SalixIM.TaskModelSelection do
       spec =
         update_in(spec, ["conversation", "participants"], fn participants ->
           Enum.map(participants, fn participant ->
-            if participant["agent_id"] == worker_id,
-              do: put_in(participant, ["payload", "session_model"], model),
-              else: participant
+            if participant["agent_id"] == worker_id and
+                 SalixIM.TaskSessionSlots.primary_worker?(participant),
+               do: put_in(participant, ["payload", "session_model"], model),
+               else: participant
           end)
         end)
 
-      worker = Enum.find(spec["conversation"]["participants"], &(&1["agent_id"] == worker_id))
+      worker =
+        Enum.find(
+          spec["conversation"]["participants"],
+          &(&1["agent_id"] == worker_id and SalixIM.TaskSessionSlots.primary_worker?(&1))
+        )
 
       evidence =
         evidence
@@ -378,6 +383,30 @@ defmodule SalixIM.TaskModelSelection do
   defp decision_context(_spec, %{"origin_session_id" => session_id}, delegator_id)
        when is_binary(session_id) and session_id != "" do
     {:ok, %{"agent_id" => delegator_id, "session_id" => session_id}}
+  end
+
+  # A router-less Collaborative Task has no delegator: its own Worker Session
+  # owns the model selection decision, as in `configure_ingress/4`.
+  defp decision_context(spec, _attrs, nil) do
+    worker =
+      Enum.find(
+        spec["conversation"]["participants"],
+        &(&1["agent_id"] == spec["worker_agent_id"])
+      )
+
+    case worker do
+      %{"payload" => %{"session_id" => session_id}}
+      when is_binary(session_id) and session_id != "" ->
+        {:ok,
+         %{
+           "agent_id" => worker["agent_id"],
+           "session_id" => session_id,
+           "billing_context" => worker["delivery_billing_context"] || %{}
+         }}
+
+      _ ->
+        {:error, {:bad_request, "Task model selection requires a Worker Session"}}
+    end
   end
 
   # A product can create a Task before its Router has received a message.

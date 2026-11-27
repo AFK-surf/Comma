@@ -244,7 +244,7 @@ defmodule SalixIM.ProviderIdentity do
   end
 
   def release(%{"provider" => provider, "app_id" => app_id, "connect_id" => connect_id})
-      when provider in ["slack", "feishu", "qq", "lark"],
+      when provider in ["slack", "feishu", "qq", "lark", "wecom"],
       do: release_provider(provider, app_id, connect_id)
 
   def release(%{"provider" => "wechat", "bot_user_id" => bot_id, "connect_id" => connect_id}),

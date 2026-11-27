@@ -219,6 +219,19 @@ defmodule SalixIM.Provider.Line do
   def profile(token, user_id),
     do: request(token, :get, base() <> "/v2/bot/profile/" <> URI.encode(str(user_id)), [])
 
+  @doc """
+  Shows the loading animation in the private chat of `user_id` for `seconds`
+  (5 to 60, in steps of 5). It is presentation only, so the request waits at
+  most 2 seconds.
+  """
+  @spec start_loading(String.t(), String.t(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def start_loading(token, user_id, seconds),
+    do:
+      request(token, :post, base() <> "/v2/bot/chat/loading/start",
+        json: %{"chatId" => str(user_id), "loadingSeconds" => seconds},
+        receive_timeout: 2_000
+      )
+
   @doc "The URL of the bytes of a file a person sent (image, video, audio or file)."
   def message_content_url(message_id),
     do: data_base() <> "/v2/bot/message/" <> URI.encode(message_id) <> "/content"
@@ -236,7 +249,13 @@ defmodule SalixIM.Provider.Line do
     headers = [{"authorization", "Bearer " <> str(token)} | Keyword.get(opts, :headers, [])]
 
     req_opts =
-      [method: method, url: url, headers: headers, retry: false, receive_timeout: @receive_timeout_ms]
+      [
+        method: method,
+        url: url,
+        headers: headers,
+        retry: false,
+        receive_timeout: Keyword.get(opts, :receive_timeout, @receive_timeout_ms)
+      ]
       |> then(fn req -> if opts[:json], do: Keyword.put(req, :json, opts[:json]), else: req end)
 
     case Req.request(req_opts) do

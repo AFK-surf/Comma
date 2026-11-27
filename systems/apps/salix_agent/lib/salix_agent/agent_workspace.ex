@@ -142,20 +142,28 @@ defmodule SalixAgent.AgentWorkspace do
   end
 
   @doc "Write an enumerable body to storage and return a workspace manifest event."
-  @spec prepare_write_stream(String.t(), String.t(), Enumerable.t()) ::
+  @spec prepare_write_stream(String.t(), String.t(), Enumerable.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def prepare_write_stream(agent_id, path, stream) do
+  def prepare_write_stream(agent_id, path, stream, opts \\ []) do
     case Blob.put_stream(agent_id, stream) do
       {:ok, ref} ->
-        {:ok,
-         %{
-           "type" => "vfs_write",
-           "path" => path,
-           "ref" => stringify(ref),
-           "size" => ref.size,
-           "hash" => ref.hash,
-           "modified_at" => SystemsClock.system_time(:second)
-         }}
+        event = %{
+          "type" => "vfs_write",
+          "path" => path,
+          "ref" => stringify(ref),
+          "size" => ref.size,
+          "hash" => ref.hash,
+          "modified_at" => SystemsClock.system_time(:second)
+        }
+
+        event =
+          if Keyword.get(opts, :if_none_match) == true do
+            Map.put(event, "if_none_match", true)
+          else
+            event
+          end
+
+        {:ok, event}
 
       {:error, _} = err ->
         err
@@ -225,6 +233,19 @@ defmodule SalixAgent.AgentWorkspace do
 
       {:error, reason} ->
         raise "workspace list failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc "The paths under `prefix` with their sizes, from one read, sorted by path."
+  @spec entries(String.t(), String.t()) ::
+          {:ok, [{String.t(), non_neg_integer()}]} | {:error, term()}
+  def entries(agent_id, prefix) do
+    with {:ok, state} <- read_state(agent_id) do
+      {:ok,
+       state.vfs
+       |> Enum.filter(fn {path, _entry} -> String.starts_with?(path, prefix) end)
+       |> Enum.map(fn {path, entry} -> {path, entry["size"] || 0} end)
+       |> Enum.sort()}
     end
   end
 
@@ -347,29 +368,31 @@ defmodule SalixAgent.AgentWorkspace do
             {:ok, {:committed, committed["result"]}}
 
           :error ->
-            record = %{
-              "operation_id" => operation_id,
-              "result" => result,
-              "event_count" => length(events),
-              "managed_blob_uuids" => managed_write_uuids(events),
-              "committed_at" => opts[:committed_at] || SystemsClock.system_time(:second)
-            }
+            with :ok <- check_write_preconditions(state, events) do
+              record = %{
+                "operation_id" => operation_id,
+                "result" => result,
+                "event_count" => length(events),
+                "managed_blob_uuids" => managed_write_uuids(events),
+                "committed_at" => opts[:committed_at] || SystemsClock.system_time(:second)
+              }
 
-            next_state =
-              events
-              |> Enum.reduce(state, &apply_workspace_event/2)
-              |> put_operation(operation_id, record)
+              next_state =
+                events
+                |> Enum.reduce(state, &apply_workspace_event/2)
+                |> put_operation(operation_id, record)
 
-            {:ok,
-             {:prepared,
-              %PreparedOperation{
-                agent_id: agent_id,
-                operation_id: operation_id,
-                result: result,
-                events: events,
-                next_state: next_state,
-                etag: etag
-              }}}
+              {:ok,
+               {:prepared,
+                %PreparedOperation{
+                  agent_id: agent_id,
+                  operation_id: operation_id,
+                  result: result,
+                  events: events,
+                  next_state: next_state,
+                  etag: etag
+                }}}
+            end
         end
       end
     else
@@ -480,32 +503,48 @@ defmodule SalixAgent.AgentWorkspace do
           {:ok, committed["result"]}
 
         :error ->
-          record = %{
-            "operation_id" => operation_id,
-            "result" => result,
-            "event_count" => length(events),
-            "managed_blob_uuids" => managed_write_uuids(events),
-            "committed_at" => opts[:committed_at] || SystemsClock.system_time(:second)
-          }
+          with :ok <- check_write_preconditions(state, events) do
+            record = %{
+              "operation_id" => operation_id,
+              "result" => result,
+              "event_count" => length(events),
+              "managed_blob_uuids" => managed_write_uuids(events),
+              "committed_at" => opts[:committed_at] || SystemsClock.system_time(:second)
+            }
 
-          next_state =
-            events
-            |> Enum.reduce(state, &apply_workspace_event/2)
-            |> put_operation(operation_id, record)
+            next_state =
+              events
+              |> Enum.reduce(state, &apply_workspace_event/2)
+              |> put_operation(operation_id, record)
 
-          case write_state(agent_id, next_state, etag) do
-            :ok ->
-              adopt_committed_writes(events)
-              {:ok, result}
+            case write_state(agent_id, next_state, etag) do
+              :ok ->
+                adopt_committed_writes(events)
+                {:ok, result}
 
-            {:error, :precondition_failed} ->
-              do_commit_operation(agent_id, operation_id, result, events, opts, retries - 1)
+              {:error, :precondition_failed} ->
+                do_commit_operation(agent_id, operation_id, result, events, opts, retries - 1)
 
-            {:error, _} = err ->
-              err
+              {:error, _} = err ->
+                err
+            end
           end
       end
     end
+  end
+
+  defp check_write_preconditions(%State{} = state, events) do
+    Enum.reduce_while(events, :ok, fn
+      %{"type" => "vfs_write", "path" => path, "if_none_match" => true}, :ok ->
+        if Map.has_key?(state.vfs, path) do
+          {:halt, {:error, :destination_exists}}
+        else
+          {:cont, :ok}
+        end
+
+      _event, :ok ->
+        {:cont, :ok}
+    end)
   end
 
   defp read_state_for_update(agent_id) do
@@ -558,6 +597,18 @@ defmodule SalixAgent.AgentWorkspace do
 
   defp normalize_state(agent_id, _state), do: %State{agent_id: agent_id}
 
+  # Join against the owner-held destination at commit time, not a stale
+  # preflight read. An existing file with no audience remains private.
+  defp imported_label(%{"preserve_destination_label" => true} = event, existing)
+       when is_map(existing) do
+    SalixAgent.IFC.FileLabels.join_encoded(
+      event["ifc_label"] || ["agent_private"],
+      existing["ifc_label"] || ["agent_private"]
+    )
+  end
+
+  defp imported_label(event, _existing), do: event["ifc_label"]
+
   defp apply_workspace_event(%{"type" => "vfs_write", "path" => path} = ev, %State{} = state) do
     entry = %{"ref" => ev["ref"], "size" => ev["size"], "hash" => ev["hash"]}
 
@@ -572,7 +623,7 @@ defmodule SalixAgent.AgentWorkspace do
     # (docs/verification.md). A write made while the
     # check was off carries none, which reads as agent-private.
     entry =
-      case ev["ifc_label"] do
+      case imported_label(ev, Map.get(state.vfs, path)) do
         label when is_list(label) -> Map.put(entry, "ifc_label", label)
         _absent -> entry
       end

@@ -102,7 +102,7 @@ export class FileStreams {
   #start(topic: Topic, shown: string | null = null): void {
     const ports = this.#ports;
     const key = topicKey(topic);
-    const request = streamRequest(topic);
+    const request = streamRequest(topic, this.#ctx);
     if (!this.#ctx.session.current() || !request) {
       this.#release(shown);
       this.#set(key, topic, { status: "failed" });
@@ -219,14 +219,15 @@ function hostedConversation(topic: Topic): string | null {
 }
 
 function streamRequest(
-  topic: Topic
+  topic: Topic,
+  ctx: Ctx
 ): { path: string; type: string; attachment: boolean } | null {
   const type = String(topic.type);
   if (!MEDIA_TYPE.test(type)) return null;
   try {
     const parsed = fileSourceSchema.safeParse(JSON.parse(String(topic.source)));
     if (!parsed.success) return null;
-    const request = fileRequest(parsed.data);
+    const request = fileRequest(parsed.data, ctx);
     return request.method === "GET"
       ? { path: request.path, type, attachment: hasMediaUrl(parsed.data) }
       : null;

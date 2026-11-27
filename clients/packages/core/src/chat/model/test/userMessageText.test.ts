@@ -44,6 +44,33 @@ Tag: button
     });
   });
 
+  it("leaves a document passage's place to the agent and shows the words, with or without a picked element after it", () => {
+    const passage = `Make this shorter
+
+<user-reminder>
+<document_selection_context>
+File: plan.md
+Selected text (as the rendered document shows it; Markdown markup is removed):
+The plugin talks to the desktop.
+</document_selection_context>
+</user-reminder>`;
+    expect(decodeUserMessage(passage)).toEqual({
+      body: "Make this shorter",
+      quotes: [],
+      files: [],
+    });
+    expect(
+      decodeUserMessage(`${passage}
+
+<user-reminder>
+<browser-element-inspection id="pick-1" />
+<browser_element_context>
+Page URL: https://example.com
+</browser_element_context>
+</user-reminder>`).body
+    ).toBe("Make this shorter");
+  });
+
   it("leaves a PDF area's context to the agent and shows the words and the area's screenshot", () => {
     const wire = composeMessageWithAttachments(
       `Make the title bigger

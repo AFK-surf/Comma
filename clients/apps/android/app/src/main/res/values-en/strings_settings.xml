@@ -40,6 +40,8 @@
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_font_size">Font size</string>
+    <string name="settings_share_location">Share location</string>
+    <string name="settings_share_location_detail">Sends this phone’s location with your messages so Comma can suggest things nearby</string>
     <string name="settings_glass">Glass material (experimental)</string>
     <string name="settings_glass_on">On</string>
     <string name="settings_glass_off">Off</string>

@@ -35,6 +35,50 @@ defmodule SalixIM.AgentTextMarkerTest do
              })
   end
 
+  test "rejects an agent Message whose text block is a JSON-encoded content block array" do
+    encoded_text = Jason.encode!([%{"type" => "text", "text" => "本轮新增观察事件"}])
+
+    assert {:error, {:bad_request, message}} =
+             ConversationMessage.prepare(
+               agent_attrs([%{"type" => "text", "text" => encoded_text}])
+             )
+
+    assert message =~ "JSON-encoded content block array"
+
+    mixed =
+      Jason.encode!([
+        %{"type" => "text", "text" => "summary"},
+        %{"type" => "dynamic_ui", "ui_ref" => "m-123", "path" => "/.salix/ui/m-123.json"}
+      ])
+
+    assert {:error, {:bad_request, _}} =
+             ConversationMessage.prepare(agent_attrs([%{"type" => "text", "text" => mixed}]))
+  end
+
+  test "allows fenced JSON, prose, generic JSON arrays, user text, and historical validate/1" do
+    encoded_text = Jason.encode!([%{"type" => "text", "text" => "example"}])
+
+    for allowed <- [
+          "```json\n" <> encoded_text <> "\n```",
+          "Example payload: " <> encoded_text,
+          Jason.encode!([%{"id" => 1, "event" => "click"}])
+        ] do
+      assert {:ok, _} =
+               ConversationMessage.prepare(agent_attrs([%{"type" => "text", "text" => allowed}]))
+    end
+
+    assert {:ok, _} =
+             ConversationMessage.prepare(%{
+               "actor_type" => "user",
+               "content" => [%{"type" => "text", "text" => encoded_text}]
+             })
+
+    assert {:ok, _} =
+             ConversationMessage.validate(
+               agent_attrs([%{"type" => "text", "text" => encoded_text}])
+             )
+  end
+
   defp agent_attrs(content) do
     %{"kind" => "message", "actor_type" => "agent", "content" => content}
   end

@@ -3,28 +3,13 @@ defmodule Comma.Analytics.Export do
   import Ecto.Query
   alias Comma.Accounts.User
   alias Comma.{Analytics, Repo}
+  require Logger
 
   @page_size 100
   @user_fields [:id, :email, :kind, :status, :locale, :created_at, :updated_at]
 
   # Bound the entire DB + HTTP attempt, including a peer that never ends a body.
-  def attempt(fun) do
-    task = SystemsRuntime.Task.async(fn -> safely(fun) end)
-
-    case SystemsRuntime.Task.yield(task, 15_000) ||
-           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      _ -> {:error, :retryable}
-    end
-  end
-
-  defp safely(fun) do
-    fun.()
-  rescue
-    _ -> {:error, :retryable}
-  catch
-    _, _ -> {:error, :retryable}
-  end
+  defdelegate attempt(fun), to: ProductAnalytics
 
   # The existing User primary key bounds both the scan and each restart page.
   def page(after_id \\ "") do
@@ -38,7 +23,9 @@ defmodule Comma.Analytics.Export do
         )
       )
 
-    events = users |> Enum.filter(&eligible?/1) |> Enum.flat_map(&profile_events/1)
+    eligible = Enum.filter(users, &eligible?/1)
+    plans = plans(eligible)
+    events = Enum.flat_map(eligible, &profile_events(&1, plans))
 
     with :ok <- deliver(events) do
       {:ok, if(length(users) == @page_size, do: List.last(users).id, else: nil)}
@@ -88,14 +75,21 @@ defmodule Comma.Analytics.Export do
       Repo.all(from(u in User, where: u.id in ^ids, select: struct(u, @user_fields)))
       |> Map.new(&{&1.id, &1})
 
+    plans =
+      entries
+      |> Enum.filter(&(&1.event in [:profile, :registration]))
+      |> Enum.flat_map(&List.wrap(users[&1.user_id]))
+      |> Enum.filter(&eligible?/1)
+      |> plans()
+
     events =
       Enum.flat_map(entries, fn entry ->
         case users[entry.user_id] do
           %User{} = user ->
             cond do
               not eligible?(user) -> []
-              entry.event == :profile -> profile_events(user)
-              entry.event == :registration -> registration_events(user, entry)
+              entry.event == :profile -> profile_events(user, plans)
+              entry.event == :registration -> registration_events(user, entry, plans)
               user.status != "active" -> []
               true -> [activity_event(user, entry)]
             end
@@ -113,7 +107,81 @@ defmodule Comma.Analytics.Export do
       user.id not in Analytics.excluded_user_ids(Analytics.config()[:excluded_user_ids])
   end
 
-  defp profile_events(user) do
+  # A redeemed code's subscription keeps its status after its last period: it
+  # counts only while one of its periods is still open.
+  @active_subscription_sql """
+  SELECT DISTINCT ON (s.billing_account_id)
+    s.billing_account_id, s.package_code, s.source_type, s.inserted_at, s.id
+  FROM billing_subscriptions s
+  WHERE s.billing_account_id = ANY($1)
+    AND s.status IN ('active', 'trialing', 'past_due', 'unpaid', 'paused')
+    AND (
+      s.source_type <> 'internal_subscription'
+      OR EXISTS (
+        SELECT 1 FROM billing_subscription_cycles c
+        WHERE c.subscription_id = s.id AND c.period_end > $2
+      )
+    )
+  ORDER BY s.billing_account_id, s.inserted_at DESC, s.id DESC
+  """
+
+  # The `plan` and `plan_source` of each User: the active subscription of the
+  # Workspace they own, as the billing summary names it. A User who owns more
+  # than one subscribed Workspace gets the newest subscription, so the
+  # properties do not change between refreshes. Two indexed reads for a batch
+  # of at most one page. A failed read sets neither property, so a profile
+  # never claims `free` for a plan it could not read, and logs a warning.
+  defp plans([]), do: %{}
+
+  defp plans(users) do
+    owners =
+      Repo.all(
+        from(w in Comma.Data.Workspace,
+          where:
+            w.owner_user_id in ^Enum.map(users, & &1.id) and w.kind == "standard" and
+              w.status != "deleted" and not is_nil(w.billing_owner_id),
+          select: {w.billing_owner_id, w.owner_user_id}
+        )
+      )
+      |> Map.new()
+
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(BillingCore.Repo, @active_subscription_sql, [
+        Map.keys(owners),
+        SystemsClock.utc_now()
+      ])
+
+    subscribed =
+      rows
+      |> Enum.group_by(fn [account | _] -> owners[account] end)
+      |> Map.new(fn {owner, owned} ->
+        [_account, package_code, source_type, _inserted_at, _id] =
+          Enum.max_by(owned, fn [_, _, _, %DateTime{} = inserted_at, id] ->
+            {DateTime.to_unix(inserted_at, :microsecond), id}
+          end)
+
+        {owner, %{"plan" => package_code, "plan_source" => plan_source(source_type)}}
+      end)
+
+    Map.new(users, &{&1.id, subscribed[&1.id] || %{"plan" => "free", "plan_source" => "none"}})
+  rescue
+    error ->
+      Logger.warning("analytics plan read failed: #{inspect(error.__struct__)}")
+      %{}
+  catch
+    kind, _reason ->
+      Logger.warning("analytics plan read failed: #{kind}")
+      %{}
+  end
+
+  defp plan_source("stripe_subscription"), do: "stripe"
+  defp plan_source("apple_subscription"), do: "apple"
+  defp plan_source("google_subscription"), do: "google"
+  # A redeemed code's subscription (`BillingCommerce.RedeemCodes`).
+  defp plan_source("internal_subscription"), do: "redeem"
+  defp plan_source(_source_type), do: "other"
+
+  defp profile_events(user, plans) do
     observed_at = SystemsClock.utc_now()
 
     [
@@ -123,21 +191,25 @@ defmodule Comma.Analytics.Export do
         "profile:#{user.id}:#{DateTime.to_iso8601(observed_at)}",
         observed_at,
         %{
-          "$set" => %{
-            "email" => user.email,
-            "created_at" => DateTime.to_iso8601(user.created_at),
-            "user_kind" => user.kind,
-            "locale" => user.locale,
-            "account_status" => user.status,
-            "is_internal" => Analytics.internal_user?(user.email)
-          }
+          "$set" =>
+            Map.merge(
+              %{
+                "email" => user.email,
+                "created_at" => DateTime.to_iso8601(user.created_at),
+                "user_kind" => user.kind,
+                "locale" => user.locale,
+                "account_status" => user.status,
+                "is_internal" => Analytics.internal_user?(user.email)
+              },
+              Map.get(plans, user.id, %{})
+            )
         }
       )
     ]
   end
 
-  defp registration_events(user, entry) do
-    profile_events(user) ++
+  defp registration_events(user, entry, plans) do
+    profile_events(user, plans) ++
       [
         envelope(
           user.id,
@@ -184,15 +256,8 @@ defmodule Comma.Analytics.Export do
 
   # A deterministic UUID is a retry/deduplication key, never an authenticity check.
   # Its only authority is the existing source record's identity.
-  defp event_uuid(event, user_id, source_id) do
-    <<a::32, b::16, c::12, d::62, _::bitstring>> =
-      :crypto.hash(
-        :sha256,
-        :erlang.term_to_binary({"comma.analytics.v1", event, user_id, source_id})
-      )
-
-    Ecto.UUID.load!(<<a::32, b::16, 8::4, c::12, 2::2, d::62>>)
-  end
+  defp event_uuid(event, user_id, source_id),
+    do: ProductAnalytics.event_uuid({"comma.analytics.v1", event, user_id, source_id})
 
   defp deliver([]), do: :ok
 

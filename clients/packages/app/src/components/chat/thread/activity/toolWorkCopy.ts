@@ -44,7 +44,6 @@ const workCopy = {
   workers: ["chat_tool_workers", "chat_tool_workers_failed"],
   workerCreate: ["chat_tool_worker_create", "chat_tool_worker_create_failed"],
   workerUpdate: ["chat_tool_worker_update", "chat_tool_worker_update_failed"],
-  email: ["chat_tool_email", "chat_tool_email_failed"],
   slackSend: ["chat_tool_slack_send", "chat_tool_slack_send_failed"],
   slackUse: ["chat_tool_slack_use", "chat_tool_slack_use_failed"],
   telegramSend: ["chat_tool_telegram_send", "chat_tool_telegram_send_failed"],

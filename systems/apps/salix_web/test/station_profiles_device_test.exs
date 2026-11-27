@@ -194,6 +194,40 @@ defmodule SalixWeb.StationProfilesDeviceTest do
     refute_received {:asked, "station_place", _}
   end
 
+  test "a desktop station on read access is lent no accounts until it is widened",
+       %{tenant_id: tenant_id, group_id: group_id} do
+    add_api_key(tenant_id)
+
+    {:ok, credential} =
+      ConnectorTokens.create_group_connector_token(group_id, tenant_id, %{
+        "meta" => %{"owner_user_id" => "u_member"}
+      })
+
+    {:ok, pid} = Client.start(credential["token"], SystemsRuntime.Proc.self())
+
+    on_exit(fn ->
+      if SystemsRuntime.Proc.alive?(pid), do: SystemsRuntime.Proc.exit(pid, :kill)
+    end)
+
+    settle_receive({:connected, connected})
+    conn = %{pid: pid, connected: connected}
+
+    metadata = fn scope ->
+      SystemsRuntime.Proc.send(
+        pid,
+        {:send, %{"type" => "metadata", "capabilities" => %{"scope" => scope}}}
+      )
+    end
+
+    metadata.("local_file_read")
+    register(conn)
+    settle()
+    refute_received {:asked, "station_profiles", _}
+
+    metadata.("")
+    settle_receive({:asked, "station_profiles", %{"profiles" => [_]}})
+  end
+
   test "a workspace without accounts sends an empty list",
        %{tenant_id: tenant_id, group_id: group_id} do
     _conn = connect_station(tenant_id, group_id, "u_member")

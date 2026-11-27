@@ -23,7 +23,7 @@ defmodule SalixAgent.Tools.Stations do
   def defs do
     [
       {"station.list",
-       "List this workspace's Stations, including managed VMM Stations. Router and Worker use the same member-authorized tools. Use a station's device_id with environment \"station\" in env.exec, env.process_list, env.process_write, env.process_tail and env.copy; use station.fs, station.process and station.session for station files, processes and chats. Commands and relative files default to this Agent conversation's own working directory. Stations share resources with other Tasks: keep your files there, use a new session for delegated work, and stop only processes you started. Do not change shared logins or kill other Tasks. It also lists, as stillfail_stations, the still.fail stations connected through Comma's still.fail plugin, with how to see what their workspace is doing and give one a Task.",
+       "List this workspace's Stations, including managed VMM Stations. Router and Worker use the same member-authorized tools. The still.fail stations below are for anyone who asked, member or not: list them, read their chats and usage, write in their chats and give them Tasks. Use a station's device_id with environment \"station\" in env.exec, env.process_list, env.process_write, env.process_tail and env.copy; use station.fs, station.process and station.session for station files, processes and chats. Commands and relative files default to this Agent conversation's own working directory. Stations share resources with other Tasks: keep your files there, use a new session for delegated work, and stop only processes you started. Do not change shared logins or kill other Tasks. It also lists, as stillfail_stations, the still.fail stations connected through Comma's still.fail plugin, each a whole still.fail workspace (workspace_id, task_models) that takes no env.* or station.* call, with how to see what their workspace is doing and give one a Task.",
        &__MODULE__.list/2, @normal_auto_wait_seconds},
       {"station.fs",
        "Inspect files on a station. Relative paths use this Agent conversation's working directory, as env.exec does without working_dir. Absolute paths address shared files. action=list (directory entries), stat (one path) or read (text up to 256 KiB, optionally from offset). Copy larger or binary files with env.copy and write files with env.copy from vfs.",
@@ -37,15 +37,26 @@ defmodule SalixAgent.Tools.Stations do
     ]
   end
 
-  @stillfail_note "These are still.fail stations connected through Comma's still.fail plugin, " <>
-                    "not Stations: do not address them with env.*, station.fs, station.process or " <>
-                    "station.session. Read their still.fail workspace's chats (who each waits for, " <>
-                    "and why) with im_api.internal.station_task.list and source stillfail, and its " <>
-                    "usage with im_api.internal.usage.query and source stillfail. Read or write in " <>
-                    "one chat with im_api.internal.read_conversation or im_api.internal.send_message " <>
-                    "and its task_id as conversation_id. Give one a Task with " <>
-                    "im_api.internal.task.create and runs_on {\"kind\":\"station\",\"device_id\":<its device_id>} " <>
-                    "while it is connected."
+  @stillfail_note "Each still.fail station (device_kind stillfail) is a whole connected still.fail " <>
+                    "workspace, connected through Comma's still.fail plugin. It is not a Station: it " <>
+                    "runs no command and serves no file, so do not address it with env.*, station.fs, " <>
+                    "station.process or station.session, and do not hand that to a Worker. See what its " <>
+                    "workspace is doing (its chats, who each waits for and why) with " <>
+                    "im_api.internal.station_task.list, source stillfail and its device_id (query finds " <>
+                    "a chat by words of its title or note), and its usage with " <>
+                    "im_api.internal.usage.query, source stillfail and its device_id. Read a chat with " <>
+                    "im_api.internal.read_conversation and its task_id as conversation_id; the Router " <>
+                    "writes in one with im_api.internal.send_message. To have it do work, such as reading " <>
+                    "its own projects or files, create a Task with im_api.internal.task.create and runs_on " <>
+                    "{\"kind\":\"station\",\"device_id\":<its device_id>}, and omit model: an agent of " <>
+                    "that workspace does the work there on the workspace's own default model. Give model " <>
+                    "{\"kind\":\"runtime\",\"provider\":\"claude\"|\"codex\"} only to choose a runtime " <>
+                    "its task_models lists, with a model id only from that list. It must be " <>
+                    "connected. When several are connected and the request does not say which, ask which " <>
+                    "with a question card."
+
+  @doc "How to reach a still.fail station, for a tool that was pointed at one."
+  def stillfail_note, do: @stillfail_note
 
   @doc false
   def list(_args, ctx) do
@@ -64,8 +75,19 @@ defmodule SalixAgent.Tools.Stations do
         |> put_stillfail(ctx)
         |> Jason.encode!()
 
+      # The still.fail stations are listed for whoever asked, even when the
+      # roster is not theirs to use.
       {:error, reason} ->
-        raise Stations.describe_error(reason)
+        case put_stillfail(%{}, ctx) do
+          %{"stillfail_stations" => _} = result ->
+            result
+            |> Map.put("stations", [])
+            |> Map.put("stations_unavailable", Stations.describe_error(reason))
+            |> Jason.encode!()
+
+          _none ->
+            raise Stations.describe_error(reason)
+        end
     end
   end
 
@@ -79,12 +101,18 @@ defmodule SalixAgent.Tools.Stations do
         |> Map.put(
           "stillfail_stations",
           Enum.map(stillfail, fn station ->
-            %{
+            base = %{
               "device_id" => station["id"],
               "name" => station["name"],
+              "workspace_id" => station["workspace_id"],
               "connected" => station["connected"],
-              "connected_at" => station["connected_at"]
+              "connected_at" => station["connected_at"],
+              "task_models" => station["task_models"]
             }
+
+            if is_binary(station["owner_email"]),
+              do: Map.put(base, "owner_email", station["owner_email"]),
+              else: base
           end)
         )
         |> Map.put("stillfail_note", @stillfail_note)
@@ -189,10 +217,24 @@ defmodule SalixAgent.Tools.Stations do
     Jason.encode!(call!(ctx, station, op, call_args))
   end
 
+  # A still.fail station's device id is no Station: say what reaches it
+  # instead of the roster's refusal. Read only on a failed call.
   defp call!(ctx, station, op, args) do
     case Stations.call(ctx, station, op, args) do
-      {:ok, result} -> result
-      {:error, reason} -> raise Stations.describe_error(reason)
+      {:ok, result} ->
+        result
+
+      {:error, reason} ->
+        if stillfail_station?(ctx, station),
+          do: raise("#{station} is a connected still.fail workspace. " <> @stillfail_note),
+          else: raise(Stations.describe_error(reason))
+    end
+  end
+
+  defp stillfail_station?(ctx, device_id) do
+    case Stations.stillfail_stations(ctx) do
+      {:ok, stations} -> Enum.any?(stations, &(&1["id"] == device_id))
+      _ -> false
     end
   end
 

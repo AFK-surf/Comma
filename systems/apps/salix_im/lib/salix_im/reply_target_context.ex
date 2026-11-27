@@ -38,7 +38,7 @@ defmodule SalixIM.ReplyTargetContext do
            target_id
          ) do
       {:ok, target} ->
-        if ConversationMessage.visible_to?(rec["participant_id"], target) do
+        if reply_target_visible?(rec, target) do
           [
             line("from_actor_type", target["actor_type"]),
             line("from_role_label", target["role_label"]),
@@ -53,6 +53,32 @@ defmodule SalixIM.ReplyTargetContext do
         ["- excerpt: unavailable; read it with internal.read_conversation if needed"]
     end
   end
+
+  defp reply_target_visible?(rec, target) do
+    ConversationMessage.visible_to?(rec["participant_id"], target) or
+      task_delegator_visible?(rec, target)
+  end
+
+  # In an internal Task, requester and product-authored commands (such as
+  # desktop meeting recordings or direct model-mention Tasks) are delivered
+  # only to the Worker so the Router is not woken prematurely. The Task's
+  # delegator still owns full read access to that Task via
+  # `internal.read_conversation`, so a Worker reply referencing that command
+  # should show its excerpt instead of withholding it.
+  defp task_delegator_visible?(
+         %{
+           "conversation_kind" => "agent_task",
+           "participant_role_label" => "delegator",
+           "source_participant_id" => sender_id
+         },
+         %{"actor_type" => actor_type, "delivery_filter" => %{"participant_ids" => ids}} = target
+       )
+       when actor_type in ["user", "agent"] and is_binary(sender_id) and sender_id != "" and
+              is_list(ids) do
+    not is_map(target["platform_message"]) and sender_id in ids
+  end
+
+  defp task_delegator_visible?(_rec, _target), do: false
 
   defp excerpt(message) do
     text =

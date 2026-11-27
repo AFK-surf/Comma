@@ -37,6 +37,8 @@ data class ConversationState(
     /** Visible canonical messages, then pending sends, then at most one streaming reply. */
     val timeline: List<TimelineEntry> = emptyList(),
     val participant: ParticipantStatus? = null,
+    /** Active worker sessions on a multi-session Task (up to 6 entries); empty when absent. */
+    val workerSessions: List<WorkerSession> = emptyList(),
     val activity: ReplyActivity? = null,
     val connection: Connection = Connection.IDLE,
     val problem: ConversationProblem? = null,
@@ -117,6 +119,41 @@ data class ChatMessage(
     val createdTaskIds: List<String> = emptyList(),
     /** An agent's message as the core parsed it (`@comma/core/markdown`'s tree, as JSON); null for anything else. */
     val markdown: String? = null,
+    /** The chat platform a person's message came in from (`wechat`, `telegram`, ...), as the core names it. */
+    val platformSource: String? = null,
+    /** Who wrote a person's message: a Task stores each writer's user id; the Router's chat calls its one user `current`. */
+    val createdBy: String? = null,
+    /** Who among the Agents wrote it: `router` or `worker`, as the core says; null when it does not. */
+    val actorRole: String? = null,
+    /** The Participant row that authored this message (distinguishes worker sessions on multi-session Tasks). */
+    val participantId: String? = null,
+)
+
+/** Structured provider/account detail accompanying a participant `issue`. */
+data class ParticipantIssueDetail(
+    val source: String? = null,
+    val profileId: String? = null,
+    val profileName: String? = null,
+    val resetAt: Long? = null,
+    val credits: Boolean? = null,
+    val trigger: String? = null,
+)
+
+/** One active worker session in a multi-session Task roster (`workerSessions`, up to 6 entries). */
+data class WorkerSession(
+    val participantId: String,
+    val actorId: String? = null,
+    val slot: String,
+    val label: String,
+    val model: String? = null,
+    val runtime: String? = null,
+    val isPrimary: Boolean = false,
+    val subscribed: Boolean? = null,
+    val state: String = "stopped",
+    val status: String = "",
+    val updatedAt: Long? = null,
+    val issue: String? = null,
+    val issueDetail: ParticipantIssueDetail? = null,
 )
 
 sealed interface MessagePart {

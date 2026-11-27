@@ -18,4 +18,15 @@ defmodule Comma.EmailDelivery.Logger do
 
     :ok
   end
+
+  @impl true
+  def send_notice(email, subject, text, _html) do
+    Logger.info("Comma notice email generated", delivery: "test")
+
+    if pid = SystemsRuntime.Proc.whereis(:comma_email_delivery_test) do
+      SystemsRuntime.Proc.send(pid, {:comma_notice, email, subject, text})
+    end
+
+    :ok
+  end
 end

@@ -16,12 +16,13 @@ defmodule BridgeForTeams.Orgs do
 
   @doc "Create an organization (allocates its Salix tenant + enqueues reconcile)."
   @spec create_org(map()) :: {:ok, Organization.t()} | {:error, Ecto.Changeset.t() | term()}
-  def create_org(attrs) do
+  @spec create_org(map(), keyword()) :: {:ok, Organization.t()} | {:error, term()}
+  def create_org(attrs, opts \\ []) do
     attrs = normalize_attrs(attrs)
-    Identity.retry_generated(fn -> create_org_once(attrs) end, [:salix_tenant_id])
+    Identity.retry_generated(fn -> create_org_once(attrs, opts) end, [:salix_tenant_id])
   end
 
-  defp create_org_once(attrs) do
+  defp create_org_once(attrs, opts) do
     tenant_id = Ids.new_tenant_id()
 
     attrs =
@@ -30,6 +31,9 @@ defmodule BridgeForTeams.Orgs do
       |> put_default_billing_account_id(tenant_id)
 
     changeset = Organization.changeset(%Organization{}, attrs)
+
+    changeset =
+      if opts[:id], do: Ecto.Changeset.put_change(changeset, :id, opts[:id]), else: changeset
 
     Repo.transaction(fn ->
       case Repo.insert(changeset) do
@@ -82,7 +86,9 @@ defmodule BridgeForTeams.Orgs do
   end
 
   defp enqueue_create_tenant(%Organization{} = org, created_at) do
-    payload = %{"attrs" => %{"tenant_id" => org.salix_tenant_id, "name" => org.name}}
+    payload = %{
+      "attrs" => %{"tenant_id" => org.salix_tenant_id, "name" => org.name, "product" => "cft"}
+    }
 
     {:ok, _} =
       Outbox.enqueue("organization", org.id, "create_tenant", payload, created_at: created_at)
@@ -251,19 +257,87 @@ defmodule BridgeForTeams.Orgs do
     |> Repo.all()
   end
 
-  @doc "List organizations a user belongs to that have an SSO connection configured."
-  @spec list_orgs_with_sso_for_user(Ecto.UUID.t()) :: [Organization.t()]
-  def list_orgs_with_sso_for_user(user_id) do
-    from(o in Organization,
-      join: m in OrgMembership,
-      on: m.org_id == o.id,
-      join: sso in OrgSsoConnection,
-      on: sso.org_id == o.id,
-      where: m.user_id == ^user_id,
-      order_by: [asc: o.name, asc: o.slug],
-      distinct: true
-    )
+  @doc """
+  List one page of organizations a user belongs to along with their org role
+  in a single bounded SQL query (`LIMIT per_page + 1` to compute `has_next`).
+  """
+  @spec list_user_orgs_with_roles_page(Ecto.UUID.t(), pos_integer(), keyword()) :: %{
+          items: [%{org: Organization.t(), role: String.t()}],
+          has_next: boolean(),
+          page: pos_integer()
+        }
+  def list_user_orgs_with_roles_page(user_id, page \\ 1, opts \\ []) do
+    per_page = Keyword.get(opts, :per_page, 20) |> max(1) |> min(100)
+    page = if is_integer(page) and page >= 1, do: page, else: 1
+    offset = (page - 1) * per_page
+
+    rows =
+      from(o in Organization,
+        join: m in OrgMembership,
+        on: m.org_id == o.id,
+        where: m.user_id == ^user_id,
+        order_by: [asc: o.name, asc: o.slug, asc: o.id],
+        limit: ^(per_page + 1),
+        offset: ^offset,
+        select: %{org: o, role: m.role}
+      )
+      |> Repo.all()
+
+    %{
+      items: Enum.take(rows, per_page),
+      has_next: length(rows) > per_page,
+      page: page
+    }
+  end
+
+  @doc """
+  List a bounded set of organizations a user belongs to with their auth method
+  (`"sso"` or `"email"`), used for login shortcuts (`remember_orgs`).
+
+  Options:
+    * `:prioritize_org_id` — when set to a valid UUID, sorts that organization
+      first in SQL before applying `LIMIT`.
+  """
+  @spec list_orgs_with_auth_method_for_user(Ecto.UUID.t(), pos_integer(), keyword()) :: [
+          %{org: Organization.t(), auth_method: String.t()}
+        ]
+  def list_orgs_with_auth_method_for_user(user_id, limit \\ 20, opts \\ []) do
+    prioritize_org_id = Keyword.get(opts, :prioritize_org_id)
+
+    base =
+      from(o in Organization,
+        join: m in OrgMembership,
+        on: m.org_id == o.id,
+        left_join: sso in OrgSsoConnection,
+        on: sso.org_id == o.id,
+        where: m.user_id == ^user_id,
+        limit: ^limit,
+        select: %{org: o, has_sso: not is_nil(sso.id)}
+      )
+
+    query =
+      case prioritize_org_id && Ecto.UUID.cast(prioritize_org_id) do
+        {:ok, prio_uuid} ->
+          from([o, _m, _sso] in base,
+            order_by: [
+              desc: fragment("? = ?", o.id, type(^prio_uuid, :binary_id)),
+              asc: o.name,
+              asc: o.slug,
+              asc: o.id
+            ]
+          )
+
+        _ ->
+          from([o, _m, _sso] in base,
+            order_by: [asc: o.name, asc: o.slug, asc: o.id]
+          )
+      end
+
+    query
     |> Repo.all()
+    |> Enum.map(fn %{org: org, has_sso: has_sso} ->
+      %{org: org, auth_method: if(has_sso, do: "sso", else: "email")}
+    end)
   end
 
   @doc """

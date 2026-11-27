@@ -17,6 +17,16 @@ defmodule SalixIFC do
   def decide(effect, activation, items, facts),
     do: SalixIFC.Native.call(:decide, {effect, activation, items, facts})
 
+  @spec decide_easy(Effect.t(), Activation.t(), [Item.t()], Facts.t()) :: decision
+  def decide_easy(effect, activation, items, facts),
+    do: SalixIFC.Native.call(:decide_easy, {effect, activation, items, facts})
+
+  def easy_protected?(items, sources),
+    do: SalixIFC.Native.call(:easy_protected, {items, sources})
+
+  def easy_reader?(principal, label, facts),
+    do: SalixIFC.Native.call(:easy_reader, {principal, label, facts})
+
   @doc false
   def transfer_start(%Evidence{} = evidence),
     do: SalixIFC.Native.call(:transfer_start, {evidence})

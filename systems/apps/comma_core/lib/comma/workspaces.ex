@@ -241,22 +241,68 @@ defmodule Comma.Workspaces do
     end
   end
 
-  @doc "Authorize an exact Group without making the Workspace its resource owner."
-  def authorize_group(user, session, group_id) when is_binary(group_id) do
-    with true <- Ids.valid_group_id?(group_id),
-         %Workspace{} = workspace <- Repo.get_by(Workspace, salix_group_id: group_id),
-         :ok <- group_session_scope(session, group_id, nil),
-         true <- active_owner?(workspace, user["id"]),
+  @doc """
+  The host Workspace of a Collaborative Task, for a member reaching that one
+  Task (`Comma.Collaborations.authorize_member/3`, which is the authority).
+  """
+  def collaboration_host(workspace_id) do
+    with %Workspace{} = workspace <- Repo.get(Workspace, workspace_id),
          :ok <- workspace_ready(workspace) do
       {:ok, workspace_map(workspace, memberships_for([workspace.id])[workspace.id] || [])}
     else
-      nil -> {:error, :not_found}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "Authorize an exact Group without making the Workspace its resource owner."
+  def authorize_group(user, session, group_id) when is_binary(group_id) do
+    with true <- Ids.valid_group_id?(group_id),
+         {:ok, workspace, collaboration_group?} <- lookup_group_workspace(user, group_id),
+         :ok <- group_session_scope(session, group_id, nil),
+         true <- active_owner?(workspace, user["id"]),
+         :ok <- workspace_ready(workspace) do
+      base = workspace_map(workspace, memberships_for([workspace.id])[workspace.id] || [])
+
+      result =
+        if collaboration_group? do
+          base
+          |> Map.put("default_group_id", group_id)
+          |> Map.put("home_group_id", workspace.salix_group_id)
+        else
+          base
+        end
+
+      {:ok, result}
+    else
       false -> {:error, :not_found}
       {:error, _} = error -> error
     end
   end
 
   def authorize_group(_user, _session, _group_id), do: {:error, :not_found}
+
+  defp lookup_group_workspace(user, group_id) do
+    case Repo.get_by(Workspace, salix_group_id: group_id) do
+      %Workspace{} = workspace ->
+        {:ok, workspace, false}
+
+      nil ->
+        with user_id when is_binary(user_id) <- user["id"],
+             workspace_id when is_binary(workspace_id) <-
+               Repo.one(
+                 from(c in Comma.Data.TaskCollaborator,
+                   where: c.group_id == ^group_id and c.host_user_id == ^user_id,
+                   select: c.workspace_id,
+                   limit: 1
+                 )
+               ),
+             %Workspace{} = workspace <- Repo.get(Workspace, workspace_id) do
+          {:ok, workspace, true}
+        else
+          _ -> {:error, :not_found}
+        end
+    end
+  end
 
   @doc """
   Re-checks, without a session, that `user_id` still owns the ready Workspace

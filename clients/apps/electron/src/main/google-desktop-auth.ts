@@ -34,7 +34,7 @@ export interface OpenIdClientAdapter {
   ): URL;
   discover(
     clientId: string,
-    options: { signal: AbortSignal; timeoutMs: number }
+    options: { fetch: typeof fetch; signal: AbortSignal; timeoutMs: number }
   ): Promise<unknown>;
   randomPKCECodeVerifier(): string;
   randomState(): string;
@@ -50,10 +50,10 @@ const openIdClientAdapter: OpenIdClientAdapter = {
   createAuthorizationUrl(configuration, parameters) {
     return oidc.buildAuthorizationUrl(configuration as oidc.Configuration, parameters);
   },
-  discover(clientId, { signal, timeoutMs }) {
+  discover(clientId, { fetch: fetchImpl, signal, timeoutMs }) {
     const operationFetch: oidc.CustomFetch = (url, options) => {
       const { body, ...request } = options;
-      return fetch(url, {
+      return fetchImpl(url, {
         ...request,
         ...(body === undefined ? {} : { body: body as BodyInit }),
         signal: combineAbortSignals(signal, options.signal),
@@ -83,27 +83,61 @@ const openIdClientAdapter: OpenIdClientAdapter = {
   },
 };
 
+/**
+ * A failed sign-in's error and its causes as one log line: each error's type, message and code. A cause that is not an
+ * error is named by its type alone: `oauth4webapi` puts the whole callback query (its `state`, Google's
+ * `error_description`) in the cause of an authorization error, and that must not reach the log.
+ */
+function failureReason(error: unknown): string {
+  const parts: string[] = [];
+  for (let next = error, depth = 0; next !== undefined && depth < 4; depth += 1) {
+    if (!(next instanceof Error)) {
+      parts.push(Object.prototype.toString.call(next).slice(8, -1));
+      break;
+    }
+    const code = (next as { code?: unknown }).code;
+    parts.push(
+      `${next.name}: ${next.message}${typeof code === "string" ? ` (${code})` : ""}`
+    );
+    next = next.cause;
+  }
+  return parts.join(" <- ");
+}
+
 export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
+  readonly #fetch: typeof fetch;
   readonly #locale: MainLocaleSource;
+  readonly #onFailure: ((reason: string) => void) | undefined;
   readonly #oidc: OpenIdClientAdapter;
   readonly #openExternal: (url: string) => Promise<void>;
   readonly #timeoutMs: number;
   readonly #clock: MainClock;
 
+  /**
+   * `fetch` reaches Google's discovery document. Main passes Electron's `net.fetch`, which uses the system proxy:
+   * Node's global `fetch` ignores it, so a Mac whose VPN sets only the system proxy could not reach Google.
+   */
   constructor({
+    fetch: fetchImpl = fetch,
     locale = baseLocale,
+    onFailure,
     oidcAdapter = openIdClientAdapter,
     openExternal,
     timeoutMs = defaultTimeoutMs,
     clock = realMainClock,
   }: {
+    fetch?: typeof fetch;
     locale?: MainLocaleSource;
+    /** Told why a sign-in failed, as one line for the log: error types, messages and codes only. */
+    onFailure?: ((reason: string) => void) | undefined;
     oidcAdapter?: OpenIdClientAdapter | undefined;
     openExternal: (url: string) => Promise<void>;
     timeoutMs?: number | undefined;
     clock?: MainClock;
   }) {
+    this.#fetch = fetchImpl;
     this.#locale = locale;
+    this.#onFailure = onFailure;
     this.#clock = clock;
     this.#oidc = oidcAdapter;
     this.#openExternal = openExternal;
@@ -135,6 +169,7 @@ export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
       });
       const configuration = await waitForOperation(
         this.#oidc.discover(clientId, {
+          fetch: this.#fetch,
           signal: operationSignal,
           timeoutMs,
         }),
@@ -183,9 +218,10 @@ export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
         },
         redirectUri: callback.redirectUri,
       };
-    } catch {
+    } catch (error) {
       callback?.complete(false);
-      throw new Error("Google sign-in could not be completed.");
+      this.#onFailure?.(failureReason(error));
+      throw new Error("Google sign-in could not be completed.", { cause: error });
     } finally {
       if (!completionHandedOff) callback?.close();
     }

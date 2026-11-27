@@ -9,7 +9,7 @@ import { basename, dirname, join } from "node:path";
 import { Cause, Clock, Duration, Effect } from "effect";
 import { killGroup, runBounded, spawnGroup } from "./child.ts";
 import { COMPUTER_USE_HELLO_MESSAGE, COMPUTER_USE_SOCKET_DIRECTORY_NAME } from "./computer-use-paths.ts";
-import { makeWindowsComputerUse } from "./computer-use-windows.ts";
+import { makeWindowsComputerUse, screenshotNotKept } from "./computer-use-windows.ts";
 import { Mutex } from "./locks.ts";
 import { platform } from "../platform/index.ts";
 
@@ -20,8 +20,76 @@ export const COMPUTER_USE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 export const COMPUTER_USE_IMAGE_BUDGET = 128 * 1024 * 1024;
 export const COMPUTER_USE_IMAGE_MAX_COUNT = 128;
 const RESPONSE_LINE_LIMIT = 64 * 1024 * 1024;
+/** Actions whose only effect is the screenshot they return. */
+const CAPTURE_ONLY_ACTIONS = new Set(["screenshot", "get_screenshot", "zoom"]);
+/** Actions that read a window's state and change nothing. */
+const STATE_READ_ACTIONS = new Set(["get_app_state"]);
 
 export type ComputerUseConfig = { computerUseHelperApp: string; computerUseSocketPath: string; computerUseRuntimePath: string; env: Record<string, string | undefined> };
+
+export type ComputerUseDaemonLease = {
+  readonly authToken: () => string;
+  readonly lock: Mutex;
+  readonly shutdownIfLast: (stop: Effect.Effect<void>) => Effect.Effect<void>;
+};
+
+export type ComputerUseDaemons = {
+  acquire: (socketPath: string) => ComputerUseDaemonLease;
+};
+
+/**
+ * Coordinates Computer Use daemon ownership across connectors in one station process that share a socket path (multiple
+ * desktop Workspace instances under the same app runtime): they present one auth token, serialize `ensureDaemon`, and
+ * stop the daemon only when the last connector on that socket closes.
+ */
+export function makeComputerUseDaemons(): ComputerUseDaemons {
+  const entries = new Map<string, { authToken: string; lock: Mutex; holders: Set<symbol> }>();
+  return {
+    acquire(socketPath) {
+      const key = socketPath.trim();
+      if (!key) return singleDaemonLease();
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = { authToken: "", lock: new Mutex(), holders: new Set() };
+        entries.set(key, entry);
+      }
+      const holder = Symbol();
+      entry.holders.add(holder);
+      const shared = entry;
+      return {
+        authToken: () => (shared.authToken ||= randomBytes(32).toString("base64url")),
+        lock: shared.lock,
+        shutdownIfLast: (stop) =>
+          shared.lock.with(
+            Effect.gen(function* () {
+              if (!shared.holders.delete(holder) || shared.holders.size > 0) return;
+              yield* stop;
+              shared.authToken = "";
+              if (shared.holders.size === 0 && entries.get(key) === shared) entries.delete(key);
+            }),
+          ),
+      };
+    },
+  };
+}
+
+function singleDaemonLease(): ComputerUseDaemonLease {
+  let authToken = "";
+  let released = false;
+  const lock = new Mutex();
+  return {
+    authToken: () => (authToken ||= randomBytes(32).toString("base64url")),
+    lock,
+    shutdownIfLast: (stop) =>
+      lock.with(
+        Effect.gen(function* () {
+          if (released) return;
+          released = true;
+          yield* stop;
+        }),
+      ),
+  };
+}
 
 type Permissions = { accessibility: boolean; screenRecording: boolean };
 
@@ -43,7 +111,7 @@ export type DaemonResponse = {
   coordinate?: number[];
 };
 
-type DaemonRequest = { action?: Record<string, unknown>; control?: string; display?: number; thinking?: string; auth_token?: string };
+type DaemonRequest = { action?: Record<string, unknown>; control?: string; display?: number; thinking?: string; session_id?: string; auth_token?: string };
 type Result = Record<string, unknown>;
 
 const darwin = platform.hasComputerUse;
@@ -59,12 +127,14 @@ export function computerUseHelperOpenArgs(helperApp: string, socketPath: string,
   return [...args, "--env", `COMMA_COMPUTER_USE_AUTH_TOKEN=${authToken}`, helperApp];
 }
 
-export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Effect<void>) => void) {
-  let authToken = "";
+export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Effect<void>) => void, daemons?: ComputerUseDaemons) {
   let imagesScheduled = false;
   const images = new Mutex();
+  const lease = daemons ? daemons.acquire(cfg.computerUseSocketPath) : singleDaemonLease();
+  const connectorSessionId = randomBytes(12).toString("base64url");
+  const ownedSessions = new Set<string>();
   const env = Object.fromEntries(Object.entries(cfg.env).filter((e): e is [string, string] => e[1] !== undefined));
-  const token = () => (authToken ||= randomBytes(32).toString("base64url"));
+  const token = lease.authToken;
 
   const available = () => {
     if (!cfg.computerUseHelperApp) return false;
@@ -203,42 +273,59 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
     }
   };
 
-  const ensureDaemon: Effect.Effect<void, Error> = Effect.gen(function* () {
-    if (!darwin) return yield* Effect.fail(new Error("computer_use is only supported on macOS"));
-    if (!cfg.computerUseHelperApp) return yield* Effect.fail(new Error("computer_use helper app is not configured"));
-    if (!available()) return yield* Effect.fail(new Error(`computer_use helper app was not found at ${cfg.computerUseHelperApp}`));
-    if (yield* socketReady) return;
-    yield* Effect.try({ try: () => prepareSocketPath(cfg.computerUseSocketPath), catch: (error) => error as Error });
-    rmSync(cfg.computerUseSocketPath, { force: true });
-    const { command, args } = yield* helperCommand(token());
-    yield* Effect.acquireUseRelease(
-      Effect.sync(() => spawnGroup(command, args, { env, stdout: "ignore", stderr: "ignore" })),
-      ({ exited }) =>
-        exited.pipe(
-          Effect.flatMap((exit) =>
-            exit.error || exit.code !== 0 ? Effect.fail(new Error(`launch computer_use helper: ${exit.error?.message ?? (exit.signal ? `signal: ${exit.signal}` : `exit status ${exit.code}`)}`)) : Effect.void,
-          ),
-        ),
-      ({ child }) => Effect.sync(() => killGroup(child)),
-    );
-    const until = (yield* Clock.currentTimeMillis) + 15_000;
-    while ((yield* Clock.currentTimeMillis) < until) {
+  const ensureDaemon: Effect.Effect<void, Error> = lease.lock.with(
+    Effect.gen(function* () {
+      if (!darwin) return yield* Effect.fail(new Error("computer_use is only supported on macOS"));
+      if (!cfg.computerUseHelperApp) return yield* Effect.fail(new Error("computer_use helper app is not configured"));
+      if (!available()) return yield* Effect.fail(new Error(`computer_use helper app was not found at ${cfg.computerUseHelperApp}`));
       if (yield* socketReady) return;
-      yield* Effect.sleep(Duration.millis(100));
+      yield* Effect.try({ try: () => prepareSocketPath(cfg.computerUseSocketPath), catch: (error) => error as Error });
+      rmSync(cfg.computerUseSocketPath, { force: true });
+      const { command, args } = yield* helperCommand(token());
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => spawnGroup(command, args, { env, stdout: "ignore", stderr: "ignore" })),
+        ({ exited }) =>
+          exited.pipe(
+            Effect.flatMap((exit) =>
+              exit.error || exit.code !== 0 ? Effect.fail(new Error(`launch computer_use helper: ${exit.error?.message ?? (exit.signal ? `signal: ${exit.signal}` : `exit status ${exit.code}`)}`)) : Effect.void,
+            ),
+          ),
+        ({ child }) => Effect.sync(() => killGroup(child)),
+      );
+      const until = (yield* Clock.currentTimeMillis) + 15_000;
+      while ((yield* Clock.currentTimeMillis) < until) {
+        if (yield* socketReady) return;
+        yield* Effect.sleep(Duration.millis(100));
+      }
+      return yield* Effect.fail(new Error("computer_use daemon did not become ready within 15s"));
+    }),
+  );
+
+  const releaseOwnedSessions: Effect.Effect<void> = Effect.gen(function* () {
+    if (windows || !darwin || !cfg.computerUseSocketPath.trim() || ownedSessions.size === 0) return;
+    const toRelease = [...ownedSessions];
+    ownedSessions.clear();
+    if (!(yield* socketReady)) return;
+    for (const sessionId of toRelease) {
+      yield* Effect.exit(send("end", { action: { end: {} }, session_id: sessionId }));
     }
-    return yield* Effect.fail(new Error("computer_use daemon did not become ready within 15s"));
   });
 
   const shutdown: Effect.Effect<void> = Effect.gen(function* () {
-    if (windows) return yield* windows.shutdown;
-    if (!darwin || !cfg.computerUseSocketPath.trim()) return;
-    if (!(yield* socketReady)) {
-      rmSync(cfg.computerUseSocketPath, { force: true });
-      return;
-    }
-    const sent = yield* Effect.exit(send("shutdown", { control: "shutdown" }));
-    if (sent._tag === "Failure") return;
-    rmSync(cfg.computerUseSocketPath, { force: true });
+    yield* releaseOwnedSessions;
+    yield* lease.shutdownIfLast(
+      Effect.gen(function* () {
+        if (windows) return yield* windows.shutdown;
+        if (!darwin || !cfg.computerUseSocketPath.trim()) return;
+        if (!(yield* socketReady)) {
+          rmSync(cfg.computerUseSocketPath, { force: true });
+          return;
+        }
+        const sent = yield* Effect.exit(send("shutdown", { control: "shutdown" }));
+        if (sent._tag === "Failure") return;
+        rmSync(cfg.computerUseSocketPath, { force: true });
+      }),
+    );
   });
 
   // Screenshots.
@@ -394,7 +481,7 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
         }
       }
       try {
-        request = buildDaemonRequest(normalized, params);
+        request = buildDaemonRequest(normalized, params, connectorSessionId);
       } catch (error) {
         return failure((error as Error).message);
       }
@@ -403,12 +490,22 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
       const sent = yield* Effect.exit(send(normalized, request));
       if (sent._tag === "Failure") return failure(errorText(sent.cause));
       const { response, raw, notices } = sent.value;
+      if (response.ok && request.session_id) {
+        if (normalized === "start") ownedSessions.add(request.session_id);
+        else if (normalized === "end" || normalized === "stop") ownedSessions.delete(request.session_id);
+      }
       if (response.ok && response.imageData && response.imageData.length > 0) {
         const stored = yield* Effect.exit(storeImage(response));
-        if (stored._tag === "Failure") return failure(errorText(stored.cause));
         // Background snapshots carry the window's accessibility tree beside its screenshot; the agent needs both from
         // the same call.
         const state = (response.text ?? "").trim();
+        if (stored._tag === "Failure") {
+          // A capture has nothing else to return. Any other action returns its state: an action that already ran must
+          // not read as failed, or the agent would repeat it.
+          if (CAPTURE_ONLY_ACTIONS.has(normalized)) return failure(errorText(stored.cause));
+          const note = screenshotNotKept(errorText(stored.cause), !STATE_READ_ACTIONS.has(normalized));
+          return { ok: true, text: [state, note].filter(Boolean).join("\n\n") };
+        }
         return state ? { ...stored.value, text: state } : stored.value;
       }
       return connectorResponse(normalized, request, response, raw, notices);
@@ -524,13 +621,19 @@ function requiredText(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
-/** Start's mode. Background is the default: it reads the target window's accessibility tree and acts on its elements
- * without taking over the user's screen. Foreground is for apps without usable accessibility. */
-function computerUseMode(args: Record<string, unknown>): "background" | "foreground" {
+/** Start's mode. Background is the only mode: it reads the target window's accessibility tree and acts on its elements
+ * without taking over the user's screen. */
+function computerUseMode(args: Record<string, unknown>): "background" {
   const mode = text(args.mode).trim();
   if (mode === "" || mode === "background") return "background";
-  if (mode === "foreground") return mode;
-  throw new Error(`'mode' must be background or foreground, got ${JSON.stringify(mode)}`);
+  throw new Error(`Computer Use runs in background mode only, got ${JSON.stringify(mode)}`);
+}
+
+/** Start's payload. The optional title names the task in the macOS notch; without one it shows the app being operated. */
+function startPayload(args: Record<string, unknown>): Record<string, unknown> {
+  const apps = Array.isArray(args.apps) ? args.apps.map((a) => text(a).trim()).filter(Boolean) : [];
+  const title = text(args.title).replace(/\s+/g, " ").trim();
+  return { apps, mode: computerUseMode(args), ...(title ? { title } : {}) };
 }
 
 /** The background-mode actions, which act on a snapshot from get_app_state. click, scroll and drag exist in both modes;
@@ -582,9 +685,10 @@ function backgroundPayload(action: string, args: Record<string, unknown>): Recor
   return payload;
 }
 
-function buildDaemonRequest(action: string, params: Record<string, unknown>): DaemonRequest {
+function buildDaemonRequest(action: string, params: Record<string, unknown>, defaultSessionId?: string): DaemonRequest {
   const args = params.args && typeof params.args === "object" && !Array.isArray(params.args) ? (params.args as Record<string, unknown>) : {};
   const request: DaemonRequest = {};
+  const sessionId = text(params.session_id).trim() || (defaultSessionId ?? "").trim();
   for (const source of [args, params]) {
     if (!("display" in source)) continue;
     const display = intValue(source.display);
@@ -604,6 +708,7 @@ function buildDaemonRequest(action: string, params: Record<string, unknown>): Da
   };
   const background = backgroundPayload(action, args);
   if (background) {
+    if (sessionId) request.session_id = sessionId;
     act(action, background);
     return request;
   }
@@ -612,7 +717,7 @@ function buildDaemonRequest(action: string, params: Record<string, unknown>): Da
       request.control = "open-permission-flow";
       break;
     case "start":
-      act("start", { apps: Array.isArray(args.apps) ? args.apps.map((a) => text(a).trim()).filter(Boolean) : [], mode: computerUseMode(args) });
+      act("start", startPayload(args));
       break;
     case "end":
     case "stop":
@@ -692,11 +797,12 @@ function buildDaemonRequest(action: string, params: Record<string, unknown>): Da
     default:
       throw new Error(`unsupported computer_use action ${JSON.stringify(action)}`);
   }
+  if (sessionId && request.action) request.session_id = sessionId;
   return request;
 }
 
 export function computerUseHelp(mode: string): string {
-  return mode === "foreground" ? computerUseForegroundHelp() : computerUseBackgroundHelp();
+  return computerUseBackgroundHelp();
 }
 
 export function computerUseBackgroundHelp(os: "macos" | "windows" = "macos"): string {
@@ -716,7 +822,8 @@ Rules:
 - Decide what success looks like before acting, and confirm it from the returned tree (for a switch or checkbox, its value) rather than from the screenshot alone.
 
 Session:
-- start: args.mode? = "background" (default) or "foreground", args.apps? = [app names]
+- Only one Computer Use session can be active at a time. If start fails because another task is using Computer Use, wait for it to finish instead of calling stop.
+- start: args.apps? = [app names], args.title? = short task name shown in the notch
 - status or permissions-status: inspect permissions and session state
 - open-permission-flow: open CommaComputerUse's guided permission flow
 - end or stop: end the session
@@ -733,40 +840,5 @@ Actions (each takes args.snapshot_id from the latest state and returns the settl
 - scroll: args.element_index, args.direction ("up"|"down"|"left"|"right"), args.pages?
 - perform_secondary_action: args.element_index, args.action (an action name listed on that element)
 - drag: args.from_x, args.from_y, args.to_x, args.to_y
-
-Use foreground mode (start with args.mode="foreground") only when the app exposes no usable accessibility tree, or for drag-and-drop across windows.`;
-}
-
-export function computerUseForegroundHelp(): string {
-  return `ComputerUse foreground mode
-
-Use action names exactly as shown below. Pass action-specific inputs under args, and pass a short top-level thinking string on each step when useful.
-
-Session:
-- start: args.apps? = [app names], args.display? = display number
-- status or permissions-status: inspect permissions, display metadata, and session state
-- open-permission-flow: open CommaComputerUse's guided permission flow
-- end or stop: end the session and restore hidden apps
-- wait: wait while the user is operating the screen
-
-Screen:
-- get_screenshot: capture the current display
-- get_screen_size: return image dimensions
-- get_cursor_position: return cursor coordinates in screenshot image space
-- zoom: args.x1, args.y1, args.x2, args.y2
-
-Mouse and keyboard:
-- left_click/right_click/middle_click/click: args.x, args.y, args.modifier?
-- double_click/triple_click/mouse_move: args.x, args.y
-- left_click_drag: args.from_x, args.from_y, args.to_x, args.to_y
-- left_mouse_down/left_mouse_up: args.x?, args.y?
-- scroll: args.direction, args.x, args.y, args.amount?, args.modifier?
-- key: args.combo
-- type: args.text
-- hold_key: args.key, args.duration
-- wait_action: args.duration
-- focus: args.app, args.window
-- thinking: args.text
-
-Coordinates are screenshot image-space coordinates from get_screenshot/get_screen_size. Screenshot and zoom actions return an image envelope to Salix; the agent receives a temporary device image reference valid for 15 minutes.`;
+`;
 }

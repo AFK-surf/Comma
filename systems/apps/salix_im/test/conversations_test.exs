@@ -1561,6 +1561,32 @@ defmodule SalixIM.ConversationsTest do
     end
   end
 
+  test "reconciles a legacy Bridge chat Router conversation title to Comma", %{
+    group_id: group_id
+  } do
+    assert {:ok, initial} = SalixIM.RouterConversationInput.ensure(group_id)
+    conversation_id = initial["conversation_id"]
+    assert initial["title"] == "Comma"
+
+    assert {:ok, legacy} =
+             ConversationServer.update_group_conversation(group_id, conversation_id, %{
+               "title" => "Bridge chat"
+             })
+
+    assert legacy["title"] == "Bridge chat"
+
+    assert {:ok, projected} =
+             SalixIM.RouterConversationProjection.get_group_router_conversation(group_id)
+
+    assert projected["title"] == "Comma"
+
+    assert {:ok, ensured} = SalixIM.RouterConversationInput.ensure(group_id)
+    assert ensured["title"] == "Comma"
+
+    assert {:ok, persisted} = Conversations.get_group_conversation(group_id, conversation_id)
+    assert persisted["title"] == "Comma"
+  end
+
   test "concurrent Router reassignment cannot deactivate both desired Router participants", %{
     tenant_id: tenant_id,
     group_id: group_id,
@@ -2147,7 +2173,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version, :stopped, nil, _timer, token} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2157,7 +2183,9 @@ defmodule SalixIM.ConversationsTest do
     settle_receive({:captured_agent_delivery, ^worker_id, nudge, _opts})
     assert nudge.content =~ "publish exactly one result Message"
     settle_refute_receive({:captured_agent_delivery, ^router_id, _, _}, 100)
-    assert {:acted, ^version, :stopped, nil, nil, nil} = :sys.get_state(watch, :infinity).stop
+
+    assert {:acted, ^version, :stopped, nil, nil, nil} =
+             watch_stop(watch, {worker_id, session_id})
 
     # A replayed timer for the same stop is ignored.
     SystemsRuntime.Proc.send(
@@ -2169,7 +2197,7 @@ defmodule SalixIM.ConversationsTest do
     # The reminder woke the Worker; it stops again without publishing.
     TaskSessionActivity.set(worker_id, session_id, "active", stopped_at + 500)
     TaskSessionActivity.notify(worker_id, session_id)
-    assert eventually_value(fn -> :sys.get_state(watch, :infinity).stop == nil end)
+    assert eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) == nil end)
 
     stopped_again = stopped_at + 1_000
     version_again = Integer.to_string(stopped_again)
@@ -2177,7 +2205,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version_again, :stopped, nil, _timer, token_again} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2194,7 +2222,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version_third, :stopped, nil, _timer, token_third} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2202,7 +2230,7 @@ defmodule SalixIM.ConversationsTest do
     )
 
     assert eventually_value(fn ->
-             match?({:acted, _, _, _, _, _}, :sys.get_state(watch, :infinity).stop)
+             match?({:acted, _, _, _, _, _}, watch_stop(watch, {worker_id, session_id}))
            end)
 
     settle_refute_receive({:captured_agent_delivery, _, _, _}, 100)
@@ -2234,6 +2262,210 @@ defmodule SalixIM.ConversationsTest do
              Conversations.get_group_conversation(group_id, conversation_id)
   end
 
+  test "TaskWorkerWatch threads task_worker_nudge to the delegation and unwraps Worker replies",
+       %{
+         group_id: group_id,
+         router_id: router_id,
+         worker_id: worker_id
+       } do
+    {conversation_id, session_id, watch} =
+      start_watched_plain_task(group_id, router_id, worker_id, "task-worker-watch-nudge-thread")
+
+    assert {:ok, [opening]} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    delegation_id = opening["message_id"]
+    delegation_root = opening["thread_root_message_id"] || delegation_id
+
+    stopped_at = SystemsClock.system_time(:millisecond)
+    version = Integer.to_string(stopped_at)
+    TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :stopped, nil, _timer, token} =
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version, token}
+    )
+
+    settle_receive({:captured_agent_delivery, ^worker_id, _nudge, nudge_opts})
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    assert [nudge_message] =
+             Enum.filter(
+               messages,
+               &(get_in(&1, ["metadata", "message_type"]) == "task_worker_nudge")
+             )
+
+    assert nudge_message["reply_to_message_id"] == delegation_id
+    assert nudge_message["thread_root_message_id"] == delegation_root
+
+    assert {:ok, %{"participants" => participants}} =
+             Conversations.list_group_conversation_participants(group_id, conversation_id)
+
+    worker_pid = Enum.find(participants, &(&1["agent_id"] == worker_id))["participant_id"]
+
+    {:ok, nudge_source_id} =
+      SalixIM.ConversationSourceIdentity.encode(
+        conversation_id,
+        nudge_message["message_id"],
+        worker_pid
+      )
+
+    assert nudge_opts[:source_message_id] == nudge_source_id
+
+    # Real production Worker reply path via im_api.internal.send_message:
+    # without reply_to_message_id, Provider.Internal derives the default reply
+    # target from tool_context["source_message_id"] (the nudge), and
+    # ConversationActor unwraps it onto the original delegation message.
+    assert {:ok, %{"message_id" => default_reply_id}} =
+             SalixIM.Provider.call_api(worker_id, "internal", "internal.send_message", %{
+               "connect_id" => "internal",
+               "params" => %{
+                 "conversation_id" => conversation_id,
+                 "request_id" => "worker-reply-default-nudge",
+                 "content" => [%{"type" => "text", "text" => "Result via default reply target."}]
+               },
+               "tool_context" => %{
+                 "session_id" => session_id,
+                 "source_message_id" => nudge_source_id
+               }
+             })
+
+    assert {:ok, default_reply} =
+             Conversations.get_group_conversation_message(
+               group_id,
+               conversation_id,
+               default_reply_id
+             )
+
+    assert default_reply["reply_to_message_id"] == delegation_id
+    assert default_reply["thread_root_message_id"] == delegation_root
+
+    # Explicit reply_to_message_id targeting the nudge also unwraps onto the delegation.
+    assert {:ok, %{"message_id" => explicit_reply_id}} =
+             SalixIM.Provider.call_api(worker_id, "internal", "internal.send_message", %{
+               "connect_id" => "internal",
+               "params" => %{
+                 "conversation_id" => conversation_id,
+                 "request_id" => "worker-reply-explicit-nudge",
+                 "reply_to_message_id" => nudge_message["message_id"],
+                 "content" => [%{"type" => "text", "text" => "Result via explicit nudge target."}]
+               },
+               "tool_context" => %{
+                 "session_id" => session_id,
+                 "source_message_id" => nudge_source_id
+               }
+             })
+
+    assert {:ok, explicit_reply} =
+             Conversations.get_group_conversation_message(
+               group_id,
+               conversation_id,
+               explicit_reply_id
+             )
+
+    assert explicit_reply["reply_to_message_id"] == delegation_id
+    assert explicit_reply["thread_root_message_id"] == delegation_root
+  end
+
+  test "TaskWorkerWatch ignores context_only messages in a Collaborative Task", %{
+    group_id: group_id,
+    router_id: router_id,
+    worker_id: worker_id
+  } do
+    {conversation_id, session_id, watch} =
+      start_watched_plain_task(
+        group_id,
+        router_id,
+        worker_id,
+        "task-worker-watch-collab-context",
+        true,
+        %{
+          "owner_user_id" => "current",
+          "conversation_metadata" => %{"collaboration" => %{"host_user_id" => "current"}},
+          "initial_message_attrs" => %{
+            "kind" => "message",
+            "actor_type" => "user",
+            "user_id" => "current",
+            "content" => "Summarize the thread and report back.",
+            "metadata" => %{"message_type" => "task_command"},
+            "client_request_id" => "task-worker-watch-collab-opening",
+            "created_at" => SystemsClock.system_time(:millisecond)
+          }
+        }
+      )
+
+    # Worker answers the opening delegation.
+    assert {:ok, _reply} =
+             append_task_result_message(
+               group_id,
+               conversation_id,
+               worker_id,
+               "task-worker-watch-collab-reply",
+               "Initial answer."
+             )
+
+    # Members post passive context without mentioning the Worker.
+    assert {:ok, %{"message_id" => ctx_msg_id}} =
+             ConversationServer.append_group_conversation_message(
+               group_id,
+               conversation_id,
+               %{
+                 "kind" => "message",
+                 "content" => "just chatting without mentioning worker",
+                 "client_request_id" => "task-worker-watch-collab-ctx-1"
+               }
+             )
+
+    assert {:ok, ctx_msg} =
+             Conversations.get_group_conversation_message(group_id, conversation_id, ctx_msg_id)
+
+    assert get_in(ctx_msg, ["metadata", "context_only"]) == true
+
+    # Passive context still reaches the Worker with no_wake: true; drain it before
+    # checking that stopping the Worker does not trigger a nudge.
+    settle_receive({:captured_agent_delivery, ^worker_id, _ctx_delivery, ctx_opts})
+    assert ctx_opts[:no_wake] == true
+
+    stopped_at = SystemsClock.system_time(:millisecond)
+    version = Integer.to_string(stopped_at)
+    TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :stopped, nil, _timer, token} =
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version, token}
+    )
+
+    assert eventually_value(fn ->
+             match?(
+               {:acted, ^version, :stopped, nil, nil, nil},
+               watch_stop(watch, {worker_id, session_id})
+             )
+           end)
+
+    settle_refute_receive({:captured_agent_delivery, ^worker_id, _, _}, 100)
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 20)
+
+    refute Enum.any?(
+             messages,
+             &(get_in(&1, ["metadata", "message_type"]) in [
+                 "task_worker_nudge",
+                 "task_worker_stopped"
+               ])
+           )
+  end
+
   test "TaskWorkerWatch reminds a Worker that recorded only milestones before it stopped", %{
     group_id: group_id,
     router_id: router_id,
@@ -2258,7 +2490,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version, :stopped, nil, _timer, token} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2295,7 +2527,7 @@ defmodule SalixIM.ConversationsTest do
       TaskSessionActivity.notify(worker_id, session_id)
 
       assert {:scheduled, ^version, :stopped, nil, _timer, token} =
-               eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+               eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
       SystemsRuntime.Proc.send(
         watch,
@@ -2303,7 +2535,7 @@ defmodule SalixIM.ConversationsTest do
       )
 
       assert eventually_value(fn ->
-               match?({:acted, ^version, _, _, _, _}, :sys.get_state(watch, :infinity).stop)
+               match?({:acted, ^version, _, _, _, _}, watch_stop(watch, {worker_id, session_id}))
              end)
     end
 
@@ -2339,6 +2571,122 @@ defmodule SalixIM.ConversationsTest do
     stop.(SystemsClock.system_time(:millisecond) + 1_000)
     settle_receive({:captured_agent_delivery, ^worker_id, nudge, _opts})
     assert nudge.content =~ "publish exactly one result Message"
+  end
+
+  @tag :desktop_meeting
+  test "desktop meeting Task preserves session_model on scan-only seq=1 and reveals title, task_kind, and recording excerpt to delegator",
+       %{
+         group_id: group_id,
+         router_id: router_id,
+         worker_id: worker_id
+       } do
+    default_model = %{"kind" => "platform", "tier" => "worker"}
+
+    assert {:ok, _group} =
+             CasRecord.update(Keys.ctl_group(group_id), fn group ->
+               Map.put(group, "default_task_model", default_model)
+             end)
+
+    assert {:ok, %{"conversation_id" => id}} =
+             SalixIM.DesktopMeetingInput.ensure(group_id, router_id, worker_id, "owner-user-1", %{
+               "occurrence_id" => "meeting-scan-and-callback-context",
+               "name" => "Meeting · Nov 24, 10:59 AM",
+               "started_at" => 1_000,
+               "archive_date" => "2026-11-24"
+             })
+
+    assert {:ok, participants} =
+             SalixIM.ConversationParticipantProjection.list_bounded(group_id, id)
+
+    worker_part = Enum.find(participants, &(&1["agent_id"] == worker_id))
+    router_part = Enum.find(participants, &(&1["agent_id"] == router_id))
+    assert worker_part["payload"]["session_model"] == default_model
+
+    # Worker scanning context-only seq=1 produces conversation_scan_only with birth model intact.
+    {:ok, worker_binding} =
+      SalixIM.ConversationSource.binding(worker_id, %{
+        group_id: group_id,
+        conversation_id: id,
+        participant_id: worker_part["participant_id"]
+      })
+
+    assert {:ok, [seq1]} = Conversations.list_group_conversation_messages(group_id, id, limit: 10)
+    assert {:ok, scan_entry} = SalixIM.ConversationSource.entry(worker_binding, seq1)
+    assert scan_entry.conversation_scan_only == true
+    assert scan_entry.payload.model == default_model
+    assert scan_entry.payload.name == "Meeting · Nov 24, 10:59 AM"
+
+    # Finalize appends the meeting recording addressed only to the Worker.
+    assert {:ok, %{"status" => "active"}} =
+             ConversationServer.desktop_meeting(
+               group_id,
+               id,
+               "owner-user-1",
+               %{
+                 "action" => "finalize",
+                 "version" => 1,
+                 "smart_summary" => true,
+                 "recording" => %{"recording_id" => "ctx-audio-1"}
+               },
+               %{
+                 "actor_type" => "user",
+                 "user_id" => "owner-user-1",
+                 "content" => "Process this saved meeting recording in THIS Task.",
+                 "client_request_id" => "meeting-audio:ctx-audio-1"
+               }
+             )
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, id, limit: 10)
+
+    recording_msg = Enum.find(messages, &(&1["seq"] == 2))
+
+    assert recording_msg["delivery_filter"] == %{
+             "participant_ids" => [worker_part["participant_id"]]
+           }
+
+    # Worker replies (e.g. model_unavailable report) targeting the recording message.
+    assert {:ok, appended} =
+             ConversationServer.append_group_conversation_agent_message(
+               group_id,
+               id,
+               worker_id,
+               %{
+                 "content" => "I stopped without a result: this Task cannot run.",
+                 "reply_to_message_id" => recording_msg["message_id"]
+               }
+             )
+
+    assert {:ok, reply_msg} =
+             Conversations.get_group_conversation_message(group_id, id, appended["message_id"])
+
+    {:ok, router_binding} =
+      SalixIM.ConversationSource.binding(router_id, %{
+        group_id: group_id,
+        conversation_id: id,
+        participant_id: router_part["participant_id"]
+      })
+
+    assert {:ok, router_entry} = SalixIM.ConversationSource.entry(router_binding, reply_msg)
+    assert [%{content: source_context}] = router_entry.payload.pre_deliveries
+    assert source_context =~ ~s(- conversation_title: "Meeting · Nov 24, 10:59 AM")
+    assert source_context =~ "- task_kind: desktop_meeting"
+    assert source_context =~ "Process this saved meeting recording in THIS Task."
+    refute source_context =~ "excerpt: withheld"
+
+    # A reply authored by someone outside the target's delivery_filter remains withheld.
+    other_sender_context =
+      SalixIM.ReplyTargetContext.content(%{
+        "agent_group_id" => group_id,
+        "conversation_id" => id,
+        "conversation_kind" => "agent_task",
+        "participant_id" => router_part["participant_id"],
+        "participant_role_label" => "delegator",
+        "source_participant_id" => "ptp1_other_sender",
+        "reply_to_message_id" => recording_msg["message_id"]
+      })
+
+    assert other_sender_context =~ "excerpt: withheld"
   end
 
   test "TaskWorkerWatch tells the Router once when it settles after a Worker result without deciding the status",
@@ -2405,14 +2753,15 @@ defmodule SalixIM.ConversationsTest do
 
     # A restarted watch finds the notice in the Task and does not review the
     # same result again.
-    %{session_ref: {^worker_id, worker_session_id}} = :sys.get_state(watch, :infinity)
+    worker_session_id = watch_worker_session_id(watch, worker_id)
+    assert is_binary(worker_session_id)
     :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
     assert {:ok, owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
     assert {:ok, restarted} = SalixIM.ConversationActor.task_worker_watch(owner)
     refute restarted == watch
 
     assert {:scheduled, worker_version, :stopped, nil, _timer, worker_token} =
-             eventually_value(fn -> :sys.get_state(restarted, :infinity).stop end)
+             eventually_value(fn -> watch_stop(restarted, {worker_id, worker_session_id}) end)
 
     SystemsRuntime.Proc.send(
       restarted,
@@ -2422,7 +2771,7 @@ defmodule SalixIM.ConversationsTest do
     assert eventually_value(fn ->
              match?(
                {:acted, ^worker_version, _, _, _, _},
-               :sys.get_state(restarted, :infinity).stop
+               watch_stop(restarted, {worker_id, worker_session_id})
              )
            end)
 
@@ -2468,14 +2817,15 @@ defmodule SalixIM.ConversationsTest do
        %{"status" => "paused", "paused_by" => "budget", "trigger" => %{"every_minutes" => 60}}}
     )
 
-    %{session_ref: {^worker_id, session_id}} = :sys.get_state(watch, :infinity)
+    session_id = watch_worker_session_id(watch, worker_id)
+    assert is_binary(session_id)
     stopped_at = SystemsClock.system_time(:millisecond) + 5_000
     version = Integer.to_string(stopped_at)
     TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version, :stopped, nil, _timer, token} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2522,14 +2872,15 @@ defmodule SalixIM.ConversationsTest do
              )
 
     settle_receive({:captured_agent_delivery, ^worker_id, _note, _opts})
-    %{session_ref: {^worker_id, session_id}} = :sys.get_state(watch, :infinity)
+    session_id = watch_worker_session_id(watch, worker_id)
+    assert is_binary(session_id)
     stopped_at = SystemsClock.system_time(:millisecond) + 5_000
     version = Integer.to_string(stopped_at)
     TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version, :stopped, nil, _timer, token} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2537,7 +2888,7 @@ defmodule SalixIM.ConversationsTest do
     )
 
     assert eventually_value(fn ->
-             match?({:acted, ^version, _, _, _, _}, :sys.get_state(watch, :infinity).stop)
+             match?({:acted, ^version, _, _, _, _}, watch_stop(watch, {worker_id, session_id}))
            end)
 
     settle_refute_receive({:captured_agent_delivery, _, _, _}, 100)
@@ -2563,7 +2914,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version_again, :stopped, nil, _timer, token_again} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2598,7 +2949,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version, :error, "insufficient_credits", _timer, token} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -2627,6 +2978,160 @@ defmodule SalixIM.ConversationsTest do
 
     assert get_in(notice_message, ["metadata", "task_worker_watch", "issue"]) ==
              "insufficient_credits"
+  end
+
+  test "TaskWorkerWatch keeps a running Loop Task active on billing blocks and notes ended Loops on status_pending",
+       %{
+         group_id: group_id,
+         router_id: router_id,
+         worker_id: worker_id
+       } do
+    SalixIM.TestSupport.TaskLoops.install(
+      {:all,
+       %{
+         "status" => "active",
+         "trigger" => %{"cron" => "0 8 * * *", "timezone" => "Asia/Singapore"}
+       }}
+    )
+
+    {conversation_id, session_id, watch} =
+      start_watched_plain_task(group_id, router_id, worker_id, "loop-task-watch-billing")
+
+    failed_at = SystemsClock.system_time(:millisecond)
+    version = Integer.to_string(failed_at)
+
+    TaskSessionActivity.set(
+      worker_id,
+      session_id,
+      "error",
+      failed_at,
+      "insufficient_credits",
+      nil,
+      "error: not enough credits"
+    )
+
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :error, "insufficient_credits", _timer, token} =
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version, token}
+    )
+
+    settle_receive({:captured_agent_delivery, ^router_id, notice, _opts})
+
+    assert notice.content =~ "insufficient_credits"
+    assert notice.content =~ "stays scheduled"
+    refute notice.content =~ "use im_api.internal.update_conversation to mark it failed."
+
+    # Once the Loop has ended, a later Worker result triggers status_pending
+    # stating that the Loop ended and pointing to task.update to restore automation.
+    SalixIM.TestSupport.TaskLoops.put_views(
+      {:all,
+       %{
+         "status" => "ended",
+         "ended_reason" => "failed",
+         "trigger" => %{"cron" => "0 8 * * *", "timezone" => "Asia/Singapore"}
+       }}
+    )
+
+    assert {:ok, %{"message_id" => _}} =
+             ConversationServer.append_group_conversation_agent_message(
+               group_id,
+               conversation_id,
+               worker_id,
+               %{"content" => "Retry report delivered.", "client_request_id" => "loop-retry-res"}
+             )
+
+    settle_receive({:captured_agent_delivery, ^router_id, _result, _opts})
+    stopped_at = failed_at + 5_000
+    w_version = Integer.to_string(stopped_at)
+    TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^w_version, :stopped, nil, _timer, w_token} =
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, w_version, w_token}
+    )
+
+    assert %{phase: :waiting} =
+             eventually_value(fn -> :sys.get_state(watch, :infinity).review end)
+
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(group_id, conversation_id)
+
+    router_session_id =
+      Enum.find(participants, &(&1["agent_id"] == router_id))["payload"]["session_id"]
+
+    r_stopped = stopped_at + 2_000
+    r_version = Integer.to_string(r_stopped)
+    TaskSessionActivity.set(router_id, router_session_id, "stopped", r_stopped)
+    TaskSessionActivity.notify(router_id, router_session_id)
+
+    assert %{phase: {:scheduled, ^r_version, _timer, r_token}} =
+             eventually_value(fn -> :sys.get_state(watch, :infinity).review end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_status_pending_timeout, {router_id, router_session_id}, r_version, r_token}
+    )
+
+    settle_receive({:captured_agent_delivery, ^router_id, status_notice, _opts})
+    assert status_notice.content =~ "ended (failed)"
+    assert status_notice.content =~ "im_api.internal.task.update"
+  end
+
+  test "TaskWorkerWatch warns that a pending Loop was never created when billing blocks setup",
+       %{
+         group_id: group_id,
+         router_id: router_id,
+         worker_id: worker_id
+       } do
+    SalixIM.TestSupport.TaskLoops.install(
+      {:all,
+       %{
+         "status" => "pending",
+         "trigger" => %{"cron" => "0 8 * * *", "timezone" => "Asia/Singapore"}
+       }}
+    )
+
+    {_conversation_id, session_id, watch} =
+      start_watched_plain_task(group_id, router_id, worker_id, "pending-loop-watch-billing")
+
+    failed_at = SystemsClock.system_time(:millisecond)
+    version = Integer.to_string(failed_at)
+
+    TaskSessionActivity.set(
+      worker_id,
+      session_id,
+      "error",
+      failed_at,
+      "insufficient_credits",
+      nil,
+      "error: not enough credits"
+    )
+
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :error, "insufficient_credits", _timer, token} =
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version, token}
+    )
+
+    settle_receive({:captured_agent_delivery, ^router_id, notice, _opts})
+
+    assert notice.content =~ "insufficient_credits"
+    assert notice.content =~ "still pending (never created)"
+    assert notice.content =~ "im_api.internal.send_message"
+    refute notice.content =~ "stays scheduled"
   end
 
   @tag :task_archive
@@ -2743,6 +3248,114 @@ defmodule SalixIM.ConversationsTest do
 
     assert restored["status"] == "ready_for_review"
     refute Map.has_key?(restored, "archived_from_status")
+  end
+
+  test "Conversation owner rejects non-canonical Task statuses without mutating status or version",
+       %{
+         group_id: group_id,
+         router_id: router_id,
+         worker_id: worker_id
+       } do
+    assert {:ok, %{"conversation_id" => id}} =
+             create_task_conversation(group_id, router_id, worker_id, %{
+               "title" => "Status guard",
+               "content" => "work",
+               "client_request_id" => "status-guard"
+             })
+
+    assert {:ok, completed} =
+             ConversationServer.update_group_conversation(group_id, id, %{
+               "status" => "completed"
+             })
+
+    for bad <- ["archive", "done", "closed"] do
+      assert {:error, {:bad_request, message}} =
+               ConversationServer.update_group_conversation(group_id, id, %{"status" => bad})
+
+      assert message =~ "im_api.internal.task.archive"
+    end
+
+    assert {:error, {:conflict, conflict_msg}} =
+             ConversationServer.update_group_conversation(group_id, id, %{"status" => "archived"})
+
+    assert conflict_msg =~ "im_api.internal.task.archive"
+
+    assert {:ok, unchanged} = Conversations.get_group_conversation(group_id, id)
+    assert unchanged["status"] == "completed"
+    assert unchanged["updated_at"] == completed["updated_at"]
+  end
+
+  test "list_group_conversations pushes archive and status filters into SQL pagination", %{
+    group_id: group_id,
+    router_id: router_id,
+    worker_id: worker_id
+  } do
+    create_task = fn key, status ->
+      assert {:ok, %{"conversation_id" => id}} =
+               create_task_conversation(group_id, router_id, worker_id, %{
+                 "title" => "Filter #{key}",
+                 "content" => "work",
+                 "client_request_id" => "list-filter-#{key}"
+               })
+
+      if status != "active" do
+        assert {:ok, updated} =
+                 ConversationServer.update_group_conversation(group_id, id, %{
+                   "status" => status
+                 })
+
+        {id, updated}
+      else
+        {:ok, current} = Conversations.get_group_conversation(group_id, id)
+        {id, current}
+      end
+    end
+
+    {archived_id, archived_before} = create_task.("archived", "completed")
+    SystemsClock.sleep(2)
+    {completed_id, _} = create_task.("completed", "completed")
+    SystemsClock.sleep(2)
+    {active_id, _} = create_task.("active", "active")
+
+    assert {:ok, _} =
+             ConversationServer.set_task_archived(
+               group_id,
+               archived_id,
+               :archive,
+               archived_before["updated_at"]
+             )
+
+    assert {:ok, %{"data" => excluded}} =
+             Conversations.list_group_conversations(group_id,
+               kind: "agent_task",
+               archive: "exclude",
+               limit: 10
+             )
+
+    excluded_ids = Enum.map(excluded, & &1["conversation_id"])
+    assert completed_id in excluded_ids
+    assert active_id in excluded_ids
+    refute archived_id in excluded_ids
+
+    assert {:ok, %{"data" => [%{"conversation_id" => ^archived_id}], "has_more" => false}} =
+             Conversations.list_group_conversations(group_id,
+               kind: "agent_task",
+               archive: "only",
+               limit: 1
+             )
+
+    assert {:ok, %{"data" => [%{"conversation_id" => ^completed_id}], "has_more" => false}} =
+             Conversations.list_group_conversations(group_id,
+               kind: "agent_task",
+               status: "completed",
+               limit: 10
+             )
+
+    assert {:error, {:bad_request, "invalid archive filter"}} =
+             Conversations.list_group_conversations(group_id, archive: "bogus")
+
+    assert {:error, {:bad_request, "invalid status filter"}} =
+             Conversations.list_group_conversations(group_id, status: "archive")
   end
 
   test "a user ends a Task by hand, its Agents are told once, and only a human turn reopens it",
@@ -4034,7 +4647,7 @@ defmodule SalixIM.ConversationsTest do
     TaskSessionActivity.notify(worker_id, session_id)
 
     assert {:scheduled, ^version, :stopped, nil, _timer, token} =
-             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+             eventually_value(fn -> watch_stop(watch, {worker_id, session_id}) end)
 
     SystemsRuntime.Proc.send(
       watch,
@@ -4042,10 +4655,26 @@ defmodule SalixIM.ConversationsTest do
     )
 
     assert eventually_value(fn ->
-             match?({:acted, ^version, _, _, _, _}, :sys.get_state(watch, :infinity).stop)
+             match?({:acted, ^version, _, _, _, _}, watch_stop(watch, {worker_id, session_id}))
            end)
 
     {conversation_id, watch, router_session_id}
+  end
+
+  defp watch_stop(watch, key) do
+    case :sys.get_state(watch, :infinity).workers do
+      %{^key => %{stop: stop}} -> stop
+      _ -> nil
+    end
+  end
+
+  defp watch_worker_session_id(watch, worker_id) do
+    :sys.get_state(watch, :infinity).workers
+    |> Map.keys()
+    |> Enum.find_value(fn
+      {^worker_id, session_id} -> session_id
+      _ -> nil
+    end)
   end
 
   defp create_task_conversation(group_id, delegator_agent_id, worker_agent_id, attrs) do
@@ -4066,7 +4695,7 @@ defmodule SalixIM.ConversationsTest do
         worker_agent_id,
         attrs
         |> Map.put("schedule", %{"schedule_id" => nil, "command" => command})
-        |> Map.put("initial_message_attrs", %{
+        |> Map.put_new("initial_message_attrs", %{
           "kind" => "message",
           "actor_type" => "agent",
           "agent_id" => delegator_agent_id,

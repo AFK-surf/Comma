@@ -76,15 +76,20 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     "slack" => {"Slack", "https://api.slack.com/apps"},
     "x" => {"X", "https://console.x.com"}
   }
-  @oauth_app_name "Comma Bridge for Teams"
+  @oauth_app_name "Comma for Teams"
   @linear_oauth_app_create_url "https://linear.app/settings/api/applications/new"
   @slack_app_create_url "https://api.slack.com/apps"
+  alias BridgeForTeams.M2square.QuoteToken
+
   @github_app_create_url "https://github.com/settings/apps/new"
 
   # ---- General ----
 
   @doc "The General page: the org profile and the caller's BFT CLI access."
-  def general(org, user) do
+  def general(org, user, opts \\ []) do
+    maybe_check_m2square_return(org, opts[:m2_order])
+    {billing, billing_policy} = teams_billing_and_policy(org, opts)
+
     %{
       "organization" => %{
         "name" => org.name,
@@ -94,9 +99,130 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
       },
       "locale_options" =>
         Enum.map(I18n.options(), fn {label, value} -> %{"value" => value, "label" => label} end),
-      "cli" => cli(user)
+      "cli" => cli(user),
+      "billing" => billing,
+      "billing_policy" => billing_policy
     }
   end
+
+  defp maybe_check_m2square_return(org, m2_order) when is_binary(m2_order) do
+    case BridgeForTeams.M2square.Orders.parse_webhook_order_id(m2_order) do
+      {:base, base_id} ->
+        BridgeForTeams.PaidSignup.check_m2square_org_order(org, base_id)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_check_m2square_return(_org, _m2_order), do: :ok
+
+  defp teams_billing_and_policy(org, opts) do
+    now = SystemsClock.utc_now()
+
+    case BillingCore.TeamsAccess.coverage(org.billing_account_id, now) do
+      {:ok, %{managed: false}} ->
+        {nil,
+         %{
+           "mode" => "unmanaged",
+           "member_count" => BridgeForTeams.Memberships.count_org_members(org.id)
+         }}
+
+      {:ok, cov} ->
+        has_stripe_customer =
+          match?(
+            {:ok, _},
+            BillingCommerce.get_active_provider_customer(%{
+              billing_account_id: org.billing_account_id,
+              provider: "stripe"
+            })
+          )
+
+        member_count = BridgeForTeams.Memberships.count_org_members(org.id)
+
+        expiring_soon =
+          cov.active == true and cov.provider == "m2square" and not cov.has_future_paid_cycle and
+            cov.current_period_end != nil and
+            DateTime.diff(cov.current_period_end, now, :second) <= 14 * 86_400
+
+        eligible_stripe = not cov.active and not cov.has_active_stripe_subscription
+
+        min_m2_seats =
+          if cov.active do
+            max(30, max(member_count, cov.licensed_seats))
+          else
+            max(30, member_count)
+          end
+
+        eligible_m2_org =
+          (not cov.active or (cov.provider == "m2square" and not cov.has_future_paid_cycle)) and
+            not cov.has_active_stripe_subscription
+
+        {window_countries, quote} =
+          billing_payment_window(
+            org.id,
+            eligible_stripe,
+            eligible_m2_org,
+            member_count,
+            min_m2_seats,
+            opts
+          )
+
+        valid_quote? =
+          match?(
+            %{token: token, ttl_seconds: ttl}
+            when is_binary(token) and token != "" and is_integer(ttl) and ttl > 0,
+            quote
+          )
+
+        m2square_countries = if valid_quote?, do: window_countries, else: []
+        can_renew_stripe = valid_quote? and eligible_stripe
+        can_renew_m2square = valid_quote? and eligible_m2_org and m2square_countries != []
+
+        billing =
+          %{
+            "active" => cov.active,
+            "licensed_seats" => cov.licensed_seats,
+            "available" => true,
+            "provider" => cov.provider,
+            "has_stripe_customer" => has_stripe_customer,
+            "expires_at" => cov.expires_at && DateTime.to_iso8601(cov.expires_at),
+            "next_period_end" => cov.next_period_end && DateTime.to_iso8601(cov.next_period_end),
+            "expiring_soon" => expiring_soon,
+            "can_renew_stripe" => can_renew_stripe,
+            "can_renew_m2square" => can_renew_m2square,
+            "member_count" => member_count,
+            "detected_country" => opts[:detected_country],
+            "m2square_countries" => m2square_countries
+          }
+          |> maybe_add_payment_quote(quote, can_renew_stripe or can_renew_m2square)
+
+        {billing, %{"mode" => "managed"}}
+
+      {:error, _} ->
+        {%{"active" => false, "licensed_seats" => 0, "available" => false},
+         %{"mode" => "managed"}}
+    end
+  end
+
+  defp billing_payment_window(org_id, stripe?, local?, member_count, min_m2_seats, opts) do
+    if Keyword.get(opts, :mint_quote, true) and (stripe? or local?) do
+      case QuoteToken.prepare_payment_window("renew:" <> org_id, max(100, member_count),
+             min_m2_seats: min_m2_seats
+           ) do
+        {:ok, window} -> {window.countries, window}
+        {:error, _} -> {[], nil}
+      end
+    else
+      {[], nil}
+    end
+  end
+
+  defp maybe_add_payment_quote(billing, %{token: token, ttl_seconds: ttl}, true) when ttl > 0 do
+    Map.merge(billing, %{"quote_token" => token, "quote_ttl_seconds" => ttl})
+  end
+
+  defp maybe_add_payment_quote(billing, _quote, _can_renew), do: billing
 
   @doc "Update the org profile. Only the profile fields are written."
   def update_general(org, user, params) do
@@ -104,7 +230,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
 
     case Orgs.update_org(org, attrs, audit_opts(user)) do
       {:ok, org} ->
-        {:ok, general(org, user)}
+        {:ok, general(org, user, mint_quote: false)}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:error, 422, "invalid_organization", gettext("Couldn't update organization."),
@@ -185,10 +311,15 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   holds allowed and default choices that the catalog does not name, and the
   models a custom endpoint lists. `servable_status` is `"unavailable"` when
   what serves each model could not be read.
-  """
-  def models(org), do: models(org, Models.catalog())
 
-  defp models(org, catalog_result) do
+  `platform_router` is the org's platform Router (`%{"model", "label"}`,
+  `BridgeForTeams.Models.platform_router/1`) or nil. While it is set, every
+  new Router takes it, so the default Router model has no effect and a save
+  leaves it unchanged.
+  """
+  def models(org), do: models(org, Models.catalog(), Models.platform_router(org))
+
+  defp models(org, catalog_result, platform_router) do
     {servable_status, served} =
       case Models.servable(org) do
         {:ok, served} -> {"ok", served}
@@ -225,7 +356,8 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
       "platform_defaults" => %{
         "router" => platform["router"],
         "task" => platform["worker"]
-      }
+      },
+      "platform_router" => platform_router
     }
   end
 
@@ -303,15 +435,26 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   (`BridgeForTeams.Models`). An absent field keeps its current value; `[]`
   allows every model and `null` follows the platform model. Salix checks each
   choice; an allowed choice that Salix refuses (for example a retired model)
-  is dropped, so a list of only retired models allows every model.
+  is dropped, so a list of only retired models allows every model. While
+  the org has a platform Router, `default_router_model` is ignored and keeps
+  its stored value.
   """
   def update_models(org, user, params) do
     catalog_result = Models.catalog()
+    platform_router = Models.platform_router(org)
+    params = if platform_router, do: Map.delete(params, "default_router_model"), else: params
 
     with {:ok, allowed} <- allowed_models(params, org, catalog_result),
          {:ok, router} <- default_model(params, org, "router", catalog_result),
          {:ok, task} <- default_model(params, org, "task", catalog_result),
-         :ok <- ensure_defaults_allowed(org, user, allowed, router, task) do
+         :ok <-
+           ensure_defaults_allowed(
+             org,
+             user,
+             allowed,
+             if(platform_router, do: nil, else: router),
+             task
+           ) do
       attrs = %{
         "allowed_models" => allowed,
         "default_router_model" => router,
@@ -320,7 +463,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
 
       case Orgs.update_org(org, attrs, audit_opts(user)) do
         {:ok, org} ->
-          {:ok, models(org, catalog_result)}
+          {:ok, models(org, catalog_result, platform_router)}
 
         {:error, %Ecto.Changeset{} = changeset} ->
           {:error, 422, "invalid_model_settings", gettext("Couldn't save the model settings."),
@@ -912,13 +1055,6 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
          "Could not enable the Feishu bot. Enter the App Secret, or first enable SSO for this same Feishu App ID so the bot can reuse that secret."
        ), %{}}
 
-  defp feishu_app_error(:bot_app_already_enabled),
-    do:
-      {:error, 409, "feishu_bot_app_already_enabled",
-       gettext(
-         "Only one Feishu app can be enabled for the group bot right now. Disable the existing bot app before enabling another."
-       ), %{}}
-
   defp feishu_app_error(:app_id_immutable),
     do:
       {:error, 422, "feishu_app_id_immutable",
@@ -984,7 +1120,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     query =
       URI.encode_query(%{
         "developer.name" => "Comma",
-        "display.description" => "Connect Linear to Comma Bridge for Teams agents.",
+        "display.description" => "Connect Linear to Comma for Teams agents.",
         "distribution" => "private",
         "oauth.client_name" => @oauth_app_name,
         "oauth.client_uri" => MacMiniRelease.api_base_url(),
@@ -999,7 +1135,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     manifest = %{
       "display_information" => %{
         "background_color" => "#1D1C1D",
-        "description" => "Connect Slack to Comma Bridge for Teams.",
+        "description" => "Connect Slack to Comma for Teams.",
         "name" => @oauth_app_name
       },
       "oauth_config" => %{
@@ -1021,7 +1157,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     query =
       URI.encode_query([
         {"name", @oauth_app_name},
-        {"description", "Connect OAuth providers to Comma Bridge for Teams agents."},
+        {"description", "Connect OAuth providers to Comma for Teams agents."},
         {"url", MacMiniRelease.api_base_url()},
         {"callback_urls[]", salix_oauth_callback_url("github")},
         {"request_oauth_on_install", "true"},

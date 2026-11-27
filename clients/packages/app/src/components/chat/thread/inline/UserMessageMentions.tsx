@@ -2,6 +2,7 @@ import { useTopic } from "@comma/core-client";
 import {
   modelMentionMatches,
   requestMentionMatches,
+  shareMentionMatches,
   slackMentionLabel,
   slackMentionMatches,
 } from "@comma/core/chat";
@@ -23,6 +24,7 @@ export function hasUserMessageMentionCandidates(text: string) {
     !skillMentionMatches(text).next().done ||
     !modelMentionMatches(text).next().done ||
     !requestMentionMatches(text).next().done ||
+    !shareMentionMatches(text).next().done ||
     !slackMentionMatches(text).next().done
   );
 }
@@ -60,6 +62,20 @@ export function userMessageMentionNodes(
           key={key}
           live={context.live}
           name={mention.name}
+          workspaceId={context.workspaceId}
+        />
+      ),
+    });
+  for (const mention of shareMentionMatches(text))
+    found.push({
+      start: mention.start,
+      end: mention.end,
+      node: (key) => (
+        <ShareMention
+          key={key}
+          live={context.live}
+          name={mention.name}
+          userId={mention.userId}
           workspaceId={context.workspaceId}
         />
       ),
@@ -144,6 +160,37 @@ function SkillMention({
 }
 
 /** A person the message asked for a Task, by name and avatar: the avatar of a person the reader may still ask. */
+/** One of the account's People named for a shared task: their face, as People shows it, and name. */
+function ShareMention({
+  live,
+  name,
+  userId,
+  workspaceId,
+}: {
+  live?: boolean | undefined;
+  name: string;
+  userId: string;
+  workspaceId: string;
+}) {
+  const { value } = useTopic(
+    live && workspaceId ? { topic: "taskRequests", prefer: workspaceId } : null
+  );
+  const person = value?.people?.find((p) => p.id === userId);
+  return (
+    <MentionChip
+      icon={
+        <RequestPersonAvatar
+          className="[&>img]:size-4! [&>span]:size-4! [&>span]:text-[8px]!"
+          email={person?.email}
+          name={name}
+          source={person?.avatar ?? undefined}
+        />
+      }
+      label={name}
+    />
+  );
+}
+
 function RequestMention({
   grantId,
   live,

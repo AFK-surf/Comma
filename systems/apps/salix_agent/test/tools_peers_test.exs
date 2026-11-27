@@ -90,6 +90,12 @@ defmodule SalixAgent.ToolsPeersTest do
     def get_device(_agent_id, "dev_idle"),
       do: {:ok, %{"device_id" => "dev_idle", "environments" => []}}
 
+    # A still.fail station: a whole still.fail workspace, with no command environment.
+    def get_device(_agent_id, "dev_stillfail"),
+      do:
+        {:ok,
+         %{"device_id" => "dev_stillfail", "device_kind" => "stillfail", "environments" => []}}
+
     def get_device(_agent_id, "lookup-failed"), do: {:error, :timeout}
     def get_device(_agent_id, _device_id), do: {:error, :not_found}
 
@@ -692,6 +698,11 @@ defmodule SalixAgent.ToolsPeersTest do
     assert_raise RuntimeError, ~r/device dev_gone is not in this workspace; device.list/, fn ->
       exec.("dev_gone", "station")
     end
+
+    # A still.fail station runs no command: the error leads to its Tasks and chats instead.
+    assert_raise RuntimeError,
+                 ~r/device dev_stillfail is a connected still.fail workspace.*runs_on \{"kind":"station"/s,
+                 fn -> exec.("dev_stillfail", "279b3c8e") end
 
     # The right environment, not connected now, or a failed lookup: not connected.
     for {device_id, environment} <- [{"dev_added", "env-offline"}, {"lookup-failed", "station"}] do

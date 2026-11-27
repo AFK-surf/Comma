@@ -132,7 +132,7 @@ Configure the Electron main process before launch:
 A source checkout builds a local Host bundle, keyed by its canonical path. The path digest gives no integrity or authorization.
 Before claim, Comma repairs the shared VMM service to use that bundle. It shares runtime data and can interrupt other registrations.
 Settings show the source, stage, and errors. A failed source build never falls back to a download.
-The local backend needs the [local VMM Gateway](#local-vmm-gateway).
+The local backend needs the [local Agent VMM Worker](#local-agent-vmm-worker).
 Public claim endpoints require HTTPS. Local development permits HTTP only on localhost, 127.0.0.1, or ::1. Gateway TLS stays required.
 
 Preparation starts after an explicit enable. Main then continues it by itself, also after a Comma restart, within a bounded budget and deadline.
@@ -158,21 +158,21 @@ An explicit URL override trusts the operator's HTTPS source and has no byte pin.
 Comma rejects traversal and symbolic links.
 Preparation does not prove readiness. Readiness needs Host health, a Gateway connection, and Salix admission.
 
-## Local VMM Gateway
+## Local Agent VMM Worker
 
-Local Compute Node use needs Salix, the VMM Gateway, and the VMM Host.
-The Host connects to the Gateway, and the Gateway forwards observations and command results to Salix.
-Neither Comma App nor the dev-container starts the Gateway. Run it in a separate terminal or process supervisor.
+Local Compute Node use needs Salix with its embedded Agent VMM worker and the VMM Host.
+The Host connects to the Salix node's `salix-vmm-worker` over `agent-vmm/rpc/1`, and the worker forwards observations and command results to Salix in-process.
 
 ### Configuration
 
-The Gateway and its variables are in `systems/gateway/salix-vmm-gateway/main.go`. Set the Salix Gateway variables from `systems/config/runtime.exs`.
+Set `SALIX_AGENT_VMM_GATEWAY_ENABLED=true` and the worker variables from `systems/config/runtime.exs`. Salix then starts `systems/gateway/salix-vmm-worker` itself.
+Build the worker with `make -C systems/gateway/salix-vmm-worker`.
 Certificate paths must exist inside the Salix container. Container loopback does not reach the Mac. Use a host address the container resolves.
 Keep existing credentials, keys, certificates, and data when you restart this stack.
 
 ### Startup and verification
 
-Restart a stopped Gateway with the same configuration. The Host reconnects automatically.
+Restart Salix with the same configuration when needed. The Host reconnects automatically.
 A restart drops live sessions, so do not restart during active work.
 
 ## SSH terminal development

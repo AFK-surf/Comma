@@ -141,7 +141,6 @@ defmodule SalixAgent.SessionToolDispatch do
     |> authorize_organization(ctx)
     |> Enum.map(fn
       {:execute, call} = decision ->
-        # Prepared guidance is a result, never an effect for IFC to authorize.
         case Tools.prepared_guidance_result(call) do
           {:ok, result} -> {:blocked, result}
           :not_guidance -> decision
@@ -153,11 +152,22 @@ defmodule SalixAgent.SessionToolDispatch do
   end
 
   defp execution_policy_decision(call, ctx) do
-    if SalixAgent.RecommendationPolicy.allowed_tool?(
-         ctx,
-         call[:name] || call["name"],
-         call[:args] || call["args"] || %{}
-       ) and SalixAgent.GuestPolicy.allowed_tool?(ctx, call[:name] || call["name"]) do
+    # Off keeps its existing policy precedence. Enabled declarations are
+    # parameter errors before an effect can enter permission checks.
+    case {IFC.mode(ctx[:ifc_mode]), Tools.prepared_guidance_result(call)} do
+      {:off, _} -> valid_execution_policy_decision(call, ctx)
+      {_, {:ok, result}} -> {:blocked, result}
+      {_, :not_guidance} -> valid_execution_policy_decision(call, ctx)
+    end
+  end
+
+  defp valid_execution_policy_decision(call, ctx) do
+    name = call[:name] || call["name"]
+    args = call[:args] || call["args"] || %{}
+
+    with true <- SalixAgent.RecommendationPolicy.allowed_tool?(ctx, name, args),
+         true <- SalixAgent.GuestPolicy.allowed_tool?(ctx, name),
+         :ok <- SalixAgent.CollaborationPolicy.authorize_call(ctx, name, args) do
       case SalixAgent.TerminalReply.authorize(call, ctx) do
         {:ok, call} ->
           {:execute, call}
@@ -170,7 +180,11 @@ defmodule SalixAgent.SessionToolDispatch do
            )}
       end
     else
-      {:blocked, recommendation_policy_result(call)}
+      {:error, reason} when is_binary(reason) ->
+        {:blocked, Map.put(recommendation_policy_result(call), :content, reason)}
+
+      _ ->
+        {:blocked, recommendation_policy_result(call)}
     end
   end
 

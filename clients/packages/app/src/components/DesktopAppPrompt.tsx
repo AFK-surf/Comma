@@ -19,7 +19,6 @@ export function commaDesktopDownloadUrl(
 
 export type DesktopAppFeature =
   | "browser"
-  | "computer-use"
   | "compute-node"
   | "dock"
   | "keep-awake"
@@ -27,6 +26,7 @@ export type DesktopAppFeature =
   | "meeting"
   | "menu-bar"
   | "notifications"
+  | "permissions"
   | "voice";
 
 /** A browser has none of the desktop app's native capabilities. */
@@ -64,7 +64,6 @@ type Messages = ReturnType<typeof useCommaMessages>;
 
 const featureLabels: Record<DesktopAppFeature, (m: Messages) => string> = {
   browser: (m) => m.desktop_app_feature_browser(),
-  "computer-use": (m) => m.desktop_app_feature_computer_use(),
   "compute-node": (m) => m.desktop_app_feature_compute_node(),
   dock: (m) => m.desktop_app_feature_dock(),
   "keep-awake": (m) => m.desktop_app_feature_keep_awake(),
@@ -72,15 +71,16 @@ const featureLabels: Record<DesktopAppFeature, (m: Messages) => string> = {
   meeting: (m) => m.desktop_app_feature_meeting(),
   "menu-bar": (m) => m.desktop_app_feature_menu_bar(),
   notifications: (m) => m.desktop_app_feature_notifications(),
+  permissions: (m) => m.desktop_app_feature_permissions(),
   voice: (m) => m.desktop_app_feature_voice(),
 };
 
 /** Features only the macOS app has; the prompt names the Mac app for them. */
 const macOnlyFeatures: ReadonlySet<DesktopAppFeature> = new Set([
-  "computer-use",
   "compute-node",
   "dock",
   "keep-awake",
+  "permissions",
 ]);
 
 export function DesktopAppPromptHost() {

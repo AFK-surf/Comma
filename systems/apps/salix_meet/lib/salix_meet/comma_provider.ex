@@ -32,8 +32,14 @@ defmodule SalixMeet.CommaProvider do
            SalixMeet.RuntimeDriver.configured?() || {:error, :meeting_runtime_not_configured},
          {:ok, url} <- requested_url(meet_urls(source["text"]), trim(params["meet_url"])) do
       case find_active_meeting(source, url) do
-        nil -> join_new(source, url)
-        meeting_id -> rejoin(source, url, meeting_id)
+        nil ->
+          case Store.find_active_google_meet(source["group_id"], url) do
+            {:ok, existing_id, _existing_state} -> {:ok, already_in_meeting_result(existing_id)}
+            :not_found -> join_new(source, url)
+          end
+
+        meeting_id ->
+          rejoin(source, url, meeting_id)
       end
     end
   end
@@ -57,7 +63,21 @@ defmodule SalixMeet.CommaProvider do
          :ok <- put_source_index(source, url, meeting_id),
          :ok <- start(meeting_id, state, created?) do
       {:ok, result(meeting_id, created?)}
+    else
+      {:error, {:join_abandoned, {:already_in_meeting, existing_id}}} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      other ->
+        other
     end
+  end
+
+  defp already_in_meeting_result(existing_id) do
+    base = %{"status" => "already_in_meeting", "provider" => "comma"}
+
+    if is_binary(existing_id) and trim(existing_id) != "",
+      do: Map.put(base, "meeting_id", trim(existing_id)),
+      else: base
   end
 
   defp result(meeting_id, created?),

@@ -9,6 +9,7 @@ import androidx.dynamicanimation.animation.FloatPropertyCompat
 import surf.comma.android.media.ImageDimensions
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
+import kotlin.math.abs
 
 /**
  * Draws one picture at a [ZoomState]. The state is relative to the fitted picture, so a sharper
@@ -40,16 +41,21 @@ class ZoomImageView(context: Context) : View(context) {
             return ZoomGeometry(width.toFloat(), height.toFloat(), size.width.toFloat(), size.height.toFloat())
         }
 
-    /** [known] fixes the proportions before the first decode arrives, if the caller has them. */
+    /** [known] supplies fallback proportions before a decode arrives; a decoded drawable's own ratio always wins. */
     fun setDrawable(value: Drawable?, known: ImageDimensions? = null) {
         (drawable as? Animatable)?.stop()
         drawable?.callback = null
         drawable = value
         value?.callback = this
-        if (content == null) {
-            content = known ?: value?.let {
-                if (it.intrinsicWidth > 0 && it.intrinsicHeight > 0) ImageDimensions(it.intrinsicWidth, it.intrinsicHeight) else null
+        val actual = value?.let {
+            if (it.intrinsicWidth > 0 && it.intrinsicHeight > 0) ImageDimensions(it.intrinsicWidth, it.intrinsicHeight) else null
+        }
+        if (actual != null) {
+            if (content == null || abs(content!!.ratio - actual.ratio) > 0.01) {
+                content = actual
             }
+        } else if (content == null) {
+            content = known
         }
         invalidate()
     }

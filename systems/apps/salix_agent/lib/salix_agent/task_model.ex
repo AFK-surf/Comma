@@ -47,7 +47,11 @@ defmodule SalixAgent.TaskModel do
 
   @doc "Whether `value` is a stored default Task model."
   def valid?(@platform), do: true
-  def valid?(%{"kind" => "catalog"} = value), do: ModelChoice.value?(value)
+
+  # The platform Router mark belongs to Routers only (`SalixAgent.PlatformRouter`).
+  def valid?(%{"kind" => "catalog"} = value),
+    do: ModelChoice.value?(value) and not ModelChoice.platform?(value)
+
   def valid?(_value), do: false
 
   @doc """

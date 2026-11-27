@@ -4,7 +4,16 @@ import type { CardCopy } from "./cardTypes";
 export type CardOutgoing =
   | { type: "request"; value: string }
   | { type: "card-state"; value: Record<string, string[]> }
-  | { type: "brand-icons"; names: string[] };
+  | { type: "brand-icons"; names: string[] }
+  | {
+      type: "map-snapshot";
+      id: string;
+      /** The area to draw, in Web Mercator pixels at zoom 0 (the world is 256 wide): x, y, width, height. */
+      rect: [number, number, number, number];
+      /** The image's size in CSS pixels. */
+      width: number;
+      height: number;
+    };
 
 export interface CardEnv {
   /** Stable identity of the widget; with the element id it picks each card's layout. */
@@ -14,6 +23,20 @@ export interface CardEnv {
   timeZone?: string | undefined;
   /** Localized chrome text; missing entries fall back to English. */
   copy: Partial<CardCopy>;
+  /**
+   * The map tile URL template for map cards: `{x}`, `{y}` and `{z}` name a
+   * 256px Web Mercator tile and `{s}` a server from 1 to 4. Without it a map
+   * shows its pins and route on a plain surface.
+   */
+  mapTiles?: string | undefined;
+  /** The tile provider's attribution, shown on every map. */
+  mapCredit?: string | undefined;
+  /**
+   * The host draws each map's base itself (iOS with MapKit): a map card asks it
+   * with a `map-snapshot` message and shows the image it answers with, instead
+   * of tiles.
+   */
+  mapSnapshots?: boolean | undefined;
   /** Host-rendered SVG glyphs the templates draw with. */
   icons: Record<string, string>;
   /** Template state saved on this device, e.g. checklist progress. */
@@ -38,6 +61,8 @@ export interface CardEngine {
     series: Array<{ name: string; values: number[] }>;
   }): DocumentFragment;
   receiveIcons(icons: unknown): void;
+  /** A map base the host drew for a `map-snapshot` request: a `data:image/` URL. */
+  receiveMapSnapshot(id: unknown, src: unknown): void;
   /** Progress that another open copy of this widget saved. */
   receiveState(state: unknown): void;
   dispose(): void;
@@ -151,6 +176,7 @@ export function cardEngine(env: CardEnv): CardEngine {
       "M7.5 5h2a1.5 1.5 0 0 1 1.5 1.5v11A1.5 1.5 0 0 1 9.5 19h-2A1.5 1.5 0 0 1 6 17.5v-11A1.5 1.5 0 0 1 7.5 5Zm7 0h2A1.5 1.5 0 0 1 18 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-2a1.5 1.5 0 0 1-1.5-1.5v-11A1.5 1.5 0 0 1 14.5 5Z",
     next: "M4.5 6.3v11.4a1 1 0 0 0 1.56.83l8.3-5.7a1 1 0 0 0 0-1.66l-8.3-5.7A1 1 0 0 0 4.5 6.3ZM17.25 5h.5c.69 0 1.25.56 1.25 1.25v11.5c0 .69-.56 1.25-1.25 1.25h-.5c-.69 0-1.25-.56-1.25-1.25V6.25c0-.69.56-1.25 1.25-1.25Z",
     check: "m5 12.5 4.5 4.5L19 7.5",
+    car: "M8.5 4.5h7a2 2 0 0 1 1.9 1.38l1.3 3.92A2.5 2.5 0 0 1 20.5 12.2V17a1 1 0 0 1-1 1h-1.25a1 1 0 0 1-1-1v-1H6.75v1a1 1 0 0 1-1 1H4.5a1 1 0 0 1-1-1v-4.8a2.5 2.5 0 0 1 1.8-2.4l1.3-3.92A2 2 0 0 1 8.5 4.5Zm-.95 5.25h8.9l-.95-2.9a.5.5 0 0 0-.48-.35H8.98a.5.5 0 0 0-.48.35ZM7 14.25a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Zm10 0a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Z",
   };
   const shape = (name: string, className?: string) =>
     hidden(
@@ -159,7 +185,11 @@ export function cardEngine(env: CardEnv): CardEngine {
         cx("wc-icon", className),
         svg(
           "svg",
-          { viewBox: "0 0 24 24", fill: name === "check" ? "none" : "currentColor" },
+          {
+            viewBox: "0 0 24 24",
+            fill: name === "check" ? "none" : "currentColor",
+            "fill-rule": "evenodd",
+          },
           svg(
             "path",
             name === "check"
@@ -936,7 +966,7 @@ export function cardEngine(env: CardEnv): CardEngine {
         details: [
           num(current.feelsLike) === undefined
             ? null
-            : `${copy.feelsLike} ${num(current.feelsLike)}°`,
+            : `${copy.feelsLike} ${deg(num(current.feelsLike)!)}`,
           num(current.humidity) === undefined
             ? null
             : `${copy.humidity} ${num(current.humidity)}%`,
@@ -949,8 +979,26 @@ export function cardEngine(env: CardEnv): CardEngine {
       highlight: text(data.highlight),
     };
   };
+  /** A temperature as weather apps show it: whole degrees. */
+  const deg = (value: number) => `${Math.round(value) || 0}°`;
   const highLow = (day: Day | undefined) =>
-    day ? ` · ${copy.high} ${day.high}° ${copy.low} ${day.low}°` : "";
+    day ? ` · ${copy.high} ${deg(day.high)} ${copy.low} ${deg(day.low)}` : "";
+  /** The coming days in columns, one label line each. */
+  const forecastStrip = (days: Day[]) =>
+    h(
+      "ul",
+      "wc-fc-strip",
+      ...days.map((day, index) =>
+        h(
+          "li",
+          cx("wc-fc-day", index === 0 && "wc-fc-today"),
+          h("span", "wc-fc-day-label wc-xs wc-c3", day.label),
+          weather(day.condition, day.conditionLabel, "wc-glyph-md"),
+          h("span", "wc-sm wc-w5 wc-c1 wc-num", deg(day.high)),
+          h("span", "wc-xs wc-c3 wc-num", deg(day.low))
+        )
+      )
+    );
   const forecastLayouts: Array<Layout<Forecast>> = [
     [
       "today",
@@ -965,28 +1013,16 @@ export function cardEngine(env: CardEnv): CardEngine {
               h(
                 "div",
                 "wc-col wc-gap-xs wc-grow",
-                h("span", "wc-fc-temp", `${current.temperature}°`),
+                h("span", "wc-fc-temp", deg(current.temperature)),
                 h("span", "wc-sm wc-c2", `${current.label}${highLow(data.days[0])}`),
                 current.details && h("span", "wc-xs wc-c3", current.details)
               ),
               weather(current.condition, current.label, "wc-fc-hero-glyph")
             ),
             data.highlight && insight(data.highlight),
-            data.days.length > 0 &&
-              h(
-                "ul",
-                "wc-fc-strip",
-                ...data.days.map((day, index) =>
-                  h(
-                    "li",
-                    cx("wc-fc-day", index === 0 && "wc-fc-today"),
-                    h("span", "wc-xs wc-c3", day.label),
-                    weather(day.condition, day.conditionLabel, "wc-glyph-md"),
-                    h("span", "wc-sm wc-w5 wc-c1 wc-num", `${day.high}°`),
-                    h("span", "wc-xs wc-c3 wc-num", `${day.low}°`)
-                  )
-                )
-              ),
+            // Today's high and low already stand under the temperature, so a
+            // strip of today alone repeats them.
+            data.days.length > 1 && forecastStrip(data.days),
           ]),
         };
       },
@@ -995,6 +1031,31 @@ export function cardEngine(env: CardEnv): CardEngine {
       "week",
       (data) => data.days.length > 0,
       (data) => {
+        // One day has no range to compare against: show it as one line.
+        if (data.days.length === 1) {
+          const day = data.days[0]!;
+          return {
+            root: card(data.frame, [
+              data.highlight && insight(data.highlight),
+              h(
+                "div",
+                "wc-fc-single",
+                h("span", "wc-sm wc-c1 wc-clip", day.label),
+                weather(day.condition, day.conditionLabel, "wc-glyph-xl"),
+                h("span", "wc-sm wc-c2 wc-clip", day.conditionLabel),
+                (day.precipitation ?? 0) >= 20 &&
+                  h("span", "wc-fc-single-rain wc-xs wc-num", `${day.precipitation}%`),
+                h(
+                  "span",
+                  "wc-push wc-sm wc-num",
+                  h("span", "wc-c3", deg(day.low)),
+                  " – ",
+                  h("span", "wc-w5 wc-c1", deg(day.high))
+                )
+              ),
+            ]),
+          };
+        }
         const min = Math.min(...data.days.map((day) => day.low));
         const max = Math.max(...data.days.map((day) => day.high));
         const span = max - min || 1;
@@ -1003,7 +1064,7 @@ export function cardEngine(env: CardEnv): CardEngine {
             data.highlight && insight(data.highlight),
             h(
               "ul",
-              "wc-list",
+              "wc-list wc-fc-week",
               ...data.days.map((day) => {
                 const left = ((day.low - min) / span) * 100;
                 const width = Math.max(((day.high - day.low) / span) * 100, 6);
@@ -1022,9 +1083,9 @@ export function cardEngine(env: CardEnv): CardEngine {
                     "wc-fc-rain wc-xs wc-num",
                     (day.precipitation ?? 0) >= 20 ? `${day.precipitation}%` : ""
                   ),
-                  h("span", "wc-fc-low wc-sm wc-c3 wc-num", `${day.low}°`),
+                  h("span", "wc-fc-low wc-sm wc-c3 wc-num", deg(day.low)),
                   hidden(h("span", "wc-range", range)),
-                  h("span", "wc-fc-high wc-sm wc-w5 wc-c1 wc-num", `${day.high}°`)
+                  h("span", "wc-fc-high wc-sm wc-w5 wc-c1 wc-num", deg(day.high))
                 );
               })
             ),
@@ -1060,7 +1121,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                     `${current.label}${highLow(data.days[0])}`
                   )
                 ),
-                h("span", "wc-fc-compact-temp", `${current.temperature}°`)
+                h("span", "wc-fc-compact-temp", deg(current.temperature))
               ),
               tomorrow &&
                 h(
@@ -1069,7 +1130,11 @@ export function cardEngine(env: CardEnv): CardEngine {
                   h("span", "wc-c2", tomorrow.label),
                   weather(tomorrow.condition, tomorrow.conditionLabel, "wc-glyph-xl"),
                   h("span", null, tomorrow.conditionLabel),
-                  h("span", "wc-push wc-num", `${tomorrow.low}° – ${tomorrow.high}°`)
+                  h(
+                    "span",
+                    "wc-push wc-num",
+                    `${deg(tomorrow.low)} – ${deg(tomorrow.high)}`
+                  )
                 ),
             ],
             { header: false, small: true }
@@ -2737,6 +2802,199 @@ export function cardEngine(env: CardEnv): CardEngine {
     ],
   ];
 
+  // ================================================================= map
+  type Spot = { name: string; address?: string | undefined; lat: number; lng: number };
+  const latOf = (raw: unknown) => {
+    const number = num(raw);
+    return number !== undefined && number >= -85 && number <= 85 ? number : undefined;
+  };
+  const lngOf = (raw: unknown) => {
+    const number = num(raw);
+    return number !== undefined && number >= -180 && number <= 180 ? number : undefined;
+  };
+  const spotOf = (raw: unknown, field: string): Spot => {
+    if (!isRecord(raw) || !text(raw.name))
+      return fail(`Card data needs ${field} with a name, lat and lng`);
+    const lat = latOf(raw.lat);
+    const lng = lngOf(raw.lng);
+    if (lat === undefined || lng === undefined)
+      return fail(`Card data needs ${field} with a name, lat and lng`);
+    return { name: text(raw.name)!, address: text(raw.address), lat, lng };
+  };
+  /** Map images the host is drawing, by request id. */
+  const snapshots = new Map<string, HTMLImageElement>();
+  let snapshotCount = 0;
+  /** Web Mercator pixels at zoom 0, where the world is one 256px tile. */
+  const mercator = (lat: number, lng: number): [number, number] => {
+    const sin = Math.sin((lat * Math.PI) / 180);
+    return [
+      ((lng + 180) / 360) * 256,
+      (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * 256,
+    ];
+  };
+  type Marker = { lat: number; lng: number; node: HTMLElement };
+  /**
+   * A map of tiles centered on what it shows: the markers and the path fit
+   * the narrowest card, a phone's, with room for the pins, and a wider card
+   * shows more of the map around them. Tiles are HTTPS images, which the
+   * runtime allows.
+   */
+  const mapView = (
+    markers: Marker[],
+    path: Array<[number, number]>,
+    className: string,
+    overlay?: Child,
+    bubble?: { at: [number, number]; node: HTMLElement }
+  ) => {
+    const width = 300;
+    const height = overlay ? 240 : 208;
+    const points = [
+      ...markers.map((marker) => mercator(marker.lat, marker.lng)),
+      ...path.map(([lat, lng]) => mercator(lat, lng)),
+    ];
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
+    const [left, right, top, bottom] = [
+      Math.min(...xs),
+      Math.max(...xs),
+      Math.min(...ys),
+      Math.max(...ys),
+    ];
+    // Room for the pins above their points and the overlay below.
+    const roomX = width - 64;
+    const roomY = height - (overlay ? 120 : 72);
+    let zoom = 16;
+    while (
+      zoom > 3 &&
+      ((right - left) * 2 ** zoom > roomX || (bottom - top) * 2 ** zoom > roomY)
+    )
+      zoom -= 1;
+    const worldScale = 2 ** zoom;
+    const centerX = ((left + right) / 2) * worldScale;
+    // Shift the view down so the overlay at the bottom covers no point.
+    const centerY = ((top + bottom) / 2) * worldScale + (overlay ? 22 : 8);
+    const world = h("div", "wc-map-world");
+    const tiles = h("div", "wc-map-tiles");
+    const reach = 400;
+    if (env.mapSnapshots) {
+      // One image of the area the tiles would cover, drawn by the host.
+      const areaTop = centerY - height / 2;
+      const id = `m${(snapshotCount += 1)}`;
+      const img = document.createElement("img");
+      img.alt = "";
+      img.decoding = "async";
+      img.className = "wc-map-snapshot";
+      img.style.left = `${-reach}px`;
+      img.style.top = `${-height / 2}px`;
+      img.style.width = `${reach * 2}px`;
+      img.style.height = `${height}px`;
+      snapshots.set(id, img);
+      world.append(img);
+      env.send({
+        type: "map-snapshot",
+        id,
+        rect: [
+          (centerX - reach) / worldScale,
+          areaTop / worldScale,
+          (reach * 2) / worldScale,
+          height / worldScale,
+        ],
+        width: reach * 2,
+        height,
+      });
+    }
+    const template = env.mapSnapshots ? "" : (env.mapTiles ?? "");
+    const count = 2 ** zoom;
+    const lastTileY = template ? Math.floor((centerY + height / 2) / 256) : -1;
+    for (
+      let tileY = Math.floor((centerY - height / 2) / 256);
+      tileY <= lastTileY;
+      tileY += 1
+    ) {
+      if (tileY < 0 || tileY >= count) continue;
+      for (
+        let tileX = Math.floor((centerX - reach) / 256);
+        tileX <= Math.floor((centerX + reach) / 256);
+        tileX += 1
+      ) {
+        const wrapped = ((tileX % count) + count) % count;
+        const img = document.createElement("img");
+        img.alt = "";
+        img.decoding = "async";
+        img.setAttribute("referrerpolicy", "no-referrer");
+        img.addEventListener("error", () => img.remove());
+        img.style.left = `${tileX * 256 - centerX}px`;
+        img.style.top = `${tileY * 256 - centerY}px`;
+        const values: Record<string, number> = {
+          x: wrapped,
+          y: tileY,
+          z: zoom,
+          s: ((wrapped + tileY) % 4) + 1,
+        };
+        img.src = template.replace(/\{([xyzs])\}/g, (_, name: string) =>
+          String(values[name])
+        );
+        tiles.append(img);
+      }
+    }
+    world.append(tiles);
+    const at = (lat: number, lng: number): [number, number] => {
+      const [x, y] = mercator(lat, lng);
+      return [x * worldScale - centerX, y * worldScale - centerY];
+    };
+    if (path.length > 1) {
+      const line = path
+        .map(([lat, lng]) =>
+          at(lat, lng)
+            .map((coord) => coord.toFixed(1))
+            .join(",")
+        )
+        .join(" ");
+      world.append(
+        svg(
+          "svg",
+          { class: "wc-map-path", width: 1, height: 1, "aria-hidden": "true" },
+          svg("polyline", { class: "wc-map-path-casing", points: line }),
+          svg("polyline", { class: "wc-map-path-line", points: line })
+        )
+      );
+    }
+    if (bubble) {
+      const [x, y] = at(...bubble.at);
+      bubble.node.style.left = `${x}px`;
+      bubble.node.style.top = `${y}px`;
+      world.append(bubble.node);
+    }
+    for (const marker of markers) {
+      const [x, y] = at(marker.lat, marker.lng);
+      marker.node.style.left = `${x}px`;
+      marker.node.style.top = `${y}px`;
+      world.append(marker.node);
+    }
+    return h(
+      "div",
+      cx("wc-map", overlay && "wc-map-tall", className),
+      hidden(world),
+      overlay,
+      env.mapCredit && hidden(h("span", "wc-map-credit", env.mapCredit))
+    );
+  };
+  const pinShape =
+    "M12 1.5a8.5 8.5 0 0 0-8.5 8.5c0 5.9 6.6 11.4 7.7 12.3a1.3 1.3 0 0 0 1.6 0c1.1-.9 7.7-6.4 7.7-12.3A8.5 8.5 0 0 0 12 1.5Z";
+  /** A map pin: a dot on top of a stem when it has no label, or a numbered head. */
+  const pin = (tone: "error" | "brand", label?: string) =>
+    h(
+      "span",
+      cx("wc-map-pin", `wc-map-pin-${tone}`),
+      svg(
+        "svg",
+        { viewBox: "0 0 24 24", "aria-hidden": "true" },
+        svg("path", { d: pinShape })
+      ),
+      h("span", "wc-map-pin-label wc-num", label ?? "")
+    );
+  const here = () => h("span", "wc-map-here");
+
   // =============================================================== place
   type Place = {
     name: string;
@@ -2749,6 +3007,8 @@ export function cardEngine(env: CardEnv): CardEngine {
     distance?: string | undefined;
     eta?: string | undefined;
     href?: string | undefined;
+    lat?: number | undefined;
+    lng?: number | undefined;
   };
   type Places = { frame: Frame; places: Place[] };
   const placesOf = (data: Record<string, unknown>): Places => {
@@ -2765,6 +3025,8 @@ export function cardEngine(env: CardEnv): CardEngine {
             distance: text(item.distance),
             eta: text(item.eta),
             href: httpsOf(item.href),
+            lat: latOf(item.lat),
+            lng: lngOf(item.lng),
           }
         : undefined
     );
@@ -2790,10 +3052,112 @@ export function cardEngine(env: CardEnv): CardEngine {
         )
       : null;
   };
+  const mapped = (data: Places) =>
+    data.places.every((item) => item.lat !== undefined && item.lng !== undefined);
+  const nearbyList = (data: Places) => {
+    // A category every row shares says nothing the title does not.
+    const mixed = new Set(data.places.map((item) => item.category)).size > 1;
+    return h(
+      "ol",
+      "wc-list",
+      ...data.places.map((item, index) => {
+        const facts = [about(item, mixed), item.status && status(item.status)].filter(
+          Boolean
+        );
+        return h(
+          "li",
+          "wc-divided",
+          row(
+            item.href,
+            "wc-place",
+            hidden(h("span", "wc-place-index", String(index + 1))),
+            h(
+              "span",
+              "wc-col wc-gap-xxs wc-grow",
+              h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.name),
+              facts.length > 0 &&
+                h("span", "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3", ...facts),
+              item.note && h("span", "wc-xs wc-c2", item.note),
+              item.address && h("span", "wc-xs wc-c3", item.address)
+            ),
+            (item.distance || item.eta) &&
+              h(
+                "span",
+                "wc-col wc-end wc-gap-xxs wc-trail",
+                item.distance && h("span", "wc-sm wc-w5 wc-c1 wc-num", item.distance),
+                item.eta && h("span", "wc-xs wc-c3", item.eta)
+              ),
+            item.href && icon("chevron-right", "wc-chevron")
+          )
+        );
+      })
+    );
+  };
+  const placeMap = (data: Places) => {
+    const single = data.places.length === 1;
+    const markers = data.places.map((item, index) => ({
+      lat: item.lat!,
+      lng: item.lng!,
+      node: pin(single ? "error" : "brand", single ? undefined : String(index + 1)),
+    }));
+    const only = data.places[0]!;
+    return mapView(
+      markers,
+      [],
+      "",
+      single &&
+        h(
+          "div",
+          "wc-map-sheet",
+          h("span", "wc-md wc-w6 wc-c1 wc-clip", only.name),
+          (only.address || only.distance) &&
+            h(
+              "span",
+              "wc-xs wc-c3 wc-clip",
+              [only.distance, only.address].filter(Boolean).join(" · ")
+            )
+        )
+    );
+  };
   const placeLayouts: Array<Layout<Places>> = [
     [
+      "map",
+      (data) => mapped(data),
+      (data) => {
+        if (data.places.length > 1)
+          return { root: card(data.frame, [placeMap(data), nearbyList(data)]) };
+        const item = data.places[0]!;
+        const go = item.href
+          ? h("a", "wc-action wc-action-link", copy.directions, icon("arrow-right"))
+          : null;
+        if (go && item.href) go.setAttribute("href", item.href);
+        const facts = [about(item, true), item.status && status(item.status)].filter(
+          Boolean
+        );
+        return {
+          root: card(
+            data.frame,
+            [
+              placeMap(data),
+              (facts.length > 0 || item.eta || go) &&
+                h(
+                  "div",
+                  "wc-row-center wc-wrap wc-gap-sm",
+                  facts.length > 0 &&
+                    h("span", "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3", ...facts),
+                  item.eta && h("span", "wc-chip", item.eta),
+                  go && h("span", "wc-push", go)
+                ),
+              item.note && h("p", "wc-sm wc-c2", item.note),
+            ],
+            { header: false }
+          ),
+        };
+      },
+    ],
+    [
       "single",
-      (data) => data.places.length === 1,
+      (data) => data.places.length === 1 && !mapped(data),
       (data) => {
         const item = data.places[0]!;
         const go = item.href
@@ -2824,56 +3188,8 @@ export function cardEngine(env: CardEnv): CardEngine {
     ],
     [
       "nearby",
-      (data) => data.places.length > 1,
-      (data) => {
-        // A category every row shares says nothing the title does not.
-        const mixed = new Set(data.places.map((item) => item.category)).size > 1;
-        return {
-          root: card(data.frame, [
-            h(
-              "ol",
-              "wc-list",
-              ...data.places.map((item, index) => {
-                const facts = [
-                  about(item, mixed),
-                  item.status && status(item.status),
-                ].filter(Boolean);
-                return h(
-                  "li",
-                  "wc-divided",
-                  row(
-                    item.href,
-                    "wc-place",
-                    hidden(h("span", "wc-place-index", String(index + 1))),
-                    h(
-                      "span",
-                      "wc-col wc-gap-xxs wc-grow",
-                      h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.name),
-                      facts.length > 0 &&
-                        h(
-                          "span",
-                          "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3",
-                          ...facts
-                        ),
-                      item.note && h("span", "wc-xs wc-c2", item.note),
-                      item.address && h("span", "wc-xs wc-c3", item.address)
-                    ),
-                    (item.distance || item.eta) &&
-                      h(
-                        "span",
-                        "wc-col wc-end wc-gap-xxs wc-trail",
-                        item.distance &&
-                          h("span", "wc-sm wc-w5 wc-c1 wc-num", item.distance),
-                        item.eta && h("span", "wc-xs wc-c3", item.eta)
-                      ),
-                    item.href && icon("chevron-right", "wc-chevron")
-                  )
-                );
-              })
-            ),
-          ]),
-        };
-      },
+      (data) => data.places.length > 1 && !mapped(data),
+      (data) => ({ root: card(data.frame, [nearbyList(data)]) }),
     ],
   ];
 
@@ -3983,6 +4299,96 @@ export function cardEngine(env: CardEnv): CardEngine {
           { header: false }
         ),
       }),
+    ],
+  ];
+
+  // =============================================================== route
+  type Trip = {
+    frame: Frame;
+    origin: Spot;
+    destination: Spot;
+    mode: "drive" | "walk" | "transit" | "cycle";
+    duration: string;
+    distance?: string | undefined;
+    note?: string | undefined;
+    path: Array<[number, number]>;
+    href?: string | undefined;
+  };
+  const tripOf = (data: Record<string, unknown>): Trip => {
+    const origin = spotOf(data.origin, "origin");
+    const destination = spotOf(data.destination, "destination");
+    const path = list(data.path, 400, (point): [number, number] | undefined => {
+      if (!Array.isArray(point)) return undefined;
+      const lat = latOf(point[0]);
+      const lng = lngOf(point[1]);
+      return lat === undefined || lng === undefined ? undefined : [lat, lng];
+    });
+    const mode = data.mode;
+    return {
+      frame: frameOf(data),
+      origin,
+      destination,
+      mode: mode === "walk" || mode === "transit" || mode === "cycle" ? mode : "drive",
+      duration: need(data.duration, "a duration"),
+      distance: text(data.distance),
+      note: text(data.note),
+      path:
+        path.length > 1
+          ? path
+          : [
+              [origin.lat, origin.lng],
+              [destination.lat, destination.lng],
+            ],
+      href: httpsOf(data.href),
+    };
+  };
+  const tripLayouts: Array<Layout<Trip>> = [
+    [
+      "map",
+      () => true,
+      (data) => {
+        const middle = data.path[Math.floor((data.path.length - 1) / 2)]!;
+        const go = h(
+          data.href ? "a" : "div",
+          "wc-trip-go wc-num",
+          data.mode === "drive"
+            ? shape("car")
+            : data.mode === "transit" && icon("train"),
+          h("span", null, data.duration)
+        );
+        if (data.href) go.setAttribute("href", data.href);
+        return {
+          root: card(data.frame, [
+            mapView(
+              [
+                { lat: data.origin.lat, lng: data.origin.lng, node: here() },
+                {
+                  lat: data.destination.lat,
+                  lng: data.destination.lng,
+                  node: pin("error"),
+                },
+              ],
+              data.path,
+              "",
+              h(
+                "div",
+                "wc-map-sheet",
+                h("span", "wc-md wc-w6 wc-c1 wc-clip", data.destination.name),
+                h(
+                  "span",
+                  "wc-xs wc-c3 wc-clip",
+                  [data.distance, data.destination.address]
+                    .filter(Boolean)
+                    .join(" · ") || data.origin.name
+                )
+              ),
+              { at: middle, node: h("span", "wc-map-bubble wc-num", data.duration) }
+            ),
+            data.note && h("p", "wc-sm wc-c2", data.note),
+            go,
+          ]),
+        };
+      },
     ],
   ];
 
@@ -5157,6 +5563,7 @@ export function cardEngine(env: CardEnv): CardEngine {
     order: kind(orderOf, orderLayouts),
     ticket: kind(ticketOf, ticketLayouts),
     ride: kind(rideOf, rideLayouts),
+    route: kind(tripOf, tripLayouts),
     product: kind(productsOf, productLayouts),
     booking: kind(bookingOf, bookingLayouts),
     device: kind(devicesOf, deviceLayouts),
@@ -5211,6 +5618,18 @@ export function cardEngine(env: CardEnv): CardEngine {
         for (const node of waiting.get(name) ?? []) settle(node, known, true);
         waiting.delete(name);
       }
+    },
+    receiveMapSnapshot(id, src) {
+      const img = typeof id === "string" ? snapshots.get(id) : undefined;
+      if (
+        !img ||
+        typeof src !== "string" ||
+        src.length > 4_000_000 ||
+        !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(src)
+      )
+        return;
+      snapshots.delete(id as string);
+      img.src = src;
     },
     receiveState(state) {
       restore(state);

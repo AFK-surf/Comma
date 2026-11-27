@@ -2,6 +2,7 @@ import type { BftCapabilities } from "./api";
 import { messages } from "./messages";
 import {
   normalizePath,
+  type LarkTriageView,
   type MeetingsView,
   type SettingsPage,
   type TriageView,
@@ -72,6 +73,12 @@ export const triagePaths: Record<TriageView, string> = {
   overview: "/triage",
   timeline: "/triage/timeline",
   knowledge: "/triage/knowledge",
+};
+
+/** The Feishu / Lark triage pages, all rendered by the SPA. */
+export const larkTriagePaths: Record<LarkTriageView, string> = {
+  overview: "/lark-triage",
+  timeline: "/lark-triage/timeline",
 };
 
 /** An Agent Swarm's pages. */
@@ -157,6 +164,11 @@ export function buildOrgNav({
         sub("triage:overview", t.triageOverview, triagePaths.overview),
         sub("triage:timeline", t.triageTimeline, triagePaths.timeline),
         sub("triage:knowledge", t.triageKnowledge, triagePaths.knowledge),
+      ]),
+    capabilities.triage &&
+      page("lark-triage", "triage", t.larkTriage, larkTriagePaths.overview, [
+        sub("lark-triage:overview", t.triageOverview, larkTriagePaths.overview),
+        sub("lark-triage:timeline", t.triageTimeline, larkTriagePaths.timeline),
       ]),
     capabilities.information_flow &&
       page("data-policy", "dataPolicy", t.dataPolicy, "/information-flow"),

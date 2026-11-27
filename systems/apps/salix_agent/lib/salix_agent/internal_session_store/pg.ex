@@ -10,6 +10,7 @@ defmodule SalixAgent.InternalSessionStore.PG do
 
   @page_size 128
   @freeze_steps {__MODULE__, :freeze_steps}
+  @write_steps {__MODULE__, :write_steps}
   @archive_batch_records 256
   @archive_idle_seconds 30
   # What a read of a session's newest messages may touch (`recent_messages/4`).
@@ -40,7 +41,8 @@ defmodule SalixAgent.InternalSessionStore.PG do
       :delta,
       :candidate,
       :command,
-      :base_storage_revision
+      :base_storage_revision,
+      :archive_refs
     ]
   end
 
@@ -623,6 +625,12 @@ defmodule SalixAgent.InternalSessionStore.PG do
       Repo.query!("DELETE FROM #{table} WHERE agent_id = $1 AND session_id = $2", scope)
     end
 
+    try do
+      SalixAgent.LivingHandoff.delete_cache_entry(agent_id, session_id)
+    rescue
+      _ -> :ok
+    end
+
     :ok
   end
 
@@ -763,7 +771,13 @@ defmodule SalixAgent.InternalSessionStore.PG do
   def history_info(agent_id, session_id) do
     history_snapshot(fn ->
       row = history_session(agent_id, session_id)
-      %{agent_id: agent_id, session_id: session_id, last_seq: row["last_seq"]}
+
+      %{
+        agent_id: agent_id,
+        session_id: session_id,
+        last_seq: row["last_seq"],
+        compacted_seq: row["compacted_seq"] || 0
+      }
     end)
   end
 
@@ -815,7 +829,7 @@ defmodule SalixAgent.InternalSessionStore.PG do
 
   defp history_session(agent_id, session_id) do
     case history_rows(
-           "SELECT birth_kind, deleted_at, control_payload IS NOT NULL AS materialized, last_seq, archived_through FROM salix_sessions WHERE agent_id = $1 AND session_id = $2",
+           "SELECT birth_kind, deleted_at, control_payload IS NOT NULL AS materialized, last_seq, archived_through, compacted_seq FROM salix_sessions WHERE agent_id = $1 AND session_id = $2",
            [agent_id, session_id]
          ) do
       [%{"birth_kind" => "internal", "deleted_at" => nil, "materialized" => true} = row] -> row
@@ -887,10 +901,41 @@ defmodule SalixAgent.InternalSessionStore.PG do
     end
   end
 
+  @doc false
+  def time_write(fun) do
+    Process.put(@write_steps, %{})
+
+    try do
+      {fun.(), Process.get(@write_steps)}
+    after
+      Process.delete(@write_steps)
+    end
+  end
+
+  defp write_step(name, fun) do
+    case Process.get(@write_steps) do
+      nil ->
+        fun.()
+
+      %{} ->
+        started = SystemsClock.monotonic_time()
+        result = fun.()
+        elapsed = SystemsClock.monotonic_time() - started
+        steps = Process.get(@write_steps)
+        Process.put(@write_steps, Map.update(steps, name, elapsed, &(&1 + elapsed)))
+        result
+    end
+  end
+
   def execute(%Pending{} = pending),
     do: transaction(pending, fn _key -> apply_pending(pending) end)
 
+  def execute_storage(%Pending{} = pending),
+    do: transaction_storage(pending, fn _key -> apply_pending(pending) end)
+
   def settle(%Pending{} = pending), do: execute(pending)
+
+  def settle_storage(%Pending{} = pending), do: execute_storage(pending)
 
   def settle_input(%Pending{} = pending), do: pending |> settle() |> complete_input()
 
@@ -909,21 +954,36 @@ defmodule SalixAgent.InternalSessionStore.PG do
       :clean ->
         base = command |> InternalSession.command_revision() |> revision()
 
-        transaction(nil, fn _key ->
-          lock_agent(InternalSession.agent_id(base.state), epoch)
-
-          row =
-            session_row(
-              InternalSession.agent_id(base.state),
-              InternalSession.session_id(base.state),
-              "FOR UPDATE"
-            )
-
-          expect_revision(row, base.revision)
-          {:clean, command, row["revision"]}
-        end)
+        confirm_clean_command_storage(
+          command,
+          InternalSession.agent_id(base.state),
+          InternalSession.session_id(base.state),
+          base.revision,
+          epoch
+        )
+        |> finish_storage()
     end
   end
+
+  def confirm_clean_command_storage(command, agent_id, session_id, expected_revision, epoch) do
+    transaction_storage(nil, fn _key ->
+      lock_agent(agent_id, epoch)
+      row = session_row(agent_id, session_id, "FOR UPDATE")
+      expect_revision(row, expected_revision)
+      {:clean, command, row["revision"]}
+    end)
+  end
+
+  def finish_storage({:storage_committed, pending, revision}),
+    do: write_step(:kernel_commit, fn -> finish(pending, revision) end)
+
+  def finish_storage({:storage_rebased, pending, _revision}),
+    do: write_step(:kernel_commit, fn -> read(pending.agent_id, pending.session_id) end)
+
+  def finish_storage({:storage_clean, command, revision}),
+    do: write_step(:kernel_commit, fn -> finish_command(command, revision) end)
+
+  def finish_storage(other), do: other
 
   def confirm_revision(%Revision{} = base, epoch) do
     transaction(nil, fn _key ->
@@ -1236,7 +1296,8 @@ defmodule SalixAgent.InternalSessionStore.PG do
       candidate: candidate,
       command: command,
       base_storage_revision:
-        step(:reads, fn -> InternalSession.get(baseline, :storage_revision) end)
+        step(:reads, fn -> InternalSession.get(baseline, :storage_revision) end),
+      archive_refs: refs || %{}
     }
   end
 
@@ -1259,34 +1320,41 @@ defmodule SalixAgent.InternalSessionStore.PG do
     end
   end
 
-  defp transaction(initial_pending, fun) do
+  defp transaction(initial_pending, fun),
+    do: transaction_storage(initial_pending, fun) |> finish_storage()
+
+  defp transaction_storage(initial_pending, fun) do
     key = {__MODULE__, SystemsRuntime.Proc.make_ref()}
     if initial_pending, do: Process.put(key, initial_pending)
 
     try do
-      case Repo.transaction(fn -> fun.(key) end) do
+      case write_step(:pg_tx, fn -> Repo.transaction(fn -> fun.(key) end) end) do
         {:ok, {:committed, pending, revision}} ->
-          SalixStore.SessionWorkNotifications.publish(
-            pending.agent_id,
-            pending.session_id,
-            revision
-          )
+          write_step(:notify, fn ->
+            SalixStore.SessionWorkNotifications.publish(
+              pending.agent_id,
+              pending.session_id,
+              revision
+            )
+          end)
 
-          finish(pending, revision)
+          {:storage_committed, pending, revision}
 
         # The write landed over an archive publication, which moved
         # archived_through. The owner continues from the stored view.
         {:ok, {:rebased, pending, revision}} ->
-          SalixStore.SessionWorkNotifications.publish(
-            pending.agent_id,
-            pending.session_id,
-            revision
-          )
+          write_step(:notify, fn ->
+            SalixStore.SessionWorkNotifications.publish(
+              pending.agent_id,
+              pending.session_id,
+              revision
+            )
+          end)
 
-          read(pending.agent_id, pending.session_id)
+          {:storage_rebased, pending, revision}
 
         {:ok, {:clean, command, revision}} ->
-          finish_command(command, revision)
+          {:storage_clean, command, revision}
 
         {:ok, {:revision, version}} ->
           {:ok, version}
@@ -1779,6 +1847,7 @@ defmodule SalixAgent.InternalSessionStore.PG do
   end
 
   defp archive_refs(%Import{archive_refs: refs}), do: refs
+  defp archive_refs(%Pending{archive_refs: refs}) when is_map(refs), do: refs
 
   defp archive_refs(pending) do
     InternalSession.get(pending.candidate.state, :archive_refs) || %{}

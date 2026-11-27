@@ -14,9 +14,13 @@ defmodule SalixIM.LarkChatJoin do
 
   A connect with `owner_only` (a person's own bot) takes the event only when
   its owner added the bot.
+
+  The bot that joined on its own, through `create_chat` or `join_chat`, is no
+  guest: the Agent that made or joined the chat already knows why, so the
+  event asks for no welcome.
   """
 
-  alias SalixIM.{ProviderConnects, ProviderRecipientIdentity}
+  alias SalixIM.{LarkThreads, ProviderConnects, ProviderRecipientIdentity}
 
   @event_type "im.chat.member.bot.added_v1"
 
@@ -39,6 +43,9 @@ defmodule SalixIM.LarkChatJoin do
     cond do
       chat_id == "" or event_id == "" ->
         {:error, :invalid_envelope}
+
+      self_join?(provider, connect, chat_id, text(operator["open_id"])) ->
+        {:ignored, :self_join}
 
       not from_owner?(connect, text(operator["open_id"])) ->
         {:ignored, :not_owner}
@@ -95,6 +102,24 @@ defmodule SalixIM.LarkChatJoin do
     """
     |> String.trim()
   end
+
+  # The bot added itself, or made the chat. A person who adds the bot is
+  # named as the operator; the app's own `create_chat` or `join_chat` names
+  # the bot or nobody, and its event can arrive before the creation answers.
+  # `create_chat` also marks the chat it made by its own ID.
+  defp self_join?(provider, connect, chat_id, operator_open_id) do
+    bot_open_id = text(connect["bot_open_id"])
+
+    cond do
+      operator_open_id == "" -> true
+      bot_open_id != "" and operator_open_id == bot_open_id -> true
+      provider == "feishu" -> created_feishu_chat?(connect, chat_id)
+      true -> LarkThreads.status(connect, chat_id, chat_id) == :joined
+    end
+  end
+
+  defp created_feishu_chat?(connect, chat_id),
+    do: ProviderConnects.feishu_thread_participation_active?(connect, chat_id, chat_id)
 
   # A shared bot takes everyone. One person's bot takes its owner only, and
   # nobody when the owner is missing.

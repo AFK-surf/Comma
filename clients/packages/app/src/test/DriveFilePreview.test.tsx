@@ -60,9 +60,9 @@ const renderPreview = () =>
       </StrictMode>
     )
   );
-/** Where the desktop opens files in apps, the download button lists them after the download itself. */
+/** Where the desktop opens files in apps, a document's Open lists them, then the file's place and its download. */
 async function chooseApp() {
-  fireEvent.click(screen.getByRole("button", { name: "Download report.md" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
   fireEvent.click(await screen.findByRole("menuitem", { name: /Preview/ }));
 }
 
@@ -115,9 +115,9 @@ describe("Drive uses the shared file reader", () => {
     );
     expect(saveDownload).toHaveBeenCalledOnce();
     expect(core.sentTo("drive.read")).toEqual([{ file: file.id }]);
-    // The same menu downloads the file, named by its format.
-    fireEvent.click(screen.getByRole("button", { name: "Download report.md" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "MD" }));
+    // The same menu downloads the file.
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Download" }));
     await waitFor(() =>
       expect(core.sentTo("drive.download")).toEqual([{ file: file.id }])
     );

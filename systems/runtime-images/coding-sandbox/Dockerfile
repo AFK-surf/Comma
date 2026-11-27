@@ -98,6 +98,25 @@ RUN npm install --global pnpm@10.25.0 \
     && mix --version \
     && elixir -e 'true = System.version() == "1.20.4"; true = (:code.root_dir() |> Path.join("releases/29/OTP_VERSION") |> File.read!() |> String.trim()) == "29.1.1"'
 
+# The locked Playwright MCP server: the browser tools the station gives its agents (systems/station/src/agents/
+# browser-mcp.ts, by COMMA_BROWSER_MCP_CONFIG in comma-station.service). It downloads no browser: browser-mcp.json
+# has it open the image's Chromium as a window over the whole display (no window manager, so the window's place and
+# size are given: the display's, comma-display.service; browser-mcp-check.mjs fails when the two differ), with the
+# page as large as the window (`viewport: null`). The profile stays in memory (`isolated`): a login in the browser
+# does not reach the sandbox's disk. Files it names itself (a screenshot without a file name) go to /tmp, not into
+# the checkout. Chromium keeps its own sandbox (`chromiumSandbox`; Playwright turns it off by default): the pages an
+# agent opens are not the station's to trust, and the station's user is not root, as the sandbox needs.
+ARG PLAYWRIGHT_MCP_TARBALL
+ARG PLAYWRIGHT_MCP_INTEGRITY
+RUN set -eu; \
+    curl --fail --location --silent --show-error --retry 5 --retry-delay 10 "${PLAYWRIGHT_MCP_TARBALL}" --output /tmp/playwright-mcp.tgz \
+    && printf '%s' "${PLAYWRIGHT_MCP_INTEGRITY#sha512-}" | base64 --decode >/tmp/playwright-mcp.expected \
+    && openssl dgst -sha512 -binary /tmp/playwright-mcp.tgz | cmp /tmp/playwright-mcp.expected - \
+    && npm_config_cache=/tmp/npm-cache npm install --global --ignore-scripts /tmp/playwright-mcp.tgz \
+    && playwright-mcp --version \
+    && rm -rf /root/.npm /tmp/npm-cache /tmp/playwright-mcp.tgz /tmp/playwright-mcp.expected
+COPY systems/runtime-images/coding-sandbox/browser-mcp.json /etc/comma/browser-mcp.json
+
 # Override Debian's RAM-backed /tmp. The root overlay uses the sandbox data disk.
 COPY systems/runtime-images/coding-sandbox/tmp.mount /etc/systemd/system/tmp.mount
 # Match the sandbox's own fd limit. A billion-entry limit makes BEAM exhaust RAM.

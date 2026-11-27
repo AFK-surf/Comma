@@ -7,6 +7,8 @@ public struct ConversationState: Sendable {
     public private(set) var messages: [Message] = []
     public private(set) var draft: AssistantDraft?
     public private(set) var participantStatuses: [ParticipantStatus] = []
+    /// Active worker sessions on a multi-session Task (up to 6 entries); empty when absent.
+    public private(set) var workerSessions: [WorkerSession] = []
     /// The Task's Worker, carried by each Task participant-status snapshot.
     public private(set) var boundWorker: BoundWorker?
     public private(set) var syncWarning: String?
@@ -69,6 +71,7 @@ public struct ConversationState: Sendable {
             guard let statuses = event.participants, statuses.count <= 2,
                   statuses.allSatisfy(validParticipant), Set(statuses.map(\.participantID)).count == statuses.count else { return false }
             participantStatuses = statuses
+            workerSessions = Array((event.workerSessions ?? []).prefix(6))
             boundWorker = event.boundWorker
             return false
         case "participant_status":

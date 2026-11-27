@@ -35,7 +35,8 @@ defmodule SalixIM.IFC.MemberRefresh do
   @spec schedule(Projection.scope(), String.t(), map()) :: :ok
   def schedule(scope, scope_id, row) do
     if enabled?() and is_binary(scope_id) and scope_id != "" and
-         not Projection.direct_scope_id?(scope_id) and Projection.needs_members?(row) and
+         not Projection.direct_scope_id?(scope_id) and
+         Projection.refresh_wanted?(row) and
          claim({scope.tenant_id, scope.group_id, scope.connect_id, scope_id}) do
       case SystemsRuntime.TaskSupervisor.start_child(@task_supervisor, fn ->
              Projection.refresh(scope, scope_id)

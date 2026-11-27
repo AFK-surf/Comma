@@ -37,6 +37,7 @@ import { ChatSidebar, ChatSidebarToggle } from "../ChatSidebar";
 import {
   ChatSidebarProvider,
   activeSidebarChat,
+  chatSidebarBrowserPageSessionId,
   chatSidebarHostKey,
   useChatSidebar,
   useRegisterChatSidebarHost,
@@ -86,6 +87,9 @@ const { nativeBridge, noop, sendMessage } = vi.hoisted(() => ({
         visible: true,
       })),
       onChanged: vi.fn<BrowserSidebarBridge["onChanged"]>(() => () => {}),
+      onCloseTabRequested: vi.fn<BrowserSidebarBridge["onCloseTabRequested"]>(
+        () => () => {}
+      ),
       onOpenTabRequested: vi.fn<BrowserSidebarBridge["onOpenTabRequested"]>(
         () => () => {}
       ),
@@ -274,6 +278,69 @@ describe("ChatSidebarContext", () => {
       expect(screen.getByTestId("active-sidebar-tab")).toHaveTextContent("browser");
     } finally {
       rendered.unmount();
+      resetBrowserSidebarMocks();
+    }
+  });
+
+  it("closes the tab Main asks to close, whether an agent or the person opened it", async () => {
+    let onOpenTabRequested:
+      | ((request: { tabId: string; url: string }) => void)
+      | undefined;
+    let onCloseTabRequested: ((request: { tabId: string }) => void) | undefined;
+    nativeBridge.platform = "electron";
+    nativeBridge.browserSidebar.close.mockClear();
+    nativeBridge.browserSidebar.onOpenTabRequested.mockImplementation((listener) => {
+      onOpenTabRequested = listener;
+      return () => undefined;
+    });
+    nativeBridge.browserSidebar.onCloseTabRequested.mockImplementation((listener) => {
+      onCloseTabRequested = listener;
+      return () => undefined;
+    });
+    const rendered = render(
+      <ChatSidebarProvider>
+        <SidebarRegistryHarness />
+      </ChatSidebarProvider>
+    );
+    const hostKey = chatSidebarHostKey(commaCenterHost);
+
+    try {
+      await waitFor(() => expect(onCloseTabRequested).toBeTypeOf("function"));
+      fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+      const personTabId = screen.getByTestId("active-browser-id").textContent ?? "";
+      expect(personTabId).not.toBe("none");
+      act(() => {
+        onOpenTabRequested?.({
+          tabId: "tab-from-main",
+          url: "https://example.com/from-main",
+        });
+      });
+      expect(screen.getByTestId("active-browser-id")).toHaveTextContent(
+        "tab-from-main"
+      );
+
+      act(() => onCloseTabRequested?.({ tabId: "tab-from-main" }));
+      expect(screen.getByTestId("active-browser-id")).toHaveTextContent(personTabId);
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.close).toHaveBeenCalledWith({
+          sessionId: chatSidebarBrowserPageSessionId(hostKey, "tab-from-main"),
+        })
+      );
+      expect(nativeBridge.browserSidebar.close).not.toHaveBeenCalledWith({
+        sessionId: chatSidebarBrowserPageSessionId(hostKey, personTabId),
+      });
+
+      act(() => onCloseTabRequested?.({ tabId: personTabId }));
+      expect(screen.getByTestId("active-browser-id")).toHaveTextContent("none");
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.close).toHaveBeenCalledWith({
+          sessionId: chatSidebarBrowserPageSessionId(hostKey, personTabId),
+        })
+      );
+    } finally {
+      rendered.unmount();
+      nativeBridge.browserSidebar.close.mockClear();
+      nativeBridge.platform = "web";
       resetBrowserSidebarMocks();
     }
   });
@@ -2325,6 +2392,85 @@ describe("ChatSidebar", () => {
     }
   });
 
+  it("opens a page hidden behind a full-window overlay and shows it once the overlay leaves", async () => {
+    resetBrowserSidebarMocks();
+    nativeBridge.platform = "electron";
+    const bounds = mockBrowserSidebarBounds();
+    const suppressionClaim = "overlay-before-open";
+
+    try {
+      renderSidebarRouter();
+      act(() => claimNativeSurfaceSuppression(suppressionClaim));
+      fireEvent.click(await screen.findByRole("button", { name: "Open browser" }));
+      // An agent's open-tab waits for this page to load, so it opens while the
+      // overlay is up, without painting over it.
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledWith(
+          expect.objectContaining({ visible: false })
+        )
+      );
+
+      act(() => releaseNativeSurfaceSuppression(suppressionClaim));
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.update).toHaveBeenCalledWith(
+          expect.objectContaining({ visible: true })
+        )
+      );
+    } finally {
+      releaseNativeSurfaceSuppression(suppressionClaim);
+      bounds.mockRestore();
+      resetBrowserSidebarMocks();
+    }
+  });
+
+  it("shows a page that opened hidden when the overlay leaves before the open returns", async () => {
+    resetBrowserSidebarMocks();
+    nativeBridge.platform = "electron";
+    const bounds = mockBrowserSidebarBounds();
+    const suppressionClaim = "overlay-during-open";
+    const open = deferred<Awaited<ReturnType<BrowserSidebarBridge["open"]>>>();
+    let openedSessionId = "";
+    let openedUrl = "";
+    nativeBridge.browserSidebar.open.mockImplementationOnce(async (input) => {
+      openedSessionId = input.sessionId;
+      openedUrl = input.url;
+      return open.promise;
+    });
+
+    try {
+      renderSidebarRouter();
+      act(() => claimNativeSurfaceSuppression(suppressionClaim));
+      fireEvent.click(await screen.findByRole("button", { name: "Open browser" }));
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledWith(
+          expect.objectContaining({ visible: false })
+        )
+      );
+
+      act(() => releaseNativeSurfaceSuppression(suppressionClaim));
+      await act(async () => {
+        open.resolve({
+          ...browserSidebarState(openedSessionId),
+          canGoBack: false,
+          canGoForward: false,
+          loading: false,
+          url: openedUrl,
+        });
+        await open.promise;
+      });
+
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.update).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: openedSessionId, visible: true })
+        )
+      );
+    } finally {
+      releaseNativeSurfaceSuppression(suppressionClaim);
+      bounds.mockRestore();
+      resetBrowserSidebarMocks();
+    }
+  });
+
   it("ignores a browser suppression capture that resolves after viewport unmount", async () => {
     resetBrowserSidebarMocks();
     nativeBridge.platform = "electron";
@@ -2489,6 +2635,7 @@ describe("ChatSidebar", () => {
         sessionId: expect.stringContaining(`${commaCenterSessionId}::`),
         tabId: expect.any(String),
         url: "https://example.com/docs",
+        visible: true,
       });
 
       fireEvent.click(screen.getByTestId("chat-sidebar-toggle"));
@@ -2980,6 +3127,10 @@ function resetBrowserSidebarMocks() {
   nativeBridge.browserSidebar.onChanged.mockImplementation(() => () => undefined);
   nativeBridge.browserSidebar.onOpenTabRequested.mockReset();
   nativeBridge.browserSidebar.onOpenTabRequested.mockImplementation(
+    () => () => undefined
+  );
+  nativeBridge.browserSidebar.onCloseTabRequested.mockReset();
+  nativeBridge.browserSidebar.onCloseTabRequested.mockImplementation(
     () => () => undefined
   );
   nativeBridge.browserSidebar.open.mockReset();

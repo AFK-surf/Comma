@@ -9,12 +9,22 @@ enum class TaskStatusBucket(val wireName: String) {
     NEEDS_REVIEW("needs_review"),
     DONE("done"),
     CANCELLED("cancelled"),
+    LOOPS("loops"),
     ARCHIVED("archived"),
     ;
 
     companion object {
         /** The bucket the core names; in progress for one it does not, since every new task starts there. */
         fun of(wireName: String?): TaskStatusBucket = entries.firstOrNull { it.wireName == wireName } ?: IN_PROGRESS
+
+        /** The bucket a raw server task status folds into (matches `@comma/i18n` `taskStatusBucket`). */
+        fun fromTaskStatus(status: String): TaskStatusBucket = when (status.trim().lowercase()) {
+            "archived" -> ARCHIVED
+            "cancelled", "canceled", "failed", "error" -> CANCELLED
+            "closed", "completed", "done", "success", "succeeded", "terminal" -> DONE
+            "escalated", "needs_review", "ready_for_review", "review", "waiting_for_review" -> NEEDS_REVIEW
+            else -> IN_PROGRESS
+        }
     }
 }
 
@@ -73,8 +83,12 @@ data class TaskSummary(
     val changedAt: Long = 0L,
     /** Where a Task a station hosts runs. Null for any other. */
     val host: TaskHost? = null,
+    /** A still.fail station's chat: its page in still.fail (`https`), where it opens, as no app reaches that station. */
+    val url: String? = null,
     /** What the core says this Task cannot take (`archive`, `pin`, `share`): not offered. */
     val unsupported: Set<String> = emptySet(),
+    /** A Collaborative Task the member hosts: the User ids of the people it was started with; empty for any other. */
+    val together: List<String> = emptyList(),
 ) {
     val isArchived: Boolean get() = bucket == TaskStatusBucket.ARCHIVED || archivedAt > 0
 

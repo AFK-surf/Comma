@@ -1,5 +1,5 @@
 import type { ChatMessagePart } from "@comma/chat-contract";
-import { useCall, type MiniAppVisibility } from "@comma/core-client";
+import { useCall, type MiniAppVia, type MiniAppVisibility } from "@comma/core-client";
 import { taskStatusBucket } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Dialog } from "@comma/ui/components/dialog";
@@ -28,6 +28,8 @@ export type MiniAppTaskState = {
   conversationId: string;
   status: string | undefined;
   reviewVersion: number | undefined;
+  /** Present when the Task is a collaborative Task: Mini Apps open via its collaboration scope. */
+  collaboration?: { group: string; task: string } | undefined;
 };
 export const MiniAppTaskContext = createContext<MiniAppTaskState | undefined>(
   undefined
@@ -128,9 +130,14 @@ export const MessageMiniAppCards = memo(function MessageMiniAppCards({
  * in the right panel; its menu has the other open mode, settings and, while the Task is in review, Publish.
  */
 export function MiniAppMessageCard({ part, live, groupId, workspaceId }: Props) {
+  const task = useContext(MiniAppTaskContext);
+  const via: MiniAppVia =
+    task?.collaboration && task.conversationId === part.conversationId
+      ? { collaboration: task.collaboration }
+      : { workspace: workspaceId };
   const coverUrl = useMiniAppImage(
     !live ? `/v1/comma/apps/${part.appId}/cover?v=${part.appVersion}` : null,
-    { workspace: workspaceId },
+    via,
     true
   );
   return (
@@ -162,6 +169,13 @@ function LiveMiniAppCard({ part, groupId, workspaceId }: Omit<Props, "live">) {
   const [publishing, setPublishing] = useState(false);
   const [settings, setSettings] = useState(false);
   const [gone, setGone] = useState<"unavailable" | "disabled">();
+  const collaboration =
+    task?.collaboration && task.conversationId === part.conversationId
+      ? task.collaboration
+      : undefined;
+  const via: MiniAppVia = collaboration
+    ? { collaboration }
+    : { workspace: workspaceId };
   const target = { appId: part.appId, workspaceId, version: part.appVersion };
   const inReview = miniAppTaskInReview(task, part.conversationId);
 
@@ -188,7 +202,11 @@ function LiveMiniAppCard({ part, groupId, workspaceId }: Omit<Props, "live">) {
           groupId,
           conversationId: part.conversationId,
         },
-        { ...target, name: part.name }
+        {
+          ...target,
+          name: part.name,
+          ...(collaboration ? { collaboration } : {}),
+        }
       );
     else open.inPanel(target);
   };
@@ -231,14 +249,18 @@ function LiveMiniAppCard({ part, groupId, workspaceId }: Omit<Props, "live">) {
         idle={!seen}
         inert
         // A page switch back shows the running preview at once.
-        keepKey={`${workspaceId}/${part.appId}@${part.appVersion}`}
+        keepKey={
+          collaboration
+            ? `collab/${collaboration.group}/${collaboration.task}/${part.appId}@${part.appVersion}`
+            : `${workspaceId}/${part.appId}@${part.appVersion}`
+        }
         known={{ name: part.name, author: "" }}
         onGone={setGone}
         onOpen={openBeside}
         openLabel={messages.mini_app_open_beside_chat()}
         variant="cover"
         version={part.appVersion}
-        via={{ workspace: workspaceId }}
+        via={via}
       />
       {settings ? (
         <MiniAppSettingsDialog

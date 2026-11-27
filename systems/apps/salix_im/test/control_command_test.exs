@@ -870,6 +870,49 @@ defmodule SalixIM.ControlCommandTest do
       assert [{:session_status, _agent, _session}] = StubAgentControl.calls()
     end
 
+    # A tap on the bot's menu names no chat or message: the answer goes to
+    # the person, and a tap delivered again runs nothing.
+    test "a tap on the bot's menu runs its command once and answers in private", ctx do
+      assert {:ok, %{ok: true, status: "command"}} =
+               feishu_menu_tap(ctx, "evt-menu-status", "status")
+
+      assert [{:session_status, _agent, _session}] = StubAgentControl.calls()
+
+      reply = MockFeishuAPI.last_request("/im/v1/messages")
+      assert reply.path == "/open-apis/im/v1/messages"
+      assert reply.body["receive_id"] == "ou_human"
+      assert reply.body["content"] =~ "claude-opus-5"
+
+      assert {:ok, %{ok: true, status: "duplicate"}} =
+               feishu_menu_tap(ctx, "evt-menu-status", "status")
+
+      assert [_once] = StubAgentControl.calls()
+    end
+
+    test "a tap on the bot's menu that is no command reaches the Router once", ctx do
+      {:ok, stored} =
+        SalixIM.ProviderConnects.get_active_connect_by_id(
+          ctx.group_id,
+          ctx.connect["connect_id"],
+          "feishu"
+        )
+
+      for {event_id, key} <- [{"evt-menu-gpt", "newgpttask"}, {"evt-menu-own", "weekly_report"}] do
+        assert {:ok, %{ok: true, status: "queued"}} = feishu_menu_tap(ctx, event_id, key)
+        assert {:ok, %{ok: true, status: "duplicate"}} = feishu_menu_tap(ctx, event_id, key)
+      end
+
+      # The long connection takes the same tap.
+      assert {:ok, %{ok: true, status: "queued"}} =
+               SalixIM.ProviderHTTP.handle_feishu_socket_event(
+                 Map.put(stored, "events", "socket"),
+                 menu_tap_envelope(ctx, "evt-menu-socket", "newclaudetask 修一下 CI")
+               )
+
+      assert StubAgentControl.calls() == []
+      SalixAgent.TestSupport.stop_all_agents()
+    end
+
     # Relayed app content is written by whoever wrote the thing being relayed.
     test "an app-authored message carrying a command is not a command", ctx do
       assert {:ok, %{ok: true}} =
@@ -1144,6 +1187,31 @@ defmodule SalixIM.ControlCommandTest do
       }
     }
 
+    SalixIM.ProviderHTTP.handle_feishu_request(ctx.app_id, envelope, [], Jason.encode!(envelope))
+  end
+
+  defp menu_tap_envelope(ctx, event_id, key) do
+    %{
+      "schema" => "2.0",
+      "header" => %{
+        "event_id" => event_id,
+        "event_type" => "application.bot.menu_v6",
+        "token" => "verify-token",
+        "app_id" => ctx.app_id
+      },
+      "event" => %{
+        "operator" => %{
+          "operator_name" => "Human",
+          "operator_id" => %{"open_id" => "ou_human", "union_id" => "on_human"}
+        },
+        "event_key" => key,
+        "timestamp" => "1700000000"
+      }
+    }
+  end
+
+  defp feishu_menu_tap(ctx, event_id, key) do
+    envelope = menu_tap_envelope(ctx, event_id, key)
     SalixIM.ProviderHTTP.handle_feishu_request(ctx.app_id, envelope, [], Jason.encode!(envelope))
   end
 

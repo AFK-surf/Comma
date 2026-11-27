@@ -42,4 +42,30 @@ describe("useSubscriptionSignIn on desktop", () => {
       ],
     ]);
   });
+
+  it("uses the desktop loopback sign-in for Gemini subscriptions", async () => {
+    const calls: [string, unknown][] = [];
+    const profile = { id: "profile-gemini", source: "gemini" };
+    const core = createScriptedCore({
+      calls: (name, params) => {
+        calls.push([name, params]);
+        return profile;
+      },
+    });
+    const completed = vi.fn();
+    const { result } = renderHook(() => useSubscriptionSignIn("workspace", completed), {
+      wrapper: ({ children }: { children: ReactNode }) => core.wrap(children),
+    });
+    await act(async () => result.current.begin("gemini", { device: false }));
+    await waitFor(() => expect(completed).toHaveBeenCalledWith(profile));
+    expect(calls).toEqual([
+      [
+        "models.signIn.loopback",
+        {
+          workspace: "workspace",
+          provider: "gemini",
+        },
+      ],
+    ]);
+  });
 });

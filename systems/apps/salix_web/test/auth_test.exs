@@ -104,29 +104,6 @@ defmodule SalixWeb.AuthTest do
     assert SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()) == []
   end
 
-  test "compute gateway secret is scoped to compute paths and requires workload identity" do
-    previous = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
-    SystemsRuntime.put_env(:salix_web, :agent_vmm_gateway_control_secret, "compute-secret")
-    on_exit(fn -> restore_env(:salix_web, :agent_vmm_gateway_control_secret, previous) end)
-
-    conn =
-      "compute-secret"
-      |> request_conn("/v1/compute/commands/claim")
-      |> put_req_header("x-agent-vmm-gateway-instance", "gateway-a")
-      |> SalixWeb.Auth.call([])
-
-    assert conn.assigns.auth_role == :compute_gateway
-    assert conn.assigns.gateway_instance_id == "gateway-a"
-
-    refute Map.has_key?(
-             "compute-secret"
-             |> request_conn("/v1/runtime/agents")
-             |> SalixWeb.Auth.call([])
-             |> Map.get(:assigns),
-             :auth_role
-           )
-  end
-
   defp request_conn(token, path) do
     :get
     |> conn(path)

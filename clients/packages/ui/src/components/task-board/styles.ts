@@ -8,8 +8,10 @@ export const TASK_BOARD_COLUMN_WIDTH = 345;
    card's 12/8 padding and shift every row inside it (same reason .comma-content
    paints its outline this way). The inset shadow sits in --tw-inset-shadow, so
    the selected/focus rings can swap --tw-shadow without erasing the stroke. */
-export const taskCardRoot =
-  "box-border flex w-full min-w-0 max-w-full shrink-0 flex-col gap-md overflow-hidden rounded-xl bg-todo-kanban-bg-card-primary px-lg py-md text-left inset-shadow-[0_0_0_var(--border-width-0-5)_var(--color-border-primary)] shadow-xs outline-none transition-[box-shadow,background-color]";
+export const taskCardSurface =
+  "rounded-xl bg-todo-kanban-bg-card-primary inset-shadow-[0_0_0_var(--border-width-0-5)_var(--color-border-primary)] shadow-xs";
+
+export const taskCardRoot = `box-border flex w-full min-w-0 max-w-full shrink-0 flex-col gap-md overflow-hidden px-lg py-md text-left outline-none transition-[box-shadow,background-color] ${taskCardSurface}`;
 
 export const taskCardInteractive =
   "cursor-pointer hover:bg-quaternary-hover active:bg-quaternary-hover group-active/task-card:bg-quaternary-hover focus-visible:shadow-focus-gray";

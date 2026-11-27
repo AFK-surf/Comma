@@ -1,11 +1,18 @@
 defmodule BillingCommerce.PaymentRights do
-  @moduledoc "Compensate only grants and unissued allocations owned by one Stripe payment."
+  @moduledoc """
+  Compensate only grants and unissued allocations owned by one provider payment.
+
+  `payment_id` is a Stripe PaymentIntent id, or a store payment id that
+  `PaidCycles` and one-time purchases recorded as `payment_id` /
+  `provider_payment_id`.
+  """
 
   alias BillingCore.{Credits, Metadata}
 
   def apply(payment_intent_id, event_id, read_provider) do
     repo = SystemsRuntime.fetch_env!(:billing_commerce, :repo)
-    path = "$.*.payment_intent_id ? (@ == #{Jason.encode!(payment_intent_id)})"
+    id = Jason.encode!(payment_intent_id)
+    path = "$.* ? (@.payment_intent_id == #{id} || @.payment_id == #{id})"
 
     accounts =
       Ecto.Adapters.SQL.query!(
@@ -13,6 +20,7 @@ defmodule BillingCommerce.PaymentRights do
         """
         SELECT billing_account_id FROM billing_one_time_purchases WHERE provider_payment_intent_id = $1
         UNION SELECT billing_account_id FROM credit_grants WHERE metadata->>'stripe_payment_intent_id' = $1
+        UNION SELECT billing_account_id FROM credit_grants WHERE metadata->>'provider_payment_id' = $1
         UNION SELECT billing_account_id FROM billing_subscription_cycles WHERE source_metadata->'payment_sources' @? ($2::text)::jsonpath
         """,
         [payment_intent_id, path]
@@ -37,7 +45,7 @@ defmodule BillingCommerce.PaymentRights do
             Ecto.Adapters.SQL.query!(
               repo,
               """
-              SELECT id, source_metadata, period_start, period_end FROM billing_subscription_cycles
+              SELECT id, source_metadata, period_start, period_end, status FROM billing_subscription_cycles
               WHERE billing_account_id = $1 AND source_metadata->'payment_sources' @? ($2::text)::jsonpath
               ORDER BY period_start, id FOR UPDATE
               """,
@@ -48,7 +56,8 @@ defmodule BillingCommerce.PaymentRights do
             Ecto.Adapters.SQL.query!(
               repo,
               """
-              SELECT id FROM credit_grants WHERE billing_account_id = $1 AND metadata->>'stripe_payment_intent_id' = $2
+              SELECT id FROM credit_grants WHERE billing_account_id = $1
+                AND (metadata->>'stripe_payment_intent_id' = $2 OR metadata->>'provider_payment_id' = $2)
               ORDER BY id
               """,
               [account, payment_intent_id]
@@ -82,12 +91,12 @@ defmodule BillingCommerce.PaymentRights do
               end
             end)
 
-          Enum.each(cycles, fn [id, raw, _starts, _ends] ->
+          Enum.each(cycles, fn [id, raw, _starts, _ends, _status] ->
             metadata = Metadata.object(raw)
 
             sources =
               Map.new(metadata["payment_sources"], fn {invoice, source} ->
-                if source["payment_intent_id"] == payment_intent_id,
+                if payment_intent_id in [source["payment_intent_id"], source["payment_id"]],
                   do: {invoice, update_source(source, action)},
                   else: {invoice, source}
               end)
@@ -105,18 +114,20 @@ defmodule BillingCommerce.PaymentRights do
           end)
 
           if action.type == :dispute and action.status in ["won", "warning_closed"] do
-            Enum.each(cycles, fn [id, _, starts, ends] ->
+            Enum.each(cycles, fn [id, _, starts, ends, status] ->
               now = SystemsClock.utc_now()
 
-              if DateTime.compare(starts, now) != :gt and DateTime.compare(ends, now) == :gt,
-                do:
-                  BillingCommerce.PaidCycles.issue_payment_sources(
-                    repo,
-                    account,
-                    id,
-                    starts,
-                    ends
-                  )
+              # A replaced cycle belongs to a period the store already ended.
+              if status != "replaced" and DateTime.compare(starts, now) != :gt and
+                   DateTime.compare(ends, now) == :gt,
+                 do:
+                   BillingCommerce.PaidCycles.issue_payment_sources(
+                     repo,
+                     account,
+                     id,
+                     starts,
+                     ends
+                   )
             end)
           end
 

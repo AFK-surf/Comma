@@ -107,6 +107,9 @@ defmodule CommaWeb.TaskRequestEndpoints do
   def target_avatar(conn, grant_id, avatar_id),
     do: avatar(conn, &TaskRequests.target_avatar(&1, &2, grant_id, avatar_id))
 
+  def grant_avatar(conn, workspace_id, grant_id, avatar_id),
+    do: avatar(conn, &TaskRequests.grant_avatar(&1, &2, workspace_id, grant_id, avatar_id))
+
   defp avatar(conn, read) do
     case conn.assigns do
       %{comma_user: user, comma_session: session} when is_map(user) and is_map(session) ->
@@ -144,14 +147,30 @@ defmodule CommaWeb.TaskRequestEndpoints do
 
   def sent(conn) do
     run(conn, 200, fn user, session ->
-      with {:ok, requests} <- TaskRequests.list_sent(user, session),
-           do: {:ok, %{"data" => requests}}
+      with {:ok, requests} <- TaskRequests.list_sent(user, session) do
+        _ = CommaWeb.TaskRequestReceipts.backfill_missing(requests)
+        {:ok, %{"data" => requests}}
+      end
     end)
   end
 
-  def get_sent(conn, request_id), do: run(conn, 200, &TaskRequests.get_sent(&1, &2, request_id))
+  def get_sent(conn, request_id) do
+    run(conn, 200, fn user, session ->
+      with {:ok, request} <- TaskRequests.get_sent(user, session, request_id) do
+        _ = CommaWeb.TaskRequestReceipts.backfill_missing([request])
+        {:ok, request}
+      end
+    end)
+  end
 
   def withdraw(conn, request_id), do: run(conn, 200, &TaskRequests.withdraw(&1, &2, request_id))
+
+  def hide_sent(conn, request_id) do
+    run(conn, 200, fn user, session ->
+      with :ok <- TaskRequests.hide_sent(user, session, request_id),
+           do: {:ok, %{"hidden" => true}}
+    end)
+  end
 
   def link_preview(conn, token),
     do: run(conn, 200, &Comma.ProviderUserLinks.preview(&1, &2, token))
@@ -203,8 +222,20 @@ defmodule CommaWeb.TaskRequestEndpoints do
   defp error(conn, :forbidden), do: json(conn, 403, %{error: "forbidden"})
 
   # The Router chat Message is billed like any the owner writes there.
-  defp error(conn, {:billing_unavailable, _decision}),
-    do: json(conn, 402, %{error: "billing_unavailable"})
+  defp error(conn, {:billing_unavailable, decision}) do
+    {status, body} = CommaWeb.BillingErrors.billing_response(decision)
+    json(conn, status, body)
+  end
+
+  defp error(conn, {:runs_on, {:billing_unavailable, decision}, _source}) do
+    {status, body} = CommaWeb.BillingErrors.billing_response(decision)
+    json(conn, status, body)
+  end
+
+  defp error(conn, {:task_model_selection_failed, message}) do
+    {status, body} = CommaWeb.BillingErrors.task_model_selection_response(message)
+    json(conn, status, body)
+  end
 
   defp error(conn, :own_workspace), do: json(conn, 409, %{error: "own_workspace"})
 
@@ -212,7 +243,8 @@ defmodule CommaWeb.TaskRequestEndpoints do
        when reason in [
               :task_request_closed,
               :task_request_expired,
-              :task_request_grant_limit
+              :task_request_grant_limit,
+              :task_request_pending
             ],
        do: json(conn, 409, %{error: Atom.to_string(reason)})
 

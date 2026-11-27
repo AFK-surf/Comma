@@ -1,6 +1,7 @@
 import type { ScreenClip, ScreenDeviceId, ScreenQuality } from "@comma/core-client";
 import { uiClock } from "@comma/ui/clock";
 import { useCallback, useSyncExternalStore } from "react";
+import type { DuoPostureId } from "./devices/duoScreens";
 import type { ScreenStreamInput } from "./screenStreamInput";
 import {
   openMeshScreenStream,
@@ -21,10 +22,12 @@ import {
   screenIsLocked,
 } from "./screenFailure";
 import type { ScreenStreamSource, ScreenStreamTarget } from "./ScreenStreamStage";
-import type {
-  ScreenAgentPointer,
-  ScreenCursor,
-  ScreenStreamStats,
+import {
+  linkTone,
+  type ScreenAgentPointer,
+  type ScreenCursor,
+  type ScreenLinkTone,
+  type ScreenStreamStats,
 } from "./screenStreamStats";
 
 /** What a holder of a stream shows. */
@@ -45,6 +48,8 @@ export type HeldScreenStreamView = {
   audio?: boolean | undefined;
   /** An agent's lease on the device lasts now, as its station says. */
   agent?: boolean | undefined;
+  /** The open view's link is weak or bad (its round trip or packet loss, `linkTone`); none: well, or not known. */
+  linkTone?: Exclude<ScreenLinkTone, "ok"> | undefined;
 };
 
 export type HeldScreenStream = {
@@ -61,6 +66,8 @@ export type HeldScreenStream = {
   retry(): void;
   /** Sets the screen's clipboard and, with `paste`, pastes it there: the station takes it only while the view drives. */
   setClipboard(clip: ScreenClip, paste: boolean): void;
+  /** Moves a device that folds to one of its postures; nothing where the stream is not over the mesh. */
+  setPosture(posture: DuoPostureId): void;
   /**
    * Hears each copy made on the screen while the stream drives, until the returned function. One holder hears it, the
    * first that listens: a copy goes onto this device's clipboard once.
@@ -84,6 +91,7 @@ type SharedStream = {
   copiedListeners: Set<(clip: ScreenClip) => void>;
   send(input: ScreenStreamInput): void;
   setClipboard(clip: ScreenClip, paste: boolean): void;
+  setPosture(posture: DuoPostureId): void;
   repaint(): void;
   retry(): void;
   close(): void;
@@ -259,6 +267,7 @@ function open(
     copiedListeners: new Set(),
     send: (input) => peer.send(input),
     setClipboard: (clip, paste) => peer.setClipboard?.(clip, paste),
+    setPosture: (posture) => peer.setPosture?.(posture),
     repaint: () => peer.repaint?.(),
     retry: () => {
       if (shared.view.state !== "failed") return;
@@ -281,6 +290,12 @@ function open(
     cancelClose: undefined,
   };
   streams.set(key, shared);
+  // The link's tone to who holds it, as it changes: the bars say it without the panel reading the statistics.
+  const toneNow = () => {
+    const tone = linkTone(shared.stats);
+    const next = tone === "ok" ? undefined : tone;
+    if (shared.view.linkTone !== next) publish(key, shared, { linkTone: next });
+  };
   const mesh = options.source.view;
   const start = (): ScreenStreamPeer =>
     openMeshScreenStream({
@@ -315,6 +330,12 @@ function open(
       send: mesh.send,
       onStream: (media) => publish(key, shared, { media }),
       onState: (state) => {
+        // (a stream that failed has no link to tell of)
+        if (state === "failed") {
+          shared.stats.rtt = undefined;
+          shared.stats.loss = undefined;
+          toneNow();
+        }
         if (looking && state !== "live") return;
         publish(key, shared, {
           state,
@@ -395,7 +416,10 @@ function open(
         if (screenAudioMuted(options.source.key)) return;
         (player ??= createScreenAudioPlayer()).play(data);
       },
-      onStats: (stats) => Object.assign(shared.stats, stats),
+      onStats: (stats) => {
+        Object.assign(shared.stats, stats);
+        if ("rtt" in stats || "loss" in stats) toneNow();
+      },
       onFrame: (bytes) => {
         shared.stats.frames = (shared.stats.frames ?? 0) + 1;
         shared.stats.bytes = (shared.stats.bytes ?? 0) + bytes;
@@ -505,6 +529,7 @@ export function holdScreenStream(
     },
     retry: () => held.retry(),
     setClipboard: (clip, paste) => held.setClipboard(clip, paste),
+    setPosture: (posture) => held.setPosture(posture),
     onCopied(listener) {
       held.copiedListeners.add(listener);
       return () => void held.copiedListeners.delete(listener);

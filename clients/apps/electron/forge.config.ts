@@ -11,6 +11,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import {
+  locationUsageDescription,
+  microphoneUsageDescription,
   notificationSoundPath,
   prepareDevElectronBundle,
 } from "./scripts/dev-electron-bundle";
@@ -132,12 +134,9 @@ const config: ForgeConfig = {
       // it the tap fails closed instead of prompting.
       NSCameraUsageDescription:
         "Websites you allow can use your camera for video meetings.",
-      NSMicrophoneUsageDescription:
-        "Comma uses your microphone for recording and for websites you allow, including meeting calls.",
-      NSLocationUsageDescription:
-        "Comma shares your location with an Agent when you allow its request.",
-      NSLocationWhenInUseUsageDescription:
-        "Comma shares your location with an Agent when you allow its request.",
+      NSMicrophoneUsageDescription: microphoneUsageDescription,
+      NSLocationUsageDescription: locationUsageDescription,
+      NSLocationWhenInUseUsageDescription: locationUsageDescription,
       NSAudioCaptureUsageDescription:
         "Comma records meeting audio playing on this Mac so it can transcribe and summarize it.",
       NSScreenCaptureUsageDescription:

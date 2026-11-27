@@ -453,13 +453,28 @@ defmodule SalixIM.Provider.Feishu.API do
           "Feishu write outcome unknown after HTTP #{status}; do not blindly retry without a read-after-write check"}
 
   defp decode_response(
-         {:ok, %{status: status, body: %{"code" => code, "msg" => msg}}},
+         {:ok, %{status: status, body: %{"code" => code, "msg" => msg}} = response},
          _method
        ),
-       do: {:error, provider_error(code, msg, status)}
+       do: {:error, provider_error(code, msg, status, log_id(response))}
 
-  defp decode_response({:ok, %{status: status}}, _method),
-    do: {:error, "Feishu HTTP #{status}"}
+  # Any other answer. Req decodes only an `application/json` body, so a JSON
+  # body of another content type is decoded here. Of a body of another shape
+  # only its integer code is kept: its text may hold content.
+  defp decode_response({:ok, %{status: status} = response}, _method) do
+    log_id = log_id(response)
+
+    case json_body(response.body) do
+      %{"code" => code, "msg" => msg} when is_integer(code) and code != 0 and is_binary(msg) ->
+        {:error, provider_error(code, msg, status, log_id)}
+
+      %{"code" => code} when is_integer(code) and code != 0 ->
+        {:error, provider_error(code, nil, status, log_id)}
+
+      _ ->
+        {:error, "Feishu HTTP #{status}" <> log_id_suffix(log_id)}
+    end
+  end
 
   defp decode_response({:error, reason}, method) when method in [:post, :put, :patch, :delete],
     do:
@@ -468,6 +483,39 @@ defmodule SalixIM.Provider.Feishu.API do
 
   defp decode_response({:error, reason}, _method),
     do: {:error, "Feishu request failed: #{inspect(reason)}"}
+
+  defp json_body(body) when is_map(body), do: body
+
+  defp json_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _ -> nil
+    end
+  end
+
+  defp json_body(_body), do: nil
+
+  # Feishu's id of the request: the `x-tt-logid` header, or the envelope's
+  # `error.log_id`. Kept only as a short alphanumeric token.
+  defp log_id(response) do
+    headers = Map.get(response, :headers, %{})
+
+    header =
+      if is_map(headers),
+        do: List.wrap(Map.get(headers, "x-tt-logid")),
+        else: for({"x-tt-logid", value} <- List.wrap(headers), do: value)
+
+    body =
+      case json_body(Map.get(response, :body)) do
+        %{"error" => %{"log_id" => id}} -> [id]
+        _ -> []
+      end
+
+    Enum.find(header ++ body, &(is_binary(&1) and &1 =~ ~r/\A[A-Za-z0-9]{1,64}\z/))
+  end
+
+  defp log_id_suffix(nil), do: ""
+  defp log_id_suffix(log_id), do: " (log_id #{log_id})"
 
   @external_chat_action " The bot cannot read an external chat, and no app permission changes that. Read it as a member who signed in: pass account (feishu.list_accounts). A member who has not signed in can do so through oauth.request_authorization."
 
@@ -497,9 +545,12 @@ defmodule SalixIM.Provider.Feishu.API do
 
   def missing_scope(_reason), do: nil
 
-  @doc "Maps a Feishu response code to a safe, actionable operator error."
-  @spec provider_error(term(), term(), integer()) :: String.t()
-  def provider_error(code, msg, status) do
+  @doc """
+  Maps a Feishu response code to a safe, actionable operator error. A nil
+  `msg` leaves the message out; a `log_id` (Feishu's request id) is appended.
+  """
+  @spec provider_error(term(), term(), integer(), String.t() | nil) :: String.t()
+  def provider_error(code, msg, status, log_id \\ nil) do
     action =
       case code do
         code when code in [99_991_672, 99_991_679, 230_027, 234_019] ->
@@ -562,7 +613,8 @@ defmodule SalixIM.Provider.Feishu.API do
 
     action = if external_chat?(code, msg), do: @external_chat_action, else: action
 
-    "Feishu API error #{code} (HTTP #{status}): #{msg}.#{action}"
+    message = if is_nil(msg), do: "", else: ": #{msg}"
+    "Feishu API error #{code} (HTTP #{status})#{message}.#{action}" <> log_id_suffix(log_id)
   end
 
   # The app identity cannot open an external chat, whatever its scopes.
@@ -585,7 +637,7 @@ defmodule SalixIM.Provider.Feishu.API do
     do: {:ok, %{"app_id" => str(connect["app_id"]), "app_secret" => secret}}
 
   defp tenant_app(connect) do
-    case ProviderAppStore.get_feishu_tenant_app(str(connect["tenant_id"])) do
+    case ProviderAppStore.get_feishu_tenant_app(str(connect["tenant_id"]), str(connect["app_id"])) do
       {:ok, app} when is_map(app) ->
         case {str(app["app_id"]), str(connect["app_id"])} do
           {"", _connect_app_id} -> {:ok, app}

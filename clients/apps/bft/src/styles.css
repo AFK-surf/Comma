@@ -418,6 +418,12 @@ body {
   padding: 14px 28px 0;
 }
 
+.bft-section-flash {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .bft-state .bft-flash {
   width: auto;
   padding: 0 0 12px;
@@ -431,10 +437,18 @@ body {
 
 .bft-notice.bft-flash-notice {
   flex-direction: row;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   border-left-color: var(--bft-line-strong);
+}
+
+/* The dismiss button sits on the notice's first line, however many it wraps to. */
+.bft-flash-dismiss {
+  display: flex;
+  height: 1lh;
+  flex: none;
+  align-items: center;
 }
 
 .bft-notice.bft-flash-notice[data-kind="error"] {
@@ -915,6 +929,33 @@ body {
   color: var(--bft-text-3);
 }
 
+/* The Swarm that sends a member's daily brief: wide enough for its picker. */
+.bft-table .bft-col-sender {
+  width: 168px;
+}
+
+.bft-stillfail-task-note {
+  margin-top: 2px;
+  color: var(--bft-text-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.bft-table .bft-stillfail-col-state {
+  width: 176px;
+}
+
+.bft-table .bft-stillfail-col-waiting {
+  width: 210px;
+  max-width: 210px;
+  color: var(--bft-text-2);
+}
+
+.bft-table .bft-stillfail-col-updated {
+  width: 136px;
+  color: var(--bft-text-3);
+}
+
 .bft-status {
   display: inline-flex;
   max-width: 100%;
@@ -973,8 +1014,15 @@ body {
 
 @container (max-width: 470px) {
   .bft-table .bft-col-tokens,
-  .bft-table .bft-col-role {
+  .bft-table .bft-col-role,
+  .bft-members[data-senders] .bft-col-account,
+  .bft-members[data-senders] .bft-col-delivery,
+  .bft-members[data-senders] .bft-col-last {
     display: none;
+  }
+
+  .bft-table .bft-col-sender {
+    width: 136px;
   }
 
   .bft-filter {
@@ -1566,7 +1614,8 @@ p.bft-health-reasons {
 
 /* Dialogs */
 
-.bft-dialog-error {
+.bft-dialog-error,
+.bft-field-error {
   margin: 0;
   color: var(--bft-error);
   font-size: 13px;
@@ -1872,6 +1921,73 @@ p.bft-health-reasons {
   font-size: 13px;
 }
 
+#teams-billing .bft-form-section-head {
+  flex-wrap: wrap;
+}
+
+#teams-billing .bft-form-actions {
+  flex-wrap: wrap-reverse;
+}
+
+.bft-billing-status,
+.bft-billing-channel,
+.bft-billing-fixed-method {
+  display: grid;
+  gap: var(--spacing-xs);
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.bft-billing-status p,
+.bft-billing-fixed-method dd {
+  margin: 0;
+}
+
+.bft-billing-status time,
+.bft-billing-estimate {
+  font-variant-numeric: tabular-nums;
+}
+
+.bft-billing-estimate {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.bft-billing-channel-options {
+  flex-flow: row wrap;
+}
+
+.bft-billing-channel-options .comma-choice-list-option {
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--spacing-md);
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: transparent;
+}
+
+.bft-billing-channel-options .comma-choice-list-key {
+  display: none;
+}
+
+.bft-billing-fields {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, calc(var(--spacing-11xl) + var(--spacing-8xl))), 1fr)
+  );
+  align-items: start;
+  gap: var(--spacing-lg);
+}
+
+.bft-billing-local-link {
+  max-width: 100%;
+  text-align: start;
+  white-space: normal;
+}
+
 .bft-field-label {
   margin: 0;
   color: var(--bft-text-2);
@@ -2032,6 +2148,10 @@ p.bft-health-reasons {
   transform: rotate(90deg);
 }
 
+.bft-model-group-chevron-empty {
+  visibility: hidden;
+}
+
 .bft-model-group-title {
   font-size: 13px;
   font-weight: 500;
@@ -2148,6 +2268,14 @@ p.bft-health-reasons {
   font-size: 13px;
 }
 
+.bft-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .bft-state-page {
   display: flex;
   height: 100dvh;
@@ -2259,12 +2387,17 @@ p.bft-health-reasons {
 /* Agent Swarms */
 
 .bft-table .bft-col-slug {
-  width: 22%;
+  width: 16%;
   color: var(--bft-text-3);
 }
 
+.bft-table .bft-col-search {
+  width: 22%;
+  color: var(--bft-text-2);
+}
+
 .bft-table .bft-col-runtime-id {
-  width: 30%;
+  width: 24%;
   color: var(--bft-text-3);
   font:
     12px ui-monospace,
@@ -2273,8 +2406,103 @@ p.bft-health-reasons {
     monospace;
 }
 
+.bft-table tbody tr.bft-dept-row th,
+.bft-table tbody tr.bft-dept-row td {
+  background: var(--bft-sidebar);
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.bft-table tbody tr.bft-dept-row:hover th,
+.bft-table tbody tr.bft-dept-row:hover td {
+  background: var(--bft-sidebar);
+}
+
+/* A department heading scrolls with its rows (only the column headers stay on
+   top) and may run on into the empty identifier cell beside it, which is about
+   16% of the table wide, instead of cutting the name short. */
+.bft-table tbody tr.bft-dept-row th {
+  position: static;
+  z-index: auto;
+}
+
+.bft-table tbody tr.bft-dept-row .bft-dept-heading {
+  max-width: calc(100% + 15cqw);
+}
+
+@container (max-width: 470px) {
+  .bft-table tbody tr.bft-dept-row .bft-dept-heading {
+    max-width: 100%;
+  }
+}
+
+.bft-dept-heading {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  color: var(--bft-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bft-dept-actions {
+  overflow: visible;
+  text-align: right;
+  text-overflow: clip;
+}
+
+.bft-table .bft-dept-actions-narrow {
+  display: none;
+}
+
+@container (max-width: 640px) {
+  .bft-table .bft-dept-actions-wide {
+    display: none;
+  }
+
+  .bft-table .bft-dept-actions-narrow {
+    display: table-cell;
+  }
+}
+
+.bft-dept-member-link {
+  padding-left: var(--spacing-lg);
+}
+
+.bft-search-extra {
+  color: var(--bft-text-2);
+  font-size: 12.5px;
+}
+
+.bft-search-scope-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding-bottom: var(--spacing-xs);
+}
+
+.bft-model-group-static {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.bft-dept-dialog-delete {
+  border-top: 1px solid var(--bft-line);
+  padding-top: var(--spacing-md);
+}
+
 @container (max-width: 860px) {
   .bft-table .bft-col-runtime-id {
+    display: none;
+  }
+}
+
+@container (max-width: 620px) {
+  .bft-table .bft-col-search {
     display: none;
   }
 }
@@ -2354,6 +2582,11 @@ p.bft-health-reasons {
   font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A reminder recipient Slack cannot find: a quiet warning after the email. */
+.bft-recipient-unmatched {
+  color: var(--bft-warn);
 }
 
 .bft-plugin-facts {
@@ -3442,6 +3675,48 @@ p.bft-health-reasons {
   flex: 1;
 }
 
+/* A connect's Members choice, its line, and the people with access when external. */
+.bft-connect-members {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.bft-connect-members-scope {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.bft-connect-grants {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.bft-connect-grants-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--bft-line);
+}
+
+.bft-connect-grants > .bft-quiet {
+  padding: 9px 0;
+}
+
+.bft-connect-grant-expiry {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* One repeated group of fields in a form, such as a menu shortcut. */
 .bft-form-group {
   display: flex;
@@ -3963,8 +4238,81 @@ p.bft-health-reasons {
   text-align: center;
 }
 
+/* The Members choice above the code reads as a form field. */
+.bft-lark-scan > .bft-form-field {
+  text-align: start;
+}
+
 .bft-lark-scan-code {
   margin: 0;
   background: #fff;
   border-radius: var(--radius-md);
+}
+
+/* Feishu / Lark triage timeline: one hairline row per batch. The reveal
+   button sits on the row's first line; revealed text opens below it. */
+.bft-lark-triage-row {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+  font-size: 13px;
+}
+
+.bft-lark-triage-row > p {
+  margin: 0;
+}
+
+.bft-lark-triage-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.bft-lark-triage-title {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Each fact stays whole on a narrow screen; the dots go between them. */
+.bft-lark-triage-facts {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0;
+}
+
+.bft-lark-triage-facts > span {
+  white-space: nowrap;
+}
+
+/* The dot ends a line, never starts one. */
+.bft-lark-triage-facts > span:not(:last-child)::after {
+  content: " · ";
+  white-space: pre;
+}
+
+.bft-lark-triage-facts > [data-role="outcome"] {
+  color: var(--bft-text-2);
+}
+
+.bft-lark-triage-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+  border-left: 1px solid var(--bft-line);
+  padding-left: 12px;
+}
+
+.bft-lark-triage-message {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bft-lark-triage-message > p {
+  margin: 0;
 }

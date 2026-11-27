@@ -1,8 +1,12 @@
 package surf.comma.android.shell
 
 import android.view.View
+import android.view.WindowInsets
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.core.graphics.Insets
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.descendants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +41,7 @@ import surf.comma.android.core.CoreApi
 import surf.comma.android.core.TopicValue
 import surf.comma.android.tasks.data.ServerTaskRepository
 import surf.comma.android.tasks.list.TaskActions
+import surf.comma.android.ui.composer.ComposerView
 import surf.comma.android.workspace.CommaApi
 import surf.comma.android.workspace.WorkspaceStore
 
@@ -63,6 +68,57 @@ class TaskDockTest {
                 .put("statusBucket", "in_progress").put("statusFailed", false).put("updatedAt", 1)
             return flowOf(TopicValue.Value(read(JSONObject().put("items", JSONArray().put(task)).put("source", "live-sync")
                 .put("hasMore", false).put("lastSyncedAt", 5))))
+        }
+    }
+
+    @Test fun `an opened Task's composer sits above the navigation bar`() {
+        Robolectric.buildActivity(ComponentActivity::class.java).use { controller ->
+            val activity = controller.get()
+            activity.setTheme(R.style.Theme_Chat)
+            controller.create()
+            val auth = TestAuthRepository(MemorySessions())
+            AuthGraph.install(auth, CoroutineScope(SupervisorJob() + Dispatchers.Unconfined))
+            runBlocking { auth.start(); auth.awaitState<AuthState.Login>() }
+            val sessions = FakeSessions().apply { scopes.value = scope(1) }
+            val tasks = ServerTaskRepository(sessions, Core(), io = Dispatchers.Unconfined).apply { start(); setForeground(true) }
+            val store = WorkspaceStore(activity, auth, tasks, CommaApi(null))
+            val shell = object : Shell {
+                override val activity = activity
+                override val store = store
+                override val actions = TaskActions(activity, store)
+                override fun openRouter(focus: Boolean) = Unit
+                override fun insertIntoRouter(text: String) = Unit
+                override fun openSearch() = Unit
+                override fun notificationsOff(): (() -> Unit)? = null
+            }
+            val navigation = 72
+            // The window hands every dispatch a gesture bar; it dispatches only when insets are asked for.
+            val window = object : FrameLayout(activity) {
+                override fun dispatchApplyWindowInsets(insets: WindowInsets): WindowInsets = super.dispatchApplyWindowInsets(
+                    WindowInsetsCompat.Builder()
+                        .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.of(0, 96, 0, 0))
+                        .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, navigation))
+                        .build().toWindowInsets()!!,
+                )
+            }
+            val dock = TaskDock(shell) { _, _ -> }
+            window.addView(dock)
+            activity.setContentView(window)
+            controller.start().resume().visible()
+            ShadowLooper.idleMainLooper()
+            try {
+                // The Task opens after the window has laid out and dispatched its insets.
+                dock.open("task-a")
+                ShadowLooper.idleMainLooper()
+                val composer = dock.descendants.filterIsInstance<ComposerView>().single()
+                val bottom = IntArray(2).also(composer::getLocationInWindow)[1] + composer.height
+                val dockBottom = IntArray(2).also(dock::getLocationInWindow)[1] + dock.height
+                assertTrue("composer bottom $bottom clears the ${navigation}px bar at ${dockBottom - navigation}",
+                    bottom <= dockBottom - navigation + 1)
+            } finally {
+                dock.release()
+                tasks.close()
+            }
         }
     }
 

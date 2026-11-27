@@ -26,13 +26,15 @@ struct CommaCallLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: "phone.fill").font(.system(size: 14, weight: .semibold)).foregroundStyle(CommaTheme.successPrimary)
+                DynamicIslandCompactSymbol(systemName: "phone.fill", maxSize: 13, weight: .semibold)
+                    .foregroundStyle(CommaTheme.successPrimary)
             } compactTrailing: {
                 CallActivityStatus(state: context.state, compact: true)
                     .font(.footnote.monospacedDigit())
                     .frame(maxWidth: 52)
             } minimal: {
-                Image(systemName: "phone.fill").font(.system(size: 12, weight: .semibold)).foregroundStyle(CommaTheme.successPrimary)
+                DynamicIslandCompactSymbol(systemName: "phone.fill", maxSize: 12, weight: .semibold)
+                    .foregroundStyle(CommaTheme.successPrimary)
             }
             .keylineTint(CommaTheme.successPrimary)
 

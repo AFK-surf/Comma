@@ -78,6 +78,38 @@ struct CoreActivityNotificationChannel: ActivityNotificationTransport {
     }
 }
 
+/// The generalized Live Status (`live_status_v1`) push tokens for one session and Workspace,
+/// through the client core (`notifications.registerLiveStatus`, `notifications.unregisterLiveStatus`).
+struct CoreLiveStatusNotificationChannel: LiveStatusNotificationTransport {
+    let core: any CoreAPI
+    let sessionID: String
+    let accountID: String
+    let workspace: Workspace
+    let environment: PushEnvironment
+    let bundleID: String
+    let locale: String
+    let current: @Sendable () async -> Bool
+
+    func register(token: String, activityID: String?, liveKey: String?, registrationID: String) async throws -> NotificationRegistration {
+        var params: [String: Any] = [
+            "session": sessionID, "workspace": workspace.id, "group": workspace.groupID, "token": token,
+            "environment": environment.rawValue, "bundleId": bundleID, "locale": locale, "registration": registrationID,
+        ]
+        if let activityID { params["activity"] = activityID }
+        if let liveKey { params["liveKey"] = liveKey }
+        let answer = try registration(try await refusal { try await core.object("notifications.registerLiveStatus", params) })
+        guard answer.id.caseInsensitiveCompare(registrationID) == .orderedSame else {
+            throw CoreError(code: "bad_response", message: "The registration is another one.")
+        }
+        return answer
+    }
+
+    func retire(id: String, reason: ActivityRetirementReason) async throws {
+        guard await current() else { return }
+        _ = try await refusal { try await core.call("notifications.unregisterLiveStatus", ["id": id, "reason": reason.rawValue]) }
+    }
+}
+
 extension CommaStore {
     /// The device's push slot for the session signed in now.
     func deviceNotificationChannel() throws -> any DeviceNotificationTransport {
@@ -95,6 +127,17 @@ extension CommaStore {
         let id = session.id
         return CoreActivityNotificationChannel(core: core, sessionID: id, accountID: session.user.id, workspace: workspace,
                                                environment: environment, bundleID: bundleID, locale: locale) { [weak self] in
+            await MainActor.run { self?.session?.id == id }
+        }
+    }
+
+    /// The generalized Live Status Activity's push tokens for the session signed in now and `workspace`.
+    func liveStatusNotificationChannel(workspace: Workspace, environment: PushEnvironment, bundleID: String,
+                                       locale: String) throws -> any LiveStatusNotificationTransport {
+        guard let session else { throw CoreError(code: "signed_out", message: "No one is signed in.") }
+        let id = session.id
+        return CoreLiveStatusNotificationChannel(core: core, sessionID: id, accountID: session.user.id, workspace: workspace,
+                                                 environment: environment, bundleID: bundleID, locale: locale) { [weak self] in
             await MainActor.run { self?.session?.id == id }
         }
     }

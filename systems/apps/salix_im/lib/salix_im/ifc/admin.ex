@@ -28,7 +28,7 @@ defmodule SalixIM.IFC.Admin do
   alias SalixIM.ProviderConnects
   alias SalixStore.IFC, as: Store
 
-  @modes ~w(off audit enforce)
+  @modes ~w(off audit enforce hard easy)
   @audience_modes ~w(space members)
   @languages ~w(zh en)
   @placements ~w(internal external)
@@ -52,10 +52,11 @@ defmodule SalixIM.IFC.Admin do
          "group_id" => group_id,
          "tenant_id" => tenant_id,
          "mode" => mode_of(group),
-         "modes" => @modes,
+         "modes" => ~w(off audit hard easy),
          "language" => language_of(group),
          "languages" => @languages,
          "supervisors" => supervisors_of(group),
+         "memory_writers" => memory_writers_of(group),
          "audience_modes" => @audience_modes,
          "connects" => connects
        }}
@@ -278,6 +279,7 @@ defmodule SalixIM.IFC.Admin do
 
   defp mode_of(group) do
     case Map.get(group, "ifc") do
+      %{"mode" => "enforce"} -> "hard"
       %{"mode" => mode} when is_binary(mode) -> if mode in @modes, do: mode, else: "off"
       _absent -> "off"
     end
@@ -302,6 +304,18 @@ defmodule SalixIM.IFC.Admin do
     case Map.get(group, "ifc") do
       %{"supervisors" => keys} when is_list(keys) -> Enum.filter(keys, &is_binary/1)
       _absent -> []
+    end
+  end
+
+  # Who may make the Router change memory: anyone until `restricted`, then
+  # the principal keys in `writers`. Written through the group control API.
+  defp memory_writers_of(group) do
+    case Map.get(group, "memory_writers") do
+      %{"restricted" => restricted, "writers" => keys} when is_list(keys) ->
+        %{"restricted" => restricted == true, "writers" => Enum.filter(keys, &is_binary/1)}
+
+      _absent ->
+        %{"restricted" => false, "writers" => []}
     end
   end
 

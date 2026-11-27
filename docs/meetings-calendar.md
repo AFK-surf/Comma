@@ -3,37 +3,37 @@
 ## Dashboard meeting preparation
 
 BFT organization owners and admins configure team preparation at **Meetings > Preparation settings**.
-Each Agent Swarm uses its existing Salix Group identity. The page creates no second meeting or preparation lifecycle.
+Each Agent Swarm uses its Salix Group identity; the page creates no second meeting or preparation lifecycle.
 `MeetingCalendarSettings` stores the Group's calendar enrollment in Postgres. Only these settings enroll a Group. Deployment config names no Group.
 
 Selected calendars' meeting details become team content in the selected channel.
 
 Research starts twenty minutes before delivery and uses the existing authorized public-source contract.
-With research off, the notice has only the title, time, event and meeting links. It creates no research triggers and does not copy the invitation description.
+With research off, the notice has only the title, time, event and meeting links, creates no research triggers and copies no invitation description.
 An existing personal-reminder rule still schedules attendee DMs without research.
 Calendar writeback and automatic joining are separate opt-in actions.
 
 The `channel_notice` setting (default on) controls the shared pre-meeting notice in the team channel.
-When it is off, the plan schedules no channel card and writes nothing back to the calendar. Saving stores `calendar_writeback` as off.
-Research runs only when personal reminders are on, because the shared report has no other audience. Personal reminders do not change.
-Automatic joining, recording, the meeting thread, and published minutes do not depend on this setting.
+When off, the plan schedules no channel card and no calendar writeback; saving stores `calendar_writeback` as off.
+Research runs only when personal reminders are on: the shared report has no other audience.
+Personal reminders, automatic joining, recording, the meeting thread, and published minutes do not depend on this setting.
 Saving without the field keeps the choice; settings without it post the notice.
 When off, a Slack setting needs no team channel if it joins by `organizer` delivery or only sends personal reminders.
 
 New Dashboard enrollments leave attendee DMs off. Administrators can enable them for the selected bot.
-Enabling DMs needs the OAuth scopes `users:read.email`, `im:write`, and `chat:write`. Existing enabled enrollments stay editable when scope evidence is missing.
+Enabling DMs needs the OAuth scopes `users:read.email`, `im:write`, and `chat:write`. Enabled enrollments stay editable without scope evidence.
 Changing the bot resets the toggle. Saving without the field keeps the existing rule for the same bot.
-The rule uses the `personal_preparation` setting. It applies to attendees matched to Slack accounts and respects their opt-outs.
+The rule (`personal_preparation`) applies to attendees matched to Slack accounts and respects their opt-outs.
 The scope status is the current connection snapshot, not delivery or a grant.
 Team-only plans need shared research completion but no personal recipient roster.
 No Dashboard page sets personal preferences, and the team page never shows personal reports.
 `meeting.preparation.set_personal_reminders` sets them for the trusted Slack, Feishu or Lark requester.
 
 The worker reads saved settings each pass (120 seconds by default). Failures give bounded errors the next pass retries; missing status never shows as an empty calendar.
-The worker runs where a meeting runtime is configured. Without one, the page says so.
+The worker runs where a meeting runtime is configured; otherwise the page says so.
 
 Each save advances the Group's settings revision; new dispatch and preparation effects must match it.
-Pause and scope changes revoke old revisions before new effects are admitted. Messages already accepted into the Conversation log cannot be recalled.
+Pause and scope changes revoke old revisions before new effects are admitted. Messages already in the Conversation log cannot be recalled.
 Revision checks are not atomic with provider writes. Storage failures deny effects until settings can be read.
 Settings reuse the calendar and MeetingPlan authorization and add no release or artifact gate.
 After saved settings exist, keep their table during rollback. Older binaries cannot enforce them, so use forward repair.
@@ -55,19 +55,20 @@ The **Calendar source** setting selects either selected calendars or every membe
 In the members scope, each Google Calendar account connected to the Group adds the calendars it owns (Google `accessRole` `owner`).
 Shared or subscribed calendars are not added. Members connect accounts through the bot's link or Connections.
 There is no account or calendar count limit. Each enrollment pass lists calendars for at most eight new accounts and two accounts not listed for six hours.
-An account without a meeting calendar (failed listing) is listed again after ten minutes. A calendar that cannot sync is left out; the others stay.
+An account without a meeting calendar (failed listing) is not a member and is listed again after ten minutes. A calendar that cannot sync is left out; the others stay.
 The other accounts keep their last listing. A removed account's unit and projection are deleted on the next pass.
-Enrollment runs beside the worker; each connect and account is timed, and a timeout keeps the last enrollment.
+Enrollment runs beside the worker; a timed-out connect or account keeps the last enrollment.
 
 Each account has its own Comma Calendar (`meeting_enrollment_member`), scan unit and projection.
 A scan reads one page of `max_events` indexed items per pass (id order, after the last page), then starts over.
 The projection holds at most `max_events` undispatched meetings; only a meeting missing from its own page counts as gone.
-A member meeting's ID is its meeting URL and start, so one meeting on several members' calendars is handled once.
+A member meeting's ID is its meeting URL and start, so a shared meeting is joined once.
 The first unit that dispatches owns the meeting. Another unit takes it over only before dispatch or for a retry, and only when the owner's projection lost it.
-When a member's copy goes away, that unit drops the meeting and does not abandon it.
+A unit whose copy goes away drops the meeting without abandoning it.
 
 The members scope joins and records its meetings unless `autojoin` is off (saved without it: on); off needs `personal_preparation`. It sends no channel notice, attendee reminder, or calendar writeback.
-With `personal_preparation` on, each meeting is prepared once, as a direct message, by the organizer's own unit or else the first unit that claims it; it goes to the organizer if in Slack, else that unit's member.
+With `personal_preparation` on, one preparer researches each meeting; each member whose calendar holds it gets a direct message; others get none.
+A preparer that is not a member or loses its copy hands over to the next unit that scans it; its plan is cancelled.
 
 A Google source that applies changes marks its Calendar (`SalixMeet.CalendarChanges`); a scan pass reads marked calendars first, in at most three quarters of the pass.
 A join pass first visits units with a meeting in its join window, then continues the rotation. Each due meeting (at most 25 per unit) is dispatched as its own timed task.
@@ -94,19 +95,20 @@ The setting's bot (`connect_id`) gets reminders, join notices and minutes. `dest
 ## Feishu/Lark joins
 
 The destination's bot, else the oldest bot of the link's platform, joins by meeting number (`SalixMeet.LarkBot`); same tenant only, gray release on Lark.
-A meeting not started (121014) stays pending each join pass until its end, spending no attempt. A refusal (settings, lock, password, permission, policy) tells the destination once what the host can change and retries at most every five minutes; passwords are unsupported. An ended or unknown meeting is given up. An invitation to the same meeting makes no second Meeting.
+A meeting not started (121014) stays pending each join pass until its end, spending no attempt. A refusal (settings, lock, password, permission, policy, a bare HTTP 403) tells the destination once why and retries at most every five minutes; passwords are unsupported. An ended or unknown meeting is given up. An invitation to the same meeting makes no second Meeting.
 The minutes carry the meeting's Minutes and AI notes links, read once as the app or a signed-in person.
 Research reads the notice chat and public groups; a personal report cites the notice chat only for its members.
 Lark events have no version; copies on several calendars order by read send time plus a 1,000-value source suffix. Accepted risk: a tie with different facts stops its calendar's discovery until a copy changes.
 
 ## Dashboard meeting history
 
-**Meetings > Upcoming** shows team preparation. **Past meetings** lists ended meetings and material links.
+**Meetings > Upcoming** shows team preparation. The members scope lists each meeting once (up to 25 member projections) with its preparer's reminder state and recipients, marking any Slack cannot find.
+**Past meetings** lists ended meetings and material links.
 History uses the owner and admin boundary and Agent Swarm of the settings.
-The server checks membership and project ownership on each read; preparation need not stay enabled.
+Each read checks membership and project ownership; preparation need not stay enabled.
 
-History includes only the configured public Slack team channel of an active connection in the same tenant and Group; everything else is excluded before the browser. Unknown visibility denies the read.
-Slack checks the user's current access when they open a recording, Canvas, or thread link.
+History includes only the configured public Slack team channel of an active connection in the same tenant and Group; the rest is excluded before the browser. Unknown visibility denies the read.
+Slack checks current access when a recording, Canvas, or thread link is opened.
 The page returns no summaries, transcript bodies, content previews, bot tokens, or storage URLs.
 
 A page is one indexed Group query, at most twenty state reads and one channel lookup, in meeting-ID order; an empty page can have a next one.
@@ -115,25 +117,17 @@ Recording and Canvas links are existing Slack permalinks with publication or sha
 
 ## Personal preparation
 
-An ordinary meeting Worker owns research and wording. The Router starts the Task but does not rewrite the finished preparation.
+An ordinary Worker owns research and wording; Router starts the Task without rewriting its output.
 
-Input is original public material of the meeting's Slack workspace or Feishu/Lark chats.
-`read_shared_source` uses the fixed plan connection and one channel per call.
-Private channels, DMs, email, workspace memory, and direct reads from other integrations are out of scope.
-Unavailable sources prove no absence of work.
+Input is public Slack channels or Feishu/Lark notice/public chats. `read_shared_source` uses the fixed connect, checks visibility before/after reading, and supports `recent_meetings` (pointer-only `complete`|`partial`|`unavailable`, newest first) alongside `history`/`replies`/`search`/`file` (with `unexpanded_threads` and cursor provenance). Research covers intervening notice-channel meetings across titles and expands threads/pages. Private channels, DMs, email, memory, and other integrations are out of scope; missing or incomplete sources prove no absence of work.
 
-Every eligible attendee gets the basic title, time, and links at the reminder time.
-Research adds personal advice only when its sources support it. Missing or failed research does not suppress the basic reminder.
-
-Before model review, require a nonempty non-bot message or admitted file; identity and bot summaries alone fail. Passing proves no claim.
+Every eligible attendee gets the basic title, time, and links at reminder time; research adds advice only when supported and never suppresses the basic reminder. Model review requires a nonempty non-bot message or admitted file (identity and bot summaries alone fail); passing proves no claim.
 
 ## Draft and review sequence
 
-Complete shared research; then per attendee read bounded private context, draft privately, run independent source review before the first save, correct unsupported claims, and save.
+Complete shared research; per attendee read bounded private context, draft privately, run source review before the first save, correct unsupported claims, and save.
 
-The reviewer gets the draft, current UTC, recipient, and source material only. The envelope's `ifc.sources` (displayed `src:` references) must resolve to stored original tool results, also with IFC off, and is the review's source list.
-A private result that lists all recipients cannot flow into one recipient's report or a Task completion message.
-This sequence grants no general permission to read private communications. See [IFC](verification.md) for source and audience rules.
+Review gets the draft, UTC time, recipient, and deduplicated originals (up to 512 KB). `ifc.sources` (`src:` refs) must resolve to stored originals, even with IFC off. Private recipient lists never enter one report or Task final, and this grants no private-communication access ([IFC](verification.md)).
 
 ## Preparation completion
 
@@ -154,7 +148,7 @@ The first saved review is immutable for its revision.
 `personal_reports_pending` covers discovered recipients awaiting reminders.
 The meeting rejects `prepared` until shared and personal research complete.
 
-The schedule discovers recipients independently of the Worker and rechecks at most twenty pending recipients per run.
+The schedule discovers recipients apart from the Worker and rechecks at most twenty pending recipients per run.
 The participant outbox uses a per-person idempotency key. Use one schedule per meeting, without per-person polling.
 Return discovery errors for retry. Do not mark discovery complete before recovery or the deadline.
 If advice loses source authorization, send only the basic reminder.
@@ -174,24 +168,22 @@ An accepted join cannot move to another runtime. Explicit runtime selection keep
 
 A calendar read does not prove admission, nor a finished model request summary delivery; the owner status and error name the failed stage.
 
-If the Google account cannot sign in, the Meet bot joins as a guest. A Meeting that refuses guests fails.
-On node stop, bots leave and deliver results. A killed node loses unfinished recordings.
-Live ASR (`meetings.live_asr`) adds a transcript section per provider. Its failure does not fail the meeting.
+If the Google account cannot sign in, the Meet bot joins as a guest; a Meeting refusing guests fails.
+One active bot per Group serves each Meet code: a join from another thread returns `already_in_meeting` instead of making a second Meeting, and a runtime session reused for another `meeting_id` is refused.
+On node stop, bots leave and deliver results; a killed node loses unfinished recordings.
+Live ASR (`meetings.live_asr`) adds a transcript section per provider without failing the meeting.
 
 ## Google Meet links in Comma chats
 
-A person can ask the Router to join a Google Meet from a Comma chat that the Router takes part in, such as Home.
-The Router decides, as for Slack, and calls `meeting.join` ([CommaProvider](../systems/apps/salix_meet/lib/salix_meet/comma_provider.ex)).
-Worker and Task chats cannot start a join, because `meeting.join` is Router-only.
+A person can ask the Router to join a Google Meet from a Comma chat the Router takes part in, such as Home.
+The Router calls `meeting.join` ([CommaProvider](../systems/apps/salix_meet/lib/salix_meet/comma_provider.ex)); Worker and Task chats cannot join.
 
-- The tool reads the committed Comma user message again; its text must hold the link, and a model `meet_url` must be one of them.
-- The bot joins as a guest (`runtime_policy.join_as = guest`) on the runtime selected for the Meeting attempt.
-- One message makes one join. While a Meeting of the same Meet code runs for the same chat, a later request reuses it: a refused join is retried, a dispatched one is left alone. After it ends, a new request makes a new Meeting.
-- The summary materials of such a Meeting carry the chat's audience, and the summary goes back to that Conversation.
-- A refusal before the join, such as no configured runtime, goes back to the Router as the tool error.
-- After the join request, the Router's messages in the same chat give the status in the sender's app language (`metadata.locale`):
-  joining, waiting for a host, joined, and the reason for a failure. "Joined" comes only from the runtime's `in_meeting` report.
-- After the meeting, the Router writes the notes as for other providers, and Salix posts them in the same chat. No transcript or audio file is attached.
+- The tool rereads the committed Comma user message; its text must hold the link, and a model `meet_url` must be one of them.
+- The bot joins as a guest (`runtime_policy.join_as = guest`) on the selected runtime.
+- One message makes one join. While a Meeting of the same Meet code runs for the same chat, a later request reuses it (a refused join retries; a dispatched one stays). A request from another chat of the same Group returns `already_in_meeting`. After it ends, a new request makes a new Meeting.
+- Summary materials carry the chat's audience, and notes go back to that Conversation without transcript or audio files.
+- A refusal before the join goes back to the Router as the tool error.
+- After the join request, Router messages in the same chat report status in the sender's app language (`metadata.locale`): joining, waiting for a host, joined (only from `in_meeting`), and failure reason.
 
 Keep online replay and provider checks off real meetings without owner approval.
 A replay fixture proves no provider permission or deployed network access.

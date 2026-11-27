@@ -11,8 +11,13 @@ Computer Use helper uses it (`docs/simulator-screen.md`). HIDInjector's `sendHar
 held as long as a person holds it) is still.fail's. `src/screens/sim-chrome.ts` lays out the device's case as serve-sim's
 TypeScript does (`packages/serve-sim/src/devicekit-chrome.ts`, `device-displays.ts`), through still.fail's port.
 
-Crates taken from crates.io and changed for Comma; `[patch.crates-io]` in mesh/ and client/ points at them. Each
+Crates taken from crates.io and changed for Comma; `[patch.crates-io]` in native/mesh/, tools/load/ and the clients'
+mesh crates (clients/packages/mesh/native, clients/packages/mesh/wasm) points at them. Each
 change is marked `ember:` in the source. Drop a crate here once upstream has the same.
+
+iroh and iroh-relay are not here: they come from still.fail's fork, github.com/zzj3720/iroh (branch `stillfail`), at
+one rev that every `[patch.crates-io]` here names, with the noq-proto fork it builds with (github.com/zzj3720/noq).
+A change to iroh goes into that fork, and the rev here moves to it.
 
 - **swarm-discovery 0.6.3**
   - src/receiver.rs: a peer's addresses are read from the answers as well as the additionals, and records with
@@ -30,18 +35,14 @@ change is marked `ember:` in the source. Drop a crate here once upstream has the
   - Without advertising (ember's devices: they only look stations up), the interfaces are still joined.
   - A republish (same addresses and TXT) is not a new discovery: `Peer`'s equality includes when it was seen, so
     every mDNS packet reached the endpoint as new addresses (also reported upstream-side in rayfish/rayfish#161).
-- **iroh 1.0.3** (src/socket/remote_map/remote_state.rs): the Initial packets sent to every known path before one
-  is selected are kept, and sent at once to addresses that Address Lookup finds afterwards. Without it a station
-  found by mDNS a moment after the dial (the relay down or unreachable) was only tried at QUIC's next Initial
-  retransmit, 1 s or 3 s after the first: LAN connections took 1–6 s.
-- **iroh 1.0.3** (src/socket/remote_map/remote_state.rs): a new connection's Initial packets go to every known path
-  while a path is selected too. A connection still open keeps the selected path, so a new connection to a peer whose
-  process restarted on another port was sent to the dead path alone and opened only after the old one timed out (28 s
-  measured), though the relay reached the peer at once (with the change, in well under a second). still.fail's iroh
-  (github.com/zzj3720/iroh bc9fada3) does the same for an endpoint home on several relays; here, for every endpoint.
-- **iroh 1.0.3** (src/socket/biased_rtt_path_selector.rs, src/endpoint.rs): `Builder::custom_transports_last`, a third tier
-  of path below the relay. By default a custom transport (Salix) ranks with direct paths, ahead of the relay, and
-  iroh's selector can be told otherwise only from its tests.
+- **n0-mainline 0.6.0** (src/actor/socket.rs; the phones' mesh only, clients/packages/mesh/native: the DHT lookup of
+  iroh-mainline-address-lookup), from still.fail's vendor/n0-mainline (AFK-surf/still.fail b91a2d754)
+  - A read that fails backs off (50 ms, doubling, at most 2 s), the next read's time kept on the socket so the actor's
+    select dropping a read for another branch does not cut the wait short; from the third failure in a row (~150 ms
+    after the first) the socket is bound anew, the old one closed first so its port can be taken again, else on
+    another. It went straight back to the actor's loop, the socket still readable: an iPhone back from the
+    background kept a core busy (hot, and reaching no station) until the app was killed. Upstream's 0.7.1 still
+    returns at once.
 - **noq-udp 1.3.0** (src/linux.rs): no UDP segmentation offload (GSO) on Android, each datagram sent on its own. An
   Android emulator's network accepts a segmented burst and drops all of it; QUIC on a direct path then got nothing
   through once it sent more than a packet or two at once, until iroh dropped the path 15 s later. The phones' iroh
@@ -51,3 +52,10 @@ change is marked `ember:` in the source. Drop a crate here once upstream has the
   On a machine with two addresses on one network (studio: 192.168.20.10 on the wired VLAN, 192.168.20.107 on Wi-Fi) a
   device that had dialed one got the answer from the other, and the handshake never finished: the station dropped
   what came back as sent to the wrong interface.
+- **noq-udp 1.3.0** (src/unix.rs, src/apple_fast.rs): `recv_single` re-prepares `msghdr` before each `recvmsg` and
+  checks receive errors before `MSG_TRUNC` (backport of n0-computer/noq#884 / GHSA-6pp4-4cxf-xf88), because
+  `netwatch` never calls `set_apple_fast_path` so Apple targets receive through `recv_single` and a single datagram
+  larger than the 1472-byte buffer followed by `EAGAIN` left `MSG_TRUNC` set and spun a core at 100%. Both
+  `recv_single` (`n == 0` with `msg_namelen == 0`) and `recv_via_recvmsg_x` (`msg_count == 0`) return `WouldBlock` on
+  `SS_CANTRCVMORE` EOF so tokio clears readiness instead of reading an uninitialized peer address or spinning on
+  `Ok(0)`.

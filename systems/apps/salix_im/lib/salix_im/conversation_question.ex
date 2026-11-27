@@ -3,7 +3,7 @@ defmodule SalixIM.ConversationQuestion do
   Pure contract for an Agent's question card and the user's answer.
 
   A question is a Message content value, not a separate entity. An Agent puts
-  one `question` block in an ordinary Message: a prompt, two to six choices,
+  one `question` block in an ordinary Message: a prompt, one to six choices,
   and whether several may be picked or a free answer added. Clients render it
   as a card. The answer is an ordinary user Message that replies to the
   question Message and carries one `question_answer` block beside its text.
@@ -15,15 +15,18 @@ defmodule SalixIM.ConversationQuestion do
   """
 
   @max_choices 6
-  @min_choices 2
+  @min_choices 1
   @prompt_bytes 1..2000
   @label_bytes 1..300
   @description_bytes 0..1000
   @reply_bytes 0..2000
   @other_bytes 0..8000
   @choice_id ~r/^[A-Za-z0-9_-]{1,32}$/
-  @question_keys ~w(type prompt choices multi_select allow_other)
-  @choice_keys ~w(id label description reply recommended)
+  @agent_question_keys ~w(type prompt choices multi_select allow_other skip_behavior)
+  @question_keys ~w(type prompt choices multi_select allow_other skip_behavior independent)
+  @choice_keys ~w(id label description reply recommended action)
+  @skip_behaviors ~w(decide dismiss)
+  @choice_actions ~w(reply close)
   @answer_keys ~w(type question_message_id choice_ids other skipped)
   @fallback_marker "question"
 
@@ -168,6 +171,21 @@ defmodule SalixIM.ConversationQuestion do
   def fallback?(%{"type" => "text", "fallback_for" => @fallback_marker}), do: true
   def fallback?(_block), do: false
 
+  @doc """
+  Marks an already-normalized question block as server-owned `independent: true`
+  so clients evaluate its state strictly from explicit `question_answer` blocks
+  targeting its `message_id`. Never callable from agent tool parameters.
+  """
+  @spec mark_independent(term()) :: term()
+  def mark_independent(content) when is_list(content) do
+    Enum.map(content, fn
+      %{"type" => "question"} = block -> Map.put(block, "independent", true)
+      other -> other
+    end)
+  end
+
+  def mark_independent(content), do: content
+
   defp normalize_question(question) do
     choices =
       question["choices"]
@@ -178,7 +196,8 @@ defmodule SalixIM.ConversationQuestion do
           choice
           |> Map.take(@choice_keys)
           |> Map.put_new_lazy("id", fn -> "c#{index}" end)
-          |> drop_blank(["description", "reply"])
+          |> drop_blank(["description", "reply", "action"])
+          |> drop_default("action", "reply")
 
         {label, index} when is_binary(label) ->
           %{"id" => "c#{index}", "label" => label}
@@ -188,10 +207,16 @@ defmodule SalixIM.ConversationQuestion do
       end)
 
     question
-    |> Map.take(@question_keys)
+    |> Map.take(@agent_question_keys)
     |> Map.put("choices", choices)
     |> Map.put("multi_select", question["multi_select"] == true)
     |> Map.put("allow_other", question["allow_other"] != false)
+    |> drop_blank(["skip_behavior"])
+    |> drop_default("skip_behavior", "decide")
+  end
+
+  defp drop_default(map, key, default) do
+    if map[key] == default, do: Map.delete(map, key), else: map
   end
 
   defp drop_blank(map, keys) do
@@ -224,7 +249,7 @@ defmodule SalixIM.ConversationQuestion do
         bad("question prompt must be 1 to 2000 bytes of text")
 
       not (is_list(choices) and length(choices) in @min_choices..@max_choices) ->
-        bad("A question offers 2 to 6 choices")
+        bad("A question offers 1 to 6 choices")
 
       not Enum.all?(choices, &valid_choice?/1) ->
         bad(
@@ -239,8 +264,12 @@ defmodule SalixIM.ConversationQuestion do
         bad("At most one choice is recommended")
 
       not optional_boolean?(question["multi_select"]) or
-          not optional_boolean?(question["allow_other"]) ->
-        bad("multi_select and allow_other are booleans")
+        not optional_boolean?(question["allow_other"]) or
+          not optional_boolean?(question["independent"]) ->
+        bad("multi_select, allow_other and independent are booleans")
+
+      not optional_enum?(question["skip_behavior"], @skip_behaviors) ->
+        bad("skip_behavior must be decide or dismiss")
 
       true ->
         :ok
@@ -251,7 +280,9 @@ defmodule SalixIM.ConversationQuestion do
     keys_within?(choice, @choice_keys) and is_binary(choice["id"]) and
       Regex.match?(@choice_id, choice["id"]) and text_in?(choice["label"], @label_bytes) and
       optional_text?(choice["description"], @description_bytes) and
-      optional_text?(choice["reply"], @reply_bytes) and optional_boolean?(choice["recommended"])
+      optional_text?(choice["reply"], @reply_bytes) and
+      optional_boolean?(choice["recommended"]) and
+      optional_enum?(choice["action"], @choice_actions)
   end
 
   defp valid_choice?(_choice), do: false
@@ -299,6 +330,9 @@ defmodule SalixIM.ConversationQuestion do
   defp optional_text?(value, range), do: is_binary(value) and byte_size(value) in range
 
   defp optional_boolean?(value), do: is_nil(value) or is_boolean(value)
+
+  defp optional_enum?(nil, _allowed), do: true
+  defp optional_enum?(value, allowed), do: is_binary(value) and value in allowed
 
   defp bad(message), do: {:error, {:bad_request, message}}
 end

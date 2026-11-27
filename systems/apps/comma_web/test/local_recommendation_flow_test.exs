@@ -203,22 +203,43 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # The portrait cites the member's first own message; an entry with made-up
     # evidence must not survive.
     defp portrait(input) do
-      [own | _] = input["ownMessages"]
+      own_entries =
+        case input["ownMessages"] do
+          [own | _] ->
+            [
+              %{
+                "kind" => "duty",
+                "text" => "renews the patrol token",
+                "evidence" => [own["permalink"]]
+              },
+              %{
+                "kind" => "duty",
+                "text" => "approves payroll",
+                "evidence" => ["https://example.com/x"]
+              }
+            ]
 
-      %{
-        "entries" => [
-          %{
-            "kind" => "duty",
-            "text" => "renews the patrol token",
-            "evidence" => [own["permalink"]]
-          },
-          %{
-            "kind" => "duty",
-            "text" => "approves payroll",
-            "evidence" => ["https://example.com/x"]
-          }
-        ]
-      }
+          _ ->
+            []
+        end
+
+      interest_entries =
+        case input["personalSignals"] do
+          [signal | _] ->
+            [
+              %{
+                "kind" => "interest",
+                "text" => "follows Steam indie wishlist discounts",
+                "evidence" => [signal["url"]],
+                "watch" => ["term:Steam", "term:Hollow Knight", "term:sale"]
+              }
+            ]
+
+          _ ->
+            []
+        end
+
+      %{"entries" => own_entries ++ interest_entries}
     end
 
     # The first own message is a promise; a thread citing a made-up permalink
@@ -278,6 +299,9 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
                   do: {"high", candidate},
                   else: {"normal", candidate}
 
+              candidate["excerpt"] =~ "verification code" ->
+                {"critical", candidate}
+
               candidate["excerpt"] =~ ~r/approve|Invitation/ or
                   (get_in(candidate, ["context", "text"]) || "") =~ "approval tomorrow" ->
                 {"critical", candidate}
@@ -308,6 +332,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
             "id" => candidate["id"],
             "continues" => continues,
             "repeats" => candidate["excerpt"] =~ "Reminder:",
+            "code" => candidate["excerpt"] =~ "verification code",
             "role" => role(candidate),
             "link" => link(candidate),
             "decision" => decision(level),
@@ -738,6 +763,9 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
         {"/api/conversations.replies", nil} ->
           %{"ok" => true, "messages" => Map.get(state, :replies, [])}
+
+        {"/api/conversations.history", nil} ->
+          %{"ok" => true, "messages" => Map.get(state, :history, [])}
       end
     end
 
@@ -791,14 +819,22 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
             Req.Test.json(conn, %{"data" => data})
           end
 
-        # The screening reads a matter's links first; this test records none.
-        "/repos/" <> _ ->
-          conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"message" => "Not Found"})
+        # The screening reads a matter's links first; this test records none unless given.
+        "/repos/" <> rest ->
+          case state[:repos][rest] do
+            %{} = payload -> Req.Test.json(conn, payload)
+            _ -> conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"message" => "Not Found"})
+          end
       end
     end
   end
 
   # Collection tests observe the durable handoff, not a second LLM turn.
+  defmodule UnavailableSchedules do
+    def create(_id, _params), do: {:error, :unavailable}
+    def delete(_id), do: :ok
+  end
+
   defmodule RouterDelivery do
     def notify_conversation(agent, source),
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
@@ -2102,6 +2138,150 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
              CommaWeb.MemberPortrait.statements(Map.put(workspace, "router_agent_id", agent))
   end
 
+  test "daily portrait refresh reads filtered personalSignals from real pool rows and isolates Slack and Web Radar" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    agent = workspace["router_agent_id"]
+
+    outlook_source = %{
+      "appId" => "outlook",
+      "appName" => "Outlook",
+      "toolkit" => "outlook",
+      "kind" => "composio",
+      "connectionId" => "conn-outlook-personal",
+      "label" => "Outlook",
+      "enabled" => true
+    }
+
+    gmail_source = %{
+      "appId" => "gmail",
+      "appName" => "Gmail",
+      "toolkit" => "gmail",
+      "kind" => "composio",
+      "connectionId" => "conn-gmail-personal",
+      "label" => "Gmail",
+      "enabled" => true
+    }
+
+    {:ok, profile} =
+      Recommendations.reconcile_discovered_sources(profile.id, [outlook_source, gmail_source])
+
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+
+    outlook_id = "conn-outlook-personal"
+    gmail_id = "conn-gmail-personal"
+    now = SystemsClock.utc_now()
+
+    {:ok, _} =
+      Comma.MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            outlook_id => %{
+              "toolkit" => "outlook",
+              "app" => "Outlook",
+              "subject" => %{"email" => "kai@example.com"},
+              "bound" => %{"truncated" => false},
+              "items" => [
+                %{
+                  "item_key" => "mail:steam-wishlist",
+                  "toolkit" => "outlook",
+                  "app" => "Outlook",
+                  "url" => "https://outlook.office.com/mail/inbox/id/steam-wishlist",
+                  "title" => "Steam Wishlist Sale",
+                  "excerpt" => "Steam Wishlist Sale",
+                  "context" => %{
+                    "text" => "Hollow Knight historical low -60% and Hades II on sale."
+                  },
+                  "relationship" => "your_recent_inbox_and_upcoming_events",
+                  "facts" => %{"messageTimestamp" => "2026-11-27T02:15:00Z"},
+                  "provider_ids" => %{"messageId" => "m-steam-1"}
+                },
+                %{
+                  "item_key" => "cal:legal-1on1",
+                  "toolkit" => "outlook",
+                  "app" => "Outlook",
+                  "url" => "https://outlook.office.com/calendar/item/cal-legal-1",
+                  "title" => "1:1 with Legal",
+                  "excerpt" => "1:1 with Legal",
+                  "context" => %{"text" => "Quarterly contract review"},
+                  "relationship" => "your_recent_inbox_and_upcoming_events",
+                  "facts" => %{"start" => "2026-11-27T04:00:00Z", "attendeeCount" => 1},
+                  "provider_ids" => %{"eventId" => "ev-legal-1"}
+                }
+              ]
+            },
+            gmail_id => %{
+              "toolkit" => "gmail",
+              "app" => "Gmail",
+              "subject" => %{"email" => "kai@example.com"},
+              "bound" => %{"truncated" => false},
+              "items" => [
+                %{
+                  "item_key" => "mail:steam-guard-otp",
+                  "toolkit" => "gmail",
+                  "app" => "Gmail",
+                  "url" => "https://mail.google.com/mail/u/0/#inbox/steam-guard",
+                  "title" => "Steam Guard",
+                  "excerpt" => "Steam Guard",
+                  "context" => %{"text" => "Your verification code is 849201 to sign in."},
+                  "relationship" => "awaiting_your_reply",
+                  "facts" => %{"messageTimestamp" => "2026-11-27T02:20:00Z"},
+                  "provider_ids" => %{"messageId" => "m-otp-1"}
+                }
+              ]
+            }
+          },
+          failed: %{}
+        },
+        [outlook_id, gmail_id],
+        now
+      )
+
+    # DB-backed personal_signals/1 reads real context["text"] and excludes calendar + body OTPs.
+    signals = CommaWeb.MemberPortrait.personal_signals(profile)
+    assert [single] = signals
+    assert single["title"] == "Steam Wishlist Sale"
+    assert single["excerpt"] =~ "Hollow Knight historical low"
+    refute Enum.any?(signals, &(&1["title"] =~ "Legal" or &1["title"] =~ "Steam Guard"))
+
+    {:ok, _grant} =
+      BillingCore.Credits.issue_grant(%{
+        repo: BillingCore.Repo,
+        billing_account_id: workspace["billing_account_id"],
+        credits: 100,
+        valid_from: ~U[2026-06-17 00:00:00Z],
+        expires_at: DateTime.add(now, 30, :day),
+        source_type: "manual_contract",
+        source_id: "portrait-interest-e2e:#{workspace["id"]}",
+        source_event_id: "portrait-interest-e2e:#{workspace["id"]}",
+        idempotency_key: "portrait-interest-e2e:#{workspace["id"]}"
+      })
+
+    assert :ok = perform_job(CommaWeb.MemberPortrait, %{"profile_id" => profile.id})
+    {:ok, note} = SalixAgent.AgentWorkspace.read(agent, "/memory/semantic/user.md")
+    assert note =~ "About you · interest: follows Steam indie wishlist discounts"
+    assert note =~ "term:Steam"
+    assert note =~ "term:Hollow Knight"
+    refute note =~ "term:sale"
+
+    statements = CommaWeb.MemberPortrait.statements(Map.put(workspace, "router_agent_id", agent))
+    targets = CommaWeb.MemberPortrait.targets(statements)
+
+    assert CommaWeb.MemberPortrait.web_radar_terms(statements) == []
+    assert targets["work_terms"] == []
+    assert targets["terms"] == ["Steam", "Hollow Knight"]
+
+    hourly_window = ~U[2026-11-27 03:05:00Z]
+
+    assert %{"memberTargets" => %{"terms" => ["Steam", "Hollow Knight"]}} =
+             CommaWeb.MemberPortrait.with_targets(%{"appId" => "gmail"}, targets, hourly_window)
+
+    refute Map.has_key?(
+             CommaWeb.MemberPortrait.with_targets(%{"appId" => "slack"}, targets, hourly_window),
+             "memberTargets"
+           )
+  end
+
   test "the daily glossary adds names the owner's material shows and keeps the Router's lines" do
     {_user, workspace, _profile, _token} = generation_fixture!()
     agent = workspace["router_agent_id"]
@@ -2148,6 +2328,145 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert :ok = perform_job(CommaWeb.MemberGlossary, %{args | "date" => "2026-11-11"})
     assert length(DraftLLM.requests()) == asked
     assert {:ok, ^note} = SalixAgent.AgentWorkspace.read(agent, "/memory/semantic/glossary.md")
+  end
+
+  test "portrait and glossary check storage authorization before LLM and periodic workers dedupe cancelled jobs" do
+    {_user, workspace, profile, _token} = generation_fixture!()
+    agent = workspace["router_agent_id"]
+
+    # Seed new glossary material so MemberGlossary would otherwise call the model.
+    {:ok, people_event} =
+      SalixAgent.AgentWorkspace.prepare_write(
+        agent,
+        "/memory/semantic/people.md",
+        "- Heyang Zhou: colleague\n"
+      )
+
+    {:ok, _} =
+      SalixAgent.AgentActor.commit_workspace_operation(agent, "seed:people", %{}, [people_event],
+        storage_authorized: true
+      )
+
+    # Revoke any bootstrap credit grants so real BillingCore storage authorization sees 0 credits.
+    Ecto.Adapters.SQL.query!(
+      BillingCore.Repo,
+      "UPDATE credit_grants SET status = 'revoked', updated_at = now() WHERE billing_account_id = $1",
+      [workspace["billing_account_id"]]
+    )
+
+    asked_before = length(DraftLLM.requests())
+
+    # Zero storage credits: both Portrait and Glossary cancel before making any LLM call.
+    assert {:cancel, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+             perform_job(CommaWeb.MemberPortrait, %{"profile_id" => profile.id})
+
+    assert {:cancel, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+             perform_job(CommaWeb.MemberGlossary, %{
+               "workspace_id" => workspace["id"],
+               "date" => "2026-11-10"
+             })
+
+    assert length(DraftLLM.requests()) == asked_before
+
+    # Transient billing infrastructure error retries instead of cancelling.
+    prev_storage_mod = SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod)
+
+    on_exit(fn ->
+      restore_env(:salix_agent, :storage_authorization_mod, prev_storage_mod)
+    end)
+
+    defmodule TransientStorageAuth do
+      @behaviour SalixAgent.StorageAuthorization
+
+      @impl true
+      def authorize_write(_attrs),
+        do: {:error, {:billing_unavailable, %{reason: "fee_control_error"}}}
+    end
+
+    SystemsRuntime.put_env(:salix_agent, :storage_authorization_mod, TransientStorageAuth)
+
+    assert {:error, {:billing_unavailable, %{reason: "fee_control_error"}}} =
+             perform_job(CommaWeb.MemberPortrait, %{"profile_id" => profile.id})
+
+    assert length(DraftLLM.requests()) == asked_before
+
+    # Commit-time storage authorization remains enforced if balance flips after preflight.
+    {:ok, _} = Agent.start_link(fn -> 0 end, name: :toctou_storage_counter_agent)
+
+    on_exit(fn ->
+      if pid = Process.whereis(:toctou_storage_counter_agent), do: Agent.stop(pid)
+    end)
+
+    defmodule FlipAfterPreflightStorageAuth do
+      @behaviour SalixAgent.StorageAuthorization
+
+      @impl true
+      def authorize_write(_attrs) do
+        n =
+          Agent.get_and_update(:toctou_storage_counter_agent, fn count -> {count, count + 1} end)
+
+        if n == 0,
+          do: :ok,
+          else: {:error, {:billing_unavailable, %{reason: "insufficient_credits"}}}
+      end
+    end
+
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :storage_authorization_mod,
+      FlipAfterPreflightStorageAuth
+    )
+
+    assert {:cancel, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+             perform_job(CommaWeb.MemberPortrait, %{"profile_id" => profile.id})
+
+    assert length(DraftLLM.requests()) == asked_before + 1
+
+    assert {:error, :not_found} =
+             SalixAgent.AgentWorkspace.read(agent, "/memory/semantic/user.md")
+
+    restore_env(:salix_agent, :storage_authorization_mod, prev_storage_mod)
+
+    # Cancelled periodic jobs deduplicate within their unique window; discarded daily jobs do not.
+    prev_wr_enabled = SystemsRuntime.get_env(:comma_web, :proactive_web_radar_enabled)
+    prev_exa_key = SystemsRuntime.get_env(:salix_agent, :exa_api_key)
+
+    on_exit(fn ->
+      restore_env(:comma_web, :proactive_web_radar_enabled, prev_wr_enabled)
+      restore_env(:salix_agent, :exa_api_key, prev_exa_key)
+    end)
+
+    SystemsRuntime.put_env(:comma_web, :proactive_web_radar_enabled, true)
+    SystemsRuntime.put_env(:salix_agent, :exa_api_key, "test-exa-key")
+    now = SystemsClock.utc_now()
+
+    for {worker, enqueue_fn} <- [
+          {CommaWeb.MemberPortrait, fn -> CommaWeb.MemberPortrait.enqueue(profile) end},
+          {CommaWeb.MemberGlossary, fn -> CommaWeb.MemberGlossary.enqueue(workspace["id"]) end},
+          {CommaWeb.OpenThreads, fn -> CommaWeb.OpenThreads.enqueue(profile) end},
+          {CommaWeb.ProactiveWebRadar, fn -> CommaWeb.ProactiveWebRadar.enqueue(profile) end}
+        ] do
+      assert {:ok, %Oban.Job{id: job_id, conflict?: false}} = enqueue_fn.()
+
+      {1, nil} =
+        Comma.Repo.update_all(
+          from(j in Oban.Job, where: j.id == ^job_id),
+          set: [state: "cancelled", cancelled_at: now]
+        )
+
+      assert {:ok, %Oban.Job{id: ^job_id, conflict?: true}} = enqueue_fn.()
+
+      if worker != CommaWeb.ProactiveWebRadar do
+        {1, nil} =
+          Comma.Repo.update_all(
+            from(j in Oban.Job, where: j.id == ^job_id),
+            set: [state: "discarded", discarded_at: now]
+          )
+
+        assert {:ok, %Oban.Job{id: new_id, conflict?: false}} = enqueue_fn.()
+        assert new_id != job_id
+      end
+    end
   end
 
   test "the daily glossary keeps the correction the owner made in a meeting Task" do
@@ -2267,6 +2586,58 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # Turning the source off deletes its threads with its items.
     {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "generic")
     assert Comma.OpenThreads.list(profile.id) == []
+  end
+
+  test "an open thread that cites a merged GitHub pull request settles during tracking" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    connect_github!(user, workspace)
+    assert :ok = RecommendationRuntime.sync_sources(profile.id)
+    assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])
+    github = Enum.find(profile.sources, &(&1["appId"] == "github"))
+    slack = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
+    {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [github, slack])
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])
+
+    member_github_http!(%{
+      notifications: [],
+      repos: %{
+        "AFK-surf/Cue/pulls/5432" => %{
+          "html_url" => "https://github.com/AFK-surf/Cue/pull/5432",
+          "title" => "fix(daily-brief): keep open work",
+          "state" => "closed",
+          "merged" => true,
+          "draft" => false
+        }
+      }
+    })
+
+    now = SystemsClock.utc_now()
+
+    assert {:ok, %{open: 1}} =
+             Comma.OpenThreads.record(
+               profile.id,
+               slack["connectionId"],
+               "slack",
+               [
+                 %{
+                   "thread_key" => "slack:C9/1761984000.000100",
+                   "kind" => "promised",
+                   "status" => "open",
+                   "summary" => "Ship https://github.com/AFK-surf/Cue/pull/5432",
+                   "quote" => "I'll merge https://github.com/AFK-surf/Cue/pull/5432",
+                   "url" => "https://team.slack.com/archives/C9/p1761984000000100",
+                   "evidence_at" => now,
+                   "checked_ts" => "1761984000.000100"
+                 }
+               ]
+             )
+
+    [open_thread] = Comma.OpenThreads.list(profile.id)
+    open_id = open_thread.id
+
+    assert {[^open_id], %{}, [^open_id]} =
+             CommaWeb.OpenThreads.track(workspace, profile, slack, slack["connectionId"])
   end
 
   test "collection feeds the item pool and hands arrivals the owner must act on to the Router" do
@@ -2413,8 +2784,8 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     assert {:ok,
             %{
-              "automatic_budget" => %{"remaining" => 9, "next_at" => nil},
-              "notification_budget" => %{"remaining" => 5, "next_at" => nil},
+              "automatic_budget" => %{"remaining" => 17, "next_at" => nil},
+              "notification_budget" => %{"remaining" => 10, "next_at" => nil},
               "sources" => sources
             }} = CommaWeb.Proactive.state(%{}, ctx)
 
@@ -2606,6 +2977,49 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run["id"]}})
     assert length(briefing_inputs.()) == 1
+
+    # A Router action on the briefing interrupted after its reservation (here
+    # its reminder schedule is unavailable) leaves that command pending. The
+    # next day's briefing finishes it and still reaches the Router.
+    {:ok, _, home_ctx, home} = CommaWeb.HomeMail.context(user, %{}, group)
+    {:ok, conversation} = SalixIM.Conversations.get_group_conversation_record(group, home)
+
+    briefing_value =
+      SalixIM.MailInteraction.entries(conversation)[CommaWeb.ProactiveBriefing.key()]
+
+    previous_schedules = SystemsRuntime.get_env(:salix_agent, :schedules_mod)
+    SystemsRuntime.put_env(:salix_agent, :schedules_mod, UnavailableSchedules)
+
+    assert {:error, :unavailable} =
+             SalixIM.ConversationServer.mail_interaction(
+               group,
+               home,
+               user["id"],
+               home_ctx.agent_id,
+               %{
+                 "action" => "snooze",
+                 "key" => CommaWeb.ProactiveBriefing.key(),
+                 "generation" => briefing_value["generation"],
+                 "request_id" => "remind-briefing",
+                 "run_at" => SystemsClock.system_time(:millisecond) + 3_600_000
+               }
+             )
+
+    restore_env(:salix_agent, :schedules_mod, previous_schedules)
+
+    {:ok, %{run: next_run}} =
+      Recommendations.begin_schedule_occurrence(profile.id, profile.schedule_id, 1_789_824_400)
+
+    assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => next_run["id"]}})
+    assert length(briefing_inputs.()) == 2
+
+    {:ok, conversation} = SalixIM.Conversations.get_group_conversation_record(group, home)
+
+    briefing_value =
+      SalixIM.MailInteraction.entries(conversation)[CommaWeb.ProactiveBriefing.key()]
+
+    assert briefing_value["state"] == "active"
+    refute Map.has_key?(briefing_value, "pending")
 
     assert Jason.decode!(List.last(messages).content)["candidates"]
            |> Enum.map(& &1["url"])
@@ -2832,10 +3246,10 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
       }
     }
 
-    # As on the owner's staging days: twelve automatic handoffs that the
-    # Router kept quiet about, and five notifications, spend the ordinary
+    # As on the owner's staging days: twenty automatic handoffs that the
+    # Router kept quiet about, and ten notifications, spend the ordinary
     # pools through the production handoff and decision paths.
-    for i <- 1..12 do
+    for i <- 1..20 do
       key = SalixIM.MailInteraction.key("internal", "earlier-#{i}")
 
       assert {:ok, _} =
@@ -2861,7 +3275,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
                  "text" => "Earlier notice #{i}"
                })
 
-      decision = if i <= 5, do: "notify", else: "quiet"
+      decision = if i <= 10, do: "notify", else: "quiet"
 
       assert {:ok, _} =
                CommaWeb.Proactive.act(
@@ -2875,8 +3289,8 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
               "automatic_budget" => %{"remaining" => 0},
               "notification_budget" => %{"remaining" => 0},
               "reserve_budget" => %{
-                "handoff" => %{"remaining" => 4},
-                "notification" => %{"remaining" => 2}
+                "handoff" => %{"remaining" => 6},
+                "notification" => %{"remaining" => 4}
               }
             }} = CommaWeb.Proactive.state(%{}, router_ctx)
 
@@ -2957,7 +3371,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
                router_ctx
              )
 
-    assert {:ok, %{"reserve_budget" => %{"notification" => %{"remaining" => 1}}}} =
+    assert {:ok, %{"reserve_budget" => %{"notification" => %{"remaining" => 3}}}} =
              CommaWeb.Proactive.state(%{}, router_ctx)
 
     # The ordinary review waits with why and when it is judged again; the
@@ -3035,7 +3449,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     assert {:ok,
             %{
-              "reserve_budget" => %{"handoff" => %{"remaining" => 1}},
+              "reserve_budget" => %{"handoff" => %{"remaining" => 3}},
               "next_actions" => next_actions,
               "waiting" => [%{"url" => waiting_url}]
             }} = CommaWeb.Proactive.state(%{}, router_ctx)
@@ -3047,7 +3461,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # Concurrent handoffs cannot overspend the last reserve handoffs: the Home
     # Conversation checks and spends each in one write.
     attempts =
-      for i <- 1..4 do
+      for i <- 1..6 do
         Task.async(fn ->
           SalixIM.ConversationServer.mail_interaction(group, home, owner, ctx.agent_id, %{
             "action" => "present",
@@ -3072,8 +3486,93 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
       end
 
     results = Enum.map(attempts, &SystemsClock.Test.settled_await/1)
-    assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 3
     assert Enum.count(results, &(&1 == {:error, :proactive_budget_exhausted})) == 3
+  end
+
+  test "a code reaches the Router through its own pool while the ordinary pools are spent" do
+    f = withdrawal_fixture!()
+    group = f.workspace["default_group_id"]
+    owner = f.user["id"]
+    {:ok, _workspace, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, group)
+
+    router_ctx = %{
+      agent_id: f.workspace["router_agent_id"],
+      session_id: nil,
+      tenant_id: f.workspace["salix_tenant_id"],
+      group_id: group,
+      trusted_origin: %{
+        "provider" => "internal",
+        "participant_id" => owner,
+        "source_actor_type" => "user"
+      }
+    }
+
+    # Ordinary matters spend the ordinary handoff and notification pools.
+    for i <- 1..20 do
+      key = SalixIM.MailInteraction.key("internal", "earlier-#{i}")
+
+      assert {:ok, _} =
+               SalixIM.ConversationServer.mail_interaction(group, home, owner, ctx.agent_id, %{
+                 "action" => "present",
+                 "automatic" => true,
+                 "urgency" => "high",
+                 "pool" => "ordinary",
+                 "key" => key,
+                 "request_id" => "earlier-#{i}",
+                 "account_id" => "internal",
+                 "thread_id" => "earlier-#{i}",
+                 "message_id" => "m#{i}",
+                 "subject" => "Earlier notice #{i}",
+                 "text" => "Earlier notice #{i}"
+               })
+    end
+
+    assert {:ok, %{"automatic_budget" => %{"remaining" => 0}}} =
+             CommaWeb.Proactive.state(%{}, router_ctx)
+
+    inputs = length(f.router_inputs.())
+
+    f.collect.([
+      %{
+        "text" => "<@UCOMMALOCAL> your verification code is 482913, valid for 10 minutes",
+        "user" => "U777",
+        "ts" => "810",
+        "channel" => %{"id" => "D810", "is_im" => true},
+        "permalink" => "https://team.slack.com/archives/D810/p810"
+      }
+    ])
+
+    assert :ok = f.check.()
+
+    assert [%{"agent_input" => %{content: handoff}}] = Enum.drop(f.router_inputs.(), inputs)
+    assert handoff =~ ~s("pool":"code")
+
+    attention =
+      Comma.Repo.one!(
+        from(i in Comma.Data.MemberSourceItem,
+          where: i.profile_id == ^profile_id(f) and like(i.url, "%p810")
+        )
+      ).attention
+
+    assert %{"outcome" => "routed", "pool" => "code", "assessment" => %{"code" => true}} =
+             attention
+
+    key =
+      Enum.find_value(
+        elem(CommaWeb.Proactive.state(%{}, router_ctx), 1)["sources"],
+        &((&1["source_url"] || "") =~ "p810" and &1["key"])
+      )
+
+    # The Router's notification spends the code pool, not the ordinary one.
+    assert {:ok, %{"decision" => %{"decision" => "notify"}}} =
+             CommaWeb.Proactive.act(
+               %{"action" => "notify", "key" => key, "request_id" => "decide-code"},
+               router_ctx
+             )
+
+    assert {:ok, %{"notification_budget" => %{"remaining" => 10}}} =
+             CommaWeb.Proactive.state(%{}, router_ctx)
   end
 
   test "a matter that waits on spent pools is judged again at its due time after the budget rechecks" do
@@ -3085,7 +3584,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     # Both handoff pools, the reserve included, are spent through the
     # production handoff path.
-    for i <- 1..16 do
+    for i <- 1..26 do
       assert {:ok, _} =
                SalixIM.ConversationServer.mail_interaction(group, home, owner, ctx.agent_id, %{
                  "action" => "present",
@@ -5150,6 +5649,285 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
                  account
                )
     end
+  end
+
+  defmodule PregateDecidePlug do
+    @behaviour Plug
+    def init(opts), do: opts
+
+    def call(conn, {owner, choice, prob}) do
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+      SystemsRuntime.Proc.send(owner, {:jev_pregate_request, request})
+
+      response = %{
+        "model" => "fixture",
+        "answers" => %{
+          "gate" => %{
+            "type" => "choice",
+            "choice" => choice,
+            "confidence" => prob,
+            "probabilities" => %{
+              "quiet" => if(choice == "quiet", do: prob, else: 1.0 - prob),
+              "escalate" => if(choice == "escalate", do: prob, else: 1.0 - prob)
+            }
+          }
+        },
+        "usage" => %{"input_tokens" => 8, "output_tokens" => 1}
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(response))
+    end
+  end
+
+  test "ProactiveCheck defers ordinary interrupts during active meetings and lets reserve codes through" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    gmail_source = Enum.find(profile.sources, &(&1["toolkit"] == "gmail"))
+    mail_source_id = gmail_source["connectionId"]
+    now = SystemsClock.utc_now()
+    meeting_start = DateTime.add(now, -10 * 60, :second) |> DateTime.to_iso8601()
+    meeting_end = DateTime.add(now, 30 * 60, :second) |> DateTime.to_iso8601()
+    meeting_end_ms = DateTime.add(now, 30 * 60, :second) |> DateTime.to_unix(:millisecond)
+
+    Comma.Repo.insert!(%Comma.Data.MemberSourceState{
+      profile_id: profile.id,
+      source_id: "cal_src",
+      toolkit: "googlecalendar",
+      current_keys: ["cal:active-meeting"],
+      attempted_at: now,
+      collected_at: now,
+      baseline_at: now
+    })
+
+    Comma.Repo.insert!(%Comma.Data.MemberSourceState{
+      profile_id: profile.id,
+      source_id: mail_source_id,
+      toolkit: "gmail",
+      current_keys: ["gmail:ordinary-review", "gmail:reserve-otp"],
+      attempted_at: now,
+      collected_at: now,
+      baseline_at: now
+    })
+
+    Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+      profile_id: profile.id,
+      source_id: "cal_src",
+      toolkit: "googlecalendar",
+      item_key: "cal:active-meeting",
+      title: "Architecture review",
+      excerpt: "Sync",
+      url: "https://calendar.google.com/event?eid=active",
+      facts: %{"start" => meeting_start, "end" => meeting_end},
+      context: %{"status" => "confirmed"},
+      fingerprint: "fp-cal-active",
+      baseline: true,
+      first_seen_at: now,
+      last_seen_at: now,
+      changed_at: now
+    })
+
+    ordinary_item =
+      Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+        profile_id: profile.id,
+        source_id: mail_source_id,
+        toolkit: "gmail",
+        item_key: "gmail:ordinary-review",
+        title: "Please review PR",
+        excerpt: "Could you review this pull request when free?",
+        url: "https://mail.google.com/mail/u/0/#inbox/ordinary",
+        facts: %{"sender" => "alice@example.test"},
+        context: %{"text" => "Could you review this pull request when free?"},
+        fingerprint: "fp-ordinary-review",
+        baseline: false,
+        first_seen_at: now,
+        last_seen_at: now,
+        changed_at: now
+      })
+
+    otp_item =
+      Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+        profile_id: profile.id,
+        source_id: mail_source_id,
+        toolkit: "gmail",
+        item_key: "gmail:reserve-otp",
+        title: "Your login verification code",
+        excerpt: "Your verification code is 492811",
+        url: "https://mail.google.com/mail/u/0/#inbox/otp",
+        facts: %{"sender" => "security@example.test"},
+        context: %{"text" => "Your verification code is 492811"},
+        fingerprint: "fp-reserve-otp",
+        baseline: false,
+        first_seen_at: now,
+        last_seen_at: now,
+        changed_at: now
+      })
+
+    assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
+
+    ordinary = Comma.Repo.get!(Comma.Data.MemberSourceItem, ordinary_item.id)
+    assert ordinary.attention["outcome"] == "deferred"
+    assert ordinary.attention["reason"] == "in_meeting"
+    assert ordinary.attention["next_at"] >= meeting_end_ms
+
+    otp = Comma.Repo.get!(Comma.Data.MemberSourceItem, otp_item.id)
+    assert otp.attention["outcome"] == "routed"
+    assert user["id"] == profile.user_id
+    assert is_binary(workspace["id"])
+  end
+
+  test "ProactiveCheck coalesces automated github-run bursts into one screened matter" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    gh_source = Enum.find(profile.sources, &(&1["toolkit"] == "github")) || hd(profile.sources)
+    gh_source_id = gh_source["connectionId"]
+    now = SystemsClock.utc_now()
+
+    Comma.Repo.insert!(%Comma.Data.MemberSourceState{
+      profile_id: profile.id,
+      source_id: gh_source_id,
+      toolkit: "github",
+      current_keys: Enum.map(1..4, &"gh:run-#{&1}"),
+      attempted_at: now,
+      collected_at: now,
+      baseline_at: now
+    })
+
+    for n <- 1..4 do
+      Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+        profile_id: profile.id,
+        source_id: gh_source_id,
+        toolkit: "github",
+        item_key: "gh:run-#{n}",
+        title: "CI workflow run ##{100 + n} failed on main",
+        excerpt: "Workflow run failed for commit abcdef#{n}",
+        url: "https://github.com/AFK-surf/Cue/actions/runs/#{9000 + n}",
+        facts: %{"sender" => "github-actions[bot]"},
+        context: %{"text" => "Workflow run failed"},
+        fingerprint: "fp-gh-burst-#{n}",
+        baseline: false,
+        first_seen_at: now,
+        last_seen_at: now,
+        changed_at: now
+      })
+    end
+
+    before_count = length(DraftLLM.requests())
+    assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
+    after_requests = Enum.drop(DraftLLM.requests(), before_count)
+
+    screen_requests =
+      Enum.filter(after_requests, fn {messages, _tools, _opts} ->
+        input = Jason.decode!(List.last(messages).content)
+        Map.has_key?(input["contentSchema"]["properties"], "decision")
+      end)
+
+    assert length(screen_requests) == 1
+    [{messages, _tools, _opts}] = screen_requests
+    %{"candidates" => [candidate]} = Jason.decode!(List.last(messages).content)
+    assert candidate["burstCount"] == 4
+  end
+
+  test "ProactiveCheck pre-gates passive noise via Decide while bypassing direct mentions and codes" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    gmail_source = Enum.find(profile.sources, &(&1["toolkit"] == "gmail"))
+    mail_source_id = gmail_source["connectionId"]
+    prev_decide = SystemsRuntime.get_env(:salix_agent, :decide)
+
+    server =
+      start_supervised!(
+        {Bandit,
+         plug: {PregateDecidePlug, {SystemsRuntime.Proc.self(), "quiet", 0.96}},
+         ip: {127, 0, 0, 1},
+         port: 0,
+         startup_log: false}
+      )
+
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+
+    SystemsRuntime.put_env(:salix_agent, :decide,
+      endpoint: "http://127.0.0.1:#{port}/decide",
+      api_key: "fixture",
+      model: "fixture"
+    )
+
+    on_exit(fn -> restore_env(:salix_agent, :decide, prev_decide) end)
+
+    now = SystemsClock.utc_now()
+
+    Comma.Repo.insert!(%Comma.Data.MemberSourceState{
+      profile_id: profile.id,
+      source_id: mail_source_id,
+      toolkit: "gmail",
+      current_keys: ["gmail:newsletter-1", "slack:mention-1"],
+      attempted_at: now,
+      collected_at: now,
+      baseline_at: now
+    })
+
+    newsletter_item =
+      Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+        profile_id: profile.id,
+        source_id: mail_source_id,
+        toolkit: "gmail",
+        item_key: "gmail:newsletter-1",
+        title: "Weekly product digest",
+        excerpt: "Here is what shipped this week.",
+        url: "https://mail.google.com/mail/u/0/#inbox/news1",
+        facts: %{"sender" => "digest@example.test"},
+        context: %{"text" => "Here is what shipped this week."},
+        fingerprint: "fp-newsletter-1",
+        baseline: false,
+        first_seen_at: now,
+        last_seen_at: now,
+        changed_at: now
+      })
+
+    mention_item =
+      Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+        profile_id: profile.id,
+        source_id: mail_source_id,
+        toolkit: "slack",
+        item_key: "slack:mention-1",
+        title: "Direct mention",
+        excerpt: "Can you review the deployment plan?",
+        url: "https://team.slack.com/archives/C1/p1795020000000100",
+        relationship: "mentioned_you",
+        facts: %{"memberRelation" => "mentioned_you"},
+        context: %{"text" => "Can you review the deployment plan?"},
+        fingerprint: "fp-mention-1",
+        baseline: false,
+        first_seen_at: now,
+        last_seen_at: now,
+        changed_at: now
+      })
+
+    before_count = length(DraftLLM.requests())
+    assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
+
+    assert_received {:jev_pregate_request, %{"state" => %{"title" => "Weekly product digest"}}}
+    refute_received {:jev_pregate_request, %{"state" => %{"title" => "Direct mention"}}}
+
+    newsletter = Comma.Repo.get!(Comma.Data.MemberSourceItem, newsletter_item.id)
+    assert newsletter.attention["outcome"] == "quiet"
+    assert newsletter.attention["decision"] == "briefing"
+
+    mention = Comma.Repo.get!(Comma.Data.MemberSourceItem, mention_item.id)
+    assert mention.attention["outcome"] == "routed"
+
+    after_requests = Enum.drop(DraftLLM.requests(), before_count)
+
+    screen_titles =
+      for {messages, _tools, _opts} <- after_requests,
+          input = Jason.decode!(List.last(messages).content),
+          Map.has_key?(input["contentSchema"]["properties"], "decision"),
+          cand <- input["candidates"] || [],
+          do: cand["title"]
+
+    assert screen_titles == ["Direct mention"]
   end
 
   defp authorized_preview(workspace, sources, href, source_id) do

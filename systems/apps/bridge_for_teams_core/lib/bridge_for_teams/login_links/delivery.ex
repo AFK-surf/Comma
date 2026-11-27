@@ -2,11 +2,9 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
   @moduledoc """
   Email delivery seam for magic-link login (`BridgeForTeams.LoginLinks`).
 
-  The default implementation sends through the shared Postmark client
-  (`SalixStore.Postmark`) from the dedicated magic-link From address
-  (config.json `email.magic_link_from_email` →
-  `:bridge_for_teams_core, :magic_link_from_email`) — the same Postmark
-  server token as agent owner notifications, a different sender.
+  The default implementation sends through `BridgeForTeams.TeamsMail`, the
+  Comma for Teams Postmark server and sender. Delivery lookups use the same
+  server.
 
   Tests inject `BridgeForTeams.LoginLinks.Delivery.Fake` via
 
@@ -21,6 +19,13 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
   provider's message reference, which `message_events/1` looks up later.
   """
   @callback deliver_login_link(email :: String.t(), org_name :: String.t(), url :: String.t()) ::
+              {:ok, %{provider_message_id: String.t() | nil}} | {:error, term()}
+
+  @doc """
+  Deliver a consolidated workspace sign-in email listing all matching organizations
+  (magic links for SSO-less organizations and SSO sign-in links for SSO organizations).
+  """
+  @callback deliver_workspace_links(email :: String.t(), entries :: [map()]) ::
               {:ok, %{provider_message_id: String.t() | nil}} | {:error, term()}
 
   @doc "Provider delivery status and events (delivered, bounced, ...) of one accepted message."
@@ -40,14 +45,14 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
     @behaviour BridgeForTeams.LoginLinks.Delivery
 
     @impl true
-    def configured?, do: SalixStore.Postmark.configured?() and from_email() != ""
+    def configured?, do: BridgeForTeams.TeamsMail.configured?()
 
     @impl true
     def deliver_login_link(email, org_name, url) do
-      subject = "Sign in to #{org_name} on Bridge For Teams"
+      subject = "Sign in to #{org_name} on Comma for Teams"
 
       body = """
-      Someone requested a sign-in link for #{org_name} on Bridge For Teams using
+      Someone requested a sign-in link for #{org_name} on Comma for Teams using
       this email address.
 
       Sign in by opening this link (valid for 15 minutes, single use):
@@ -58,7 +63,37 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
       in without the link above.
       """
 
-      case SalixStore.Postmark.send_message(from_email(), email, subject, body) do
+      case BridgeForTeams.TeamsMail.send_message(email, subject, body) do
+        {:ok, %{message_id: message_id}} -> {:ok, %{provider_message_id: message_id}}
+        {:error, _reason} = error -> error
+      end
+    end
+
+    @impl true
+    def deliver_workspace_links(email, entries) do
+      subject = "Sign in to Comma for Teams"
+
+      lines =
+        Enum.map_join(entries, "\n\n", fn entry ->
+          case entry.kind do
+            :sso ->
+              "#{entry.org_name} (#{entry.org_slug}) — Sign in with SSO:\n#{entry.url}"
+
+            :magic_link ->
+              "#{entry.org_name} (#{entry.org_slug}) — One-time sign-in link (valid for 15 minutes):\n#{entry.url}"
+          end
+        end)
+
+      body = """
+      Someone requested sign-in links for your Comma for Teams organizations using
+      this email address.
+
+      #{lines}
+
+      If you did not request this, you can ignore this email.
+      """
+
+      case BridgeForTeams.TeamsMail.send_message(email, subject, body) do
         {:ok, %{message_id: message_id}} -> {:ok, %{provider_message_id: message_id}}
         {:error, _reason} = error -> error
       end
@@ -66,16 +101,9 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
 
     @impl true
     def message_events(provider_message_id),
-      do: SalixStore.Postmark.message_events(provider_message_id)
+      do: BridgeForTeams.TeamsMail.message_events(provider_message_id)
 
     @impl true
-    def recipient_suppression(email), do: SalixStore.Postmark.suppression(email)
-
-    defp from_email do
-      :bridge_for_teams_core
-      |> SystemsRuntime.get_env(:magic_link_from_email)
-      |> to_string()
-      |> String.trim()
-    end
+    def recipient_suppression(email), do: BridgeForTeams.TeamsMail.suppression(email)
   end
 end

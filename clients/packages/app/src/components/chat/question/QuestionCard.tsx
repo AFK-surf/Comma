@@ -46,6 +46,7 @@ import {
   QuestionCardAttachmentsContext,
   type QuestionCardActions,
 } from "./QuestionCardContext";
+import { useAgentCardMorph, type AgentCardMorph } from "../agent-card/AgentCard";
 import "../agent-card/agent-card.css";
 import "./question-card.css";
 
@@ -53,8 +54,8 @@ const NO_ATTACHMENTS: readonly DraftAttachment[] = [];
 
 /**
  * An Agent's question, drawn as a card under the message that asks it. While it is open the person picks, writes
- * their own answer (with images) or skips; whatever they send closes it into a one-line receipt, and so does a
- * message they write in the chat instead. Changes are instant: no transition on picking, sending or closing.
+ * their own answer (with images) or skips; whatever they send folds the card smoothly into a one-line receipt, and so
+ * does a message they write in the chat instead.
  */
 export const QuestionCard = memo(function QuestionCard({
   part,
@@ -64,9 +65,12 @@ export const QuestionCard = memo(function QuestionCard({
   live: boolean;
 }) {
   const actions = useContext(QuestionCardActionsContext);
+  const morph = useAgentCardMorph();
   const open = part.state.status === "open" || part.state.status === "failed";
-  if (open && live && actions) return <QuestionForm actions={actions} part={part} />;
-  return <QuestionReceipt part={part} />;
+  if (open && live && actions) {
+    return <QuestionForm actions={actions} morph={morph} part={part} />;
+  }
+  return <QuestionReceipt morph={morph} part={part} />;
 });
 
 /**
@@ -93,9 +97,11 @@ export const MessageQuestionCards = memo(function MessageQuestionCards({
 
 function QuestionForm({
   actions,
+  morph,
   part,
 }: {
   actions: QuestionCardActions;
+  morph: AgentCardMorph;
   part: ChatQuestionPart;
 }) {
   const messages = useCommaMessages();
@@ -333,7 +339,7 @@ function QuestionForm({
         ...(choice.recommended
           ? {
               badge: (
-                <Badge color="brand" size="sm">
+                <Badge color="brand" size="xs" type="badge-color">
                   {messages.chat_question_recommended()}
                 </Badge>
               ),
@@ -370,7 +376,10 @@ function QuestionForm({
         event.preventDefault();
         submit();
       }}
-      ref={formRef}
+      ref={(node) => {
+        formRef.current = node;
+        morph.cardRef(node);
+      }}
     >
       <div className="comma-agent-card-head">
         <p className="comma-agent-card-title" id={promptId}>
@@ -492,7 +501,9 @@ function QuestionForm({
             }}
             size="xs"
           >
-            {messages.chat_question_skip()}
+            {part.skipBehavior === "dismiss"
+              ? messages.chat_question_dismiss()
+              : messages.chat_question_skip()}
           </Button>
           <Button
             adornmentTrailing={
@@ -592,7 +603,13 @@ function QuestionImages({
   );
 }
 
-function QuestionReceipt({ part }: { part: ChatQuestionPart }) {
+function QuestionReceipt({
+  morph,
+  part,
+}: {
+  morph: AgentCardMorph;
+  part: ChatQuestionPart;
+}) {
   const messages = useCommaMessages();
   const { status } = part.state;
   const given = status === "answered" || status === "sending";
@@ -601,6 +618,7 @@ function QuestionReceipt({ part }: { part: ChatQuestionPart }) {
       aria-label={part.prompt}
       className="comma-agent-receipt"
       data-status={status}
+      ref={morph.receiptRef}
     >
       <span
         className={cx("comma-agent-receipt-icon", status !== "answered" && "is-muted")}
@@ -622,7 +640,7 @@ function QuestionReceipt({ part }: { part: ChatQuestionPart }) {
         <span className={cx("comma-agent-receipt-answer", !given && "is-muted")}>
           {given
             ? answerLabel(part.choices, part.state)
-            : receiptLabel(status, messages)}
+            : receiptLabel(status, part.skipBehavior, messages)}
           {status === "sending" ? (
             <span className="comma-agent-receipt-note">
               {" "}
@@ -645,9 +663,14 @@ function answerLabel(choices: readonly ChatQuestionChoice[], state: ChatQuestion
 
 function receiptLabel(
   status: ChatQuestionState["status"],
+  skipBehavior: ChatQuestionPart["skipBehavior"],
   messages: ReturnType<typeof useCommaMessages>
 ) {
-  if (status === "skipped") return messages.chat_question_skipped();
+  if (status === "skipped") {
+    return skipBehavior === "dismiss"
+      ? messages.chat_question_dismissed()
+      : messages.chat_question_skipped();
+  }
   if (status === "replaced") return messages.chat_question_replaced();
   if (status === "replied") return messages.chat_question_replied();
   return "";

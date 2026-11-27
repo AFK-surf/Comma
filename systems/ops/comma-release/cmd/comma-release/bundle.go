@@ -191,6 +191,9 @@ func buildBundle(ctx context.Context, spec release.EnvironmentSpec, gcloud, kube
 	if manifest := os.Getenv("COMMA_STATION_RELEASE_MANIFEST_URL"); manifest != "" {
 		replacements["COMMA_STATION_RELEASE_MANIFEST_URL"] = manifest
 	}
+	if ip := os.Getenv("COMMA_VMM_REMOTE_IP"); ip != "" {
+		replacements["COMMA_VMM_REMOTE_IP"] = ip
+	}
 	if alertRouterEnabled {
 		replacements["ALERT_ROUTER_CONFIG_SECRET_NAME"] = byBase["alert-router-config"]
 		replacements["ALERT_ROUTER_CONFIG_SHA256"] = hashHex(alertRouterBody)

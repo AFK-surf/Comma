@@ -71,41 +71,115 @@ download() {
   if python3 - "$url" "$output" "$expected_size" <<'PY'
 import os
 import pathlib
+import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 url, output, expected_raw = sys.argv[1:4]
 expected = int(expected_raw)
 parsed = urllib.parse.urlparse(url)
+# HTTP downloads keep received bytes and resume with a Range request after a
+# dropped connection, a timeout, or a short body: 1 attempt plus 5 retries.
+attempts = 6 if parsed.scheme in ("http", "https") else 1
 
-try:
+
+def size_status(length):
+    return 20 if length > expected else 21
+
+
+def open_source(offset, validator):
     if parsed.scheme == "":
         source = open(pathlib.Path(url), "rb")
-        content_length = os.fstat(source.fileno()).st_size
-    else:
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "bridge-for-teams-installer/1"}
+        return source, 200, os.fstat(source.fileno()).st_size
+    headers = {"User-Agent": "bridge-for-teams-installer/1"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+        if validator:
+            headers["If-Range"] = validator
+    try:
+        source = urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=60
         )
-        source = urllib.request.urlopen(request, timeout=60)
-        raw_length = source.headers.get("Content-Length")
-        content_length = int(raw_length) if raw_length is not None else None
+    except urllib.error.HTTPError as error:
+        if offset and error.code == 416:
+            error.close()
+            return None, 416, None
+        raise
+    raw_length = source.headers.get("Content-Length")
+    length = int(raw_length) if raw_length is not None else None
+    return source, source.getcode() or 200, length
 
-    with source:
-        if content_length is not None and content_length != expected:
-            raise SystemExit(20 if content_length > expected else 21)
-        total = 0
-        with open(output, "wb") as target:
-            while True:
-                chunk = source.read(min(64 * 1024, expected + 1 - total))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > expected:
-                    raise SystemExit(20)
-                target.write(chunk)
-        if total < expected:
-            raise SystemExit(21)
+
+def restart(target):
+    target.seek(0)
+    target.truncate()
+
+
+try:
+    validator = None
+    failure = 21
+    with open(output, "wb") as target:
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(min(2 ** (attempt - 1), 8))
+            offset = target.tell()
+            try:
+                source, status, length = open_source(offset, validator)
+                if status == 416:
+                    if offset == expected:
+                        break
+                    restart(target)
+                    continue
+                with source:
+                    if status == 206:
+                        match = re.fullmatch(
+                            r"bytes (\d+)-\d+/(\d+|\*)",
+                            source.headers.get("Content-Range", "").strip(),
+                        )
+                        if match is None or int(match.group(1)) != offset:
+                            restart(target)
+                            failure = 22
+                            continue
+                        if match.group(2) != "*" and int(match.group(2)) != expected:
+                            raise SystemExit(size_status(int(match.group(2))))
+                    else:
+                        restart(target)
+                        if length is not None and length != expected:
+                            raise SystemExit(size_status(length))
+                        if attempts > 1:
+                            etag = source.headers.get("ETag")
+                            validator = (
+                                etag
+                                if etag and not etag.startswith("W/")
+                                else source.headers.get("Last-Modified")
+                            )
+                    while True:
+                        received = target.tell()
+                        chunk = source.read(min(64 * 1024, expected + 1 - received))
+                        if not chunk:
+                            break
+                        if received + len(chunk) > expected:
+                            raise SystemExit(20)
+                        target.write(chunk)
+                failure = 21
+            except SystemExit:
+                raise
+            except Exception as error:
+                failure = 22
+                print(f"download attempt {attempt + 1} failed: {error}", file=sys.stderr)
+            target.flush()
+            if target.tell() == expected:
+                break
+            if attempt + 1 < attempts:
+                print(
+                    f"download resumes at byte {target.tell()} of {expected}",
+                    file=sys.stderr,
+                )
+        if target.tell() < expected:
+            raise SystemExit(failure)
 except SystemExit:
     raise
 except Exception as error:

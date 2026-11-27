@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import XCTest
 import CommaCore
 @testable import Comma
@@ -42,6 +43,23 @@ final class ChatTranscriptModelTests: XCTestCase {
                       draft: [String: Any]? = nil, activity: String? = nil, identity: ReplyRowIdentity = ReplyRowIdentity()) -> [ChatRow] {
         ChatTranscriptModel.rows(timeline: timeline(messages, pending: pending, shown: shown, draft: draft), isTask: false,
                                  activity: activity, identity: identity)
+    }
+
+    /// In a Task together, another person's message is not the account's own: it sits on the left under their name.
+    /// It was drawn as the account's own, on the right, because only user and Agent messages were told apart.
+    func testAnotherPersonsMessageInATaskTogetherIsNotTheAccountsOwn() {
+        var theirs = message("m2", user: true)
+        theirs["createdBy"] = "u2"
+        let rows = ChatTranscriptModel.rows(timeline: timeline([message("m1", user: true), theirs, message("m3", user: false)]),
+                                            isTask: true, selfID: "u1")
+        XCTAssertEqual(rows.map(\.isMine), [true, false, false])
+        XCTAssertEqual(rows.map(\.otherWriter), [nil, "u2", nil])
+        XCTAssertTrue(rows[0].groupLast && rows[1].groupFirst, "Each writer starts their own group")
+
+        // The Router's chat calls its one user "current"; that is the account.
+        var router = message("r1", user: true)
+        router["createdBy"] = "current"
+        XCTAssertTrue(ChatTranscriptModel.rows(timeline: timeline([router]), isTask: false, selfID: "u1")[0].isMine)
     }
 
     private func items(_ messages: [[String: Any]]) -> [ChatItem] {
@@ -209,12 +227,53 @@ final class ChatTranscriptModelTests: XCTestCase {
         var single = question("q2", state: ["status": "failed", "choiceIds": ["c2"], "other": "", "error": "Offline"])
         XCTAssertEqual(items([single]).first?.question?.state,
                        ChatQuestion.State(status: .failed, choiceIDs: ["c2"], other: "", error: "Offline"))
+        XCTAssertFalse(try XCTUnwrap(items([single]).first?.question?.independent))
+        XCTAssertNil(items([single]).first?.question?.skipBehavior)
+
+        // Single-choice independent Monoid confirmation card (1..6 choices allowed, skipBehavior: "dismiss").
+        var monoid = message("q_monoid", user: false, text: "")
+        monoid["parts"] = [["kind": "question", "messageId": "q_monoid", "prompt": "Approve staging deploy?",
+                            "choices": [["id": "c1", "label": "Approve", "recommended": true]],
+                            "multiSelect": false, "allowOther": false,
+                            "skipBehavior": "dismiss", "independent": true,
+                            "state": ["status": "open"]]]
+        let monoidCard = try XCTUnwrap(items([monoid]).first?.question)
+        XCTAssertEqual(monoidCard.choices, [ChatQuestion.Choice(id: "c1", label: "Approve", description: nil, recommended: true)])
+        XCTAssertEqual(monoidCard.skipBehavior, "dismiss")
+        XCTAssertTrue(monoidCard.independent)
+
+        // Zero choices or more than 6 choices are rejected as incomplete questions.
         single["text"] = "Fallback"
-        single["parts"] = [["kind": "question", "messageId": "q2", "prompt": "One choice", "choices": [["id": "c1", "label": "Only"]],
+        single["parts"] = [["kind": "question", "messageId": "q2", "prompt": "No choices", "choices": [],
                             "multiSelect": false, "allowOther": true, "state": ["status": "open"]]]
-        let fallback = try XCTUnwrap(items([single]).first)
-        XCTAssertNil(fallback.question)
-        XCTAssertEqual(fallback.parts, [.other])
+        let emptyFallback = try XCTUnwrap(items([single]).first)
+        XCTAssertNil(emptyFallback.question)
+        XCTAssertEqual(emptyFallback.parts, [.other])
+
+        single["parts"] = [["kind": "question", "messageId": "q3", "prompt": "Too many",
+                            "choices": (1...7).map { ["id": "c\($0)", "label": "Option \($0)"] },
+                            "multiSelect": false, "allowOther": false, "state": ["status": "open"]]]
+        let overflowFallback = try XCTUnwrap(items([single]).first)
+        XCTAssertNil(overflowFallback.question)
+        XCTAssertEqual(overflowFallback.parts, [.other])
+    }
+
+    /// Independent Monoid cards stay open alongside later ordinary questions without local replacement.
+    func testIndependentQuestionCardsRemainOpenAlongsideLaterQuestions() throws {
+        var independent = message("q_monoid", user: false, text: "")
+        independent["parts"] = [["kind": "question", "messageId": "q_monoid", "prompt": "Confirm Monoid action?",
+                                 "choices": [["id": "c1", "label": "Confirm"]],
+                                 "multiSelect": false, "allowOther": false,
+                                 "skipBehavior": "dismiss", "independent": true,
+                                 "state": ["status": "open"]]]
+        let later = question("q_router", state: ["status": "open"])
+        let parsed = items([independent, later])
+        XCTAssertEqual(parsed.count, 2)
+        XCTAssertEqual(parsed[0].question?.independent, true)
+        XCTAssertEqual(parsed[0].question?.skipBehavior, "dismiss")
+        XCTAssertEqual(parsed[0].question?.state.status, .open)
+        XCTAssertEqual(parsed[1].question?.independent, false)
+        XCTAssertEqual(parsed[1].question?.state.status, .open)
     }
 
     /// A person's answer to a card shows only its own words: its `question-answer` part draws nothing.
@@ -272,5 +331,197 @@ final class ChatTranscriptModelTests: XCTestCase {
         XCTAssertEqual(flight.flight?.text, MessageBubbles.inline("Ask \(mention.wireText)"), "The flight draws what lands")
         flight.launch(id: "s2", text: ControlCommand.wireText("compact"), radius: 20)
         XCTAssertEqual(flight.flight.map { String($0.text.characters) }, "/compact")
+    }
+
+    @MainActor func testDynamicUICardPreviewAndTitleDeduplication() {
+        XCTAssertNil(DynamicUIChatCard.previewText(for: "   \n\n  "))
+        XCTAssertEqual(
+            DynamicUIChatCard.previewText(for: "  附近8家咖啡店  \n\n  瑰機咖啡约60米  \n"),
+            "附近8家咖啡店\n瑰機咖啡约60米"
+        )
+        XCTAssertEqual(
+            DynamicUIChatCard.subtitleText(
+                for: "附近8家咖啡店，按OpenStreetMap坐标直线距离排序：瑰機咖啡约60米",
+                title: "附近 8 家咖啡店"
+            ),
+            "按OpenStreetMap坐标直线距离排序：瑰機咖啡约60米"
+        )
+        XCTAssertNil(
+            DynamicUIChatCard.subtitleText(for: "附近 8 家咖啡店", title: "附近 8 家咖啡店")
+        )
+        XCTAssertEqual(
+            DynamicUIChatCard.subtitleText(for: "香港本周末天气 · 周六阴", title: "周末天气"),
+            "香港本周末天气 · 周六阴"
+        )
+    }
+
+    @MainActor func testDynamicUISheetTitlePrefersCardTitleAndNestedCardTitle() {
+        XCTAssertEqual(
+            PhoneDynamicUIModel.sheetTitle(for: nil, preferredTitle: "  附近 8 家咖啡店  "),
+            "附近 8 家咖啡店"
+        )
+        let nested: NSDictionary = [
+            "data": [
+                "coffee_list": [
+                    "title": "附近 8 家咖啡店",
+                    "items": []
+                ]
+            ]
+        ]
+        XCTAssertEqual(
+            PhoneDynamicUIModel.sheetTitle(for: nested, preferredTitle: nil),
+            "附近 8 家咖啡店"
+        )
+        let flat: NSDictionary = ["data": ["title": "周末天气"]]
+        XCTAssertEqual(
+            PhoneDynamicUIModel.sheetTitle(for: flat, preferredTitle: nil),
+            "周末天气"
+        )
+        XCTAssertEqual(
+            PhoneDynamicUIModel.sheetTitle(for: nil, preferredTitle: nil, fallback: "Interactive content"),
+            "Interactive content"
+        )
+    }
+
+    @MainActor func testDynamicUICardClampsLongSummaryHeightForTitledAndLegacyCards() {
+        let longSummary = String(repeating: "附近8家咖啡店，按OpenStreetMap坐标直线距离排序：瑰機咖啡约60米；MOBYS约450米；星巴克约520米。", count: 8)
+        let titled = PhoneDynamicUI(
+            id: "ui-titled",
+            conversation: "cnv-1",
+            message: "msg-1",
+            index: 0,
+            title: "附近 8 家咖啡店",
+            summary: longSummary
+        )
+        let legacy = PhoneDynamicUI(
+            id: "ui-legacy",
+            conversation: "cnv-1",
+            message: "msg-2",
+            index: 0,
+            title: nil,
+            summary: longSummary
+        )
+        for ui in [titled, legacy] {
+            let controller = UIHostingController(rootView: DynamicUIChatCard(ui: ui, disabled: false, open: {}))
+            let size = controller.sizeThatFits(in: CGSize(width: 318, height: 1000))
+            XCTAssertGreaterThan(size.height, 44)
+            XCTAssertLessThan(size.height, 140)
+        }
+    }
+
+    /// A missing or zero-sized target anchor must skip its connector rather than drawing a line from y = 0
+    /// across earlier turns; a textless attachment-only user message with a content rect still draws its hook.
+    func testReplyConnectorsSkipMissingOrEmptyTargetsAndAnchorToContentBounds() {
+        let rows = rows([
+            message("u1", user: true, text: "First"),
+            message("a1", user: false, root: "u1", reply: "u1", text: "Answer 1"),
+            message("u2", user: true, text: "", display: ["body": "", "quotes": [], "files": [["name": "photo.jpg", "path": "/tmp/photo.jpg"]], "texts": []]),
+            message("a2", user: false, root: "u2", reply: "u2", text: "Answer 2"),
+        ])
+
+        let baseRects: [ChatAnchorID: CGRect] = [
+            ChatAnchorID(row: "u1", part: .content): CGRect(x: 260, y: 20, width: 100, height: 40),
+            ChatAnchorID(row: "a1", part: .content): CGRect(x: 0, y: 72, width: 280, height: 80),
+            ChatAnchorID(row: "a2", part: .content): CGRect(x: 0, y: 224, width: 280, height: 60),
+        ]
+
+        let missingTarget = ChatTranscriptView.connectors(rows: rows, showsIdentity: { _ in false }, rects: baseRects)
+        XCTAssertEqual(missingTarget.map(\.id), ["line:u1"])
+
+        var emptyTargetRects = baseRects
+        emptyTargetRects[ChatAnchorID(row: "u2", part: .content)] = .zero
+        let emptyTarget = ChatTranscriptView.connectors(rows: rows, showsIdentity: { _ in false }, rects: emptyTargetRects)
+        XCTAssertEqual(emptyTarget.map(\.id), ["line:u1"])
+
+        var anchoredRects = baseRects
+        anchoredRects[ChatAnchorID(row: "u2", part: .content)] = CGRect(x: 200, y: 172, width: 160, height: 40)
+        let anchored = ChatTranscriptView.connectors(rows: rows, showsIdentity: { _ in false }, rects: anchoredRects)
+        XCTAssertEqual(anchored.map(\.id), ["line:u1", "line:u2"])
+        let u2Bounds = anchored[1].path.boundingRect
+        XCTAssertEqual(u2Bounds.minY, 192, accuracy: 0.5, "Connector starts at the attachment row's vertical midpoint")
+        XCTAssertEqual(u2Bounds.maxY, 216, accuracy: 0.5, "Connector ends 8pt above the reply bubble")
+    }
+
+    /// A textless user row (files/attachments only) still publishes a non-empty content anchor, and an assistant row
+    /// with a QuestionCard includes the card in its content anchor so follow-up connectors start below the card.
+    @MainActor func testTextlessUserRowAndQuestionCardPublishContentAnchors() async throws {
+        let serverMessages: [[String: Any]] = [
+            ["messageId": "u1", "seq": 1, "role": "user", "actorType": "user", "createdBy": "current",
+             "text": "", "display": ["body": "", "quotes": [], "files": [["name": "photo.jpg", "path": "/tmp/photo.jpg"]], "texts": []]],
+            ["messageId": "a1", "seq": 2, "role": "assistant", "actorType": "agent", "actorRole": "router",
+             "replyToMessageId": "u1", "threadRootMessageId": "u1",
+             "text": "检测到冲突：",
+             "parts": [[
+                "kind": "question", "messageId": "a1", "prompt": "怎么处理？",
+                "choices": [["id": "c1", "label": "合并", "recommended": true], ["id": "c2", "label": "取消"]],
+                "multiSelect": false, "allowOther": false,
+                "state": ["status": "answered", "choiceIds": ["c1"]],
+             ]]],
+            ["messageId": "u2", "seq": 3, "role": "user", "actorType": "user", "createdBy": "current",
+             "replyToMessageId": "a1", "threadRootMessageId": "u1", "text": "合并"],
+            ["messageId": "a2", "seq": 4, "role": "assistant", "actorType": "agent", "actorRole": "router",
+             "replyToMessageId": "u2", "threadRootMessageId": "u1", "text": "已合并。"],
+        ]
+        let payloadData = try JSONSerialization.data(withJSONObject: [
+            "revision": 1,
+            "state": [
+                "status": "ready",
+                "conversation": ["conversationId": "router", "kind": "router"],
+                "serverMessages": serverMessages,
+                "pending": [],
+                "messages": [],
+            ] as [String: Any],
+        ])
+        let harness = try StoreHarness()
+        harness.core.serve("chatView") { _ in
+            (try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any]) ?? [:]
+        }
+        await harness.start()
+        let pane = try XCTUnwrap(harness.store.router.pane)
+        pane.open(); defer { pane.close() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while pane.messages.count < serverMessages.count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let rows = ChatTranscriptModel.rows(for: pane)
+        var captured: [ChatAnchorID: CGRect] = [:]
+        let probe = ChatTranscriptView(
+            rows: rows, pane: pane, store: harness.store, isTask: false,
+            hasOlderMessages: false, loadingMore: false, openAttachment: { _, _ in }
+        )
+        .overlayPreferenceValue(ChatAnchorKey.self) { anchors in
+            GeometryReader { geometry in
+                Color.clear.onAppear {
+                    captured = anchors.mapValues { geometry[$0] }
+                }
+                .onChange(of: anchors.keys.count) { _, _ in
+                    captured = anchors.mapValues { geometry[$0] }
+                }
+            }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let original = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = UIHostingController(rootView: probe)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
+        let anchorDeadline = ContinuousClock.now + .seconds(5)
+        while captured[ChatAnchorID(row: "u1", part: .content)] == nil, ContinuousClock.now < anchorDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let u1Rect = try XCTUnwrap(captured[ChatAnchorID(row: "u1", part: .content)], "Textless user row must publish a content anchor")
+        XCTAssertGreaterThan(u1Rect.width, 0)
+        XCTAssertGreaterThan(u1Rect.height, 0)
+        let a1Rect = try XCTUnwrap(captured[ChatAnchorID(row: "a1", part: .content)])
+        let a2Rect = try XCTUnwrap(captured[ChatAnchorID(row: "a2", part: .content)])
+        // Text bubble (~42pt) + QuestionCard (~64pt+) must both lie inside a1's content anchor.
+        XCTAssertGreaterThan(a1Rect.height, 90, "Assistant content anchor must include its QuestionCard")
+        let lines = ChatTranscriptView.connectors(rows: rows, showsIdentity: { _ in false }, rects: captured)
+        let u1Line = try XCTUnwrap(lines.first { $0.id == "line:u1" })
+        XCTAssertEqual(u1Line.path.boundingRect.minY, u1Rect.midY, accuracy: 1)
+        let a1Line = try XCTUnwrap(lines.first { $0.id == "line:a1" })
+        XCTAssertGreaterThanOrEqual(a1Line.path.boundingRect.minY, a1Rect.maxY + 7)
+        XCTAssertLessThanOrEqual(a1Line.path.boundingRect.maxY, a2Rect.minY - 7)
     }
 }

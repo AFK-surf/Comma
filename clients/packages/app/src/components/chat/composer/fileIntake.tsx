@@ -265,7 +265,26 @@ export function attachmentMeta(
   return formatAttachmentSize(attachment.size, locale);
 }
 
-function formatAttachmentSize(size: number | undefined, locale: CommaLocale) {
+/**
+ * The folder a file on the person's computer is in, with the home folder as `~` (macOS `/Users/<user>`, Linux
+ * `/home/<user>`, Windows `C:\Users\<user>`). A long one is cut in its middle where it is shown (`MiddleEllipsis`).
+ */
+export function localDirectory(fullPath: string): string {
+  const separator = fullPath.includes("\\") && !fullPath.startsWith("/") ? "\\" : "/";
+  const path = fullPath
+    .replace(/^\/Users\/[^/]+(?=\/|$)/, "~")
+    .replace(/^\/home\/[^/]+(?=\/|$)/, "~")
+    .replace(/^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/, "~");
+  const last = path.lastIndexOf(separator);
+  if (last < 0) return path;
+  const parent = path.slice(0, last);
+  // A file in the root, the home folder or a drive's root: that folder with its separator.
+  return parent === "" || parent === "~" || /^[A-Za-z]:$/.test(parent)
+    ? `${parent}${separator}`
+    : parent;
+}
+
+export function formatAttachmentSize(size: number | undefined, locale: CommaLocale) {
   if (size === undefined || !Number.isFinite(size) || size < 0) {
     return undefined;
   }

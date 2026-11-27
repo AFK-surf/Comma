@@ -657,7 +657,7 @@ defmodule BridgeForTeams.LarkRunChecks do
         status: :needs_manual,
         reason_class: :lark_console_steps_required,
         next_action:
-          "In the Lark Developer Console: Permissions & Scopes → batch import, import the scope JSON of the Connections page or of bft lark scopes. On Events & Callbacks save the request URL, subscribe to im.message.receive_v1, im.message.recalled_v1 and im.chat.member.bot.added_v1, and under Callbacks subscribe to card.action.trigger. Create a version of the app and publish it, then add the bot to the target group.",
+          "In the Lark Developer Console: Permissions & Scopes → batch import, import the scope JSON of the Connections page or of bft lark scopes. On Events & Callbacks save the request URL, subscribe to im.message.receive_v1, im.message.recalled_v1, im.chat.member.bot.added_v1 and im.chat.member.bot.deleted_v1, and under Callbacks subscribe to card.action.trigger. Create a version of the app and publish it, then add the bot to the target group.",
         evidence: %{
           "settings_path" => "/orgs/#{org.slug}/projects/#{project.id}/connections?provider=lark",
           "required_scopes" => LarkScopes.required_scope_ids(),

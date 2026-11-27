@@ -40,6 +40,13 @@ final class WatchPairingBridge: NSObject, ObservableObject, WCSessionDelegate {
             guard data.count <= 8192 else { throw CommaError.responseTooLarge }
             let value = try JSONDecoder().decode(WatchPairingEnvelope.self, from: data)
             if let message = value.error { throw CommaError.invalidInput(message) }
+            // An iPhone switched to the other known backend (TestFlight and development builds) takes the watch
+            // with it from the next launch.
+            if let phone = value.baseURL.flatMap(URL.init(string:)), phone.absoluteString != store.configuration.baseURL.absoluteString,
+               let environment = BackendEnvironment(url: phone) {
+                BackendEnvironment.choose(environment)
+                throw CommaError.invalidInput("Your iPhone uses \(environment.name). Close Comma on this watch and open it again.")
+            }
             guard let grant = value.pairing, let parent = value.parentSessionID,
                   value.baseURL == store.configuration.baseURL.absoluteString else { throw CommaError.originMismatch }
             let result = try await store.client.exchangeWatchPairing(grant)
@@ -68,13 +75,25 @@ final class WatchPairingBridge: NSObject, ObservableObject, WCSessionDelegate {
         guard WCSession.isSupported() else { return }
         let context = WCSession.default.receivedApplicationContext
         await receive(parent: context["parent_session_id"] as? String,
-                      authenticated: context["authenticated"] as? Bool)
+                      authenticated: context["authenticated"] as? Bool,
+                      baseURL: context["base_url"] as? String)
     }
 
-    private func receive(parent: String?, authenticated: Bool?) async {
-        guard authenticated == false, parent == UserDefaults.standard.string(forKey: Self.parentKey) else { return }
+    func receive(parent: String?, authenticated: Bool?, baseURL: String? = nil,
+                 defaults: UserDefaults = .standard) async {
+        if let phone = baseURL.flatMap(URL.init(string:)), let store,
+           phone.absoluteString != store.configuration.baseURL.absoluteString,
+           let environment = BackendEnvironment(url: phone) {
+            BackendEnvironment.choose(environment, defaults: defaults)
+            await store.invalidateLocalSession()
+            defaults.removeObject(forKey: Self.parentKey)
+            pairedBefore = false
+            error = "Your iPhone uses \(environment.name). Close Comma on this watch and open it again."
+            return
+        }
+        guard authenticated == false, parent == defaults.string(forKey: Self.parentKey) else { return }
         await store?.invalidateLocalSession()
-        UserDefaults.standard.removeObject(forKey: Self.parentKey)
+        defaults.removeObject(forKey: Self.parentKey)
         pairedBefore = false
     }
 
@@ -94,7 +113,10 @@ final class WatchPairingBridge: NSObject, ObservableObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         let parent = applicationContext["parent_session_id"] as? String
         let authenticated = applicationContext["authenticated"] as? Bool
-        Task { @MainActor [weak self] in await self?.receive(parent: parent, authenticated: authenticated) }
+        let baseURL = applicationContext["base_url"] as? String
+        Task { @MainActor [weak self] in
+            await self?.receive(parent: parent, authenticated: authenticated, baseURL: baseURL)
+        }
     }
 }
 

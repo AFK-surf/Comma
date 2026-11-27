@@ -1,6 +1,7 @@
 // The Markdown syntax every client reads: GFM as marked lexes it, through Incremark's syntax tree (mdast), with what
 // replies need on top. Chinese labels such as "**标签：**正文" are bold; `$x$`, `$$x$$` and `\(x\)` are math inline,
-// a `$$` or `\[ \]` block is math, and a price such as "$5 or $10" is text; inline HTML stays HTML.
+// a `$$` or `\[ \]` block is math, and a price such as "$5 or $10" is text; inline HTML stays HTML. `---` under a line
+// that is only a web address is a rule, not that address as a heading.
 import {
   MarkedAstBuilder,
   type EngineParserOptions,
@@ -47,8 +48,13 @@ const cjkStrong: TokenizerExtension = {
   },
 };
 
-// Brackets or single dollars hold math when what is in them reads as TeX: a command, or a letter's sub- or superscript.
-const TEX = /\\[A-Za-z]+|(?:^|[^\w\\])[A-Za-z][_^](?:\{[^}]+\}|[A-Za-z0-9\\])/;
+// Brackets or single dollars hold math when what is in them reads as TeX: a command (2+ letters, so JSON escapes such
+// as `\n` or `\t` stay text), or a letter's sub- or superscript.
+const TEX = /\\[A-Za-z]{2,}|(?:^|[^\w\\])[A-Za-z][_^](?:\{[^}]+\}|[A-Za-z0-9\\])/;
+
+// Bare `[ ... ]` also appears around JSON arrays and quoted data: reject double quotes and unescaped `$`.
+const isBareBracketMath = (text: string) =>
+  TEX.test(text) && !text.includes('"') && !/(?:^|[^\\])\$/.test(text);
 
 // Inline delimiters are also written around plain prose: two words in a row with no TeX or `=` read as text, anything else as math.
 const isInlineTex = (text: string) =>
@@ -87,7 +93,8 @@ function mathBlockAt(source: string) {
   const bare =
     /^ {0,3}\[[ \t]*\n([\s\S]+?)\n {0,3}\][ \t]*(?:\n+|$)/.exec(source) ??
     /^ {0,3}\[(?!\^)([^\n\]]+)\][ \t]*(?:\n+|$)/.exec(source);
-  if (bare && TEX.test(bare[1]!)) return { raw: bare[0], text: bare[1]!.trim() };
+  if (bare && isBareBracketMath(bare[1]!))
+    return { raw: bare[0], text: bare[1]!.trim() };
   return undefined;
 }
 
@@ -103,6 +110,31 @@ const blockMath: TokenizerExtension = {
   tokenizer(source) {
     const block = mathBlockAt(source);
     return block && { type: "blockMath", ...block };
+  },
+};
+
+// The last line of a block's text, when it is nothing but a web address.
+const ADDRESS_LINE = /(?:^|\n)[ \t]*<?https?:\/\/[^\s<>]+>?[ \t]*$/;
+
+// A digest ends an item with its source address and `---`. CommonMark reads those two lines as a setext heading, so
+// the address is drawn as a title. Lines that end in an address alone are a paragraph, and the `---` is left to be
+// read as the rule it was written as; `---` under any other line is still its heading.
+const addressRule: TokenizerExtension = {
+  name: "addressRule",
+  level: "block",
+  tokenizer(this: TokenizerThis, source) {
+    const { tokenizer } = this.lexer as unknown as {
+      tokenizer: {
+        hr(source: string): Tokens.Hr | undefined;
+        lheading(source: string): Tokens.Heading | undefined;
+      };
+    };
+    // This runs before marked's own rules: a block that opens with a rule, as the next item after a digest's `---`
+    // does, is that rule and not the first line of a heading.
+    const heading = tokenizer.hr(source) ? undefined : tokenizer.lheading(source);
+    if (heading?.depth !== 2 || !ADDRESS_LINE.test(heading.text)) return undefined;
+    const raw = heading.raw.replace(/\n[^\n]*\n*$/, "\n");
+    return { type: "paragraph", raw, text: heading.text, tokens: heading.tokens };
   },
 };
 
@@ -175,6 +207,7 @@ export class MarkdownAstBuilder extends MarkedAstBuilder {
               cjkStrong,
               markSpans,
               blockMath,
+              addressRule,
             ] as unknown as MarkedExtension[],
           },
         },

@@ -125,6 +125,32 @@ class QuestionCardViewTest {
         card.findViewWithContentDescription(card.context.getString(R.string.chat_question_add_image))!!.performClick()
         assertEquals(listOf("msg_q" to 6), host.picks)
     }
+
+    @Test fun `a single-choice dismiss card labels secondary action Dismiss and shows Dismissed receipt`() = withCard { card, host, activity ->
+        val dismissCard = AgentQuestion(
+            messageId = "msg_monoid",
+            prompt = "Confirm Monoid action?",
+            choices = listOf(QuestionChoice("ok", "Confirm", recommended = true)),
+            multiSelect = false,
+            allowOther = false,
+            state = QuestionState(QuestionStatus.OPEN),
+            independent = true,
+            skipBehavior = "dismiss",
+        )
+        card.show(QuestionCardPayload(dismissCard))
+        assertEquals(activity.getString(R.string.chat_question_dismiss), card.skip.text.toString())
+        assertTrue(card.choiceRow("ok") != null)
+        card.skip.performClick()
+        assertEquals(listOf("msg_monoid" to QuestionCardAnswer.SKIP), host.answers)
+
+        // Switching back to a normal card restores the Skip label.
+        card.show(QuestionCardPayload(question()))
+        assertEquals(activity.getString(R.string.chat_question_skip), card.skip.text.toString())
+
+        // Dismissed receipt uses chat_question_dismissed rather than chat_question_skipped.
+        card.show(QuestionCardPayload(dismissCard.copy(state = QuestionState(QuestionStatus.SKIPPED))))
+        assertEquals(activity.getString(R.string.chat_question_dismissed), card.receiptLine.toString())
+    }
 }
 
 private fun View.findViewWithContentDescription(description: String): View? {

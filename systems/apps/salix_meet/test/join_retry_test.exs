@@ -167,7 +167,6 @@ defmodule SalixMeet.JoinRetryTest do
   end
 
   describe "JoinDispatch retry rounds" do
-
     test "a retry with a live session adopts it without a second join" do
       meeting_id = seed_meeting(failed_dispatch(1))
       SystemsRuntime.put_env(:salix_meet, :join_retry_test_answer, {:ok, :live})

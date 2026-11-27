@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// The outer Settings pop moves three columns. UIKit's interactive pop controls only the detail column,
+/// The outer Settings or People pop moves three columns. UIKit's interactive pop controls only the detail column,
 /// so this boundary uses the Back button until the columns share an interactive transition owner.
 struct SettingsPopGesturePolicy: UIViewControllerRepresentable {
     let blocked: Bool

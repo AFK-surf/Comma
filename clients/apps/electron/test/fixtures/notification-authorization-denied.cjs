@@ -8,4 +8,10 @@ module.exports = {
   setBadgeCount() {
     return Promise.resolve("cleared");
   },
+  locationAuthorizationStatus() {
+    return Promise.resolve("denied");
+  },
+  requestLocationAuthorization() {
+    return Promise.resolve("denied");
+  },
 };

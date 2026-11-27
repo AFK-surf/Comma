@@ -11,6 +11,7 @@ import CommaCore
     private var previewedLink = ""
     private(set) var invitePreview = CoreJSON(value: nil)
     private var previewedInvite = ""
+    private var invitePreviewToken = 0
     init(store: CommaStore, workspace: Workspace) {
         feed = WorkspaceTopic(store: store, workspace: workspace, topic: "taskRequests", parameters: ["prefer": workspace.id], workspaceField: true)
     }
@@ -28,14 +29,19 @@ import CommaCore
     }
     /// What accepting [invitation] in this workspace gives the inviter.
     func previewInvitation(_ invitation: String) async {
-        let value = await scope.perform("taskRequests.invitePreview", ["invite": invitation.trimmingCharacters(in: .whitespacesAndNewlines)])
-        previewedInvite = invitation; invitePreview = value ?? CoreJSON(value: nil)
+        let trimmed = invitation.trimmingCharacters(in: .whitespacesAndNewlines)
+        invitePreviewToken += 1
+        let token = invitePreviewToken
+        let value = await scope.perform("taskRequests.invitePreview", ["invite": trimmed])
+        guard token == invitePreviewToken else { return }
+        previewedInvite = trimmed; invitePreview = value ?? CoreJSON(value: nil)
     }
-    func invalidateInvitePreview() { invitePreview = CoreJSON(value: nil); previewedInvite = "" }
+    func invalidateInvitePreview() { invitePreviewToken += 1; invitePreview = CoreJSON(value: nil); previewedInvite = "" }
     /// Accepted only as previewed, in this workspace: the inviter may send requests back to it.
     func acceptInvitation(_ invitation: String) async -> Bool {
-        guard previewedInvite == invitation, let preview = invitePreview.object, !preview.bool("own") else { return false }
-        return await scope.perform("taskRequests.acceptInvite", ["invite": invitation.trimmingCharacters(in: .whitespacesAndNewlines)]) != nil
+        let trimmed = invitation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard previewedInvite == trimmed, let preview = invitePreview.object, !preview.bool("own") else { return false }
+        return await scope.perform("taskRequests.acceptInvite", ["invite": trimmed]) != nil
     }
     func previewLink() async {
         let requested = link
@@ -54,6 +60,7 @@ struct PhoneTaskRequestsView: View {
     @State var model: PhoneTaskRequestsModel
     @State private var revoking: String?
     @State private var removingLink: String?
+    @State private var deletingSent: String?
     @State private var acceptingInvitation = false
 
     var body: some View {
@@ -76,6 +83,14 @@ struct PhoneTaskRequestsView: View {
         .confirmationDialog("Unlink this account?", isPresented: Binding(get: { removingLink != nil }, set: { if !$0 { removingLink = nil } }), titleVisibility: .visible) {
             if let id = removingLink { Button("Unlink account", role: .destructive) { Task { _ = await model.scope.perform("taskRequests.removeLink", ["id": id], workspaceParameter: false) }; removingLink = nil } }
         }
+        .confirmationDialog("Delete this request?", isPresented: Binding(get: { deletingSent != nil }, set: { if !$0 { deletingSent = nil } }), titleVisibility: .visible) {
+            if let id = deletingSent {
+                Button("Delete request", role: .destructive) {
+                    deletingSent = nil
+                    Task { _ = await model.scope.perform("taskRequests.hide", ["request": id], workspaceParameter: false) }
+                }
+            }
+        } message: { Text("It will be removed from your lists across devices. The recipient's task is not affected.") }
         .disabled(model.scope.busy || !model.scope.current)
     }
 
@@ -163,12 +178,14 @@ struct PhoneTaskRequestsView: View {
                 HStack(spacing: GroupedSurface.groupSpacing) {
                     NavigationLink { PhoneRequestDetail(model: model, request: request, incoming: false) } label: {
                         description(request.string("title") ?? String(localized: "Task request"),
-                                    detail: [personName(request.object("workspace")?.object("owner")), requestStatus(request.string("status")), request.string("decline_reason") ?? "", request.string("reply") ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                                    detail: [personName(request.object("workspace")?.object("owner")), requestStatusName(request.string("status"), taskStatus: request.string("task_status")), request.string("decline_reason") ?? "", request.string("reply") ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                     }.buttonStyle(.plain)
                     if request.string("status") == "pending", let id = request.string("id") {
                         Button("Withdraw request", role: .destructive) {
                             Task { _ = await model.scope.perform("taskRequests.withdraw", ["request": id], workspaceParameter: false) }
                         }.font(.subheadline)
+                    } else if let id = request.string("id") {
+                        Button("Delete", role: .destructive) { deletingSent = id }.font(.subheadline)
                     }
                 }.surfaceRowFrame()
             }
@@ -292,53 +309,434 @@ private struct PhoneLinkChatAccountView: View {
 }
 
 struct PhoneRequestDetail: View {
-    @Environment(AppNavigation.self) private var navigation
+    static let maxDeclineReasonBytes = 1_000
+
+    /// Truncates `text` to at most `maxBytes` UTF-8 bytes without splitting an extended grapheme cluster.
+    static func clampUTF8(_ text: String, maxBytes: Int) -> String {
+        guard text.utf8.count > maxBytes else { return text }
+        var bytes = 0
+        var end = text.startIndex
+        while end < text.endIndex {
+            let next = text.index(after: end)
+            let step = text[end..<next].utf8.count
+            if bytes + step > maxBytes { break }
+            bytes += step
+            end = next
+        }
+        return String(text[..<end])
+    }
+
     let model: PhoneTaskRequestsModel
     let request: NSDictionary
     let incoming: Bool
     @State private var title = ""
     @State private var content = ""
     @State private var reason = ""
-    @State private var destination = "task"
     @State private var declining = false
+    @State private var deleting = false
     @Environment(\.dismiss) private var dismiss
     private var id: String { request.string("id") ?? "" }
-    private var current: NSDictionary { model.rows(incoming ? "incoming" : "sent").first { $0.string("id") == id } ?? request }
+    var current: NSDictionary {
+        if incoming {
+            return model.rows("received").first { $0.string("id") == id }
+                ?? model.rows("incoming").first { $0.string("id") == id }
+                ?? request
+        }
+        return model.rows("sent").first { $0.string("id") == id } ?? request
+    }
     var body: some View {
-        SettingsPage {
-            SettingsSection(Text("Request")) {
-                if incoming, current.string("status") == "pending" {
-                    TextField("Title", text: $title).surfaceRowFrame()
-                    TextEditor(text: $content).frame(minHeight: GroupedSurface.rowHeight * 3).surfaceRowFrame().accessibilityLabel("Request content")
-                    Picker("Send to", selection: $destination) { Text("New task").tag("task"); Text("Router chat").tag("router") }.surfaceRowFrame()
-                    Button("Accept request") {
-                        Task {
-                            guard let answer = await model.scope.perform("taskRequests.accept", ["request": id, "title": title, "content": content, "to": destination]) else { return }
-                            dismiss()
-                            if let task = answer.object?.object("task")?.string("id") { await model.scope.store.openTask(id: task) }
-                            else if destination == "router" { navigation.openRouter() }
-                        }
-                    }.surfaceRowFrame().disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    TextField("Decline reason (optional)", text: $reason).surfaceRowFrame()
-                    Button("Decline request", role: .destructive) { declining = true }.surfaceRowFrame()
-                } else {
-                    Text(verbatim: current.string("title") ?? "").font(.headline).surfaceRowFrame()
-                    Text(verbatim: current.text("content") ?? "").textSelection(.enabled).surfaceRowFrame()
-                    SettingsRow(Text("Status"), value: Text(requestStatus(current.string("status"))))
-                    if let reply = current.string("reply") { Text(verbatim: reply).textSelection(.enabled).surfaceRowFrame() }
-                    if let reason = current.string("decline_reason") { Text(verbatim: reason).surfaceRowFrame() }
-                    if !incoming, current.string("status") == "pending" {
-                        Button("Withdraw request", role: .destructive) { Task { _ = await model.scope.perform("taskRequests.withdraw", ["request": id], workspaceParameter: false) } }.surfaceRowFrame()
-                    }
-                    if let task = current.object("task")?.string("id") { Button("Open task") { Task { await model.scope.store.openTask(id: task) } }.surfaceRowFrame() }
+        let pendingIncoming = incoming && current.string("status") == "pending"
+        Group {
+            if pendingIncoming {
+                pendingIncomingBody
+            } else {
+                conversationBody
+            }
+        }
+        .toolbar {
+            if !pendingIncoming {
+                ToolbarItem(placement: .principal) {
+                    conversationTitleBar
                 }
             }
-            if let error = model.scope.error { InlineError(message: error, dismiss: { model.scope.error = nil }) }
-        }.pageTitle("Task request")
-            .onAppear { title = request.text("title") ?? ""; content = request.text("content") ?? "" }
-            .confirmationDialog("Decline this request?", isPresented: $declining, titleVisibility: .visible) {
-                Button("Decline request", role: .destructive) { Task { _ = await model.scope.perform("taskRequests.decline", ["request": id, "reason": reason]) } }
-            }.disabled(model.scope.busy || !model.scope.current)
+            if !incoming, !id.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        if current.string("status") == "pending" {
+                            Button(role: .destructive) {
+                                Task { _ = await model.scope.perform("taskRequests.withdraw", ["request": id], workspaceParameter: false) }
+                            } label: {
+                                Label { Text("Withdraw request") } icon: { MenuIcon.destructive("icon-close") }
+                            }
+                        } else {
+                            Button(role: .destructive) { deleting = true } label: {
+                                Label { Text("Delete request") } icon: { MenuIcon.destructive("central-trash-can") }
+                            }
+                        }
+                    } label: {
+                        Label("Request actions", image: "icon-more")
+                    }
+                    .accessibilityIdentifier("requestDetailMore")
+                }
+            }
+        }
+        .onAppear { title = request.text("title") ?? ""; content = request.text("content") ?? "" }
+        .alert("Decline this request?", isPresented: $declining) {
+            TextField("Reason (optional)", text: $reason)
+                .onChange(of: reason) { _, value in
+                    let clamped = Self.clampUTF8(value, maxBytes: Self.maxDeclineReasonBytes)
+                    if clamped != value { reason = clamped }
+                }
+            Button("Cancel", role: .cancel) {}
+            Button("Decline", role: .destructive) {
+                let note = Self.clampUTF8(reason.trimmingCharacters(in: .whitespacesAndNewlines), maxBytes: Self.maxDeclineReasonBytes)
+                Task { _ = await model.scope.perform("taskRequests.decline", ["request": id, "reason": note]) }
+            }
+        } message: {
+            Text("The sender will see your reason if you add one.")
+        }
+        .confirmationDialog("Delete this request?", isPresented: $deleting, titleVisibility: .visible) {
+            Button("Delete request", role: .destructive) {
+                Task {
+                    if await model.scope.perform("taskRequests.hide", ["request": id], workspaceParameter: false) != nil {
+                        dismiss()
+                    }
+                }
+            }
+        } message: { Text("It will be removed from your lists across devices. The recipient's task is not affected.") }
+        .disabled(model.scope.busy || !model.scope.current)
+    }
+
+    private var statusBucket: TaskBucket? {
+        let status = current.string("status")
+        let taskStatus = incoming ? nil : current.string("task_status")
+        return switch status {
+        case "pending": nil
+        case "accepted":
+            taskStatus.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : TaskBucket(status: $0) } ?? .inProgress
+        default: .cancelled
+        }
+    }
+
+    private var statusQuiet: Bool {
+        !["pending", "accepted"].contains(current.string("status") ?? "")
+    }
+
+    private var statusLabel: String {
+        requestStatusName(current.string("status"), taskStatus: incoming ? nil : current.string("task_status"))
+    }
+
+    private var headingText: String {
+        let raw = current.string("title") ?? ""
+        return raw.isEmpty ? String(localized: "Task request") : raw
+    }
+
+    /// Two-line navigation title matching `TaskDockHeader`: title over status glyph and label.
+    private var conversationTitleBar: some View {
+        let bucket = statusBucket
+        return VStack(spacing: 1) {
+            Text(verbatim: headingText)
+                .font(.body.weight(.medium))
+                .foregroundStyle(CommaTheme.textPrimary)
+                .lineLimit(1)
+            HStack(spacing: 4) {
+                if let bucket, !statusQuiet {
+                    TaskStatusIcon(bucket: bucket, size: 11)
+                } else {
+                    Image(bucket?.iconName ?? TaskBucket.neutralIconName)
+                        .renderingMode(.template).resizable().interpolation(.high)
+                        .frame(width: 11, height: 11)
+                        .foregroundStyle(CommaTheme.sidebarIcon)
+                        .accessibilityHidden(true)
+                }
+                if bucket == .inProgress, !statusQuiet {
+                    ShimmerText(text: statusLabel, font: .footnote.weight(.medium))
+                } else {
+                    Text(verbatim: statusLabel)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(CommaTheme.textQuaternary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Incoming pending request review: sender metadata, a labeled editable request card, and a pinned Decline / Create task footer.
+    private var pendingIncomingBody: some View {
+        let sender = current.object("sender")
+        let senderID = sender?.string("id")
+        let senderName = sender?.string("name") ?? sender?.string("email") ?? ""
+        let avatarSource = senderID.flatMap { pid in model.rows("people").first { $0.string("id") == pid }?.object("avatar") }
+        let timestamp = current.int("created_at").map {
+            Date(timeIntervalSince1970: TimeInterval($0)).formatted(date: .abbreviated, time: .shortened)
+        } ?? ""
+        let canAccept = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if !senderName.isEmpty || !timestamp.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !senderName.isEmpty {
+                            recipientChip(name: senderName, source: avatarSource, label: String(localized: "From \(senderName)"))
+                        }
+                        if !timestamp.isEmpty {
+                            Text(verbatim: timestamp)
+                                .font(.footnote)
+                                .foregroundStyle(CommaTheme.textTertiary)
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Title")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(CommaTheme.textTertiary)
+                        TextField("Title", text: $title)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(CommaTheme.textPrimary)
+                            .accessibilityIdentifier("incomingRequestTitle")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+
+                    Divider()
+                        .padding(.leading, 16)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Request content")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(CommaTheme.textTertiary)
+                        ZStack(alignment: .topLeading) {
+                            if content.isEmpty {
+                                Text("Request content")
+                                    .font(.body)
+                                    .foregroundStyle(CommaTheme.textPlaceholder)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 4)
+                                    .allowsHitTesting(false)
+                            }
+                            TextEditor(text: $content)
+                                .font(.body)
+                                .foregroundStyle(CommaTheme.textPrimary)
+                                .scrollContentBackground(.hidden)
+                                .frame(minHeight: 120)
+                                .padding(.horizontal, -5)
+                                .accessibilityLabel("Request content")
+                                .accessibilityIdentifier("incomingRequestContent")
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+                }
+                .background(
+                    GroupedSurface.surface,
+                    in: RoundedRectangle(cornerRadius: GroupedSurface.radius, style: .continuous)
+                )
+
+                Text("Creates a new task in your workspace. You can edit the title or content before accepting.")
+                    .font(.footnote)
+                    .foregroundStyle(CommaTheme.textTertiary)
+                    .padding(.horizontal, 4)
+
+                if let error = model.scope.error {
+                    InlineError(message: error, dismiss: { model.scope.error = nil })
+                }
+            }
+            .padding(.horizontal, GroupedSurface.margin)
+            .padding(.bottom, 20)
+            .frame(maxWidth: 600).frame(maxWidth: .infinity)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .background(CommaTheme.bgPrimary)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 12) {
+                    Button("Decline", role: .destructive) {
+                        reason = ""
+                        declining = true
+                    }
+                    .buttonStyle(RequestActionButtonStyle(tone: .destructive))
+                    .accessibilityIdentifier("incomingRequestDecline")
+                    Button("Create task") {
+                        Task {
+                            guard let answer = await model.scope.perform(
+                                "taskRequests.accept",
+                                ["request": id, "title": title, "content": content]
+                            ) else { return }
+                            dismiss()
+                            if let task = answer.object?.object("task")?.string("id") {
+                                await model.scope.store.openTask(id: task)
+                            }
+                        }
+                    }
+                    .buttonStyle(RequestActionButtonStyle(tone: .primary))
+                    .disabled(!canAccept)
+                    .accessibilityIdentifier("incomingRequestAccept")
+                }
+                .padding(.horizontal, GroupedSurface.margin)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+                .frame(maxWidth: 600).frame(maxWidth: .infinity)
+            }
+            .background(CommaTheme.bgPrimary)
+        }
+        .pageTitle("Task request")
+        .toolbar(.hidden, for: .tabBar)
+    }
+
+    private func recipientChip(name: String, source: NSDictionary?, label: String) -> some View {
+        HStack(spacing: 6) {
+            PersonAvatar(store: model.scope.store, name: name, source: source, size: 22)
+            Text(verbatim: label)
+                .font(.subheadline)
+                .foregroundStyle(CommaTheme.textPrimary)
+                .lineLimit(1)
+        }
+        .padding(.leading, 3).padding(.trailing, 10).padding(.vertical, 3)
+        .background(GroupedSurface.ink, in: Capsule())
+    }
+
+    private var conversationBody: some View {
+        let status = current.string("status")
+        let person = incoming ? current.object("sender") : current.object("workspace")?.object("owner")
+        let personID = person?.string("id")
+        let counterparty = person?.string("name") ?? person?.string("email") ?? current.object("workspace")?.string("name") ?? ""
+        let avatarSource = personID.flatMap { pid in model.rows("people").first { $0.string("id") == pid }?.object("avatar") }
+        let timestamp = current.int("created_at").map {
+            Date(timeIntervalSince1970: TimeInterval($0)).formatted(date: .abbreviated, time: .shortened)
+        } ?? ""
+        let requestText = (current.text("content") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let reply = (current.string("reply") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let declineReason = (current.string("decline_reason") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if !counterparty.isEmpty || !timestamp.isEmpty {
+                    VStack(spacing: 6) {
+                        if !counterparty.isEmpty {
+                            HStack(spacing: 6) {
+                                if !incoming {
+                                    Text("To:").font(.subheadline).foregroundStyle(CommaTheme.textTertiary)
+                                }
+                                recipientChip(
+                                    name: counterparty,
+                                    source: avatarSource,
+                                    label: incoming
+                                        ? String(localized: "From \(counterparty)")
+                                        : String(localized: "\(counterparty)’s Comma")
+                                )
+                            }
+                        }
+                        if !timestamp.isEmpty {
+                            Text(verbatim: timestamp)
+                                .font(.caption)
+                                .foregroundStyle(CommaTheme.textTertiary)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 12)
+                    .padding(.bottom, 22)
+                }
+
+                if !requestText.isEmpty {
+                    if !incoming {
+                        HStack {
+                            Spacer(minLength: 48)
+                            ChatBubbleSurface(fill: CommaTheme.brandSolid, tail: .trailing) {
+                                Text(MessageBubbles.inline(requestText))
+                                    .font(CommaTheme.messageFont)
+                                    .foregroundStyle(Color.white)
+                                    .tint(Color.white)
+                                    .padding(CommaTheme.bubblePadding)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    } else {
+                        incomingRow(counterparty: counterparty, avatarSource: avatarSource, isComma: false, caption: counterparty, body: requestText)
+                    }
+                }
+
+                if !reply.isEmpty {
+                    incomingRow(
+                        counterparty: counterparty,
+                        avatarSource: avatarSource,
+                        isComma: true,
+                        caption: (!incoming && !counterparty.isEmpty) ? String(localized: "\(counterparty)’s Comma") : "",
+                        body: reply
+                    )
+                    .padding(.top, 22)
+                } else if !declineReason.isEmpty {
+                    incomingRow(
+                        counterparty: counterparty,
+                        avatarSource: avatarSource,
+                        isComma: false,
+                        caption: String(localized: "Declined"),
+                        body: declineReason
+                    )
+                    .padding(.top, 22)
+                } else if !incoming, !["declined", "withdrawn", "expired"].contains(status ?? "") {
+                    Text("No result yet.")
+                        .font(.footnote)
+                        .foregroundStyle(CommaTheme.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 24)
+                }
+
+                if let task = current.object("task")?.string("id") {
+                    Button("Open task") { Task { await model.scope.store.openTask(id: task) } }
+                        .buttonStyle(RequestActionButtonStyle(tone: .primary))
+                        .padding(.top, 28)
+                }
+                if let error = model.scope.error {
+                    InlineError(message: error, dismiss: { model.scope.error = nil })
+                        .padding(.top, 16)
+                }
+            }
+            .padding(.horizontal, GroupedSurface.margin).padding(.top, 4).padding(.bottom, 28)
+            .frame(maxWidth: 600).frame(maxWidth: .infinity)
+        }
+        .background(CommaTheme.bgPrimary)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+    }
+
+    private func incomingRow(counterparty: String, avatarSource: NSDictionary?, isComma: Bool, caption: String, body: String) -> some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            if isComma || !counterparty.isEmpty {
+                ZStack(alignment: .bottomLeading) {
+                    Color.clear
+                    if isComma {
+                        AgentAvatar(role: .router).padding(4)
+                    } else {
+                        PersonAvatar(store: model.scope.store, name: counterparty, source: avatarSource, size: 24)
+                    }
+                }
+                .frame(width: CommaTheme.avatarGutter)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                if !caption.isEmpty {
+                    Text(verbatim: caption)
+                        .font(.footnote)
+                        .foregroundStyle(CommaTheme.textTertiary)
+                        .padding(.leading, 13)
+                }
+                ChatBubbleSurface(fill: CommaTheme.bubbleAssistant, tail: .leading) {
+                    Text(MessageBubbles.inline(body))
+                        .font(CommaTheme.messageFont)
+                        .foregroundStyle(CommaTheme.textPrimary)
+                        .padding(CommaTheme.bubblePadding)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 42)
+        }
     }
 }
 
@@ -369,13 +767,36 @@ struct PhoneSendRequestView: View {
     private var full: Bool { (target.int("sent_today") ?? 0) >= (target.int("daily_limit") ?? 0) || (target.int("pending") ?? 0) >= (target.int("pending_limit") ?? 0) }
 }
 
-private func requestStatus(_ value: String?) -> String {
-    switch value {
-    case "pending": String(localized: "Pending")
-    case "accepted": String(localized: "Accepted")
-    case "declined": String(localized: "Declined")
-    case "withdrawn": String(localized: "Withdrawn")
-    case "expired": String(localized: "Expired")
-    default: value ?? "—"
+/// Full-capsule action button for request review and detail actions, unified across iOS and Android.
+private struct RequestActionButtonStyle: ButtonStyle {
+    enum Tone { case primary, destructive }
+    var tone: Tone = .primary
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = Capsule()
+        configuration.label
+            .font(.body.weight(.medium))
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .foregroundStyle(foreground)
+            .background(background, in: shape)
+            .contentShape(shape)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(configuration.isPressed ? .easeOut(duration: 0.05) : CommaMotion.release, value: configuration.isPressed)
+    }
+
+    private var foreground: Color {
+        switch tone {
+        case .primary: isEnabled ? .white : CommaTheme.textPlaceholder
+        case .destructive: isEnabled ? CommaTheme.errorPrimary : CommaTheme.textPlaceholder
+        }
+    }
+
+    private var background: Color {
+        switch tone {
+        case .primary: isEnabled ? CommaTheme.brandSolid : CommaTheme.bgDisabled
+        case .destructive: GroupedSurface.surface
+        }
     }
 }

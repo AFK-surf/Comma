@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="task_status_in_progress">In progress</string>
+    <string name="task_status_loops">Automated</string>
     <string name="task_status_needs_review">Needs review</string>
     <string name="task_status_done">Done</string>
     <string name="task_status_cancelled">Cancelled</string>

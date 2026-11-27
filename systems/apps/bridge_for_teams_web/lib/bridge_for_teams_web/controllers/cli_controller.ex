@@ -519,7 +519,7 @@ defmodule BridgeForTeamsWeb.CLIController do
     [
       "In the Lark Developer Console, add the Bot capability to the app.",
       "Under Events & Callbacks, choose \"Send events to developer's server\" and save the callback URL as the request URL.",
-      "Subscribe to the events im.message.receive_v1, im.message.recalled_v1 and im.chat.member.bot.added_v1.",
+      "Subscribe to the events im.message.receive_v1, im.message.recalled_v1, im.chat.member.bot.added_v1 and im.chat.member.bot.deleted_v1.",
       "Under Permissions & Scopes, batch-import the JSON that bft lark scopes prints. It has im:message.group_msg, so that people can go on in a thread without mentioning the bot, and every message of a group is recorded.",
       "Create a version of the app and publish it; scopes and events take effect with the published version.",
       "Add the bot to a group and mention it, or write to it in a private chat.",
@@ -659,6 +659,81 @@ defmodule BridgeForTeamsWeb.CLIController do
       "Add the bot to a group and mention it, or write to it in a private chat.",
       "For messages later than 5 minutes after a mention, a group admin turns on \"机器人主动在群聊内发言\" in the bot's settings in that group.",
       "To record the whole group conversation, a group admin sets \"机器人可获取的群聊消息范围\" to \"获取群内全部消息\"."
+    ]
+  end
+
+  @doc "Connects a WeCom AI bot to a project, or refreshes the credentials of a connected one."
+  def wecom_connect(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "admin"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :write),
+         {:ok, attrs} <- wecom_credentials(params) do
+      case ProjectIMConnects.create_project_connect(org.id, project.id, "wecom", attrs) do
+        {:ok, connect} ->
+          send_ok(conn, %{
+            "mode" => "wecom_connect",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "action" => connect["action"] || "created",
+            "connect" => public_connect(connect),
+            "manual_checklist" => wecom_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not connect the WeCom bot.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc "The WeCom AI bots of a project."
+  def wecom_status(conn, params) do
+    with {:ok, org} <- require_org(params),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :read) do
+      case ProjectIMConnects.list_project_connects(org.id, project.id, "wecom") do
+        {:ok, connects} ->
+          send_ok(conn, %{
+            "mode" => "wecom_status",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "connects" => Enum.map(connects, &public_connect/1),
+            "manual_checklist" => wecom_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not read the WeCom bots.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  defp wecom_credentials(params) do
+    attrs = %{"app_id" => trim(params["bot_id"]), "app_secret" => trim(params["secret"])}
+
+    case Enum.filter(
+           [{"bot_id", "app_id"}, {"secret", "app_secret"}],
+           &(attrs[elem(&1, 1)] == "")
+         ) do
+      [] ->
+        {:ok, attrs}
+
+      missing ->
+        error(400, "missing_wecom_credentials", "Pass the WeCom bot's Bot ID and Secret.", %{
+          "fields" => Enum.map(missing, &elem(&1, 0))
+        })
+    end
+  end
+
+  defp wecom_manual_checklist do
+    [
+      "In the WeCom admin console (工作台 → 智能机器人), the bot is in API mode with the long connection (使用长连接).",
+      "Its 可见范围 includes the people who will use it.",
+      "Do not use the bot's long connection anywhere else (the console's 调试 included): WeCom keeps one connection per bot.",
+      "Write to the bot in WeCom, or add it to a group and mention it."
     ]
   end
 
@@ -884,7 +959,7 @@ defmodule BridgeForTeamsWeb.CLIController do
          {:ok, project} <- require_project(conn, org, params),
          :ok <- authorize_project(conn, project, :read),
          {:ok, manifest} <-
-           ProjectIMConnects.slack_manifest(params["app_name"] || project.name || "Bridge") do
+           ProjectIMConnects.slack_manifest(params["app_name"] || project.name || "Comma") do
       app_manifest = manifest["manifest"] || %{}
       bot_scopes = get_in(app_manifest, ["oauth_config", "scopes", "bot"]) || []
 
@@ -1115,7 +1190,8 @@ defmodule BridgeForTeamsWeb.CLIController do
           "event_subscriptions" => [
             "im.message.receive_v1",
             "im.message.recalled_v1",
-            "im.chat.member.bot.added_v1"
+            "im.chat.member.bot.added_v1",
+            "im.chat.member.bot.deleted_v1"
           ],
           "manual_checklist" => feishu_manual_checklist(),
           "limitations" => [
@@ -1383,9 +1459,9 @@ defmodule BridgeForTeamsWeb.CLIController do
       "Enable group bot (IM) on the org Feishu app binding.",
       "Create or resync the Agent Swarm Feishu connect to generate the callback URL.",
       "Paste the callback URL into Feishu Events & Callbacks.",
-      "Subscribe to im.message.receive_v1, im.message.recalled_v1 and im.chat.member.bot.added_v1.",
+      "Subscribe to im.message.receive_v1, im.message.recalled_v1, im.chat.member.bot.added_v1 and im.chat.member.bot.deleted_v1.",
       "Batch-import the required bot scopes, publish/install the app version, and add the bot to the target group.",
-      "Run bft feishu checks --json and then test a real @Bridge message."
+      "Run bft feishu checks --json and then test a real @Comma message."
     ]
   end
 

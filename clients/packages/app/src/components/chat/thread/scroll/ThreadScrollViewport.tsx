@@ -9,6 +9,9 @@ const CHAT_AWAY_SCROLL_KEYS = new Set(["ArrowUp", "Home", "PageUp"]);
 const CHAT_TOWARD_SCROLL_KEYS = new Set(["ArrowDown", "PageDown"]);
 const SPACE_ACTIVATION_SELECTOR =
   'button, input, select, textarea, [contenteditable="true"]';
+/** A control that unfolds content in place (a clamped message, details). */
+const OPENING_DISCLOSURE_SELECTOR =
+  '[aria-expanded="false"][aria-controls]:not([aria-haspopup])';
 
 type Follow = ReturnType<typeof useStickToBottom>;
 
@@ -24,6 +27,7 @@ export function ThreadScrollViewport({
     scrollRootRef,
     scrollToBottom,
     showScrollToBottom,
+    stopFollowing,
   },
   freezeContentInlineSizeOnWindowResize,
   overlay,
@@ -46,6 +50,7 @@ export function ThreadScrollViewport({
     | "scrollRootRef"
     | "scrollToBottom"
     | "showScrollToBottom"
+    | "stopFollowing"
   >;
   freezeContentInlineSizeOnWindowResize: boolean;
   /** A layer over the transcript, such as an open reply thread. */
@@ -84,6 +89,17 @@ export function ThreadScrollViewport({
           ...(displayOnly
             ? { "aria-hidden": true, tabIndex: -1 }
             : { "aria-label": messagesApi.chat_thread_label(), role: "log" }),
+          // The reader opened something to read it: it unfolds downward from
+          // where they are. Following would pin the tail and push its start
+          // up off screen instead.
+          onClickCapture: (event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest(OPENING_DISCLOSURE_SELECTOR)
+            ) {
+              stopFollowing();
+            }
+          },
           onFocusCapture: (event) => handleFocusChange(event.target),
           onKeyDown: (event) => {
             if (!scrollEnabled) {

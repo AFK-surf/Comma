@@ -220,6 +220,146 @@ defmodule SalixIM.Triage.SlackEffectAdapterTest do
     end
   end
 
+  test "freshness maps SlackMirror.Reader thread_ts rows into message_roots for DelegationEffect ChannelBatch anchoring" do
+    Process.put(:product_authority, product_authority())
+
+    rows = [
+      %{
+        "actor_kind" => "user",
+        "actor_id" => "U_TARGET",
+        "message_ts" => "100.000001",
+        "thread_ts" => "",
+        "message_ts_us" => 100_000_001,
+        "version" => 200_000_002
+      },
+      %{
+        "actor_kind" => "user",
+        "actor_id" => "U_TARGET",
+        "message_ts" => "100.000005",
+        "thread_ts" => "100.000001",
+        "message_ts_us" => 100_000_005,
+        "version" => 200_000_010
+      },
+      %{
+        "actor_kind" => "user",
+        "actor_id" => "U_SIBLING",
+        "message_ts" => "200.000001",
+        "thread_ts" => "",
+        "message_ts_us" => 200_000_001,
+        "version" => 400_000_002
+      },
+      %{
+        "actor_kind" => "user",
+        "actor_id" => "U_SIBLING",
+        "message_ts" => "200.000005",
+        "thread_ts" => "200.000001",
+        "message_ts_us" => 200_000_005,
+        "version" => 400_000_010
+      }
+    ]
+
+    Process.put(:clickhouse_thread_page, %{messages: rows, reactions: [], complete?: true})
+
+    channel_claim = %{
+      obligation_id: "triage-product-" <> String.duplicate("c", 64),
+      claim_token: "triage-product-claim-channel",
+      payload: %{
+        "run_id" => "run-channel",
+        "target" => %{
+          "connect_id" => "connect-1",
+          "connect_generation" => "generation-1",
+          "workspace_id" => "T1",
+          "channel_id" => "C1",
+          "thread_ts" => "100.000001"
+        },
+        "product_identity" => %{
+          "project_salix_group_id" => "group-1",
+          "salix_agent_id" => "agent-1"
+        },
+        "source_window" => %{
+          "oldest_ts_us" => 100_000_001,
+          "latest_ts_us" => 200_000_005,
+          "thread_roots" => ["100.000001", "200.000001"]
+        },
+        "target_cutoff" => %{"event_message_timestamps" => ["200.000005"]},
+        # Persisted legacy obligation: no root_thread_ts on source_messages, and target reply omitted from summary.
+        "source_messages" => [
+          %{"message_ts" => "200.000005"}
+        ],
+        "source_authority" =>
+          Enum.map(rows, fn row ->
+            %{
+              "message_ts" => row["message_ts"],
+              "message_ts_us" => row["message_ts_us"],
+              "observed_version" => row["version"]
+            }
+          end),
+        "delegations" => [
+          %{
+            "task" => "Sibling thread reply",
+            "source_refs" => ["slack://T1/C1/channel/200.000005"]
+          },
+          %{
+            "task" => "Sibling thread root",
+            "source_refs" => ["slack://T1/C1/channel/200.000001"]
+          },
+          %{
+            "task" => "Target thread reply without persisted root_thread_ts",
+            "source_refs" => ["slack://T1/C1/channel/100.000005"]
+          },
+          %{
+            "task" => "Target thread root with empty thread_ts",
+            "source_refs" => ["slack://T1/C1/channel/100.000001"]
+          }
+        ]
+      }
+    }
+
+    assert {:ok, %{status: :fresh, message_roots: message_roots}} =
+             Freshness.check(channel_claim, freshness_opts())
+
+    assert message_roots == %{
+             "100.000001" => "100.000001",
+             "100.000005" => "100.000001",
+             "200.000001" => "200.000001",
+             "200.000005" => "200.000001"
+           }
+
+    assert {:ok,
+            [
+              %{
+                "index" => 0,
+                "status" => "suppressed_stale",
+                "reason" => "unanchored_delegation"
+              },
+              %{
+                "index" => 1,
+                "status" => "suppressed_stale",
+                "reason" => "unanchored_delegation"
+              },
+              %{
+                "index" => 2,
+                "status" => "routed",
+                "source_count" => 1
+              },
+              %{
+                "index" => 3,
+                "status" => "routed",
+                "source_count" => 1
+              }
+            ]} =
+             SalixIM.Triage.DelegationEffect.apply(channel_claim,
+               freshness_port: Freshness,
+               delegation_port: __MODULE__.ChannelDelegationPort,
+               port_opts: freshness_opts()
+             )
+  end
+
+  defmodule ChannelDelegationPort do
+    def prepare(_claim, _delegation, request_id), do: {:ok, request_id}
+    def commit(request_id), do: {:ok, %{"disposition" => "routed", "request_id" => request_id}}
+  end
+
   defmodule FreshPort do
     def check(claim, opts) do
       SystemsRuntime.Proc.send(Keyword.fetch!(opts, :test_pid), {:freshness, claim})

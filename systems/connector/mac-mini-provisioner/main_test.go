@@ -871,3 +871,162 @@ printf '{"requestId":"%s","outcome":"succeeded"}\n' "$5"
 		t.Fatal("terminal A blocked B page advancement")
 	}
 }
+
+func writeCountingAgentVMMUpdateCLI(t *testing.T, root, resultFields string) (map[string]any, string) {
+	t.Helper()
+	lifecycle := filepath.Join(root, "agent-vmm-lifecycle")
+	cli := filepath.Join(root, "agent-vmm")
+	calls := filepath.Join(root, "calls")
+	writeExecutable(t, lifecycle, "#!/bin/sh\nprintf '%s\\n' '{\"component\":\"agent-vmm-host\",\"version\":\"release-1\",\"release_id\":\"release-1\"}'\n")
+	writeExecutable(t, cli, `#!/bin/sh
+printf 'x\n' >> `+strconv.Quote(calls)+`
+request_id=; release=
+while [ "$#" -gt 0 ]; do
+  case "$1" in --request-id) request_id=$2 ;; --target-release-id) release=$2 ;; esac
+  shift
+done
+printf '{"version":1,"command":"update",`+resultFields+`,"facts":{"target_release_id":"%s","request_id":"%s","retry_at":"2030-01-01T00:10:00Z"}}\n' "$release" "$request_id"
+`)
+	config := map[string]any{
+		"paths":        map[string]any{"host_runtime_lifecycle": lifecycle, "host_runtime_cli": cli},
+		"launchd":      map[string]any{"domain": "gui/501", "service_user": "alice"},
+		"capabilities": map[string]any{"component_digests": map[string]any{"agent-vmm-host": strings.Repeat("1", 64)}},
+	}
+	return config, calls
+}
+
+func agentVMMUpdateCalls(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Count(data, []byte("x"))
+}
+
+func testAgentVMMUpdateTarget(release string) map[string]any {
+	return map[string]any{
+		"component": "agent-vmm-host", "release_id": release,
+		"artifact_url": "https://releases.example.test/Agent-VMM-Host.zip", "sha256": strings.Repeat("b", 64), "size": 42,
+	}
+}
+
+func captureStderr(t *testing.T, run func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+	captured := make(chan []byte)
+	go func() {
+		data, _ := io.ReadAll(reader)
+		captured <- data
+	}()
+	defer func() { os.Stderr = original }()
+	run()
+	_ = writer.Close()
+	return string(<-captured)
+}
+
+func TestAgentVMMUpdateRetryWaitsUntilRetryAtAndLogs(t *testing.T) {
+	root := t.TempDir()
+	config, calls := writeCountingAgentVMMUpdateCLI(t, root, `"state":"retry_wait","stage":"download","disposition":"retry_same_request_at","issue":{"code":"update_download_unavailable","message":"network unavailable"}`)
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	opts := runOptions{configPath: filepath.Join(root, "runner.json"), updateGate: &agentVMMUpdateGate{now: func() time.Time { return now }}}
+	update := testAgentVMMUpdateTarget("release-2")
+
+	logs := captureStderr(t, func() {
+		for _, at := range []time.Duration{0, 15 * time.Second, 9 * time.Minute} {
+			now = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC).Add(at)
+			exclusive, advisory, err := applyAgentVMMUpdate(opts, config, update)
+			if err != nil || exclusive || stringValue(mapValue(advisory, "agent_vmm_update")["disposition"]) != "retry_same_request_at" {
+				t.Fatalf("at %s: exclusive=%t advisory=%+v err=%v", at, exclusive, advisory, err)
+			}
+		}
+	})
+	if got := agentVMMUpdateCalls(t, calls); got != 1 {
+		t.Fatalf("CLI ran %d times before retry_at, want 1", got)
+	}
+	for _, expected := range []string{
+		"Agent VMM update starting: release=release-2 request_id=agent-vmm-update-",
+		"url=https://releases.example.test/Agent-VMM-Host.zip size=42",
+		"state=retry_wait stage=download disposition=retry_same_request_at retry_at=2030-01-01T00:10:00Z",
+		`reason="update_download_unavailable network unavailable"`,
+	} {
+		if !strings.Contains(logs, expected) {
+			t.Fatalf("logs %q missing %q", logs, expected)
+		}
+	}
+	if strings.Count(logs, "starting:") != 1 {
+		t.Fatalf("logs repeated a held attempt: %q", logs)
+	}
+
+	now = time.Date(2030, 1, 1, 0, 10, 0, 0, time.UTC)
+	captureStderr(t, func() {
+		if _, _, err := applyAgentVMMUpdate(opts, config, update); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := agentVMMUpdateCalls(t, calls); got != 2 {
+		t.Fatalf("CLI ran %d times after retry_at, want 2", got)
+	}
+}
+
+func TestAgentVMMUpdateTerminalDispositionHoldsUntilTargetChanges(t *testing.T) {
+	root := t.TempDir()
+	config, calls := writeCountingAgentVMMUpdateCLI(t, root, `"state":"action_required","stage":"verify","disposition":"terminal_action_required","issue":{"code":"update_artifact_digest_mismatch","message":"digest mismatch"}`)
+	opts := runOptions{configPath: filepath.Join(root, "runner.json"), updateGate: &agentVMMUpdateGate{}}
+
+	captureStderr(t, func() {
+		for range 3 {
+			_, advisory, err := applyAgentVMMUpdate(opts, config, testAgentVMMUpdateTarget("release-2"))
+			if err != nil || stringValue(advisory["failure_code"]) != "agent_vmm.update_action_required" {
+				t.Fatalf("advisory=%+v err=%v", advisory, err)
+			}
+		}
+	})
+	if got := agentVMMUpdateCalls(t, calls); got != 1 {
+		t.Fatalf("CLI ran %d times for one terminal request, want 1", got)
+	}
+	captureStderr(t, func() {
+		if _, _, err := applyAgentVMMUpdate(opts, config, testAgentVMMUpdateTarget("release-3")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := agentVMMUpdateCalls(t, calls); got != 2 {
+		t.Fatalf("CLI ran %d times after the target changed, want 2", got)
+	}
+}
+
+func TestAgentVMMUpdateProcessFailureCoolsDownSameRequest(t *testing.T) {
+	root := t.TempDir()
+	config, calls := writeCountingAgentVMMUpdateCLI(t, root, `"state":"succeeded"`)
+	writeExecutable(t, stringValue(mapValue(config, "paths")["host_runtime_cli"]), "#!/bin/sh\nprintf 'x\\n' >> "+strconv.Quote(calls)+"\nprintf '%s\\n' 'connection reset by peer' >&2\nexit 1\n")
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	opts := runOptions{configPath: filepath.Join(root, "runner.json"), updateGate: &agentVMMUpdateGate{now: func() time.Time { return now }}}
+
+	logs := captureStderr(t, func() {
+		for range 2 {
+			if _, _, err := applyAgentVMMUpdate(opts, config, testAgentVMMUpdateTarget("release-2")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if got := agentVMMUpdateCalls(t, calls); got != 1 || !strings.Contains(logs, `error="exit status 1" output="connection reset by peer"`) {
+		t.Fatalf("calls=%d logs=%q", got, logs)
+	}
+	now = now.Add(agentVMMUpdateFailureCooldown)
+	captureStderr(t, func() {
+		if _, _, err := applyAgentVMMUpdate(opts, config, testAgentVMMUpdateTarget("release-2")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := agentVMMUpdateCalls(t, calls); got != 2 {
+		t.Fatalf("CLI ran %d times after the cooldown, want 2", got)
+	}
+}

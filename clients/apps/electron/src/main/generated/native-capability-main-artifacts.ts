@@ -102,6 +102,8 @@ export type NativeCapabilityHandlerTypeMap = {
   "appPreferences.openNotificationSettings": AppPreferencesProvider["openNotificationSettings"];
   "appPreferences.refreshLaunchAtLogin": AppPreferencesProvider["refreshLaunchAtLogin"];
   "appPreferences.requestNotificationAuthorization": AppPreferencesProvider["requestNotificationAuthorization"];
+  "appPreferences.requestLocationAuthorization": AppPreferencesProvider["requestLocationAuthorization"];
+  "appPreferences.requestMicrophoneAuthorization": AppPreferencesProvider["requestMicrophoneAuthorization"];
   "appPreferences.update": AppPreferencesProvider["update"];
   "connectorRuntime.state": ConnectorRuntimeProvider["state"];
   "connectorRuntime.scope": ConnectorRuntimeProvider["scope"];
@@ -275,6 +277,10 @@ export function registerGeneratedNativeMainBindings({
       providers.appPreferences.refreshLaunchAtLogin(input),
     "appPreferences.requestNotificationAuthorization": async (input) =>
       providers.appPreferences.requestNotificationAuthorization(input),
+    "appPreferences.requestLocationAuthorization": async (input) =>
+      providers.appPreferences.requestLocationAuthorization(input),
+    "appPreferences.requestMicrophoneAuthorization": async (input) =>
+      providers.appPreferences.requestMicrophoneAuthorization(input),
     "appPreferences.update": async (input) => providers.appPreferences.update(input),
     "connectorRuntime.state": async (input) => providers.connectorRuntime.state(input),
     "connectorRuntime.scope": async (input) => providers.connectorRuntime.scope(input),

@@ -408,6 +408,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     case Port.info(port_proc, :os_pid) do
       {:os_pid, os_pid} ->
         System.cmd("kill", [Integer.to_string(os_pid)])
+
         receive do
           {^port_proc, {:exit_status, _status}} -> :ok
         end

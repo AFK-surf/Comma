@@ -250,6 +250,27 @@
    "dir": "out",
    "data": {
     "id": 12,
+    "call": "chat.locale",
+    "params": {
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 13,
+    "subscribe": {
+     "topic": "locationSharing"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 14,
     "subscribe": {
      "topic": "profile"
     }
@@ -295,6 +316,18 @@
      "emailCooldown": null,
      "guestImports": 0
     }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "ok": null
    }
   },
   {
@@ -415,7 +448,17 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 12,
+    "id": 13,
+    "value": {
+     "enabled": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 14,
     "value": {
      "status": "loading",
      "profile": null
@@ -459,7 +502,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 13,
+    "id": 15,
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke"
@@ -470,29 +513,29 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 14,
-    "call": "tasks.focus",
-    "params": {
-     "workspace": "ws-smoke"
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 15,
-    "call": "tasks.focus",
-    "params": {
-     "workspace": "ws-smoke"
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
     "id": 16,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 17,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
     "subscribe": {
      "topic": "taskRequests",
      "prefer": "ws-smoke"
@@ -503,7 +546,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 17,
+    "id": 19,
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke",
@@ -515,7 +558,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 18,
+    "id": 20,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -526,7 +569,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 19,
+    "id": 21,
     "subscribe": {
      "topic": "router",
      "workspace": "ws-smoke",
@@ -559,7 +602,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 12,
+    "id": 14,
     "delta": [
      {
       "path": [
@@ -585,7 +628,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 20,
+    "id": 22,
     "call": "profile.update",
     "params": {
      "locale": "en"
@@ -623,7 +666,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 21,
+    "id": 23,
     "subscribe": {
      "topic": "recommendations",
      "workspace": "ws-smoke",
@@ -636,7 +679,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 22,
+    "id": 24,
     "subscribe": {
      "topic": "creditWarning",
      "workspace": "ws-smoke"
@@ -647,7 +690,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 23,
+    "id": 25,
     "subscribe": {
      "topic": "mentionTasks",
      "group": "grp-smoke"
@@ -658,7 +701,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 24,
+    "id": 26,
     "subscribe": {
      "topic": "recommendations",
      "workspace": "ws-smoke",
@@ -670,7 +713,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 25,
+    "id": 27,
     "subscribe": {
      "topic": "plugins",
      "workspace": "ws-smoke"
@@ -681,7 +724,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 26,
+    "id": 28,
     "subscribe": {
      "topic": "taskLabels",
      "group": "grp-smoke",
@@ -694,7 +737,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 27,
+    "id": 29,
     "subscribe": {
      "topic": "chatView",
      "workspace": "ws-smoke",
@@ -708,7 +751,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 28,
+    "id": 30,
     "subscribe": {
      "topic": "skills",
      "workspace": "ws-smoke"
@@ -719,7 +762,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 31,
     "call": "workspace.select",
     "params": {
      "workspace": "ws-smoke"
@@ -730,7 +773,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 32,
     "call": "chatView.setDraft",
     "params": {
      "draft": "请完成冒烟任务",
@@ -753,7 +796,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 14,
+    "id": 16,
     "ok": null
    }
   },
@@ -761,19 +804,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 15,
-    "ok": null
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 18,
+    "id": 17,
     "ok": null
    }
   },
@@ -785,7 +816,19 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 20,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 31,
     "ok": null
    }
   },
@@ -793,7 +836,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 32,
     "ok": {
      "revision": 3,
      "draftEpoch": 1
@@ -804,7 +847,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 13,
+    "id": 15,
     "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
@@ -825,15 +868,17 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 18,
     "value": {
      "workspace": null,
      "incoming": null,
+     "received": null,
      "grants": null,
      "targets": null,
      "sent": null,
      "links": null,
      "own": null,
+     "people": null,
      "error": false
     }
    }
@@ -842,7 +887,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 19,
     "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
@@ -863,7 +908,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 33,
     "subscribe": {
      "topic": "taskOrder",
      "group": "grp-smoke"
@@ -874,7 +919,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 19,
+    "id": 21,
     "value": null
    }
   },
@@ -882,7 +927,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 12,
+    "id": 14,
     "delta": [
      {
       "path": [
@@ -898,7 +943,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 21,
+    "id": 23,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -906,22 +951,6 @@
      "discovering": false,
      "refreshing": false
     }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 22,
-    "value": null
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 23,
-    "value": null
    }
   },
   {
@@ -929,6 +958,22 @@
    "dir": "in",
    "data": {
     "id": 24,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -942,7 +987,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 27,
     "value": {
      "status": "loading"
     }
@@ -952,7 +997,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "value": {
      "catalog": null,
      "error": false,
@@ -964,7 +1009,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -1004,7 +1049,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "status": "loading",
      "skills": []
@@ -1034,7 +1079,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 22,
     "ok": {
      "avatar_id": null,
      "email": "smoke@comma.local",
@@ -1052,7 +1097,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 18,
     "delta": [
      {
       "path": [
@@ -1073,45 +1118,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 21,
-    "delta": [
-     {
-      "path": [
-       "envelope"
-      ],
-      "set": {
-       "settings": {
-        "autoEnableNewSources": true,
-        "schedule": {
-         "enabled": true,
-         "hour": 8,
-         "minute": 0,
-         "timezone": "UTC"
-        },
-        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
-        "sourceRevision": 1,
-        "sources": []
-       },
-       "snapshot": null,
-       "state": "empty"
-      }
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
     "id": 23,
-    "value": []
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 24,
     "delta": [
      {
       "path": [
@@ -1142,6 +1149,44 @@
    "dir": "in",
    "data": {
     "id": 25,
+    "value": []
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1175,7 +1220,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -1196,57 +1241,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 4
-     },
-     {
-      "path": [
-       "state",
-       "conversation"
-      ],
-      "set": {
-       "created_at": 1720000000,
-       "group_id": "grp-smoke",
-       "id": "cnv_public_chat_smoke",
-       "kind": "user_chat",
-       "messages": [],
-       "status": "active",
-       "title": "聊天",
-       "updated_at": 1720000000
-      }
-     },
-     {
-      "path": [
-       "state",
-       "status"
-      ],
-      "set": "ready"
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 32,
-    "subscribe": {
-     "topic": "agentRequests",
-     "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke"
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 31,
+    "id": 33,
     "value": {
      "orders": {},
      "sections": [
@@ -1265,6 +1260,10 @@
       {
        "bucket": "cancelled",
        "ids": []
+      },
+      {
+       "bucket": "loops",
+       "ids": []
       }
      ]
     }
@@ -1278,7 +1277,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "delta": [
      {
       "path": [
@@ -1339,7 +1338,77 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 4
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000000,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_chat_smoke",
+       "kind": "user_chat",
+       "messages": [],
+       "status": "active",
+       "title": "聊天",
+       "updated_at": 1720000000
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 34,
+    "subscribe": {
+     "topic": "agentRequests",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 34,
+    "value": {
+     "requests": [],
+     "loading": true,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1415,7 +1484,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 35,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
@@ -1428,23 +1497,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 32,
-    "value": {
-     "requests": [],
-     "loading": true,
-     "error": false
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 32,
+    "id": 34,
     "delta": [
      {
       "path": [
@@ -1463,9 +1516,13 @@
   },
   {
    "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 35,
     "value": null
    }
   },
@@ -1477,7 +1534,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 36,
     "call": "chatView.send",
     "params": {
      "text": "请完成冒烟任务",
@@ -1501,7 +1558,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 36,
     "value": {
      "accepted": true
     }
@@ -1515,7 +1572,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 35,
     "value": {
      "browser": null
     }
@@ -1525,7 +1582,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1634,7 +1691,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 36,
     "ok": {
      "revision": 11,
      "draftEpoch": 2
@@ -1649,7 +1706,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -8372,7 +8429,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 37,
     "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
@@ -8384,7 +8441,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 36,
+    "id": 38,
     "subscribe": {
      "topic": "taskLabels",
      "group": "grp-smoke",
@@ -8397,7 +8454,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 37,
+    "id": 39,
     "subscribe": {
      "topic": "taskWorkers",
      "group": "grp-smoke",
@@ -8458,7 +8515,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 13,
+    "id": 15,
     "delta": [
      {
       "path": [
@@ -8503,7 +8560,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 19,
     "delta": [
      {
       "path": [
@@ -8548,7 +8605,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 35,
+    "id": 37,
     "value": {
      "summaries": [
       {
@@ -8574,7 +8631,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -8589,7 +8646,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 36,
+    "id": 38,
     "value": {
      "catalog": null,
      "error": true,
@@ -8601,7 +8658,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 37,
+    "id": 39,
     "value": {}
    }
   },
@@ -8617,7 +8674,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -8632,7 +8689,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 36,
+    "id": 38,
     "delta": [
      {
       "path": [
@@ -8647,7 +8704,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 37,
+    "id": 39,
     "delta": [
      {
       "path": [
@@ -8674,7 +8731,7 @@
    "at": 240,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -8720,7 +8777,7 @@
    "at": 380,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -8755,7 +8812,7 @@
    "dir": "rest"
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "step",
    "data": {
     "name": "stub.commitThinkingReply",
@@ -8763,10 +8820,10 @@
    }
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -8778,14 +8835,14 @@
    }
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "rest"
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -8901,10 +8958,10 @@
    }
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "out",
    "data": {
-    "id": 38,
+    "id": 40,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -8912,14 +8969,14 @@
    }
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "rest"
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "in",
    "data": {
-    "id": 38,
+    "id": 40,
     "error": {
      "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
      "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
@@ -8931,22 +8988,22 @@
    }
   },
   {
-   "at": 480,
+   "at": 464,
    "dir": "rest"
   },
   {
-   "at": 530,
+   "at": 514,
    "dir": "due"
   },
   {
-   "at": 620,
+   "at": 604,
    "dir": "due"
   },
   {
-   "at": 620,
+   "at": 604,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -8981,18 +9038,18 @@
    }
   },
   {
-   "at": 620,
+   "at": 604,
    "dir": "rest"
   },
   {
-   "at": 760,
+   "at": 744,
    "dir": "due"
   },
   {
-   "at": 760,
+   "at": 744,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9023,18 +9080,18 @@
    }
   },
   {
-   "at": 760,
+   "at": 744,
    "dir": "rest"
   },
   {
-   "at": 900,
+   "at": 884,
    "dir": "due"
   },
   {
-   "at": 900,
+   "at": 884,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9065,18 +9122,18 @@
    }
   },
   {
-   "at": 900,
+   "at": 884,
    "dir": "rest"
   },
   {
-   "at": 1040,
+   "at": 1024,
    "dir": "due"
   },
   {
-   "at": 1040,
+   "at": 1024,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9107,7 +9164,7 @@
    }
   },
   {
-   "at": 1040,
+   "at": 1024,
    "dir": "rest"
   },
   {
@@ -9119,14 +9176,14 @@
    "dir": "due"
   },
   {
-   "at": 1180,
+   "at": 1164,
    "dir": "due"
   },
   {
-   "at": 1180,
+   "at": 1164,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9157,18 +9214,18 @@
    }
   },
   {
-   "at": 1180,
+   "at": 1164,
    "dir": "rest"
   },
   {
-   "at": 1320,
+   "at": 1304,
    "dir": "due"
   },
   {
-   "at": 1320,
+   "at": 1304,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9199,18 +9256,18 @@
    }
   },
   {
-   "at": 1320,
+   "at": 1304,
    "dir": "rest"
   },
   {
-   "at": 1460,
+   "at": 1444,
    "dir": "due"
   },
   {
-   "at": 1460,
+   "at": 1444,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9241,18 +9298,18 @@
    }
   },
   {
-   "at": 1460,
+   "at": 1444,
    "dir": "rest"
   },
   {
-   "at": 1600,
+   "at": 1584,
    "dir": "due"
   },
   {
-   "at": 1600,
+   "at": 1584,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9283,18 +9340,18 @@
    }
   },
   {
-   "at": 1600,
+   "at": 1584,
    "dir": "rest"
   },
   {
-   "at": 1740,
+   "at": 1724,
    "dir": "due"
   },
   {
-   "at": 1740,
+   "at": 1724,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9325,18 +9382,18 @@
    }
   },
   {
-   "at": 1740,
+   "at": 1724,
    "dir": "rest"
   },
   {
-   "at": 1880,
+   "at": 1864,
    "dir": "due"
   },
   {
-   "at": 1880,
+   "at": 1864,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -9367,7 +9424,7 @@
    }
   },
   {
-   "at": 1880,
+   "at": 1864,
    "dir": "rest"
   }
  ]

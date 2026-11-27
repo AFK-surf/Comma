@@ -388,6 +388,177 @@ test("a public link shows the shared Task and its files without a Comma session"
   expect(requests.every((request) => request.cookie === undefined)).toBe(true);
 });
 
+test("a document's owner shares it from its toolbar, and the link shows the version on the page", async ({
+  page,
+}) => {
+  const plan = "# Plan\n\nThe plugin talks to the desktop.\n";
+  const stub = await startChatSmokeStub({
+    attachmentFiles: {
+      "msg_plan:1": {
+        bytes: Buffer.from(plan),
+        contentType: "text/markdown",
+        fileName: "plan.md",
+      },
+    },
+    taskTranscript: [
+      {
+        actor_type: "agent",
+        agent_id: "worker_plan",
+        message_id: "msg_plan",
+        kind: "message",
+        content: [
+          { type: "text", text: "Here is the plan." },
+          {
+            type: "file",
+            file_name: "plan.md",
+            mime_type: "text/markdown",
+            blob_ref: { uuid: "u", hash: "h", size: Buffer.byteLength(plan) },
+          },
+        ],
+      },
+    ],
+  });
+  const shareUrl = `https://comma.test/s/${token}`;
+  const calls: { method: string; query: string; body: unknown }[] = [];
+  let shared = false;
+
+  try {
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "document-share@comma.local",
+      token: "comma_sess_document_share",
+    });
+    await page.route(
+      `${stub.baseUrl}/v1/comma/groups/*/conversations/*/document-share*`,
+      async (route) => {
+        const request = route.request();
+        const method = request.method();
+        const headers = await request.allHeaders();
+        const cors = {
+          "access-control-allow-origin": headers.origin ?? "*",
+          "access-control-allow-credentials": "true",
+        };
+        if (method === "OPTIONS") {
+          return route.fulfill({
+            status: 204,
+            headers: {
+              ...cors,
+              "access-control-allow-methods": "GET,PUT,DELETE,OPTIONS",
+              "access-control-allow-headers":
+                headers["access-control-request-headers"] ?? "content-type",
+            },
+          });
+        }
+        calls.push({
+          method,
+          query: new URL(request.url()).search,
+          body: request.postDataJSON() as unknown,
+        });
+        if (method === "PUT") shared = true;
+        if (method === "DELETE") {
+          shared = false;
+          return json(route, 200, { revoked: true }, cors);
+        }
+        if (!shared) return json(route, 404, { error: "not_found" }, cors);
+        return json(
+          route,
+          200,
+          {
+            url: shareUrl,
+            file_name: "plan.md",
+            message_id: "msg_plan",
+            index: 1,
+            created_at: 1_790_100_000,
+            shared_at: 1_790_100_000,
+          },
+          cors
+        );
+      }
+    );
+
+    await page.goto(
+      `/#/tasks/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`
+    );
+    await page.getByRole("button", { name: "Open plan.md" }).click();
+    const panel = page.getByTestId("file-preview-panel");
+    await expect(panel.getByText("The plugin talks to the desktop.")).toBeVisible();
+
+    await panel.getByTestId("file-preview-share").click();
+    const dialog = page.getByTestId("document-share-dialog");
+    await dialog.getByRole("button", { name: "Create public link" }).click();
+    await expect(dialog.getByTestId("document-share-url")).toHaveValue(shareUrl);
+    // The link is of the version the page shows.
+    expect(calls.map(({ method, query, body }) => ({ method, query, body }))).toEqual([
+      { method: "GET", query: "?file_name=plan.md", body: null },
+      { method: "PUT", query: "", body: { message_id: "msg_plan", index: 1 } },
+    ]);
+    await expect(dialog.getByTestId("document-share-other-version")).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Link actions" }).click();
+    await page.getByRole("menuitem", { name: "Stop sharing" }).click();
+    await expect(
+      dialog.getByRole("button", { name: "Create public link" })
+    ).toBeVisible();
+    expect(calls.at(-1)).toMatchObject({
+      method: "DELETE",
+      query: "?file_name=plan.md",
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a document link shows the document as a page, without a Comma session", async ({
+  context,
+  page,
+}) => {
+  const requests: { path: string; cookie: string | undefined }[] = [];
+  await context.addCookies([
+    {
+      name: "comma_session",
+      value: "private",
+      domain: "share-api.comma.test",
+      path: "/",
+    },
+  ]);
+  await page.addInitScript((baseUrl) => {
+    localStorage.setItem("comma.apiBaseUrl", baseUrl);
+  }, shareApi);
+  await page.route(`${shareApi}/v1/comma/public/shares/**`, async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname.replace(`/v1/comma/public/shares/${token}`, "");
+    requests.push({ path, cookie: (await route.request().allHeaders()).cookie });
+    if (path === "")
+      return json(route, 200, {
+        kind: "document",
+        file_name: "plan.md",
+        size: 44,
+        shared_at: 1_790_100_000,
+      });
+    if (path === "/document")
+      return route.fulfill({
+        status: 200,
+        contentType: "text/markdown",
+        headers: { "access-control-allow-origin": "*" },
+        body: "# Plan\n\nThe plugin talks to the desktop.\n\n- one\n- two\n",
+      });
+    // A document link has no Messages.
+    return json(route, 404, { error: "not_found" });
+  });
+
+  await page.goto(`/s/${token}`);
+  const document = page.getByTestId("share-view-document");
+  await expect(document.getByRole("heading", { name: "plan.md" })).toBeVisible();
+  await expect(document.getByText("The plugin talks to the desktop.")).toBeVisible();
+  await expect(document.getByRole("listitem")).toHaveCount(2);
+  await expect(page).toHaveTitle("plan.md");
+  // The page is the document alone: no Task thread, and nothing to edit.
+  await expect(page.getByTestId("share-view-thread")).toHaveCount(0);
+  await expect(document.locator("[contenteditable='true']")).toHaveCount(0);
+  expect(requests.map((request) => request.path)).toContain("/document");
+  expect(requests.every((request) => request.cookie === undefined)).toBe(true);
+});
+
 test("a stopped or unknown public link says it is not available", async ({ page }) => {
   await page.addInitScript((baseUrl) => {
     localStorage.setItem("comma.apiBaseUrl", baseUrl);

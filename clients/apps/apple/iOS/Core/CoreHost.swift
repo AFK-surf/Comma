@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A call's input, read from JSON and never changed afterwards.
 private struct SendableInput: @unchecked Sendable {
@@ -28,8 +29,10 @@ protocol AppleIdentityTokens: Sendable {
  *   `custody`.
  * - Session ports (`session.*`) use `custody`, native sign-in, and bounded abuse verification.
  * - The databases (`sql.*`) are SQLite files in `dataDirectory`, used at once on the core's thread.
+ * - In-app purchases (`store.*`) are StoreKit's (`StoreKitPurchases`), where the app sells through the App Store.
  */
 final class CoreHost: CoreHostOps, @unchecked Sendable {
+    private static let log = Logger(subsystem: "surf.comma.ios", category: "network")
     private static let withheld: Set<String> = ["authorization", "cookie", "host", "content-length", "connection"]
     private static let authRequestHeaders: Set<String> = ["accept", "content-type"]
     private static let authResponseHeaders: Set<String> = ["content-type", "retry-after"]
@@ -41,6 +44,8 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     let downloads: HostDownloads
     /// Files picks left with the app, which a request may send as its body (`localFileRef`).
     let localFiles: HostLocalFiles?
+    /// The App Store, where the app sells plans and credit packs through it.
+    let store: StoreKitPurchases?
     private let apple: any AppleIdentityTokens
     private let abuseProof = AbuseProof()
     private let google: any GoogleIdentityTokens
@@ -64,11 +69,12 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     private var downloadLeases: [Int: LeasedBearer] = [:]
 
     init(custody: SessionCustody, dataDirectory: URL, downloads: HostDownloads, localFiles: HostLocalFiles? = nil,
-         apple: any AppleIdentityTokens, google: any GoogleIdentityTokens = GoogleSignInSheet(), configuration: URLSessionConfiguration = .default,
+         store: StoreKitPurchases? = nil, apple: any AppleIdentityTokens, google: any GoogleIdentityTokens = GoogleSignInSheet(), configuration: URLSessionConfiguration = .default,
          networkFailure: @escaping @Sendable (Int?) -> Void = { _ in }) {
         self.custody = custody
         self.downloads = downloads
         self.localFiles = localFiles
+        self.store = store
         self.apple = apple
         self.google = google
         self.networkFailure = networkFailure
@@ -85,7 +91,8 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
 
     func startConfig() -> [String: Any] {
         var config: [String: Any] = ["platform": "ios", "apiOrigin": custody.audience, "resumed": custody.resume(),
-                                     "uploadsLocalFiles": localFiles != nil, "readsLocalFiles": localFiles != nil]
+                                     "uploadsLocalFiles": localFiles != nil, "readsLocalFiles": localFiles != nil,
+                                     "sellsInStore": store != nil]
         // The app's version, as the core's requests report it.
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String { config["version"] = version }
         return config
@@ -160,6 +167,13 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
                 self.deviceBluetooth?.perform(command, box.value) { value, error in
                     if let error { reply.fail(error) } else { reply.ok(["value": value ?? NSNull()]) }
                 }
+            }
+        case let operation where operation.hasPrefix("store."):
+            guard let store else { reply.fail("The app sells through no store."); return }
+            let command = String(operation.dropFirst("store.".count))
+            run(id, reply, box) { input in
+                let value = try await store.perform(command, input)
+                if !Task.isCancelled { reply.ok(value) }
             }
         case "fetch": run(id, reply, box) { input in try await self.product(id, input, bytes, reply, stream: false) }
         case "localFiles.read": run(id, reply, box) { input in try self.readLocal(input, reply) }
@@ -268,9 +282,33 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
         }
     }
 
+    static func networkMessage(_ error: any Error, fallback: String) -> String {
+        guard let urlError = error as? URLError else { return fallback }
+        switch urlError.code {
+        case .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff:
+            return String(localized: "No internet connection.")
+        case .timedOut:
+            return String(localized: "The request timed out.")
+        case .networkConnectionLost:
+            return String(localized: "The network connection was lost.")
+        case .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost:
+            return String(localized: "Couldn’t reach the server.")
+        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+             .serverCertificateHasBadDate, .serverCertificateNotYetValid:
+            return String(localized: "Couldn’t establish a secure connection.")
+        default:
+            return fallback
+        }
+    }
+
+    private static func logNetworkError(_ error: any Error, method: String?, path: String?) {
+        let ns = error as NSError
+        log.error("request failed method=\(method ?? "?", privacy: .public) path=\(path ?? "?", privacy: .public) domain=\(ns.domain, privacy: .public) code=\(ns.code)")
+    }
+
     private static func describe(_ error: any Error) -> String {
         if let failure = error as? HostFailure { return failure.message }
-        if error is URLError { return "The request got no answer." }
+        if error is URLError { return networkMessage(error, fallback: String(localized: "The request got no answer.")) }
         return "\(error)"
     }
 
@@ -380,9 +418,10 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
         } catch {
             untrack(id)
             if Task.isCancelled { throw CancellationError() }
+            Self.logNetworkError(error, method: request.httpMethod, path: request.url?.path)
             networkFailure(nil)
             if !custody.isCurrent(leased) { answer(reply, 409, Self.leaseUnavailable, stream: stream); return }
-            throw HostFailure(message: "The request got no answer.")
+            throw HostFailure(message: Self.networkMessage(error, fallback: String(localized: "The request got no answer.")))
         }
         if head.status >= 500 { networkFailure(head.status) }
         if !custody.isCurrent(leased) {
@@ -416,7 +455,8 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
             } catch {
                 untrack(id)
                 if Task.isCancelled { throw CancellationError() }
-                throw HostFailure(message: "The answer broke off.")
+                Self.logNetworkError(error, method: request.httpMethod, path: request.url?.path)
+                throw HostFailure(message: Self.networkMessage(error, fallback: String(localized: "The answer broke off.")))
             }
             untrack(id)
             reply.ok(head.json, body)
@@ -495,8 +535,9 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
         } catch {
             untrack(id)
             if Task.isCancelled { throw CancellationError() }
+            Self.logNetworkError(error, method: request.httpMethod, path: request.url?.path)
             networkFailure(nil)
-            throw HostFailure(message: "The request got no answer.")
+            throw HostFailure(message: Self.networkMessage(error, fallback: String(localized: "The request got no answer.")))
         }
         if head.status >= 500 { networkFailure(head.status) }
         let answered = custody.keepBearer(body, request: id)

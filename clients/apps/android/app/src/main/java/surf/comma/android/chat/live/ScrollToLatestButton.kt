@@ -21,8 +21,11 @@ import surf.comma.android.ui.widget.LiquidGlass
  * is never over the last message of a list resting at the bottom. Showing and hiding scale on
  * [DesignMotion.springScale] and fade on the duration tokens; both go straight to the end when
  * the system removes animations.
+ *
+ * Over the live chat the experimental glass under it can draw its surface ([glassUnder]); a list
+ * with no glass layer under it, such as a task's page, always gets the opaque surface.
  */
-internal class ScrollToLatestButton(context: Context) : FrameLayout(context) {
+internal class ScrollToLatestButton(context: Context, glassUnder: Boolean = true) : FrameLayout(context) {
     private val density = resources.displayMetrics.density
     // Nullable: the platform constructor may touch pressed state before this class initialises.
     private var scale: ButtonScale? = null
@@ -36,7 +39,7 @@ internal class ScrollToLatestButton(context: Context) : FrameLayout(context) {
         background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             // The experimental glass under it draws the surface and the edge.
-            if (!LiquidGlass.enabled) {
+            if (!glassUnder || !LiquidGlass.enabled) {
                 setColor(context.getColor(R.color.token_bg_primary))
                 setStroke(1, context.getColor(R.color.token_border_primary))
             }

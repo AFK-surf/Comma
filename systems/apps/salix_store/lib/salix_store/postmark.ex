@@ -1,9 +1,10 @@
 defmodule SalixStore.Postmark do
   @moduledoc """
-  Minimal Postmark client shared by product email senders — agent owner
-  notifications (`SalixAgent.Tools.OwnerEmail`) and the BridgeForTeams
-  magic-link login (`BridgeForTeams.LoginLinks`). One server token, one
-  endpoint; each caller supplies its own From address.
+  Minimal Postmark client shared by the product's system email senders: Comma
+  login codes (`Comma.EmailDelivery.Postmark`) and the BridgeForTeams
+  magic-link login (`BridgeForTeams.LoginLinks`). Each caller supplies its own
+  From address. A caller with its own Postmark server passes `:server_token`
+  to every call; the others use the shared token.
 
   Handwritten-adapter rationale (AGENTS.md external-integration rule): Postmark
   ships no official Elixir SDK, and the community options (Swoosh/Bamboo
@@ -17,7 +18,7 @@ defmodule SalixStore.Postmark do
   Configuration (`:salix_store` app env; wired from the config.json `email`
   section by `SalixStore.ConfigJson`):
 
-    * `:postmark_server_token` — Postmark server API token (required)
+    * `:postmark_server_token` — shared Postmark server API token
     * `:postmark_base_url` — endpoint override so tests can mock the API
       (default `https://api.postmarkapp.com`, trailing slashes trimmed)
 
@@ -51,12 +52,13 @@ defmodule SalixStore.Postmark do
           created_at: String.t() | nil
         }
 
-  @doc "Whether the server token is configured (does not validate it)."
+  @doc "Whether the shared server token is configured (does not validate it)."
   @spec configured?() :: boolean()
   def configured?, do: config_string(:postmark_server_token) != ""
 
   @doc """
-  Send email with a text body and optional `:html_body` and `:attachments`.
+  Send email with a text body and optional `:html_body`, `:attachments`,
+  `:reply_to` and `:server_token`.
   Split recipients at the per-message cap. Return `:ok` only when Postmark accepts every message.
   """
   @spec send_email(String.t(), [String.t()], String.t(), String.t()) ::
@@ -65,7 +67,7 @@ defmodule SalixStore.Postmark do
           :ok | {:error, send_error()}
   def send_email(from, recipients, subject, text_body, opts \\ [])
       when is_binary(from) and is_list(recipients) do
-    token = config_string(:postmark_server_token)
+    token = token(opts)
 
     if token == "" or String.trim(from) == "" do
       {:error, :not_configured}
@@ -89,7 +91,7 @@ defmodule SalixStore.Postmark do
           {:ok, %{message_id: String.t() | nil}} | {:error, send_error()}
   def send_message(from, recipient, subject, text_body, opts \\ [])
       when is_binary(from) and is_binary(recipient) do
-    token = config_string(:postmark_server_token)
+    token = token(opts)
 
     if token == "" or String.trim(from) == "" do
       {:error, :not_configured}
@@ -107,16 +109,19 @@ defmodule SalixStore.Postmark do
   classification. Returns `{:error, {:postmark, 422, 701}}` for an unknown
   message id.
   """
-  @spec message_events(String.t()) ::
+  @spec message_events(String.t(), keyword()) ::
           {:ok, %{status: String.t() | nil, events: [message_event()]}} | {:error, send_error()}
-  def message_events(message_id) when is_binary(message_id) do
-    with {:ok, resp} <- get_json("/messages/outbound/" <> path_segment(message_id) <> "/details") do
+  def message_events(message_id, opts \\ []) when is_binary(message_id) do
+    token = token(opts)
+
+    with {:ok, resp} <-
+           get_json(token, "/messages/outbound/" <> path_segment(message_id) <> "/details") do
       events =
         resp
         |> Map.get("MessageEvents")
         |> List.wrap()
         |> Enum.filter(&is_map/1)
-        |> Enum.map(&message_event/1)
+        |> Enum.map(&message_event(token, &1))
 
       {:ok, %{status: string_or_nil(resp["Status"]), events: events}}
     end
@@ -126,11 +131,12 @@ defmodule SalixStore.Postmark do
   The outbound stream's suppression for `email`, or `nil` when Postmark would
   send to it. Postmark rejects a send to a suppressed address with ErrorCode 406.
   """
-  @spec suppression(String.t()) :: {:ok, suppression() | nil} | {:error, send_error()}
-  def suppression(email) when is_binary(email) do
+  @spec suppression(String.t(), keyword()) :: {:ok, suppression() | nil} | {:error, send_error()}
+  def suppression(email, opts \\ []) when is_binary(email) do
     query = URI.encode_query(%{"EmailAddress" => String.trim(email)})
 
-    with {:ok, resp} <- get_json("/message-streams/outbound/suppressions/dump?" <> query) do
+    with {:ok, resp} <-
+           get_json(token(opts), "/message-streams/outbound/suppressions/dump?" <> query) do
       suppression =
         resp
         |> Map.get("Suppressions")
@@ -152,14 +158,19 @@ defmodule SalixStore.Postmark do
     end
   end
 
-  defp message_event(event) do
+  defp message_event(token, event) do
     type = string_or_nil(event["Type"])
-    %{type: type, received_at: string_or_nil(event["ReceivedAt"]), bounce: bounce(type, event)}
+
+    %{
+      type: type,
+      received_at: string_or_nil(event["ReceivedAt"]),
+      bounce: bounce(token, type, event)
+    }
   end
 
-  defp bounce("Bounced", %{"Details" => %{"BounceID" => id}})
+  defp bounce(token, "Bounced", %{"Details" => %{"BounceID" => id}})
        when is_binary(id) or is_integer(id) do
-    case get_json("/bounces/" <> path_segment(to_string(id))) do
+    case get_json(token, "/bounces/" <> path_segment(to_string(id))) do
       {:ok, resp} ->
         %{
           type: string_or_nil(resp["Type"]),
@@ -172,11 +183,9 @@ defmodule SalixStore.Postmark do
     end
   end
 
-  defp bounce(_type, _event), do: nil
+  defp bounce(_token, _type, _event), do: nil
 
-  defp get_json(path) do
-    token = config_string(:postmark_server_token)
-
+  defp get_json(token, path) do
     if token == "" do
       {:error, :not_configured}
     else
@@ -216,6 +225,7 @@ defmodule SalixStore.Postmark do
 
     body = if opts[:html_body], do: Map.put(body, "HtmlBody", opts[:html_body]), else: body
     body = if opts[:attachments], do: Map.put(body, "Attachments", opts[:attachments]), else: body
+    body = if opts[:reply_to], do: Map.put(body, "ReplyTo", opts[:reply_to]), else: body
 
     case Req.post(base_url() <> "/email",
            json: body,
@@ -244,6 +254,13 @@ defmodule SalixStore.Postmark do
     case config_string(:postmark_base_url) do
       "" -> @default_base_url
       url -> String.trim_trailing(url, "/")
+    end
+  end
+
+  defp token(opts) do
+    case opts[:server_token] do
+      nil -> config_string(:postmark_server_token)
+      token -> token |> to_string() |> String.trim()
     end
   end
 

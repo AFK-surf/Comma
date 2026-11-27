@@ -75,8 +75,9 @@ defmodule SalixStore.ConfigJsonTest do
     "search" => %{"exa_api_key" => "file-exa"},
     "email" => %{
       "postmark_server_token" => "file-postmark-token",
-      "owner_notification_from_email" => "agents@file.test",
-      "magic_link_from_email" => "login@file.test"
+      "teams_postmark_server_token" => "file-teams-token",
+      "teams_from_email" => "teams@file.test",
+      "teams_reply_to_email" => "support@file.test"
     },
     "future_section" => %{"unknown" => true}
   }
@@ -222,8 +223,9 @@ defmodule SalixStore.ConfigJsonTest do
 
     assert {:salix_agent, :exa_api_key, "file-exa"} in env
     assert {:salix_store, :postmark_server_token, "file-postmark-token"} in env
-    assert {:salix_agent, :owner_notification_from_email, "agents@file.test"} in env
-    assert {:bridge_for_teams_core, :magic_link_from_email, "login@file.test"} in env
+    assert {:bridge_for_teams_core, :teams_postmark_server_token, "file-teams-token"} in env
+    assert {:bridge_for_teams_core, :teams_from_email, "teams@file.test"} in env
+    assert {:bridge_for_teams_core, :teams_reply_to_email, "support@file.test"} in env
 
     assert {:salix_env, :cloudflare_vm_gateway,
             [
@@ -385,6 +387,7 @@ defmodule SalixStore.ConfigJsonTest do
     assert {:salix_analytics, :clickhouse_url, "http://clickhouse:8123"} in env
     assert {:salix_meet, :runtime_base_url, "http://meeting-runtime:8080"} in env
     assert config_entry?(env, :calendar_autojoin)
+    assert {:comma_web, :proactive_web_radar_enabled, false} in env
 
     assert Map.has_key?(
              ConfigJson.get(json, ~w(bridge_for_teams dashboard)),
@@ -424,6 +427,28 @@ defmodule SalixStore.ConfigJsonTest do
     # Absent: nothing is set, and the watch keeps its defaults.
     refute Enum.any?(ConfigJson.app_env(%{}), fn {app, key, _value} ->
              app == :salix_im and key == :station_task_watch
+           end)
+  end
+
+  test "comma.proactive.web_radar_enabled maps explicitly and fails closed when malformed" do
+    assert {:comma_web, :proactive_web_radar_enabled, true} in ConfigJson.app_env(%{
+             "comma" => %{"proactive" => %{"web_radar_enabled" => true}}
+           })
+
+    assert {:comma_web, :proactive_web_radar_enabled, false} in ConfigJson.app_env(%{
+             "comma" => %{"proactive" => %{"web_radar_enabled" => false}}
+           })
+
+    assert {:comma_web, :proactive_web_radar_enabled, false} in ConfigJson.app_env(%{
+             "comma" => %{"proactive" => %{"web_radar_enabled" => "true"}}
+           })
+
+    assert {:comma_web, :proactive_web_radar_enabled, false} in ConfigJson.app_env(%{
+             "comma" => %{"proactive" => "invalid"}
+           })
+
+    refute Enum.any?(ConfigJson.app_env(%{}), fn {app, key, _value} ->
+             app == :comma_web and key == :proactive_web_radar_enabled
            end)
   end
 

@@ -5,20 +5,25 @@
  * nothing.
  */
 export function ChatImageGroupPlaceholder({
+  align = "end",
   count,
   expanded,
 }: {
+  align?: "start" | "end";
   count: number;
   expanded: boolean;
 }) {
   const stackable = count > 3;
   const isExpanded = stackable ? expanded : true;
   const painted = isExpanded ? count : 1;
+  const isSingle = count <= 1;
   return (
     <div
       aria-hidden
       className="chat-panel-image-group"
+      data-align={align}
       data-comma-image-group-placeholder=""
+      data-single={isSingle ? "true" : undefined}
     >
       {stackable ? (
         <span className="chat-panel-image-group-toggle">
@@ -30,6 +35,8 @@ export function ChatImageGroupPlaceholder({
       <div
         className="chat-panel-image-group-cards"
         data-expanded={isExpanded ? "true" : "false"}
+        data-single={isSingle ? "true" : undefined}
+        data-stackable={stackable ? "true" : undefined}
       >
         {Array.from({ length: painted }, (_, index) => (
           <div className="chat-panel-image-group-card" key={index} />

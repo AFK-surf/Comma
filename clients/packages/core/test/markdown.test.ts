@@ -188,6 +188,8 @@ describe("a message that is only a code block", () => {
   });
 });
 
+const link = (href: string) => ["a", [href], { href }];
+
 describe("the Markdown syntax", () => {
   it("reads a footnote definition still streaming as no formula, and the whole one as the footnote", () => {
     const initial = [
@@ -266,6 +268,30 @@ describe("the Markdown syntax", () => {
     ]);
   });
 
+  it("keeps bare-bracket JSON arrays, string escapes, and dollar literals as text, not display math", () => {
+    const jsonLines = [
+      '[{"text":"新增事件：cft_buy\\n\\n$pageview 正常","type":"text"}]',
+      '[{"text":"x_1","type":"text"}]',
+      '[{"expr":"\\alpha"}]',
+      '["a\\nb", "c"]',
+      "[line1\\n line2]",
+      "[line1\\n\\n中文]",
+      "[cost $5 + x_1]",
+      '[\n{"text":"x_1"}\n]',
+    ];
+    for (const line of jsonLines) {
+      const tree = treeOf(line);
+      expect(JSON.stringify(tree)).not.toMatch(/"math/);
+      expect(tree).toEqual([["p", [line]]]);
+    }
+    expect(treeOf("[y_1 = \\frac{1}{n}\\sum_{i=1}^{n} x_i]")).toEqual([
+      ["mathblock", { content: "y_1 = \\frac{1}{n}\\sum_{i=1}^{n} x_i", markup: "[]" }],
+    ]);
+    expect(treeOf("[\n  \\sum_{i=1}^n i = \\frac{n(n+1)}{2}\n]")).toEqual([
+      ["mathblock", { content: "\\sum_{i=1}^n i = \\frac{n(n+1)}{2}", markup: "[]" }],
+    ]);
+  });
+
   it("keeps prose between \\( \\) or $ $ as text, and formulas there as math", () => {
     expect(treeOf("PR #4243 \\(Task next/previous navigation\\)")).toEqual([
       ["p", ["PR #4243 (Task next/previous navigation)"]],
@@ -293,6 +319,46 @@ describe("the Markdown syntax", () => {
         [["p", [["math", { content: tex, markup: "\\(\\)" }]]]],
         [["p", [["math", { content: tex, markup: "$" }]]]],
       ]);
+  });
+
+  it("reads --- under a line that is only a web address as a rule, and under a title as its heading", () => {
+    const digest =
+      "#general：等你回一句。\nhttps://x.test/archives/C1/p1?thread_ts=1.2&cid=C1\n---\n" +
+      "#app：可忽略。\nhttps://x.test/archives/C2/p2\n---\n#ops：已处理。";
+    const read = [
+      ["p", ["#general：等你回一句。"]],
+      ["p", [link("https://x.test/archives/C1/p1?thread_ts=1.2&cid=C1")]],
+      ["hr"],
+      ["p", ["#app：可忽略。"]],
+      ["p", [link("https://x.test/archives/C2/p2")]],
+      ["hr"],
+      ["p", ["#ops：已处理。"]],
+    ];
+    expect(treeOf(digest)).toEqual(read);
+    // The same while it streams in: the address is no heading before its rule is whole, nor after.
+    let text = "";
+    for (const piece of digest.split(/(?<=\n)/)) {
+      text += piece;
+      expect(JSON.stringify(draftMarkdown("draft-rule", text, false))).not.toContain(
+        '"h"'
+      );
+    }
+    expect(draftMarkdown("draft-rule", digest, true)).toEqual(read);
+    expect(treeOf("See below\nhttps://x.test/a\n---\nNext.")).toEqual([
+      ["p", ["See below\n", link("https://x.test/a")]],
+      ["hr"],
+      ["p", ["Next."]],
+    ]);
+    expect(treeOf("---\nhttps://x.test/a\n---\nNext.")).toEqual([
+      ["hr"],
+      ["p", [link("https://x.test/a")]],
+      ["hr"],
+      ["p", ["Next."]],
+    ]);
+    expect(treeOf("Heading\n---\n\nBody.")).toEqual([
+      ["h", ["Heading"], { level: 2 }],
+      ["p", ["Body."]],
+    ]);
   });
 
   it("links references and footnotes defined after them, and reads character references and inline HTML", () => {

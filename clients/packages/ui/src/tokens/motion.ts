@@ -147,6 +147,11 @@ export const motionDuration = {
   routineDismissFade: 120,
   routineDismissClose: 220,
   /**
+   * The cleared Routines arriving once the last card has gone: its mark pops
+   * in and its line fades in with it, while the confetti is thrown.
+   */
+  routineClearedEnter: 320,
+  /**
    * A tab closed from the pointer: it fades and shrinks where it stood while
    * the tabs after it glide into its place (spatialMove).
    */
@@ -373,6 +378,8 @@ export const motionScale = {
   routineDismiss: 0.96,
   /** A closed tab shrinking as it fades out. */
   tabClose: 0.96,
+  /** The mark of the cleared Routines popping in as its confetti is thrown. */
+  routineClearedMark: 0.5,
 } as const;
 
 /** Pixel distances travelled by moving surfaces during stage transitions. */
@@ -382,6 +389,8 @@ export const motionDistance = {
   revealItem: 8,
   /** Directional nudge a pressed navigation arrow travels along its own axis. */
   navPressShift: 2,
+  /** Sideways travel of a reply thread handing over to the next pending card. */
+  replyThreadAdvance: 48,
 } as const;
 
 /** Rotations applied to icons whose glyph itself describes the action. */
@@ -438,6 +447,42 @@ export const motionRailFold = {
 export const motionNotchResize = {
   stiffness: 520,
   damping: 41,
+} as const;
+
+/**
+ * The last Routine card cleared: a party popper at each side of the rail
+ * throws paper and ribbons up and across it. A throw spends itself against the
+ * air, then the pieces drift down, sway and fade. Distances are in CSS pixels,
+ * speeds per second, times in ms.
+ */
+export const motionRoutineCleared = {
+  /** Pieces each popper throws. */
+  pieces: 22,
+  /** The pieces leave a popper within this long of each other. */
+  delay: [0, 110],
+  /** A piece's time in the air, from the quickest to the slowest. */
+  flight: [1800, 2800],
+  /** Share of its flight a piece stays whole before it fades out. */
+  fadeFrom: 0.62,
+  /** How fast the air spends a throw: the share of its speed lost a second. */
+  drag: 4.2,
+  /** How far a throw carries, as a share of the rail's width, and its limit. */
+  reach: [0.5, 1.25],
+  reachLimit: 400,
+  /** The throw's angle above the horizontal, in degrees. */
+  angle: [50, 84],
+  /** How far under the line the poppers stand, so the throw rises past it. */
+  drop: 48,
+  /** How fast a spent piece drifts down. */
+  fall: [70, 135],
+  /** Side to side sway of a drifting piece: its width and its turns a second. */
+  sway: [3, 9],
+  swayRate: [0.6, 1.1],
+  /** Turns a second a piece spins, and a paper flips over. */
+  spin: [0.4, 1.4],
+  flip: [0.9, 1.7],
+  /** Positions each flight is drawn through. */
+  samples: 24,
 } as const;
 
 /**

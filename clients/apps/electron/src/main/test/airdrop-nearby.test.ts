@@ -8,6 +8,7 @@ import { testEpoch } from "@comma/test-utils/test-clock";
 import { AirDropService } from "../modules/airdrop";
 import {
   LanNearby,
+  LanUnreachableError,
   type LanNearbyPlatform,
   type LanService,
 } from "../modules/airdrop/lan-nearby";
@@ -65,13 +66,18 @@ function watch(states: NearbyState[]) {
  * receiver and an iPhone, A's `send --url` becomes an offer to B's receiver,
  * and B's answer to it ends A's send, as OpenDropKit's HTTP exchange does.
  */
-async function twoMacs(aLan?: LanNearby) {
+async function twoMacs(
+  aLan?: LanNearby,
+  /** Whether an AirDrop scan of A's reaches B's Mac; by default every one does. */
+  reachesB: (scan: number) => boolean = () => true
+) {
   const directory = await root();
   const binaryPath = join(directory, "opendropkit");
   await writeFile(binaryPath, "");
   let receiverRun: AirDropHelperRun | undefined;
   const answers = new Map<string, (accept: boolean) => void>();
   const sendArgs: string[][] = [];
+  let scans = 0;
   const air = fakeAirDropHelper((run) => {
     run.onStdinEnd(() => run.exit(0));
     if (run.args[0] === "receive") {
@@ -85,7 +91,9 @@ async function twoMacs(aLan?: LanNearby) {
       });
       run.emit({ type: "listening", port: fakePort });
     } else if (run.args[0] === "find") {
-      run.emit({ type: "peer", id: "b-mac", name: "Bo’s Comma", model: "Comma" });
+      scans += 1;
+      if (reachesB(scans))
+        run.emit({ type: "peer", id: "b-mac", name: "Bo’s Comma", model: "Comma" });
       run.emit({ type: "peer", id: "phone", name: "Bo’s iPhone", model: "iPhone" });
       run.emit({ type: "scan_completed", count: 2, truncated: false });
       run.exit(0);
@@ -146,6 +154,7 @@ async function twoMacs(aLan?: LanNearby) {
   const b = watch(bStates);
   const bNearby = new NearbyService({
     publish: b.publish,
+    present: () => "win_main",
     sender: new AirDropSender({ platform: "darwin", bindSession: session() }),
     senderName: async () => "Bo’s Comma",
   });
@@ -157,7 +166,7 @@ async function twoMacs(aLan?: LanNearby) {
     platform: "darwin",
     spawn: air.spawn,
     onOffer: async (offer, signal) => {
-      const held = bNearby.offer(offer, signal, "window-1");
+      const held = bNearby.offer(offer, signal);
       if (held) return held;
       chatOffers.push(offer);
       return undefined;
@@ -183,10 +192,11 @@ describe("Nearby connect over AirDrop", () => {
     aNearby.ask({ inviteUrl: invite(), peerId: "b-mac" });
     await b.until((state) => state.offers.length === 1);
     const [offer] = bNearby.state().offers;
+    // The card is the main window's, whichever window had focus.
     expect(offer).toMatchObject({
       invite: "t".repeat(43),
       senderName: "Ada’s Comma",
-      surfaceId: "window-1",
+      surfaceId: "win_main",
     });
     expect(sendArgs[0]).toEqual(
       expect.arrayContaining(["--url", invite(), "--to", "b-mac"])
@@ -245,18 +255,13 @@ describe("Nearby connect over AirDrop", () => {
     };
     const signal = new AbortController().signal;
     expect(
-      bNearby.offer(
-        { ...base, files: [], links: ["https://example.com/"] },
-        signal,
-        undefined
-      )
+      bNearby.offer({ ...base, files: [], links: ["https://example.com/"] }, signal)
     ).toBeUndefined();
     // An invite beside a file is a chat's AirDrop, not a connect request.
     expect(
       bNearby.offer(
         { ...base, files: [{ name: "a.txt", isDirectory: false }], links: [invite()] },
-        signal,
-        undefined
+        signal
       )
     ).toBeUndefined();
   });
@@ -361,7 +366,7 @@ async function twoComputersOnWifi() {
     publish: b.publish,
     sender: noAirDrop,
     senderName: async () => "Bo’s Comma",
-    surfaceId: () => "window-1",
+    present: () => "win_main",
   });
   await bLan.start(
     async () => "Bo’s Comma",
@@ -387,7 +392,7 @@ describe("Nearby connect on the same Wi-Fi", () => {
     expect(bNearby.state().offers[0]).toMatchObject({
       invite: "t".repeat(43),
       senderName: "Ada’s Comma",
-      surfaceId: "window-1",
+      surfaceId: "win_main",
     });
     bNearby.answer({ accept: true, requestId: bNearby.state().offers[0]!.requestId });
     await a.until((state) => state.asks[0]?.status === "accepted");
@@ -404,6 +409,131 @@ describe("Nearby connect on the same Wi-Fi", () => {
     clock.fire();
     await a.until((state) => state.asks[0]?.status === "unanswered");
     await b.until((state) => state.offers.length === 0);
+  });
+
+  it("tells an accepted, a declined and an undelivered invite apart", async () => {
+    const warnings: string[] = [];
+    const outcomes: (() => Promise<number>)[] = [
+      async () => 200,
+      async () => 403,
+      () =>
+        Promise.reject(
+          new LanUnreachableError([
+            { address: "192.0.2.1", code: "ECONNREFUSED" },
+            { address: "198.51.100.1", code: "timeout" },
+          ])
+        ),
+    ];
+    const lan = new LanNearby({
+      clock: manualClock(),
+      log: { warn: (message) => warnings.push(message) },
+      platform: { ...localNetwork().platform(), post: () => outcomes.shift()!() },
+      onInvite: async () => false,
+    });
+    const service = {
+      id: "b",
+      name: "Bo’s Comma",
+      addresses: ["192.0.2.1", "198.51.100.1"],
+      port: fakePort,
+    };
+    expect(await lan.send(service, invite(), "Ada’s Comma")).toBe("accepted");
+    expect(await lan.send(service, invite(), "Ada’s Comma")).toBe("declined");
+    expect(await lan.send(service, invite(), "Ada’s Comma")).toBe("unreachable");
+    // The log says which addresses were tried and why each failed, never the link.
+    expect(warnings).toEqual([
+      expect.stringContaining("192.0.2.1 ECONNREFUSED, 198.51.100.1 timeout"),
+    ]);
+    expect(warnings.join("\n")).not.toContain("invite=");
+  });
+
+  it("tells the asker their computer could not be reached, not that they declined", async () => {
+    const net = localNetwork();
+    const timers = manualClock();
+    const offered: unknown[] = [];
+    await new LanNearby({
+      clock: timers,
+      platform: net.platform(),
+      onInvite: async (offer) => {
+        offered.push(offer);
+        return true;
+      },
+    }).start(
+      async () => "Bo’s Comma",
+      () => true
+    );
+    const states: NearbyState[] = [];
+    const a = watch(states);
+    const aNearby = new NearbyService({
+      lan: new LanNearby({
+        clock: timers,
+        platform: {
+          ...net.platform(),
+          post: () =>
+            Promise.reject(
+              new LanUnreachableError([{ address: "192.0.2.1", code: "ECONNREFUSED" }])
+            ),
+        },
+        onInvite: async () => false,
+      }),
+      publish: a.publish,
+      sender: new AirDropSender({ platform: "win32", bindSession: session() }),
+      senderName: async () => "Ada’s Comma",
+    });
+    aNearby.find();
+    timers.fire();
+    await a.until((state) => state.scan === "done");
+    const [peer] = aNearby.state().peers;
+    aNearby.ask({ inviteUrl: invite(), peerId: peer!.id });
+    await a.until((state) => state.asks[0]?.status === "unreachable");
+    expect(aNearby.state().asks).toEqual([{ peerId: peer!.id, status: "unreachable" }]);
+    expect(offered).toEqual([]);
+  });
+
+  it("sends over AirDrop when the network does not reach them, and answers on the same row", async () => {
+    const net = localNetwork();
+    const timers = manualClock();
+    // Bo's computer advertises its AirDrop receiver (b-mac) on the network.
+    await new LanNearby({
+      clock: timers,
+      platform: net.platform(),
+      onInvite: async () => true,
+    }).start(
+      async () => "Bo’s Comma",
+      () => true,
+      () => "b-mac"
+    );
+    const { a, aNearby, b, bNearby } = await twoMacs(
+      new LanNearby({
+        clock: timers,
+        platform: {
+          ...net.platform(),
+          post: () =>
+            Promise.reject(
+              new LanUnreachableError([{ address: "10.211.55.2", code: "timeout" }])
+            ),
+        },
+        onInvite: async () => false,
+      }),
+      // A's first AirDrop scan misses Bo's Mac; the one the fallback runs finds it.
+      (scan) => scan > 1
+    );
+    aNearby.find();
+    timers.fire();
+    await a.until((state) => state.scan === "done");
+    const peers = aNearby.state().peers;
+    expect(peers).toEqual([
+      { id: expect.stringMatching(/^lan:/), name: "Bo’s Comma", via: "wifi" },
+    ]);
+
+    aNearby.ask({ inviteUrl: invite(), peerId: peers[0]!.id });
+    await b.until((state) => state.offers.length === 1);
+    bNearby.answer({ accept: true, requestId: bNearby.state().offers[0]!.requestId });
+    await a.until((state) => state.asks[0]?.status === "accepted");
+    // The answer lands on the row the person picked, and the list stays as it was.
+    expect(aNearby.state().asks).toEqual([
+      { peerId: peers[0]!.id, status: "accepted" },
+    ]);
+    expect(aNearby.state().peers).toEqual(peers);
   });
 
   it("refuses a post that is not one Comma invite link", async () => {

@@ -47,12 +47,18 @@ defmodule SalixAgent.StorageAuthorization do
     end
   end
 
-  @spec prepare_write_stream(String.t(), String.t(), Enumerable.t(), map() | keyword()) ::
+  @spec prepare_write_stream(
+          String.t(),
+          String.t(),
+          Enumerable.t(),
+          map() | keyword(),
+          keyword()
+        ) ::
           {:ok, map()} | {:error, term()}
-  def prepare_write_stream(agent_id, path, stream, context_or_opts \\ %{}) do
+  def prepare_write_stream(agent_id, path, stream, context_or_opts \\ %{}, opts \\ []) do
     with :ok <- authorize_prepared_write(agent_id, path, context_or_opts) do
       agent_id
-      |> AgentWorkspace.prepare_write_stream(path, stream)
+      |> AgentWorkspace.prepare_write_stream(path, stream, opts)
       |> record_ifc_label(agent_id, path, context_or_opts)
     end
   end

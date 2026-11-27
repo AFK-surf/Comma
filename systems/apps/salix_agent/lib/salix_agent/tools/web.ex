@@ -51,17 +51,141 @@ defmodule SalixAgent.Tools.Web do
   `/.runtime/skills`; this module intentionally has no skill discovery tool.
   """
 
+  alias SalixAgent.Egress.Destination
   alias SalixAgent.FileBackend
 
   @exa_default_base_url "https://api.exa.ai"
   @exa_max_urls_per_request 10
   @exa_max_error_body 2048
   @exa_text_max_characters 10_000
+  @exa_contents_default_max_urls 2
+  @exa_contents_hard_max_urls 5
+  @exa_contents_default_chars 1_500
+  @exa_contents_hard_max_chars 4_000
   @max_script_file_size SalixAgent.Spinfoam.Build.max_source_bytes()
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
   @host_gateway_opts [safety: "write"]
   @read_opts [safety: "read"]
   @write_opts [safety: "write"]
+
+  @doc "Whether `url` is a public HTTP(S) URL safe to pass to Exa contents/read helpers."
+  def public_url?(url) when is_binary(url) do
+    url = String.trim(url)
+
+    with true <- url != "" and byte_size(url) <= 2_048,
+         %URI{scheme: scheme, host: host, userinfo: nil} <- URI.parse(url),
+         true <- scheme in ~w(http https),
+         true <- is_binary(host) and host != "",
+         false <- Destination.blocked_name?(host),
+         false <- private_ip_literal?(host) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  def public_url?(_url), do: false
+
+  defp private_ip_literal?(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, ip} -> Destination.blocked_address?(ip)
+      {:error, _} -> false
+    end
+  end
+
+  @doc "Bounded non-raising Exa `/contents` reader shared by proactive evidence and research."
+  def contents(urls, opts \\ [])
+
+  def contents(url, opts) when is_binary(url), do: contents([url], opts)
+
+  def contents(urls, opts) when is_list(urls) do
+    max_urls =
+      opts
+      |> Keyword.get(:max_urls, @exa_contents_default_max_urls)
+      |> clamp_int(1, @exa_contents_hard_max_urls)
+
+    max_chars =
+      opts
+      |> Keyword.get(:max_characters, @exa_contents_default_chars)
+      |> clamp_int(200, @exa_contents_hard_max_chars)
+
+    clean_urls =
+      urls
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(&public_url?/1)
+      |> Enum.uniq()
+      |> Enum.take(max_urls)
+
+    if clean_urls == [] do
+      {:error, :invalid}
+    else
+      case SystemsRuntime.get_env(:salix_agent, :exa_api_key) do
+        key when is_binary(key) and key != "" ->
+          req_opts = Keyword.drop(opts, [:max_urls, :max_characters])
+          contents_request(clean_urls, key, max_chars, req_opts)
+
+        _ ->
+          {:error, :not_configured}
+      end
+    end
+  end
+
+  def contents(_urls, _opts), do: {:error, :invalid}
+
+  defp contents_request(urls, key, max_chars, opts) do
+    options =
+      [
+        json: %{urls: urls, text: %{maxCharacters: max_chars}},
+        headers: [{"x-api-key", key}],
+        receive_timeout: 8_000,
+        retry: false
+      ]
+      |> Keyword.merge(opts)
+
+    case Req.post(exa_base_url() <> "/contents", options) do
+      {:ok, %{status: status, body: %{"results" => results}}}
+      when status in 200..299 and is_list(results) ->
+        items =
+          results
+          |> Enum.take(length(urls))
+          |> Enum.flat_map(fn
+            %{"url" => url} = result when is_binary(url) ->
+              if String.length(url) <= 4096 do
+                title = result["title"] |> trim() |> String.slice(0, 256)
+                text = result["text"] |> trim() |> String.slice(0, max_chars)
+
+                if title == "" and text == "" do
+                  []
+                else
+                  [
+                    %{"url" => String.trim(url), "title" => title, "text" => text}
+                    |> Map.reject(fn {_k, v} -> v == "" end)
+                  ]
+                end
+              else
+                []
+              end
+
+            _ ->
+              []
+          end)
+
+        {:ok, items}
+
+      {:ok, %{status: status}} when status in 200..299 ->
+        {:error, :invalid_response}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http, status}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
+  defp clamp_int(n, low, high) when is_integer(n), do: n |> max(low) |> min(high)
+  defp clamp_int(_n, low, _high), do: low
 
   @doc "The shared Exa search used by agent tools and Mini Apps."
   def search(query, opts \\ [])
@@ -80,18 +204,28 @@ defmodule SalixAgent.Tools.Web do
   def search(_query, _opts), do: {:error, :invalid}
 
   defp search_request(query, key, opts) do
+    {start_published_date, req_opts} = Keyword.pop(opts, :start_published_date)
+
+    body =
+      %{
+        query: String.trim(query),
+        numResults: 5,
+        contents: %{text: %{maxCharacters: 1500}}
+      }
+      |> then(fn payload ->
+        if is_binary(start_published_date) and start_published_date != "",
+          do: Map.put(payload, :startPublishedDate, start_published_date),
+          else: payload
+      end)
+
     options =
       [
-        json: %{
-          query: String.trim(query),
-          numResults: 5,
-          contents: %{text: %{maxCharacters: 1500}}
-        },
+        json: body,
         headers: [{"x-api-key", key}],
         receive_timeout: 30_000,
         retry: :transient
       ]
-      |> Keyword.merge(opts)
+      |> Keyword.merge(req_opts)
 
     case Req.post(exa_base_url() <> "/search", options) do
       {:ok, %{status: 200, body: %{"results" => results}}} when is_list(results) ->

@@ -48,18 +48,28 @@ defmodule Comma.Workers.AccountDeletion do
 
   defp retire(%ExternalOperation{} = operation, final_attempt?) do
     ids = List.wrap(operation.metadata["workspace_ids"])
+    collab_groups = List.wrap(operation.metadata["collaboration_groups"])
 
     result =
       try do
-        from(w in Workspace, where: w.id in ^ids and w.status == "deleted", order_by: w.id)
-        |> Repo.all()
-        |> Enum.reduce_while(:ok, fn workspace, :ok ->
-          case Comma.Salix.Client.retire_workspace_scope(payload(workspace)) do
-            :ok -> {:cont, :ok}
-            {:error, :salix_client_not_configured} -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
+        with :ok <-
+               from(w in Workspace, where: w.id in ^ids and w.status == "deleted", order_by: w.id)
+               |> Repo.all()
+               |> Enum.reduce_while(:ok, fn workspace, :ok ->
+                 case Comma.Salix.Client.retire_workspace_scope(payload(workspace)) do
+                   :ok -> {:cont, :ok}
+                   {:error, :salix_client_not_configured} -> {:cont, :ok}
+                   {:error, reason} -> {:halt, {:error, reason}}
+                 end
+               end) do
+          Enum.reduce_while(collab_groups, :ok, fn group, :ok ->
+            case Comma.Salix.Client.retire_collaboration_group(group) do
+              :ok -> {:cont, :ok}
+              {:error, :salix_client_not_configured} -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+        end
       rescue
         exception ->
           Logger.warning("Account deletion cleanup failed",

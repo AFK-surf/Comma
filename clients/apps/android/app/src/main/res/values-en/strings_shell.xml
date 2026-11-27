@@ -25,7 +25,7 @@
     <string name="home_greeting_morning">Good morning, %s.</string>
     <string name="home_greeting_afternoon">Good afternoon, %s.</string>
     <string name="home_greeting_evening">Good evening, %s.</string>
-    <string name="home_open_routine">Shows your whole routine</string>
+    <string name="home_open_routine">Shows your whole briefing</string>
     <string name="home_all_tasks">All tasks</string>
     <string name="home_statuses">%d statuses</string>
     <string name="home_filters">Filters</string>
@@ -44,13 +44,13 @@
     <string name="home_clear_filters">Clear Filters</string>
     <string name="home_tasks_failed">Couldn’t load tasks</string>
     <string name="home_tasks_failed_detail">Check your connection, then try again.</string>
-    <string name="routines_title">Routines</string>
-    <string name="routines_refresh">Refresh routines</string>
-    <string name="routines_unavailable">Routines couldn’t be loaded.</string>
+    <string name="routines_title">Briefing</string>
+    <string name="routines_refresh">Refresh briefing</string>
+    <string name="routines_unavailable">Briefing couldn’t be loaded.</string>
     <string name="routines_rate_limited">Too many refreshes in the last hour. Try again later.</string>
     <string name="routines_connect_apps">Connect apps in Comma on your computer</string>
     <string name="routines_nothing_from">Nothing from %s needs you right now.</string>
-    <string name="routines_reconnect">Routines can’t read %s. Reconnect it in Plugins on the desktop.</string>
+    <string name="routines_reconnect">Briefing can’t read %s. Reconnect it in Plugins on the desktop.</string>
     <string name="routines_card_count">%1$s, %2$d suggested tasks</string>
     <string name="routines_card_nothing">%s, nothing new</string>
     <string name="routines_needs_reconnecting">Needs reconnecting</string>
@@ -59,6 +59,12 @@
     <string name="routines_adds_prompt">Adds to your message to Comma</string>
     <string name="routines_opens_link">Opens the link</string>
     <string name="routines_dismiss">Don’t remind me</string>
+    <plurals name="routines_status_count">
+        <item quantity="one">%1$d thing needs you</item>
+        <item quantity="other">%1$d things need you</item>
+    </plurals>
+    <string name="routines_status_cleared">All cleared</string>
+    <string name="routines_cleared">Congrats, briefing cleared</string>
     <string name="routines_dismiss_failed">Couldn’t remove this item. Try again.</string>
     <string name="routines_platforms">Platforms</string>
     <string name="routines_card_position">Card %1$d of %2$d</string>

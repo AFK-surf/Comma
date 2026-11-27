@@ -79,9 +79,10 @@ iOS Google reuses `GoogleLoginAttempts`, `GoogleAuth`, Login Identity and Auth S
 Google email-authority rules select automatic linking or mailbox OTP. Cancellation retires the core attempt and closes its browser session.
 Invalid Apple or Google proof rejects login.
 
-A two-minute, single-use phone grant gives Watch its own Auth Session for direct HTTPS access.
-Restricted sessions cannot delegate. Parent revocation rejects grants and Watch sessions.
-Phone disconnection or natural parent expiry leaves issued Watch sessions valid until their own expiry.
+A two-minute, single-use grant from a full session gives a Watch or Raycast its own Auth Session.
+Raycast must also present its verifier.
+Restricted sessions cannot delegate. Parent revocation rejects grants and paired sessions.
+Parent expiry or disconnection does not end an issued paired session.
 
 APNs: [Native Apple clients](clients.md#native-apple-clients). Keep private keys outside Git.
 
@@ -157,7 +158,7 @@ Formal coverage: [current roster](../tla/README.md).
 
 ## Task Share links
 
-A Task Share token authorizes public reads of one Task under fail-closed rate limits.
+A Task or Document Share token authorizes public reads under fail-closed rate limits.
 See [Task Share](architecture/DOMAIN_CONCEPTS.md#task-share).
 
 ## Attachment media URLs
@@ -275,7 +276,7 @@ Code: [trigger tools](../systems/apps/salix_agent/lib/salix_agent/tools/composio
 
 Routine automatic messages default on. Off stops collection. Re-enabling starts a new pool baseline.
 Home starts one collection chain per owner every 15 minutes, until Workspace loss.
-Only the Routine collector reads member sources, with current consent and bindings. Member Routines read the pool.
+Only the Routine collector reads member sources for Routines, with current consent and bindings. Member Routines read the pool.
 Ingress keeps one trigger per owner Gmail or Outlook source. Events schedule at most one source read per minute.
 The pool keeps bounded excerpts, without raw payloads, for five days after last observation.
 Revocation, rebinding or source removal deletes the items of that source at once.

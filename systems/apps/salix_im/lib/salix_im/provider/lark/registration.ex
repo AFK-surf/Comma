@@ -47,7 +47,7 @@ defmodule SalixIM.Provider.Lark.Registration do
   # and their direct messages, the chats those are in, and calendar events
   # that wait for their answer. The names are the platform's user scopes, as
   # the official larksuite/cli asks for them.
-  @member_scopes [
+  @routine_scopes [
     "search:message",
     "im:message.group_msg:get_as_user",
     "im:message.p2p_msg:get_as_user",
@@ -55,45 +55,95 @@ defmodule SalixIM.Provider.Lark.Registration do
     "calendar:calendar.event:read"
   ]
 
+  # The OAuth adapter of each platform's user sign-in. Its scopes are what
+  # the connect's own reads and edits as the member need (documents, wiki,
+  # meetings, Minutes, tables): `default_scopes/0` and every
+  # `on_demand_scopes/0` need. `offline_access` is no scope of the app; the
+  # device sign-in adds it (`SalixStore.OAuth.LarkDevice.begin/3`).
+  @adapters %{
+    "feishu" => SalixStore.OAuth.Adapters.Feishu,
+    "lark" => SalixStore.OAuth.Adapters.Lark
+  }
+
+  @member_scopes Map.new(@adapters, fn {provider, adapter} ->
+                   on_demand = adapter.on_demand_scopes() |> Map.values() |> List.flatten()
+
+                   {provider,
+                    Enum.uniq(@routine_scopes ++ adapter.default_scopes() ++ on_demand) --
+                      ["offline_access"]}
+                 end)
+
   # What a connect needs of its app (`SalixIM.LarkInbound`,
   # `BridgeForTeams.LarkScopes`): receive and send messages, read its chats
-  # and their members, join public groups, resolve people, answer card buttons,
-  # and join the Lark video meetings a person invites the bot to.
-  @addons %{
-    "scopes" => %{
-      "tenant" => [
-        "im:message",
-        "im:message:send_as_bot",
-        "im:message.group_msg",
-        "im:message.p2p_msg:readonly",
-        "im:message.group_at_msg:readonly",
-        "im:resource",
-        "im:chat:readonly",
-        "im:chat.members:read",
-        "im:chat.members:write_only",
-        "contact:user.base:readonly",
-        "contact:user.id:readonly",
-        "cardkit:card:write",
-        "tenant:tenant:readonly",
-        "vc:meeting.bot.join:write",
-        "vc:meeting.message:write"
-      ],
-      # The member's own sign-in with the app (`member_scopes/0`).
-      "user" => @member_scopes
-    },
-    "events" => %{
-      "items" => %{
-        "tenant" => [
-          "im.message.receive_v1",
-          "im.message.recalled_v1",
-          "im.chat.member.bot.added_v1",
-          "vc.bot.meeting_invited_v1",
-          "vc.bot.meeting_ended_v1"
-        ]
-      }
-    },
-    "callbacks" => %{"items" => ["card.action.trigger"]}
-  }
+  # and their members, create groups and join public ones, resolve people, answer card buttons,
+  # read and subscribe to team calendars, and join the Lark video meetings a
+  # person invites the bot to. It also reads the documents, wiki pages,
+  # spreadsheets and Base people share with the bot, read-only (the names of
+  # `BridgeForTeams.FeishuScopes` and `BridgeForTeams.LarkScopes` for
+  # documents); it reads the rest as the member.
+  @tenant_scopes [
+    "im:message",
+    "im:message:send_as_bot",
+    "im:message.group_msg",
+    "im:message.p2p_msg:readonly",
+    "im:message.group_at_msg:readonly",
+    "im:resource",
+    "im:chat:readonly",
+    "im:chat:create",
+    "im:chat.members:read",
+    "im:chat.members:write_only",
+    "contact:user.base:readonly",
+    "contact:user.id:readonly",
+    "cardkit:card:write",
+    "tenant:tenant:readonly",
+    "calendar:calendar",
+    "calendar:calendar:readonly",
+    "calendar:calendar:read",
+    "calendar:calendar.event:read",
+    "vc:meeting.bot.join:write",
+    "vc:meeting.message:write",
+    "docx:document:readonly",
+    "wiki:wiki:readonly",
+    "wiki:node:read",
+    "wiki:node:retrieve",
+    "wiki:space:read",
+    "wiki:space:retrieve",
+    "drive:drive:readonly",
+    "drive:drive.metadata:readonly",
+    "drive:drive.search:readonly",
+    "space:document:retrieve",
+    "docs:document.comment:read",
+    "docs:document.media:download",
+    "docs:permission.member:retrieve",
+    "docs:permission.setting:read",
+    "sheets:spreadsheet:readonly",
+    "bitable:app:readonly",
+    "search:docs:read"
+  ]
+
+  @addons Map.new(@member_scopes, fn {provider, user_scopes} ->
+            {provider,
+             %{
+               "scopes" => %{
+                 "tenant" => @tenant_scopes,
+                 # The member's own sign-in with the app (`member_scopes/1`).
+                 "user" => user_scopes
+               },
+               "events" => %{
+                 "items" => %{
+                   "tenant" => [
+                     "im.message.receive_v1",
+                     "im.message.recalled_v1",
+                     "im.chat.member.bot.added_v1",
+                     "im.chat.member.bot.deleted_v1",
+                     "vc.bot.meeting_invited_v1",
+                     "vc.bot.meeting_ended_v1"
+                   ]
+                 }
+               },
+               "callbacks" => %{"items" => ["card.action.trigger"]}
+             }}
+          end)
 
   @type domain :: String.t()
   @type begun :: %{
@@ -111,8 +161,15 @@ defmodule SalixIM.Provider.Lark.Registration do
           domain: domain()
         }
 
-  @doc "The user scopes a member's own sign-in with a scanned app asks for."
-  def member_scopes, do: @member_scopes
+  @doc """
+  The user scopes a member's own sign-in with a scanned app of `provider`
+  (`"feishu"` or `"lark"`) asks for: what their Routine reads, and what the
+  connect's own reads and edits as them need. A scan asks the app for the
+  same ones.
+  """
+  @spec member_scopes(domain()) :: [String.t()]
+  def member_scopes(provider) when is_map_key(@member_scopes, provider),
+    do: @member_scopes[provider]
 
   @doc "The platforms a registration can begin on."
   def domains, do: Map.keys(@accounts)
@@ -140,7 +197,7 @@ defmodule SalixIM.Provider.Lark.Registration do
       {:ok,
        %{
          device_code: device_code,
-         url: link(@pages[domain], user_code, name, opts[:app_id]),
+         url: link(domain, user_code, name, opts[:app_id]),
          interval_s: positive(begun["interval"], 5),
          expires_in_s: positive(begun["expire_in"] || begun["expires_in"], 600),
          domain: "feishu"
@@ -248,18 +305,20 @@ defmodule SalixIM.Provider.Lark.Registration do
     do: {:error, to_string(answer["error_description"] || answer["error"] || "no device code")}
 
   # The page updates the app named by `clientID`.
-  defp link(page, user_code, name, app_id) do
-    query = %{"user_code" => user_code, "name" => name, "addons" => addons()}
+  defp link(domain, user_code, name, app_id) do
+    query = %{"user_code" => user_code, "name" => name, "addons" => addons(domain)}
 
     query =
       if is_binary(app_id) and app_id != "", do: Map.put(query, "clientID", app_id), else: query
 
-    page <> "?" <> URI.encode_query(query)
+    @pages[domain] <> "?" <> URI.encode_query(query)
   end
 
-  # JSON, gzipped, base64url without padding, as the link takes it.
-  defp addons,
-    do: @addons |> Jason.encode!() |> :zlib.gzip() |> Base.url_encode64(padding: false)
+  # JSON, gzipped, base64url without padding, as the link takes it. The link
+  # is shown as a QR code, which holds about 2,900 bytes: the scopes keep
+  # the whole link under 1,700.
+  defp addons(domain),
+    do: @addons[domain] |> Jason.encode!() |> :zlib.gzip() |> Base.url_encode64(padding: false)
 
   defp brand(answer), do: get_in(answer, ["user_info", "tenant_brand"])
 

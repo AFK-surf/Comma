@@ -148,6 +148,11 @@ defmodule SalixIM.Provider.Util do
   end
 
   def control_error(reason) when is_binary(reason), do: reason
+
+  def control_error(:teams_subscription_required),
+    do:
+      "The Teams subscription has expired. Ask an organization admin to renew it, then try again."
+
   def control_error({:bad_request, message}) when is_binary(message), do: message
   def control_error(reason), do: inspect(reason)
 

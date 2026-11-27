@@ -1337,6 +1337,71 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     end
   end
 
+  defmodule WeComSalixClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+
+    @moduledoc false
+
+    def list_group_im_connects(_group_id, _provider),
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_wecom_connects, [])}
+
+    def create_wecom_im_connect(tenant_id, group_id, attrs) do
+      connect = %{
+        "connect_id" => "imc1_wecom",
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "provider" => "wecom",
+        "app_id" => attrs["app_id"],
+        "status" => "connected",
+        "app_secret_configured" => true
+      }
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_wecom_connects, [connect])
+      {:ok, connect}
+    end
+  end
+
+  test "a project admin connects a WeCom bot and reads it back, without the secret", %{
+    org: org,
+    project: project,
+    token: token
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, WeComSalixClient)
+    on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_wecom_connects) end)
+    scope = %{"org" => org.slug, "project" => project.slug}
+
+    missing = api(:post, "/v1/cli/wecom/connect", token, Map.put(scope, "bot_id", "aibTestBot"))
+    assert missing.status == 400
+
+    assert %{"error" => %{"code" => "missing_wecom_credentials", "details" => details}} =
+             Jason.decode!(missing.resp_body)
+
+    assert details["fields"] == ["secret"]
+
+    conn =
+      api(
+        :post,
+        "/v1/cli/wecom/connect",
+        token,
+        Map.merge(scope, %{"bot_id" => "aibTestBot", "secret" => "fake-wecom-secret"})
+      )
+
+    assert conn.status == 200
+    refute conn.resp_body =~ "fake-wecom-secret"
+    data = json_data(conn)
+    assert data["mode"] == "wecom_connect"
+    assert data["connect"]["connect_id"] == "imc1_wecom"
+    assert Enum.any?(data["manual_checklist"], &String.contains?(&1, "long connection"))
+
+    status =
+      :get
+      |> api("/v1/cli/wecom/status?org=#{org.slug}&project=#{project.slug}", token)
+      |> json_data()
+
+    assert status["mode"] == "wecom_status"
+    assert [%{"connect_id" => "imc1_wecom", "app_id" => "aibTestBot"}] = status["connects"]
+  end
+
   test "a project admin connects a Telegram bot and allows a group, without the token", %{
     org: org,
     project: project,

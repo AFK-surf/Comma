@@ -14,13 +14,14 @@ import {
   type TaskSummaryViewModel,
 } from "@comma/ui/components/task-workspace";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
-import { taskRun } from "@comma/core/chat";
+import { taskRun, type ChatWorkerSession } from "@comma/core/chat";
 import { useCall, useTopic, type GroupTask } from "@comma/core-client";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { CommaAuthGate, useCommaAuth } from "../AuthGate";
 import { CommaAppearanceProvider } from "../commaAppearance";
 import { ShellIconButton } from "../ShellIconButton";
 import { TaskDetailsPanel } from "../chat/tasks/TaskDetailsPanel";
+import { taskLoopStanding, taskLoopStop } from "./taskLoopLabels";
 import { panelTabButton } from "../panelTabButton";
 import { MiniAppPanel } from "../apps/MiniAppPanel";
 
@@ -54,6 +55,7 @@ const TASK_STATUSES: readonly (TaskStatusBucket | "all")[] = [
   "needs_review",
   "done",
   "cancelled",
+  "loops",
 ];
 
 /** The same Task in the full Comma Web app, served from the panel's origin. */
@@ -226,6 +228,49 @@ function TaskPanelReader({
         ? "unavailable"
         : "loading";
   const conversation = shown?.status === "ready" ? shown.preview : undefined;
+  const workerSessions: readonly ChatWorkerSession[] | undefined = useMemo(
+    () =>
+      conversation?.worker_sessions?.map((session) => {
+        const rawDetail = session.issue_detail;
+        const issueDetail = rawDetail
+          ? {
+              ...(rawDetail.source ? { source: rawDetail.source } : {}),
+              ...(rawDetail.profile_id ? { profileId: rawDetail.profile_id } : {}),
+              ...(rawDetail.profile_name
+                ? { profileName: rawDetail.profile_name }
+                : {}),
+              ...(rawDetail.reset_at !== undefined && rawDetail.reset_at > 0
+                ? { resetAt: rawDetail.reset_at }
+                : {}),
+              ...(rawDetail.credits === true ? { credits: true as const } : {}),
+              ...(rawDetail.trigger === "background" ||
+              rawDetail.trigger === "voice_call"
+                ? { trigger: rawDetail.trigger }
+                : {}),
+            }
+          : undefined;
+        return {
+          participantId: session.participant_id,
+          ...(session.actor_id ? { actorId: session.actor_id } : {}),
+          slot: session.slot,
+          label: session.label,
+          ...(session.model ? { model: session.model } : {}),
+          ...(session.runtime ? { runtime: session.runtime } : {}),
+          isPrimary: session.is_primary,
+          subscribed: session.subscribed,
+          state: session.state,
+          status: session.status ?? "",
+          ...(session.updated_at !== undefined
+            ? { updatedAt: session.updated_at }
+            : {}),
+          ...(session.issue ? { issue: session.issue } : {}),
+          ...(issueDetail && Object.keys(issueDetail).length > 0
+            ? { issueDetail }
+            : {}),
+        };
+      }),
+    [conversation?.worker_sessions]
+  );
   // The panel's session reads only the Group, so a Loop Task's Loop comes with the preview.
   const taskLoop = shown?.status === "ready" ? shown.loop : undefined;
 
@@ -328,6 +373,8 @@ function TaskPanelReader({
                         >
                           <TaskPanelReport
                             conversation={conversation}
+                            loop={taskLoop}
+                            workerSessions={workerSessions}
                             workspaceId={target.workspaceId}
                           />
                         </Suspense>
@@ -340,6 +387,7 @@ function TaskPanelReader({
                       loop={taskLoop}
                       open
                       run={taskRun(conversation.run)}
+                      workerSessions={workerSessions}
                     />
                   </>
                 ) : previewStatus === "loading" && groupId && conversationId ? (
@@ -428,7 +476,9 @@ function TaskPanelList({
 
   const tasks = state.status === "ready" ? state.tasks : [];
   const visibleTasks = tasks.filter(
-    (task) => filter === "all" || taskStatusBucket(task.status) === filter
+    (task) =>
+      filter === "all" ||
+      taskStatusBucket(task.status, { loopState: task.loop?.state }) === filter
   );
 
   return (
@@ -477,7 +527,7 @@ function TaskPanelList({
                     <TaskPanelRow
                       onOpen={() => onOpenTask(task.id)}
                       status={task.status}
-                      task={taskSummary(task)}
+                      task={taskSummary(task, messages, locale)}
                     />
                   </li>
                 ))}
@@ -534,11 +584,20 @@ function TaskPanelList({
   );
 }
 
-function taskSummary(task: GroupTask): TaskSummaryViewModel {
+function taskSummary(
+  task: GroupTask,
+  messages: ReturnType<typeof useCommaMessages>,
+  locale: ReturnType<typeof useCommaLocale>
+): TaskSummaryViewModel {
+  const statusBucket = taskStatusBucket(task.status, { loopState: task.loop?.state });
+  const loopStop = taskLoopStop(statusBucket, task.loop, messages);
+  const loopStanding = taskLoopStanding(statusBucket, task.loop, messages, locale);
   return {
     id: task.id,
     title: task.title,
-    statusBucket: taskStatusBucket(task.status),
+    statusBucket,
+    ...(loopStop ? { loopStop } : {}),
+    ...(loopStanding ? { loopStanding } : {}),
     updatedAt: task.updatedAt,
     activityStatus: task.activityStatus,
   };
@@ -558,7 +617,9 @@ function TaskPanelRow({
   task: TaskSummaryViewModel;
 }) {
   const locale = useCommaLocale();
-  const progress = taskProgressLabel(task, locale);
+  // A Loop that stopped or stands between runs says so without the running shimmer.
+  const loopText = task.loopStop?.text ?? task.loopStanding?.text;
+  const progress = loopText ?? taskProgressLabel(task, locale);
   return (
     <button
       aria-label={task.title}
@@ -571,12 +632,21 @@ function TaskPanelRow({
       type="button"
     >
       <span aria-hidden className="comma-embedded-task-row-icon">
-        {taskStatusIcon(task.statusBucket)}
+        {taskStatusIcon(task.statusBucket, {
+          loopStop: task.loopStop,
+          loopStanding: task.loopStanding,
+        })}
       </span>
       <span className="comma-embedded-task-row-body">
         <span className="comma-embedded-task-row-title">{task.title}</span>
         {progress ? (
-          <span className="comma-embedded-task-row-meta comma-shiny-text">
+          <span
+            className={
+              loopText
+                ? "comma-embedded-task-row-meta"
+                : "comma-embedded-task-row-meta comma-shiny-text"
+            }
+          >
             {progress}
           </span>
         ) : null}

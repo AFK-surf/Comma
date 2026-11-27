@@ -16,7 +16,14 @@ export function useMiniAppImage(
       ? {
           topic: "miniAppImage",
           url,
-          ...("workspace" in via ? { workspace: via.workspace } : { link: via.token }),
+          ...("workspace" in via
+            ? { workspace: via.workspace }
+            : "token" in via
+              ? { link: via.token }
+              : {
+                  collaborationGroup: via.collaboration.group,
+                  collaborationTask: via.collaboration.task,
+                }),
         }
       : null
   );

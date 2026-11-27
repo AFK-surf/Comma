@@ -337,8 +337,8 @@ defmodule SalixIM.Triage.Runtime do
     state = %{
       namespace: Keyword.get(opts, :namespace),
       mode: Keyword.get(opts, :mode, :off),
-      debounce_ms: Keyword.get(opts, :debounce_ms, 180_000),
-      max_wait_ms: Keyword.get(opts, :max_wait_ms, :infinity),
+      debounce_ms: Keyword.get(opts, :debounce_ms, 30_000),
+      max_wait_ms: Keyword.get(opts, :max_wait_ms, 120_000),
       evaluation_timeout_ms: Keyword.get(opts, :evaluation_timeout_ms, 150_000),
       review_projection: Keyword.get(opts, :review_projection, :none),
       context_port: Keyword.get(opts, :context_port),

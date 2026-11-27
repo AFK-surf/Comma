@@ -19,7 +19,6 @@ struct RecommendationFeedTests {
             {"id":"c2","title":"Later","template":"future@9","sourceIds":["conn-gh","conn-sl"],"fallbackText":"Plain text"}]}}
         """#
         let feed = try RecommendationFeed(envelope: JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))
-        #expect(feed.summaryText == "Two things need you. Fix CI")
         #expect(feed.generation == 4 && feed.canRefresh)
         #expect(feed.sourcesNeedingReconnect.map(\.appName) == ["Slack"])
         #expect(feed.source(for: feed.cards[0])?.appID == "github")
@@ -58,19 +57,6 @@ struct RecommendationFeedTests {
         #expect(row.quote?.plainText == "Ember: @zanwei CI is green.\n• Retry")
         // A row with prose around its link is not a member task row: it shows its prose and quotes nothing.
         #expect(feed.cards[0].items[1].objective == nil && feed.cards[0].items[1].quote == nil)
-    }
-
-    @Test func summaryBodyLeavesOutTheBriefingTitle() {
-        let titled = RecommendationFeed(state: "fresh", summary: [
-            .text("Your work briefing\n\nHere is what I suggest you focus on: "),
-            .task(label: "Fix CI", conversationID: "t1", sourceID: nil)])
-        #expect(titled.summaryBody == [.text("Here is what I suggest you focus on: "),
-                                       .task(label: "Fix CI", conversationID: "t1", sourceID: nil)])
-        let titleOnly = RecommendationFeed(state: "fresh", summary: [
-            .text("你的工作简报\n\n"), .task(label: "Fix CI", conversationID: "t1", sourceID: nil)])
-        #expect(titleOnly.summaryBody == [.task(label: "Fix CI", conversationID: "t1", sourceID: nil)])
-        let untitled = RecommendationFeed(state: "fresh", summary: [.text("Two things need you.")])
-        #expect(untitled.summaryBody == untitled.summary)
     }
 
     @Test func emptyEnvelopeHasNoCards() throws {

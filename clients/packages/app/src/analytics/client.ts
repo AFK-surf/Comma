@@ -43,6 +43,10 @@ const eventNames = new Set([
   "comma_message_send_failed",
   "comma_recording_transcribe_failed",
   "comma_widget_failed",
+  "comma_billing_opened",
+  "comma_checkout_requested",
+  "comma_checkout_open_failed",
+  "comma_billing_returned",
 ]);
 
 // PostHog enriches even manually captured events. Keep that enrichment bounded:
@@ -88,6 +92,8 @@ const propertyNames = new Set([
   "source_message_id",
   "launch_kind",
   "widget_reason",
+  "plan_key",
+  "billing_entry",
 ]);
 
 export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
@@ -104,6 +110,13 @@ export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
     delete properties.login_error_code;
   if (!errorDetails.has(properties.error_detail)) delete properties.error_detail;
   if (!isWidgetReason(properties.widget_reason)) delete properties.widget_reason;
+  // A plan key is a catalog name; an entry is one of the places that open billing.
+  if (
+    typeof properties.plan_key !== "string" ||
+    !/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(properties.plan_key)
+  )
+    delete properties.plan_key;
+  if (!billingEntries.has(properties.billing_entry)) delete properties.billing_entry;
   if (event.event === "$pageview") {
     // A stable product route, never a filesystem URL or a URL with OAuth handles.
     properties.$current_url = `comma://client${properties.route}`;
@@ -166,15 +179,70 @@ export function commaAnalyticsRoute(hash: string): string {
 // every event, so an existing install keeps its analytics identity.
 const windowRole = "main-window";
 
-export function startCommaAnalytics({
-  runtime,
-  lifecycle,
-  desktopLaunch,
-}: {
+type CommaAnalyticsStart = {
   runtime: Runtime;
   lifecycle: SessionLifecycleProjectionSource;
   desktopLaunch?: Promise<NativeInfo["desktopLaunch"]> | undefined;
-}): () => void {
+};
+
+// The person's choice (the usageAnalyticsEnabled client setting) and the
+// running reporter it allows. A stopped reporter keeps its start options, so
+// the switch can turn it on again without a reload.
+let consent:
+  | { enabled: boolean; start: CommaAnalyticsStart; reported: boolean }
+  | undefined;
+let stopReporting: (() => void) | undefined;
+
+/**
+ * Starts the product analytics of this window. `enabled` is the stored
+ * client setting, read before this call: while it is off, the SDK is not
+ * loaded and nothing is sent. `setCommaAnalyticsEnabled` changes it later.
+ */
+export function startCommaAnalytics({
+  enabled,
+  ...start
+}: CommaAnalyticsStart & { enabled: boolean }): () => void {
+  // One reporter per window. A start whose SDK did not load can be repeated.
+  if (active) return () => {};
+  stopReporting?.();
+  const current = { enabled, start, reported: enabled };
+  consent = current;
+  if (enabled) stopReporting = report(start, false);
+  return () => {
+    if (consent !== current) return;
+    stopReporting?.();
+    stopReporting = undefined;
+    consent = undefined;
+    uiCommitted = false;
+  };
+}
+
+/**
+ * Applies the person's analytics switch at once. Off: the SDK opts out and
+ * the reporters stop. On: reporting starts,
+ * or resumes for the current session without a second launch or open event.
+ */
+export function setCommaAnalyticsEnabled(enabled: boolean) {
+  if (!consent || consent.enabled === enabled) return;
+  consent.enabled = enabled;
+  if (enabled) {
+    // Switched on after launch: the first report of this window opens it.
+    stopReporting = report(consent.start, consent.reported);
+    consent.reported = true;
+    return;
+  }
+  const client = active?.client;
+  stopReporting?.();
+  stopReporting = undefined;
+  // The SDK drops every capture from now on, and keeps the opt-out in its
+  // own storage. With batching off it holds no captured events to flush.
+  if (client) safely(() => client.opt_out_capturing());
+}
+
+function report(
+  { runtime, lifecycle, desktopLaunch }: CommaAnalyticsStart,
+  resumed: boolean
+): () => void {
   const key =
     typeof COMMA_DEFINED_POSTHOG_KEY === "undefined" ? "" : COMMA_DEFINED_POSTHOG_KEY;
   const host =
@@ -202,6 +270,10 @@ export function startCommaAnalytics({
       enable_recording_console_log: false,
       persistence: "localStorage",
       persistence_name: `comma_${getActiveCommaConfig().channel}_${runtime}_${windowRole}`,
+      // Each event leaves as it is captured. A batch would hold events past
+      // the moment the person switches analytics off, and the opt-out does
+      // not drop a batch already made.
+      request_batching: false,
       ...(sharedWebIdentity ? webPersistence(getActiveCommaConfig().channel) : {}),
       person_profiles: "identified_only",
       respect_dnt: true,
@@ -214,6 +286,13 @@ export function startCommaAnalytics({
     return () => {};
   }
   if (!client) return () => {};
+  // The SDK keeps an opt-out in its own storage: a person who switched
+  // analytics off and on again has opted in.
+  const sdk = client;
+  safely(() => {
+    if (sdk.has_opted_out_capturing())
+      sdk.opt_in_capturing({ captureEventName: false });
+  });
   const analytics: Analytics = {
     client,
     userId: undefined,
@@ -248,7 +327,8 @@ export function startCommaAnalytics({
   let previousNavigation: string | undefined;
   let sessionResolved = false;
   let launch: NativeInfo["desktopLaunch"];
-  let launchCaptured = false;
+  // Switched back on: this window already opened and launched.
+  let launchCaptured = resumed;
   const captureDesktopLaunch = () => {
     if (!sessionResolved || !launch || launchCaptured || active !== analytics) return;
     launchCaptured = true;
@@ -272,7 +352,7 @@ export function startCommaAnalytics({
       })
       .catch(() => undefined);
   }
-  let readyCaptured = false;
+  let readyCaptured = resumed;
   analytics.captureReady = () => {
     if (!sessionResolved || !uiCommitted || readyCaptured) return;
     readyCaptured = true;
@@ -330,6 +410,7 @@ export function startCommaAnalytics({
         else client.identify(userId);
       }
     });
+    if (firstSnapshot && resumed) previousPhase = snapshot.phase;
     if (snapshot.phase !== previousPhase) {
       previousPhase = snapshot.phase;
       safely(() =>
@@ -339,7 +420,7 @@ export function startCommaAnalytics({
         })
       );
     }
-    if (firstSnapshot) {
+    if (firstSnapshot && !resumed) {
       safely(() => client.capture("comma_client_opened"));
       captureDesktopLaunch();
       capturePage();
@@ -365,7 +446,6 @@ export function startCommaAnalytics({
     reportedErrors = new WeakMap<Error, ClientErrorKind>();
     errorReportCounts = {};
     widgetFailureCount = 0;
-    uiCommitted = false;
     if (active === analytics) active = undefined;
   };
 }
@@ -523,6 +603,53 @@ export function captureCommaWidgetFailure(
       widget_reason: widgetReason,
     })
   );
+}
+
+/** Where the Usage & billing page was opened from: a notice, the website, or Settings itself. */
+const billingEntryNames = [
+  "settings",
+  "out_of_credits",
+  "credit_warning",
+  "failed_delivery",
+  "funding_stop",
+  "website",
+  "menu_bar",
+  "billing_return",
+] as const;
+export type BillingEntry = (typeof billingEntryNames)[number];
+const billingEntries = new Set<unknown>(billingEntryNames);
+
+/** The entry a `from` hash parameter names, or Settings itself. */
+export function billingEntry(value: string | null): BillingEntry {
+  return billingEntries.has(value) ? (value as BillingEntry) : "settings";
+}
+
+/**
+ * One step of the payment funnel before Stripe: the billing page opened, a
+ * checkout asked for, a checkout that could not open, or a return from Stripe.
+ * The server reports created, failed and paid checkouts; these are the steps
+ * only the client sees. Never an amount, URL, provider id or error text.
+ * The desktop app sees a return with its `state`: Stripe's return page opens
+ * its URL scheme. It reports only a return to a checkout it opened itself in
+ * this run, because the return page opens the scheme for a web checkout too. The web app gets no return route: its return has no `state`
+ * and means the checkout window closed and the person is back on the billing
+ * page. A page on the way that isolates its window (a bank's) can end that
+ * early; the server's completed checkout says whether it was paid.
+ */
+export function captureCommaBilling(
+  event:
+    | "comma_billing_opened"
+    | "comma_checkout_requested"
+    | "comma_checkout_open_failed"
+    | "comma_billing_returned",
+  properties: {
+    billing_entry?: BillingEntry;
+    plan_key?: string;
+    error_kind?: "popup_blocked" | "request_failed" | "open_failed";
+    state?: "success" | "cancel";
+  } = {}
+) {
+  if (active?.sessionResolved) safely(() => active?.client.capture(event, properties));
 }
 
 export function markCommaClientReady() {

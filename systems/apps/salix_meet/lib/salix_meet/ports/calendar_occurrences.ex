@@ -11,11 +11,23 @@ defmodule SalixMeet.Ports.CalendarOccurrences do
   @callback list(group :: map(), range_start_ms :: integer(), range_end_ms :: integer()) ::
               {:ok, [occurrence()]} | {:ok, [occurrence()], page_key() | nil} | {:error, term()}
   @callback revalidate(group :: map(), occurrence()) :: :ok | {:error, term()}
+  # A member unit's indexed copy left its calendar: the unit stops holding
+  # the meeting.
+  @callback release(group :: map(), occurrence()) :: :ok | {:error, term()}
+  @optional_callbacks release: 2
 
   def list(group, range_start_ms, range_end_ms),
     do: impl().list(group, range_start_ms, range_end_ms)
 
   def revalidate(group, occurrence), do: impl().revalidate(group, occurrence)
+
+  def release(group, occurrence) do
+    impl = impl()
+
+    if Code.ensure_loaded?(impl) and function_exported?(impl, :release, 2),
+      do: impl.release(group, occurrence),
+      else: :ok
+  end
 
   defp impl,
     do: SystemsRuntime.get_env(:salix_meet, :calendar_occurrences_mod, __MODULE__.None)

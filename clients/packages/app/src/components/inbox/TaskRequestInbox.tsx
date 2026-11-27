@@ -1,16 +1,31 @@
 import {
   useCall,
   useTopic,
+  type Collaboration,
   type TaskRequestIncoming,
   type TaskRequestSent,
 } from "@comma/core-client";
+import type {
+  FileSource,
+  TaskRequestGrant,
+  TaskRequestPerson,
+} from "@comma/core/contract";
 import { taskStatusBucket, taskStatusLabel, type CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { InviteIcon } from "@comma/ui/components/icons";
+import {
+  InviteIcon,
+  MoreHorizontalIcon,
+  ResetIcon,
+  TrashCanIcon,
+} from "@comma/ui/components/icons";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
 import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { ContentHeader } from "@comma/ui/components/content-header";
 import { TaskListItem } from "@comma/ui/components/TaskListItem";
+import { taskRequestAcceptBillingFailure } from "../billing/billingError";
 import { toast } from "@comma/ui/components/toast";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
@@ -24,6 +39,7 @@ import {
   type ReactNode,
 } from "react";
 import { useWorkspacePreference } from "../activeWorkspace";
+import { CommaAuthContext } from "../auth-context";
 import { useOptionalCommaClientSettings } from "../commaClientSettings";
 import { playRequestSound } from "../notifications/notificationSound";
 import { UserAvatar } from "../UserAvatar";
@@ -54,8 +70,25 @@ function useWaitingRequests() {
   return {
     workspace: value?.workspace ?? undefined,
     incoming: value?.incoming ?? undefined,
+    received: value?.received ?? undefined,
     sent: value?.sent ?? undefined,
+    grants: value?.grants ?? undefined,
+    people: value?.people ?? undefined,
   };
+}
+
+/**
+ * Each person who took the account's own invite link, by its grant: they joined its People then. A grant made back when
+ * the account took someone else's link is no news to it.
+ */
+function joinedGrants(grants: readonly TaskRequestGrant[] | undefined) {
+  return (grants ?? []).filter(
+    (grant) =>
+      grant.status === "active" &&
+      grant.from_invite &&
+      grant.grantee &&
+      grant.accepted_at
+  );
 }
 
 type Messages = ReturnType<typeof useCommaMessages>;
@@ -67,7 +100,11 @@ export const recipientName = (sent: TaskRequestSent) =>
   "";
 
 /** What came of a sent request, in a word: the owner's decision, then its Task's status as the Task last reported it. */
-function sentStatusLabel(sent: TaskRequestSent, m: Messages, locale: CommaLocale) {
+export function sentStatusLabel(
+  sent: TaskRequestSent,
+  m: Messages,
+  locale: CommaLocale
+) {
   switch (sent.status) {
     case "pending":
       return m.task_requests_status_pending();
@@ -93,6 +130,11 @@ function answerFailed(
   messages: Messages,
   failure: unknown
 ) {
+  const billingError = taskRequestAcceptBillingFailure(failure, messages);
+  if (billingError) {
+    toast.error(billingError);
+    return;
+  }
   if ((failure as { code?: string }).code !== "task_request_closed") {
     toast.error(messages.task_requests_failed());
     return;
@@ -155,10 +197,14 @@ export interface InboxRequestRow {
  */
 export function useRefreshRequestsOnReturn() {
   const call = useCall();
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
   useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState !== "hidden")
+      if (document.visibilityState !== "hidden") {
         void call("taskRequests.refresh", {}).catch(() => undefined);
+        if (peopleEnabled)
+          void call("collaborations.refresh", {}).catch(() => undefined);
+      }
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -166,7 +212,7 @@ export function useRefreshRequestsOnReturn() {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [call]);
+  }, [call, peopleEnabled]);
 }
 
 /** A sent request's result toast, by the request: raised once per result. */
@@ -189,24 +235,85 @@ export function useRequestArrivalToasts() {
   const call = useCall();
   const navigate = useNavigate();
   const locale = useCommaLocale();
-  const { incoming, sent, workspace } = useWaitingRequests();
+  const { grants, incoming, sent, workspace } = useWaitingRequests();
   // Read when a toast shows, so turning the sound on or off does not read the requests again.
   const requestSound = useRef(true);
   requestSound.current = useOptionalCommaClientSettings()?.requestSound ?? true;
-  // Of each sent request, what it last said (none until the first read): a change to a result raises its toast.
-  const sentSeen = useRef<Map<string, string> | null>(null);
+  const auth = useContext(CommaAuthContext);
+  // Scoped by workspace (from the same `taskRequests` snapshot as `sent`) with an
+  // account fallback when a user has no workspace yet, so switching accounts never
+  // replays the next account's already-finished requests as live toasts.
+  const sentScope = workspace ?? auth?.userId ?? "";
+  // Of each sent request, what it last said (none until the first read for this scope):
+  // a change to a result raises its toast.
+  const sentSeen = useRef<{
+    scope: string;
+    said: Map<string, string>;
+    unfilled: Set<string>;
+    suppressed: Set<string>;
+    oldestCreatedAt: number | null;
+  } | null>(null);
   useEffect(() => {
     if (!sent) return;
     const said = new Map(sent.map((r) => [r.id, `${r.status}:${r.task_status ?? ""}`]));
-    const before = sentSeen.current;
-    sentSeen.current = said;
-    if (!before) return;
+    const prev = sentSeen.current?.scope === sentScope ? sentSeen.current : null;
+    let oldestCreatedAt = prev?.oldestCreatedAt ?? null;
     for (const request of sent) {
-      if (before.get(request.id) === said.get(request.id) || !sentHasResult(request))
+      if (
+        request.created_at !== null &&
+        (oldestCreatedAt === null || request.created_at < oldestCreatedAt)
+      ) {
+        oldestCreatedAt = request.created_at;
+      }
+    }
+    if (!prev) {
+      const unfilled = new Set(
+        sent.filter((r) => r.status === "accepted" && !r.task_status).map((r) => r.id)
+      );
+      sentSeen.current = {
+        scope: sentScope,
+        said,
+        unfilled,
+        suppressed: new Set(),
+        oldestCreatedAt,
+      };
+      return;
+    }
+    const unfilled = new Set(prev.unfilled);
+    const suppressed = new Set(prev.suppressed);
+    const prevOldest = prev.oldestCreatedAt;
+    for (const request of sent) {
+      const prior = prev.said.get(request.id);
+      const current = said.get(request.id);
+      const isOlderShift =
+        prior === undefined &&
+        prevOldest !== null &&
+        request.created_at !== null &&
+        request.created_at < prevOldest;
+      if (isOlderShift && request.status === "accepted" && !request.task_status) {
+        unfilled.add(request.id);
+      }
+      const wasUnfilled = unfilled.has(request.id);
+      if (request.task_status) unfilled.delete(request.id);
+      if (!sentHasResult(request)) {
+        suppressed.delete(request.id);
         continue;
+      }
+      if (isOlderShift) continue;
+      const reply = request.reply?.trim() ?? "";
+      const lateReply =
+        prior === current && suppressed.has(request.id) && reply.length > 0;
+      if (prior === current && !lateReply) continue;
+      // Historical receipt backfill fills a missing `task_status` without a reply;
+      // update the list silently instead of raising persistent toasts for old Tasks.
+      // Remember it so a live Router report arriving afterwards still raises its toast.
+      if (wasUnfilled && prior === "accepted:" && !reply) {
+        suppressed.add(request.id);
+        continue;
+      }
+      suppressed.delete(request.id);
       const id = resultToastId(request.id);
       const name = recipientName(request);
-      const reply = request.reply?.trim() ?? "";
       toast(
         request.status === "declined"
           ? messages.task_requests_declined_by({ name })
@@ -247,7 +354,56 @@ export function useRequestArrivalToasts() {
         }
       );
     }
-  }, [locale, messages, navigate, sent]);
+    sentSeen.current = {
+      scope: sentScope,
+      said,
+      unfilled,
+      suppressed,
+      oldestCreatedAt,
+    };
+  }, [locale, messages, navigate, sent, sentScope]);
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
+  // Someone took the account's invite link while the window is open: a toast, as a request's arrival raises one.
+  const joinedSeen = useRef<{ workspace: string; ids: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!peopleEnabled) {
+      joinedSeen.current = null;
+      return;
+    }
+    if (!grants || !workspace) return;
+    const joined = joinedGrants(grants);
+    const before =
+      joinedSeen.current?.workspace === workspace ? joinedSeen.current.ids : null;
+    joinedSeen.current = { workspace, ids: new Set(joined.map((grant) => grant.id)) };
+    // The first read of a workspace is what joined before: the Inbox lists those.
+    if (!before) return;
+    for (const grant of joined) {
+      if (before.has(grant.id) || !grant.grantee) continue;
+      const person = grant.grantee;
+      const id = `people-joined:${grant.id}`;
+      toast(messages.people_joined({ name: personName(person, messages) }), {
+        id,
+        testId: "people-joined",
+        description: messages.people_joined_detail(),
+        leading: (
+          <UserAvatar
+            displayName={person.name ?? undefined}
+            email={person.email ?? ""}
+            size="compact"
+          />
+        ),
+        actions: [
+          {
+            label: messages.task_requests_view(),
+            onPress: () => {
+              toast.dismiss(id);
+              void navigate({ to: "/people", search: { person: person.id } });
+            },
+          },
+        ],
+      });
+    }
+  }, [grants, messages, navigate, peopleEnabled, workspace]);
   // What the window has already seen of a workspace (none until its first read); each raised toast's avatar URL, to
   // revoke with it.
   const seen = useRef<{ workspace: string; ids: Set<string> } | null>(null);
@@ -363,8 +519,142 @@ export interface InboxSentRow {
   sent: TaskRequestSent;
 }
 
-/** A request's row of either side: waiting for the owner, or sent by the person. */
-export type InboxRequestEntry = InboxRequestRow | InboxSentRow;
+/** An invitation to a Task another person hosts, as an Inbox row: it waits for the person, as a request does. */
+export interface InboxInvitationRow {
+  kind: "collaboration_invite";
+  id: string;
+  /** Unix seconds, as a request's. */
+  updatedAt: number;
+  invitation: Collaboration;
+}
+
+/** Someone who took the account's invite link, as an Inbox row: they are in its People now. */
+export interface InboxJoinedRow {
+  kind: "people_joined";
+  id: string;
+  /** Unix milliseconds, as a sent request's: its Inbox deleted mark sits among the Tasks' marks. */
+  updatedAt: number;
+  person: TaskRequestPerson;
+  avatar: FileSource | null;
+}
+
+/** A request's row of either side (waiting for the owner, or sent by the person), an invitation waiting, or a join. */
+export type InboxRequestEntry =
+  | InboxRequestRow
+  | InboxSentRow
+  | InboxInvitationRow
+  | InboxJoinedRow;
+
+/** The people who took the account's invite links, as Inbox rows, the latest first. */
+export function useInboxJoinedRows(): InboxJoinedRow[] {
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
+  const { grants, people } = useWaitingRequests();
+  return useMemo(
+    () =>
+      peopleEnabled
+        ? joinedGrants(grants).flatMap((grant) =>
+            grant.grantee
+              ? [
+                  {
+                    kind: "people_joined" as const,
+                    id: `people-joined:${grant.id}`,
+                    updatedAt: (grant.accepted_at ?? 0) * 1000,
+                    person: grant.grantee,
+                    avatar:
+                      people?.find((p) => p.id === grant.grantee?.id)?.avatar ?? null,
+                  },
+                ]
+              : []
+          )
+        : [],
+    [grants, people, peopleEnabled]
+  );
+}
+
+const personName = (
+  person: TaskRequestPerson,
+  messages: ReturnType<typeof useCommaMessages>
+) => person.name || person.email || messages.task_requests_unknown_person();
+
+/**
+ * A join's row: their face, that they joined the account's People, and when. Opens them in People; its menu hides it.
+ */
+export function InboxJoinedRowView({
+  onDelete,
+  row,
+}: {
+  onDelete: () => void;
+  row: InboxJoinedRow;
+}) {
+  const messages = useCommaMessages();
+  const locale = useCommaLocale();
+  const navigate = useNavigate();
+  const rowRef = useRef<HTMLButtonElement | null>(null);
+  const menu = useInboxItemMenu();
+  const avatarUrl = useAvatarUrl(row.avatar ?? undefined);
+  return (
+    <>
+      <button
+        className="block w-full rounded-xl border-0 bg-transparent p-0 text-left outline-none focus-visible:shadow-focus-gray"
+        data-testid="inbox-people-joined"
+        onClick={() =>
+          void navigate({ to: "/people", search: { person: row.person.id } })
+        }
+        {...inboxItemMenuTrigger(menu, rowRef)}
+        ref={rowRef}
+        type="button"
+      >
+        <TaskListItem
+          icon={
+            <UserAvatar
+              {...(avatarUrl ? { avatarUrl } : {})}
+              displayName={row.person.name ?? undefined}
+              email={row.person.email ?? ""}
+              size="compact"
+            />
+          }
+          layout="sidebar"
+          selected={menu.isOpen}
+          tail={
+            <span>
+              {row.updatedAt ? formatCompactRelative(row.updatedAt, locale) : ""}
+            </span>
+          }
+          title={messages.people_joined({ name: personName(row.person, messages) })}
+          titleIdentity={row.id}
+        />
+      </button>
+      <InboxItemMenuPopover
+        actions={["delete"]}
+        isOpen={menu.isOpen}
+        onAction={() => onDelete()}
+        onOpenChange={menu.onOpenChange}
+        pointerOffsets={menu.pointerOffsets}
+        triggerRef={rowRef}
+      />
+    </>
+  );
+}
+
+/** The person's invitations to Tasks others host, as Inbox rows. */
+export function useInboxInvitationRows(): InboxInvitationRow[] {
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
+  const { value } = useTopic(peopleEnabled ? { topic: "collaborations" } : null);
+  return useMemo(
+    () =>
+      peopleEnabled
+        ? (value?.items ?? [])
+            .filter((item) => item.status === "invited")
+            .map((invitation) => ({
+              kind: "collaboration_invite" as const,
+              id: `collaboration:${invitation.id}`,
+              updatedAt: invitation.invited_at ?? 0,
+              invitation,
+            }))
+        : [],
+    [peopleEnabled, value?.items]
+  );
+}
 
 /** The requests the person sent as Inbox rows, but those they withdrew. */
 export function useInboxSentRows(): InboxSentRow[] {
@@ -494,8 +784,28 @@ export function InboxSentRowView({
 function InboxSentRequestPane({ sent }: { sent: TaskRequestSent }) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
+  const call = useCall();
+  const navigate = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const owner = sent.workspace?.owner;
   const status = sentStatusLabel(sent, messages, locale);
+  const remove = () => {
+    if (busy) return;
+    setConfirmingDelete(false);
+    setBusy(true);
+    const write =
+      sent.status === "pending"
+        ? call("taskRequests.withdraw", { request: sent.id })
+        : call("taskRequests.hide", { request: sent.id });
+    void write.then(
+      () => void navigate({ replace: true, to: "/inbox" }),
+      (failure: unknown) => {
+        setBusy(false);
+        answerFailed(call, messages, failure);
+      }
+    );
+  };
   return (
     <section
       aria-label={sent.title}
@@ -503,8 +813,44 @@ function InboxSentRequestPane({ sent }: { sent: TaskRequestSent }) {
       data-testid="inbox-sent-request-pane"
     >
       <ContentHeader className="comma-chat-header">
-        <div className="flex min-w-0 flex-1 items-center gap-sm">
+        <div
+          className="flex min-w-0 flex-1 items-center gap-sm"
+          data-task-header="true"
+        >
           <h1 className="comma-chat-title">{sent.title}</h1>
+          <MenuTrigger>
+            <Button
+              aria-label={messages.inbox_item_actions()}
+              data-testid="inbox-sent-request-actions"
+              hierarchy="tertiary-gray"
+              iconLeading={<MoreHorizontalIcon />}
+              iconOnly
+              isDisabled={busy}
+              size="xs"
+            />
+            <MenuPopover placement="bottom start">
+              <Menu
+                aria-label={messages.inbox_item_actions()}
+                className="min-w-44 bg-popup-secondary px-sm py-sm shadow-2xl"
+                onAction={() => {
+                  if (sent.status === "pending") remove();
+                  else setConfirmingDelete(true);
+                }}
+              >
+                <MenuItem
+                  contentClassName="h-8"
+                  gutter="none"
+                  icon={sent.status === "pending" ? <ResetIcon /> : <TrashCanIcon />}
+                  id={sent.status === "pending" ? "withdraw" : "delete"}
+                  tone={sent.status === "pending" ? "default" : "destructive"}
+                >
+                  {sent.status === "pending"
+                    ? messages.task_requests_withdraw_request()
+                    : messages.task_requests_delete_request()}
+                </MenuItem>
+              </Menu>
+            </MenuPopover>
+          </MenuTrigger>
         </div>
       </ContentHeader>
       {/* The Task the person asked for, as a Task shows: its words and reply, and its details beside them. */}
@@ -585,6 +931,28 @@ function InboxSentRequestPane({ sent }: { sent: TaskRequestSent }) {
           </div>
         </aside>
       </div>
+      {confirmingDelete ? (
+        <Dialog
+          actions={[
+            {
+              hierarchy: "secondary-gray",
+              label: messages.people_cancel(),
+              onPress: () => setConfirmingDelete(false),
+            },
+            {
+              hierarchy: "destructive",
+              label: messages.task_requests_delete(),
+              onPress: remove,
+            },
+          ]}
+          description={messages.task_requests_delete_description()}
+          isOpen
+          onOpenChange={(open) => {
+            if (!open) setConfirmingDelete(false);
+          }}
+          title={messages.task_requests_delete_title()}
+        />
+      ) : null}
     </section>
   );
 }
@@ -708,36 +1076,137 @@ const CARD_EXIT_TIMING: KeyframeAnimationOptions = {
 const reducedMotion = () =>
   document.documentElement.dataset.commaReducedMotion === "true";
 
+/** What came of a received request, in a word. */
+function incomingStatusLabel(request: TaskRequestIncoming, m: Messages) {
+  switch (request.status) {
+    case "pending":
+      return m.task_requests_status_pending();
+    case "accepted":
+      return m.task_requests_status_accepted();
+    case "declined":
+      return m.task_requests_status_declined();
+    case "withdrawn":
+      return m.task_requests_status_withdrawn();
+    case "expired":
+      return m.task_requests_status_expired();
+  }
+}
+
+/**
+ * A received request that has already been answered (declined, expired, withdrawn, or accepted), opened read-only in
+ * the detail pane: its title, words, status, and who sent it.
+ */
+function InboxAnsweredRequestPane({
+  request,
+  workspace,
+}: {
+  request: TaskRequestIncoming;
+  workspace: string;
+}) {
+  const messages = useCommaMessages();
+  const sender = request.sender;
+  return (
+    <section
+      aria-label={request.title}
+      className="comma-chat-route flex min-h-0 w-full min-w-0 flex-1 flex-col bg-main-panel-bg"
+      data-testid="inbox-answered-request-pane"
+    >
+      <ContentHeader className="comma-chat-header">
+        <div className="flex min-w-0 flex-1 items-center gap-sm">
+          <h1 className="comma-chat-title">{request.title}</h1>
+        </div>
+      </ContentHeader>
+      <div className="comma-chat-body" data-panel-open="true">
+        <div className="comma-chat-thread">
+          <div className="comma-chat-column flex flex-col gap-lg">
+            <div className="comma-chat-message-user">
+              <div className="comma-chat-user-bubble-slot">
+                <div className="comma-chat-user-bubble">{request.content}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <aside
+          aria-label={messages.task_panel_region()}
+          className="comma-task-panel"
+          data-layout="column"
+          data-open="true"
+          data-testid="inbox-answered-request-panel"
+        >
+          <div className="comma-task-panel-inner">
+            <section className="comma-task-panel-section">
+              <h2 className="comma-task-panel-heading">
+                {messages.task_panel_properties()}
+              </h2>
+              <div className="comma-task-panel-row">
+                <span
+                  className="comma-task-panel-pill"
+                  data-testid="inbox-answered-request-status"
+                >
+                  <InviteIcon />
+                  {incomingStatusLabel(request, messages)}
+                </span>
+              </div>
+            </section>
+            <TaskRequestPersonSection
+              avatar={
+                sender?.avatar_id
+                  ? {
+                      source: "sender-avatar",
+                      workspace,
+                      request: request.id,
+                      revision: sender.avatar_id,
+                    }
+                  : undefined
+              }
+              email={sender?.email}
+              heading={messages.task_panel_request()}
+              name={senderName(request)}
+              note={request.decline_reason}
+              testId="inbox-answered-request-from"
+            />
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
 /**
  * A request opened in the Inbox's detail pane, as the Task it would become: the Task's header with the request's
  * title, a conversation behind a blur (the request's words and a reply still to come), and the request's card where
- * the Task's message box would be. There the owner chooses where and on what it runs, sends it to the Router, or
- * declines it. Making the Task takes the card away and opens the Task's own conversation here, sharpening out of the
- * blur; the other answers close the pane. A request answered elsewhere closes it too.
+ * the Task's message box would be. There the owner chooses where and on what it runs, and creates the Task or
+ * declines the request. Making the Task takes the card away and opens the Task's own conversation here, sharpening out
+ * of the blur; declining closes the pane. A request answered elsewhere closes it too.
  */
 export function InboxRequestPane() {
   const messages = useCommaMessages();
   const navigate = useNavigate();
   const { launch } = useInboxLaunch();
   const { requestId } = useParams({ strict: false }) as { requestId?: string };
-  const { incoming, sent, workspace } = useWaitingRequests();
+  const { incoming, received, sent, workspace } = useWaitingRequests();
   const live = incoming?.find((r) => r.id === requestId);
-  // A request the person sent opens as what came of it.
-  const mine = live ? undefined : sent?.find((r) => r.id === requestId);
   // Accepting it takes it off the waiting list before its card has left: the pane keeps it until the Task opens.
   const [held, setHeld] = useState(live);
   if (live && live !== held) setHeld(live);
   const [launching, setLaunching] = useState(false);
   const request = live ?? (launching ? held : undefined);
+  // An answered incoming request (declined, expired, withdrawn, accepted) stays readable from `received`.
+  const answered =
+    live || launching ? undefined : received?.find((r) => r.id === requestId);
+  // A request the person sent opens as what came of it.
+  const mine = live || answered ? undefined : sent?.find((r) => r.id === requestId);
   const card = useRef<HTMLDivElement>(null);
   const close = useCallback(
     () => void navigate({ replace: true, to: "/inbox" }),
     [navigate]
   );
   useEffect(() => {
-    if (incoming && sent && !request && !mine) close();
-  }, [close, incoming, mine, request, sent]);
+    if (incoming && received && sent && !request && !answered && !mine) close();
+  }, [answered, close, incoming, mine, received, request, sent]);
 
+  if (answered && workspace)
+    return <InboxAnsweredRequestPane request={answered} workspace={workspace} />;
   if (mine) return <InboxSentRequestPane sent={mine} />;
   if (!request || !workspace) return null;
 
@@ -807,10 +1276,12 @@ export function InboxRequestPane() {
               id: request.id,
               title: request.title,
               sender: (
-                <div className="flex items-center gap-xs text-sm text-secondary">
+                <div className="inline-flex items-center gap-xs rounded-full bg-tertiary py-0.5 px-sm text-xs text-secondary">
                   <span>{messages.task_requests_from_label()}</span>
                   <SenderAvatar request={request} size="xs" workspace={workspace} />
-                  <span>{senderName(request)}</span>
+                  <span className="font-medium text-primary">
+                    {senderName(request)}
+                  </span>
                 </div>
               ),
               content: request.content,

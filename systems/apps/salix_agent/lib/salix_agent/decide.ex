@@ -243,9 +243,15 @@ defmodule SalixAgent.Decide do
 
     case result do
       {:ok, answer, _meta} -> {:ok, answer}
-      {:error, reason} -> {:error, error_code(reason)}
+      {:error, reason} -> {:error, error_code(reason, metering[:profile])}
     end
   end
+
+  defp error_code({:billing_unavailable, %{reason: reason}}, :task_model_selection)
+       when reason in ["insufficient_credits", "account_inactive", "missing_account"],
+       do: {:billing_unavailable, reason}
+
+  defp error_code(reason, _profile), do: error_code(reason)
 
   defp error_code(%{decide_error: code}), do: error_code(code)
 

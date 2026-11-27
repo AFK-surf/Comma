@@ -3,6 +3,7 @@ import { taskStatusBucketLabel } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { ChevronRightSmallIcon } from "@comma/ui/components/icons";
 import { HOVER_PANEL_ITEM } from "@comma/ui/components/hover-card";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import {
   cloneElement,
   useCallback,
@@ -349,7 +350,12 @@ function WorkerLogSteps({
   const frame = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLOListElement>(null);
   const follow = useLogFollow(frame);
-  useEasedHeight(frame, list, follow.reveal);
+  const resize = useCallback(() => {
+    if (!frame.current || !list.current) return;
+    const height = list.current.offsetHeight;
+    frame.current.style.height = `${height}px`;
+    follow.reveal(height);
+  }, [follow]);
   // The step in progress holds one last row whatever it is, so a Worker that
   // turns from thinking to a command and back changes its words in place;
   // only a finished step rises in above it.
@@ -360,9 +366,13 @@ function WorkerLogSteps({
       : []),
   ];
   return (
-    <div
-      className="comma-chat-activity-log-frame"
+    <ScrollArea
+      className="comma-chat-activity-log-scroll"
+      viewportClassName="comma-chat-activity-log-frame"
       ref={frame}
+      onContentResize={resize}
+      onViewportResize={() => follow.reveal(list.current?.offsetHeight ?? 0)}
+      scrollbarRevealSource="interaction"
       onScroll={follow.scrolled}
       onWheel={follow.released}
       onPointerDown={follow.released}
@@ -378,7 +388,7 @@ function WorkerLogSteps({
           </li>
         ))}
       </ol>
-    </div>
+    </ScrollArea>
   );
 }
 

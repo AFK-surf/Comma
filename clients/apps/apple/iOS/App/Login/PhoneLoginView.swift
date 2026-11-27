@@ -13,6 +13,9 @@ struct PhoneLoginView: View {
     @State private var emailInvalid = false
     @State var localError: String?
     @State private var codeError: String?
+    @AppStorage("comma.backend-switch-shown") private var backendSwitchShown = false
+    @State private var markTaps = 0
+    @State private var choosingBackend = false
 
     private var challengeID: String? { store.signIn?.challengeID }
     private var providerLink: Bool { store.signIn?.linkingApple == true || store.signIn?.linkingGoogle == true }
@@ -38,6 +41,12 @@ struct PhoneLoginView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     CommaMark(size: 48).foregroundStyle(CommaTheme.textPrimary)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard BackendEnvironment.switchAvailable, !backendSwitchShown else { return }
+                            markTaps += 1
+                            if markTaps >= 7 { backendSwitchShown = true }
+                        }
                     ZStack(alignment: .top) {
                         if challengeID == nil {
                             emailStage.transition(.loginStage(reduced: reduceMotion))
@@ -138,7 +147,7 @@ struct PhoneLoginView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // The accounts still signed in on this iPhone: one tap goes back to one, without signing in again.
+                    // The accounts still signed in on this iPhone: one tap goes back to one, without signing in again.
             if !store.otherAccounts.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Signed in on this iPhone").font(.subheadline.weight(.medium)).foregroundStyle(CommaTheme.textSecondary)
@@ -155,6 +164,35 @@ struct PhoneLoginView: View {
                         .disabled(signingInWithApple || requestingCode || store.loading)
                         .accessibilityIdentifier("continueAsKeptAccount")
                     }
+                }
+            }
+
+            if BackendEnvironment.switchAvailable,
+               let current = store.configuration.environment,
+               backendSwitchShown || current != .production || store.configuration.storageSuffix != "" {
+                Button { choosingBackend = true } label: {
+                    HStack(spacing: 6) {
+                        Text("Server").foregroundStyle(CommaTheme.textTertiary)
+                        Text("·").foregroundStyle(CommaTheme.textQuaternary)
+                        Text(current.name).fontWeight(.medium).foregroundStyle(CommaTheme.textSecondary)
+                    }
+                    .font(.subheadline)
+                }
+                .buttonStyle(.plain)
+                .disabled(signingInWithApple || requestingCode || store.loading)
+                .accessibilityIdentifier("loginChooseBackend")
+                .confirmationDialog("Switch server?", isPresented: $choosingBackend, titleVisibility: .visible) {
+                    ForEach(BackendEnvironment.allCases.filter { $0 != current }, id: \.self) { environment in
+                        Button("Use \(environment.name)") {
+                            Task {
+                                await store.chooseBackend(environment)
+                                PhonePairingBridge.shared.backendChanged(to: environment)
+                                exit(0)
+                            }
+                        }
+                    }
+                } message: {
+                    Text("Comma closes now. Open it again to use the other server. Each server keeps its own sign-in.")
                 }
             }
         }

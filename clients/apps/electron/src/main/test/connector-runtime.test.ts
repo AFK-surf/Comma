@@ -8,10 +8,12 @@ import { testEpoch } from "@comma/test-utils/test-clock";
 import { MainCredentialGate } from "../modules/session/main-credential-gate";
 import type { MainSessionTransportAuthority } from "../modules/session/main-session-transport";
 import {
+  SYSTEM_PROXY_TIMEOUT_MS,
   WorkspaceConnectorRuntimeService,
   type StationHost,
   type WorkspaceConnectorScopeSnapshot,
 } from "../modules/connector-runtime";
+import { stationProxy } from "../modules/connector-runtime/system-proxy";
 import {
   acceptVerified,
   beginSignOut,
@@ -244,6 +246,9 @@ function createTimers() {
   };
 }
 
+/** The runtime's wait for the system's proxy answer. */
+const isProxyWait = (timer: Timer) => timer.ms === SYSTEM_PROXY_TIMEOUT_MS;
+
 function createRuntimeHarness(
   options: {
     carried?: boolean;
@@ -255,6 +260,7 @@ function createRuntimeHarness(
     readyTimeoutMs?: number;
     rejectStableDevice?: boolean;
     staticStatusFilePath?: string;
+    systemProxy?: (url: string) => Promise<string>;
   } = {}
 ) {
   const { authority, session, signIn } = createSessionHarness();
@@ -275,6 +281,8 @@ function createRuntimeHarness(
   };
   const timers = createTimers();
   const isPoll = (timer: Timer) => timer.ms === POLL_MS;
+  /** A mint retry or the credential watch: what the runtime arms once an attempt is over. */
+  const isAfterAttempt = (timer: Timer) => !isPoll(timer) && !isProxyWait(timer);
   const runtime = new WorkspaceConnectorRuntimeService({
     ...(options.clientControl ? { clientControl: options.clientControl } : {}),
     computerUseHelperApp: join(tempDir, "Comma Computer Use.app"),
@@ -297,6 +305,7 @@ function createRuntimeHarness(
     // run when the test runs them.
     clock: timers,
     staticStatusFilePath: options.staticStatusFilePath,
+    ...(options.systemProxy ? { systemProxy: options.systemProxy } : {}),
     station,
     statusPollIntervalMs: POLL_MS,
     synchBinaryPath: join(tempDir, "synch"),
@@ -309,7 +318,7 @@ function createRuntimeHarness(
    * written one it watches the credential, so ask before it writes.
    */
   const instance = async (workspaceId: string, token?: string) => {
-    await timers.next((timer) => !isPoll(timer));
+    await timers.next(isAfterAttempt);
     let found: { path: string; config: InstanceFile } | undefined;
     for (const name of await readdir(instancesDir).catch(() => [] as string[])) {
       if (!name.endsWith(".json") || name.endsWith(".status.json")) continue;
@@ -338,7 +347,9 @@ function createRuntimeHarness(
     poll: async () => (await polling()).run(),
     polling,
     /** Its pending mint retry or credential watch, once armed. */
-    renewal: () => timers.armed((timer) => !isPoll(timer)),
+    renewal: () => timers.armed(isAfterAttempt),
+    /** The runtime's wait for the system's proxy answer, once armed. */
+    proxyWait: () => timers.armed(isProxyWait),
     runtime,
     session,
     signIn,
@@ -423,6 +434,100 @@ describe("WorkspaceConnectorRuntimeService", () => {
     ).resolves.toContain("dev_live");
     await harness.runtime.close();
     expect(existsSync(path)).toBe(false);
+  });
+
+  it("writes the system's proxy for the server into the connection, asked again at each write", async () => {
+    const asked: string[] = [];
+    let answer = "PROXY proxy.test:8080; DIRECT";
+    const harness = createRuntimeHarness({
+      systemProxy: async (url) => {
+        asked.push(url);
+        return answer;
+      },
+    });
+    const pending = harness.runtime.registrationTarget("wsp_alpha");
+    const { path, config } = await harness.instance("wsp_alpha");
+    // Chromium is asked about the server as an HTTPS request, not as a WebSocket.
+    expect(asked).toEqual(["https://salix.test"]);
+    expect(config.connector).toMatchObject({
+      proxy: "http://proxy.test:8080",
+      server: "wss://salix.test",
+    });
+    await writeStatus(path);
+    await harness.poll();
+    await pending;
+
+    // The proxy was turned off: the next write of the connection says so.
+    answer = "DIRECT";
+    const scoped = harness.runtime.setScope("wsp_alpha", "local_file_read");
+    // It waits for the station once it has written the change.
+    await harness.polling();
+    const next = JSON.parse(await readFile(path, "utf8")) as InstanceFile;
+    expect(next.connector).not.toHaveProperty("proxy");
+    await writeStatus(path, { scope: "local_file_read" });
+    await harness.poll();
+    await scoped;
+    await harness.runtime.close();
+  });
+
+  it("follows a proxy the user turns on while the station cannot connect, in the same connection", async () => {
+    const asked: string[] = [];
+    let answer = "DIRECT";
+    const harness = createRuntimeHarness({
+      systemProxy: async (url) => {
+        asked.push(url);
+        return answer;
+      },
+    });
+    harness.runtime.prewarm("wsp_alpha");
+    const { path, config } = await harness.instance("wsp_alpha");
+    expect(config.connector).not.toHaveProperty("proxy");
+
+    // The station cannot reach Salix, and the user turns the proxy on.
+    await writeStatus(path, { state: "reconnecting" });
+    answer = "PROXY proxy.test:8080";
+    (await harness.renewal()).run();
+    await harness.renewal();
+    const followed = JSON.parse(await readFile(path, "utf8")) as InstanceFile;
+    expect(followed.connector).toMatchObject({
+      connector_token: "salix_tok_1",
+      proxy: "http://proxy.test:8080",
+    });
+    expect(harness.endpoint.mintCount()).toBe(1);
+
+    // Connected: Chromium is not asked, and the connection's file stays as it is.
+    await writeStatus(path);
+    answer = "DIRECT";
+    const questions = asked.length;
+    (await harness.renewal()).run();
+    await harness.renewal();
+    expect(asked).toHaveLength(questions);
+    const kept = JSON.parse(await readFile(path, "utf8")) as InstanceFile;
+    expect(kept.connector).toMatchObject({ proxy: "http://proxy.test:8080" });
+    await harness.runtime.close();
+  });
+
+  it("writes the connection without a proxy when the system's answer does not come in time", async () => {
+    const harness = createRuntimeHarness({ systemProxy: () => new Promise(() => {}) });
+    harness.runtime.prewarm("wsp_alpha");
+    (await harness.proxyWait()).run();
+    const { config } = await harness.instance("wsp_alpha");
+    expect(config.connector.server).toBe("wss://salix.test");
+    expect(config.connector).not.toHaveProperty("proxy");
+    await harness.runtime.close();
+  });
+
+  it("takes only a first-choice HTTP or HTTPS proxy from Chromium's answer", () => {
+    expect(stationProxy("PROXY proxy.test:8080")).toBe("http://proxy.test:8080");
+    expect(stationProxy("HTTPS proxy.example:8443; DIRECT")).toBe(
+      "https://proxy.example:8443"
+    );
+    // The station tunnels with CONNECT: a SOCKS first choice is not one it can take, and DIRECT is none.
+    expect(
+      stationProxy("SOCKS5 proxy.test:1080; PROXY proxy.test:8080")
+    ).toBeUndefined();
+    expect(stationProxy("DIRECT")).toBeUndefined();
+    expect(stationProxy("")).toBeUndefined();
   });
 
   it("writes no connection before the client control endpoint is ready", async () => {

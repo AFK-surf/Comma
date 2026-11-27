@@ -317,3 +317,5 @@ Third-party code, fonts and icons keep their own licenses:
 - [NOTICE](NOTICE) lists the Apache-2.0 code in `:scroll`. The source files keep their original headers.
 - `app/src/main/assets/licenses/` holds the license texts that ship in the app, including Inter and the KaTeX fonts (OFL).
 - `IconSources` (`app/src/main/java/surf/comma/android/ui/icons/IconSources.kt`) records the source and terms of every licensed icon and brand mark.
+  Provider marks (`provider_<key>.png`) are exported from the desktop logos with
+  `pnpm --dir clients/packages/ui export:provider-marks <key>`, which writes the iOS marks too.

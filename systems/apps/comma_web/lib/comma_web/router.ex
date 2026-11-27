@@ -68,8 +68,10 @@ defmodule CommaWeb.Router do
   plug(CommaWeb.Auth)
   plug(:mini_app_backend_body)
 
+  # A composer attachment arrives as one multipart body: each read waits as long
+  # as a part's (`read_upload_part/1`), not Plug's 15 s, so a slow uplink finishes.
   plug(Plug.Parsers,
-    parsers: [:urlencoded, :json, {:multipart, length: 11_000_000}],
+    parsers: [:urlencoded, :json, {:multipart, length: 11_000_000, read_timeout: 60_000}],
     json_decoder: Jason,
     pass: ["application/json", "audio/mp4", "application/octet-stream"],
     body_reader: {__MODULE__, :cache_body, []}
@@ -160,8 +162,54 @@ defmodule CommaWeb.Router do
     CommaWeb.TaskShareEndpoints.messages(conn, token)
   end
 
+  get "/v1/comma/public/shares/:token/document" do
+    CommaWeb.TaskShareEndpoints.document(conn, token)
+  end
+
   get "/v1/comma/public/shares/:token/attachments/:seq/:index" do
     CommaWeb.TaskShareEndpoints.attachment(conn, token, seq, index)
+  end
+
+  # Public External Email Guest Collaboration routes. CommaWeb.Auth admits
+  # these paths without a Comma session.
+  get "/v1/comma/public/collaborations/invites/:token" do
+    CommaWeb.CollaborationGuestEndpoints.invite_preview(conn, token)
+  end
+
+  post "/v1/comma/public/collaborations/invites/:token/otp/request" do
+    CommaWeb.CollaborationGuestEndpoints.request_otp(conn, token)
+  end
+
+  post "/v1/comma/public/collaborations/invites/:token/otp/verify" do
+    CommaWeb.CollaborationGuestEndpoints.verify_otp(conn, token)
+  end
+
+  get "/v1/comma/public/collaborations/task" do
+    CommaWeb.CollaborationGuestEndpoints.get_task(conn)
+  end
+
+  post "/v1/comma/public/collaborations/task/messages" do
+    CommaWeb.CollaborationGuestEndpoints.post_message(conn)
+  end
+
+  get "/v1/comma/public/collaborations/task/events" do
+    CommaWeb.CollaborationGuestEndpoints.events(conn)
+  end
+
+  get "/v1/comma/public/collaborations/task/files" do
+    CommaWeb.CollaborationGuestEndpoints.list_files(conn)
+  end
+
+  post "/v1/comma/public/collaborations/task/files" do
+    CommaWeb.CollaborationGuestEndpoints.upload_file(conn)
+  end
+
+  get "/v1/comma/public/collaborations/task/files/download" do
+    CommaWeb.CollaborationGuestEndpoints.download_file(conn)
+  end
+
+  post "/v1/comma/public/collaborations/task/leave" do
+    CommaWeb.CollaborationGuestEndpoints.leave(conn)
   end
 
   if @local_recommendation_mock_compiled do
@@ -334,6 +382,29 @@ defmodule CommaWeb.Router do
     case Comma.WatchPairing.exchange(conn.body_params || %{}) do
       {:ok, session} -> send_auth_result(conn, 200, session)
       {:error, :invalid_watch_pairing} -> send_error(conn, 401, :invalid_watch_pairing)
+      {:error, _} -> send_error(conn, 503, :auth_unavailable)
+    end
+  end
+
+  # The Raycast extension starts its own pairing: the desktop app's full
+  # session asks for a grant bound to the extension's challenge, and the
+  # extension exchanges the grant with the matching verifier.
+  post "/v1/comma/auth/raycast/pairing" do
+    with_session_management(conn, fn user, session ->
+      case Comma.RaycastPairing.create(user, session, (conn.body_params || %{})["challenge"]) do
+        {:ok, grant} -> send_json(conn, 201, grant)
+        {:error, :invalid_challenge} -> send_error(conn, 400, :invalid_challenge)
+        {:error, :rate_limited, retry_after} -> send_rate_limited(conn, retry_after)
+        {:error, :forbidden} -> send_error(conn, 403, :forbidden)
+        {:error, _} -> send_error(conn, 503, :auth_unavailable)
+      end
+    end)
+  end
+
+  post "/v1/comma/auth/raycast/exchange" do
+    case Comma.RaycastPairing.exchange(conn.body_params || %{}) do
+      {:ok, session} -> send_auth_result(conn, 200, session)
+      {:error, :invalid_raycast_pairing} -> send_error(conn, 401, :invalid_raycast_pairing)
       {:error, _} -> send_error(conn, 503, :auth_unavailable)
     end
   end
@@ -834,8 +905,47 @@ defmodule CommaWeb.Router do
     signature_header = conn |> get_req_header("stripe-signature") |> List.first() || ""
 
     case BillingStripe.handle_webhook(payload, signature_header) do
-      {:ok, _result} -> send_json(conn, 200, %{"received" => true})
-      {:error, reason} -> stripe_webhook_error(conn, reason)
+      {:ok, %{event: event}} ->
+        CommaWeb.CheckoutAnalytics.webhook(event)
+        send_json(conn, 200, %{"received" => true})
+
+      {:ok, _result} ->
+        send_json(conn, 200, %{"received" => true})
+
+      {:error, reason} ->
+        stripe_webhook_error(conn, reason)
+    end
+  end
+
+  # App Store Server Notifications V2. The body only names a transaction;
+  # BillingApple reads it from the App Store before recording anything.
+  # A non-2xx answer makes Apple deliver the notification again.
+  post "/v1/comma/billing/apple/notifications" do
+    case BillingApple.handle_notification(conn.body_params || %{}, &billing_owner_email/1) do
+      {:ok, _result} ->
+        send_json(conn, 200, %{"received" => true})
+
+      {:error, reason}
+      when reason in [
+             :invalid_apple_notification,
+             :invalid_jws,
+             :apple_account_unknown,
+             :apple_bundle_mismatch,
+             :apple_unpaid_transaction,
+             :apple_product_type_mismatch,
+             :apple_sandbox_not_allowed,
+             :apple_family_shared_not_allowed
+           ] ->
+        # Delivering these again cannot change the result.
+        Logger.warning("apple notification not recorded: #{inspect(reason)}")
+        send_json(conn, 200, %{"received" => true})
+
+      {:error, :apple_not_configured} ->
+        send_error(conn, 503, :apple_not_configured)
+
+      {:error, reason} ->
+        Logger.error("apple notification failed: #{inspect(reason)}")
+        send_error(conn, 500, :apple_notification_failed)
     end
   end
 
@@ -1847,6 +1957,220 @@ defmodule CommaWeb.Router do
     CommaWeb.StationEndpoints.credential(conn, workspace_id)
   end
 
+  # Collaborative Tasks: a Task the Workspace owner hosts with people of their
+  # People (CommaWeb.CollaborationEndpoints).
+  post "/v1/comma/workspaces/:workspace_id/collaborations" do
+    CommaWeb.CollaborationEndpoints.start(conn, workspace_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/collaborations/:task_id/members" do
+    CommaWeb.CollaborationEndpoints.members(conn, workspace_id, task_id)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/collaborations/:task_id/members/:user_id" do
+    CommaWeb.CollaborationEndpoints.remove(conn, workspace_id, task_id, user_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/collaborations/:task_id/members/:member_id/resend" do
+    CommaWeb.CollaborationEndpoints.resend(conn, workspace_id, task_id, member_id)
+  end
+
+  get "/v1/comma/collaborations" do
+    CommaWeb.CollaborationEndpoints.list(conn)
+  end
+
+  post "/v1/comma/collaborations/:id/accept" do
+    CommaWeb.CollaborationEndpoints.accept(conn, id)
+  end
+
+  post "/v1/comma/collaborations/:id/decline" do
+    CommaWeb.CollaborationEndpoints.decline(conn, id)
+  end
+
+  post "/v1/comma/collaborations/:id/leave" do
+    CommaWeb.CollaborationEndpoints.leave(conn, id)
+  end
+
+  get "/v1/comma/collaborations/:group_id/:task_id/members/:user_id/avatar/:avatar_id" do
+    CommaWeb.CollaborationEndpoints.member_avatar(conn, group_id, task_id, user_id, avatar_id)
+  end
+
+  # A member's one Task, as the Group's own routes serve it to the Workspace.
+  get "/v1/comma/collaborations/:group_id/:task_id" do
+    with_user(conn, fn user, session ->
+      case Comma.Conversations.member_get(
+             user,
+             session,
+             group_id,
+             task_id,
+             [message_limit: parse_int(conn.query_params["message_limit"], 1000)] ++
+               conversation_resume_options(conn)
+           ) do
+        {:ok, conversation} -> send_json_with_etag(conn, 200, conversation)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/collaborations/:group_id/:task_id/messages" do
+    with_user(conn, fn user, session ->
+      page_opts =
+        [
+          before: conn.query_params["before"],
+          after: conn.query_params["after"],
+          around: conn.query_params["around"],
+          limit: conn.query_params["limit"],
+          view: conn.query_params["view"]
+        ]
+        |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+
+      case Comma.Conversations.member_message_page(user, session, group_id, task_id, page_opts) do
+        {:ok, page} -> send_json_with_etag(conn, 200, message_page_json(page))
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/collaborations/:group_id/:task_id/messages" do
+    with_user(conn, fn user, session ->
+      case Comma.Conversations.member_send_message(
+             user,
+             session,
+             group_id,
+             task_id,
+             conn.body_params || %{},
+             conversation_transcript_options(conn)
+           ) do
+        {:ok, conversation} -> send_json(conn, 202, conversation)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  # An attachment of a message of the member's one Task: what anyone sends into
+  # it is the Task's, so its members read it as its host does. Nothing else of
+  # the host's Group (its Drive, other Tasks' files) is reachable here.
+  get "/v1/comma/collaborations/:group_id/:task_id/messages/:message_id/attachments/:index" do
+    with_user(conn, fn user, session ->
+      with {:ok, attachment} <-
+             open_member_attachment(user, session, group_id, task_id, message_id, index),
+           {:ok, conn} <-
+             conn
+             |> put_resp_header("cache-control", "private, no-store")
+             |> CommaWeb.AttachmentDownload.send(attachment) do
+        conn
+      else
+        {:error, reason} -> group_file_read_error(conn, reason)
+      end
+    end)
+  end
+
+  # A file into a Task together's own folder, by its host or a member: the raw
+  # body, named by `name`. Nothing of it reaches the host's Drive.
+  post "/v1/comma/collaborations/:group_id/:task_id/files" do
+    with_user(conn, fn user, session ->
+      with {:ok, workspace} <- task_files_scope(user, session, group_id, task_id),
+           {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+           {:ok, body, conn} <- read_task_file_body(conn),
+           true <- byte_size(body) > 0 || {:error, :file_required},
+           {:ok, file} <-
+             Comma.Salix.Client.impl().write_task_file(
+               workspace,
+               task_id,
+               conn.query_params["name"] || "file",
+               body
+             ) do
+        send_json(conn, 201, file)
+      else
+        {:error, reason} ->
+          comma_error(conn, reason)
+      end
+    end)
+  end
+
+  # The Task's own folder, for its host and members: without `path` the list
+  # of what is in it, with `path` one file of it.
+  get "/v1/comma/collaborations/:group_id/:task_id/files" do
+    if conn.query_params["path"] in [nil, ""],
+      do: list_task_folder(conn, group_id, task_id),
+      else: read_task_folder_file(conn, group_id, task_id)
+  end
+
+  defp list_task_folder(conn, group_id, task_id) do
+    with_user(conn, fn user, session ->
+      with {:ok, workspace} <- task_files_scope(user, session, group_id, task_id),
+           {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+           {:ok, files} <- Comma.Salix.Client.impl().list_task_folder(workspace, task_id) do
+        conn
+        |> put_resp_header("cache-control", "private, no-store")
+        |> send_json(200, %{"files" => files})
+      else
+        {:error, reason} -> group_file_read_error(conn, reason)
+      end
+    end)
+  end
+
+  defp read_task_folder_file(conn, group_id, task_id) do
+    with_user(conn, fn user, session ->
+      with {:ok, workspace} <- task_files_scope(user, session, group_id, task_id),
+           {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+           {:ok, file} <-
+             Comma.Salix.Client.impl().open_task_file(
+               workspace,
+               task_id,
+               conn.query_params["path"] || ""
+             ),
+           {:ok, conn} <-
+             conn
+             |> put_resp_header("cache-control", "private, no-store")
+             |> CommaWeb.TaskFileDownload.send(file) do
+        conn
+      else
+        {:error, reason} -> group_file_read_error(conn, reason)
+      end
+    end)
+  end
+
+  # Its media URL, as the Group's route mints one for the host.
+  post "/v1/comma/collaborations/:group_id/:task_id/messages/:message_id/attachments/:index/media" do
+    with_user(conn, fn user, session ->
+      ttl = Comma.ConversationAttachments.media_ttl_seconds()
+
+      with {:ok, attachment} <-
+             open_member_attachment(user, session, group_id, task_id, message_id, index),
+           {:ok, url} <- Comma.ConversationAttachments.presign(attachment, ttl) do
+        send_json(conn, 200, %{
+          "url" => url,
+          "expires_at" => SystemsClock.system_time(:second) + ttl
+        })
+      else
+        {:error, reason} -> group_file_read_error(conn, reason)
+      end
+    end)
+  end
+
+  # The member's change stream of their one Task: it says only when this Task
+  # changed, and it ends once their membership does.
+  get "/v1/comma/collaborations/:group_id/:task_id/events" do
+    with_user(conn, fn user, session ->
+      case Comma.Conversations.member_list_events(user, session, group_id, task_id) do
+        {:ok, stream_context} ->
+          send_task_list_sse(
+            conn,
+            stream_context,
+            task_list_sse_wait_ms(conn.query_params["wait"])
+          )
+
+        {:error, reason} ->
+          conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/collaborations/:group_id/:task_id/apps/:app_id/versions/:version/bundle" do
+    CommaWeb.MiniAppEndpoints.collaboration_bundle(conn, group_id, task_id, app_id, version)
+  end
+
   # Task Requests: another person asks this Workspace for a Task
   # (CommaWeb.TaskRequestEndpoints).
   get "/v1/comma/workspaces/:workspace_id/task-request-grants" do
@@ -1863,6 +2187,10 @@ defmodule CommaWeb.Router do
 
   delete "/v1/comma/workspaces/:workspace_id/task-request-grants/:grant_id" do
     CommaWeb.TaskRequestEndpoints.revoke_grant(conn, workspace_id, grant_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/task-request-grants/:grant_id/avatar/:avatar_id" do
+    CommaWeb.TaskRequestEndpoints.grant_avatar(conn, workspace_id, grant_id, avatar_id)
   end
 
   get "/v1/comma/workspaces/:workspace_id/task-request-own" do
@@ -1941,6 +2269,10 @@ defmodule CommaWeb.Router do
     CommaWeb.TaskRequestEndpoints.withdraw(conn, request_id)
   end
 
+  delete "/v1/comma/sent-task-requests/:request_id" do
+    CommaWeb.TaskRequestEndpoints.hide_sent(conn, request_id)
+  end
+
   # Coding sessions: Tasks that run on a cloud sandbox (CommaWeb.Coding.Endpoints).
   get "/v1/comma/workspaces/:workspace_id/coding/repo-owners" do
     CommaWeb.Coding.Endpoints.repo_owners(conn, workspace_id)
@@ -1996,6 +2328,10 @@ defmodule CommaWeb.Router do
 
   post "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/terminal" do
     CommaWeb.Coding.Endpoints.terminal(conn, workspace_id, task_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/screen" do
+    CommaWeb.Coding.Endpoints.screen(conn, workspace_id, task_id)
   end
 
   # Mini Apps (CommaWeb.MiniAppEndpoints).
@@ -2177,6 +2513,22 @@ defmodule CommaWeb.Router do
 
   delete "/v1/comma/notifications/registrations/:id" do
     CommaWeb.NativePushEndpoints.unregister(conn, id)
+  end
+
+  post "/v1/comma/notifications/live-statuses/push-to-start" do
+    CommaWeb.LiveStatusEndpoints.register(conn, "push_to_start")
+  end
+
+  post "/v1/comma/notifications/live-statuses/tokens" do
+    CommaWeb.LiveStatusEndpoints.register(conn, "live_activity")
+  end
+
+  delete "/v1/comma/notifications/live-statuses/registrations/:id" do
+    CommaWeb.LiveStatusEndpoints.unregister(conn, id)
+  end
+
+  get "/v1/comma/groups/:group_id/live-activities" do
+    CommaWeb.LiveStatusEndpoints.list(conn, group_id)
   end
 
   get "/v1/comma/groups/:group_id/task-activity" do
@@ -3612,6 +3964,12 @@ defmodule CommaWeb.Router do
   get "/v1/comma/workspaces/:workspace_id/plugins" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
+           :ok <-
+             CommaWeb.PluginConnections.maybe_reconcile_workspace_colab(
+               user,
+               session,
+               workspace_id
+             ),
            {:ok, plugins} <-
              Comma.Plugins.list(user, session, workspace_id, client: client_capabilities(conn)) do
         send_json(conn, 200, %{"data" => plugins})
@@ -3785,6 +4143,24 @@ defmodule CommaWeb.Router do
                workspace_id,
                plugin_id,
                device_id
+             ) do
+        send_json(conn, 200, stations)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/plugins/:plugin_id/stillfail-notifications" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, stations} <-
+             CommaWeb.PluginConnections.set_stillfail_notification_level(
+               user,
+               session,
+               workspace_id,
+               plugin_id,
+               conn.body_params["level"]
              ) do
         send_json(conn, 200, stations)
       else
@@ -4028,18 +4404,25 @@ defmodule CommaWeb.Router do
   post "/v1/comma/workspaces/:workspace_id/plugins/:plugin_id/install" do
     with_user(conn, fn user, session ->
       install =
-        if conn.body_params["contract"] == "unified_v1" do
-          fn user, session, workspace_id, plugin_id ->
-            CommaWeb.PluginConnections.install(
-              user,
-              session,
-              workspace_id,
-              plugin_id,
-              conn.body_params
-            )
-          end
-        else
-          &Comma.Plugins.install/4
+        cond do
+          conn.body_params["contract"] == "unified_v1" ->
+            fn user, session, workspace_id, plugin_id ->
+              CommaWeb.PluginConnections.install(
+                user,
+                session,
+                workspace_id,
+                plugin_id,
+                conn.body_params
+              )
+            end
+
+          plugin_id == "google-colab" ->
+            fn user, session, workspace_id, _plugin_id ->
+              CommaWeb.PluginConnections.install_legacy_colab(user, session, workspace_id)
+            end
+
+          true ->
+            &Comma.Plugins.install/4
         end
 
       with :ok <- full_workspace_session(session),
@@ -4404,9 +4787,11 @@ defmodule CommaWeb.Router do
 
   post "/v1/comma/workspaces/:workspace_id/billing/checkout" do
     with_user(conn, fn user, session ->
+      attrs = conn.body_params || %{}
+
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, checkout} <- create_checkout(workspace, user, conn.body_params || %{}) do
+           {:ok, checkout} <- observed_checkout(workspace, user, attrs) do
         send_json(conn, 201, public_billing_session(checkout))
       else
         {:error, reason} -> comma_error(conn, reason)
@@ -4475,9 +4860,55 @@ defmodule CommaWeb.Router do
                "metadata" => %{"channel" => "comma_paywall"}
              }),
            {:ok, result} <- BillingCommerce.apply_redeem_code(command) do
+        CommaWeb.CheckoutAnalytics.redeemed(user["id"], workspace, result)
         send_json(conn, 201, public_redemption_result(result))
       else
         {:error, reason} -> redeem_command_error(conn, reason)
+      end
+    end)
+  end
+
+  # Starts an App Store purchase: the client passes `account_token` to StoreKit
+  # as `appAccountToken`, so the purchase is recorded for this Billing Account.
+  post "/v1/comma/workspaces/:workspace_id/billing/store/intent" do
+    with_user(conn, fn user, session ->
+      attrs = conn.body_params || %{}
+
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           :ok <- apple_provider(attrs),
+           {:ok, plan} <- plan(attrs),
+           :ok <- purchasable(plan),
+           :ok <- store_subscription_allowed(workspace, plan),
+           {:ok, token} <- BillingApple.account_token(billing_owner(workspace)) do
+        CommaWeb.CheckoutAnalytics.store_started(user["id"], workspace, plan.provider_lookup_key)
+
+        send_json(conn, 201, %{
+          "provider" => "apple",
+          "product_id" => plan.provider_lookup_key,
+          "account_token" => token
+        })
+      else
+        {:error, reason} -> store_error(conn, reason)
+      end
+    end)
+  end
+
+  # The client reports a finished StoreKit transaction. The server reads it from
+  # the App Store and records it; the client then finishes the transaction.
+  post "/v1/comma/workspaces/:workspace_id/billing/store/transactions" do
+    with_user(conn, fn user, session ->
+      attrs = conn.body_params || %{}
+
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           :ok <- apple_provider(attrs),
+           {:ok, _result} = recorded <-
+             BillingApple.sync_transaction(attrs["transaction_id"], &billing_owner_email/1) do
+        CommaWeb.CheckoutAnalytics.store_completed(user["id"], workspace, recorded)
+        send_json(conn, 200, %{"recorded" => true})
+      else
+        {:error, reason} -> store_error(conn, reason)
       end
     end)
   end
@@ -4567,6 +4998,16 @@ defmodule CommaWeb.Router do
     with_user(conn, fn user, session ->
       case Comma.Conversations.list_task_files(user, session, group_id, conn.query_params) do
         {:ok, page} -> send_json(conn, 200, page)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  # Read-only Task Feed projection over canonical Tasks and milestones.
+  get "/v1/comma/groups/:group_id/task-feed" do
+    with_user(conn, fn user, session ->
+      case Comma.TaskFeed.list(user, session, group_id, conn.query_params) do
+        {:ok, page} -> send_json_with_etag(conn, 200, page)
         {:error, reason} -> conversation_error(conn, reason)
       end
     end)
@@ -4880,6 +5321,89 @@ defmodule CommaWeb.Router do
       opts = [limit: conn.query_params["limit"], cursor: conn.query_params["cursor"]]
 
       case Comma.TaskShares.list(user, session, group_id, opts) do
+        {:ok, page} ->
+          send_json(
+            conn,
+            200,
+            Map.update!(
+              page,
+              "data",
+              &Enum.map(&1, fn share -> CommaWeb.TaskShareEndpoints.owner_json(share) end)
+            )
+          )
+
+        {:error, reason} ->
+          conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/groups/:group_id/conversations/:conversation_id/document-share" do
+    with_user(conn, fn user, session ->
+      case Comma.DocumentShares.get(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conn.query_params["file_name"]
+           ) do
+        {:ok, share} -> send_json(conn, 200, CommaWeb.TaskShareEndpoints.owner_json(share))
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/groups/:group_id/conversations/:conversation_id/document-share" do
+    with_user(conn, fn user, session ->
+      case Comma.DocumentShares.publish(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conn.body_params["message_id"],
+             conn.body_params["index"]
+           ) do
+        {:ok, share} -> send_json(conn, 200, CommaWeb.TaskShareEndpoints.owner_json(share))
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/groups/:group_id/conversations/:conversation_id/document-share/reset" do
+    with_user(conn, fn user, session ->
+      case Comma.DocumentShares.reset(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conn.query_params["file_name"]
+           ) do
+        {:ok, share} -> send_json(conn, 200, CommaWeb.TaskShareEndpoints.owner_json(share))
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  delete "/v1/comma/groups/:group_id/conversations/:conversation_id/document-share" do
+    with_user(conn, fn user, session ->
+      case Comma.DocumentShares.revoke(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conn.query_params["file_name"]
+           ) do
+        :ok -> send_json(conn, 200, %{revoked: true})
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/groups/:group_id/document-shares" do
+    with_user(conn, fn user, session ->
+      opts = [limit: conn.query_params["limit"], cursor: conn.query_params["cursor"]]
+
+      case Comma.DocumentShares.list(user, session, group_id, opts) do
         {:ok, page} ->
           send_json(
             conn,
@@ -6080,6 +6604,51 @@ defmodule CommaWeb.Router do
   defp comma_error(conn, :plugin_credential_rejected),
     do: send_error(conn, 422, :plugin_credential_rejected)
 
+  defp comma_error(conn, {:wrong_google_account, email}) do
+    message =
+      if is_binary(email) and String.trim(email) != "" do
+        "Sign in with #{String.trim(email)} to reconnect this Google Colab account, or remove the plugin first to switch accounts."
+      else
+        "Sign in with the connected Google account to reconnect Google Colab, or remove the plugin first to switch accounts."
+      end
+
+    send_json(conn, 422, %{
+      error: "wrong_google_account",
+      code: "wrong_google_account",
+      message: message
+    })
+  end
+
+  defp comma_error(conn, :colab_account_in_use) do
+    send_json(conn, 409, %{
+      error: "colab_account_in_use",
+      code: "colab_account_in_use",
+      message:
+        "Active or unconfirmed Google Colab VMs are still running. Stop them first, or reconnect the same Google account if your authorization expired."
+    })
+  end
+
+  defp comma_error(conn, reason)
+       when reason in [
+              :colab_account_draining,
+              :single_account_limit_reached,
+              :oauth_exchange_in_progress,
+              :attempt_invalidated,
+              :scope_retired
+            ],
+       do: send_error(conn, 409, reason)
+
+  defp comma_error(conn, reason) when reason in [:already_connected, :conflict] do
+    send_json(conn, 409, %{
+      error: Atom.to_string(reason),
+      code: Atom.to_string(reason),
+      message: "Connection state changed concurrently. Refresh and try again."
+    })
+  end
+
+  defp comma_error(conn, :platform_unavailable),
+    do: send_error(conn, 503, :platform_unavailable)
+
   defp comma_error(conn, :plugin_connection_unavailable),
     do: send_error(conn, 503, :plugin_connection_unavailable)
 
@@ -6123,10 +6692,21 @@ defmodule CommaWeb.Router do
   defp comma_error(conn, :stripe_customer_not_linked),
     do: send_error(conn, 409, :stripe_customer_not_linked)
 
+  defp comma_error(conn, :subscription_active_elsewhere),
+    do: send_error(conn, 409, :subscription_active_elsewhere)
+
   defp comma_error(conn, :stripe_price_not_synced),
     do: send_error(conn, 409, :stripe_price_not_synced)
 
+  defp comma_error(conn, {:task_model_selection_failed, message}),
+    do: task_model_selection_error(conn, message)
+
   defp comma_error(conn, reason), do: send_error(conn, 400, reason)
+
+  defp task_model_selection_error(conn, message) do
+    {status, body} = CommaWeb.BillingErrors.task_model_selection_response(message)
+    send_json(conn, status, body)
+  end
 
   defp telegram_integration_error(conn, reason) when reason in [:not_found, :forbidden],
     do: comma_error(conn, reason)
@@ -6312,7 +6892,7 @@ defmodule CommaWeb.Router do
               "expected_updated_at must be a positive integer",
               "runs_on is required",
               "q is required",
-              "q must contain at least 2 characters",
+              "q must contain at least 1 character",
               "q must contain at most 128 characters",
               "q contains an unsupported null character",
               "limit must be between 1 and 50",
@@ -6322,7 +6902,9 @@ defmodule CommaWeb.Router do
               "after must be a positive integer",
               "around must be a positive integer",
               "at most one of before, after, around is allowed",
-              "view must be activity"
+              "view must be activity",
+              "message is required",
+              "a Task together is not shared publicly"
             ],
        do: comma_error(conn, reason)
 
@@ -6349,6 +6931,9 @@ defmodule CommaWeb.Router do
 
   defp conversation_error(conn, :invalid_task_files_query),
     do: send_error(conn, 400, :invalid_task_files_query)
+
+  defp conversation_error(conn, :invalid_task_feed_query),
+    do: send_error(conn, 400, :invalid_task_feed_query)
 
   # Reads open once the backfill has indexed the files of older Messages.
   defp conversation_error(conn, :task_files_indexing),
@@ -6384,6 +6969,9 @@ defmodule CommaWeb.Router do
         error: "billing_unavailable",
         reason: conversation_billing_reason(decision)
       })
+
+  defp conversation_error(conn, {:task_model_selection_failed, message}),
+    do: task_model_selection_error(conn, message)
 
   defp conversation_error(conn, :workspace_provisioning),
     do: send_workspace_provisioning(conn)
@@ -6860,6 +7448,47 @@ defmodule CommaWeb.Router do
     end
   end
 
+  # A member reads an attachment of a message of their one Task, and only
+  # while they are in it (`Comma.Collaborations.authorize_member/4`).
+  defp open_member_attachment(user, session, group_id, task_id, message_id, index) do
+    with {:ok, workspace} <- member_scope(user, session, group_id, task_id),
+         {:ok, index} <- Comma.ConversationAttachments.parse_index(index) do
+      Comma.ConversationAttachments.open(workspace, task_id, message_id, index)
+    end
+  end
+
+  # A Task together's host or one of its members; anyone else finds nothing.
+  defp task_files_scope(user, session, group_id, task_id) do
+    case Comma.Collaborations.task_scope(user, session, group_id, task_id) do
+      {:ok, workspace} -> {:ok, workspace}
+      {:error, _reason} -> {:error, :not_found}
+    end
+  end
+
+  # The most one Task together file holds.
+  @task_file_max_bytes 25 * 1024 * 1024
+
+  defp read_task_file_body(conn) do
+    case Plug.Conn.read_body(conn,
+           length: @task_file_max_bytes + 1,
+           read_length: 1_048_576,
+           read_timeout: 60_000
+         ) do
+      {:ok, body, conn} when byte_size(body) <= @task_file_max_bytes -> {:ok, body, conn}
+      {:ok, _body, _conn} -> {:error, :file_too_large}
+      {:more, _partial, _conn} -> {:error, :file_too_large}
+      {:error, _reason} -> {:error, :upload_incomplete}
+    end
+  end
+
+  # Not a member (any more): as if there were no such attachment.
+  defp member_scope(user, session, group_id, task_id) do
+    case Comma.Collaborations.authorize_member(user, session, group_id, task_id) do
+      {:ok, workspace} -> {:ok, workspace}
+      {:error, _reason} -> {:error, :not_found}
+    end
+  end
+
   defp authorize_task_attachment_session(
          user,
          %{"session_source" => "channel_task_panel"} = session,
@@ -6997,6 +7626,20 @@ defmodule CommaWeb.Router do
 
   defp nonblank(_value, fallback), do: fallback
 
+  defp observed_checkout(workspace, user, attrs) do
+    result = create_checkout(workspace, user, attrs)
+
+    CommaWeb.CheckoutAnalytics.requested(
+      user["id"],
+      workspace["id"],
+      attrs["plan_key"],
+      attrs["client_request_id"],
+      result
+    )
+
+    result
+  end
+
   defp create_checkout(workspace, user, attrs) do
     with {:ok, plan} <- plan(attrs),
          :ok <- purchasable(plan),
@@ -7013,6 +7656,8 @@ defmodule CommaWeb.Router do
         package_version: plan.package_version,
         provider_price_id: plan.provider_price_id,
         mode: plan.mode,
+        # DNT on the request also covers the webhook's completion event.
+        analytics_opt_out: Process.get(:comma_analytics_suppressed, false),
         success_url: required_body(attrs, "success_url"),
         cancel_url: required_body(attrs, "cancel_url"),
         idempotency_key:
@@ -7072,6 +7717,7 @@ defmodule CommaWeb.Router do
     account_id = workspace["billing_account_id"]
 
     with {:ok, subscription} <- active_billing_subscription(account_id),
+         :ok <- stripe_managed(subscription),
          {:ok, customer} <-
            BillingCommerce.get_active_provider_customer(%{
              billing_account_id: account_id,
@@ -7094,12 +7740,21 @@ defmodule CommaWeb.Router do
     ArgumentError -> {:error, :invalid_subscription_change_request}
   end
 
+  # The App Store and Google Play own changes and cancellation of their subscriptions.
+  defp stripe_managed(%{"provider" => "stripe"}), do: :ok
+
+  defp stripe_managed(%{"provider" => provider}) when provider in ["apple", "google"],
+    do: {:error, :subscription_managed_by_store}
+
+  defp stripe_managed(_subscription), do: {:error, :active_subscription_not_found}
+
   defp subscription_plan(%{mode: "subscription"}), do: :ok
   defp subscription_plan(_plan), do: {:error, :subscription_plan_required}
 
   defp subscription_change_error(conn, reason)
        when reason in [
               :active_subscription_not_found,
+              :subscription_managed_by_store,
               :stripe_customer_not_linked,
               :subscription_plan_already_active,
               :subscription_payment_pending,
@@ -7149,6 +7804,91 @@ defmodule CommaWeb.Router do
 
   defp public_billing_session(session), do: Map.take(session, ["id", "url", "provider"])
 
+  defp apple_provider(%{"provider" => "apple"}), do: :ok
+  defp apple_provider(_attrs), do: {:error, :invalid_store_provider}
+
+  defp billing_owner(workspace) do
+    %{
+      billing_account_id: workspace["billing_account_id"],
+      surface: "comma",
+      product_owner_type: "workspace",
+      product_owner_id: workspace["id"]
+    }
+  end
+
+  # The email of a Billing Account's workspace owner. BillingApple records a
+  # sandbox transaction only for an owner at a sandbox email domain.
+  defp billing_owner_email(%{product_owner_type: "workspace", product_owner_id: id}) do
+    with {:ok, workspace} <- Comma.Workspaces.get(id),
+         {:ok, %{"status" => "active", "email" => email}} <-
+           Comma.Accounts.get_user(workspace["owner_user_id"]) do
+      email
+    else
+      _ -> nil
+    end
+  end
+
+  defp billing_owner_email(_owner), do: nil
+
+  # An App Store subscription changes through StoreKit. Another channel's
+  # running subscription blocks it.
+  defp store_subscription_allowed(workspace, %{mode: "subscription"}) do
+    case active_billing_subscription(workspace["billing_account_id"]) do
+      {:ok, %{"provider" => provider}} when provider in ["stripe", "google"] ->
+        {:error, :subscription_active_elsewhere}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp store_subscription_allowed(_workspace, _plan), do: :ok
+
+  defp store_error(conn, reason)
+       when reason in [:invalid_store_provider, :invalid_plan_selector, :invalid_transaction_id],
+       do: send_error(conn, 400, reason)
+
+  defp store_error(conn, :apple_transaction_not_found),
+    do: send_error(conn, 404, :apple_transaction_not_found)
+
+  defp store_error(conn, reason)
+       when reason in [:subscription_active_elsewhere, :plan_not_purchasable],
+       do: send_error(conn, 409, reason)
+
+  # Reporting these again cannot change the result: the client finishes the
+  # transaction. The same reasons answer an App Store notification with 200.
+  defp store_error(conn, reason)
+       when reason in [
+              :apple_account_unknown,
+              :apple_bundle_mismatch,
+              :apple_unpaid_transaction,
+              :apple_product_type_mismatch,
+              :apple_sandbox_not_allowed,
+              :apple_family_shared_not_allowed
+            ] do
+    Logger.warning("store transaction not recordable: #{inspect(reason)}")
+    send_error(conn, 422, :store_transaction_not_recordable)
+  end
+
+  defp store_error(conn, :apple_not_configured), do: send_error(conn, 503, :store_unavailable)
+
+  # A failed store API read is the store's failure, not the request's: the client reports again.
+  defp store_error(conn, {kind, _detail} = reason)
+       when kind in [:apple_http_status, :apple_unavailable],
+       do: store_unavailable(conn, reason)
+
+  defp store_error(conn, reason)
+       when reason in [:not_found, :forbidden, :workspace_provisioning, :expired] or
+              is_tuple(reason),
+       do: comma_error(conn, reason)
+
+  defp store_error(conn, reason), do: store_unavailable(conn, reason)
+
+  defp store_unavailable(conn, reason) do
+    Logger.error("store transaction not recorded: #{inspect(reason)}")
+    send_error(conn, 502, :store_unavailable)
+  end
+
   defp public_billing_plan(plan) do
     %{
       "plan_key" => plan.provider_lookup_key,
@@ -7161,7 +7901,9 @@ defmodule CommaWeb.Router do
       "amount_minor" => plan.amount_minor,
       "grant_credits" => plan.grant_credits,
       "grant_period" => plan.grant_period,
-      "billing_period" => plan.billing_period
+      "billing_period" => plan.billing_period,
+      # The App Store product id equals the plan key.
+      "apple_product_id" => if(BillingApple.configured?(), do: plan.provider_lookup_key)
     }
   end
 
@@ -7458,29 +8200,42 @@ defmodule CommaWeb.Router do
     }
   end
 
-  defp current_subscription_plan(metadata) do
-    case metadata["provider_price_id"] do
-      price_id when is_binary(price_id) and price_id != "" ->
-        case BillingCommerce.get_provider_plan(%{
-               surface: "comma",
-               provider: "stripe",
-               provider_price_id: price_id
-             }) do
-          {:ok, plan} -> public_billing_plan(plan)
-          {:error, :not_found} -> nil
-        end
+  defp current_subscription_plan(metadata, package_code, package_version) do
+    query =
+      case metadata["provider_price_id"] do
+        price_id when is_binary(price_id) and price_id != "" ->
+          %{
+            surface: "comma",
+            provider: "stripe",
+            provider_price_id: price_id
+          }
 
-      _ ->
-        nil
+        _ ->
+          %{
+            surface: "comma",
+            provider: "stripe",
+            package_code: package_code,
+            package_version: package_version
+          }
+      end
+
+    case BillingCommerce.get_provider_plan(query) do
+      {:ok, plan} -> public_billing_plan(plan)
+      {:error, :not_found} -> nil
     end
   end
+
+  defp subscription_provider("stripe_subscription"), do: "stripe"
+  defp subscription_provider("apple_subscription"), do: "apple"
+  defp subscription_provider("google_subscription"), do: "google"
+  defp subscription_provider(_source_type), do: "comma"
 
   defp active_billing_subscription(account_id) do
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         BillingCore.Repo,
         """
-        SELECT package_code, package_version, status, source_id, source_metadata
+        SELECT package_code, package_version, status, source_id, source_metadata, source_type
         FROM billing_subscriptions
         WHERE billing_account_id = $1
           AND status IN ('active', 'trialing', 'past_due', 'unpaid', 'paused')
@@ -7491,7 +8246,7 @@ defmodule CommaWeb.Router do
       )
 
     case rows do
-      [[package_code, package_version, status, source_id, metadata]] ->
+      [[package_code, package_version, status, source_id, metadata, source_type]] ->
         metadata = BillingCore.Metadata.object(metadata)
 
         {:ok,
@@ -7500,7 +8255,8 @@ defmodule CommaWeb.Router do
            "package_version" => package_version,
            "status" => status,
            "source_id" => source_id,
-           "plan" => current_subscription_plan(metadata),
+           "provider" => subscription_provider(source_type),
+           "plan" => current_subscription_plan(metadata, package_code, package_version),
            "source_metadata" =>
              Map.take(metadata, [
                "cancel_at_period_end",
@@ -7624,7 +8380,31 @@ defmodule CommaWeb.Router do
         {id, Map.put(participant, :owner_ref, SystemsRuntime.Proc.monitor(participant.owner_pid))}
       end)
 
-    stream_context = %{stream_context | task_participants: participants}
+    worker_sessions =
+      stream_context
+      |> Map.get(:worker_sessions, [])
+      |> Enum.map(fn session ->
+        cond do
+          tp = participants[session.participant_id] ->
+            %{session | owner_ref: tp.owner_ref}
+
+          SystemsRuntime.Proc.is_process(session.owner_pid) ->
+            %{session | owner_ref: SystemsRuntime.Proc.monitor(session.owner_pid)}
+
+          true ->
+            session
+        end
+      end)
+
+    participants = reconcile_primary_task_participant(participants, worker_sessions)
+
+    now_ms = SystemsClock.monotonic_time(:millisecond)
+
+    stream_context =
+      stream_context
+      |> Map.put(:task_participants, participants)
+      |> Map.put(:worker_sessions, worker_sessions)
+      |> schedule_worker_session_retry(now_ms)
 
     owner_ref =
       case stream_context[:owner_pid] do
@@ -7645,7 +8425,6 @@ defmodule CommaWeb.Router do
 
     with {:ok, conn} <- chunk_task_list_resync(conn, stream_context),
          {:ok, conn} <- chunk_task_participant_statuses(conn, stream_context) do
-      now_ms = SystemsClock.monotonic_time(:millisecond)
       deadline_ms = if wait_ms == :infinity, do: nil, else: now_ms + wait_ms
 
       task_list_sse_loop(
@@ -7766,12 +8545,172 @@ defmodule CommaWeb.Router do
   # only that participant. See tla/salix/TaskParticipantStatus.tla.
   defp update_task_participant(context, group_id, conversation_id, participant_id) do
     with true <- group_id == context.workspace["default_group_id"],
-         true <- conversation_id == context.conversation_id,
-         %{owner_ref: _} = participant <- context.task_participants[participant_id],
-         {:ok, status} <- Comma.Conversations.participant_status(participant) do
-      put_in(context, [:task_participants, participant_id, :status], status)
+         true <- conversation_id == context.conversation_id do
+      context =
+        if known_task_participant?(context, participant_id) do
+          context
+        else
+          {synced, _changed?} = sync_task_worker_sessions_and_monitor(context)
+          synced
+        end
+
+      participant =
+        context.task_participants[participant_id] ||
+          Enum.find(
+            Map.get(context, :worker_sessions, []),
+            &(&1.participant_id == participant_id)
+          )
+
+      case participant do
+        %{owner_ref: ref} when is_reference(ref) ->
+          case Comma.Conversations.participant_status(participant) do
+            {:ok, status} ->
+              context =
+                if Map.has_key?(context.task_participants, participant_id),
+                  do: put_in(context, [:task_participants, participant_id, :status], status),
+                  else: context
+
+              worker_sessions =
+                context
+                |> Map.get(:worker_sessions, [])
+                |> Enum.map(fn session ->
+                  if session.participant_id == participant_id,
+                    do: %{session | status: status},
+                    else: session
+                end)
+
+              Map.put(context, :worker_sessions, worker_sessions)
+
+            _ ->
+              context
+          end
+
+        _ ->
+          context
+      end
     else
       _ -> context
+    end
+  end
+
+  defp known_task_participant?(context, participant_id) do
+    Map.has_key?(context.task_participants, participant_id) or
+      Enum.any?(Map.get(context, :worker_sessions, []), &(&1.participant_id == participant_id))
+  end
+
+  defp sync_task_worker_sessions_and_monitor(context) do
+    {next, changed?, new_entries, removed_refs} =
+      Comma.Conversations.sync_task_worker_sessions(context)
+
+    Enum.each(removed_refs, fn ref ->
+      SystemsRuntime.Proc.demonitor(ref, [:flush])
+    end)
+
+    new_refs =
+      Map.new(new_entries, fn entry ->
+        {entry.participant_id, SystemsRuntime.Proc.monitor(entry.owner_pid)}
+      end)
+
+    worker_sessions =
+      next
+      |> Map.get(:worker_sessions, [])
+      |> Enum.map(fn session ->
+        case new_refs[session.participant_id] do
+          ref when is_reference(ref) -> %{session | owner_ref: ref}
+          _ -> session
+        end
+      end)
+
+    task_participants =
+      Enum.reduce(new_entries, Map.get(next, :task_participants, %{}), fn entry, acc ->
+        ref = new_refs[entry.participant_id]
+
+        cond do
+          Map.has_key?(acc, entry.participant_id) ->
+            Map.update!(acc, entry.participant_id, fn tp ->
+              %{tp | owner_pid: entry.owner_pid, owner_ref: ref, status: entry.status}
+            end)
+
+          entry.is_primary ->
+            Map.put(acc, entry.participant_id, %{entry | owner_ref: ref})
+
+          true ->
+            acc
+        end
+      end)
+
+    task_participants =
+      task_participants
+      |> reconcile_primary_task_participant(worker_sessions)
+
+    {next
+     |> Map.put(:task_participants, task_participants)
+     |> Map.put(:worker_sessions, worker_sessions), changed?}
+  end
+
+  # Ensures legacy `participants` (capped at <= 2) always reflects a live primary
+  # worker even when initial primary subscription failed and `worker_sessions`
+  # recovered it, sharing the exact same monitor ref without double-monitoring.
+  defp reconcile_primary_task_participant(participants, worker_sessions) do
+    case Enum.find(worker_sessions, fn s ->
+           s.is_primary and SystemsRuntime.Proc.is_process(s.owner_pid) and
+             is_reference(s.owner_ref)
+         end) do
+      nil ->
+        participants
+
+      primary ->
+        case participants[primary.participant_id] do
+          %{owner_pid: pid} when pid != nil ->
+            participants
+
+          %{} = existing ->
+            Map.put(participants, primary.participant_id, %{
+              existing
+              | owner_pid: primary.owner_pid,
+                owner_ref: primary.owner_ref,
+                status: primary.status
+            })
+
+          nil ->
+            Map.put(participants, primary.participant_id, primary)
+        end
+    end
+  end
+
+  # Bounded retry cadence per SSE connection: at most 5 short retries (<= 1.9s total) for
+  # unsubscribed worker sessions or transient roster read failures (max 6 sessions/Task),
+  # falling back to the SSE heartbeat interval thereafter.
+  @worker_retry_backoffs_ms [50, 100, 250, 500, 1_000]
+
+  defp has_unsubscribed_worker_session?(context) do
+    context
+    |> Map.get(:worker_sessions, [])
+    |> Enum.any?(fn s -> is_nil(s.owner_pid) end)
+  end
+
+  defp needs_worker_session_retry?(context) do
+    context[:worker_roster_sync_halted] != true and
+      (has_unsubscribed_worker_session?(context) or context[:worker_roster_sync_pending] == true)
+  end
+
+  defp schedule_worker_session_retry(context, now_ms) do
+    if needs_worker_session_retry?(context) do
+      attempt = Map.get(context, :worker_retry_attempt, 0)
+
+      case Enum.at(@worker_retry_backoffs_ms, attempt) do
+        delay when is_integer(delay) ->
+          context
+          |> Map.put(:worker_retry_at_ms, now_ms + delay)
+          |> Map.put(:worker_retry_attempt, attempt + 1)
+
+        nil ->
+          Map.put(context, :worker_retry_at_ms, nil)
+      end
+    else
+      context
+      |> Map.put(:worker_retry_at_ms, nil)
+      |> Map.put(:worker_retry_attempt, 0)
     end
   end
 
@@ -7791,21 +8730,53 @@ defmodule CommaWeb.Router do
 
   defp task_list_sse_loop(conn, deadline_ms, stream_context, owner_ref, heartbeat_at_ms) do
     now_ms = SystemsClock.monotonic_time(:millisecond)
+    retry_at_ms = stream_context[:worker_retry_at_ms]
 
     cond do
       is_integer(deadline_ms) and now_ms >= deadline_ms ->
         conn
 
+      is_integer(retry_at_ms) and retry_at_ms <= now_ms ->
+        {next_context, roster_changed?} = sync_task_worker_sessions_and_monitor(stream_context)
+        next_context = schedule_worker_session_retry(next_context, now_ms)
+
+        if roster_changed? do
+          continue_task_participant_stream(
+            conn,
+            deadline_ms,
+            next_context,
+            owner_ref,
+            heartbeat_at_ms
+          )
+        else
+          task_list_sse_loop(conn, deadline_ms, next_context, owner_ref, heartbeat_at_ms)
+        end
+
       heartbeat_at_ms <= now_ms ->
         case chunk_heartbeat(conn) do
           {:ok, conn} ->
-            task_list_sse_loop(
-              conn,
-              deadline_ms,
-              stream_context,
-              owner_ref,
-              now_ms + comma_sse_heartbeat_ms()
-            )
+            next_heartbeat = now_ms + comma_sse_heartbeat_ms()
+
+            if needs_worker_session_retry?(stream_context) do
+              {next_context, roster_changed?} =
+                sync_task_worker_sessions_and_monitor(stream_context)
+
+              next_context = schedule_worker_session_retry(next_context, now_ms)
+
+              if roster_changed? do
+                continue_task_participant_stream(
+                  conn,
+                  deadline_ms,
+                  next_context,
+                  owner_ref,
+                  next_heartbeat
+                )
+              else
+                task_list_sse_loop(conn, deadline_ms, next_context, owner_ref, next_heartbeat)
+              end
+            else
+              task_list_sse_loop(conn, deadline_ms, stream_context, owner_ref, next_heartbeat)
+            end
 
           _error ->
             conn
@@ -7813,22 +8784,54 @@ defmodule CommaWeb.Router do
 
       true ->
         timeout =
-          if is_integer(deadline_ms),
-            do: min(deadline_ms - now_ms, heartbeat_at_ms - now_ms),
-            else: heartbeat_at_ms - now_ms
+          [deadline_ms, heartbeat_at_ms, retry_at_ms]
+          |> Enum.filter(&is_integer/1)
+          |> Enum.map(&max(&1 - now_ms, 0))
+          |> Enum.min()
 
         SystemsClock.vreceive do
-          {:group_conversation_list_invalidated, group_id, kind, _conversation_id, version} ->
-            if group_id == stream_context[:group_id] and kind == stream_context[:kind] do
+          {:group_conversation_list_invalidated, group_id, kind, conversation_id, version} ->
+            # A member's stream says nothing of the host's other Tasks.
+            if group_id == stream_context[:group_id] and kind == stream_context[:kind] and
+                 (is_nil(stream_context[:member]) or
+                    conversation_id == stream_context[:conversation_id]) do
               case chunk_task_list_invalidation(conn, stream_context, version) do
                 {:ok, conn} ->
-                  task_list_sse_loop(
-                    conn,
-                    deadline_ms,
-                    stream_context,
-                    owner_ref,
-                    heartbeat_at_ms
-                  )
+                  {next_context, roster_changed?} =
+                    if conversation_id == stream_context[:conversation_id] do
+                      {synced, changed?} = sync_task_worker_sessions_and_monitor(stream_context)
+
+                      next =
+                        if synced[:worker_roster_sync_pending] == true do
+                          synced
+                          |> Map.put(:worker_retry_attempt, 0)
+                          |> schedule_worker_session_retry(now_ms)
+                        else
+                          schedule_worker_session_retry(synced, now_ms)
+                        end
+
+                      {next, changed?}
+                    else
+                      {stream_context, false}
+                    end
+
+                  if roster_changed? do
+                    continue_task_participant_stream(
+                      conn,
+                      deadline_ms,
+                      next_context,
+                      owner_ref,
+                      heartbeat_at_ms
+                    )
+                  else
+                    task_list_sse_loop(
+                      conn,
+                      deadline_ms,
+                      next_context,
+                      owner_ref,
+                      heartbeat_at_ms
+                    )
+                  end
 
                 _error ->
                   conn
@@ -7841,6 +8844,14 @@ defmodule CommaWeb.Router do
                 owner_ref,
                 heartbeat_at_ms
               )
+            end
+
+          :collaborations_changed ->
+            # A member removed, or who left, is told nothing more.
+            if stream_context[:member] && not Comma.Conversations.member?(stream_context.member) do
+              conn
+            else
+              task_list_sse_loop(conn, deadline_ms, stream_context, owner_ref, heartbeat_at_ms)
             end
 
           {:station_tasks_invalidated, group_id} ->
@@ -7901,7 +8912,24 @@ defmodule CommaWeb.Router do
                 participant.owner_ref == participant_ref
               end)
 
-            next = %{stream_context | task_participants: participants}
+            worker_sessions =
+              stream_context
+              |> Map.get(:worker_sessions, [])
+              |> Enum.map(fn session ->
+                if session.owner_ref == participant_ref do
+                  %{session | owner_pid: nil, owner_ref: nil, status: nil}
+                else
+                  session
+                end
+              end)
+
+            next =
+              stream_context
+              |> Map.put(:task_participants, participants)
+              |> Map.put(:worker_sessions, worker_sessions)
+              |> Map.put(:worker_retry_attempt, 0)
+              |> schedule_worker_session_retry(now_ms)
+
             continue_task_participant_stream(conn, deadline_ms, next, owner_ref, heartbeat_at_ms)
 
           {:conversation_participant_status_changed, group_id, conversation_id, participant_id} ->
@@ -7909,6 +8937,23 @@ defmodule CommaWeb.Router do
               update_task_participant(stream_context, group_id, conversation_id, participant_id)
 
             continue_task_participant_stream(conn, deadline_ms, next, owner_ref, heartbeat_at_ms)
+
+          # The Task's sandbox said something new of itself: its run is read
+          # again and sent with the statuses (`Comma.Conversations.list_events/4`).
+          {:coding_sandbox_said, conversation_id} ->
+            if conversation_id == stream_context[:conversation_id] do
+              next = Comma.Conversations.refresh_task_run(stream_context)
+
+              continue_task_participant_stream(
+                conn,
+                deadline_ms,
+                next,
+                owner_ref,
+                heartbeat_at_ms
+              )
+            else
+              task_list_sse_loop(conn, deadline_ms, stream_context, owner_ref, heartbeat_at_ms)
+            end
 
           _unrelated ->
             task_list_sse_loop(
@@ -8792,8 +9837,7 @@ defmodule CommaWeb.Router do
   defp send_error(conn, status, reason),
     do: send_json(conn, status, %{error: error_reason(reason)})
 
-  defp decision_reason(%{reason: reason}) when is_binary(reason), do: reason
-  defp decision_reason(_decision), do: "billing_unavailable"
+  defp decision_reason(decision), do: CommaWeb.BillingErrors.billing_reason(decision)
 
   defp error_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp error_reason(reason) when is_binary(reason), do: reason

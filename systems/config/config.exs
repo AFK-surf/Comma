@@ -170,6 +170,10 @@ config :salix_store,
   ecto_repos: [SalixStore.Repo],
   start_repo: true
 
+# Who is told that a Host session committed (SalixStore.AgentVMMGatewayControl):
+# the reconciler wakes the exact Workload. It belongs to an app above the store.
+config :salix_store, agent_vmm_session_notifier: SalixEnv.ComputeReconciler
+
 config :salix_store, SalixStore.Repo,
   username: "postgres",
   password: "postgres",
@@ -255,7 +259,11 @@ config :comma_core, :operation_claim_timeout_ms, operation_claim_timeout_ms
 config :comma_core, :profile_avatar, adapter: Comma.ProfileAvatar.Storage.GCS, bucket: nil
 
 config :bridge_for_teams_core,
-  rate_limit_redis_url: "redis://127.0.0.1:6379/0"
+  rate_limit_redis_url: "redis://127.0.0.1:6379/0",
+  m2square: %{}
+
+config :billing_stripe, bridge_event_handler: BridgeForTeams.PaidSignup
+config :salix_im, teams_access_mod: BillingCore.TeamsAccess
 
 config :salix_web,
   site_rate_limit_redis_url: "redis://127.0.0.1:6379/0"
@@ -292,6 +300,7 @@ config :comma_core, :mail,
 config :comma_web,
   port: 4200,
   web_cookie_origin: "http://127.0.0.1:5174",
+  app_url_scheme: "comma-dev",
   admin_cookie_origin: "http://127.0.0.1:4175",
   allowed_origins: [
     "http://127.0.0.1:5173",
@@ -399,6 +408,7 @@ config :bridge_for_teams_core, BridgeForTeams.SlackHistoryOnboarding.Reconciler,
 # scheduled pruning worker consumes these explicit windows and the operator task
 # can call the same boundary manually when needed.
 config :bridge_for_teams_core,
+  quote_signing_secret: "dev_only_quote_signing_secret_change_me_0000000000000000000000000000",
   observability_payload_max_bytes: 16_384,
   observability_freshness: [
     event_history_seconds: 86_400,
@@ -563,6 +573,8 @@ config :salix_agent, composio_store_mod: Salix.Bindings.AgentComposioStore
 config :salix_agent, plugin_store_mod: Salix.Bindings.AgentPluginStore
 # Durable Task primitives used by the internal IM owner.
 config :salix_im, task_create_mod: Salix.Bindings.AgentConversations
+# Feishu and Lark group triage's model call (SalixIM.LarkSuiteTriage).
+config :salix_im, lark_suite_triage_evaluator: SalixWeb.LarkSuiteTriageEvaluator
 config :salix_im, task_execution_owner_mod: CommaWeb.TaskExecutionOwner
 config :salix_im, task_schedule_mod: Salix.Bindings.AgentConversations
 # Signal product integration (docs/messaging-voice.md): the Signal provider
@@ -573,6 +585,7 @@ config :salix_signal, handler: SalixSignal.IMHandler
 
 config :salix_agent, memory_consultation_source_mod: Salix.Bindings.AgentConversations
 config :salix_agent, triage_investigation_authority_mod: SalixIM.Triage.InvestigationAuthority
+config :salix_agent, collaboration_command_mod: SalixIM.CollaborationCommand
 
 config :salix_agent, meeting_preparation_mod: SalixMeet.MeetingPreparation
 config :salix_im, meeting_preparation_authority_mod: SalixMeet.PreparationAuthority

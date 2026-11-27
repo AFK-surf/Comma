@@ -1,6 +1,16 @@
+import type { ChatQuestionPart } from "@comma/chat-contract";
 import { CoreProvider } from "@comma/core-client";
-import { useProductInboxProjection } from "../../../../product-inbox";
-import { createProductInboxProjectionHarness } from "../../../../test/productInboxProjectionHarness";
+import type { ChatMessage, ConversationChannelState } from "@comma/core/chat";
+import { createdTasksOf } from "@comma/core/chat";
+import { initializeCommaI18n } from "@comma/i18n";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@comma/test-utils/render";
 import {
   Outlet,
   RouterProvider,
@@ -9,19 +19,19 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
-import { initializeCommaI18n } from "@comma/i18n";
-import { useMemo, useState } from "react";
 import userEvent from "@testing-library/user-event";
+import { useMemo, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatTaskPanel } from "../ChatTaskPanel";
+import { useProductInboxProjection } from "../../../../product-inbox";
+import { createProductInboxProjectionHarness } from "../../../../test/productInboxProjectionHarness";
+import { fixedDraftSource } from "../../composer/conversationDraft";
 import {
   ConversationView,
   type ConversationViewActions,
 } from "../../conversation/ConversationView";
-import { fixedDraftSource } from "../../composer/conversationDraft";
-import type { ChatMessage, ConversationChannelState } from "@comma/core/chat";
-import { createdTasksOf } from "@comma/core/chat";
+import { ChatTaskPanel } from "../ChatTaskPanel";
+import type { ChatAttentionCard } from "../useChatAttentionCards";
+import type { ChatCreatedTask } from "../useChatCreatedTasks";
 
 describe("chat task panel", () => {
   beforeEach(() => {
@@ -88,17 +98,23 @@ describe("chat task panel", () => {
     expect(actions.setTaskStatus).not.toHaveBeenCalled();
   });
 
-  it("tracks a task's status as its projection moves on", async () => {
+  it("moves a task from the running pill to the attention focus strip when it needs review", async () => {
+    const user = userEvent.setup();
     const { setState } = renderConversation({ state: taskState("in_progress") });
 
+    const activePill = await screen.findByTestId("chat-task-panel-toggle");
+    expect(activePill).toHaveTextContent("1 running");
+    await user.click(activePill);
     const item = await screen.findByTestId("chat-task-item-cnv_task_1");
     expect(item.textContent).toContain("In progress");
     expect(item.querySelector(".comma-shiny-text")).toBeTruthy();
 
     setState(taskState("needs_review"));
     await waitFor(() => {
-      expect(screen.getByTestId("chat-task-item-cnv_task_1").textContent).toContain(
-        "Needs Review"
+      expect(screen.queryByTestId("chat-task-panel-toggle")).toBeNull();
+      expect(screen.getByTestId("chat-task-item-cnv_task_1")).toHaveAttribute(
+        "data-status",
+        "needs_review"
       );
     });
     expect(
@@ -107,17 +123,22 @@ describe("chat task panel", () => {
   });
 
   it("settles an arriving row only from its own reveal animation", async () => {
-    const task = {
+    const task: ChatCreatedTask = {
       archiveVersion: 7,
       conversationId: "cnv_task_arrival",
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
       loopStop: undefined,
-      statusBucket: "needs_review" as const,
+      statusBucket: "needs_review",
       title: "Review the arrival",
       turnKey: "msg_u1",
       version: 1,
+    };
+    const secondTask: ChatCreatedTask = {
+      ...task,
+      conversationId: "cnv_task_arrival_2",
+      title: "Second arrival",
     };
     const actions = {
       onArchive: vi.fn().mockResolvedValue(undefined),
@@ -125,7 +146,13 @@ describe("chat task panel", () => {
       onOpen: vi.fn(),
       onReveal: vi.fn(),
     };
-    const { rerender } = render(<ChatTaskPanel {...actions} items={[task]} />);
+    const { rerender } = render(
+      <ChatTaskPanel
+        {...actions}
+        defaultOpenPopover="attention"
+        items={[task, secondTask]}
+      />
+    );
     const item = await screen.findByTestId("chat-task-item-cnv_task_arrival");
 
     expect(item).toHaveAttribute("data-arriving", "true");
@@ -141,31 +168,42 @@ describe("chat task panel", () => {
     expect(item).not.toHaveAttribute("data-arriving");
 
     rerender(
-      <ChatTaskPanel {...actions} items={[{ ...task, archiveVersion: undefined }]} />
+      <ChatTaskPanel
+        {...actions}
+        defaultOpenPopover="attention"
+        items={[{ ...task, archiveVersion: undefined }, secondTask]}
+      />
     );
     expect(screen.getByTestId("chat-task-item-cnv_task_arrival")).toBe(item);
     expect(item).not.toHaveAttribute("data-arriving");
 
-    rerender(<ChatTaskPanel {...actions} items={[task]} />);
+    rerender(
+      <ChatTaskPanel
+        {...actions}
+        defaultOpenPopover="attention"
+        items={[task, secondTask]}
+      />
+    );
     expect(screen.getByTestId("chat-task-item-cnv_task_arrival")).toBe(item);
     expect(item).not.toHaveAttribute("data-arriving");
   });
 
   it("settles an arriving row when its reveal animation is cancelled", async () => {
-    const task = {
+    const task: ChatCreatedTask = {
       archiveVersion: undefined,
       conversationId: "cnv_task_cancelled_arrival",
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
       loopStop: undefined,
-      statusBucket: "in_progress" as const,
+      statusBucket: "in_progress",
       title: "Cancelled arrival",
       turnKey: "msg_u1",
       version: 1,
     };
     render(
       <ChatTaskPanel
+        defaultOpenPopover="active"
         items={[task]}
         onArchive={vi.fn()}
         onDismiss={vi.fn()}
@@ -179,50 +217,197 @@ describe("chat task panel", () => {
     expect(item).not.toHaveAttribute("data-arriving");
   });
 
-  it("keeps the panel folded when a conversation opens again", async () => {
+  it("opens popovers on demand and closes them on Escape or outside click", async () => {
     const user = userEvent.setup();
-    const task = {
+    const runningTask: ChatCreatedTask = {
       archiveVersion: undefined,
-      conversationId: "cnv_task_folded",
+      conversationId: "cnv_task_active",
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
       loopStop: undefined,
-      statusBucket: "in_progress" as const,
-      title: "Folded away",
+      statusBucket: "in_progress",
+      title: "Running task",
       turnKey: "msg_u1",
       version: 1,
     };
-    const actions = {
-      onArchive: vi.fn(),
-      onDismiss: vi.fn(),
-      onOpen: vi.fn(),
-      onReveal: vi.fn(),
+    const reviewA: ChatCreatedTask = {
+      ...runningTask,
+      conversationId: "cnv_task_review_1",
+      statusBucket: "needs_review",
+      title: "Review PR #1",
     };
-    const first = render(<ChatTaskPanel {...actions} items={[task]} />);
-    await user.click(screen.getByTestId("chat-task-panel-toggle"));
-    expect(screen.queryByTestId("chat-task-item-cnv_task_folded")).toBeNull();
-    first.unmount();
+    const reviewB: ChatCreatedTask = {
+      ...runningTask,
+      conversationId: "cnv_task_review_2",
+      statusBucket: "needs_review",
+      title: "Review PR #2",
+    };
 
-    // Another conversation, or this one reopened after a relaunch.
-    const second = render(
+    render(
+      <div>
+        <button data-testid="outside-target" type="button">
+          Outside
+        </button>
+        <ChatTaskPanel
+          items={[reviewA, reviewB, runningTask]}
+          onArchive={vi.fn()}
+          onDismiss={vi.fn()}
+          onOpen={vi.fn()}
+          onReveal={vi.fn()}
+        />
+      </div>
+    );
+
+    // Popovers start closed; left focus strip shows the top review task + "+1", right pill shows "1 running".
+    expect(screen.queryByTestId("chat-dock-attention-popover")).toBeNull();
+    expect(screen.queryByTestId("chat-dock-active-popover")).toBeNull();
+    expect(screen.getByTestId("chat-dock-attention-focus")).toHaveTextContent(
+      "Review PR #1"
+    );
+    expect(screen.getByTestId("chat-dock-attention-focus")).not.toHaveTextContent(
+      /\bOpen\b/
+    );
+    expect(screen.getByTestId("chat-dock-attention-toggle")).toHaveTextContent("+1");
+    expect(screen.getByTestId("chat-task-panel-toggle")).toHaveTextContent("1 running");
+
+    // Opening the attention popover shows both review items.
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.getByTestId("chat-dock-attention-popover")).toBeVisible();
+    expect(screen.getByTestId("chat-task-item-cnv_task_review_1")).toBeVisible();
+    expect(screen.getByTestId("chat-task-item-cnv_task_review_2")).toBeVisible();
+
+    // Switching to the active popover closes the attention popover.
+    await user.click(screen.getByTestId("chat-task-panel-toggle"));
+    expect(screen.queryByTestId("chat-dock-attention-popover")).toBeNull();
+    expect(screen.getByTestId("chat-dock-active-popover")).toBeVisible();
+    expect(screen.getByTestId("chat-task-item-cnv_task_active")).toBeVisible();
+
+    // Escape closes the open popover.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("chat-dock-active-popover")).toBeNull();
+
+    // Clicking outside also closes an open popover.
+    await user.click(screen.getByTestId("chat-task-panel-toggle"));
+    expect(screen.getByTestId("chat-dock-active-popover")).toBeVisible();
+    await user.click(screen.getByTestId("outside-target"));
+    expect(screen.queryByTestId("chat-dock-active-popover")).toBeNull();
+  });
+
+  it("closes an open popover when clicking blank space in the dock bar or the focus bubble", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    const loopA: ChatCreatedTask = {
+      archiveVersion: undefined,
+      conversationId: "cnv_loop_1",
+      messageId: undefined,
+      needsAttention: false,
+      needsInput: false,
+      loopStanding: { kind: "scheduled", text: "Every day at 8:00 AM" },
+      loopStop: undefined,
+      statusBucket: "loops",
+      title: "Morning PR brief",
+      turnKey: undefined,
+      version: 1,
+    };
+    const loopB: ChatCreatedTask = {
+      ...loopA,
+      conversationId: "cnv_loop_2",
+      title: "Daily digest",
+    };
+    const reviewA: ChatCreatedTask = {
+      ...loopA,
+      conversationId: "cnv_review_1",
+      loopStanding: undefined,
+      statusBucket: "needs_review",
+      title: "Review PR #1",
+    };
+    const reviewB: ChatCreatedTask = {
+      ...reviewA,
+      conversationId: "cnv_review_2",
+      title: "Review PR #2",
+    };
+
+    const { container, rerender } = render(
       <ChatTaskPanel
-        {...actions}
-        items={[{ ...task, conversationId: "cnv_task_other" }]}
+        items={[loopA, loopB]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={onOpen}
+        onReveal={vi.fn()}
       />
     );
-    const toggle = screen.getByTestId("chat-task-panel-toggle");
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("chat-task-item-cnv_task_other")).toBeNull();
 
-    await user.click(toggle);
-    expect(await screen.findByTestId("chat-task-item-cnv_task_other")).toBeVisible();
-    second.unmount();
-    render(<ChatTaskPanel {...actions} items={[task]} />);
-    expect(screen.getByTestId("chat-task-panel-toggle")).toHaveAttribute(
-      "aria-expanded",
-      "true"
+    const bar = container.querySelector<HTMLElement>(".comma-chat-dock-bar")!;
+    const activeToggle = screen.getByTestId("chat-task-panel-toggle");
+
+    // Clicking the empty space to the right of the pill in the dock bar closes the menu.
+    await user.click(activeToggle);
+    expect(screen.getByTestId("chat-dock-active-popover")).toBeVisible();
+    await user.click(bar);
+    expect(screen.queryByTestId("chat-dock-active-popover")).toBeNull();
+
+    // Clicking the toggle pill itself still toggles cleanly without bouncing back open.
+    await user.click(activeToggle);
+    expect(screen.getByTestId("chat-dock-active-popover")).toBeVisible();
+    await user.click(activeToggle);
+    expect(screen.queryByTestId("chat-dock-active-popover")).toBeNull();
+
+    // With both focus bubble and active pill present, clicking the bar gap or focus bubble closes the popover.
+    rerender(
+      <ChatTaskPanel
+        items={[reviewA, reviewB, loopA]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={onOpen}
+        onReveal={vi.fn()}
+      />
     );
+
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.getByTestId("chat-dock-attention-popover")).toBeVisible();
+    await user.click(bar);
+    expect(screen.queryByTestId("chat-dock-attention-popover")).toBeNull();
+
+    // Clicking the FocusTaskBubble +N toggle itself closes without bouncing back open.
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.getByTestId("chat-dock-attention-popover")).toBeVisible();
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.queryByTestId("chat-dock-attention-popover")).toBeNull();
+
+    await user.click(screen.getByTestId("chat-task-panel-toggle"));
+    expect(screen.getByTestId("chat-dock-active-popover")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /Review PR #1/ }));
+    expect(screen.queryByTestId("chat-dock-active-popover")).toBeNull();
+    expect(onOpen).toHaveBeenCalledWith(reviewA, "chat");
+
+    // Clicking the focusCard +N toggle itself also closes without bouncing back open.
+    const focusCard: ChatAttentionCard = {
+      actionLabel: "Answer",
+      expiresAt: null,
+      id: "question:msg_q1",
+      kind: "question",
+      kindLabel: "Question",
+      messageId: "msg_q1",
+      priority: 1,
+      title: "Keep the canary?",
+      turnKey: "msg_u1",
+    };
+    rerender(
+      <ChatTaskPanel
+        attentionCards={[focusCard]}
+        items={[reviewA, loopA]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={onOpen}
+        onReveal={vi.fn()}
+        onRevealCard={vi.fn()}
+      />
+    );
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.getByTestId("chat-dock-attention-popover")).toBeVisible();
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.queryByTestId("chat-dock-attention-popover")).toBeNull();
   });
 
   it("ignores user-authored task mentions and stays out of the rail", async () => {
@@ -257,22 +442,22 @@ describe("chat task panel", () => {
     const user = userEvent.setup();
     const { setState } = renderConversation({ state: taskState("needs_review") });
 
-    // Acknowledging a settled row commits the clearance in the same beat: the
-    // row leaves by unmounting, with no exit motion to wait out.
+    // Single settled task surfaces directly in the focus strip with Reveal & Dismiss.
     await screen.findByTestId("chat-task-item-cnv_task_1");
     await user.click(screen.getByTestId("chat-task-reveal-cnv_task_1"));
     expect(screen.queryByTestId("chat-task-panel")).toBeNull();
 
-    // Running again re-docks the task…
+    // Running again re-docks the task in the active pill…
     setState(taskState("in_progress", [], 2));
-    await screen.findByTestId("chat-task-item-cnv_task_1");
+    await screen.findByTestId("chat-task-panel-toggle");
 
     // …and its next settle is a newer version than the one acknowledged, so it
-    // shows again and asks for a fresh acknowledgement.
+    // shows again in the attention focus strip.
     setState(taskState("needs_review", [], 3));
     await waitFor(() => {
-      expect(screen.getByTestId("chat-task-item-cnv_task_1").textContent).toContain(
-        "Needs Review"
+      expect(screen.getByTestId("chat-task-item-cnv_task_1")).toHaveAttribute(
+        "data-status",
+        "needs_review"
       );
     });
     await user.click(screen.getByTestId("chat-task-reveal-cnv_task_1"));
@@ -308,20 +493,20 @@ describe("chat task panel", () => {
 
   it("lets a task that ended leave the panel without an acknowledgement", async () => {
     const { setState } = renderConversation({ state: taskState("in_progress") });
-    await screen.findByTestId("chat-task-item-cnv_task_1");
+    await screen.findByTestId("chat-task-panel-toggle");
 
     for (const status of ["completed", "cancelled"]) {
       setState(taskState(status));
       await waitFor(() => expect(screen.queryByTestId("chat-task-panel")).toBeNull());
       setState(taskState("in_progress", [], 2));
-      await screen.findByTestId("chat-task-item-cnv_task_1");
+      await screen.findByTestId("chat-task-panel-toggle");
     }
   });
 
   it("keeps a failed task until it is dismissed", async () => {
     const user = userEvent.setup();
     const { setState } = renderConversation({ state: taskState("in_progress") });
-    await screen.findByTestId("chat-task-item-cnv_task_1");
+    await screen.findByTestId("chat-task-panel-toggle");
 
     setState(taskState("failed"));
     await waitFor(() =>
@@ -345,7 +530,8 @@ describe("chat task panel", () => {
     await waitFor(() => expect(screen.queryByTestId("chat-task-panel")).toBeNull());
   });
 
-  it("docks every task but mounts only the rows near the scrollport", async () => {
+  it("docks every running task but mounts only the rows near the scrollport when opened", async () => {
+    const user = userEvent.setup();
     const turns = Array.from({ length: 40 }, (_, index) => [
       message(`msg_u${index}`, "user", `Start task ${index}`),
       message(`msg_a${index}`, "assistant", `Started task ${index}.`, {
@@ -358,9 +544,10 @@ describe("chat task panel", () => {
     renderConversation({ state: settled({ messages: turns }) });
 
     const panel = await screen.findByTestId("chat-task-panel");
-    expect(screen.getByTestId("chat-task-panel-toggle").textContent).toContain(
-      "40 Tasks"
-    );
+    const toggle = screen.getByTestId("chat-task-panel-toggle");
+    expect(toggle.textContent).toContain("40 running");
+    await user.click(toggle);
+
     // Five rows show at a time; the rest of the history is not in the DOM.
     const rows = panel.querySelectorAll(".comma-chat-task-item");
     expect(rows.length).toBeGreaterThanOrEqual(5);
@@ -383,15 +570,310 @@ describe("chat task panel", () => {
       expect(document.querySelector('[data-reveal-highlight="true"]')).not.toBeNull();
     });
     const highlighted = document.querySelectorAll('[data-reveal-highlight="true"]');
-    // The announcing sentence alone: the assistant message's body, not its
-    // turn, not the user message that prompted it, and not the article's
-    // hover-action row.
     expect(highlighted).toHaveLength(1);
     const marked = highlighted[0]!;
     expect(marked.classList.contains("comma-chat-assistant-response-body")).toBe(true);
     expect(marked.closest("[data-message-id]")?.getAttribute("data-message-id")).toBe(
       "msg_a1"
     );
+  });
+
+  it("surfaces open question cards in the focus bubble and answers them in their reply thread", async () => {
+    const user = userEvent.setup();
+    const question: ChatQuestionPart = {
+      allowOther: true,
+      choices: [
+        { id: "rolling", label: "Rolling deploy", recommended: true },
+        { id: "exclusive", label: "Exclusive cutover" },
+      ],
+      kind: "question",
+      messageId: "msg_q1",
+      multiSelect: false,
+      prompt: "Choose the staging migration strategy",
+      state: { status: "open" },
+    };
+    const laterTurns: ChatMessage[] = Array.from({ length: 4 }, (_, index) => [
+      message(`msg_u${index + 2}`, "user", `Follow-up ${index}`),
+      message(`msg_a${index + 2}`, "assistant", `Reply ${index}`),
+    ]).flat();
+
+    renderConversation({
+      state: settled({
+        messages: [
+          message("msg_u1", "user", "Prepare release"),
+          message("msg_q1", "assistant", "Before we start:", {
+            parts: [{ kind: "markdown", text: "Before we start:" }, question],
+          }),
+          ...laterTurns,
+        ],
+      }),
+    });
+
+    const focus = await screen.findByTestId("chat-dock-attention-focus");
+    expect(focus).toHaveTextContent("Question");
+    expect(focus).toHaveTextContent("Choose the staging migration strategy");
+
+    await user.click(screen.getByTestId("chat-dock-card-question:msg_q1"));
+    const thread = await screen.findByRole("region", { name: "Reply thread" });
+    expect(thread.querySelector('[data-message-id="msg_q1"]')).not.toBeNull();
+  });
+
+  it("hands an answered card over to the next pending card until none is left", async () => {
+    const user = userEvent.setup();
+    const withQuestions = (open: ReadonlySet<string>) =>
+      settled({
+        messages: [
+          message("msg_u1", "user", "Prepare release"),
+          ...(["msg_q1", "msg_q2"] as const).map((id) => {
+            const part = openQuestion(
+              id,
+              id === "msg_q1" ? "Keep the canary?" : "Freeze merges?"
+            );
+            return message(id, "assistant", "Decide:", {
+              parts: [
+                { kind: "markdown", text: "Decide:" },
+                open.has(id)
+                  ? part
+                  : { ...part, state: { status: "answered", choiceIds: ["yes"] } },
+              ],
+            });
+          }),
+        ],
+      });
+    const { setState } = renderConversation({
+      state: withQuestions(new Set(["msg_q1", "msg_q2"])),
+    });
+
+    // The newest card leads; answering it starts a run over both.
+    await user.click(await screen.findByTestId("chat-dock-card-question:msg_q2"));
+    let thread = await screen.findByRole("region", { name: "Reply thread" });
+    expect(thread.querySelector('[data-message-id="msg_q2"]')).not.toBeNull();
+    expect(within(thread).getByRole("status")).toHaveTextContent("1 / 2");
+
+    // The reader answers in the thread.
+    fireEvent.pointerDown(thread.querySelector('[data-message-id="msg_q2"]')!);
+    act(() => setState(withQuestions(new Set(["msg_q1"]))));
+    await waitFor(
+      () => {
+        thread = screen.getByRole("region", { name: "Reply thread" });
+        expect(thread.querySelector('[data-message-id="msg_q1"]')).not.toBeNull();
+      },
+      { timeout: 3000 }
+    );
+    expect(within(thread).getByRole("status")).toHaveTextContent("2 / 2");
+
+    fireEvent.pointerDown(thread.querySelector('[data-message-id="msg_q1"]')!);
+    act(() => setState(withQuestions(new Set())));
+    await waitFor(
+      () => expect(screen.queryByRole("region", { name: "Reply thread" })).toBeNull(),
+      { timeout: 3000 }
+    );
+  });
+
+  it("ends a run without moving on when its card closes without an answer here", async () => {
+    const user = userEvent.setup();
+    const withQuestions = (open: ReadonlySet<string>) =>
+      settled({
+        messages: [
+          message("msg_u1", "user", "Prepare release"),
+          ...(["msg_q1", "msg_q2"] as const).map((id) => {
+            const part = openQuestion(
+              id,
+              id === "msg_q1" ? "Keep the canary?" : "Freeze merges?"
+            );
+            return message(id, "assistant", "Decide:", {
+              parts: [
+                { kind: "markdown", text: "Decide:" },
+                open.has(id)
+                  ? part
+                  : { ...part, state: { status: "answered", choiceIds: ["yes"] } },
+              ],
+            });
+          }),
+        ],
+      });
+    const { setState } = renderConversation({
+      state: withQuestions(new Set(["msg_q1", "msg_q2"])),
+    });
+
+    await user.click(await screen.findByTestId("chat-dock-card-question:msg_q2"));
+    const thread = await screen.findByRole("region", { name: "Reply thread" });
+    expect(within(thread).getByRole("status")).toHaveTextContent("1 / 2");
+
+    // Answered on another device: the reader did nothing in this thread.
+    act(() => setState(withQuestions(new Set(["msg_q1"]))));
+    // Past the handoff delay: no next card takes over.
+    act(() => vi.advanceTimersByTime(1000));
+    const still = screen.getByRole("region", { name: "Reply thread" });
+    expect(still.querySelector('[data-message-id="msg_q2"]')).not.toBeNull();
+    expect(still.querySelector('[data-message-id="msg_q1"]')).toBeNull();
+  });
+
+  it("shows a card in the transcript when its message cannot take a reply", async () => {
+    const user = userEvent.setup();
+    renderConversation({
+      state: settled({
+        messages: [
+          message("msg_u1", "user", "Prepare release"),
+          message("msg_q1", "assistant", "Decide:", {
+            delivery: "failed",
+            parts: [
+              { kind: "markdown", text: "Decide:" },
+              openQuestion("msg_q1", "Keep the canary?"),
+            ],
+          }),
+        ],
+      }),
+    });
+
+    await user.click(await screen.findByTestId("chat-dock-card-question:msg_q1"));
+
+    await waitFor(() => {
+      expect(
+        document
+          .querySelector('[data-reveal-highlight="true"]')
+          ?.closest("[data-message-id]")
+          ?.getAttribute("data-message-id")
+      ).toBe("msg_q1");
+    });
+    expect(screen.queryByRole("region", { name: "Reply thread" })).toBeNull();
+  });
+
+  it("shows pending confirmation cards and review tasks together in the attention popover", async () => {
+    const user = userEvent.setup();
+    const onRevealCard = vi.fn();
+    const cards: ChatAttentionCard[] = [
+      {
+        actionLabel: "Fill in",
+        expiresAt: null,
+        id: "request:req_1",
+        kind: "secret",
+        kindLabel: "Secret",
+        messageId: "msg_a1",
+        priority: 1,
+        title: "Fill in Stripe test key",
+        turnKey: "msg_u1",
+      },
+      {
+        actionLabel: "Answer",
+        expiresAt: null,
+        id: "question:msg_q1",
+        kind: "question",
+        kindLabel: "Question",
+        messageId: "msg_q1",
+        priority: 2,
+        title: "Rolling or exclusive?",
+        turnKey: "msg_u1",
+      },
+    ];
+    const reviewTask: ChatCreatedTask = {
+      archiveVersion: undefined,
+      conversationId: "cnv_review_1",
+      messageId: "msg_a2",
+      needsAttention: true,
+      needsInput: false,
+      loopStop: undefined,
+      statusBucket: "needs_review",
+      title: "Fix attribution PR",
+      turnKey: "msg_u2",
+      version: 1,
+    };
+    const runningTask: ChatCreatedTask = {
+      archiveVersion: undefined,
+      conversationId: "cnv_run_1",
+      messageId: "msg_a3",
+      needsAttention: false,
+      needsInput: false,
+      loopStop: undefined,
+      statusBucket: "in_progress",
+      title: "Run client E2E",
+      turnKey: "msg_u3",
+      version: 1,
+    };
+
+    render(
+      <ChatTaskPanel
+        attentionCards={cards}
+        items={[reviewTask, runningTask]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={vi.fn()}
+        onReveal={vi.fn()}
+        onRevealCard={onRevealCard}
+      />
+    );
+
+    expect(screen.getByTestId("chat-dock-attention-focus")).toHaveTextContent(
+      "Fill in Stripe test key"
+    );
+    expect(screen.getByTestId("chat-dock-attention-toggle")).toHaveTextContent("+2");
+    expect(screen.getByTestId("chat-task-panel-toggle")).toHaveTextContent("1 running");
+
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    expect(screen.getByTestId("chat-dock-attention-popover")).toBeVisible();
+    expect(screen.getByTestId("chat-dock-card-row-request:req_1")).toBeVisible();
+    expect(screen.getByTestId("chat-dock-card-row-question:msg_q1")).toBeVisible();
+    expect(screen.getByTestId("chat-task-item-cnv_review_1")).toBeVisible();
+
+    await user.click(screen.getByTestId("chat-dock-card-row-question:msg_q1"));
+    expect(onRevealCard).toHaveBeenCalledExactlyOnceWith(cards[1]);
+    expect(screen.queryByTestId("chat-dock-attention-popover")).toBeNull();
+  });
+
+  it("filters between running tasks and loops inside the active popover", async () => {
+    const user = userEvent.setup();
+    const running: ChatCreatedTask = {
+      archiveVersion: undefined,
+      conversationId: "cnv_run",
+      messageId: undefined,
+      needsAttention: false,
+      needsInput: false,
+      loopStop: undefined,
+      statusBucket: "in_progress",
+      title: "Build release",
+      turnKey: undefined,
+      version: 1,
+    };
+    const loop: ChatCreatedTask = {
+      archiveVersion: undefined,
+      conversationId: "cnv_loop",
+      messageId: undefined,
+      needsAttention: false,
+      needsInput: false,
+      loopStop: undefined,
+      loopStanding: { kind: "scheduled", text: "Every day at 9:00 AM" },
+      statusBucket: "loops",
+      title: "Daily AI radar",
+      turnKey: undefined,
+      version: 1,
+    };
+
+    render(
+      <ChatTaskPanel
+        items={[running, loop]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={vi.fn()}
+        onReveal={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByTestId("chat-task-panel-toggle"));
+    expect(
+      screen
+        .getByTestId("chat-dock-active-popover")
+        .querySelector(".comma-chat-dock-popover-title svg")
+    ).toBeNull();
+    expect(screen.getByTestId("chat-task-item-cnv_run")).toBeVisible();
+    expect(screen.getByTestId("chat-task-item-cnv_loop")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Loops 1" }));
+    expect(screen.queryByTestId("chat-task-item-cnv_run")).toBeNull();
+    expect(screen.getByTestId("chat-task-item-cnv_loop")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "In progress 1" }));
+    expect(screen.getByTestId("chat-task-item-cnv_run")).toBeVisible();
+    expect(screen.queryByTestId("chat-task-item-cnv_loop")).toBeNull();
   });
 
   it("dismisses a settled task without revealing its turn", async () => {
@@ -406,8 +888,12 @@ describe("chat task panel", () => {
 
     const item = await screen.findByTestId("chat-task-item-cnv_task_1");
     expect(document.querySelector('[data-turn-key="msg_u1"]')).toBeNull();
-    // Open the Task, Dismiss, Reveal in Chat.
+    // Open the Task, Dismiss, Reveal in Chat; no Open CTA badge.
     expect(item.querySelectorAll("button")).toHaveLength(3);
+    expect(item.querySelector(".comma-chat-dock-cta")).toBeNull();
+    expect(item).not.toHaveTextContent(/\bOpen\b/);
+    expect(screen.getByTestId("chat-task-dismiss-cnv_task_1")).toBeVisible();
+    expect(screen.getByTestId("chat-task-reveal-cnv_task_1")).toBeVisible();
 
     await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
     expect(screen.queryByTestId("chat-task-panel")).toBeNull();
@@ -418,6 +904,7 @@ describe("chat task panel", () => {
   it("shows a Task whose Loop stopped on an error as stopped, not running", async () => {
     render(
       <ChatTaskPanel
+        defaultOpenPopover="active"
         items={[
           {
             archiveVersion: undefined,
@@ -426,7 +913,7 @@ describe("chat task panel", () => {
             needsAttention: false,
             needsInput: false,
             loopStop: { text: "Stopped · couldn’t reach this task", failed: true },
-            statusBucket: "in_progress",
+            statusBucket: "loops",
             title: "Daily digest",
             turnKey: undefined,
             version: 1,
@@ -447,16 +934,54 @@ describe("chat task panel", () => {
     expect(item.querySelector(".comma-shiny-text")).toBeNull();
   });
 
+  it("shows an active Loop Task with a static trigger icon and non-shimmering schedule", async () => {
+    render(
+      <ChatTaskPanel
+        defaultOpenPopover="active"
+        items={[
+          {
+            archiveVersion: undefined,
+            conversationId: "cnv_task_loop_active",
+            messageId: undefined,
+            needsAttention: false,
+            needsInput: false,
+            loopStop: undefined,
+            loopStanding: {
+              kind: "scheduled",
+              text: "Every day at 9:00 AM",
+            },
+            statusBucket: "loops",
+            title: "Daily AI radar",
+            turnKey: undefined,
+            version: 1,
+          },
+        ]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={vi.fn()}
+        onReveal={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("chat-task-panel-toggle")).toHaveTextContent("1 Loop");
+    const item = await screen.findByTestId("chat-task-item-cnv_task_loop_active");
+    expect(item).toHaveTextContent("Every day at 9:00 AM");
+    expect(item).not.toHaveTextContent("In progress");
+    expect(item.querySelector(".comma-task-status-spin")).toBeNull();
+    expect(item.querySelector(".comma-task-status-loop-standing")).not.toBeNull();
+    expect(item.querySelector(".comma-shiny-text")).toBeNull();
+  });
+
   it("splits the row between opening the task and revealing its turn", async () => {
     const user = userEvent.setup();
-    const task = {
+    const task: ChatCreatedTask = {
       archiveVersion: undefined,
       conversationId: "cnv_task_split",
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
       loopStop: undefined,
-      statusBucket: "in_progress" as const,
+      statusBucket: "in_progress",
       title: "Build the release",
       turnKey: "msg_u1",
       version: 1,
@@ -465,6 +990,7 @@ describe("chat task panel", () => {
     const onReveal = vi.fn();
     render(
       <ChatTaskPanel
+        defaultOpenPopover="active"
         items={[task]}
         onArchive={vi.fn()}
         onDismiss={vi.fn()}
@@ -485,25 +1011,31 @@ describe("chat task panel", () => {
     expect(onOpen).toHaveBeenCalledOnce();
   });
 
-  it("keeps archive with the settled row's Reveal and Dismiss controls", async () => {
+  it("keeps archive with the settled row's Reveal and Dismiss controls in both focus strip and popover", async () => {
     const user = userEvent.setup();
     const onArchive = vi.fn().mockResolvedValue(undefined);
     const onDismiss = vi.fn();
     const onOpen = vi.fn();
     const onReveal = vi.fn();
-    const task = {
+    const task: ChatCreatedTask = {
       archiveVersion: 7,
       conversationId: "cnv_task_archive",
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
       loopStop: undefined,
-      statusBucket: "needs_review" as const,
+      statusBucket: "needs_review",
       title: "Review the release",
       turnKey: "msg_u1",
       version: 1,
     };
-    render(
+    const otherTask: ChatCreatedTask = {
+      ...task,
+      conversationId: "cnv_task_archive_2",
+      title: "Second release",
+    };
+
+    const { rerender } = render(
       <ChatTaskPanel
         items={[task]}
         onArchive={onArchive}
@@ -513,22 +1045,33 @@ describe("chat task panel", () => {
       />
     );
 
-    const item = await screen.findByTestId("chat-task-item-cnv_task_archive");
-    const archiveButton = screen.getByRole("button", {
-      name: "Archive task",
-    });
-    const actions = item.querySelector(".comma-chat-task-item-actions");
-    expect(item.querySelectorAll("button")).toHaveLength(4);
+    const singleFocus = await screen.findByTestId("chat-task-item-cnv_task_archive");
+    const singleArchive = screen.getByRole("button", { name: "Archive task" });
+    expect(singleFocus.querySelectorAll("button")).toHaveLength(4);
+    await user.click(singleArchive);
+    await user.click(screen.getByRole("menuitem", { name: "Archive task" }));
+    expect(onArchive).toHaveBeenCalledExactlyOnceWith(task);
+
+    // Inside the expanded popover, clicking the portaled menu item must keep the popover mounted until archive runs.
+    onArchive.mockClear();
+    rerender(
+      <ChatTaskPanel
+        defaultOpenPopover="attention"
+        items={[task, otherTask]}
+        onArchive={onArchive}
+        onDismiss={onDismiss}
+        onOpen={onOpen}
+        onReveal={onReveal}
+      />
+    );
+    await user.click(screen.getByTestId("chat-dock-attention-toggle"));
+    const row = await screen.findByTestId("chat-task-item-cnv_task_archive");
+    const actions = row.querySelector(".comma-chat-task-item-actions");
+    const archiveButton = row.querySelector<HTMLElement>(
+      '[aria-label="Archive task"]'
+    )!;
     expect(actions?.contains(archiveButton)).toBe(true);
-    expect(
-      actions?.contains(screen.getByTestId("chat-task-dismiss-cnv_task_archive"))
-    ).toBe(true);
-    expect(
-      actions?.contains(screen.getByTestId("chat-task-reveal-cnv_task_archive"))
-    ).toBe(true);
-
     await user.click(archiveButton);
-
     expect(onOpen).not.toHaveBeenCalled();
     expect(onReveal).not.toHaveBeenCalled();
     expect(onDismiss).not.toHaveBeenCalled();
@@ -669,7 +1212,6 @@ function message(
     text,
     ...overrides,
   };
-  // The Tasks an agent's message announces, as the core names them.
   return role === "user"
     ? built
     : { ...built, ...createdTasksOf(built.parts ?? [], built.refs) };
@@ -755,7 +1297,6 @@ function renderConversation({
   };
 }
 
-// Fixture server state is supplied separately from the transcript render path.
 function canonicalTaskProjection(state: ConversationChannelState) {
   const tasks = state.messages.flatMap((entry) =>
     entry.role === "user"
@@ -780,5 +1321,22 @@ function canonicalTaskProjection(state: ConversationChannelState) {
       workspaceId: "wsp_1",
       workspaceName: "Workspace",
     })),
+  };
+}
+
+function openQuestion(messageId: string, prompt: string): ChatQuestionPart {
+  return {
+    allowOther: false,
+    // Independent cards, such as station cards, stay open side by side.
+    independent: true,
+    choices: [
+      { id: "yes", label: "Yes" },
+      { id: "no", label: "No" },
+    ],
+    kind: "question",
+    messageId,
+    multiSelect: false,
+    prompt,
+    state: { status: "open" },
   };
 }

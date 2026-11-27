@@ -24,6 +24,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>comma-ios-dev</string>
+				<string>comma-staging</string>
 				<string>comma</string>
 			</array>
 		</dict>
@@ -36,6 +37,10 @@
 	<string>$(COMMA_PUSH_ENVIRONMENT)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>iosamap</string>
+	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Comma uses Bluetooth to find your device and set it up. It is only used while you add a device.</string>
 	<key>NSCameraUsageDescription</key>
@@ -43,7 +48,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Comma connects straight to your computers on this network when it can.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Lets an Agent read your location while you use Comma, when it needs to know where you are.</string>
+	<string>Lets an Agent read your location while you use Comma, when it needs to know where you are, and with each message you send while Share location is on.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Talk with Comma in a voice call, or dictate a message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

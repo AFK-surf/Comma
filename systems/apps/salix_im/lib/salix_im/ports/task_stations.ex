@@ -85,7 +85,60 @@ defmodule SalixIM.Ports.TaskStations do
   """
   @callback sessions(group_id :: String.t(), conversation_id :: String.t()) ::
               {:ok, %{String.t() => String.t()}} | {:error, term()}
-  @optional_callbacks moved: 1, sessions: 2, terminal_urls: 2, update_github: 3
+
+  @doc "Checks whether the target `runs_on` station/Cloud VM supports multi-session Tasks before side effects."
+  @callback check_multi_session(tenant_id :: String.t(), group_id :: String.t(), runs_on :: map()) ::
+              :ok | {:error, term()}
+
+  @doc "Adds a dynamically created secondary worker session to a station or sandbox Task."
+  @callback add_session(entry :: map()) :: :ok | {:error, term()}
+
+  @doc "Queries all active session statuses (`task.status {all: true}`) on a station/sandbox Task."
+  @callback session_statuses(group_id :: String.t(), conversation_id :: String.t()) ::
+              {:ok, map()} | :unknown
+
+  @doc "Hydrates committed `participant_id`s onto reserved sandbox start specs after `create_task` commits."
+  @callback hydrate_participant_ids(
+              tenant_id :: String.t(),
+              conversation_id :: String.t(),
+              pid_by_slot :: map()
+            ) :: :ok | {:error, term()}
+
+  @doc "Tells a station device to leave a Task (e.g. cleanup after partial multi-session create failure)."
+  @callback leave_device(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              conversation_id :: String.t(),
+              device_id :: String.t()
+            ) :: :ok
+
+  @doc "Asks a station to start a Session and also returns the exact `connector_run_id` that executed the RPC."
+  @callback invite_with_run(invite :: map()) ::
+              {:ok, {String.t(), String.t() | nil}} | {:ok, :when_connected} | {:error, term()}
+
+  @doc "Tells a station device to leave a single specific session or slot of a Task over `run_id` (optionally fenced by `claim_token`)."
+  @callback leave_session(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              conversation_id :: String.t(),
+              device_id :: String.t(),
+              session :: String.t() | nil,
+              run_id :: String.t() | nil,
+              claim_token :: String.t() | nil,
+              slot :: String.t() | nil
+            ) :: :ok
+
+  @optional_callbacks invite_with_run: 1,
+                      leave_session: 8,
+                      moved: 1,
+                      sessions: 2,
+                      terminal_urls: 2,
+                      update_github: 3,
+                      check_multi_session: 3,
+                      add_session: 1,
+                      session_statuses: 2,
+                      hydrate_participant_ids: 3,
+                      leave_device: 4
 
   @doc "A Message was added to a Task. Never waits for a station."
   @callback appended(group_id :: String.t(), conversation_id :: String.t()) :: :ok
@@ -142,6 +195,25 @@ defmodule SalixIM.Ports.TaskStations do
     case impl() do
       nil -> {:error, :task_stations_not_configured}
       module -> module.invite(invite)
+    end
+  end
+
+  @spec invite_with_run(map()) ::
+          {:ok, {String.t(), String.t() | nil}} | {:ok, :when_connected} | {:error, term()}
+  def invite_with_run(invite) when is_map(invite) do
+    case impl() do
+      nil ->
+        {:error, :task_stations_not_configured}
+
+      module ->
+        if function_exported?(module, :invite_with_run, 1) do
+          module.invite_with_run(invite)
+        else
+          case module.invite(invite) do
+            {:ok, session} when is_binary(session) -> {:ok, {session, nil}}
+            other -> other
+          end
+        end
     end
   end
 
@@ -235,6 +307,141 @@ defmodule SalixIM.Ports.TaskStations do
     case impl() do
       nil -> :unknown
       module -> module.session_status(group_id, conversation_id)
+    end
+  end
+
+  @spec check_multi_session(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def check_multi_session(tenant_id, group_id, runs_on) when is_map(runs_on) do
+    module = impl()
+
+    if module && function_exported?(module, :check_multi_session, 3),
+      do: module.check_multi_session(tenant_id, group_id, runs_on),
+      else: :ok
+  end
+
+  @spec add_session(map()) :: :ok | {:error, term()}
+  def add_session(entry) when is_map(entry) do
+    module = impl()
+
+    if module && function_exported?(module, :add_session, 1),
+      do: module.add_session(entry),
+      else: :ok
+  end
+
+  def verify_slot_unbound(
+        group_id,
+        conversation_id,
+        device_id,
+        slot,
+        stale_tok,
+        expected_invite_id
+      ) do
+    module = impl()
+
+    if module && function_exported?(module, :verify_slot_unbound, 6) do
+      module.verify_slot_unbound(
+        group_id,
+        conversation_id,
+        device_id,
+        slot,
+        stale_tok,
+        expected_invite_id
+      )
+    else
+      :not_implemented
+    end
+  end
+
+  @spec session_statuses(String.t(), String.t()) :: {:ok, map()} | :unknown
+  def session_statuses(group_id, conversation_id) do
+    module = impl()
+
+    cond do
+      is_nil(module) ->
+        :unknown
+
+      function_exported?(module, :session_statuses, 2) ->
+        module.session_statuses(group_id, conversation_id)
+
+      true ->
+        module.session_status(group_id, conversation_id)
+    end
+  end
+
+  @spec hydrate_participant_ids(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def hydrate_participant_ids(tenant_id, conversation_id, pid_by_slot)
+      when is_binary(tenant_id) and is_binary(conversation_id) and is_map(pid_by_slot) do
+    module = impl()
+
+    if module && function_exported?(module, :hydrate_participant_ids, 3),
+      do: module.hydrate_participant_ids(tenant_id, conversation_id, pid_by_slot),
+      else: :ok
+  end
+
+  @spec leave_device(String.t(), String.t(), String.t(), String.t()) :: :ok
+  def leave_device(tenant_id, group_id, conversation_id, device_id)
+      when is_binary(tenant_id) and is_binary(group_id) and is_binary(conversation_id) and
+             is_binary(device_id) do
+    module = impl()
+
+    if module && function_exported?(module, :leave_device, 4),
+      do: module.leave_device(tenant_id, group_id, conversation_id, device_id),
+      else: :ok
+  end
+
+  @spec leave_session(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          String.t() | nil,
+          String.t() | nil
+        ) :: :ok
+  def leave_session(
+        tenant_id,
+        group_id,
+        conversation_id,
+        device_id,
+        session,
+        run_id,
+        claim_token \\ nil,
+        slot \\ nil
+      )
+      when is_binary(tenant_id) and is_binary(group_id) and is_binary(conversation_id) and
+             is_binary(device_id) and (is_binary(session) or is_binary(slot)) do
+    module = impl()
+
+    cond do
+      module && function_exported?(module, :leave_session, 8) ->
+        module.leave_session(
+          tenant_id,
+          group_id,
+          conversation_id,
+          device_id,
+          session,
+          run_id,
+          claim_token,
+          slot
+        )
+
+      (module && function_exported?(module, :leave_session, 7)) and is_binary(session) ->
+        module.leave_session(
+          tenant_id,
+          group_id,
+          conversation_id,
+          device_id,
+          session,
+          run_id,
+          claim_token
+        )
+
+      (module && function_exported?(module, :leave_session, 6)) and is_binary(session) ->
+        module.leave_session(tenant_id, group_id, conversation_id, device_id, session, run_id)
+
+      true ->
+        :ok
     end
   end
 

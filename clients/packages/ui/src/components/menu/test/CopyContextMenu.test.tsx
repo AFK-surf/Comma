@@ -17,9 +17,11 @@ const FakeHighlight = class extends Set<AbstractRange> {
 
 const CopyMenuHost = ({
   disabled,
+  forwardLabel,
   onAction,
 }: {
   disabled?: boolean;
+  forwardLabel?: string;
   onAction: (action: string) => void;
 }) => {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -45,6 +47,7 @@ const CopyMenuHost = ({
         labels={{
           ariaLabel: "Text menu",
           copy: "Copy",
+          forward: forwardLabel,
         }}
         onAction={onAction}
         onOpenChange={handleOpenChange}
@@ -142,9 +145,36 @@ describe("CopyContextMenu", () => {
     const items = screen.getAllByRole("menuitem");
     expect(items).toHaveLength(1);
     expect(items[0]).toHaveTextContent("Copy");
+    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
 
     await user.click(items[0]!);
     expect(onAction).toHaveBeenCalledWith("copy");
+  });
+
+  it("renders Share separated by a divider when provided and dispatches forward action", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(<CopyMenuHost forwardLabel="Share" onAction={onAction} />);
+
+    await user.pointer({
+      keys: "[MouseRight>]",
+      target: screen.getByRole("button", { name: "Text" }),
+    });
+
+    const items = screen.getAllByRole("menuitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("Copy");
+    expect(items[1]).toHaveTextContent("Share");
+    const separator = screen.getByRole("separator");
+    expect(
+      items[0]!.compareDocumentPosition(separator) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      separator.compareDocumentPosition(items[1]!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    await user.click(items[1]!);
+    expect(onAction).toHaveBeenCalledWith("forward");
   });
 
   it("disables Copy when the action is unavailable", async () => {

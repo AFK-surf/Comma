@@ -67,26 +67,58 @@ defmodule SalixIM.TaskRun do
   @spec switch(String.t(), String.t(), map(), String.t()) :: {:ok, map()} | {:error, term()}
   def switch(group_id, conversation_id, params, user_id) when is_map(params) do
     with {:ok, conversation} <- task(group_id, conversation_id),
-         {:ok, runs_on} <- requested_place(conversation, params["runs_on"]),
-         {:ok, group} <- GroupDirectory.get_group(group_id),
-         scope = %{tenant_id: group["tenant_id"], group_id: group_id},
-         worker_agent_id = conversation["task_worker_agent_id"],
-         {:ok, worker} <- worker(group_id, conversation_id, worker_agent_id),
-         {:ok, placement} <- placement(scope, conversation, worker_agent_id, runs_on, params),
-         :ok <- not_mid_turn(group_id, conversation_id, worker),
-         {:ok, stations} <- TaskStations.sessions(group_id, conversation_id),
-         {:ok, to} <- invite(scope, conversation_id, worker_agent_id, placement, stations),
-         :ok <- moved(group_id, conversation_id, stations, to) do
-      ConversationServer.switch_task_run(group_id, conversation_id, %{
-        "runs_on" => placement.runs_on,
-        "worker" => desired_worker(worker, placement, group),
-        "notice" => notice(placement, user_id)
-      })
+         {:ok, switch_token} <-
+           ConversationServer.acquire_task_run_switch(group_id, conversation_id) do
+      try do
+        with {:ok, runs_on} <- requested_place(conversation, params["runs_on"]),
+             {:ok, group} <- GroupDirectory.get_group(group_id),
+             scope = %{tenant_id: group["tenant_id"], group_id: group_id},
+             worker_agent_id = conversation["task_worker_agent_id"],
+             {:ok, worker} <- worker(group_id, conversation_id, worker_agent_id),
+             {:ok, placement} <-
+               placement(scope, conversation, worker_agent_id, runs_on, params),
+             :ok <- not_mid_turn(group_id, conversation_id, worker),
+             {:ok, stations} <- TaskStations.sessions(group_id, conversation_id),
+             {:ok, to} <- invite(scope, conversation_id, worker_agent_id, placement, stations),
+             :ok <- moved(group_id, conversation_id, stations, to) do
+          case ConversationServer.switch_task_run(group_id, conversation_id, %{
+                 "runs_on" => placement.runs_on,
+                 "worker" => desired_worker(worker, placement, group),
+                 "notice" => notice(placement, user_id)
+               }) do
+            {:ok, updated} ->
+              {:ok, updated}
+
+            {:error, {:bad_request, _reason}} = err ->
+              log_orphan_station_move(conversation_id, to, err)
+              err
+
+            {:error, _reason} = err ->
+              err
+          end
+        end
+      after
+        _ = ConversationServer.release_task_run_switch(group_id, conversation_id, switch_token)
+      end
     end
   end
 
   def switch(_group_id, _conversation_id, _params, _user_id),
     do: {:error, {:bad_request, "runs_on and model are required"}}
+
+  defp log_orphan_station_move(conversation_id, %{device_id: device_id}, err)
+       when is_binary(device_id) and device_id != "" do
+    require Logger
+
+    Logger.warning(
+      "task_run_switch commit rejected after station move conversation=#{conversation_id} " <>
+        "device=#{device_id} err=#{inspect(err)}; leaving orphan cleanup to Station gone"
+    )
+
+    :ok
+  end
+
+  defp log_orphan_station_move(_conversation_id, _to, _err), do: :ok
 
   defp task(group_id, conversation_id) do
     case Conversations.get_group_conversation(group_id, conversation_id) do
@@ -95,6 +127,12 @@ defmodule SalixIM.TaskRun do
       {:ok, %{"kind" => "agent_task", "runs_on" => %{"kind" => "sandbox"}, "repo" => %{}}} ->
         {:error,
          {:bad_request, "a coding Task runs on its own sandbox; its model is not switched"}}
+
+      # A Task together stays on Comma's own servers and model: its members can
+      # have its Worker act, so it never runs on its host's machine or account
+      # (`SalixIM.TaskPlacement.create_collaborative_task_conversation/4`).
+      {:ok, %{"kind" => "agent_task", "metadata" => %{"collaboration" => %{}}}} ->
+        {:error, {:bad_request, "a Task together runs on Comma's own model; it is not switched"}}
 
       {:ok, %{"kind" => "agent_task", "task_worker_agent_id" => worker} = conversation}
       when is_binary(worker) and worker != "" ->
@@ -144,7 +182,7 @@ defmodule SalixIM.TaskRun do
 
   defp worker(group_id, conversation_id, agent_id) do
     with {:ok, %{"participant_id" => participant_id}} <-
-           ConversationServer.get_group_conversation_agent_participant_identity(
+           ConversationServer.get_group_conversation_primary_worker_identity(
              group_id,
              conversation_id,
              agent_id

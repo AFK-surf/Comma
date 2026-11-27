@@ -12,10 +12,7 @@
     <string name="devices_add_bluetooth_off">蓝牙已关闭。打开蓝牙才能找到设备。</string>
     <string name="devices_add_allow_bluetooth">允许使用蓝牙</string>
     <string name="devices_add_turn_on_bluetooth">打开蓝牙</string>
-    <string name="devices_nearby_permission_title">查找附近的 Comma 设备</string>
-    <string name="devices_nearby_permission_body">允许“附近的设备”权限后，打开 App 时可以找到新的 Comma 设备。</string>
     <string name="devices_nearby_permission_not_now">以后再说</string>
-    <string name="devices_nearby_permission_continue">继续</string>
 
     <string name="devices_add_scan_title">正在查找设备</string>
     <string name="devices_add_scan_body">给 Comma 设备接上电源。带屏幕的新设备会在屏幕上显示“Hello”。要重新设置一台设备，按住它的按键 3 秒后松开。</string>

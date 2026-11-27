@@ -11,14 +11,24 @@ data class AgentQuestion(
     /** The Agent message that asks; the answer replies to it. */
     val messageId: String,
     val prompt: String,
-    /** Two to six, in the order the Agent gave them. */
+    /** One to six, in the order the Agent gave them. */
     val choices: List<QuestionChoice>,
     val multiSelect: Boolean,
     val allowOther: Boolean,
     val state: QuestionState,
+    /** Externally bound card (e.g. a Monoid station card): never replaced by later questions or plain replies. */
+    val independent: Boolean = false,
+    /** `"dismiss"` for cards whose secondary action dismisses the card instead of letting the agent decide. */
+    val skipBehavior: String? = null,
 ) {
-    /** The choice a single-select card starts on; null for a multi-select card or when none is recommended. */
-    val recommended: String? get() = if (multiSelect) null else choices.firstOrNull { it.recommended }?.id
+    /**
+     * The choice a single-select card starts on: the recommended one, or a sole choice, which is the answer Send gives.
+     * Null for a multi-select card or when none applies.
+     */
+    val recommended: String? get() = if (multiSelect) null else (choices.firstOrNull { it.recommended } ?: choices.singleOrNull())?.id
+
+    /** Whether skipping this card dismisses it instead of handing the decision to the agent. */
+    val dismissOnSkip: Boolean get() = skipBehavior == "dismiss"
 
     /** The core's own JSON of the part, read back by [parse]. */
     fun json(): JSONObject = JSONObject().put("kind", "question").put("messageId", messageId).put("prompt", prompt)
@@ -30,6 +40,10 @@ data class AgentQuestion(
             }
         }))
         .put("multiSelect", multiSelect).put("allowOther", allowOther)
+        .apply {
+            if (independent) put("independent", true)
+            skipBehavior?.let { put("skipBehavior", it) }
+        }
         .put("state", JSONObject().put("status", state.status.wire).apply {
             if (state.choiceIds.isNotEmpty()) put("choiceIds", JSONArray(state.choiceIds))
             state.other?.let { put("other", it) }
@@ -53,7 +67,7 @@ data class AgentQuestion(
                     recommended = choice.optBoolean("recommended"),
                 )
             }
-            if (choices.size != listed.length() || choices.size !in 2..6 || choices.distinctBy { it.id }.size != choices.size) return null
+            if (choices.size != listed.length() || choices.size !in 1..6 || choices.distinctBy { it.id }.size != choices.size) return null
             val state = json.optJSONObject("state") ?: return null
             val status = QuestionStatus.entries.firstOrNull { it.wire == state.optString("status") } ?: return null
             val picked = state.optJSONArray("choiceIds")
@@ -67,6 +81,8 @@ data class AgentQuestion(
                     other = state.opt("other") as? String,
                     error = state.string("error"),
                 ),
+                independent = json.optBoolean("independent", false),
+                skipBehavior = json.string("skipBehavior"),
             )
         }
     }

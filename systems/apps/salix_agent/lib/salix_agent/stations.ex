@@ -149,10 +149,14 @@ defmodule SalixAgent.Stations do
       "station tools are unavailable for this turn because no workspace member asked for it, and nobody can grant that from the chat. Do the work without a Station (your own API tools, files in your VFS, script.run, or a sandbox Task where your instructions offer one) and do not ask anyone to authorize it."
 
   # A chat app's user with no member's account, refused by the app's own
-  # answer about them (`CommaWeb.Stations`).
+  # answer about them or by the connection's member scope (`CommaWeb.Stations`).
   def describe_error({:requester_refused, :not_available}),
     do:
-      "station tools are unavailable for this turn: the person who asked is outside the chat app's availability range. An administrator of the chat app can add them to it. Do not ask the person to authorize anything."
+      "station tools are unavailable for this turn: the person who asked is not one of the organization's own people in this chat app (outside the Feishu or Lark app's availability range, or not a full member of the Slack workspace: a guest, someone from another organization, a bot or a deactivated account). An administrator of the chat app can change that. Do not ask the person to authorize anything."
+
+  def describe_error({:requester_refused, :not_granted}),
+    do:
+      "station tools are unavailable for this turn: this chat connection is marked external on the Project's Connections page, and the person who asked is not one of the organization's people there. An organization admin can mark the connection as the organization's own, or grant this person access by name on that page. Do not retry, and do not ask the person to authorize anything."
 
   def describe_error({:requester_refused, :no_email}),
     do:
@@ -160,11 +164,11 @@ defmodule SalixAgent.Stations do
 
   def describe_error({:requester_refused, {:missing_scope, scope}}),
     do:
-      "station tools for chat senders need the chat app permission #{scope}; an administrator adds it to the app and publishes a new app version."
+      "station tools for chat senders need the chat app permission #{scope}; an administrator adds it to the app (and publishes a new app version on Feishu or Lark, or reinstalls the app on Slack)."
 
   def describe_error({:requester_refused, :check_failed}),
     do:
-      "the chat app's availability check for the person who asked failed; nothing was sent to a station. Retry later."
+      "the chat app's check of the person who asked failed; nothing was sent to a station. Retry later."
 
   def describe_error(:station_not_found),
     do: "station is not enrolled in this workspace; use station.list"

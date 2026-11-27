@@ -114,6 +114,14 @@ defmodule SalixMeet.JoinDispatch do
       :ok ->
         checkpoint_success(meeting_id, generation, doc, opts)
 
+      {:ok, %{"accepted" => false, "reason_code" => "already_in_meeting"} = rejection} ->
+        checkpoint_other(
+          meeting_id,
+          generation,
+          {:abandoned, {:already_in_meeting, rejection["existing_meeting_id"]}},
+          opts
+        )
+
       {:ok, _response} ->
         checkpoint_success(meeting_id, generation, doc, opts)
 

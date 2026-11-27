@@ -28,13 +28,15 @@ export interface SettingsDialogProps extends Omit<SettingsPageProps, "onLayoutCh
 }
 
 const overlayMotion = {
-  enter: "duration-200 ease-out animate-in fade-in",
-  exit: "duration-150 ease-in animate-out fade-out",
+  enter:
+    "duration-[var(--motion-duration-dialog-enter)] ease-[var(--motion-easing-surface-smooth-out)] animate-in fade-in",
+  exit: "duration-[var(--motion-duration-dialog-exit)] ease-[var(--motion-easing-sharp-in)] animate-out fade-out",
 } as const;
 
 const modalMotion = {
-  enter: "duration-200 ease-out animate-in fade-in zoom-in-95 slide-in-from-top-1",
-  exit: "duration-150 ease-in animate-out fade-out zoom-out-95 slide-out-to-top-1",
+  enter:
+    "duration-[var(--motion-duration-dialog-enter)] ease-[var(--motion-easing-surface-smooth-out)] animate-in fade-in zoom-in-[0.97]",
+  exit: "duration-[var(--motion-duration-dialog-exit)] ease-[var(--motion-easing-sharp-in)] animate-out fade-out zoom-out-[0.97]",
 } as const;
 
 const SettingsDialogBodyContext = createContext<ReactNode>(null);

@@ -738,7 +738,8 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
           {"calendar_join_dispatch_skip", "in_doubt"},
           {"calendar_join_dispatch_skip", "unavailable"},
           {"calendar_enrollment_group", "dropped"},
-          {"meeting_delivery_claim", "error"}
+          {"meeting_delivery_claim", "error"},
+          {"meeting_notice_settle", "dropped"}
         ] do
       Salix.Telemetry.emit_operation("salix_meet", operation, "system", outcome, duration)
     end
@@ -761,7 +762,8 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
           {"calendar_join_dispatch_skip", "in_doubt"},
           {"calendar_join_dispatch_skip", "unavailable"},
           {"calendar_enrollment_group", "dropped"},
-          {"meeting_delivery_claim", "error"}
+          {"meeting_delivery_claim", "error"},
+          {"meeting_notice_settle", "dropped"}
         ] do
       assert scrape =~
                ~s(salix_operations_total{component="salix_meet",operation="#{operation}",outcome="#{outcome}",surface="system"} 1)

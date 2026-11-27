@@ -61,11 +61,14 @@ defmodule SalixAgent.SessionHistory.Worker do
     {:ok, %{cursor: nil, archive_cursor: nil}}
   end
 
+  # Every node reads the same due pages. A node queues only the Sessions of
+  # Agents placed on it, so one node visits each Session instead of every node
+  # waiting on the visit that holds its history row.
   def handle_info(:tick, state) do
     cursor =
       case safely("session_history_pending", fn -> Hot.due(state.cursor) end) do
         {rows, cursor} when is_list(rows) ->
-          Enum.each(rows, fn [agent, session] -> hint(agent, session) end)
+          hint_placed(rows)
           cursor
 
         _ ->
@@ -77,7 +80,7 @@ defmodule SalixAgent.SessionHistory.Worker do
              InternalSessionStore.PG.archive_work_page(state.archive_cursor)
            end) do
         {:ok, rows, cursor} ->
-          Enum.each(rows, fn [agent, session] -> hint(agent, session) end)
+          hint_placed(rows)
           cursor
 
         _ ->
@@ -86,6 +89,12 @@ defmodule SalixAgent.SessionHistory.Worker do
 
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, 250)
     {:noreply, %{state | cursor: cursor, archive_cursor: archive_cursor}}
+  end
+
+  defp hint_placed(rows) do
+    for [agent, session] <- rows,
+        SalixAgent.Placement.placed_here?(agent),
+        do: hint(agent, session)
   end
 
   def handle_cast(:drain, state) do
@@ -154,7 +163,15 @@ defmodule SalixAgent.SessionHistory.Worker do
     end
   end
 
+  # A visit with nothing to hand off does not take the row lock, which the
+  # Session commit and any other visit of the same Session also need.
   def transfer(agent, session) do
+    if Hot.transfer_due?(Hot.state(agent, session)),
+      do: transfer_locked(agent, session),
+      else: :caught_up
+  end
+
+  defp transfer_locked(agent, session) do
     with {:ok, {before, through, docs}} when through > before <-
            Hot.transfer_batch(agent, session) do
       case confirm(agent, session, docs) do

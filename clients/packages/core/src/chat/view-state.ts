@@ -56,6 +56,7 @@ export function projectionToChannelState(
     pending: projection.pending.map(pendingSend),
     participantStatus: projection.participantStatus,
     participantStatuses: projection.participantStatuses,
+    workerSessions: projection.workerSessions,
     boundWorker: projection.boundWorker,
     taskRun: projection.taskRun,
     taskRunBlocked: projection.taskRunBlocked,

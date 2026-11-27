@@ -10,9 +10,10 @@ defmodule SalixIM.Provider.QQ.Menu do
   optionally a prompt.
 
   QQ puts the name of a tapped item in the person's input box after a slash.
-  The message that arrives is `/<name>`. `prompt/3` gives the Router the
-  shortcut's prompt in its place; a shortcut without a prompt arrives as
-  written. A shortcut is ordinary input for the Router, never a control
+  The message that arrives is `/<name>`, or `/<name> <content>` when the
+  person writes after the name. `prompt/3` gives the Router the shortcut's
+  prompt in its place, followed by the content; a shortcut without a prompt
+  arrives as written. A shortcut is ordinary input for the Router, never a control
   command.
 
   ## Panels
@@ -51,6 +52,22 @@ defmodule SalixIM.Provider.QQ.Menu do
   @max_prompt_chars 500
 
   @default [
+    %{
+      "name" => "newgpttask",
+      "description" => "新建 Codex 任务",
+      "prompt" =>
+        "Create a task using a Codex worker. If no task content follows, ask the user briefly what task to create; otherwise create it now. Task content:",
+      "scope" => "all",
+      "admin_only" => false
+    },
+    %{
+      "name" => "newclaudetask",
+      "description" => "新建 Claude 任务",
+      "prompt" =>
+        "Create a task using a Claude worker. If no task content follows, ask the user briefly what task to create; otherwise create it now. Task content:",
+      "scope" => "all",
+      "admin_only" => false
+    },
     %{
       "name" => "总结群聊",
       "description" => "总结最近的群聊内容",
@@ -144,18 +161,34 @@ defmodule SalixIM.Provider.QQ.Menu do
   the message names, or `nil` when the message names none that has a prompt.
   """
   @spec prompt(map(), String.t(), String.t()) :: String.t() | nil
-  def prompt(connect, chat_type, "/" <> name) when is_map(connect) do
-    name = String.downcase(String.trim(name))
+  def prompt(connect, chat_type, "/" <> raw) when is_map(connect) do
+    case String.split(String.trim(raw), ~r/\s+/, parts: 2) do
+      [""] ->
+        nil
 
-    connect
-    |> shown(chat_type)
-    |> Enum.find_value(fn shortcut ->
-      if String.downcase(shortcut["name"]) == name and shortcut["prompt"] != "",
-        do: shortcut["prompt"]
-    end)
+      [head | rest] ->
+        name = String.downcase(head)
+
+        connect
+        |> shown(chat_type)
+        |> Enum.find_value(fn shortcut ->
+          if String.downcase(shortcut["name"]) == name and shortcut["prompt"] != "",
+            do: with_content(shortcut["prompt"], rest)
+        end)
+    end
   end
 
   def prompt(_connect, _chat_type, _body), do: nil
+
+  # A shortcut can take content after its name: `/<name> <content>`.
+  defp with_content(prompt, [content]) do
+    case String.trim(content) do
+      "" -> prompt
+      content -> prompt <> " " <> content
+    end
+  end
+
+  defp with_content(prompt, []), do: prompt
 
   @doc "The answer to `/help` in a QQ chat of this connect."
   @spec help_text(map(), String.t()) :: String.t()
@@ -177,7 +210,7 @@ defmodule SalixIM.Provider.QQ.Menu do
       end)
 
     [
-      "我是这个团队在 Bridge For Teams 上的 Agent。" <>
+      "我是这个团队在 Comma for Teams 上的 Agent。" <>
         if(chat_type == "group", do: "在群里 @我 并说明要做的事，", else: "直接发消息说明要做的事，") <>
         "我会处理并把结果发回这里。",
       section("指令", commands),
@@ -188,7 +221,7 @@ defmodule SalixIM.Provider.QQ.Menu do
         "接手耗时的任务并跟进，或按计划定时执行",
         "在远程设备和云电脑上运行代码，发布网站"
       ]),
-      "团队管理员可以在 Bridge For Teams 后台的 Connections 里连接 Feishu、Slack、QQ 等消息渠道和第三方帐号，" <>
+      "团队管理员可以在 Comma for Teams 后台的 Connections 里连接 Feishu、Slack、QQ 等消息渠道和第三方帐号，" <>
         "在 Plugins 和 Skills 里为 Agent 增加能力。"
     ]
     |> Enum.reject(&(&1 == ""))

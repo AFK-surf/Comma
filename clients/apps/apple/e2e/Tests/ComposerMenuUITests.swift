@@ -20,9 +20,9 @@ import XCTest
         for button in [mention, skill] { XCTAssertEqual(button.frame.midY, send.midY, accuracy: 1) }
         XCTAssertEqual(mention.label, "Mention a task")
         XCTAssertEqual(skill.label, "Use a skill")
-        app.at(0.5, 0.2).press(forDuration: 0.05, thenDragTo: app.at(0.5, 0.35))
+        app.dragKeyboardDown()
         XCTAssertTrue(app.keyboards.firstMatch.waitUntilGone(timeout: 3))
-        XCTAssertTrue(mention.waitUntilGone(), "Scrolling the transcript collapses the composer and its buttons")
+        XCTAssertTrue(mention.waitUntilGone(), "Dragging the keyboard down collapses the composer and its buttons")
         XCTAssertFalse(skill.exists)
     }
 
@@ -150,12 +150,48 @@ import XCTest
         XCTAssertTrue(menu.waitForExistence(timeout: 3))
         app.buttons["Add attachment"].tap()
         XCTAssertTrue(app.buttons["Photos"].waitUntilHittable())
+        let keyboard = app.keyboards.firstMatch
+        for title in ["Camera", "Photos", "Files", "Drive and System Files"] {
+            let row = app.buttons[title]
+            XCTAssertLessThanOrEqual(row.frame.maxY, keyboard.frame.minY, "\(title) must stay above the keyboard")
+            XCTAssertTrue(row.isHittable, "\(title) must be reachable above the keyboard")
+        }
         XCTAssertTrue(menu.waitUntilGone(), "The + card closes the @ menu")
         XCTAssertTrue(app.element("composerMention").waitUntilUnhittable(), "The card covers @ and /")
-        app.at(0.5, 0.3).tap()
+        app.at(0.5, 0.2).tap()
         XCTAssertTrue(app.buttons["Photos"].waitUntilUnhittable())
         XCTAssertTrue(menu.waitForExistence(timeout: 3), "Closing the card brings the menu back")
         XCTAssertEqual(composer.value as? String, "@")
+    }
+
+    func testTaskDockAttachmentMenuStaysAboveTheKeyboard() throws {
+        let app = XCUIApplication.fixture(light: true, arguments: ["--hide-metrics"])
+        let task = app.element("task-review0")
+        XCTAssertTrue(task.waitForExistence(timeout: 10))
+        task.tap()
+        let close = app.buttons["Close task"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        let composer = try XCTUnwrap(app.descendants(matching: .any).matching(identifier: "chatComposer")
+            .allElementsBoundByIndex.first(where: \.isHittable))
+        focus(composer, in: app)
+        let keyboard = app.keyboards.firstMatch
+        let add = try XCTUnwrap(app.buttons.matching(NSPredicate(format: "label == %@", "Add attachment"))
+            .allElementsBoundByIndex.first(where: \.isHittable))
+        add.tap()
+        let camera = app.buttons["Camera"]
+        XCTAssertTrue(camera.waitUntilHittable())
+        _ = keepScreenshot(app, "Task attachment menu above keyboard")
+        for title in ["Camera", "Photos", "Files", "Drive and System Files"] {
+            let row = app.buttons[title]
+            XCTAssertTrue(row.exists, "\(title) must appear in the attachment menu")
+            XCTAssertLessThanOrEqual(row.frame.maxY, keyboard.frame.minY,
+                                     "\(title) must stay above the keyboard (\(row.frame) vs keyboard \(keyboard.frame))")
+            XCTAssertGreaterThanOrEqual(row.frame.minY, close.frame.maxY,
+                                        "\(title) must stay below the Task header")
+            XCTAssertTrue(row.isHittable, "\(title) must be reachable above the keyboard")
+        }
+        app.at(0.5, 0.25).tap()
+        XCTAssertTrue(camera.waitUntilUnhittable())
     }
 
     /// Photos picked from the panel show as tiles at once and upload side by side; Send waits until every one has

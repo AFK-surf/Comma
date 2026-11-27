@@ -304,27 +304,18 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
     # Without sandboxes, automatic placement falls through to the Cloud VM.
     assert {:error, :cloud_vm_disabled} = SalixWeb.TaskStations.resolve(request, runtime)
 
-    SystemsRuntime.put_env(:salix_web, :l4es, url: "https://l4es.test", max_sandboxes: 2)
-    SystemsRuntime.put_env(:salix_web, :l4es_assertion_signer, Signer)
-    sandboxes_mod = SystemsRuntime.get_env(:salix_agent, :sandboxes_mod)
-    SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SalixWeb.L4ES)
-
-    on_exit(fn ->
-      for key <- [:l4es, :l4es_assertion_signer], do: SystemsRuntime.delete_env(:salix_web, key)
-      SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired)
-
-      if sandboxes_mod,
-        do: SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, sandboxes_mod),
-        else: SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
-    end)
+    sandboxes_on!()
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired) end)
 
     # Sandboxes set up, the Cloud VM not retired: automatic placement still ends at the Cloud VM.
     assert {:error, :cloud_vm_disabled} = SalixWeb.TaskStations.resolve(request, runtime)
 
     SystemsRuntime.put_env(:salix_agent, :cloud_vm_retired, true)
 
-    # No VMM Station, no personal Station of the requester: a sandbox.
+    # No VMM Station, no personal Station of the requester: a sandbox, which
+    # runs Codex on the workspace's Codex account.
     assert {:ok, %{"kind" => "sandbox"}} = SalixWeb.TaskStations.resolve(request, runtime)
+    lend(scope, "codex-team", "codex")
 
     assert {:ok, %{runs_on: %{"kind" => "sandbox"}}} =
              TaskPlacement.resolve(request, scope.agent_id, %{"model" => runtime}, false)
@@ -345,6 +336,119 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
     # A Loop Task takes no default: it runs inside Salix.
     assert {:ok, %{runs_on: nil}} =
              TaskPlacement.resolve(request, scope.agent_id, %{}, true)
+  end
+
+  test "a sandbox Task's runtime needs an account the workspace lends a sandbox", %{scope: scope} do
+    SystemsRuntime.put_env(:salix_web, :l4es, url: "https://l4es.test", max_sandboxes: 2)
+    SystemsRuntime.put_env(:salix_web, :l4es_assertion_signer, Signer)
+
+    on_exit(fn ->
+      for key <- [:l4es, :l4es_assertion_signer], do: SystemsRuntime.delete_env(:salix_web, key)
+    end)
+
+    claude = %{"kind" => "runtime", "provider" => "claude"}
+    sandbox = %{"runs_on" => %{"kind" => "sandbox"}, "model" => claude}
+
+    # No account at all: no runtime runs there.
+    assert {:error, {:model, {:not_in_sandbox, []}}} =
+             TaskPlacement.resolve(
+               scope,
+               scope.agent_id,
+               put_in(sandbox, ["model", "provider"], "codex"),
+               false
+             )
+
+    lend(scope, "codex-team", "codex")
+
+    # A Codex account only: the sandbox's station would refuse a Claude Task
+    # once started, so the placement refuses it before a sandbox is made.
+    assert {:error, {:model, {:not_in_sandbox, ["codex"]}} = refusal} =
+             TaskPlacement.resolve(scope, scope.agent_id, sandbox, false)
+
+    assert TaskPlacement.message(refusal) =~ "accounts for codex only"
+
+    # So is a model id of that runtime.
+    assert {:error, {:model, {:not_in_sandbox, _}}} =
+             TaskPlacement.resolve(
+               scope,
+               scope.agent_id,
+               put_in(sandbox, ["model", "model"], "claude-opus-5-5"),
+               false
+             )
+
+    lend(scope, "claude-team", "claude")
+
+    assert {:ok, %{runs_on: %{"kind" => "sandbox"}, session_model: ^claude}} =
+             TaskPlacement.resolve(scope, scope.agent_id, sandbox, false)
+  end
+
+  test "a Task that selected one account is checked against that account alone",
+       %{scope: scope} do
+    sandboxes_on!()
+    lend(scope, "codex-team", "codex")
+    lend(scope, "claude-team", "claude")
+    claude = %{"kind" => "runtime", "provider" => "claude"}
+
+    create = fn account ->
+      TaskPlacement.create_task_conversation(scope.group_id, scope.agent_id, %{
+        "title" => "Fix it",
+        "content" => "Fix it",
+        "runs_on" => %{"kind" => "sandbox"},
+        "model" => claude,
+        "account_id" => account,
+        "client_request_id" => "selected-#{account}"
+      })
+    end
+
+    # The sandbox would be lent the Codex account alone, so Claude is refused
+    # before a Task or sandbox is made.
+    assert {:error, {:model, {:not_in_sandbox, ["codex"]}}} = create.("codex-team")
+    assert {:ok, _task} = create.("claude-team")
+  end
+
+  test "a Worker bound to a sandbox with a runtime the sandbox cannot run is refused",
+       %{scope: scope} do
+    sandboxes_on!()
+
+    {:ok, bound} =
+      SalixAgent.Control.create(
+        %{
+          "group_id" => scope.group_id,
+          "name" => "Claude in a sandbox",
+          "role" => "worker",
+          "station_binding" => %{
+            "runs_on" => %{"kind" => "sandbox"},
+            "model" => %{"kind" => "runtime", "provider" => "claude"}
+          }
+        },
+        scope.tenant_id
+      )
+
+    # The Task names no model: the binding's runtime is checked as a named one.
+    lend(scope, "codex-team", "codex")
+
+    assert {:error, {:model, {:not_in_sandbox, ["codex"]}}} =
+             TaskPlacement.resolve(scope, bound["agent_id"], %{}, false)
+
+    lend(scope, "claude-team", "claude")
+
+    assert {:ok, %{runs_on: %{"kind" => "sandbox"}, session_model: %{"provider" => "claude"}}} =
+             TaskPlacement.resolve(scope, bound["agent_id"], %{}, false)
+  end
+
+  defp sandboxes_on! do
+    SystemsRuntime.put_env(:salix_web, :l4es, url: "https://l4es.test", max_sandboxes: 2)
+    SystemsRuntime.put_env(:salix_web, :l4es_assertion_signer, Signer)
+    sandboxes_mod = SystemsRuntime.get_env(:salix_agent, :sandboxes_mod)
+    SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SalixWeb.L4ES)
+
+    on_exit(fn ->
+      for key <- [:l4es, :l4es_assertion_signer], do: SystemsRuntime.delete_env(:salix_web, key)
+
+      if sandboxes_mod,
+        do: SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, sandboxes_mod),
+        else: SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+    end)
   end
 
   test "concurrent automatic creates invite only the winning receipt's Station", %{scope: scope} do
@@ -448,7 +552,7 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
     station = Repo.get!(Compute.Workload, id)
     now = SystemsClock.utc_now()
 
-    park = fn code ->
+    park = fn code, detail ->
       Repo.delete_all(from(c in Compute.ReconcilerClaim, where: c.workload_id == ^id))
 
       Repo.insert!(%Compute.ReconcilerClaim{
@@ -458,7 +562,7 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
         generation: station.generation,
         claim_token: "parked",
         attempt_count: 9,
-        last_error: %{"kind" => "action_required", "code" => code},
+        last_error: Map.merge(%{"kind" => "action_required", "code" => code}, detail),
         created_at: now,
         updated_at: now
       })
@@ -475,13 +579,48 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
       Repo.get_by!(Compute.ReconcilerClaim, workload_id: id).last_error
     end
 
-    # A person must inspect the old container first.
-    park.("container_start_evidence_unavailable")
-    assert %{"kind" => "action_required"} = reconnect.("3")
+    # A person must inspect the old container, free Host storage, or replace
+    # the image first.
+    for {code, detail, epoch} <- [
+          {"container_start_evidence_unavailable", %{}, "3"},
+          {"resource_capacity_exhausted", %{"resource" => "storage_headroom"}, "4"},
+          {"invalid_argument", %{"stage" => "image_import", "image_import_failures" => 1}, "5"}
+        ] do
+      park.(code, detail)
+      assert %{"kind" => "action_required", "code" => ^code} = reconnect.(epoch)
+    end
 
-    park.("provider_command_outcome_unknown")
-    assert reconnect.("4") == %{}
+    park.("provider_command_outcome_unknown", %{})
+    assert reconnect.("6") == %{}
     assert Repo.get!(Compute.Workload, id).observed_state == "pending"
+
+    # Import attempts used up on the old Host get a new window on the new one.
+    for {code, epoch} <- [{"image_import_failed", "7"}, {"deadline_exceeded", "8"}] do
+      park.(code, %{"stage" => "image_import", "image_import_failures" => 5})
+      assert reconnect.(epoch) == %{}
+      assert Repo.get!(Compute.Workload, id).observed_state == "pending"
+    end
+
+    # A Station waiting in retryable backoff wakes immediately on reconnect.
+    Repo.delete_all(from(c in Compute.ReconcilerClaim, where: c.workload_id == ^id))
+    retry_at = DateTime.add(SystemsClock.utc_now(), 60, :second)
+
+    Repo.insert!(%Compute.ReconcilerClaim{
+      id: "retryable-backoff",
+      provider: "agent_vmm",
+      workload_id: id,
+      generation: station.generation,
+      claim_token: "retryable",
+      attempt_count: 3,
+      last_error: %{"kind" => "retryable", "code" => "invalid_container_state"},
+      next_retry_at: retry_at,
+      created_at: now,
+      updated_at: now
+    })
+
+    assert %{"kind" => "retryable", "code" => "invalid_container_state"} = reconnect.("9")
+    claim = Repo.get_by!(Compute.ReconcilerClaim, workload_id: id)
+    assert DateTime.compare(claim.next_retry_at, SystemsClock.utc_now()) != :gt
   end
 
   test "concurrent preparation reuses one Station under its exact registration", %{scope: scope} do
@@ -805,6 +944,136 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
 
     send(caller, :continue_connection)
     assert {:error, :managed_provider_changed} = settled_await(task)
+  end
+
+  test "external IM computer choice reads same-thread history and Router replies from the Router session",
+       %{scope: scope} do
+    alias SalixAgent.InternalSession
+    alias SalixAgent.InternalSessionStore.PG
+
+    {mbp, _} = physical(scope, "mbp", "alice")
+    {mini, _} = physical(scope, "mini", "alice")
+
+    session_id = SalixStore.Ids.new_session_id()
+
+    slack_origin = fn msg_id, text, thread_ts ->
+      %{
+        "provider" => "slack",
+        "source_actor_type" => "provider_user",
+        "source_message_id" => msg_id,
+        "source_text" => text,
+        "provider_context" => %{
+          "connect_id" => "conn_slack",
+          "channel_id" => "C123",
+          "channel_type" => "mpim",
+          "thread_ts" => thread_ts
+        }
+      }
+    end
+
+    other_thread_origin = slack_origin.("m_other", "在 device-mbp 上跑", "999.0")
+    first_origin = slack_origin.("m_1", "帮我跑一下脚本", "100.1")
+    reply_origin = slack_origin.("m_2", "随便哪台都行", "100.1")
+
+    state =
+      InternalSession.new(scope.agent_id, session_id)
+      |> InternalSession.apply_events([
+        %{
+          "type" => "delivery",
+          "from_queue" => true,
+          "message_id" => 1,
+          "role" => "user",
+          "content" => "other thread",
+          "source_message_id" => "m_other",
+          "trusted_origin" => other_thread_origin
+        },
+        %{
+          "type" => "delivery",
+          "from_queue" => true,
+          "message_id" => 2,
+          "role" => "user",
+          "content" => "first request",
+          "source_message_id" => "m_1",
+          "trusted_origin" => first_origin
+        },
+        %{
+          "type" => "assistant",
+          "message_id" => 3,
+          "content" => "",
+          "tool_calls" => [
+            %{
+              id: "tc_reply_1",
+              name: "end_turn",
+              args: %{
+                "outcome" => "blocked",
+                "reply" => %{
+                  "tool" => "im_api.slack.send_message",
+                  "params" => %{
+                    "channel" => "C123",
+                    "thread_ts" => "100.1",
+                    "text" => "你现在有两台电脑在线：#{mbp} 和 #{mini}，这次想在哪台跑，还是用云端沙盒？"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ])
+
+    assert {:ok, frozen} = PG.prepare_import(scope.agent_id, state, %{})
+    assert {:ok, :ok} = Repo.transaction(fn -> PG.import_session!(frozen) end)
+
+    choice_scope =
+      Map.merge(scope, %{
+        requester_user_id: "alice",
+        computer_choice_session_id: session_id
+      })
+
+    assert {:ok, history} =
+             Salix.Bindings.AgentConversations.external_choice_messages(
+               choice_scope,
+               first_origin,
+               20
+             )
+
+    # Other thread is excluded; newest message is the Router's Slack reply, followed by m_1.
+    assert [
+             %{"actor_type" => "agent", "external_reply" => true},
+             %{"actor_type" => "user", "message_id" => "m_1"}
+           ] = history
+
+    # Before the Router asked (simulating a brand-new thread without prior reply), choice is required.
+    fresh_origin = slack_origin.("m_fresh", "帮我跑一下脚本", "200.1")
+
+    assert {:error, {:computer_choice_required, computers, "slack"}} =
+             SalixIM.ComputerChoice.check(
+               Map.put(choice_scope, :computer_choice, fresh_origin),
+               %{},
+               %{"kind" => "station", "device_id" => mbp}
+             )
+
+    assert length(computers) == 2
+
+    # Once the user replies in the same thread after the Router listed both computers,
+    # even without repeating a computer name ("随便哪台都行"), the guard does not loop.
+    assert :ok =
+             SalixIM.ComputerChoice.check(
+               Map.put(choice_scope, :computer_choice, reply_origin),
+               %{},
+               %{"kind" => "station", "device_id" => mbp}
+             )
+  end
+
+  # An enabled subscription account, which a sandbox's station is lent.
+  defp lend(scope, id, source) do
+    {:ok, _account} =
+      SalixAgent.SubscriptionStore.create(scope.tenant_id, %{
+        "id" => id,
+        "credential" => "subscription",
+        "source" => source,
+        "status" => "ok",
+        "disabled" => false
+      })
   end
 
   defp physical(scope, id, owner, models \\ %{"codex" => ["codex-default"]}) do

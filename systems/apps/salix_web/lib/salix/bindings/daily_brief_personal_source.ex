@@ -1,7 +1,9 @@
 defmodule Salix.Bindings.DailyBriefPersonalSource do
   @moduledoc """
   Reads one BFT member's direct and group direct messages with the member's
-  own grant, for that member's daily brief.
+  own grant, for that member's daily brief, and the member's own messages in
+  the shared channels the bot does not read (Slack Connect channels with
+  another company), so the brief sees where the member took part.
 
   Every call loads the grant and checks its tenant, owner, status, and Slack
   user before it reads. The token never leaves this module, and nothing read
@@ -11,12 +13,17 @@ defmodule Salix.Bindings.DailyBriefPersonalSource do
 
   alias SalixIM.Provider.Slack.API, as: SlackAPI
   alias SalixStore.OAuth, as: Connections
+  alias SalixStore.OAuth.Adapters.Slack
 
   @list_page 200
   @max_list_pages 10
   @history_page 200
   @max_history_pages 5
   @max_retry_after_s 30
+  @search_page 100
+  @max_search_pages 10
+  @max_concurrency 5
+  @task_timeout_ms 60_000
   @revoked_errors ~w(invalid_auth token_revoked account_inactive not_authed token_expired missing_scope)
 
   @doc """
@@ -30,24 +37,41 @@ defmodule Salix.Bindings.DailyBriefPersonalSource do
       when is_integer(after_us) and is_integer(before_us) and before_us > after_us do
     with_token(request, fn token ->
       {conversations, listed?} = conversations(token, nil, 1, [])
+      oldest = ts(after_us)
+      latest = ts(before_us)
 
       {messages, read?} =
-        Enum.reduce(conversations, {[], true}, fn channel, {acc, read?} ->
-          case history(token, channel["id"], ts(after_us), ts(before_us), nil, 1, []) do
-            {:ok, found, complete?} ->
-              kind = kind(channel)
-              {acc ++ Enum.map(found, &message_view(&1, channel, kind)), read? and complete?}
+        conversations
+        |> SystemsClock.async_stream(
+          fn channel ->
+            {channel, history(token, channel["id"], oldest, latest, nil, 1, [])}
+          end,
+          ordered: true,
+          max_concurrency: @max_concurrency,
+          timeout: @task_timeout_ms,
+          on_timeout: :kill_task
+        )
+        |> Enum.reduce({[], true}, fn
+          {:ok, {channel, {:ok, found, complete?}}}, {acc, read?} ->
+            kind = kind(channel)
+            {acc ++ Enum.map(found, &message_view(&1, channel, kind)), read? and complete?}
 
-            :error ->
-              {acc, false}
-          end
+          {:ok, {_channel, {:revoked, error}}}, _acc ->
+            raise error
+
+          _failed, {acc, _read?} ->
+            {acc, false}
         end)
+
+      {shared, searched?} = shared_own(token, request.slack_user_id, after_us, before_us)
 
       {:ok,
        %{
          messages:
-           messages |> Enum.uniq_by(&{&1.channel_id, &1.ts}) |> Enum.sort_by(&ts_us(&1.ts)),
-         complete?: listed? and read?
+           (messages ++ shared)
+           |> Enum.uniq_by(&{&1.channel_id, &1.ts})
+           |> Enum.sort_by(&ts_us(&1.ts)),
+         complete?: listed? and read? and searched?
        }}
     end)
   end
@@ -75,6 +99,87 @@ defmodule Salix.Bindings.DailyBriefPersonalSource do
     end
   end
 
+  # The member's own messages in public channels shared with another
+  # company: the bot is never in those, so only the member's search sees
+  # them. Search takes whole days, so the window is cut after.
+  defp shared_own(token, slack_user_id, after_us, before_us) do
+    first = search_day(after_us, -86_400)
+    last = search_day(before_us, 86_400)
+    query = "from:<@#{slack_user_id}> after:#{first} before:#{last}"
+    {matches, complete?} = search(token, query, 1, [])
+
+    messages =
+      for %{"channel" => channel} = match <- matches,
+          shared_public?(channel),
+          at = ts_us(match["ts"]),
+          is_integer(at) and at > after_us and at <= before_us,
+          do: shared_view(match, channel)
+
+    {messages, complete?}
+  rescue
+    error in SlackAPI.Error ->
+      if error.message in @revoked_errors, do: reraise(error, __STACKTRACE__), else: {[], false}
+  end
+
+  # Search days are exclusive at both ends.
+  defp search_day(us, shift),
+    do:
+      us
+      |> div(1_000_000)
+      |> Kernel.+(shift)
+      |> DateTime.from_unix!()
+      |> DateTime.to_date()
+      |> Date.to_iso8601()
+
+  defp search(token, query, page, acc) do
+    %{matches: matches, more?: more?} =
+      with_retry(fn ->
+        SlackAPI.search_messages(token, query, count: @search_page, page: page)
+      end)
+
+    acc = acc ++ matches
+
+    cond do
+      not more? -> {acc, true}
+      page >= @max_search_pages -> {acc, false}
+      true -> search(token, query, page + 1, acc)
+    end
+  end
+
+  defp shared_public?(channel) when is_map(channel) do
+    channel["is_channel"] == true and channel["is_private"] != true and
+      channel["is_mpim"] != true and channel["is_im"] != true and
+      (channel["is_ext_shared"] == true or channel["is_shared"] == true)
+  end
+
+  defp shared_public?(_channel), do: false
+
+  # A search match has no thread field; its permalink carries the thread.
+  defp shared_view(match, channel) do
+    permalink = match["permalink"]
+
+    %{
+      channel_id: channel["id"],
+      channel_name: channel["name"],
+      kind: "shared",
+      ts: match["ts"],
+      thread_ts: thread_of(permalink),
+      author: match["user"],
+      bot?: false,
+      text: match["text"] || "",
+      permalink: permalink
+    }
+  end
+
+  defp thread_of(permalink) when is_binary(permalink) do
+    case URI.parse(permalink).query do
+      nil -> nil
+      query -> URI.decode_query(query)["thread_ts"]
+    end
+  end
+
+  defp thread_of(_permalink), do: nil
+
   # One conversation's messages in the window, a page at a time. A rate
   # limit waits as Slack asks once; any other failure leaves it out.
   defp history(token, channel_id, oldest, latest, cursor, page, acc) do
@@ -97,7 +202,7 @@ defmodule Salix.Bindings.DailyBriefPersonalSource do
     end
   rescue
     error in SlackAPI.Error ->
-      if error.message in @revoked_errors, do: reraise(error, __STACKTRACE__), else: :error
+      if error.message in @revoked_errors, do: {:revoked, error}, else: :error
   end
 
   defp with_retry(read) do
@@ -127,15 +232,38 @@ defmodule Salix.Bindings.DailyBriefPersonalSource do
       ts: message["ts"],
       thread_ts: message["thread_ts"],
       author: message["user"] || message["bot_id"],
-      bot?: is_binary(message["bot_id"]) and is_nil(message["user"]),
+      # An app posts with its bot user as "user", so its bot_id tells it apart.
+      bot?: is_binary(message["bot_id"]),
       text: message["text"] || "",
-      permalink: nil
+      permalink: nil,
+      reactions: reactions(message["reactions"])
     }
   end
 
+  # Who reacted with what: a reaction is often the whole answer.
+  defp reactions(list) when is_list(list) do
+    for %{"name" => name} = reaction <- list,
+        is_binary(name),
+        users = Enum.filter(List.wrap(reaction["users"]), &is_binary/1),
+        users != [],
+        do: %{name: name, users: Enum.take(users, 10)}
+  end
+
+  defp reactions(_none), do: []
+
   defp with_token(request, read) do
     with {:ok, token} <- token(request) do
-      read.(token)
+      try do
+        read.(token)
+      rescue
+        error in SlackAPI.Error ->
+          # Slack refused the member's grant itself: the grant records it, so
+          # later reads stop at the grant without asking Slack again.
+          if Slack.token_refused?("slack.com", 200, %{"ok" => false, "error" => error.message}),
+            do: _ = Connections.mark_token_refused(request.connection_id, token)
+
+          reraise(error, __STACKTRACE__)
+      end
     end
   rescue
     error in SlackAPI.Error ->

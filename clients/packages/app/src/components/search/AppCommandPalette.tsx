@@ -40,9 +40,6 @@ import {
 } from "./searchText";
 
 const taskHistoryLimit = 20;
-// The server keeps two-codepoint queries on its bounded short-gram index; this
-// preserves useful searches such as "AI" and common two-character CJK terms.
-const taskSearchMinQueryCodepoints = 2;
 const taskSearchMaxQueryCodepoints = 128;
 
 // The app commands the palette offers beside Tasks, in the order it lists them.
@@ -169,8 +166,7 @@ function useTaskSearch(
 ): TaskSearchState {
   const call = useCall();
   const normalizedQuery = boundedTaskQuery(query);
-  const eligible =
-    open && Array.from(normalizedQuery).length >= taskSearchMinQueryCodepoints;
+  const eligible = open && normalizedQuery !== "";
   const requestKey = `${preferredScope?.groupId ?? ""}\u0000${preferredWorkspaceId ?? ""}\u0000${normalizedQuery}`;
   const [answer, setAnswer] = useState<{ key: string; state: TaskSearchState }>();
   useEffect(() => {
@@ -226,8 +222,7 @@ function useTaskFileSearch(
 ): TaskFileSearchState {
   const call = useCall();
   const normalizedQuery = boundedTaskQuery(query);
-  const eligible =
-    open && Array.from(normalizedQuery).length >= taskSearchMinQueryCodepoints;
+  const eligible = open && normalizedQuery !== "";
   const requestKey = `${preferredScope?.groupId ?? ""}\u0000${preferredWorkspaceId ?? ""}\u0000${normalizedQuery}`;
   const [answer, setAnswer] = useState<{ key: string; state: TaskFileSearchState }>();
   useEffect(() => {
@@ -370,9 +365,6 @@ export function AppCommandPalette({
 
   const normalizedQuery = query.trim();
   const normalizedTaskQuery = boundedTaskQuery(query);
-  const taskQueryTooShort =
-    normalizedQuery.length > 0 &&
-    Array.from(normalizedTaskQuery).length < taskSearchMinQueryCodepoints;
   const recentTasks = useMemo(
     () =>
       workspaceTasks.tasks
@@ -687,9 +679,7 @@ export function AppCommandPalette({
           ? m.search_palette_unavailable()
           : invalidQuery
             ? m.search_palette_invalid_query()
-            : taskQueryTooShort
-              ? m.search_palette_min_query({ count: taskSearchMinQueryCodepoints })
-              : m.search_palette_no_results()
+            : m.search_palette_no_results()
       }
       footerHints={[
         { keys: ["↑", "↓"], label: m.search_palette_navigate_hint() },

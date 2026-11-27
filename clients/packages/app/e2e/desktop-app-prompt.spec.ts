@@ -89,13 +89,13 @@ test("desktop-only settings in the browser offer the desktop app and keep their 
       "desktop app",
     ],
     ["Meeting", "switch", "Smart summary", "Meeting recording", "desktop app"],
-    ["Computer use", "button", "Manage permissions", "Computer use", "app for Mac"],
-    ["Computer use", "button", "Refresh status", "Computer use", "app for Mac"],
+    ["Permissions", "button", "Allow", "Granting macOS permissions", "app for Mac"],
     ["Devices", "button", "Open the desktop app", "Compute node", "app for Mac"],
   ] as const;
   for (const [category, role, name, feature, app] of cases) {
     await page.getByRole("button", { name: category, exact: true }).click();
-    const control = page.getByRole(role, { name, exact: true });
+    // Every Permissions row offers the same Allow; the first stands for them.
+    const control = page.getByRole(role, { name, exact: true }).first();
     const checked = role === "switch" ? await control.isChecked() : undefined;
     if (role === "switch") {
       await control.focus();

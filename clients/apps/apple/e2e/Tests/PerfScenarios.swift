@@ -140,10 +140,10 @@ import XCTest
         }
     }
 
-    /// S7: Inbox, Settings and Home in turn six times, then three flings down Home's list and three back.
+    /// S7: Inbox, People and Home in turn six times, then three flings down Home's list and three back.
     func testS7Tabs() throws {
         let app = try launchPerfFixture()
-        let tabs = ["tab-inbox", "tab-settings", "tab-home"].map { app.buttons[$0] }
+        let tabs = ["tab-inbox", "tab-people", "tab-home"].map { app.buttons[$0] }
         try measureScenario("S7-tabs", in: app) {
             for _ in 0..<6 {
                 for tab in tabs { tab.tap() }

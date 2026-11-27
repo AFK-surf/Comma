@@ -40,6 +40,21 @@ describe("Comma web static worker", () => {
     expect(assetsFetch).not.toHaveBeenCalled();
   });
 
+  it("serves the Android association only on the production domain", async () => {
+    const assetsFetch = vi.fn();
+    const get = (host: string) =>
+      worker.fetch(new Request(`https://${host}/.well-known/assetlinks.json`), {
+        ASSETS: { fetch: assetsFetch },
+      });
+    const prod = await get("app.comma.surf");
+    expect(prod.status).toBe(200);
+    expect(prod.headers.get("content-type")).toBe("application/json");
+    expect((await prod.json())[0].target.package_name).toBe("surf.comma.android");
+    expect((await get("app-staging.comma.surf")).status).toBe(404);
+    expect((await get("preview.workers.dev")).status).toBe(404);
+    expect(assetsFetch).not.toHaveBeenCalled();
+  });
+
   it("does not expose a second same-origin Comma API ingress", async () => {
     const fetchMock = vi.fn();
     const assetsFetch = vi.fn(async (_request: Request) => {

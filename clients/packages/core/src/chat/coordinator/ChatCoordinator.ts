@@ -1,10 +1,12 @@
 import type {
   ChatBeginSendIntentReceipt,
   ChatCommandReceipt,
+  ChatDraftEntry,
   ChatLeasedAcknowledgeIntakeFailuresInput,
   ChatLeasedAttachInput,
   ChatLeasedAttachConversationFilesInput,
   ChatLeasedAttachLocalFilesInput,
+  ChatLeasedAttachLocalPathsInput,
   ChatLeasedAttachmentIdInput,
   ChatLeasedBeginSendIntentInput,
   ChatLeasedClientRequestInput,
@@ -104,7 +106,9 @@ export class ChatCoordinator implements ChatProvider {
     return this.#leases.release(input);
   }
 
-  setDraft(input: ChatLeasedSetDraftInput): ChatCommandReceipt {
+  setDraft(
+    input: ChatLeasedSetDraftInput & { entry?: ChatDraftEntry | undefined }
+  ): ChatCommandReceipt {
     return this.#drafts.setDraft(input);
   }
 
@@ -148,6 +152,10 @@ export class ChatCoordinator implements ChatProvider {
 
   attachLocalFiles(input: ChatLeasedAttachLocalFilesInput): ChatCommandReceipt {
     return this.#drafts.attachLocalFiles(input);
+  }
+
+  attachLocalPaths(input: ChatLeasedAttachLocalPathsInput): ChatCommandReceipt {
+    return this.#drafts.attachLocalPaths(input);
   }
 
   attachConversationFiles(

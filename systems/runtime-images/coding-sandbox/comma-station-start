@@ -6,6 +6,9 @@
 # the sandbox's L4ES GitHub proxy token (systems/station/src/tasks/coding.ts).
 # Salix places it in no workspace: SALIX_CONNECTOR_JOIN=1 puts it in its
 # Task's workspace while its connection runs, so its Session takes turns.
+# SALIX_CONNECTOR_TASK_SCREEN=1: the station can show the display
+# (comma-display.service) to the Task's owner, who looks and does not drive it.
+# Nothing runs for that until Salix says the owner asked to see it.
 set -eu
 secrets=/run/sbx/secrets
 data="$HOME/.comma/station"
@@ -13,5 +16,6 @@ mkdir -p "$data" "$HOME/.tmp"
 SALIX_WORKLOAD_CREDENTIAL=$(cat "$secrets/SALIX_WORKLOAD_CREDENTIAL")
 export SALIX_WORKLOAD_CREDENTIAL TMPDIR="$HOME/.tmp"
 exec env SALIX_CONNECTOR_ROOT="$HOME" SALIX_CONNECTOR_NAME="Coding sandbox" SALIX_CONNECTOR_JOIN=1 \
+  SALIX_CONNECTOR_TASK_SCREEN=1 \
   /opt/comma-station/mesh/target/release/comma-station run \
   --app /opt/comma-station --data "$data"

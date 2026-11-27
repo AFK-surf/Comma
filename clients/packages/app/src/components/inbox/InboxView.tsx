@@ -1,3 +1,5 @@
+import { useOptionalCommaClientSettings } from "../commaClientSettings";
+import { InboxInvitationRowView } from "../people/Invitations";
 import { countTaskLoopRules } from "@comma/core/task-loop-filter";
 import { useTaskLoopRuleFilter } from "../tasks/useTaskLoopRuleFilter";
 import { uiClock } from "@comma/ui/clock";
@@ -25,6 +27,10 @@ import { commaInboxConversationRailWidth } from "../shellGeometry";
 import {
   InboxRequestRowView,
   InboxSentRowView,
+  useInboxInvitationRows,
+  useInboxJoinedRows,
+  InboxJoinedRowView,
+  type InboxJoinedRow,
   useInboxRequestRows,
   useInboxSentRows,
   type InboxRequestEntry,
@@ -67,6 +73,7 @@ export interface InboxViewProps {
   selectedConversationId?: string | undefined;
   /** The request open in the detail pane, if one is. */
   selectedRequestId?: string | undefined;
+  selectedInvitationId?: string | undefined;
   workspaceSelector?: InboxWorkspaceSelector | undefined;
 }
 
@@ -83,10 +90,12 @@ export function InboxView({
   result,
   selectedConversationId,
   selectedRequestId,
+  selectedInvitationId,
   workspaceSelector,
 }: InboxViewProps) {
   const locale = useCommaLocale();
   const messages = useCommaMessages();
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
   // The reader may widen the list up to half the window; its divider resets it.
   const railRef = useRef<HTMLElement | null>(null);
   const { width: railWidth, setWidth: setRailWidth } = useRailWidth(
@@ -110,14 +119,24 @@ export function InboxView({
     () => allSentRows.filter((row) => !isInboxItemDeleted(deletedMarks, row)),
     [allSentRows, deletedMarks]
   );
+  // Invitations to Tasks others host wait here too, as requests do.
+  const invitationRows = useInboxInvitationRows();
+  // Someone who took the person's invite link: a notification until hidden, as a decided sent request.
+  const allJoinedRows = useInboxJoinedRows();
+  const joinedRows = useMemo(
+    () => allJoinedRows.filter((row) => !isInboxItemDeleted(deletedMarks, row)),
+    [allJoinedRows, deletedMarks]
+  );
   const allRequestRows = useMemo<InboxRequestEntry[]>(
-    () => [...incomingRows, ...sentRows],
-    [incomingRows, sentRows]
+    () => [...incomingRows, ...invitationRows, ...sentRows, ...joinedRows],
+    [incomingRows, invitationRows, joinedRows, sentRows]
   );
   // Opening the Inbox reads them again: the server tells no client of a new one.
   useEffect(() => {
     void call("taskRequests.refresh", {}).catch(() => undefined);
-  }, [call]);
+    // Invitations to Tasks together come the same way: read again on opening.
+    if (peopleEnabled) void call("collaborations.refresh", {}).catch(() => undefined);
+  }, [call, peopleEnabled]);
   // Archived conversations and deleted notifications leave the rail; filters
   // only hide rows, and the footer reports how many.
   const items = useMemo(
@@ -219,15 +238,18 @@ export function InboxView({
   // Deleting acts on what the rail lists right now, filters included: its Tasks and the sent requests already decided
   // (one still waiting is withdrawn, not hidden; none carries the attention dot). Deleting the open one closes it too.
   const decidedSentRows = requestRows.filter(
-    (row): row is InboxSentRow =>
-      row.kind === "task_request_sent" && row.sent.status !== "pending"
+    (row): row is InboxSentRow | InboxJoinedRow =>
+      (row.kind === "task_request_sent" && row.sent.status !== "pending") ||
+      row.kind === "people_joined"
   );
-  const deleteItems = (targets: readonly (ProductInboxItem | InboxSentRow)[]) => {
+  const deleteItems = (
+    targets: readonly (ProductInboxItem | InboxSentRow | InboxJoinedRow)[]
+  ) => {
     markActions.deleteItems(targets);
     if (
       targets.some((target) =>
         isRequestRow(target)
-          ? target.sent.id === selectedRequestId
+          ? target.kind === "task_request_sent" && target.sent.id === selectedRequestId
           : target.conversationId === selectedConversationId
       )
     ) {
@@ -302,7 +324,14 @@ export function InboxView({
         <InboxList
           groups={groups}
           renderRequest={(row) =>
-            row.kind === "task_request_sent" ? (
+            row.kind === "people_joined" ? (
+              <InboxJoinedRowView onDelete={() => deleteItems([row])} row={row} />
+            ) : row.kind === "collaboration_invite" ? (
+              <InboxInvitationRowView
+                row={row}
+                selected={row.invitation.id === selectedInvitationId}
+              />
+            ) : row.kind === "task_request_sent" ? (
               <InboxSentRowView
                 onDelete={() => deleteItems([row])}
                 row={row}
@@ -374,7 +403,11 @@ export function InboxView({
 }
 
 const isRequestRow = (row: InboxListEntry): row is InboxRequestEntry =>
-  "kind" in row && (row.kind === "task_request" || row.kind === "task_request_sent");
+  "kind" in row &&
+  (row.kind === "task_request" ||
+    row.kind === "task_request_sent" ||
+    row.kind === "collaboration_invite" ||
+    row.kind === "people_joined");
 
 /**
  * The Tasks in the order the list gives them, with each request placed before the first Task older than it: the

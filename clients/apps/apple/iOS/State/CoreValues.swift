@@ -26,6 +26,11 @@ extension NSDictionary {
 
     func bool(_ key: String) -> Bool { (self[key] as? NSNumber)?.boolValue ?? false }
 
+    func optionalBool(_ key: String) -> Bool? {
+        guard let number = self[key] as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
     func object(_ key: String) -> NSDictionary? { self[key] as? NSDictionary }
 
     func array(_ key: String) -> NSArray? { self[key] as? NSArray }

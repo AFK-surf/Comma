@@ -15,7 +15,7 @@ defmodule SalixStore.CondensedWorkspaces do
   """
 
   import Ecto.Query
-  alias SalixStore.Repo
+  alias SalixStore.{Repo, StatementList}
 
   @hard_limit_bytes 16 * 1024
   @recommended_bytes 4 * 1024
@@ -107,152 +107,28 @@ defmodule SalixStore.CondensedWorkspaces do
   end
 
   @doc "The text every Session sees: one `- [id] text` line per statement."
-  def render([]), do: "(empty)"
-
-  def render(statements) when is_list(statements),
-    do: Enum.map_join(statements, "\n", &line/1)
+  def render(statements), do: StatementList.render(statements)
 
   @doc "Rendered size in bytes, the unit of both limits."
-  def rendered_bytes(statements) when is_list(statements),
-    do: statements |> Enum.map(&(byte_size(line(&1)) + 1)) |> Enum.sum()
+  def rendered_bytes(statements), do: StatementList.rendered_bytes(statements)
 
   @doc false
   def apply_to_value(value, operations) do
-    statements = List.wrap(value["statements"])
-    next_id = value["next_id"] || 1
-    known = MapSet.new(statements, & &1["id"])
-
-    missing =
-      operations
-      |> Enum.filter(&(&1["op"] in ["replace", "remove"]))
-      |> Enum.map(& &1["id"])
-      |> Enum.reject(&MapSet.member?(known, &1))
-      |> Enum.uniq()
-
-    if missing != [] do
-      {:conflict, missing}
-    else
-      {statements, next_id} = Enum.reduce(operations, {statements, next_id}, &apply_operation/2)
-      {kept, removed} = truncate(statements)
-      {:ok, %{"statements" => kept, "next_id" => next_id}, Enum.map(removed, & &1["id"])}
-    end
-  end
-
-  defp apply_operation(%{"op" => "add", "text" => text}, {statements, next_id}),
-    do: {statements ++ [%{"id" => "s#{next_id}", "text" => text}], next_id + 1}
-
-  defp apply_operation(%{"op" => "replace", "id" => id, "text" => text}, {statements, next_id}) do
-    {Enum.map(statements, &if(&1["id"] == id, do: %{&1 | "text" => text}, else: &1)), next_id}
-  end
-
-  # A remove of a statement that an earlier operation of the same batch
-  # already removed is a no-op, not a conflict.
-  defp apply_operation(%{"op" => "remove", "id" => id}, {statements, next_id}),
-    do: {Enum.reject(statements, &(&1["id"] == id)), next_id}
-
-  defp truncate(statements) do
-    {kept, removed, _bytes} =
-      Enum.reduce(statements, {[], [], 0}, fn statement, {kept, removed, bytes} ->
-        size = byte_size(line(statement)) + 1
-
-        if removed == [] and bytes + size <= @hard_limit_bytes,
-          do: {[statement | kept], removed, bytes + size},
-          else: {kept, [statement | removed], bytes}
-      end)
-
-    {Enum.reverse(kept), Enum.reverse(removed)}
+    StatementList.apply_to_value(value, operations,
+      hard_limit_bytes: @hard_limit_bytes,
+      overflow_policy: :truncate,
+      allow_empty_result: true
+    )
   end
 
   @doc false
-  def normalize_operations(operations) when is_list(operations) do
-    cond do
-      operations == [] ->
-        {:error, {:invalid, "operations must contain at least one operation"}}
-
-      length(operations) > @max_operations ->
-        {:error, {:invalid, "operations accepts at most #{@max_operations} operations"}}
-
-      true ->
-        operations
-        |> Enum.reduce_while({:ok, []}, fn operation, {:ok, acc} ->
-          case normalize_operation(operation) do
-            {:ok, operation} -> {:cont, {:ok, [operation | acc]}}
-            {:error, _} = error -> {:halt, error}
-          end
-        end)
-        |> case do
-          {:ok, acc} -> {:ok, Enum.reverse(acc)}
-          error -> error
-        end
-    end
+  def normalize_operations(operations) do
+    StatementList.normalize_operations(operations,
+      max_statement_bytes: @max_statement_bytes,
+      max_operations: @max_operations,
+      allow_empty_operations: false
+    )
   end
-
-  def normalize_operations(_operations),
-    do: {:error, {:invalid, "operations must be a list"}}
-
-  defp normalize_operation(%{"op" => "add"} = operation) do
-    with :ok <- only_keys(operation, ~w(op text)),
-         {:ok, text} <- statement_text(operation["text"]) do
-      {:ok, %{"op" => "add", "text" => text}}
-    end
-  end
-
-  defp normalize_operation(%{"op" => "replace"} = operation) do
-    with :ok <- only_keys(operation, ~w(op id text)),
-         {:ok, id} <- statement_id(operation["id"]),
-         {:ok, text} <- statement_text(operation["text"]) do
-      {:ok, %{"op" => "replace", "id" => id, "text" => text}}
-    end
-  end
-
-  defp normalize_operation(%{"op" => "remove"} = operation) do
-    with :ok <- only_keys(operation, ~w(op id)),
-         {:ok, id} <- statement_id(operation["id"]) do
-      {:ok, %{"op" => "remove", "id" => id}}
-    end
-  end
-
-  defp normalize_operation(_operation),
-    do: {:error, {:invalid, "each operation needs op add, replace or remove"}}
-
-  defp only_keys(operation, allowed) do
-    case Map.keys(operation) -- allowed do
-      [] -> :ok
-      extra -> {:error, {:invalid, "unsupported operation fields: #{Enum.join(extra, ", ")}"}}
-    end
-  end
-
-  defp statement_id(id) when is_binary(id) do
-    if Regex.match?(~r/\As[1-9][0-9]{0,9}\z/, id),
-      do: {:ok, id},
-      else: {:error, {:invalid, "id must be a statement id such as s3"}}
-  end
-
-  defp statement_id(_id), do: {:error, {:invalid, "id must be a statement id such as s3"}}
-
-  # One statement is one line: line breaks would let a statement look like
-  # several, so they become spaces.
-  defp statement_text(text) when is_binary(text) do
-    text = text |> String.replace(~r/\s*[\r\n]+\s*/, " ") |> String.trim()
-
-    cond do
-      text == "" ->
-        {:error, {:invalid, "text must not be empty"}}
-
-      not String.valid?(text) ->
-        {:error, {:invalid, "text must be UTF-8"}}
-
-      byte_size(text) > @max_statement_bytes ->
-        {:error, {:invalid, "a statement holds at most #{@max_statement_bytes} bytes"}}
-
-      true ->
-        {:ok, text}
-    end
-  end
-
-  defp statement_text(_text), do: {:error, {:invalid, "text must be a string"}}
-
-  defp line(%{"id" => id, "text" => text}), do: "- [#{id}] #{text}"
 
   @doc false
   def view(%Row{} = row) do

@@ -31,7 +31,8 @@ defmodule SalixIM.LineProviderTest do
         do:
           SystemsRuntime.Proc.send(
             pid,
-            {:line_api, conn.method, conn.request_path, body, get_req_header(conn, "authorization")}
+            {:line_api, conn.method, conn.request_path, body,
+             get_req_header(conn, "authorization")}
           )
 
       {status, answer} = answer(conn.method, conn.path_info, body, conn)
@@ -239,7 +240,11 @@ defmodule SalixIM.LineProviderTest do
 
     # The Comma for Teams pages cannot change it.
     assert {:error, {:bad_request, "Manage this LINE connection in Comma Settings"}} =
-             ProviderConnects.enable_im_connect(ctx.tenant, ctx.group_id, ctx.connect["connect_id"])
+             ProviderConnects.enable_im_connect(
+               ctx.tenant,
+               ctx.group_id,
+               ctx.connect["connect_id"]
+             )
   end
 
   test "the signature check accepts only the channel secret's signature" do
@@ -353,8 +358,7 @@ defmodule SalixIM.LineProviderTest do
     assert_received {:line_api, "POST", "/v2/bot/message/reply", %{"replyToken" => "expired"},
                      _authorization}
 
-    assert_received {:line_api, "POST", "/v2/bot/message/push", %{"to" => @user},
-                     _authorization}
+    assert_received {:line_api, "POST", "/v2/bot/message/push", %{"to" => @user}, _authorization}
 
     # A chat that never wrote to the account is pushed to directly; a text
     # over one message's limit goes out as several.

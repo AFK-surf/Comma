@@ -114,6 +114,16 @@ defmodule Comma.MiniApps do
     end
   end
 
+  @doc "Whether `app` is bound to a Collaborative Task."
+  def collaboration?(%App{visibility: "collaboration"}), do: true
+  def collaboration?(%App{collaboration_conversation_id: id}) when is_binary(id), do: true
+  def collaboration?(_app), do: false
+
+  defp owner_visible?(%App{visibility: "collaboration"}, _user), do: false
+
+  defp owner_visible?(%App{collaboration_conversation_id: id}, _user) when is_binary(id),
+    do: false
+
   defp owner_visible?(%App{visibility: "private", created_by: creator}, user),
     do: creator == user["id"]
 
@@ -164,18 +174,23 @@ defmodule Comma.MiniApps do
   """
   def insert_app(%Workspace{} = workspace, user_id, attrs) do
     now = SystemsClock.utc_now()
+    visibility = Map.get(attrs, :visibility, "private")
+    collaboration_conversation_id = Map.get(attrs, :collaboration_conversation_id)
+    collaboration? = visibility == "collaboration" or is_binary(collaboration_conversation_id)
 
     %App{
       id: SystemsRuntime.Proc.uuid(),
       slug: attrs.slug,
       workspace_id: workspace.id,
-      group_id: workspace.salix_group_id,
+      group_id: Map.get(attrs, :group_id, workspace.salix_group_id),
+      collaboration_conversation_id: collaboration_conversation_id,
       created_by: user_id,
       name: attrs.name,
       description: attrs.description,
       repo_owner: attrs.repo_owner,
       repo_name: attrs.repo_name,
-      visibility: Map.get(attrs, :visibility, "private"),
+      visibility: if(collaboration?, do: "collaboration", else: visibility),
+      grants: if(collaboration?, do: [], else: Map.get(attrs, :grants, [])),
       status: "active",
       inserted_at: now,
       updated_at: now
@@ -204,6 +219,8 @@ defmodule Comma.MiniApps do
         from(app in App,
           where:
             app.status != "deleted" and
+              app.visibility != "collaboration" and
+              is_nil(app.collaboration_conversation_id) and
               ((app.workspace_id == ^workspace.id and
                   (app.visibility != "private" or app.created_by == ^user["id"])) or
                  app.id in subquery(installed_ids)),
@@ -225,6 +242,8 @@ defmodule Comma.MiniApps do
       from(app in App,
         where:
           app.status != "deleted" and
+            app.visibility != "collaboration" and
+            is_nil(app.collaboration_conversation_id) and
             ((app.workspace_id == ^workspace.id and
                 app.visibility != "private") or
                app.id in subquery(installed_ids)),
@@ -236,9 +255,15 @@ defmodule Comma.MiniApps do
     {apps, view_context(apps, workspace.id)}
   end
 
-  @doc "One shared or installed app. Member-private apps remain outside the Router's scope."
+  @doc "One shared or installed app. Member-private and collaboration apps remain outside the Router's scope."
   def router_app(%Workspace{} = workspace, app_id) do
     case get_app(app_id) do
+      %App{visibility: "collaboration"} ->
+        {:error, :not_found}
+
+      %App{collaboration_conversation_id: id} when is_binary(id) ->
+        {:error, :not_found}
+
       %App{workspace_id: id, visibility: visibility} = app
       when id == workspace.id and visibility != "private" ->
         {:ok, app}
@@ -484,8 +509,16 @@ defmodule Comma.MiniApps do
   @doc """
   Whether `app` may take `visibility`. A private app is its creator's alone,
   so one with no creator (the Router knew nobody, or its creator deleted their
-  account) cannot become private: nobody would see it.
+  account) cannot become private: nobody would see it. A collaboration app's
+  visibility is fixed at creation.
   """
+  def visibility_allowed(%App{visibility: "collaboration"}, _visibility),
+    do: {:error, :forbidden}
+
+  def visibility_allowed(%App{collaboration_conversation_id: id}, _visibility)
+      when is_binary(id),
+      do: {:error, :forbidden}
+
   def visibility_allowed(%App{created_by: nil}, "private"),
     do: {:error, {:bad_request, "an app with no creator cannot be private"}}
 
@@ -673,7 +706,7 @@ defmodule Comma.MiniApps do
   @doc "Makes `version` live (and sets `visibility` when given)."
   def set_live(%App{} = app, %Version{} = version, visibility, workspace_id) do
     changes =
-      if visibility in @visibilities,
+      if not collaboration?(app) and visibility in @visibilities,
         do: %{live_version_id: version.id, visibility: visibility},
         else: %{live_version_id: version.id}
 
@@ -690,6 +723,7 @@ defmodule Comma.MiniApps do
   def put_grants(user, session, workspace_id, app_id, grants) do
     with {:ok, workspace, _role} <- member(user, session, workspace_id, :write),
          {:ok, app, kind} <- workspace_app(workspace, user, app_id),
+         :ok <- allow_app_grants(app, grants),
          {:ok, grants} <- grant_list(grants) do
       case kind do
         :owner ->
@@ -703,6 +737,14 @@ defmodule Comma.MiniApps do
           {:ok, view_one(app, workspace.id)}
       end
     end
+  end
+
+  defp allow_app_grants(app, grants) do
+    if collaboration?(app) and
+         is_list(grants) and
+         Enum.any?(grants, &(&1 == "drive" or String.starts_with?(to_string(&1), "drive."))),
+       do: {:error, :forbidden},
+       else: :ok
   end
 
   defp grant_list(grants) when is_list(grants) do
@@ -781,7 +823,8 @@ defmodule Comma.MiniApps do
 
   @doc "Creates the app's link (and makes the app `link` visible), or returns the active one."
   def put_link(user, session, workspace_id, app_id) do
-    with {:ok, _workspace, app} <- owner_app(user, session, workspace_id, app_id) do
+    with {:ok, _workspace, app} <- owner_app(user, session, workspace_id, app_id),
+         :ok <- disallow_collaboration(app) do
       if app.visibility != "link",
         do: app |> Ecto.Changeset.change(visibility: "link") |> Repo.update!()
 
@@ -794,7 +837,8 @@ defmodule Comma.MiniApps do
 
   @doc "Revokes the link and issues a new token. Installs made through the old one are removed."
   def reset_link(user, session, workspace_id, app_id) do
-    with {:ok, _workspace, app} <- owner_app(user, session, workspace_id, app_id) do
+    with {:ok, _workspace, app} <- owner_app(user, session, workspace_id, app_id),
+         :ok <- disallow_collaboration(app) do
       Repo.transaction(fn ->
         revoke_links(app)
 
@@ -804,6 +848,10 @@ defmodule Comma.MiniApps do
         end
       end)
     end
+  end
+
+  defp disallow_collaboration(app) do
+    if collaboration?(app), do: {:error, :forbidden}, else: :ok
   end
 
   def revoke_link(user, session, workspace_id, app_id) do
@@ -974,6 +1022,23 @@ defmodule Comma.MiniApps do
     end
   end
 
+  @doc "A Version's bundle for a Collaborative Task's host or active member: `{:ok, app, version}`."
+  def collaboration_bundle(user, session, group_id, task_id, app_id, number) do
+    with :ok <- guest_via(user, {:collaboration, group_id, task_id}),
+         true <-
+           SalixStore.Ids.valid_group_id?(group_id) and
+             SalixStore.Ids.valid_conversation_id?(task_id),
+         {:ok, app} <- authorize_collaboration_app(user, session, group_id, task_id, app_id),
+         {:ok, number} <- positive(number),
+         %Version{state: "ready"} = version <-
+           Repo.get_by(Version, app_id: app.id, number: number) do
+      {:ok, app, version}
+    else
+      {:error, :signup_required} = error -> error
+      _ -> {:error, :not_found}
+    end
+  end
+
   def live_version(%App{live_version_id: nil}), do: nil
 
   def live_version(%App{live_version_id: id}) do
@@ -1024,9 +1089,29 @@ defmodule Comma.MiniApps do
 
   defp parse_via("workspace/" <> id) when id != "", do: {:ok, {:workspace, id}}
   defp parse_via("link/" <> token) when token != "", do: {:ok, {:link, token}}
+
+  defp parse_via("collaboration/" <> rest) do
+    case String.split(rest, "/", parts: 2) do
+      [group_id, task_id] ->
+        if SalixStore.Ids.valid_group_id?(group_id) and
+             SalixStore.Ids.valid_conversation_id?(task_id) do
+          {:ok, {:collaboration, group_id, task_id}}
+        else
+          {:error, :not_found}
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
   defp parse_via(_via), do: {:error, :not_found}
 
   defp guest_via(user, {:workspace, _id}) do
+    if Comma.GuestMode.guest?(user), do: {:error, :signup_required}, else: :ok
+  end
+
+  defp guest_via(user, {:collaboration, _group_id, _task_id}) do
     if Comma.GuestMode.guest?(user), do: {:error, :signup_required}, else: :ok
   end
 
@@ -1051,6 +1136,43 @@ defmodule Comma.MiniApps do
     end
   end
 
+  defp runtime_access(user, session, app_id, {:collaboration, group_id, task_id}) do
+    case authorize_collaboration_app(user, session, group_id, task_id, app_id) do
+      {:ok, app} -> {:ok, app, :collaboration, nil, nil}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp authorize_collaboration_app(user, session, group_id, task_id, app_id) do
+    with false <- Comma.GuestMode.guest?(user),
+         false <- session["restricted"] == true,
+         %App{
+           status: "active",
+           visibility: "collaboration",
+           group_id: ^group_id,
+           collaboration_conversation_id: ^task_id
+         } = app <- get_app(app_id),
+         true <-
+           collaboration_caller_authorized?(user, session, group_id, task_id, app.workspace_id) do
+      {:ok, app}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp collaboration_caller_authorized?(user, session, group_id, task_id, workspace_id) do
+    case Comma.Workspaces.authorize_group(user, session, group_id) do
+      {:ok, %{"id" => ^workspace_id}} ->
+        true
+
+      _ ->
+        match?(
+          {:ok, %{"id" => ^workspace_id}},
+          Comma.Collaborations.authorize_member(user, session, group_id, task_id)
+        )
+    end
+  end
+
   defp runtime_version(app, :owner, _install, requested) when is_integer(requested) do
     case Repo.get_by(Version, app_id: app.id, number: requested) do
       %Version{state: "ready"} = version -> version
@@ -1059,6 +1181,9 @@ defmodule Comma.MiniApps do
   end
 
   defp runtime_version(app, :owner, _install, _requested),
+    do: live_version(app) || latest_ready(app)
+
+  defp runtime_version(app, :collaboration, _install, _requested),
     do: live_version(app) || latest_ready(app)
 
   defp runtime_version(app, :install, %Install{pinned_version: pinned}, _requested)

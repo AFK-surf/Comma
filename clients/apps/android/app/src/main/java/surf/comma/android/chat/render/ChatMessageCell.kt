@@ -72,11 +72,8 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         val item = prepared ?: return
-        val columnLeft = when (item.message.role) {
-            ChatRole.USER -> width - item.sideMarginPx - contentWidth(item)
-            ChatRole.AGENT -> item.sideMarginPx
-            ChatRole.SYSTEM -> (width - contentWidth(item)) / 2
-        }
+
+        val columnLeft = columnLeftOf(item).toInt()
         pictures.forEach { (block, view) ->
             val x = columnLeft + block.leftInsetPx
             view.layout(x, block.yOffsetPx, x + block.widthPx, block.yOffsetPx + block.heightPx)
@@ -140,6 +137,8 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
     private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
     private val actionTextPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
     private var prepared: PreparedChatMessage? = null
+    /** The row this cell draws, for what the timeline draws beside it. */
+    internal val preparedItem: PreparedChatMessage? get() = prepared
     internal var textSelection: MessageTextSelection? = null
         private set
 
@@ -195,7 +194,8 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
                 if (link != null && link == linkAt(downX, downY)) {
                     when (link) {
                         is TaskLinkSpan -> TaskRefDirectory.find(this@ChatMessageCell)?.open(link.taskId)
-                        is WebLinkSpan -> runCatching {
+                        // An AMap web link opens in the AMap app when it is installed.
+                        is WebLinkSpan -> if (!MapAppLink.open(context, link.url)) runCatching {
                             context.startActivity(
                                 Intent(Intent.ACTION_VIEW, Uri.parse(link.url)).addCategory(Intent.CATEGORY_BROWSABLE),
                             )
@@ -326,7 +326,7 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
         contentDescription = when (item.message.role) {
             ChatRole.USER -> "You$sourceNote: ${item.message.text}"
             ChatRole.AGENT -> if (TypingBubble.isTypingRow(item)) "Agent is replying" else
-                "Agent$sourceNote: ${item.message.text}$stateDescription"
+                "${item.message.otherWriterName ?: "Agent"}$sourceNote: ${item.message.text}$stateDescription"
             ChatRole.SYSTEM -> "System$sourceNote: ${item.message.text}"
         }
         requestLayout()
@@ -533,7 +533,8 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
         } else if (item.drawBubble) {
             bubblePaint.color = when {
                 replyError -> color(R.color.chat_error_card_bg)
-                item.message.role == ChatRole.USER -> color(R.color.token_bg_brand_solid)
+                item.message.role == ChatRole.USER ->
+                    PlatformBubble.colors(item.message.platformSource, darkTheme())?.fill ?: color(R.color.token_bg_brand_solid)
                 item.message.role == ChatRole.SYSTEM -> color(R.color.token_bg_tertiary)
                 else -> color(R.color.token_markdown_bg_message)
             }
@@ -562,6 +563,11 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
                 bubbleBounds.inset(-stroke / 2f, -stroke / 2f)
                 rulePaint.style = Paint.Style.FILL
             }
+        }
+
+        // Another person's name over the first bubble of their run, in line with the bubble's text.
+        item.writerLabel?.let { label ->
+            canvas.withTranslation(columnLeft + item.horizontalPaddingPx, item.writerLabelTopPx.toFloat()) { label.draw(this) }
         }
 
         actionHits.clear()
@@ -987,10 +993,13 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
         drawBriefFooter(canvas, item, brief, columnLeftOf(item), height - brief.footerBlockPx)
     }
 
+    /** Where this row's content column starts, for tests. */
+    internal fun columnLeft(): Int = prepared?.let { columnLeftOf(it).toInt() } ?: 0
+
     private fun columnLeftOf(item: PreparedChatMessage): Float = when (item.message.role) {
         ChatRole.USER -> (width - item.sideMarginPx - contentWidth(item)).toFloat()
         ChatRole.AGENT -> item.sideMarginPx.toFloat()
-        ChatRole.SYSTEM -> (width - contentWidth(item)) / 2f
+        ChatRole.SYSTEM -> if (item.message.speaker != null) item.sideMarginPx.toFloat() else (width - contentWidth(item)) / 2f
     }
 
     /**
@@ -1225,6 +1234,10 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
     }
 
     private fun color(id: Int): Int = ContextCompat.getColor(context, id)
+
+    private fun darkTheme(): Boolean =
+        (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
 
     private companion object {
         /** 首 token 的过渡时长：入 400ms、出 250ms，缓出无过冲。 */

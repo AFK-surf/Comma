@@ -1,6 +1,13 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
+import {
+  selectionActionBarAction,
+  selectionActionBarChrome,
+  selectionActionBarLabel,
+} from "@comma/ui/components/selection-action-bar";
+import { cx } from "@comma/ui/components/utils";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Button as AriaButton } from "react-aria-components";
 import { z } from "zod";
 
 const noteSchema = z.object({
@@ -242,24 +249,28 @@ export function ArtifactAnnotations({
           ) : null;
         })}
         {selection && !draft ? (
+          // Same chrome as the DS selection action pill (Figma 1193:11862).
           <div
-            className="absolute left-0 z-10 rounded-lg bg-primary shadow-lg"
+            className={cx("absolute left-0 z-10 mt-xs", selectionActionBarChrome)}
             style={{ top: anchorTop }}
           >
-            <Button
-              hierarchy="tertiary-gray"
+            <AriaButton
+              type="button"
+              className={selectionActionBarAction}
               onPress={() => {
                 setDraft({ anchor: selection });
                 setBody("");
               }}
             >
-              {messages.artifact_notes_add()}
-            </Button>
+              <span className={selectionActionBarLabel}>
+                {messages.artifact_notes_add()}
+              </span>
+            </AriaButton>
           </div>
         ) : null}
         {draft ? (
           <form
-            className="absolute inset-x-0 z-10 flex flex-col gap-sm rounded-lg border border-primary bg-primary p-md shadow-lg"
+            className="absolute left-0 z-10 mt-xs flex w-[360px] max-w-full flex-col gap-md rounded-xl border-[0.5px] border-primary bg-popup-primary p-md shadow-lg"
             style={{ top: anchorTop }}
             onSubmit={(event) => {
               event.preventDefault();
@@ -281,34 +292,39 @@ export function ArtifactAnnotations({
               }
             }}
           >
-            <blockquote className="text-sm text-secondary">
+            <blockquote className="m-0 line-clamp-2 whitespace-pre-wrap border-l-2 border-primary px-md text-sm text-secondary [overflow-wrap:anywhere]">
               {draft.anchor.quote}
             </blockquote>
-            <label className="flex flex-col gap-sm">
-              {messages.artifact_notes_body()}
-              <textarea
-                ref={editor}
-                className="rounded-md border border-primary bg-primary p-sm text-sm text-primary"
-                maxLength={4000}
-                value={body}
-                onChange={(event) => setBody(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Escape") return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setDraft(undefined);
-                }}
-              />
-            </label>
-            <div className="flex gap-sm">
+            <textarea
+              ref={editor}
+              aria-label={messages.artifact_notes_body()}
+              placeholder={messages.artifact_notes_placeholder()}
+              rows={3}
+              className="block min-h-8xl w-full resize-y rounded-md bg-primary px-md py-sm text-sm font-regular text-primary shadow-xs outline-none ring-1 ring-primary ring-inset placeholder:text-placeholder"
+              maxLength={4000}
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                event.stopPropagation();
+                setDraft(undefined);
+              }}
+            />
+            <div className="flex justify-end gap-sm">
+              <Button
+                hierarchy="secondary-gray"
+                size="sm"
+                onPress={() => setDraft(undefined)}
+              >
+                {messages.artifact_notes_cancel()}
+              </Button>
               <Button
                 type="submit"
+                size="sm"
                 isDisabled={!body.trim() || (!draft.id && notes.length >= 100)}
               >
                 {messages.artifact_notes_save()}
-              </Button>
-              <Button hierarchy="secondary-gray" onPress={() => setDraft(undefined)}>
-                {messages.artifact_notes_cancel()}
               </Button>
             </div>
           </form>

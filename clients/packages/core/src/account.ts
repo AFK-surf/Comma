@@ -478,6 +478,17 @@ export class Account {
       .map((row) => JSON.parse(row[0] as string) as T);
   }
 
+  /** The stations hosting a Task of `workspace` whose status (as last read or set) is not done, cancelled or archived. */
+  stationTaskHosts(workspace: string, limit = 500): string[] {
+    if (this.#closed) return [];
+    return this.#sql
+      .all(
+        "SELECT DISTINCT station FROM station_task WHERE workspace = ? AND (status IS NULL OR status NOT IN ('done', 'cancelled', 'archived')) LIMIT ?",
+        [workspace, limit]
+      )
+      .map((row) => row[0] as string);
+  }
+
   /** Changes fields of one station-hosted Task as kept (its value), until the next read gives it again. */
   patchStationTask(
     station: string,
@@ -496,6 +507,12 @@ export class Account {
       station,
       thread,
     ]);
+    // (the status is a column too: what stationTaskHosts reads)
+    if (typeof fields.status === "string")
+      this.#sql.run(
+        "UPDATE station_task SET status = ? WHERE station = ? AND thread = ?",
+        [fields.status, station, thread]
+      );
   }
 
   /**

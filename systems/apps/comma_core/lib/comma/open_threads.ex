@@ -221,27 +221,46 @@ defmodule Comma.OpenThreads do
        do: :ok
 
   defp put(%OpenThread{} = thread, _profile_id, _source_id, _toolkit, entry, now) do
+    status =
+      SalixStore.ProactiveKernel.merge_thread_status(
+        thread.status,
+        thread.evidence_at,
+        not is_nil(thread.corrected_at),
+        entry["status"],
+        entry["evidence_at"]
+      )
+
     evidence_at =
       if DateTime.compare(entry["evidence_at"], thread.evidence_at) == :gt,
         do: entry["evidence_at"],
         else: thread.evidence_at
 
-    changes = %{
-      status: entry["status"],
-      summary: entry["summary"],
-      quote: entry["quote"] || "",
-      counterpart: entry["counterpart"],
-      url: entry["url"],
-      due_on: entry["due_on"],
-      evidence_at: evidence_at,
-      checked_ts: later_ts(thread.checked_ts, entry["checked_ts"])
-    }
+    # Stale evidence behind a resolved tombstone leaves its summary and link as settled.
+    if thread.status == "resolved" and status == "resolved" and
+         DateTime.compare(entry["evidence_at"], thread.evidence_at) != :gt do
+      checked_ts = later_ts(thread.checked_ts, entry["checked_ts"])
 
-    changed = Enum.any?(changes, fn {field, value} -> Map.fetch!(thread, field) != value end)
+      if checked_ts != thread.checked_ts,
+        do: thread |> Ecto.Changeset.change(%{checked_ts: checked_ts}) |> Repo.update!(),
+        else: :ok
+    else
+      changes = %{
+        status: status,
+        summary: entry["summary"],
+        quote: entry["quote"] || "",
+        counterpart: entry["counterpart"],
+        url: entry["url"],
+        due_on: entry["due_on"],
+        evidence_at: evidence_at,
+        checked_ts: later_ts(thread.checked_ts, entry["checked_ts"])
+      }
 
-    if changed,
-      do: thread |> Ecto.Changeset.change(Map.put(changes, :changed_at, now)) |> Repo.update!(),
-      else: :ok
+      changed = Enum.any?(changes, fn {field, value} -> Map.fetch!(thread, field) != value end)
+
+      if changed,
+        do: thread |> Ecto.Changeset.change(Map.put(changes, :changed_at, now)) |> Repo.update!(),
+        else: :ok
+    end
   end
 
   defp later_ts(a, b) when is_binary(a) and is_binary(b),

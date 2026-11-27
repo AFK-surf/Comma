@@ -512,7 +512,6 @@
   "apps/salix_agent/test/tools_mcp_management_test.exs": 0.0,
   "apps/salix_agent/test/tools_media_test.exs": 0.1,
   "apps/salix_agent/test/tools_oauth_test.exs": 0.0,
-  "apps/salix_agent/test/tools_owner_email_test.exs": 0.0,
   "apps/salix_agent/test/tools_peers_archived_test.exs": 0.0,
   "apps/salix_agent/test/tools_peers_copy_test.exs": 0.1,
   "apps/salix_agent/test/tools_peers_test.exs": 0.6,

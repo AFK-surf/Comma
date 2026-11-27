@@ -28,6 +28,9 @@ defmodule SalixStore.OAuth.Adapters.Slack do
       refresh token — the existing non-expiring token is returned unchanged.
     * Revoke posts the user token to `auth.revoke` with a bearer header;
       `token_revoked` / `invalid_auth` / `not_authed` count as success.
+    * An API response with `ok: false` and `token_revoked`, `invalid_auth` or
+      `account_inactive` from `slack.com` refuses the token (`token_refused?/3`). Slack answers
+      HTTP 200 for these. `token_expired` is left to refresh.
 
   Divergences: see `SalixStore.OAuth.Adapter` (ms expiry, nil-for-missing,
   in-adapter invalid_grant classification), plus:
@@ -189,6 +192,14 @@ defmodule SalixStore.OAuth.Adapters.Slack do
       end
     end
   end
+
+  @refused_errors ~w(token_revoked invalid_auth account_inactive)
+
+  @impl true
+  def token_refused?(host, _status, %{"ok" => false, "error" => error}),
+    do: error in @refused_errors and Adapter.api_host?("slack", host, "slack.com")
+
+  def token_refused?(_host, _status, _body), do: false
 
   @impl true
   def validate_credential_value(value, scopes),

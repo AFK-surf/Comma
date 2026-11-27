@@ -14,12 +14,15 @@ struct CommaDeviceRow: Identifiable, Sendable {
     let allowsOperations: Bool
     /// Its station serves its screen and devices on the mesh (`screen_view`), the way this app views them.
     let screenView: Bool
+    /// Its station, which this phone reaches over the mesh.
+    let stationId: String?
     init?(_ row: NSDictionary) {
         guard let id = row.string("device_id") else { return nil }
         self.id = id; name = row.string("name") ?? id
         online = row.string("status") == "connected"; comma = row.bool("isCommaDevice")
         allowsOperations = row.bool("allows_operations")
         screenView = row.bool("screen_view")
+        stationId = row.string("station_id")
     }
     /// "View screen", and its simulators and devices, are offered: online, and its station serves them on the mesh.
     var showsScreen: Bool { online && screenView }
@@ -58,7 +61,8 @@ struct CommaDevicesView: View {
                         }
                         if device.showsScreen, let workspace = store.workspace {
                             NavigationLink {
-                                PhoneScreenDevicesView(scope: WorkspaceSettingsScope(store: store, workspace: workspace), device: device.id)
+                                PhoneScreenDevicesView(scope: WorkspaceSettingsScope(store: store, workspace: workspace), device: device.id,
+                                                       station: device.stationId)
                             } label: { SettingsRow(Text("Simulators and devices")) { SettingsChevron() } }.buttonStyle(SurfaceRowButtonStyle())
                         }
                         if device.comma {

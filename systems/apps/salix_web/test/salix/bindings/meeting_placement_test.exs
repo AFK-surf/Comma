@@ -186,6 +186,31 @@ defmodule Salix.Bindings.MeetingPlacementTest do
     refute_received {:fake_session, _, _}
   end
 
+  test "already_in_meeting from a connected runtime abandons without starting a native bot",
+       ctx do
+    connected!(
+      ctx,
+      {:ok,
+       %{
+         "accepted" => false,
+         "reason_code" => "already_in_meeting",
+         "existing_meeting_id" => "mtg-cal-existing"
+       }}
+    )
+
+    assert {:ok,
+            %{
+              "meeting_id" => "mtg-cal-existing",
+              "status" => "already_in_meeting",
+              "provider" => "comma"
+            }} = CommaProvider.join_from_router(ctx.source, %{})
+
+    assert {:ok, [meeting_id]} = Store.list()
+    assert {:ok, %{"state" => state}, _} = Store.get(meeting_id)
+    assert state["join_dispatch"]["status"] == "abandoned"
+    refute_received {:fake_session, _, _}
+  end
+
   test "an explicit HTTP runtime error does not prove that it accepted no join", ctx do
     server = start_supervised!({Bandit, plug: {HTTPRuntime, self()}, ip: {127, 0, 0, 1}, port: 0})
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server)

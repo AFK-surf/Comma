@@ -29,7 +29,7 @@ defmodule SalixAgent.DependencyJob do
     :timeout_ms
   ]
 
-  @type kind :: :llm | :compaction | :tool | :loop_control
+  @type kind :: :llm | :compaction | :tool | :loop_control | :handoff
   @type t :: %__MODULE__{
           kind: kind(),
           tenant_id: String.t(),
@@ -45,7 +45,7 @@ defmodule SalixAgent.DependencyJob do
   @spec start(kind(), String.t(), (-> term()), keyword()) ::
           {:ok, t()} | {:error, :dependency_saturated | term()}
   def start(kind, tenant_id, fun, opts \\ [])
-      when kind in [:llm, :compaction, :tool, :loop_control] and
+      when kind in [:llm, :compaction, :tool, :loop_control, :handoff] and
              is_binary(tenant_id) and
              is_function(fun, 0) do
     owner = SystemsRuntime.Proc.self()
@@ -167,6 +167,9 @@ defmodule SalixAgent.DependencyRunner do
   @doc false
   def active_count, do: SystemsRuntime.Server.call(__MODULE__, :active_count)
 
+  @doc false
+  def running?(key), do: SystemsRuntime.Server.call(__MODULE__, {:running?, key})
+
   @impl true
   def init(_opts), do: {:ok, %__MODULE__{}}
 
@@ -197,6 +200,9 @@ defmodule SalixAgent.DependencyRunner do
   end
 
   def handle_call(:active_count, _from, state), do: {:reply, map_size(state.jobs), state}
+
+  def handle_call({:running?, key}, _from, state),
+    do: {:reply, Map.has_key?(state.keys, key), state}
 
   @impl true
   def handle_info({:dependency_job_result, token, _result}, state) do
@@ -252,14 +258,19 @@ defmodule SalixAgent.DependencyAdmission do
 
   @default_global_limit 64
   @default_per_tenant_limit 8
-  @kinds [:llm, :compaction, :tool, :loop_control]
-  # Kinds admitted without a global or per-Tenant slot (see `DependencyJob`).
-  @unmetered_kinds [:loop_control]
+  @default_handoff_global_limit 8
+  @default_handoff_per_tenant_limit 2
+  @kinds [:llm, :compaction, :tool, :loop_control, :handoff]
+  # Kinds that do not take a foreground global or per-Tenant slot (see `DependencyJob`).
+  # `:handoff` uses its own independent global and per-Tenant limits so background
+  # living handoffs can never starve foreground `:llm`, `:compaction`, or `:tool` slots.
+  @unmetered_kinds [:loop_control, :handoff]
 
   defstruct jobs: %{},
             task_refs: %{},
             owner_refs: %{},
             tenant_counts: %{},
+            handoff_tenant_counts: %{},
             kind_counts: %{},
             tenant_limits: %{},
             capacity_watches: %{},
@@ -461,6 +472,13 @@ defmodule SalixAgent.DependencyAdmission do
     end
   end
 
+  defp admitted?(state, tenant_id, :handoff) do
+    Map.get(state.kind_counts, :handoff, 0) <
+      limit(:living_handoff_max_children, @default_handoff_global_limit) and
+      Map.get(state.handoff_tenant_counts, tenant_id, 0) <
+        limit(:living_handoff_max_children_per_tenant, @default_handoff_per_tenant_limit)
+  end
+
   defp admitted?(_state, _tenant_id, kind) when kind in @unmetered_kinds, do: true
 
   defp admitted?(state, tenant_id, _kind) do
@@ -494,12 +512,18 @@ defmodule SalixAgent.DependencyAdmission do
   end
 
   defp put_job(state, token, job) do
+    handoff_tenant_counts =
+      if job.kind == :handoff,
+        do: Map.update(state.handoff_tenant_counts, job.tenant_id, 1, &(&1 + 1)),
+        else: state.handoff_tenant_counts
+
     %{
       state
       | jobs: Map.put(state.jobs, token, job),
         task_refs: Map.put(state.task_refs, job.task_ref, token),
         owner_refs: Map.put(state.owner_refs, job.owner_ref, token),
         tenant_counts: count_tenant(state.tenant_counts, job),
+        handoff_tenant_counts: handoff_tenant_counts,
         kind_counts: Map.update(state.kind_counts, job.kind, 1, &(&1 + 1))
     }
   end
@@ -521,6 +545,11 @@ defmodule SalixAgent.DependencyAdmission do
             do: state.tenant_counts,
             else: decrement_count(state.tenant_counts, job.tenant_id)
 
+        handoff_tenant_counts =
+          if job.kind == :handoff,
+            do: decrement_count(state.handoff_tenant_counts, job.tenant_id),
+            else: state.handoff_tenant_counts
+
         kind_counts = decrement_count(state.kind_counts, job.kind)
 
         state = %{
@@ -529,6 +558,7 @@ defmodule SalixAgent.DependencyAdmission do
             task_refs: Map.delete(state.task_refs, job.task_ref),
             owner_refs: Map.delete(state.owner_refs, job.owner_ref),
             tenant_counts: tenant_counts,
+            handoff_tenant_counts: handoff_tenant_counts,
             kind_counts: kind_counts
         }
 

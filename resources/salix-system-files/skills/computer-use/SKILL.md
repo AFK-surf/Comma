@@ -10,10 +10,8 @@ metadata:
 Do this task with `env.computer_use` on the user's computer.
 
 1. Call `env.computer_use` with `action="help"` and follow its workflow to find the device and environment.
-2. Start the session in background mode: `action="start"`, `args={mode: "background", apps: [...]}`.
-   The user keeps their screen, pointer and keyboard.
-3. Use foreground mode only when the app has no usable accessibility tree or the task needs drag-and-drop across windows.
-   Tell the user before you change to it.
-4. Call `action="end"` when the task is done.
+2. Start the session: `action="start"`, `args={mode: "background", apps: [...]}`.
+   On macOS, target app windows run on an isolated virtual desktop with a live Notch preview and AI cursor, keeping the user's primary screen, pointer and keyboard free.
+3. Call `action="end"` when the task is done.
 
-If no environment has `computer_use_tool`, tell the user to open the Comma app on their Mac and allow Computer use. Do not do the task another way without asking.
+If no environment has `computer_use_tool`, tell the user to open the Comma app on their Mac or Windows computer. On a Mac, they also allow Computer use. Do not do the task another way without asking.

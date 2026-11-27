@@ -624,8 +624,26 @@ defmodule SalixAgent.InternalSessionActor do
           # the committed baseline retained by this owner.
           baseline = InternalSessionStore.revision_baseline(revision)
 
+          # A running compaction is the one private phase status shows: the
+          # baseline can still say idle while the summary runs.
           {:ok,
-           SalixAgent.InternalAgentRuntime.project_session_activity(data.agent_id, baseline.state)}
+           SalixAgent.InternalAgentRuntime.project_session_activity(
+             data.agent_id,
+             baseline.state,
+             compacting: is_map(data.pending_compaction)
+           )}
+
+        # An overlapping compact control forgets the retained revision while
+        # the summary still runs; status reads the stored baseline instead.
+        _ when is_map(data.pending_compaction) ->
+          InternalSessionStore.with_session(data.agent_id, data.session_id, fn session ->
+            {:ok,
+             SalixAgent.InternalAgentRuntime.project_session_activity(
+               data.agent_id,
+               session,
+               compacting: true
+             )}
+          end)
 
         _ ->
           :not_resident
@@ -1037,7 +1055,15 @@ defmodule SalixAgent.InternalSessionActor do
   def terminate(_reason, data) do
     SalixAgent.SessionResidency.unregister(SystemsRuntime.Proc.self())
     SalixAgent.RoundConfigCache.stop(data.round_config_cache)
+    if is_map(data.pending_compaction), do: SessionActivity.notify(data.agent_id, data.session_id)
     :ok
+  end
+
+  # The summary that status showed ended. A follow-up compaction armed by the
+  # same step notified again when it parked.
+  defp notify_compaction_ended(data) do
+    SessionActivity.notify(data.agent_id, data.session_id)
+    data
   end
 
   # The pure kernel admits the exact live owner. Payload validation and job
@@ -1069,11 +1095,14 @@ defmodule SalixAgent.InternalSessionActor do
         :ok = finish_dependency_job(pending.dependency_job, event)
         data = %{data | pending_compaction: nil}
 
-        if event == :result do
-          noreply(finish_compaction(data, pending, result))
-        else
-          noreply(fail_compaction(data, pending, dependency_failure(:compaction, event, result)))
-        end
+        data =
+          if event == :result do
+            finish_compaction(data, pending, result)
+          else
+            fail_compaction(data, pending, dependency_failure(:compaction, event, result))
+          end
+
+        noreply(notify_compaction_ended(data))
 
       {:tool, pending} ->
         :ok = finish_dependency_job(pending.dependency_job, event)
@@ -1873,6 +1902,7 @@ defmodule SalixAgent.InternalSessionActor do
         do: ctx.data |> reset_session_retry() |> reply_direct_round_waiter(result),
         else: ctx.data
 
+    round_llm_opts = if is_map(ctx.host), do: Map.get(ctx.host, :llm_opts), else: nil
     ctx = %{ctx | data: data, host: nil, result: result}
 
     case result do
@@ -1880,7 +1910,11 @@ defmodule SalixAgent.InternalSessionActor do
         data = ctx.data |> retain(context) |> reset_session_retry()
 
         answer(
-          %{ctx | data: settle_round(data, context, outcome), rev: context.revision},
+          %{
+            ctx
+            | data: settle_round(data, context, outcome, round_llm_opts),
+              rev: context.revision
+          },
           driver,
           :ok
         )
@@ -1890,13 +1924,14 @@ defmodule SalixAgent.InternalSessionActor do
     end
   end
 
-  defp settle_round(data, context, {:async_tools_started, pending} = outcome) do
+  defp settle_round(data, context, {:async_tools_started, pending} = outcome, round_llm_opts) do
     pending_async_tools =
       Enum.reduce(pending, data.pending_async_tools, fn item, acc ->
         Map.put(acc, item.ref, item)
       end)
 
     notify_session_updated(data)
+    _ = SalixAgent.LivingHandoff.maybe_update_async(context, data.session_id, round_llm_opts)
 
     %{data | pending_async_tools: pending_async_tools}
     |> stop_cancelled_pending_async_tools(context)
@@ -1906,13 +1941,14 @@ defmodule SalixAgent.InternalSessionActor do
   # Compaction follows an overflow. A candidate that cannot reserve a
   # disposition must not immediately redispatch; send refusals already
   # reserve and settle their source.
-  defp settle_round(data, _context, outcome)
+  defp settle_round(data, _context, outcome, _round_llm_opts)
        when outcome in [:context_overflow, :guard_failure_parked],
        do: data
 
-  defp settle_round(data, context, outcome) do
+  defp settle_round(data, context, outcome, round_llm_opts) do
     notify_session_updated(data)
     _ = SalixAgent.Titles.maybe_generate_async(context, data.session_id)
+    _ = SalixAgent.LivingHandoff.maybe_update_async(context, data.session_id, round_llm_opts)
     _ = TrajectoryEval.Runner.maybe_eval_async(context, data.session_id, outcome)
 
     data
@@ -1962,6 +1998,10 @@ defmodule SalixAgent.InternalSessionActor do
     do: drop_unfenced_llm(data, pending)
 
   defp complete_llm_response(data, pending, response, duration_ms, meter_meta) do
+    # Translate before the driver consumes the response, not only in its later
+    # metering host. The kernel owns persistence and dispatch of these calls.
+    response = SalixAgent.IFC.ContextProjection.response(response, pending[:ifc_projection])
+
     SalixStore.ReadScope.run(fn ->
       {revision, data} = resident_revision(data)
 
@@ -1980,16 +2020,16 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   # The kernel settles a standalone `end_turn` as soon as it reads the
-  # response, so a done that leaves the activation's person with nothing is
-  # refused here, before the kernel reads it (`SalixAgent.UnansweredPersonGuard`).
-  defp guard_response(%Revision{state: state}, pending, response),
-    do:
-      SalixAgent.UnansweredPersonGuard.guard(
-        response,
-        state,
-        pending[:role],
-        pending[:visible_reply_phase] || :clean
-      )
+  # response, so premature sends before a queued same-thread follow-up and
+  # a done that leaves the activation's person with nothing are refused here
+  # (`SalixAgent.FollowupReplyGuard`, `SalixAgent.UnansweredPersonGuard`).
+  defp guard_response(%Revision{state: state}, pending, response) do
+    phase = pending[:visible_reply_phase] || :clean
+
+    response
+    |> SalixAgent.FollowupReplyGuard.guard(state, pending[:role], phase)
+    |> SalixAgent.UnansweredPersonGuard.guard(state, pending[:role], phase)
+  end
 
   defp guard_response(_revision, _pending, response), do: response
 
@@ -2250,6 +2290,8 @@ defmodule SalixAgent.InternalSessionActor do
 
           "compaction" ->
             pending = Map.merge(data.pending_compaction, %{driver: driver, ctx: suspended(ctx)})
+            # Status shows the running summary (`activity_snapshot`).
+            SessionActivity.notify(data.agent_id, data.session_id)
             %{data | pending_compaction: pending}
         end
 

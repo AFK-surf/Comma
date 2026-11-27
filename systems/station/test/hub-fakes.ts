@@ -149,12 +149,17 @@ export class FakeDriver implements AgentDriver {
   private n = 1;
   /// Times every process it started was ended.
   shutdowns = 0;
+  /// Whether its sessions are given browser tools (AgentDriver.browser).
+  browserTools = false;
 
   constructor(kind: "claude" | "codex") {
     this.kind = kind;
   }
   runtime() {
     return this.kind;
+  }
+  browser() {
+    return this.browserTools;
   }
   last(): FakeSession {
     const last = this.sessions.at(-1);

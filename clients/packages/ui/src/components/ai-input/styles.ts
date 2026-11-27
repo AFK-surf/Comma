@@ -95,7 +95,7 @@ export const AI_INPUT_MENU_MAX_HEIGHT_PX = 320;
 export const AI_INPUT_MENU_WIDTH_PX = 353;
 
 export const aiInputMenuPanel =
-  "comma-ai-input-menu absolute z-50 flex max-w-full flex-col rounded-2xl border border-primary bg-ai-input-panel-bg-input shadow-xs";
+  "comma-ai-input-menu absolute z-50 flex max-w-full flex-col rounded-2xl border-[length:var(--border-width-0-5)] border-primary bg-popup-secondary shadow-lg";
 
 export const aiInputMenuScrollContent = "flex w-full flex-col gap-sm";
 
@@ -103,7 +103,7 @@ export const aiInputMenuSection = "flex w-full flex-col gap-xxs";
 
 /** Sticky until its own section scrolls away; opaque so rows pass under it. */
 export const aiInputMenuSectionLabel =
-  "sticky top-0 z-[1] w-full bg-ai-input-panel-bg-input px-xs pt-xs pb-xxs text-xs font-medium text-quaternary";
+  "sticky top-0 z-[1] w-full bg-popup-secondary px-xs pt-xs pb-xxs text-xs font-medium text-quaternary";
 
 /**
  * scroll-mt clears the 24px sticky label when keyboard nav reveals a row.
@@ -225,20 +225,21 @@ export const aiInputIconButton =
   "inline-flex shrink-0 items-center justify-center rounded-full text-ai-input-panel-icon-primary outline-none transition-colors focus-visible:shadow-focus-gray disabled:cursor-not-allowed disabled:text-ai-input-panel-icon-disabled";
 
 /** AI Input circular controls share the 30px footprint and tokenized inset. */
-export const aiInputControlSmallSize = "size-[30px] p-sm";
+export const aiInputControlSmallSize = "size-[30px] p-sm [--button-press-scale:0.94]";
 
 export const aiInputAccessButton =
-  "inline-flex h-[30px] w-[143px] shrink-0 items-center justify-center gap-xs rounded-full bg-transparent px-md py-xs text-sm leading-5 tracking-[-0.14px] text-ai-input-panel-text-warning outline-none transition-colors hover:bg-quaternary focus-visible:shadow-focus-gray disabled:cursor-not-allowed disabled:text-ai-input-panel-icon-disabled";
+  "inline-flex h-[30px] w-[143px] shrink-0 items-center justify-center gap-xs rounded-full bg-transparent px-md py-xs text-sm leading-5 tracking-[-0.14px] text-ai-input-panel-text-warning outline-none transition-colors hover:bg-quaternary focus-visible:shadow-focus-gray disabled:cursor-not-allowed disabled:text-ai-input-panel-icon-disabled [--button-press-scale:0.97]";
 
 export const aiInputSendButton =
-  "inline-flex shrink-0 items-center justify-center rounded-full outline-none transition-colors focus-visible:shadow-focus-brand-shadow-xs disabled:cursor-not-allowed";
+  "inline-flex shrink-0 items-center justify-center rounded-full outline-none transition-colors focus-visible:shadow-focus-brand-shadow-xs disabled:cursor-not-allowed [--button-press-scale:0.94]";
 
 export const aiInputAttachment =
   "comma-ai-input-attachment group/attachment relative shrink-0";
 
 /**
- * Sits inside the tile's top-right corner, `spacing-xxs` from both edges, so
- * the tile's own footprint holds it.
+ * Sits inside the tile's top-right corner, `spacing-sm` (6px) from both
+ * edges, so the 16px round control stays concentric with the tile's 16px
+ * outer corner and does not cross its arc.
  *
  * The reveal transition lives in ai-input-attachment.css, not here: the global
  * unlayered button rule declares the whole `transition` shorthand, and an
@@ -246,7 +247,7 @@ export const aiInputAttachment =
  * feedback uses the action-specific 0.94 scale in that stylesheet.
  */
 export const aiInputAttachmentClose =
-  "comma-ai-input-attachment-close absolute top-xxs right-xxs inline-flex size-4 items-center justify-center rounded-full border-[0.5px] border-button-secondary-border bg-ai-input-panel-bg-tag p-xxs text-ai-input-panel-icon-fg outline-none " +
+  "comma-ai-input-attachment-close absolute top-sm right-sm inline-flex size-4 items-center justify-center rounded-full border-[0.5px] border-button-secondary-border bg-ai-input-panel-bg-tag p-xxs text-ai-input-panel-icon-fg outline-none " +
   "opacity-0 " +
   "group-hover/attachment:opacity-100 " +
   "group-focus-within/attachment:opacity-100 " +
@@ -266,32 +267,36 @@ export const aiInputVoiceRecordingControl =
  * mixed row keeps one baseline. The content tiles share the file chip's
  * popup fill and inset hairline (an inset ring rather than a border, which
  * would take layout and push the inset close control off the tile edge).
+ *
+ * The tiles sit 5px inside the compact composer shell's 20px corner, so they
+ * take the 16px radius to stay concentric with it.
  */
 const aiInputAttachmentCard =
-  "h-20 rounded-xl bg-popup-primary shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]";
+  "h-20 rounded-2xl bg-popup-primary shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]";
 
 /**
  * Text on a tile's first line clears the inset close control: its 16px box
- * plus the 2px inset, and spacing-xxs before the text.
+ * plus the 6px inset, and spacing-xxs before the text.
  */
-const aiInputAttachmentCloseClearance =
-  "pr-[calc(var(--spacing-xl)+var(--spacing-xs))]";
+const aiInputAttachmentCloseClearance = "pr-3xl";
 
-const aiInputQuoteCard =
-  "flex rounded-xl bg-popup-primary text-left shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)] outline-none focus-visible:shadow-focus-gray";
+const aiInputQuoteSurface =
+  "flex bg-popup-primary text-left shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)] outline-none focus-visible:shadow-focus-gray";
 
 /**
  * A quoted passage staged for the next message. It shows the start of the
  * passage behind a quote bar, as Claude and ChatGPT do, so the reader sees
  * what they picked without hovering; the hover card carries the whole passage.
+ * Shares the staged tiles' 16px radius to stay concentric with the compact
+ * composer shell's 20px corner.
  */
-export const aiInputQuoteAttachment = `${aiInputQuoteCard} h-20 w-40 items-start py-lg pl-lg ${aiInputAttachmentCloseClearance}`;
+export const aiInputQuoteAttachment = `${aiInputQuoteSurface} h-20 w-40 rounded-2xl items-start py-lg pl-lg ${aiInputAttachmentCloseClearance}`;
 
 /**
  * The same passage on the sent message. It has no close control and no row to
  * line up with, so it takes even padding and only the height its text needs.
  */
-export const aiInputMessageQuote = `${aiInputQuoteCard} max-w-60 p-lg`;
+export const aiInputMessageQuote = `${aiInputQuoteSurface} max-w-60 rounded-xl p-lg`;
 
 /**
  * Up to three lines behind a bar as tall as the text; pre-wrap keeps the
@@ -311,10 +316,27 @@ export const aiInputFileName = `line-clamp-2 ${aiInputAttachmentCloseClearance} 
 export const aiInputFileFooter = "flex min-w-0 items-center gap-sm";
 
 export const aiInputFileIconSurface =
-  "flex size-6 shrink-0 items-center justify-center rounded-sm bg-panel-bg-file text-ai-input-header-text-secondary [&>img]:size-4 [&>svg]:size-4";
+  "flex size-6 shrink-0 items-center justify-center rounded-md bg-panel-bg-file text-ai-input-header-text-secondary [&>img]:size-4 [&>svg]:size-4";
 
 export const aiInputFileMeta =
   "truncate text-xs leading-[18px] text-ai-input-panel-text-attachment-secondary";
+
+/** A file card's name and footer, when the card shows a detail on hover: laid out as the card lays them out. */
+/** `aiInputFileMeta` for a path, cut in its middle (`MiddleEllipsis`) rather than at its end. */
+export const aiInputFileMetaPath =
+  "text-xs leading-[18px] text-ai-input-panel-text-attachment-secondary";
+
+export const aiInputFileBody = "flex min-h-0 min-w-0 flex-1 flex-col justify-between";
+
+/** A file card's hover: as wide as its path, up to the window. */
+export const aiInputFileHoverCard = "w-max max-w-[min(520px,calc(100vw-32px))]";
+
+export const aiInputFileDetail = "flex min-w-0 flex-col gap-xxs";
+
+export const aiInputFileDetailText =
+  "m-0 text-xs leading-[18px] text-primary [overflow-wrap:anywhere]";
+
+export const aiInputFileDetailMeta = "text-xs leading-4 text-tertiary";
 
 /**
  * A block of text staged for the next message in place of the prompt, such as
@@ -358,7 +380,7 @@ export const aiInputQuotePreviewText =
  * as an upload settles.
  */
 export const aiInputImageAttachmentTile =
-  "flex size-20 items-center justify-center overflow-clip rounded-xl";
+  "flex size-20 items-center justify-center overflow-clip rounded-2xl";
 
 /** A settled thumbnail keeps the attachment fill and hairline it always had. */
 export const aiInputImageAttachmentReady = `${aiInputImageAttachmentTile} border-[0.5px] border-primary bg-ai-input-panel-bg-attachment`;

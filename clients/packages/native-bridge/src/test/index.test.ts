@@ -674,6 +674,7 @@ describe("native bridge contracts", () => {
       "blender.state.changed",
       "browserSidebar.changed",
       "browserSidebar.openTabRequested",
+      "browserSidebar.closeTabRequested",
       "surfaces.changed",
       "surfaces.windowFullScreen.changed",
       "surfaces.windowMaximized.changed",
@@ -737,6 +738,12 @@ describe("native bridge contracts", () => {
       {
         channel: "comma:browser-sidebar:open-tab-requested",
         id: "browserSidebar.openTabRequested",
+        permission: "browser-sidebar.control",
+        target: { role: "main-window", type: "role" },
+      },
+      {
+        channel: "comma:browser-sidebar:close-tab-requested",
+        id: "browserSidebar.closeTabRequested",
         permission: "browser-sidebar.control",
         target: { role: "main-window", type: "role" },
       },

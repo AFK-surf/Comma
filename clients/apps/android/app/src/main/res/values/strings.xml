@@ -59,4 +59,9 @@
     <string name="composer_attachment_remove">移除附件</string>
     <string name="composer_attachment_retry">上传失败，轻点重试</string>
     <string name="composer_uploads_failed">有附件上传失败，重试或删除后再发送</string>
+    <string name="activity_indicator_loading">正在加载</string>
+    <string name="task_worker_session_state_active">运行中</string>
+    <string name="task_worker_session_state_waiting">等待中</string>
+    <string name="task_worker_session_state_error">错误</string>
+    <string name="task_worker_session_state_idle">空闲</string>
 </resources>

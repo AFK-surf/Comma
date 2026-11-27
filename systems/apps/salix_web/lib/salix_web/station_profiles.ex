@@ -43,6 +43,26 @@ defmodule SalixWeb.StationProfiles do
     end
   end
 
+  @doc """
+  Whether a sandbox running default Codex in `tenant` runs on the platform's
+  `worker` model rather than a workspace Codex subscription: true when
+  `SalixWeb.StationLLM.tier/0` is configured and no enabled workspace Codex
+  account is lent to the sandbox (respecting a pinned `account_id`).
+  """
+  def sandbox_codex_platform?(tenant, account_id \\ nil) do
+    with {:ok, _tier} <- SalixWeb.StationLLM.tier(),
+         {:ok, accounts} <- SubscriptionStore.station_accounts(tenant) do
+      lent =
+        if is_binary(account_id),
+          do: Enum.filter(accounts, &(&1["id"] == account_id)),
+          else: accounts
+
+      not Enum.any?(lent, &(runtime(&1) == "codex"))
+    else
+      _ -> false
+    end
+  end
+
   # The authorization snapshot owns the account restriction. Never re-read a
   # stable Device here: a later generation may have a different account.
   defp accounts(tenant, owner) do
@@ -250,8 +270,7 @@ defmodule SalixWeb.StationProfiles do
 
   defp key(_tenant, _account), do: nil
 
-  defp runtime(%{"credential" => "subscription", "source" => source}), do: source
-  defp runtime(_api_key), do: "claude"
+  defp runtime(account), do: SalixAgent.Sandboxes.account_runtime(account)
 
   # The share's id: of this account, in this tenant, as the share protocol spells one.
   defp share_id(tenant, account_id) do

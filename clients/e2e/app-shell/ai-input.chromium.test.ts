@@ -185,14 +185,32 @@ test("AI Input insets every attachment's close control inside its tile", async (
     elements.map((tile) => {
       const close = tile.querySelector<HTMLElement>(".comma-ai-input-attachment-close");
       if (!close) throw new Error("Attachment tile has no close control.");
-      const inset = parseFloat(
-        getComputedStyle(tile).getPropertyValue("--spacing-xxs")
-      );
+      const inset = parseFloat(getComputedStyle(tile).getPropertyValue("--spacing-sm"));
       const tileRect = tile.getBoundingClientRect();
       const closeRect = close.getBoundingClientRect();
+      // The rounded surface may be the tile itself or the element filling it
+      // (the image's state surface, the quote's button); never the close control.
+      const surface = [tile, ...tile.querySelectorAll<HTMLElement>("*")].find(
+        (element) =>
+          !close.contains(element) &&
+          parseFloat(getComputedStyle(element).borderTopRightRadius) > 0 &&
+          Math.abs(element.getBoundingClientRect().right - tileRect.right) < 0.5 &&
+          Math.abs(element.getBoundingClientRect().top - tileRect.top) < 0.5
+      );
+      if (!surface) throw new Error("Attachment tile has no rounded surface.");
+      const cornerRadius = parseFloat(getComputedStyle(surface).borderTopRightRadius);
+      // Distance from the corner arc's center to the far edge of the round control.
+      const closeRadius = closeRect.width / 2;
+      const reach =
+        Math.hypot(
+          closeRect.left + closeRadius - (tileRect.right - cornerRadius),
+          closeRect.top + closeRadius - (tileRect.top + cornerRadius)
+        ) + closeRadius;
       return {
+        cornerRadius,
         height: tileRect.height,
         inset,
+        reach,
         right: tileRect.right - closeRect.right,
         slot: tile.getAttribute("data-slot"),
         top: closeRect.top - tileRect.top,
@@ -205,6 +223,11 @@ test("AI Input insets every attachment's close control inside its tile", async (
       right: placement.inset,
       top: placement.inset,
     });
+    // The round control stays inside the tile's corner arc instead of crossing it.
+    expect(placement.cornerRadius, placement.slot ?? "").toBeGreaterThan(0);
+    expect(placement.reach, placement.slot ?? "").toBeLessThanOrEqual(
+      placement.cornerRadius
+    );
   }
   // A mixed row keeps one baseline: the file chip matches the square tiles.
   expect(new Set(placements.map((placement) => placement.height)).size).toBe(1);

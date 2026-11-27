@@ -43,6 +43,43 @@ defmodule SalixIM.TaskReplySourceTest do
     assert :ok = SourceRefProtection.validate_update(refs_a, refs_a)
   end
 
+  for provider <- ~w(feishu lark) do
+    test "#{provider}: the original message and chat are the Task's reply source" do
+      provider = unquote(provider)
+      source = "im_provider:#{provider}:connect:om_source"
+
+      context = %{
+        source_message_id: source,
+        source_message_ids: [source],
+        trusted_origin: %{
+          "provider" => provider,
+          "agent_group_id" => "group",
+          "source_message_id" => source,
+          "provider_context" => %{
+            "connect_id" => "connect",
+            "chat_id" => "oc_1",
+            "message_id" => "om_source",
+            "message_thread_id" => "omt_1"
+          }
+        }
+      }
+
+      refs = TaskReplySource.source_refs(%{group_id: "group"}, context)
+
+      assert refs["task_reply_source"] == %{
+               "provider" => provider,
+               "connect_id" => "connect",
+               "chat_id" => "oc_1",
+               "message_id" => "om_source",
+               "thread_id" => "omt_1",
+               "source_message_id" => source
+             }
+
+      record = %{"conversation_kind" => "agent_task", "conversation_source_refs" => refs}
+      assert TaskReplySource.content(record) =~ "im_api.#{provider}.send_message"
+    end
+  end
+
   # A schedule run that wakes a Router after it answered this person creates
   # a Task that is not theirs, so it must not return results to their thread.
   test "an answered person superseded by a later source gives no reply source" do

@@ -16,7 +16,12 @@ import {
   productInboxErrorMessage,
   useProductInboxProjection,
 } from "../../product-inbox";
-import { taskLoopStop } from "./taskLoopLabels";
+import {
+  taskLoopStanding,
+  taskLoopStop,
+  taskLoopZoneClock,
+  type TaskLoopZoneClock,
+} from "./taskLoopLabels";
 import { taskOriginKey, type TaskOriginKey } from "./taskOrigin";
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
 import { useHeldWhileDisabled } from "../useHeldWhileDisabled";
@@ -36,10 +41,14 @@ export type TaskViewModel = TaskWorkspaceTask & {
   origin: TaskOriginKey | undefined;
   /** Set on a Task a station hosts. */
   host?: TaskHost | undefined;
+  /** Set on a still.fail station's chat: its page in still.fail, where it opens (`ProductInboxItem.url`). */
+  url?: string | undefined;
   labels?: readonly string[] | undefined;
   clientPlatform?: string | undefined;
   /** Set on a Task accepted from another person's request: who sent it. */
   requestedBy?: ProductInboxItem["requestedBy"];
+  /** Set on a Task together: the people it was started with, whose faces its card wears. */
+  together?: readonly string[] | undefined;
   /** Set on a Loop Task only: its cards wear the Loops chip. */
   loop?: TaskLoop | undefined;
   /** When the Task's latest run started (Unix milliseconds); absent for a Task from before it was kept. */
@@ -108,10 +117,11 @@ export function useWorkspaceTasks({
     if (!result) return [];
     const previous = taskCache.current;
     const next = new Map<string, TaskViewModel>();
+    const loopClock = taskLoopZoneClock();
     const list = result.items
       .filter((item) => item.kind === "agent_task" && item.status !== "archived")
       .map((item) => {
-        const fresh = toTaskViewModel(item, messages);
+        const fresh = toTaskViewModel(item, messages, locale, loopClock);
         fresh.archiveVersion = item.archiveVersion;
         // One the core says cannot be archived from here (a Task a station hosts) offers no archive.
         if (!item.unsupported?.includes("archive"))
@@ -142,7 +152,7 @@ export function useWorkspaceTasks({
       });
     taskCache.current = next;
     return list;
-  }, [result, archive, messages]);
+  }, [result, archive, locale, messages]);
   const selectedWorkspaceId = result?.activeWorkspaceId || activeWorkspaceId;
   const activeGroupId = useMemo(
     () =>
@@ -202,11 +212,22 @@ export function useWorkspaceTasks({
 
 function toTaskViewModel(
   item: ProductInboxItem,
-  messages: ReturnType<typeof useCommaMessages>
+  messages: ReturnType<typeof useCommaMessages>,
+  locale: ReturnType<typeof useCommaLocale>,
+  loopClock: TaskLoopZoneClock
 ): TaskViewModel {
   const host = item.host;
-  const statusBucket = taskStatusBucket(item.status);
+  const statusBucket = taskStatusBucket(item.status, {
+    loopState: item.loop?.state,
+  });
   const loopStop = taskLoopStop(statusBucket, item.loop, messages);
+  const loopStanding = taskLoopStanding(
+    statusBucket,
+    item.loop,
+    messages,
+    locale,
+    loopClock
+  );
   return {
     activityStatus:
       item.status === "active" && item.meetingPhase
@@ -216,12 +237,14 @@ function toTaskViewModel(
     groupId: item.groupId,
     id: item.id,
     messages: [],
-    origin: taskOriginKey(item.origin),
+    origin: item.url ? "monoid" : taskOriginKey(item.origin),
     labels: item.labels,
     clientPlatform: item.clientPlatform,
     ...(item.requestedBy ? { requestedBy: item.requestedBy } : {}),
+    ...(item.together ? { together: item.together } : {}),
     loop: item.loop,
     ...(loopStop === undefined ? {} : { loopStop }),
+    ...(loopStanding === undefined ? {} : { loopStanding }),
     statusBucket,
     title: item.title,
     updatedAt: item.updatedAt,
@@ -230,6 +253,7 @@ function toTaskViewModel(
     ...(item.createdAt === undefined ? {} : { createdAt: item.createdAt }),
     // A Task a station hosts: where it runs, and what runs it.
     ...(host ? { host: toTaskHost(host) } : {}),
+    ...(item.url ? { url: item.url } : {}),
     ...(host?.runtime === "codex" || host?.runtime === "claude"
       ? { worker: host.runtime }
       : {}),
@@ -256,6 +280,7 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
     a.requestedBy?.id === b.requestedBy?.id &&
     a.requestedBy?.name === b.requestedBy?.name &&
     a.requestedBy?.avatar?.revision === b.requestedBy?.avatar?.revision &&
+    a.together?.join(",") === b.together?.join(",") &&
     (a.labels === b.labels ||
       (a.labels !== undefined &&
         b.labels !== undefined &&
@@ -267,10 +292,15 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
     a.statusBucket === b.statusBucket &&
     a.loopStop?.text === b.loopStop?.text &&
     a.loopStop?.failed === b.loopStop?.failed &&
+    a.loopStanding?.kind === b.loopStanding?.kind &&
+    a.loopStanding?.text === b.loopStanding?.text &&
+    a.loopStanding?.title === b.loopStanding?.title &&
+    a.loopStanding?.nextRunText === b.loopStanding?.nextRunText &&
     a.title === b.title &&
     a.updatedAt === b.updatedAt &&
     a.workspaceId === b.workspaceId &&
     a.worker === b.worker &&
+    a.url === b.url &&
     a.host?.machine === b.host?.machine &&
     a.host?.online === b.host?.online &&
     a.host?.model === b.host?.model

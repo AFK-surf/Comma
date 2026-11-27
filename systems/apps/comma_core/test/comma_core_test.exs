@@ -148,6 +148,8 @@ defmodule CommaCoreTest do
 
     @impl true
     def append_group_router_conversation_message(workspace, attrs) do
+      notify({:router_message_attrs, workspace["id"], attrs})
+
       with {:ok, conversation} <- ensure_group_router_conversation(workspace) do
         append_group_conversation_message(
           workspace,
@@ -313,20 +315,82 @@ defmodule CommaCoreTest do
     @impl true
     def get_group_conversation_with_messages(workspace, conversation_id, opts) do
       with {:ok, conversation} <- get_group_conversation(workspace, conversation_id) do
-        messages = get({:messages, conversation_id}, [])
+        all_messages = get({:messages, conversation_id}, [])
+
+        window_messages =
+          case Keyword.get(opts, :tail) do
+            tail when is_integer(tail) and tail > 0 -> Enum.take(all_messages, -tail)
+            _ -> Enum.take(all_messages, Keyword.get(opts, :limit, 200))
+          end
 
         messages =
-          case Keyword.get(opts, :tail) do
-            tail when is_integer(tail) and tail > 0 -> Enum.take(messages, -tail)
-            _ -> Enum.take(messages, Keyword.get(opts, :limit, 200))
+          case Keyword.get(opts, :after_seq) do
+            after_seq when is_integer(after_seq) ->
+              Enum.filter(window_messages, &(is_integer(&1["seq"]) and &1["seq"] > after_seq))
+
+            _ ->
+              window_messages
           end
+
+        final_id =
+          window_messages
+          |> Enum.reverse()
+          |> Enum.find_value(fn
+            %{"actor_type" => actor_type, "message_id" => id}
+            when actor_type in ["agent", "system"] and is_binary(id) ->
+              id
+
+            _ ->
+              nil
+          end)
 
         put({:last_snapshot_opts, conversation_id}, opts)
 
         {:ok,
          %{
            "conversation" => conversation,
-           "messages" => messages
+           "messages" => messages,
+           "final_message_id" => final_id
+         }}
+      end
+    end
+
+    @impl true
+    def list_group_conversation_message_page(workspace, conversation_id, opts) do
+      with {:ok, _conversation} <- get_group_conversation(workspace, conversation_id) do
+        all_messages = get({:messages, conversation_id}, [])
+        limit = Keyword.get(opts, :limit, 100)
+        before_seq = Keyword.get(opts, :before)
+
+        eligible =
+          if is_integer(before_seq),
+            do: Enum.filter(all_messages, &(is_integer(&1["seq"]) and &1["seq"] < before_seq)),
+            else: all_messages
+
+        page = Enum.take(eligible, -limit)
+        head_seq = List.first(all_messages) && List.first(all_messages)["seq"]
+        tail_seq = List.last(all_messages) && List.last(all_messages)["seq"]
+        first_seq = List.first(page) && List.first(page)["seq"]
+        last_seq = List.last(page) && List.last(page)["seq"]
+
+        existing_calls = get({:message_page_opts, conversation_id}, [])
+        put({:message_page_opts, conversation_id}, existing_calls ++ [opts])
+
+        {:ok,
+         %{
+           "messages" => page,
+           "covered" =>
+             if(is_integer(first_seq) and is_integer(last_seq),
+               do: %{"first_seq" => first_seq, "last_seq" => last_seq},
+               else: nil
+             ),
+           "has_older" => is_integer(first_seq) and is_integer(head_seq) and first_seq > head_seq,
+           "has_newer" => is_integer(last_seq) and is_integer(tail_seq) and last_seq < tail_seq,
+           "bounds" =>
+             if(is_integer(head_seq) and is_integer(tail_seq),
+               do: %{"head_seq" => head_seq, "tail_seq" => tail_seq},
+               else: nil
+             )
          }}
       end
     end
@@ -651,6 +715,7 @@ defmodule CommaCoreTest do
     def participants(conversation_id), do: get({:participants, conversation_id}, [])
     def messages(conversation_id), do: get({:messages, conversation_id}, [])
     def last_snapshot_opts(conversation_id), do: get({:last_snapshot_opts, conversation_id})
+    def message_page_opts(conversation_id), do: get({:message_page_opts, conversation_id}, [])
 
     def put_task_run(conversation_id, run), do: put({:task_run, conversation_id}, run)
 
@@ -920,6 +985,32 @@ defmodule CommaCoreTest do
     end
   end
 
+  test "Home router message always forwards server-authenticated user email and ignores client-spoofed requester_email" do
+    {user, workspace, session} = setup_user_workspace("authed-sender@example.com")
+    assert {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
+
+    assert {:ok, _conversation} =
+             Comma.Conversations.send_message(
+               user,
+               session,
+               workspace["default_group_id"],
+               chat["id"],
+               %{
+                 "client_request_id" => "req-requester-email-1",
+                 "requester_email" => "spoofed@example.com",
+                 "metadata" => %{"requester_email" => "spoofed-meta@example.com"},
+                 "message" => %{
+                   "content" => "approve",
+                   "requester_email" => "spoofed-msg@example.com"
+                 }
+               }
+             )
+
+    workspace_id = workspace["id"]
+    assert_received {:router_message_attrs, ^workspace_id, attrs}
+    assert attrs["requester_email"] == "authed-sender@example.com"
+  end
+
   test "message source device is resolved in the sending workspace without granting access" do
     {user, workspace, session} = setup_user_workspace("client-device@example.com")
     {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
@@ -962,6 +1053,62 @@ defmodule CommaCoreTest do
       message = RuntimeFake.messages(stored_salix_id(chat)) |> List.last()
       assert get_in(message, ["metadata", "client_device"]) == expected
       refute Map.has_key?(message["metadata"] || %{}, "allows_operations")
+    end
+  end
+
+  test "a message names Raycast as where it was written only for that reported value" do
+    {user, workspace, session} = setup_user_workspace("client-entry@example.com")
+    {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
+
+    for {reported, expected} <- [{"raycast", "raycast"}, {"telegram", nil}, {nil, nil}] do
+      assert {:ok, _} =
+               Comma.Conversations.send_message(
+                 user,
+                 session,
+                 workspace["default_group_id"],
+                 chat["id"],
+                 %{
+                   "client_request_id" => "client-entry-#{reported}",
+                   "client_entry" => reported,
+                   "metadata" => %{"client_entry" => "raycast"},
+                   "message" => %{"content" => "from the launcher"}
+                 }
+               )
+
+      message = RuntimeFake.messages(stored_salix_id(chat)) |> List.last()
+      assert get_in(message, ["metadata", "client_entry"]) == expected
+    end
+  end
+
+  test "a message carries its sender's shared phone position only when it is a position" do
+    {user, workspace, session} = setup_user_workspace("client-location@example.com")
+    {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
+    read_at = "2026-11-12T03:00:00.000Z"
+    tokyo = %{"latitude" => 35.6812, "longitude" => 139.7671, "read_at" => read_at}
+
+    for {reported, expected} <- [
+          {Map.put(tokyo, "accuracy_m", 25), Map.put(tokyo, "accuracy_m", 25)},
+          {Map.merge(tokyo, %{"accuracy_m" => -1, "altitude" => 40}), tokyo},
+          {%{tokyo | "latitude" => 91}, nil},
+          {%{tokyo | "read_at" => "yesterday"}, nil},
+          {Map.delete(tokyo, "read_at"), nil},
+          {nil, nil}
+        ] do
+      assert {:ok, _} =
+               Comma.Conversations.send_message(
+                 user,
+                 session,
+                 workspace["default_group_id"],
+                 chat["id"],
+                 %{
+                   "client_request_id" => "client-location-#{:erlang.phash2(reported)}",
+                   "client_location" => reported,
+                   "message" => %{"content" => "lunch nearby?"}
+                 }
+               )
+
+      message = RuntimeFake.messages(stored_salix_id(chat)) |> List.last()
+      assert get_in(message, ["metadata", "client_location"]) == expected
     end
   end
 
@@ -1247,6 +1394,129 @@ defmodule CommaCoreTest do
     assert default_accepted["status"] == "completed"
     assert default_accepted["message_count"] == 1_005
     assert length(default_accepted["messages"]) == 1_000
+  end
+
+  test "incremental conversation reads preserve final_message_id and suggestion_source pages backward until context is sufficient" do
+    {user, workspace, session} = setup_user_workspace("bounded-reads@example.com")
+    group_id = workspace["default_group_id"]
+    {:ok, chat} = Comma.AssistantChats.ensure_chat(user, session, group_id)
+    chat_id = chat["id"]
+
+    user_msg = %{
+      "seq" => 1,
+      "message_id" => SalixStore.Ids.new_message_id(),
+      "actor_type" => "user",
+      "content" => [%{"type" => "text", "text" => "hello"}]
+    }
+
+    reply_msg = %{
+      "seq" => 2,
+      "message_id" => SalixStore.Ids.new_message_id(),
+      "actor_type" => "agent",
+      "content" => [%{"type" => "text", "text" => "world"}]
+    }
+
+    RuntimeFake.put_messages(chat_id, [user_msg, reply_msg])
+
+    assert {:ok, full} =
+             Comma.Conversations.get(user, session, group_id, chat_id, message_limit: 24)
+
+    assert full["final_message_id"] == reply_msg["message_id"]
+
+    assert {:ok, caught_up} =
+             Comma.Conversations.get(user, session, group_id, chat_id,
+               message_limit: 24,
+               after_seq: 2
+             )
+
+    assert RuntimeFake.last_snapshot_opts(chat_id) == [tail: 24, after_seq: 2]
+    assert caught_up["messages"] == []
+    assert caught_up["final_message_id"] == full["final_message_id"]
+
+    assert {:ok, event_snapshot, [], _ctx} =
+             Comma.Conversations.events(user, session, group_id, chat_id,
+               message_limit: 24,
+               after_seq: 2
+             )
+
+    assert event_snapshot["messages"] == []
+    assert event_snapshot["final_message_id"] == full["final_message_id"]
+
+    # Suggestion sourcing pages backward past non-text records so the user question is not lost.
+    sparse_task = RuntimeFake.put_conversation(workspace, %{"status" => "active"})
+    sparse_id = sparse_task["conversation_id"]
+
+    sparse_messages =
+      [
+        %{
+          "seq" => 1,
+          "message_id" => SalixStore.Ids.new_message_id(),
+          "actor_type" => "user",
+          "content" => [
+            %{"type" => "text", "text" => "Where should we deploy the billing worker?"}
+          ]
+        }
+      ] ++
+        for seq <- 2..50 do
+          %{
+            "seq" => seq,
+            "message_id" => SalixStore.Ids.new_message_id(),
+            "actor_type" => "system",
+            "content" => []
+          }
+        end ++
+        [
+          %{
+            "seq" => 51,
+            "message_id" => SalixStore.Ids.new_message_id(),
+            "actor_type" => "agent",
+            "content" => [%{"type" => "text", "text" => "Done."}]
+          }
+        ]
+
+    RuntimeFake.put_messages(sparse_id, sparse_messages)
+
+    assert {:ok, sparse_source} =
+             Comma.Conversations.suggestion_source(user, session, group_id, sparse_id)
+
+    assert RuntimeFake.message_page_opts(sparse_id) == [[limit: 50], [before: 2, limit: 50]]
+
+    owner = SystemsRuntime.Proc.self()
+
+    assert [%{"label" => "Deploy"}] =
+             Comma.ChatSuggestions.generate_from_source(
+               Map.put(sparse_source, :agent_id, SalixStore.Ids.new_agent_id(group_id)),
+               locale: "en",
+               request_fun: fn transcript, _source, _locale ->
+                 send(owner, {:suggestion_transcript, transcript})
+                 [%{"id" => "sug_1", "label" => "Deploy", "prompt" => "Deploy now"}]
+               end
+             )
+
+    assert_received {:suggestion_transcript,
+                     "user: Where should we deploy the billing worker?\nassistant: Done."}
+
+    # Dense chats stop after a single 50-message page once 3 user turns are collected.
+    dense_task = RuntimeFake.put_conversation(workspace, %{"status" => "active"})
+    dense_id = dense_task["conversation_id"]
+
+    dense_messages =
+      for seq <- 1..80 do
+        %{
+          "seq" => seq,
+          "message_id" => SalixStore.Ids.new_message_id(),
+          "actor_type" => if(rem(seq, 2) == 1, do: "user", else: "agent"),
+          "content" => [%{"type" => "text", "text" => "msg-#{seq}"}]
+        }
+      end
+
+    RuntimeFake.put_messages(dense_id, dense_messages)
+
+    assert {:ok, dense_source} =
+             Comma.Conversations.suggestion_source(user, session, group_id, dense_id)
+
+    assert RuntimeFake.message_page_opts(dense_id) == [[limit: 50]]
+    assert length(dense_source.messages) == 50
   end
 
   test "manual Task status forwards the user, status and exact version to Salix" do
@@ -1790,6 +2060,33 @@ defmodule CommaCoreTest do
     persisted = Repo.get!(Comma.Accounts.AuthSession, session["id"])
     assert persisted.interaction_budget_remaining == 0
     assert map_size(persisted.consumed_interaction_ids) == 1
+  end
+
+  test "normalizes legacy Bridge chat user_chat title to Comma when reading conversations" do
+    {user, workspace, session} = setup_user_workspace("legacy-bridge-title@example.com")
+    {:ok, ensured} = converge_assistant_chat(user, session, workspace["default_group_id"])
+    salix_id = stored_salix_id(ensured)
+
+    assert {:ok, _updated} =
+             RuntimeFake.update_group_conversation(workspace, salix_id, %{
+               "title" => "Bridge chat"
+             })
+
+    assert {:ok, read_back} =
+             Comma.Conversations.get(
+               user,
+               session,
+               workspace["default_group_id"],
+               ensured["id"]
+             )
+
+    assert read_back["kind"] == "user_chat"
+    assert read_back["title"] == "Comma"
+
+    assert {:ok, converged_again} =
+             converge_assistant_chat(user, session, workspace["default_group_id"])
+
+    assert converged_again["title"] == "Comma"
   end
 
   test "Workspace group binding revision changes only with the default Group mapping" do

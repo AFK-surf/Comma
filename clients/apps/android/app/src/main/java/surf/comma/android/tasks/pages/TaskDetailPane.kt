@@ -1,6 +1,7 @@
 package surf.comma.android.tasks.pages
 
 import android.content.res.Configuration
+import android.view.Gravity
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.core.view.doOnLayout
@@ -20,6 +21,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import surf.comma.android.R
 import surf.comma.android.chat.live.LiveLabels
+import surf.comma.android.chat.live.ScrollToLatestButton
 import surf.comma.android.chat.live.mapConversation
 import surf.comma.android.chat.render.ChatPalette
 import surf.comma.android.chat.render.ChatTimelineView
@@ -63,6 +65,8 @@ internal class TaskDetailPane(
 ) {
     val view = TaskDetailView(activity, sheet)
     val timeline = ChatTimelineView(activity).apply { clipToPadding = false }
+    /** Back to the latest message, centred over the list's foot once the reader has scrolled a screen up. */
+    private val scrollToLatest = ScrollToLatestButton(activity, glassUnder = false)
     private val strings = TaskStrings(activity)
     private val precomputer = MessageLayoutPrecomputer(
         sideMarginDp = PAGE_GUTTER_DP,
@@ -73,7 +77,8 @@ internal class TaskDetailPane(
         ),
         // Read only: an Agent's question shows as its receipt here.
         cardHeights = TaskRefCardLayout(TaskTheme(activity), activity.getString(R.string.chat_task_ref), UiSansTypeface)
-            .then(surf.comma.android.chat.live.QuestionCardLayout(activity, interactive = false)),
+            .then(surf.comma.android.chat.live.QuestionCardLayout(activity, interactive = false))
+            .then(surf.comma.android.dynamicui.DynamicUiCardLayout(activity)),
     )
     private val refs = TaskRefDirectory(sessions, repository.state) { ids -> repository.setConversationTaskIds(refsKey(), ids) }
     private val labels = LiveLabels(
@@ -81,6 +86,7 @@ internal class TaskDetailPane(
         taskUnavailable = activity.getString(R.string.chat_task_unavailable),
         interactiveUnavailable = activity.getString(R.string.chat_interactive_unavailable),
         file = activity.getString(R.string.chat_file),
+        someone = activity.getString(R.string.chat_someone),
         replyErrorTitle = activity.getString(R.string.chat_reply_error_title),
         replyErrorDetail = activity.getString(R.string.chat_reply_error_detail),
     )
@@ -88,6 +94,9 @@ internal class TaskDetailPane(
     private val knownTasks = refs.knownChanges()
     /** Briefs the reader has opened, by row id. */
     private val expandedBriefs = MutableStateFlow<Set<Long>>(emptySet())
+    /** Advances when People names another person writing in this Task together. */
+    private val namesRead = MutableStateFlow(0)
+    private val writers = surf.comma.android.people.ConversationWriters(activity) { namesRead.value++ }
     private var prepared: List<PreparedChatMessage> = emptyList()
     /** A read of this task has finished, so an empty list really means no messages. */
     private var synced = false
@@ -106,6 +115,11 @@ internal class TaskDetailPane(
         refs.onOpenTask = { other -> if (other != taskId) onOpenTask?.invoke(other) }
         refs.install(timeline)
         view.messageArea.addView(timeline, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        view.messageArea.addView(scrollToLatest, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+        ).apply { bottomMargin = (SCROLL_TO_LATEST_MARGIN_DP * activity.resources.displayMetrics.density).toInt() })
+        scrollToLatest.bindTo(timeline)
         view.onRetry = ::claim
         timeline.onLongPressMessage = MessageActionsPopup::show
         timeline.onCopyCode = { MessageActionsPopup.copyCode(activity, it) }
@@ -136,7 +150,7 @@ internal class TaskDetailPane(
                 .onStart { if (repository.detail.value.taskId != taskId) emit(TaskDetailState(taskId)) },
             repository.observeTask(taskId).onEach { task -> task?.let { view.setTitle(strings.title(it)) } },
             repository.state.map { it.snapshot.labels }.distinctUntilChanged(),
-            expandedBriefs,
+            expandedBriefs.combine(namesRead) { expanded, _ -> expanded },
             knownTasks,
         ) { detail, task, labels, expanded, known -> Shown(detail, task, labels, expanded, known) }
             .collect(::render)
@@ -146,6 +160,7 @@ internal class TaskDetailPane(
     fun release() {
         if (released) return
         released = true
+        writers.close()
         TaskDetailOwner.release(this, repository)
         val repository = repository
         val key = refsKey()
@@ -177,8 +192,9 @@ internal class TaskDetailPane(
     private suspend fun render(shown: Shown) {
         val detail = shown.detail
         val state = ConversationState(conversationId = taskId, timeline = detail.timeline, hasOlder = detail.hasOlder)
+        val writers = writers.writers(detail.timeline, task = true)
         val rows = withContext(Background.compute) {
-            taskDetailRows(mapConversation(state, labels, tasks = shown.known), detail.timeline, shown.task, shown.labels, strings,
+            taskDetailRows(mapConversation(state, labels, tasks = shown.known, writers = writers), detail.timeline, shown.task, shown.labels, strings,
                 shown.expanded)
         }
         refs.track(referencedTaskIds(detail.timeline.map { it.message }))
@@ -223,5 +239,7 @@ internal class TaskDetailPane(
     private companion object {
         /** DESIGN §4's page gutter, shared with the bar and the status line. */
         const val PAGE_GUTTER_DP = 16f
+        /** The button's gap above the page's foot, its 48dp touch target taking it 4dp further. */
+        const val SCROLL_TO_LATEST_MARGIN_DP = 12f
     }
 }

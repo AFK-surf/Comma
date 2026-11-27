@@ -205,9 +205,11 @@ Account edits and deletes compare the current row version.
 Before external credential preparation, Salix claims the row through a versioned update.
 Concurrent callers cannot refresh the same record. Different records remain independent, including duplicate upstream accounts.
 Salix saves the result before an inference call can use it.
-A crash, lost refresh response, or failed save leaves the record unavailable and requires reauthorization.
-A confirmed pre-execution capacity or frame-size rejection restores the original record through the refresh claim's version check.
-A concurrent edit or deletion prevents restoration.
+A crash or failed save can leave the refresh claim unavailable. A deadline alone does not prove that authorization failed.
+An explicit refresh authentication rejection requires reauthorization and clears the claim deadline.
+Other returned preparation errors restore the previous account status through the existing claim check.
+This includes transport failures, 5xx responses, and pre-execution capacity or frame-size rejection.
+A credential replacement or deletion prevents restoration.
 A late result cannot overwrite a replacement or restore a deleted record.
 A prepared account with an unexpired token does not repeat preparation for each request.
 Native Codex imports use the access-token `exp` claim as an expiry hint. The provider remains the authentication authority.
@@ -215,7 +217,13 @@ An unknown expiry with a refresh token triggers preparation before use.
 
 `SubscriptionStore.candidates/3` reads a provider's enabled accounts and returns at most three.
 The Profiles pool (`systems/profiles` `pool.rs`) orders them. A used-up window that has not refilled excludes an account.
-A failed request cools the account, except a 400, 403, or 404 response, which rejects the model or request, not the account.
+Only Codex and Claude support automatic recovery from a 401 before response bytes or output.
+Each account gets at most one credential recovery within the request attempt budget.
+Other providers retain the existing 401 cooldown. Their refresh authentication errors do not yet have complete classification.
+A concurrent refresh returns retryable 503 with a bounded delay. It does not require reauthorization.
+A repeated 401 after credential recovery requires reauthorization only while the rejected credentials still own the account.
+A 401 after output starts, or before recovery when the attempt budget is empty, cannot sign out the account.
+Other failures cool the account, except 400, 403, and 404 responses, which reject the model or request.
 Salix can try another candidate before stream output starts.
 After a 403 or 404, Salix fetches untried accounts, within a fixed attempt budget per request.
 The dispatcher does not execute cooling accounts. If no account is ready, the error includes the earliest cooldown delay.

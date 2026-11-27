@@ -222,7 +222,8 @@ function canonicalResponseEntry(
   message: ChatMessage,
   key?: string | undefined
 ): Extract<ConversationEntry, { kind: "assistant-response" }> | undefined {
-  if (message.role !== "assistant") {
+  // A Task together's line that someone left is no one's reply: it is drawn as a message row.
+  if (message.role !== "assistant" || message.memberChange) {
     return undefined;
   }
 

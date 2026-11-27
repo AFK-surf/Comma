@@ -8,6 +8,8 @@ import {
   type RecordedRequest,
 } from "./support";
 
+test.use({ deviceScaleFactor: 2 });
+
 const policy = (overrides: Record<string, unknown> = {}) => ({
   mode: "audit",
   language: "zh",
@@ -95,15 +97,15 @@ test("shows each workspace's conversations, clearances and placements", async ({
 
 test("mode and language are written with the page's CSRF token", async ({ page }) => {
   const requests = await openPolicy(page, (request) =>
-    ok(policy({ mode: (request.body as { mode?: string }).mode ?? "audit" }))
+    ok(
+      policy({ mode: (request.body as { mode?: string } | undefined)?.mode ?? "audit" })
+    )
   );
 
   await page
     .getByRole("button", { name: /When the assistant would carry something across/ })
     .click();
-  await page
-    .getByRole("option", { name: "Enforce: refuse what does not belong" })
-    .click();
+  await page.getByRole("option", { name: "Hard: full IFC policy" }).click();
   await expect(
     page.getByText("The assistant is refusing to carry information")
   ).toBeVisible();
@@ -117,7 +119,7 @@ test("mode and language are written with the page's CSRF token", async ({ page }
       method: "PATCH",
       path: "/orgs/acme/data-policy/p-1",
       csrf,
-      body: { mode: "enforce" },
+      body: { mode: "hard" },
     },
     {
       method: "PATCH",
@@ -126,6 +128,32 @@ test("mode and language are written with the page's CSRF token", async ({ page }
       body: { language: "en" },
     },
   ]);
+});
+
+test("easy selection is shown and saved independently of hard", async ({
+  page,
+}, testInfo) => {
+  const requests = await openPolicy(page, (request) =>
+    ok(
+      policy({ mode: (request.body as { mode?: string } | undefined)?.mode ?? "audit" })
+    )
+  );
+  await page
+    .getByRole("button", { name: /When the assistant would carry something across/ })
+    .click();
+  await page.getByRole("option", { name: "Easy: check IM access" }).click();
+  await expect(
+    page.getByText("Channel sharing also requires the bot to be a member.", {
+      exact: false,
+    })
+  ).toBeVisible();
+  expect(writes(requests)).toMatchObject([{ method: "PATCH", body: { mode: "easy" } }]);
+  await expect(page.getByRole("option")).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath("easy-mode.png"),
+    fullPage: true,
+    animations: "disabled",
+  });
 });
 
 test("classifies a conversation, grants and withdraws a clearance, and clears a placement", async ({
@@ -235,9 +263,7 @@ test("a fresh read replaces a write's copy after switching swarms", async ({
   await page
     .getByRole("button", { name: /When the assistant would carry something across/ })
     .click();
-  await page
-    .getByRole("option", { name: "Enforce: refuse what does not belong" })
-    .click();
+  await page.getByRole("option", { name: "Hard: full IFC policy" }).click();
   await expect(
     page.getByText("The assistant is refusing to carry information")
   ).toBeVisible();
@@ -251,6 +277,43 @@ test("a fresh read replaces a write's copy after switching swarms", async ({
   await expect(
     page.getByText("The assistant is refusing to carry information")
   ).toHaveCount(0);
+});
+
+test("memory changes can be limited to named people", async ({ page }) => {
+  const requests = await openPolicy(page, (request) =>
+    request.method === "PATCH"
+      ? ok(
+          policy({
+            memory_writers: (request.body as { memory_writers: unknown })
+              .memory_writers,
+          })
+        )
+      : ok({ people: {} })
+  );
+  const section = page.getByRole("region", { name: "Who may change memory" });
+
+  // The switch input is visually hidden inside its label; click the label like a user.
+  await section
+    .locator("label")
+    .filter({
+      has: page.getByRole("switch", { name: "Only these people may change memory" }),
+    })
+    .click();
+  await expect(
+    section.getByRole("switch", { name: "Only these people may change memory" })
+  ).toBeChecked();
+  await expect(
+    section.getByText("Nobody is on the list, so nobody can change memory.")
+  ).toBeVisible();
+
+  expect(writes(requests)).toMatchObject([
+    {
+      method: "PATCH",
+      path: "/orgs/acme/data-policy/p-1",
+      csrf,
+      body: { memory_writers: { restricted: true, writers: [] } },
+    },
+  ]);
 });
 
 test("a refused change shows the server's message", async ({ page }) => {

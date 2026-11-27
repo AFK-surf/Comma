@@ -4,6 +4,8 @@
     <string name="chat_task_unavailable">Task unavailable</string>
     <string name="chat_interactive_unavailable">Interactive content isn\'t available yet</string>
     <string name="chat_file">File</string>
+    <!-- Another person in a Task together whose name is not known yet. -->
+    <string name="chat_someone">Unnamed member</string>
     <string name="chat_send_not_ready">Unable to send yet. Please try again.</string>
     <string name="chat_paused">Offline · Tap to retry</string>
     <string name="chat_account">Account</string>
@@ -27,6 +29,7 @@
     <string name="chat_question_uploading">Uploading</string>
     <string name="chat_question_upload_failed">Upload failed</string>
     <string name="chat_question_skip">Skip</string>
+    <string name="chat_question_dismiss">Dismiss</string>
     <string name="chat_question_send">Send</string>
     <string name="chat_question_pick_one">Choose one, or write your answer in Other.</string>
     <string name="chat_question_pick_any">Choose at least one, or write your answer in Other.</string>
@@ -37,6 +40,7 @@
     <string name="chat_question_sending">Sending</string>
     <string name="chat_question_replied">Answered in the chat</string>
     <string name="chat_question_skipped">Skipped. The agent decides.</string>
+    <string name="chat_question_dismissed">Dismissed</string>
     <string name="chat_question_replaced">Replaced by a newer question</string>
     <string name="chat_request_connect_title">Connect %1$s</string>
     <string name="chat_request_authorize">Authorize in browser</string>
@@ -54,6 +58,7 @@
     <string name="chat_request_fill">Fill in</string>
     <string name="chat_request_fill_title">Fill in %1$s</string>
     <string name="chat_request_save">Save</string>
+    <string name="chat_request_optional_field">%1$s (optional)</string>
     <string name="chat_request_saved">Saved</string>
     <string name="chat_request_next">Next</string>
     <string name="chat_request_app_id">App ID</string>
@@ -64,7 +69,8 @@
     <string name="chat_request_fill_hint">Saved to Comma directly. It stays out of the chat and is not sent to the model.</string>
     <string name="chat_request_fill_failed">Could not save. Try again.</string>
     <string name="chat_request_location_title">Share your location</string>
-    <string name="chat_request_location_share">Share location</string>
+    <string name="chat_request_location_share_once">Only this time</string>
+    <string name="chat_request_location_share_always">Always share</string>
     <string name="chat_request_location_locating">Getting your location…</string>
     <string name="chat_request_location_denied">Location is off for Comma. Turn it on in your settings, then try again.</string>
     <string name="chat_request_location_unavailable">Your location is not known now. Try again.</string>
@@ -77,5 +83,11 @@
     <string name="chat_request_login_code">Code from the page</string>
     <string name="chat_request_login_open">Open the sign-in page</string>
     <string name="chat_request_login_submit">Submit</string>
+    <string name="chat_request_plugin_title">Add %1$s</string>
+    <string name="chat_request_plugin_add">Add to Comma</string>
+    <string name="chat_request_plugin_adding">Adding…</string>
+    <string name="chat_request_plugin_add_failed">Could not add it. Try again.</string>
+    <string name="chat_request_plugin_added">Added %1$s</string>
+    <string name="chat_request_plugin_declined">You did not add %1$s</string>
     <string name="chat_suggestions">Suggested replies</string>
 </resources>

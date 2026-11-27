@@ -10,8 +10,10 @@ import {
   chatImagePreviewMaxBytes,
   type ChatPickAttachmentError,
   type ChatAttachmentSource,
+  type ChatLocalPathMode,
 } from "@comma/chat-contract";
-import { stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { BrowserWindow, dialog, nativeImage, webContents } from "electron";
 import { getCurrentNativeCallerContext } from "../ipc";
@@ -32,12 +34,12 @@ const MAX_LOCAL_FILES_PER_PICK = 50;
 const MAX_LOCAL_FILES_TOTAL_BYTES = 1024 * 1024 * 1024;
 const LOCAL_FILE_PREVIEW_MAX_BYTES = chatImagePreviewMaxBytes;
 /**
- * Previews ship at source resolution — the render is a sanitizing
- * decode/encode pass, not a thumbnail step (the renderer's cards AND its
- * full-size preview modal consume these bytes, and a downscale reads as a
- * blurry upload). The ladder below steps the scale down when a rung's PNG
- * overflows the transport bound, or when the source itself is larger than a
- * rendered preview may be.
+ * Previews ship at source resolution, not as thumbnails (the renderer's cards
+ * AND its full-size preview modal consume these bytes, and a downscale reads
+ * as a blurry upload). A source that fits ships as-is; for one that does not,
+ * the ladder below steps the scale down when a rung's PNG overflows the
+ * transport bound, or when the source itself is larger than a rendered
+ * preview may be.
  */
 const LOCAL_FILE_PREVIEW_ENCODE_SCALES = [1, 0.75, 0.5, 0.35, 0.25] as const;
 /**
@@ -46,6 +48,14 @@ const LOCAL_FILE_PREVIEW_ENCODE_SCALES = [1, 0.75, 0.5, 0.35, 0.25] as const;
  * sources ship through as-is once their header has been bounded.
  */
 const RENDERER_DECODED_MEDIA_TYPES = new Set(["image/gif", "image/webp"]);
+/**
+ * A PNG or JPEG that already fits a rendered preview also ships as-is: the
+ * renderer's sandboxed Chromium decodes it, as it does GIF and WebP. Main only
+ * decodes and re-encodes a source it must scale down, since that work is
+ * synchronous and one image at a time, and a chat full of images otherwise
+ * waits behind it past the chat's preview deadline.
+ */
+const PASSTHROUGH_WHEN_FITTING_MEDIA_TYPES = new Set(["image/png", "image/jpeg"]);
 /**
  * Decode bound: a phone camera photo. 48 megapixels covers the largest
  * current iPhone still, and decodes to about 200 MB of bitmap, briefly.
@@ -63,6 +73,48 @@ export const CHAT_UPLOAD_IMAGE_EXTENSIONS = [
   ".png",
   ".webp",
 ] as const;
+/**
+ * Files a Salix conversation takes as they are, uploaded, when they are within the upload bound: the server's own
+ * list (`Comma.GroupFiles`) less the images (uploaded as images) and `.zip` (an archive, named by its path).
+ */
+const CHAT_UPLOADED_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".md",
+  ".markdown",
+  ".txt",
+  ".csv",
+  ".tsv",
+  ".json",
+  ".jsonl",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".html",
+  ".htm",
+  ".log",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".svg",
+  ".mp3",
+  ".wav",
+  ".m4a",
+  ".aac",
+  ".flac",
+  ".ogg",
+  ".mp4",
+  ".mov",
+  ".m4v",
+  ".webm",
+]);
+/** Archives, disk images and installers: named by their path at any size, since the agent unpacks them where they are. */
+const CHAT_ARCHIVE_PATTERN =
+  /\.(?:tar\.(?:gz|bz2|xz|zst)|zip|tar|gz|tgz|bz2|tbz2|xz|txz|zst|tzst|7z|rar|dmg|pkg|iso|apk|ipa)$/i;
+const LOCAL_PATH_MAX_LENGTH = 4096;
 const JPEG_HEADER_SCAN_MAX_BYTES = 1024 * 1024;
 const JPEG_HEADER_SCAN_MAX_SEGMENTS = 1_024;
 const allowNonChatLocalFileRegistration = () => {};
@@ -111,6 +163,8 @@ export type ChatAttachmentPickInput = Readonly<{
   maxTotalSize: number;
   maxUploadFiles: number;
   workspaceId: string;
+  /** Which files that are not images the message names by their path rather than uploads (absent: none). */
+  localPathMode?: ChatLocalPathMode | undefined;
 }>;
 
 export type ChatAttachmentPickItem =
@@ -123,6 +177,11 @@ export type ChatAttachmentPickItem =
   | Readonly<{
       file: LocalFileSnapshot;
       kind: "local_file";
+    }>
+  | Readonly<{
+      /** A file the message names by its path on this computer: nothing of it is kept or uploaded. */
+      file: Readonly<{ name: string; path: string; size: number }>;
+      kind: "local_path";
     }>;
 
 export type ChatAttachmentPickResult = Readonly<{
@@ -151,7 +210,7 @@ export interface LocalFilePickerProvider {
 /**
  * Main owns native intake and preview resolution. Host paths stay in the picker
  * stack frame; the generated bridge returns only opaque refs, bounded metadata,
- * or bounded preview bytes (a PNG re-encode, or the bounded GIF/WebP source).
+ * or bounded preview bytes (the bounded source, or a PNG re-encode of one too large).
  */
 export class LocalFilePickerService implements LocalFilePickerProvider {
   readonly #createPreviewImage: CreatePreviewImage;
@@ -221,8 +280,14 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
     ) {
       throw previewUnavailable();
     }
+    throwIfAborted(signal);
+    const bytes = Buffer.from(input.bytes);
+    // A source that ships as-is takes no turn in the queue, so it never waits
+    // behind another image's decode past the chat's preview deadline.
+    const asIs = previewAsIs(bytes, input.mediaType);
+    if (asIs) return asIs;
     return this.#previewWorkQueue.run(signal, () =>
-      this.#renderImagePreview(Buffer.from(input.bytes), input.mediaType, signal)
+      this.#renderImagePreview(bytes, input.mediaType, signal)
     );
   }
 
@@ -232,12 +297,8 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
     signal: AbortSignal
   ): Promise<Uint8Array> {
     throwIfAborted(signal);
-    inspectPreviewImageHeader(bytes, mediaType);
-
-    if (RENDERER_DECODED_MEDIA_TYPES.has(mediaType)) {
-      if (bytes.byteLength > LOCAL_FILE_PREVIEW_MAX_BYTES) throw previewUnavailable();
-      return bytes;
-    }
+    const asIs = previewAsIs(bytes, mediaType);
+    if (asIs) return asIs;
 
     // nativeImage decode/resize/encode are synchronous. Yield once before
     // entering that bounded section so unrelated Main work can run after
@@ -409,6 +470,7 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
     let regularBatchRejected = false;
     let uploadFiles = 0;
     let localFileCount = 0;
+    const mode = input.localPathMode ?? "none";
 
     // Admission is per class over the full selection: image uploads budget
     // only against the upload allowance and local refs only against the
@@ -443,6 +505,9 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
       const sourceIsImage = this.#uploadImageExtensions.has(
         extname(sourceName).toLowerCase()
       );
+      const localPath = sourceIsImage
+        ? undefined
+        : await localPathFile(sourcePath, sourceName, mode);
       if (!sourceIsImage && localFileCount >= maxFiles) {
         pushChatPickError(errors, {
           errorClass: "too_many_local_files",
@@ -463,7 +528,7 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
         });
         continue;
       }
-      if (!sourceIsImage && regularBatchRejected) {
+      if (!sourceIsImage && !localPath && regularBatchRejected) {
         pushChatPickError(errors, {
           errorClass: "local_file_too_large",
           isImage: false,
@@ -493,6 +558,13 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
         continue;
       }
 
+      if (localPath) {
+        // Named by its path: no snapshot, so neither the snapshot bytes nor the snapshot's size bound apply.
+        localFileCount += 1;
+        candidates.push({ file: localPath, kind: "local_path" });
+        continue;
+      }
+
       let snapshot: LocalFileSnapshot;
       try {
         const admission = getCurrentNativeSessionAdmission();
@@ -515,7 +587,8 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
               : []
           )
         );
-        candidates = candidates.filter((candidate) => candidate.kind === "upload");
+        // The files named by their path stay: none of them took snapshot bytes.
+        candidates = candidates.filter((candidate) => candidate.kind !== "local_file");
         regularSnapshotBytes = 0;
         regularBatchRejected = true;
         pushChatPickError(errors, {
@@ -542,6 +615,51 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
       ...(folderPaths.length > 0 ? { folderPaths } : {}),
       items: candidates,
     };
+  }
+}
+
+/**
+ * Whether a pick in `mode` names a file that is not an image by its path: `all_non_images` every one; `routed` an
+ * archive (any size), one over the upload bound, or one of a type the server does not take as it is.
+ */
+export function routesByLocalPath(
+  name: string,
+  size: number,
+  mode: ChatLocalPathMode
+): boolean {
+  if (mode === "none") return false;
+  if (mode === "all_non_images") return true;
+  if (CHAT_ARCHIVE_PATTERN.test(name)) return true;
+  if (size > chatAttachmentUploadMaxBytes) return true;
+  return !CHAT_UPLOADED_EXTENSIONS.has(extname(name).toLowerCase());
+}
+
+/**
+ * The file at `sourcePath` as a message names it by its path, when `mode` routes it so and it is a readable regular
+ * file whose path a message line can carry; undefined to take it as before.
+ */
+async function localPathFile(
+  sourcePath: string,
+  name: string,
+  mode: ChatLocalPathMode
+) {
+  if (
+    mode === "none" ||
+    sourcePath.length === 0 ||
+    sourcePath.length > LOCAL_PATH_MAX_LENGTH ||
+    sourcePath.includes("\u0000") ||
+    /[\r\n]/.test(sourcePath)
+  ) {
+    return undefined;
+  }
+  try {
+    const info = await stat(sourcePath);
+    if (!info.isFile() || !routesByLocalPath(name, info.size, mode)) return undefined;
+    await access(sourcePath, constants.R_OK);
+    return { name, path: sourcePath, size: info.size };
+  } catch {
+    // Unreadable or gone: the snapshot path reports why.
+    return undefined;
   }
 }
 
@@ -626,6 +744,24 @@ class PreviewWorkQueue {
   }
 }
 
+/**
+ * The source itself when the renderer decodes it as it is (GIF and WebP, a PNG
+ * or JPEG that fits a rendered preview); undefined when Main must scale it
+ * down. Refuses a source whose header is out of bounds or too many bytes.
+ */
+function previewAsIs(bytes: Buffer, mediaType: string): Buffer | undefined {
+  const source = inspectPreviewImageHeader(bytes, mediaType);
+  if (RENDERER_DECODED_MEDIA_TYPES.has(mediaType)) {
+    if (bytes.byteLength > LOCAL_FILE_PREVIEW_MAX_BYTES) throw previewUnavailable();
+    return bytes;
+  }
+  return PASSTHROUGH_WHEN_FITTING_MEDIA_TYPES.has(mediaType) &&
+    bytes.byteLength <= LOCAL_FILE_PREVIEW_MAX_BYTES &&
+    validRenderedPreviewDimensions(source.width, source.height)
+    ? bytes
+    : undefined;
+}
+
 function inspectPreviewImageHeader(bytes: Buffer, mediaType: string) {
   const dimensions =
     mediaType === "image/png"
@@ -640,6 +776,7 @@ function inspectPreviewImageHeader(bytes: Buffer, mediaType: string) {
   if (!dimensions || !validPreviewDimensions(dimensions.width, dimensions.height)) {
     throw previewUnavailable();
   }
+  return dimensions;
 }
 
 function inspectPngHeader(bytes: Buffer) {

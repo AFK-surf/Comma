@@ -123,6 +123,22 @@ defmodule BridgeForTeams.Plugins do
 
   def product_plugin?(_definition), do: true
 
+  @spec list_colab_accounts(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: result()
+  def list_colab_accounts(org_id, project_id, opts \\ []) do
+    with {:ok, org, project} <- fetch_org_project(org_id, project_id),
+         :ok <- authorize_project_read(project, opts),
+         :ok <- ensure_group_ready(project) do
+      case Client.call_optional(:list_colab_group_accounts, [
+             org.salix_tenant_id,
+             project.salix_group_id
+           ]) do
+        {:ok, accounts} when is_list(accounts) -> {:ok, accounts}
+        {:error, :unsupported} -> {:ok, []}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
   @spec connect_plugin(
           Ecto.UUID.t(),
           Ecto.UUID.t(),
@@ -135,8 +151,13 @@ defmodule BridgeForTeams.Plugins do
     with {:ok, org, project} <- fetch_org_project(org_id, project_id),
          :ok <- authorize_project_manage(project, opts),
          :ok <- ensure_group_ready(project) do
-      case Keyword.fetch(opts, :config_values) do
-        {:ok, values} ->
+      cond do
+        trim(plugin_id) == "google-colab" ->
+          connect_colab_plugin(org, project, opts)
+
+        Keyword.has_key?(opts, :config_values) ->
+          values = Keyword.fetch!(opts, :config_values)
+
           case client().configure_group_plugin_credentials(
                  org.salix_tenant_id,
                  project.salix_group_id,
@@ -148,7 +169,7 @@ defmodule BridgeForTeams.Plugins do
             {:error, _} = error -> error
           end
 
-        :error ->
+        true ->
           with {:ok, setup} <-
                  client().prepare_group_plugin_setup(
                    org.salix_tenant_id,
@@ -161,6 +182,115 @@ defmodule BridgeForTeams.Plugins do
       end
     end
   end
+
+  defp connect_colab_plugin(org, project, opts) do
+    operation = if Keyword.get(opts, :force_reauthorize, false), do: :reconnect, else: :install
+    binding_id = Keyword.get(opts, :binding_id)
+    initiator_user_id = Keyword.get(opts, :actor_user_id) || ""
+
+    case Keyword.fetch(opts, :config_values) do
+      {:ok, values} ->
+        pasted_input = if is_map(values), do: values["GOOGLE_COLAB_AUTH_CODE"], else: nil
+        attempt_id = Keyword.get(opts, :attempt_id)
+
+        case Client.call_optional(:complete_colab_oauth_attempt, [
+               org.salix_tenant_id,
+               project.salix_group_id,
+               initiator_user_id,
+               attempt_id,
+               pasted_input,
+               [operation: operation, binding_id: binding_id, sync_plugin_state: false]
+             ]) do
+          {:ok, _receipt} ->
+            {:ok, %{"status" => "connected"}}
+
+          {:retry_with_fresh_attempt, fresh, reason} ->
+            {:ok, %{"configuration" => colab_configuration(fresh, reason)}}
+
+          {:error, {:wrong_google_account, expected_email}} ->
+            case Client.call_optional(:start_colab_oauth_attempt, [
+                   org.salix_tenant_id,
+                   project.salix_group_id,
+                   initiator_user_id,
+                   [operation: :reconnect, binding_id: binding_id]
+                 ]) do
+              {:ok, fresh} ->
+                {:ok,
+                 %{
+                   "configuration" =>
+                     colab_configuration(fresh, {:wrong_google_account, expected_email})
+                 }}
+
+              {:error, _retry_error} ->
+                {:error, {:wrong_google_account, expected_email}}
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      :error ->
+        case Client.call_optional(:start_colab_oauth_attempt, [
+               org.salix_tenant_id,
+               project.salix_group_id,
+               initiator_user_id,
+               [operation: operation, binding_id: binding_id]
+             ]) do
+          {:ok, attempt} ->
+            {:ok, %{"configuration" => colab_configuration(attempt, nil)}}
+
+          {:error, _reason} = error ->
+            error
+        end
+    end
+  end
+
+  defp colab_configuration(attempt, reason) do
+    %{
+      "key" => attempt.key,
+      "label" => attempt.label,
+      "help_url" => attempt.authorize_url,
+      "format" => attempt.format,
+      "attempt_id" => attempt.attempt_id,
+      "binding_id" => Map.get(attempt, :binding_id)
+    }
+    |> then(fn map ->
+      case colab_retry_error(reason) do
+        nil -> map
+        message -> Map.put(map, "error", message)
+      end
+    end)
+  end
+
+  defp colab_retry_error(nil), do: nil
+
+  defp colab_retry_error(:attempt_expired),
+    do: "That authorization attempt expired. Sign in again with the new link."
+
+  defp colab_retry_error(:exchange_timed_out),
+    do: "The previous authorization timed out. Sign in again with the new link."
+
+  defp colab_retry_error(:colab_not_eligible),
+    do: "This Google account is not eligible for Google Colab. Sign in with an eligible account."
+
+  defp colab_retry_error(:missing_refresh_token),
+    do:
+      "Google did not return a refresh token. Sign in again and approve all requested permissions."
+
+  defp colab_retry_error(:missing_colaboratory_scope),
+    do:
+      "Google Colab permission was not granted. Sign in again and approve the requested permissions."
+
+  defp colab_retry_error({:wrong_google_account, email}) do
+    if is_binary(email) and String.trim(email) != "" do
+      "Sign in with #{String.trim(email)} to reconnect this Google Colab account, or disconnect it first to switch accounts."
+    else
+      "Sign in with the connected Google account to reconnect Google Colab, or disconnect it first to switch accounts."
+    end
+  end
+
+  defp colab_retry_error(_reason),
+    do: "Google rejected that authorization code. Sign in again with the new link."
 
   @spec disconnect_plugin(
           Ecto.UUID.t(),
@@ -180,7 +310,46 @@ defmodule BridgeForTeams.Plugins do
              trim(plugin_id),
              trim(connection_id)
            ) do
-      disconnect_plugin_connection(org, project, Map.put(setup, "plugin_id", trim(plugin_id)))
+      disconnect_plugin_connection(
+        org,
+        project,
+        Map.put(setup, "plugin_id", trim(plugin_id)),
+        opts
+      )
+    end
+  end
+
+  defp colab_binding_id(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp colab_binding_id(_value), do: nil
+
+  defp disconnect_plugin_connection(
+         org,
+         project,
+         %{"connection" => %{"kind" => "oauth_code_paste", "provider" => "google_colab"}},
+         opts
+       ) do
+    # Bridge for Teams disconnects exactly one Colab account; a missing binding_id
+    # must never widen into a whole-group disconnect.
+    case colab_binding_id(Keyword.get(opts, :binding_id)) do
+      nil ->
+        {:error, :missing_binding_id}
+
+      binding_id ->
+        case Client.call_optional(:disconnect_colab_account, [
+               org.salix_tenant_id,
+               project.salix_group_id,
+               binding_id
+             ]) do
+          :ok -> {:ok, :ok}
+          {:ok, _} -> {:ok, :ok}
+          {:error, _reason} = error -> error
+        end
     end
   end
 
@@ -190,7 +359,31 @@ defmodule BridgeForTeams.Plugins do
          %{
            "plugin_id" => plugin_id,
            "connection" => %{"kind" => "mcp_api_key", "id" => connection_id}
-         }
+         },
+         _opts
+       ) do
+    case client().disconnect_group_plugin_credentials(
+           org.salix_tenant_id,
+           project.salix_group_id,
+           plugin_id,
+           connection_id
+         ) do
+      :ok -> {:ok, :ok}
+      {:ok, _} = ok -> ok
+      {:error, _} = error -> error
+    end
+  end
+
+  # Each person's own sign-in: disconnecting removes the binding and every
+  # person's sign-in to it.
+  defp disconnect_plugin_connection(
+         org,
+         project,
+         %{
+           "plugin_id" => plugin_id,
+           "connection" => %{"kind" => "requester_mcp_oauth", "id" => connection_id}
+         },
+         _opts
        ) do
     case client().disconnect_group_plugin_credentials(
            org.salix_tenant_id,
@@ -207,7 +400,8 @@ defmodule BridgeForTeams.Plugins do
   defp disconnect_plugin_connection(
          org,
          project,
-         %{"connection" => %{"kind" => "native_mcp_oauth"}, "bindings" => [binding]}
+         %{"connection" => %{"kind" => "native_mcp_oauth"}, "bindings" => [binding]},
+         _opts
        ) do
     case client().disconnect_remote_mcp_authorization(
            org.salix_tenant_id,
@@ -223,7 +417,8 @@ defmodule BridgeForTeams.Plugins do
   defp disconnect_plugin_connection(
          org,
          project,
-         %{"connection" => %{"kind" => "managed_oauth"} = connection}
+         %{"connection" => %{"kind" => "managed_oauth"} = connection},
+         _opts
        ) do
     binding =
       client().list_group_oauth_bindings(project.salix_group_id)
@@ -252,11 +447,12 @@ defmodule BridgeForTeams.Plugins do
   defp disconnect_plugin_connection(
          _org,
          _project,
-         %{"connection" => %{"kind" => "composio"}}
+         %{"connection" => %{"kind" => "composio"}},
+         _opts
        ),
        do: {:error, {:bad_request, "disconnect this account from the Composio connection list"}}
 
-  defp disconnect_plugin_connection(_org, _project, _setup),
+  defp disconnect_plugin_connection(_org, _project, _setup, _opts),
     do: {:error, {:bad_request, "plugin connection cannot be disconnected"}}
 
   defp normalize_bindings({:ok, bindings}) when is_list(bindings), do: bindings
@@ -271,6 +467,17 @@ defmodule BridgeForTeams.Plugins do
          _opts
        ),
        do: {:error, {:bad_request, "enter the required plugin credential"}}
+
+  # Nothing to authorize for the swarm: the setup made the binding, and each
+  # person signs in with their own account when they first ask.
+  defp start_plugin_connection(
+         _org,
+         _project,
+         %{"connection" => %{"kind" => "requester_mcp_oauth"}},
+         _redirect,
+         _opts
+       ),
+       do: {:ok, %{"status" => "connected"}}
 
   defp start_plugin_connection(
          org,

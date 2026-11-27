@@ -1,6 +1,7 @@
 ---
 name: google
 description: Work with Google services through Salix-managed Google OAuth and the Google Workspace CLI (`gws`), including Gmail, Drive, Calendar, Sheets, Docs, and other Google Workspace APIs.
+prompt_summary: "Access Google Workspace (Gmail, Drive, Docs, Sheets, Calendar) via native Google OAuth/REST or gws CLI; check existing auth before Composio."
 ---
 
 # Google

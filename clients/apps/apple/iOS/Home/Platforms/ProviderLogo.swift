@@ -59,7 +59,8 @@ enum ProviderArtwork {
 
     static func image(_ appID: String?) -> UIImage? {
         guard let key = RecommendationSource.brandKey(appID) else { return nil }
-        let name = "provider-" + (key == "googleworkspace" ? "google" : key)
+        // The desktop's resolver names Google Workspace and Google Colab both ways.
+        let name = "provider-" + (["googleworkspace": "google", "colab": "googlecolab"][key] ?? key)
         return UIImage(named: name)
     }
 

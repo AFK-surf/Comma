@@ -28,8 +28,11 @@ import {
   useChatSidebarActions,
   useRegisterChatSidebarHost,
 } from "./chat-sidebar/ChatSidebarContext";
+import { isMailPreviewLink, isStillfailChatLink } from "./links/useLinkPreview";
+import type { ChatDraftEntry } from "@comma/chat-contract";
 import {
   ConversationView,
+  type ComposerDraftRequest,
   type ConversationComposerPresentation,
   type ConversationViewActions,
 } from "./chat/conversation/ConversationView";
@@ -67,6 +70,7 @@ export const HomeRoute = memo(function HomeRoute({
   onConnectApps,
   onRequestedDraftTaken,
   requestedDraft,
+  requestedDraftEntry,
   surfaceActive = true,
   workspaceId,
 }: {
@@ -75,6 +79,8 @@ export const HomeRoute = memo(function HomeRoute({
   onRequestedDraftTaken?: (() => void) | undefined;
   /** Text another page hands to the composer, such as a skill's "Try in Chat". */
   requestedDraft?: string | undefined;
+  /** Where `requestedDraft` was written when not in this app (a Raycast link). */
+  requestedDraftEntry?: ChatDraftEntry | undefined;
   surfaceActive?: boolean;
   workspaceId?: string | undefined;
 } = {}) {
@@ -96,6 +102,8 @@ export const HomeRoute = memo(function HomeRoute({
       ? rememberedTarget
       : undefined;
   const [pendingDraft, setPendingDraft] = useState("");
+  // Where the words waiting for the conversation were written when not here: kept until they are applied or emptied.
+  const [pendingDraftEntry, setPendingDraftEntry] = useState<ChatDraftEntry>();
   const [pendingError, setPendingError] = useState<string | undefined>();
   const [pendingSend, setPendingSend] = useState(false);
   const workspaceBusy = chat.state.status === "provisioning";
@@ -123,6 +131,9 @@ export const HomeRoute = memo(function HomeRoute({
     setPendingSend(true);
     setPendingError(undefined);
     setPendingDraft("");
+    // The words leave Home with their source: the next words written here have none.
+    const draftEntry = pendingDraftEntry;
+    setPendingDraftEntry(undefined);
     const attempt = registry.beginAttempt();
     let sendAccepted = false;
     let observableSend = false;
@@ -152,6 +163,9 @@ export const HomeRoute = memo(function HomeRoute({
         );
         try {
           boundary = "dispatch";
+          // Words a Raycast link handed over go through the conversation's draft, which carries their source to
+          // the send.
+          if (draftEntry) await lease.channel.setDraft(text, draftEntry);
           const send = lease.channel.send(text);
           const admission = acceptedSendPromise(send);
           boundary = admission ? "runtime" : "server";
@@ -176,6 +190,7 @@ export const HomeRoute = memo(function HomeRoute({
         finishAnalytics("failed", boundary, error);
       if (attempt.isCurrent() && !sendAccepted && !isStaleChatSessionError(error)) {
         setPendingDraft(text);
+        setPendingDraftEntry(draftEntry);
         setPendingError(
           error instanceof Error && error.message === noWorkspaceMessage
             ? noWorkspaceMessage
@@ -197,11 +212,15 @@ export const HomeRoute = memo(function HomeRoute({
     (value: string) => sendPendingDraftRef.current(value),
     []
   );
-  const handleDraftChange = useCallback((draft: string) => {
+  const handleDraftChange = useCallback((draft: string, entry?: ChatDraftEntry) => {
     setPendingError(undefined);
     setPendingDraft(draft);
+    setPendingDraftEntry((before) => (draft.trim() ? (entry ?? before) : undefined));
   }, []);
-  const handlePendingDraftApplied = useCallback(() => setPendingDraft(""), []);
+  const handlePendingDraftApplied = useCallback(() => {
+    setPendingDraft("");
+    setPendingDraftEntry(undefined);
+  }, []);
   const handlePendingErrorClear = useCallback(() => setPendingError(undefined), []);
 
   const conversationTarget =
@@ -232,8 +251,10 @@ export const HomeRoute = memo(function HomeRoute({
       onRetry={chat.retry}
       onSend={handleSend}
       pendingDraft={pendingDraft}
+      pendingDraftEntry={pendingDraftEntry}
       pendingError={pendingError}
       requestedDraft={requestedDraft}
+      requestedDraftEntry={requestedDraftEntry}
       surfaceActive={surfaceActive}
       workspaceState={chat.state}
     />
@@ -342,8 +363,10 @@ function HomeConversation({
   onRetry,
   onSend,
   pendingDraft,
+  pendingDraftEntry,
   pendingError,
   requestedDraft,
+  requestedDraftEntry,
   surfaceActive,
   workspaceState,
 }: {
@@ -353,15 +376,17 @@ function HomeConversation({
     | { conversationId: string; groupId: string; workspaceId: string }
     | undefined;
   onConnectApps?: (() => void) | undefined;
-  onDraftChange: (draft: string) => void;
+  onDraftChange: (draft: string, entry?: ChatDraftEntry) => void;
   onPendingDraftApplied: () => void;
   onPendingErrorClear: () => void;
   onRequestedDraftTaken?: (() => void) | undefined;
   onRetry: () => unknown;
   onSend: (draft: string) => unknown;
   pendingDraft: string;
+  pendingDraftEntry?: ChatDraftEntry | undefined;
   pendingError: string | undefined;
   requestedDraft?: string | undefined;
+  requestedDraftEntry?: ChatDraftEntry | undefined;
   surfaceActive: boolean;
   workspaceState: WorkspaceChatState;
 }) {
@@ -387,7 +412,8 @@ function HomeConversation({
   const workspaceId = conversationTarget?.workspaceId;
   const conversation = useConversation(workspaceId, groupId, conversationId);
   const skills = useWorkspaceSkills(guest ? "" : (workspaceId ?? ""));
-  const { openBrowser, openChat } = useChatSidebarActions();
+  const { openBrowser, openChat, openMailPreview, openStillfailPreview } =
+    useChatSidebarActions();
   // A computer's screen asked for from Settings › Devices opens beside this chat.
   useOpenPendingScreen(
     conversationId && groupId && workspaceId
@@ -400,12 +426,16 @@ function HomeConversation({
     if (surfaceActive) setComposerFocusRequest((request) => request + 1);
   });
   // Each hand-over from another page is written into the composer once.
-  const [composerDraftRequest, setComposerDraftRequest] = useState<{ text: string }>();
+  const [composerDraftRequest, setComposerDraftRequest] =
+    useState<ComposerDraftRequest>();
   useEffect(() => {
     if (!requestedDraft) return;
-    setComposerDraftRequest({ text: requestedDraft });
+    setComposerDraftRequest({
+      text: requestedDraft,
+      ...(requestedDraftEntry ? { entry: requestedDraftEntry } : {}),
+    });
     onRequestedDraftTaken?.();
-  }, [onRequestedDraftTaken, requestedDraft]);
+  }, [onRequestedDraftTaken, requestedDraft, requestedDraftEntry]);
 
   useLayoutEffect(() => {
     if (!workspaceId || !groupId || !conversationId) return;
@@ -438,7 +468,7 @@ function HomeConversation({
         { conversationId, groupId, workspaceId },
         {
           conversationId: conversationRef.conversationId,
-          groupId,
+          groupId: conversationRef.groupId ?? groupId,
           kind: "agent_task",
           title: conversationRef.title,
           workspaceId,
@@ -450,9 +480,30 @@ function HomeConversation({
   const handleOpenInCommaBrowser = useCallback(
     (url: string) => {
       if (!conversationId || !groupId || !workspaceId) return;
+      if (isStillfailChatLink(url)) {
+        openStillfailPreview(
+          { conversationId, groupId, workspaceId },
+          { id: url.trim(), href: url.trim(), workspaceId }
+        );
+        return;
+      }
+      if (isMailPreviewLink(url)) {
+        openMailPreview(
+          { conversationId, groupId, workspaceId },
+          { id: url.trim(), href: url.trim(), workspaceId }
+        );
+        return;
+      }
       openBrowser({ conversationId, groupId, workspaceId }, { url });
     },
-    [conversationId, groupId, openBrowser, workspaceId]
+    [
+      conversationId,
+      groupId,
+      openBrowser,
+      openMailPreview,
+      openStillfailPreview,
+      workspaceId,
+    ]
   );
   const handleOpenRecommendationTask = useCallback(
     (targetConversationId: string) => {
@@ -502,7 +553,10 @@ function HomeConversation({
     ) {
       return;
     }
-    conversation.channel.setDraft(pendingDraft);
+    // An ordinary draft is set as it always was, with the text alone.
+    if (pendingDraftEntry)
+      conversation.channel.setDraft(pendingDraft, pendingDraftEntry);
+    else conversation.channel.setDraft(pendingDraft);
     onPendingDraftApplied();
   }, [
     conversation.channel,
@@ -510,6 +564,7 @@ function HomeConversation({
     conversationTarget,
     onPendingDraftApplied,
     pendingDraft,
+    pendingDraftEntry,
   ]);
 
   // Everything handed down besides `state` keeps its identity while the
@@ -549,9 +604,9 @@ function HomeConversation({
               onPendingErrorClear();
               return send(text, options);
             },
-            setDraft: (draft) => {
+            setDraft: (draft, entry) => {
               onPendingErrorClear();
-              return setDraft(draft);
+              return entry ? setDraft(draft, entry) : setDraft(draft);
             },
           }
         : {

@@ -31,6 +31,7 @@
 @import "./components/settings/CreatedSecretPanel.css";
 @import "./components/home-tasks/home-tasks.css";
 @import "./components/task-board/task-board.css";
+@import "./components/task-feed/task-feed.css";
 @import "./components/right-sidebar/right-sidebar-browser-toolbar.css";
 @import "./components/right-sidebar/right-sidebar-tabs.css";
 /* Composed onto elements the sheets above already style — keep it last. */
@@ -196,6 +197,7 @@
 
 .comma-tooltip[data-exiting] {
   transition-duration: var(--motion-duration-tooltip-exit);
+  transition-timing-function: var(--motion-easing-sharp-in);
 }
 
 .comma-tooltip[data-instant="true"] {
@@ -669,17 +671,17 @@
 }
 
 .ai-input-rich-token-tooltip {
-  --tooltip-enter-duration: 150ms;
-  --tooltip-exit-duration: 50ms;
+  --tooltip-enter-duration: var(--motion-duration-tooltip-enter);
+  --tooltip-exit-duration: var(--motion-duration-menu-exit);
   --tooltip-enter-delay: 80ms;
-  --tooltip-closed-scale: 0.98;
+  --tooltip-closed-scale: var(--motion-scale-tooltip-enter);
 
   opacity: 0;
   transform: scale(var(--tooltip-closed-scale));
   transform-origin: bottom center;
   transition:
-    opacity var(--tooltip-exit-duration) ease-in,
-    transform var(--tooltip-exit-duration) ease-in;
+    opacity var(--tooltip-exit-duration) var(--motion-easing-sharp-in),
+    transform var(--tooltip-exit-duration) var(--motion-easing-sharp-in);
   will-change: opacity, transform;
 }
 
@@ -691,7 +693,7 @@
   opacity: 1;
   transform: scale(1);
   transition-duration: var(--tooltip-enter-duration);
-  transition-timing-function: ease-out;
+  transition-timing-function: var(--motion-easing-surface-smooth-out);
   transition-delay: var(--tooltip-enter-delay);
 }
 
@@ -755,24 +757,30 @@
     ):not([role="slider"]):not([data-no-press-feedback])
 ) {
   --button-press-current-duration: var(--button-press-out-duration);
+  --button-press-current-easing: var(--button-press-easing);
 
   scale: 1;
   transition:
     color var(--button-state-duration) var(--button-state-easing),
     background-color var(--button-state-duration) var(--button-state-easing),
     border-color var(--button-state-duration) var(--button-state-easing),
+    box-shadow var(--button-state-duration) var(--button-state-easing),
     text-decoration-color var(--button-state-duration) var(--button-state-easing),
     fill var(--button-state-duration) var(--button-state-easing),
     stroke var(--button-state-duration) var(--button-state-easing),
-    scale var(--button-press-current-duration) var(--button-press-easing);
+    scale var(--button-press-current-duration) var(--button-press-current-easing);
 }
 
 :where(
   :is(button, [data-slot="settings-sidebar-item"]):not(:disabled):not(
       [aria-disabled="true"]
-    ):not([role="slider"]):not([data-no-press-feedback]):active
+    ):not([aria-expanded="true"]):not([role="slider"]):not([data-no-press-feedback]):is(
+      :active,
+      [data-pressed="true"]
+    )
 ) {
   --button-press-current-duration: var(--button-press-in-duration);
+  --button-press-current-easing: var(--button-press-in-easing);
 
   scale: var(--button-press-scale);
 }
@@ -887,9 +895,10 @@
   :root {
     --button-state-duration: var(--motion-duration-state-change);
     --button-state-easing: var(--motion-easing-smooth-out);
-    --button-press-in-duration: var(--motion-duration-feedback-in);
-    --button-press-out-duration: var(--motion-duration-feedback-out);
-    --button-press-easing: var(--motion-easing-smooth-out);
+    --button-press-in-duration: var(--motion-duration-press-travel);
+    --button-press-out-duration: var(--motion-duration-press-recoil);
+    --button-press-in-easing: var(--motion-easing-press-travel);
+    --button-press-easing: var(--motion-easing-press-recoil);
     --button-press-scale: var(--motion-scale-pressed);
     --icon-swap-dur: var(--motion-duration-icon-swap);
     --icon-swap-blur: var(--spacing-xxs);
@@ -906,9 +915,9 @@
     --collapse-content-bezier-x2: 0.202;
     --collapse-content-bezier-y2: 0.918;
     --collapse-content-opacity-hidden: 0;
-    --collapse-content-scale-hidden: 0.98;
+    --collapse-content-scale-hidden: 0.985;
     --collapse-content-translate-x-hidden: 0px;
-    --collapse-content-translate-y-hidden: -10px;
+    --collapse-content-translate-y-hidden: -4px;
     --task-list-item-icon-duration: 220ms;
     --task-list-item-icon-blur: 5px;
     --task-list-item-icon-travel: 14px;
@@ -930,6 +939,150 @@
     --scroll-area-edge-blur-target-end-size: 0px;
     --scroll-area-edge-transition-duration: 450ms;
     --scroll-area-edge-transition-easing: cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* Low-chroma translucent badge & label washes: blend with any underlying
+       surface (resting, hovered, or selected rows) without heavy outlines. */
+    --comma-badge-gray-bg: color-mix(in srgb, var(--color-fg-primary) 6%, transparent);
+    --comma-badge-brand-bg: color-mix(
+      in srgb,
+      var(--color-brand-400) 8.5%,
+      transparent
+    );
+    --comma-badge-brand-fg: #1849d6;
+    --comma-badge-brand-border: color-mix(
+      in srgb,
+      var(--color-brand-400) 22%,
+      var(--color-border-primary)
+    );
+    --comma-badge-error-bg: color-mix(in srgb, var(--color-error-500) 9%, transparent);
+    --comma-badge-warning-bg: color-mix(
+      in srgb,
+      var(--color-warning-500) 11%,
+      transparent
+    );
+    --comma-badge-success-bg: color-mix(
+      in srgb,
+      var(--color-utility-success-700) 9%,
+      transparent
+    );
+    --comma-badge-blue-bg: color-mix(
+      in srgb,
+      var(--color-utility-blue-700) 9%,
+      transparent
+    );
+    --comma-badge-indigo-bg: color-mix(
+      in srgb,
+      var(--color-utility-indigo-700) 9%,
+      transparent
+    );
+    --comma-badge-purple-bg: color-mix(
+      in srgb,
+      var(--color-utility-purple-700) 9%,
+      transparent
+    );
+    --comma-badge-pink-bg: color-mix(
+      in srgb,
+      var(--color-utility-pink-700) 9%,
+      transparent
+    );
+    --comma-badge-orange-bg: color-mix(
+      in srgb,
+      var(--color-utility-orange-700) 10%,
+      transparent
+    );
+  }
+
+  .dark,
+  [data-theme="Dark mode"] {
+    --comma-badge-gray-bg: color-mix(in srgb, var(--color-fg-primary) 9%, transparent);
+    --comma-badge-brand-bg: color-mix(in srgb, var(--color-brand-300) 15%, transparent);
+    --comma-badge-brand-fg: #84b5ff;
+    --comma-badge-brand-border: color-mix(
+      in srgb,
+      var(--color-brand-300) 28%,
+      var(--color-border-primary)
+    );
+    --comma-badge-error-bg: color-mix(
+      in srgb,
+      var(--color-utility-error-700) 13%,
+      transparent
+    );
+    --comma-badge-warning-bg: color-mix(
+      in srgb,
+      var(--color-utility-warning-700) 13%,
+      transparent
+    );
+    --comma-badge-success-bg: color-mix(
+      in srgb,
+      var(--color-utility-success-700) 13%,
+      transparent
+    );
+    --comma-badge-blue-bg: color-mix(
+      in srgb,
+      var(--color-utility-blue-700) 13%,
+      transparent
+    );
+    --comma-badge-indigo-bg: color-mix(
+      in srgb,
+      var(--color-utility-indigo-700) 13%,
+      transparent
+    );
+    --comma-badge-purple-bg: color-mix(
+      in srgb,
+      var(--color-utility-purple-700) 13%,
+      transparent
+    );
+    --comma-badge-pink-bg: color-mix(
+      in srgb,
+      var(--color-utility-pink-700) 13%,
+      transparent
+    );
+    --comma-badge-orange-bg: color-mix(
+      in srgb,
+      var(--color-utility-orange-700) 13%,
+      transparent
+    );
+  }
+
+  /* Tactile button surfaces: a whisper-thin top specular rim plus subtle
+     vertical luminance depth so buttons read as physical keycaps rather than
+     flat fills, settling flush into the plane while pressed. */
+  .comma-btn-surface-primary {
+    background-image: linear-gradient(
+      180deg,
+      rgb(255 255 255 / 0.1) 0%,
+      rgb(255 255 255 / 0) 100%
+    );
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.2),
+      var(--shadow-xs);
+  }
+
+  .comma-btn-surface-primary:not(:disabled):not([aria-disabled="true"]):is(
+      :active,
+      [data-pressed="true"]
+    ) {
+    background-image: none;
+    box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.18);
+  }
+
+  .comma-btn-surface-secondary {
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.72),
+      var(--shadow-xs);
+  }
+
+  :where(.dark, [data-theme="Dark mode"]) .comma-btn-surface-secondary {
+    box-shadow:
+      inset 0 0.5px 0 0 rgb(255 255 255 / 0.08),
+      var(--shadow-xs);
+  }
+
+  .comma-btn-surface-secondary:not(:disabled):not([aria-disabled="true"]):is(
+      :active,
+      [data-pressed="true"]
+    ) {
+    box-shadow: inset 0 1px 1.5px 0 rgb(0 0 0 / 0.06);
   }
 
   .comma-scroll-area {
@@ -1302,9 +1455,11 @@
     transform: rotate(90deg);
   }
 
+  /* Clips an icon travelling in or out, but leaves room for an avatar's hairline ring that sits just outside it. */
   .task-list-item-icon-stage {
     position: relative;
-    overflow: hidden;
+    overflow: clip;
+    overflow-clip-margin: var(--border-width-default);
   }
 
   .task-list-item-icon-layer {

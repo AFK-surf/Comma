@@ -62,20 +62,24 @@ defmodule SalixIM.RouterWaitProbe do
 
   def own_active_task?(_record, _agent_id), do: false
 
-  defp worker_busy?(group_id, %{"conversation_id" => conversation_id} = record) do
-    worker_agent_id = record["task_worker_agent_id"]
-
-    with {:ok, %{"participants" => participants}} <-
-           Conversations.list_group_conversation_participants(group_id, conversation_id),
-         %{} = participant <- Enum.find(participants, &(&1["agent_id"] == worker_agent_id)),
-         {:ok, status} <-
-           ConversationParticipantActivity.read(
+  defp worker_busy?(group_id, %{"conversation_id" => conversation_id}) do
+    with {:ok, %{"workers" => workers}} <-
+           SalixIM.ConversationServer.get_group_conversation_task_worker_identities(
              group_id,
-             conversation_id,
-             participant["participant_id"],
-             participant
+             conversation_id
            ) do
-      busy_activity?(status["activity"])
+      Enum.any?(workers, fn worker ->
+        pid = worker["participant_id"]
+
+        with {:ok, participant} <-
+               Conversations.get_group_conversation_participant(group_id, conversation_id, pid),
+             {:ok, status} <-
+               ConversationParticipantActivity.read(group_id, conversation_id, pid, participant) do
+          busy_activity?(status["activity"])
+        else
+          _ -> false
+        end
+      end)
     else
       _ -> false
     end

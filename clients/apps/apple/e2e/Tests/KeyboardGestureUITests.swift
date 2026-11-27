@@ -96,8 +96,7 @@ import UIKit
         XCTAssertEqual(app.keyboards.firstMatch.frame.minY - homeDraft.frame.maxY, keyboardGap, accuracy: 2,
                        "The minimized Task must not reserve space between the router input and keyboard")
         XCTAssertEqual(homeDraft.value as? String, "Home draft")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+        app.dragKeyboardDown()
         wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)], timeout: 3)
         XCTAssertTrue(title.waitUntilHittable())
         XCTAssertLessThanOrEqual(homeDraft.frame.maxY, title.frame.minY,
@@ -180,7 +179,9 @@ import UIKit
         XCTAssertFalse(app.keyboards.firstMatch.exists, "Returning to the router chat must not restore its old focus")
     }
 
-    func testScrollingRouterHistoryDismissesKeyboardAndPreservesDraft() throws {
+    /// The keyboard follows the finger, as in Messages: a scroll that stays above it leaves it up, and a drag down
+    /// into it takes it down. The draft stays either way.
+    func testDraggingRouterTranscriptIntoKeyboardDismissesItAndPreservesDraft() throws {
         continueAfterFailure = false
         let app = XCUIApplication.fixture()
         let composer = app.openRouterChat()
@@ -189,6 +190,8 @@ import UIKit
         composer.typeText("Keep this draft")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
             .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+        XCTAssertTrue(app.keyboards.firstMatch.isHittable, "A scroll above the keyboard leaves it up")
+        app.dragKeyboardDown()
         let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
         wait(for: [hidden], timeout: 3)
         XCTAssertEqual(composer.value as? String, "Keep this draft")
@@ -198,6 +201,26 @@ import UIKit
         let edited = try XCTUnwrap(composer.value as? String)
         XCTAssertTrue(edited.contains(" again"))
         XCTAssertEqual(edited.replacingOccurrences(of: " again", with: ""), "Keep this draft")
+    }
+
+    /// A finger that drags the keyboard halfway down and rests before letting go leaves it to finish on its own: it
+    /// never stays stopped where the finger was.
+    func testKeyboardLetGoHalfwayDoesNotStop() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication.fixture()
+        let composer = app.openRouterChat()
+        composer.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        composer.typeText("Keep this draft")
+        let up = keyboard.frame.minY
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)),
+                   withVelocity: 250, thenHoldForDuration: 0.8)
+        let settled = expectation(for: NSPredicate { _, _ in !keyboard.exists || abs(keyboard.frame.minY - up) < 1 },
+                                  evaluatedWith: nil)
+        wait(for: [settled], timeout: 3)
+        XCTAssertEqual(composer.value as? String, "Keep this draft")
     }
 
     /// Taking the composer while reading history brings the newest message back above it, as Messages does.

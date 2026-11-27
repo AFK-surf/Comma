@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
@@ -125,6 +127,9 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 				}
 			}
 			if err != nil || a == nil {
+				if refreshAuthenticationRejected(err) {
+					return &operationError{401, "authorization_unavailable"}
+				}
 				return &operationError{502, "prepare_failed"}
 			}
 		case "/models":
@@ -242,4 +247,49 @@ func queryQuota(ctx context.Context, c Credential, e auth.ProviderExecutor, a *a
 		return b, err
 	}
 	return withClaudePlan(ctx, e, a, c.ClientVersion, b), nil
+}
+
+// The pinned SDK exposes OAuth refresh responses through error text, without
+// a public status/code type. Match its exact response envelope and known OAuth
+// rejection codes. Unknown errors remain transient and never revoke a login.
+func refreshAuthenticationRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	const prefix = "token refresh failed with status "
+	_, response, found := strings.Cut(err.Error(), prefix)
+	if !found {
+		return false
+	}
+	code, body, found := strings.Cut(response, ": ")
+	if !found {
+		return false
+	}
+	status, parseErr := strconv.Atoi(code)
+	if parseErr != nil {
+		return false
+	}
+	if status == http.StatusUnauthorized {
+		return true
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var payload struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &payload) != nil {
+		return false
+	}
+	var reason string
+	if json.Unmarshal(payload.Error, &reason) != nil {
+		var detail struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(payload.Error, &detail) != nil {
+			return false
+		}
+		reason = detail.Code
+	}
+	return slices.Contains([]string{"invalid_grant", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated", "token_revoked"}, reason)
 }

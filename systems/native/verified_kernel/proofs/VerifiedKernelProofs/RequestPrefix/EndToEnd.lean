@@ -5,14 +5,15 @@ import VerifiedKernelProofs.Provider.RequestPrefix
 /-!
 # Consecutive provider requests share a prefix
 
-Two provider dispatches of one Session, for states `s` and then `s'`, start with the same durable
+Two unprojected provider dispatches of one Session, for states `s` and then `s'`, start with the same durable
 history `D`: the stored prompt and the Session context of `s`, with attachments inlined. The
 first request sends `D ++ X`, the second `D ++ X'`. With the request prefix theorem
 (`ProviderLoop.request_prefix_stable`), both provider bodies start with the projection of `D`.
 
 The states must agree on the window fields and the stored prompt (`SameWindow`), the transcript
 must only grow, and attachment inlining must read the earlier messages the same way (`AckFrame`). The host must answer each request the same way in both dispatches
-(`HostAnswers`, `PrefetchSound`).
+(`HostAnswers`, `PrefetchSound`). Audience projection uses a separate host boundary; these
+claims do not assert prefix stability across changing audience views.
 -/
 
 namespace VerifiedKernel.RequestPrefix
@@ -41,9 +42,9 @@ theorem dispatch_prefix {s s' delta delta' cfg tools mode
     (window : SameWindow s s') (stored : s'.get (a "system_prompt") = s.get (a "system_prompt"))
     (msgs : s.get (a "messages") = list xs) (msgs' : s'.get (a "messages") = list (xs ++ ys))
     (ack : AckFrame host s s')
-    (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode]) pre J =
+    (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode]) pre nil J =
       .ok (body, K))
-    (h' : Session.Request.dispatch s' (.tuple [delta', .binary name, cfg, tools, mode]) pre' J' =
+    (h' : Session.Request.dispatch s' (.tuple [delta', .binary name, cfg, tools, mode]) pre' nil J' =
       .ok (body', K')) :
     ∃ D X Y X' tools', tools = list tools' ∧
       (∃ j k, Provider.Request.encodedBody (String.fromUTF8! name) cfg (D ++ X) tools'
@@ -122,9 +123,9 @@ theorem consecutive_requests_share_prefix {s s' delta delta' cfg tools mode body
     (window : SameWindow s s') (stored : s'.get (a "system_prompt") = s.get (a "system_prompt"))
     (msgs : s.get (a "messages") = list xs) (grown : Session.TranscriptExtends s s')
     (ack : AckFrame host s s')
-    (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode]) pre J =
+    (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode]) pre nil J =
       .ok (body, K))
-    (h' : Session.Request.dispatch s' (.tuple [delta', .binary name, cfg, tools, mode]) pre' J' =
+    (h' : Session.Request.dispatch s' (.tuple [delta', .binary name, cfg, tools, mode]) pre' nil J' =
       .ok (body', K')) :
     let pr := String.fromUTF8! name
     let md := String.fromUTF8! (Provider.bytes mode)

@@ -110,11 +110,18 @@ export default defineConfig({
         // a 4 MB bundle (clients/vite/no-dependency-source-maps.ts).
         optimizeDeps: { exclude: ["effect"] },
         // The server transforms every story file and what it imports as it
-        // starts, while Vitest opens its pages: a file's first story no longer
-        // waits for its own transform inside the story's 15 s.
+        // starts, while Vitest opens its pages: a file's first story does not
+        // wait for its own transform.
         server: { warmup: { clientFiles: browserStoryFiles() } },
         test: {
           name: "storybook",
+          // A story's play waits for states, never for an amount of real time,
+          // so no story or hook has a deadline of its own, as in the other
+          // client projects (clients/vitest.config.ts, `noDeadline`): the CI
+          // job's timeout is the one bound. Browser mode's 15 s default
+          // failed a story that a busy runner had only made slow.
+          testTimeout: 0,
+          hookTimeout: 0,
           // Chromium keeps frame state for every story iframe a page has
           // removed (vitest-dev/vitest#10300), so a page's renderer grows with
           // each file it runs and long runs end in "Browser connection was

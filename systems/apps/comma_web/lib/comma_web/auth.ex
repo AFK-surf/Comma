@@ -39,6 +39,11 @@ defmodule CommaWeb.Auth do
       CommaWeb.TaskShareEndpoints.public_path?(conn.request_path) ->
         conn
 
+      # External email guest collaboration links authenticate via invite token
+      # or single-task `cgs_...` bearer token inside CollaborationGuestEndpoints.
+      CommaWeb.CollaborationGuestEndpoints.public_path?(conn.request_path) ->
+        conn
+
       # Stations hold no Comma session: install, releases and enrollment are
       # public; connect and notify verify the station's own signature.
       CommaWeb.StationEndpoints.public_path?(conn.request_path) ->
@@ -76,6 +81,7 @@ defmodule CommaWeb.Auth do
   end
 
   defp public_billing_path?("/v1/comma/billing/stripe/webhook"), do: true
+  defp public_billing_path?("/v1/comma/billing/apple/notifications"), do: true
   defp public_billing_path?("/v1/comma/billing/stripe/checkout/return"), do: true
   defp public_billing_path?("/v1/comma/billing/stripe/checkout/cancel"), do: true
   defp public_billing_path?(_path), do: false

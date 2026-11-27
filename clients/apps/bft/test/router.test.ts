@@ -184,6 +184,17 @@ describe("BFT router", () => {
       });
     }
     expect(matchRoute("/orgs/acme/triage/settings")).toEqual({ name: "unknown" });
+    expect(matchRoute("/orgs/acme/lark-triage")).toEqual({
+      name: "org-lark-triage",
+      org: "acme",
+      view: "overview",
+    });
+    expect(matchRoute("/orgs/acme/lark-triage/timeline/")).toEqual({
+      name: "org-lark-triage",
+      org: "acme",
+      view: "timeline",
+    });
+    expect(matchRoute("/orgs/acme/lark-triage/knowledge")).toEqual({ name: "unknown" });
     expect(matchRoute("/orgs/acme/members/u1")).toEqual({ name: "unknown" });
     expect(matchRoute("/orgs/acme/finance")).toEqual({ name: "unknown" });
   });

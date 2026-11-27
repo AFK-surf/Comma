@@ -98,6 +98,8 @@ extension CommaStore {
             mentionModels.reset()
             taskActivity = nil
             activityRequest += 1
+            liveStatuses = nil
+            liveStatusesRequest += 1
         }
         // Initial Workspace restoration must not discard a public link already opened after sign-in.
         let preservesIncomingShare: Bool
@@ -133,6 +135,7 @@ extension CommaStore {
             return
         }
         await refreshTaskList()
+        await refreshLiveStatuses()
         for pane in panes { pane.refresh() }
         await loadProfile()
     }

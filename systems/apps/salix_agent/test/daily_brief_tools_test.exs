@@ -58,6 +58,30 @@ defmodule SalixAgent.DailyBriefToolsTest do
     assert_received {:set_time, "group", ^origin, "mine", "08:30"}
   end
 
+  test "a Feishu or Lark requester is named by their open id" do
+    for provider <- ["feishu", "lark"] do
+      origin = %{"provider" => provider, "provider_context" => %{"sender_open_id" => "ou_ann"}}
+
+      assert DailyBriefTools.set_time(%{"brief" => "mine", "time" => "08:30"}, %{
+               agent_id: "router",
+               trusted_origin: origin
+             }) == ~s({"brief":"mine","time":"08:30"})
+
+      assert_received {:set_time, "group", ^origin, "mine", "08:30"}
+    end
+
+    ann = %{"provider" => "feishu", "provider_context" => %{"sender_open_id" => "ou_ann"}}
+    ben = %{"provider" => "feishu", "provider_context" => %{"sender_open_id" => "ou_ben"}}
+
+    assert_raise RuntimeError, ~r/requester_ambiguous/, fn ->
+      DailyBriefTools.set_time(%{"brief" => "mine", "time" => "07:00"}, %{
+        agent_id: "router",
+        trusted_origin: ann,
+        trusted_origins: [ann, ben]
+      })
+    end
+  end
+
   test "a turn several Slack users wrote in changes nothing" do
     alice = %{"provider" => "slack", "provider_context" => %{"user_id" => "UALICE"}}
     bob = %{"provider" => "slack", "provider_context" => %{"user_id" => "UBOB"}}

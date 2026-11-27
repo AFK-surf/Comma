@@ -497,7 +497,11 @@ defmodule SalixAgent.Round do
           ])
         )
 
-      specs = session_config.tool_specs
+      specs =
+        SalixAgent.IFC.Declaration.for_mode(
+          session_config.tool_specs,
+          SalixAgent.IFC.mode_for(session_config.tenant_id, session_config.group_id)
+        )
 
       # Activity v2 cannot mint or infer its own response identity. The actor
       # durably installs this exact scope before Round starts, so the first
@@ -618,7 +622,10 @@ defmodule SalixAgent.Round do
           :ok
       end
 
-      stream_opts = stream_llm_opts(llm_opts, on_tool_delta, on_reasoning_delta)
+      stream_opts =
+        llm_opts
+        |> stream_llm_opts(on_tool_delta, on_reasoning_delta)
+        |> put_platform_admit(meter_ctx)
 
       # What `stream_opts` cannot say. Provider config is resolved per template
       # (`LlmResolver.resolve_runtime/1`: model, protocol, key, base url) and
@@ -643,6 +650,11 @@ defmodule SalixAgent.Round do
           archive_identity
         )
 
+      specs =
+        if get_in(config, ["ifc_projection", :finish_only]),
+          do: SalixAgent.IFC.HardConvergence.tools(specs),
+          else: specs
+
       {:request, config,
        %{
          context: context,
@@ -665,6 +677,7 @@ defmodule SalixAgent.Round do
          stream_opts: stream_opts,
          archive_identity: archive_identity,
          image_ctx: image_ctx,
+         ifc_projection: config["ifc_projection"],
          protocol: protocol
        }}
     else
@@ -816,6 +829,7 @@ defmodule SalixAgent.Round do
           pending = %{
             session_id: session_id,
             facts: facts,
+            ifc_projection: prep[:ifc_projection],
             id_snapshot: id_snapshot,
             next_queue_id_snapshot: InternalSession.get(session, :next_queue_id) || 1,
             llm_opts: llm_opts,
@@ -926,6 +940,26 @@ defmodule SalixAgent.Round do
          stream_opts,
          archive_identity
        ) do
+    {source, origin} =
+      current_turn_source(session, InternalSession.current_source_message_ids(session))
+
+    projection =
+      SalixAgent.IFC.ProjectionRequest.prepare(session, activation_delta, session_config, %{
+        agent_id: context.agent_id,
+        session_id: session_id,
+        tenant_id: session_config.tenant_id,
+        group_id: session_config.group_id,
+        role: session_config.role,
+        trusted_origin: origin,
+        trusted_origins:
+          current_turn_trusted_origins(
+            session,
+            InternalSession.current_source_message_ids(session)
+          ),
+        source_message_id: source,
+        source_message_ids: InternalSession.current_source_message_ids(session)
+      })
+
     {protocol, cfg, images?} = LLM.request_config(stream_opts, archive_identity)
 
     image_ctx = %{
@@ -934,6 +968,7 @@ defmodule SalixAgent.Round do
       tenant_id: session_config.tenant_id,
       group_id: session_config.group_id,
       model_supports_images: images?,
+      ifc_projection: projection,
       async_result_resolver: fn seq ->
         resolve_async_result_for_request(context.agent_id, session_id, session, seq)
       end
@@ -947,9 +982,14 @@ defmodule SalixAgent.Round do
       "guard_config" => true,
       "nonce" => SystemsRuntime.Proc.unique_integer([:positive]),
       "delta" => activation_delta,
+      "ifc_projection" => projection,
       "protocol" => protocol,
       "cfg" => cfg,
-      "tools" => session_config.tool_specs,
+      "tools" =>
+        if(projection && projection[:finish_only],
+          do: SalixAgent.IFC.HardConvergence.tools(session_config.tool_specs),
+          else: session_config.tool_specs
+        ),
       "mode" => "stream"
     }
 
@@ -1176,6 +1216,7 @@ defmodule SalixAgent.Round do
         |> Map.put(:role, pending[:role] || "worker")
         |> Map.put(:tool_disclosure, pending[:tool_disclosure] || %{}),
       response: response,
+      ifc_projection: pending[:ifc_projection],
       duration_ms: duration_ms,
       meter_meta: meter_meta
     })
@@ -1398,12 +1439,18 @@ defmodule SalixAgent.Round do
   end
 
   # A durable `end_turn` with no_reply closes this activation's mentions, which
-  # would otherwise wait out `SalixIM.MentionReplyLatency`'s retained hour.
+  # would otherwise wait out `SalixIM.MentionReplyLatency`'s retained hour. An
+  # `end_turn` the runtime refused (a reply repair still owed) settles nothing:
+  # the activation goes on and may still answer.
   defp observe_no_reply(host, events) do
     no_reply? =
       Enum.any?(events, fn
-        %{"provider_meta" => %{"settled_call" => %{"call" => %{"args" => args}}}} ->
-          args["no_reply"] == true
+        %{
+          "provider_meta" => %{
+            "settled_call" => %{"call" => %{"args" => %{"no_reply" => true}}} = settled
+          }
+        } ->
+          accepted_settlement?(settled["result"])
 
         _event ->
           false
@@ -1415,6 +1462,16 @@ defmodule SalixAgent.Round do
       })
     end
   end
+
+  defp accepted_settlement?(result) when is_binary(result) do
+    case Jason.decode(result) do
+      {:ok, decoded} -> accepted_settlement?(decoded)
+      {:error, _} -> false
+    end
+  end
+
+  defp accepted_settlement?(%{"status" => "accepted"}), do: true
+  defp accepted_settlement?(_result), do: false
 
   defp notify(host, {:notify, kind, data}) do
     %{context: context, session_id: session_id} = host
@@ -1528,10 +1585,31 @@ defmodule SalixAgent.Round do
           consecutive_failures: streak,
           error_category: SalixAgent.LLM.Error.category(meta)
         })
+
+        SalixAgent.Ports.OwnerAlerts.notify(
+          SalixAgent.Ports.OwnerAlerts.group_of_agent(agent_id),
+          "model_failing",
+          agent_id,
+          %{
+            "agent_id" => agent_id,
+            "category" => SalixAgent.LLM.Error.category(meta),
+            "status" => llm_status(meta),
+            "quota_exhausted" => SalixAgent.LLM.Error.provider_quota_exhausted?(meta)
+          }
+        )
     end
 
     host
   end
+
+  defp llm_status(%{} = meta) do
+    case meta["status"] || meta[:status] do
+      status when is_integer(status) -> status
+      _other -> nil
+    end
+  end
+
+  defp llm_status(_meta), do: nil
 
   # The kernel's own failure notice answers only a human source; a Worker's
   # Task gets its report here.
@@ -1616,7 +1694,8 @@ defmodule SalixAgent.Round do
 
         # What the model wrote this round is labelled by what it says it drew
         # on: the join of the sources declared on this round's effects (§3.3,
-        # last row). A round that declares nothing joins the whole context.
+        # last row). An undeclared transcript joins the whole context, even
+        # when tool parameter validation refuses its outgoing call.
         facts =
           host
           |> record_facts(SalixAgent.IFC.Check.round_label(calls, ctx))
@@ -1627,10 +1706,12 @@ defmodule SalixAgent.Round do
             "source_ids" => ctx.source_message_ids
           })
 
-        # A refused `end_turn` (`UnansweredPersonGuard`) is recorded as the
-        # model made it; only dispatch runs its guidance.
+        # A refused `end_turn` or premature send (`FollowupReplyGuard`,
+        # `UnansweredPersonGuard`) is recorded as the model made it; only
+        # dispatch runs its guidance.
         spec =
           case spec["record_calls"] ||
+                 SalixAgent.FollowupReplyGuard.model_calls(calls) ||
                  SalixAgent.UnansweredPersonGuard.model_calls(calls) do
             nil -> spec
             recorded -> Map.put(spec, "record_calls", recorded)
@@ -1689,7 +1770,8 @@ defmodule SalixAgent.Round do
       "trace" => host.trace_ctx,
       "model" => llm_opt(host.llm_opts, :model),
       "provider_states" => ContextProviders.adopted_provider_state(delta),
-      "ifc_label" => ifc_label
+      "ifc_label" => ifc_label,
+      "ifc_view_label" => get_in(host, [:ifc_projection, :label])
     }
   end
 
@@ -1724,10 +1806,10 @@ defmodule SalixAgent.Round do
         ),
       organization_scopes:
         SalixAgent.IFC.Context.organization_scopes(session, source_message_ids),
-      # The labelled view of this session and this activation. Nothing is
-      # filtered out of the prompt by it; it exists so an effect can be checked
-      # against the sources it declares (§7).
+      # The complete source index remains available to the effect kernel.
+      # Request visibility uses a separate projection and local ref mapping.
       ifc_mode: ifc_mode,
+      ifc_view_label: get_in(host, [:ifc_projection, :label]),
       ifc:
         ifc_mode != :off &&
           SalixAgent.IFC.Context.build(session,
@@ -2394,6 +2476,15 @@ defmodule SalixAgent.Round do
     |> put_opt(:on_reasoning_delta, on_reasoning_delta)
   end
 
+  # A platform Router's route (`SalixAgent.PlatformRouter`) in `deduct`
+  # billing asks the fee check again, platform-funded, before a platform key
+  # serves it (`SalixAgent.AccountPool`).
+  defp put_platform_admit(opts, meter_ctx) do
+    if SalixAgent.AccountPool.platform_route?(opts),
+      do: put_opt(opts, :platform_admit, fn -> LLMMetering.platform_admit(meter_ctx) end),
+      else: opts
+  end
+
   defp put_opt(opts, key, value) when is_list(opts), do: Keyword.put(opts, key, value)
   defp put_opt(opts, key, value) when is_map(opts), do: Map.put(opts, key, value)
 
@@ -2921,6 +3012,7 @@ defmodule SalixAgent.Round do
     status = if match?({:error, %{}}, response), do: "error", else: status
 
     ctx
+    |> LLMMetering.served_by(meta)
     |> Map.merge(%{
       status: status,
       stale: status == "stale",

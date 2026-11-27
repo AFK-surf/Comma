@@ -1,6 +1,8 @@
 // How a meeting submission's failure is worded and whether it is retried on its own. The words name the stage and a
 // class of cause only: no response body, credential, host path or arbitrary exception message reaches a person.
 import { CoreError, HostError } from "@comma/core-kernel";
+import type { CommaLocale } from "@comma/i18n";
+import * as messages from "@comma/i18n/messages";
 import type { MeetingFailure } from "../host.ts";
 
 export type MeetingSubmissionStage =
@@ -25,12 +27,37 @@ export class MeetingPortFailure extends Error {
   }
 }
 
+function billingReason(detail: unknown): string | undefined {
+  if (typeof detail !== "object" || detail === null) return undefined;
+  const reason = (detail as { reason?: unknown }).reason;
+  return typeof reason === "string" ? reason : undefined;
+}
+
 export function meetingSubmissionError(
   stage: MeetingSubmissionStage,
-  error: unknown
+  error: unknown,
+  locale: CommaLocale = "en"
 ): string {
   let detail = "Unexpected failure. Retry this meeting.";
   if (error instanceof CoreError) {
+    if (
+      error.status === 402 ||
+      error.code === "billing_unavailable" ||
+      error.code === "budget_exhausted"
+    ) {
+      const reason = billingReason(error.detail);
+      if (reason === "insufficient_credits" || error.code === "budget_exhausted")
+        return messages.meeting_submission_insufficient_credits({}, { locale });
+      if (reason === "account_inactive")
+        return messages.meeting_submission_account_inactive({}, { locale });
+      if (reason === "missing_account")
+        return messages.meeting_submission_account_missing({}, { locale });
+      return messages.meeting_submission_billing_unavailable({}, { locale });
+    }
+    if (error.status === 429 || error.code === "rate_limited")
+      return messages.meeting_submission_rate_limited({}, { locale });
+    if (error.status === 503)
+      return messages.meeting_submission_service_unavailable({}, { locale });
     if (error.status !== undefined) detail = `HTTP ${error.status}.`;
     else if (error.code === "timeout" || error.code === "signed_out")
       detail = "The request timed out or the session changed.";

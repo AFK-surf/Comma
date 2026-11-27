@@ -13,6 +13,7 @@ export interface TaskProgressTextProps {
   children: string;
   /** Applied to each line, e.g. the running-task shimmer. */
   className?: string | undefined;
+  title?: string | undefined;
 }
 
 /**
@@ -24,7 +25,11 @@ export interface TaskProgressTextProps {
  * fade to run (reduced motion zeroes it) goes at once too, since no
  * transition ends to remove it.
  */
-export function TaskProgressText({ children: text, className }: TaskProgressTextProps) {
+export function TaskProgressText({
+  children: text,
+  className,
+  title,
+}: TaskProgressTextProps) {
   const [layers, setLayers] = useState<{ current: Layer; leaving: Layer | undefined }>(
     () => ({ current: { key: 0, text, entering: false }, leaving: undefined })
   );
@@ -71,6 +76,7 @@ export function TaskProgressText({ children: text, className }: TaskProgressText
         className={lineClassName}
         data-state={current.entering ? "entering" : undefined}
         key={current.key}
+        title={title}
       >
         {current.text}
       </span>

@@ -62,7 +62,7 @@ defmodule BeamTestShard do
     {"salix-web", ~w(salix_web)},
     {"product-comma",
      ~w(systems_observability comma comma_log alert_router billing_core comma_core comma_tui
-        comma_ssh billing_commerce billing_stripe comma_web systems_clock systems_runtime systems_sim)},
+        comma_ssh billing_commerce billing_stripe billing_apple comma_web systems_clock systems_runtime systems_sim)},
     {"product-bft", ~w(bridge_for_teams_core bridge_for_teams_web)}
   ]
 

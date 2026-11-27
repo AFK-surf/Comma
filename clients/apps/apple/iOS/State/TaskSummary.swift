@@ -27,8 +27,13 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
     let loop: TaskLoop?
     /// Where a Task a station hosts runs; nil for any other.
     let host: TaskHost?
+    /// A still.fail station's chat: its page in still.fail, where it opens, as no app reaches that station. Nil for any
+    /// other Task.
+    let url: URL?
     /// What the core says this Task cannot take (`archive`, `pin`, `share`): not offered.
     let unsupported: Set<String>
+    /// A Collaborative Task the member hosts: the User ids of the people it was started with. Empty for any other Task.
+    let together: [String]
 
     var isTask: Bool { kind == "agent_task" }
     /// Its Loop still runs it: it never waits for a review to accept.
@@ -49,7 +54,8 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         self.id = id
         groupID = ""; workspaceID = ""; self.title = title; status = ""; bucket = .inProgress; listBucket = .inProgress
         failed = false; kind = "agent_task"; labels = []; origin = nil; clientPlatform = nil; updatedAt = 0
-        archiveVersion = nil; archiveAvailability = nil; reviewVersion = nil; loop = nil; host = nil; unsupported = []
+        archiveVersion = nil; archiveAvailability = nil; reviewVersion = nil; loop = nil; host = nil; url = nil
+        unsupported = []; together = []
     }
 
     init?(_ item: NSDictionary) {
@@ -73,7 +79,9 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         reviewVersion = item.int("reviewVersion")
         loop = TaskLoop(item.object("loop"))
         host = item.object("host").map(TaskHost.init)
+        url = item.string("url").flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
         unsupported = Set(item.strings("unsupported"))
+        together = item.strings("together")
         listBucket = bucket
     }
 
@@ -102,7 +110,9 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         reviewVersion = nil
         loop = TaskLoop(item.object("loop"))
         host = nil
+        url = nil
         unsupported = []
+        together = item.strings("together")
     }
 }
 
@@ -126,6 +136,7 @@ extension TaskBucket {
     init(section: String?) {
         switch section {
         case "in_progress": self = .inProgress
+        case "loops": self = .loops
         case "needs_review": self = .needsReview
         case "done": self = .done
         case "cancelled": self = .cancelled

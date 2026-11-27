@@ -43,7 +43,7 @@ import {
   SelectionAlignedRevealIndicator,
   useSelectionAlignedPopover,
 } from "../dropdown/select-primitives";
-import { ScrollArea } from "../scroll-area";
+import { ScrollArea, type ScrollAreaMetrics } from "../scroll-area";
 import {
   clearContextSelectionHighlight,
   paintContextSelectionHighlight,
@@ -811,9 +811,9 @@ function RevivedPopoverContents({
  * its own shadow, which a clipping viewport would cut off.
  */
 const anchorMenuScrollClasses =
-  "max-h-[inherit] not-data-[has-overflow-y=true]:overflow-visible";
+  "flex min-h-0 flex-col max-h-[inherit] not-data-[has-overflow-y=true]:overflow-visible";
 const anchorMenuViewportClasses =
-  "max-h-[inherit] [.comma-scroll-area:not([data-has-overflow-y=true])>&]:overflow-visible";
+  "min-h-0 max-h-[inherit] [.comma-scroll-area:not([data-has-overflow-y=true])>&]:overflow-visible";
 
 const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
   function AnchorMenuPopover(
@@ -823,6 +823,7 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
       className,
       closeSubmenusOnPointerLeave = false,
       dismissControlledNonModalOnInteractOutside = false,
+      maxHeight,
       offset = spacing.xs,
       placement,
       selectionAlign: _selectionAlign,
@@ -874,6 +875,78 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
     useSelectionAsideWhileOpen(isOpen, props.isNonModal, interactionRef);
     useCloseSubmenusOnPointerLeave(closeSubmenusOnPointerLeave, ownedGroup);
 
+    // React Aria's useOverlayPosition skips resetting overlay.style.maxHeight
+    // before re-measuring when a maxHeight prop is given, which traps menus
+    // whose items load asynchronously at the smaller side's max-height instead
+    // of flipping. Enforcing maxHeight on the inner ScrollArea viewport lets
+    // React Aria keep owning the viewport cap and flip cleanly when content
+    // grows, while subtracting the popover's own vertical chrome keeps the
+    // outer surface within the requested maxHeight.
+    const [chromeBlockSize, setChromeBlockSize] = useState(0);
+    const lastOverflowScrollHeightRef = useRef<number | null>(null);
+    const repositionFrameRef = useRef<CancelUiTimer | null>(null);
+    useLayoutEffect(() => {
+      if (!isOpen) {
+        lastOverflowScrollHeightRef.current = null;
+        repositionFrameRef.current?.();
+        repositionFrameRef.current = null;
+        return;
+      }
+      const popover = interactionRef.current;
+      if (!popover || maxHeight === undefined) return;
+      const style = window.getComputedStyle(popover);
+      const next =
+        (Number.parseFloat(style.borderTopWidth) || 0) +
+        (Number.parseFloat(style.borderBottomWidth) || 0) +
+        (Number.parseFloat(style.paddingTop) || 0) +
+        (Number.parseFloat(style.paddingBottom) || 0);
+      setChromeBlockSize((prev) => (prev === next ? prev : next));
+    }, [className, isOpen, maxHeight]);
+
+    useEffect(
+      () => () => {
+        repositionFrameRef.current?.();
+        repositionFrameRef.current = null;
+      },
+      []
+    );
+
+    const contentMaxHeight =
+      maxHeight !== undefined ? Math.max(0, maxHeight - chromeBlockSize) : undefined;
+    const handleScrollMetricsChange = useCallback(
+      (metrics: ScrollAreaMetrics) => {
+        const popover = interactionRef.current;
+        if (!isOpen || !popover) return;
+        const previousScrollHeight = lastOverflowScrollHeightRef.current;
+        const limit = contentMaxHeight ?? Number.POSITIVE_INFINITY;
+        const isViewportClamped =
+          metrics.scrollHeight > metrics.clientHeight + 1 &&
+          metrics.clientHeight < limit - 1;
+        if (
+          previousScrollHeight !== null &&
+          isViewportClamped &&
+          metrics.scrollHeight > previousScrollHeight
+        ) {
+          lastOverflowScrollHeightRef.current = metrics.scrollHeight;
+          // If the initial content already filled the smaller side's cap,
+          // growing inside ScrollArea does not change the popover's own height
+          // so React Aria's overlay ResizeObserver does not fire. Schedule a
+          // max-height release outside ScrollArea's read phase so React Aria
+          // re-measures and flips without triggering a ResizeObserver loop.
+          repositionFrameRef.current?.();
+          repositionFrameRef.current = uiClock.frame(() => {
+            repositionFrameRef.current = null;
+            if (interactionRef.current === popover && popover.isConnected) {
+              popover.style.maxHeight = "";
+            }
+          }, popover.ownerDocument.defaultView ?? undefined);
+        } else if (previousScrollHeight === null || !isViewportClamped) {
+          lastOverflowScrollHeightRef.current = metrics.scrollHeight;
+        }
+      },
+      [contentMaxHeight, isOpen]
+    );
+
     const popover = (
       <AriaPopover
         {...props}
@@ -881,7 +954,7 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
         offset={offset}
         placement={placement ?? popoverContext?.placement ?? "bottom start"}
         className={(state) =>
-          cx(menuAnimationClasses(resolvedAnimation, state), className)
+          cx("flex flex-col", menuAnimationClasses(resolvedAnimation, state), className)
         }
         data-animation={resolvedAnimation}
         data-slot="menu-popover"
@@ -889,8 +962,15 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
         {(values) => (
           <ScrollArea
             className={anchorMenuScrollClasses}
+            onMetricsChange={handleScrollMetricsChange}
             viewportClassName={anchorMenuViewportClasses}
-            viewportProps={{ tabIndex: -1 }}
+            viewportProps={{
+              style:
+                contentMaxHeight !== undefined
+                  ? { maxHeight: contentMaxHeight }
+                  : undefined,
+              tabIndex: -1,
+            }}
           >
             <RevivedPopoverContents isExiting={values.isExiting}>
               {typeof children === "function" ? children(values) : children}

@@ -73,6 +73,29 @@ defmodule SalixIM.IFCReadLabelsTest do
   defp space, do: "space|#{@connect}"
   defp legal, do: "scope|#{@connect}|C_LEGAL"
 
+  describe "easy source labels" do
+    test "keeps a public channel's identity for its membership check", %{tenant: tenant} do
+      group_id = group(tenant, "easy")
+      observe(tenant, group_id)
+
+      assert %{"label" => ["scope|" <> _ = atom]} =
+               ReadLabels.for_scope(connect(tenant, group_id), "C_PUB")
+
+      assert atom == "scope|#{@connect}|C_PUB"
+    end
+
+    test "document and directory access policies are off", %{tenant: tenant} do
+      group_id = group(tenant, "easy")
+      conn = connect(tenant, group_id)
+      assert ReadLabels.for_space(conn) == %{"label" => ["unclassified_non_im"]}
+
+      assert ReadLabels.for_document(conn, fn ->
+               flunk("easy must not fetch document permissions")
+             end) ==
+               %{"label" => ["unclassified_non_im"]}
+    end
+  end
+
   describe "a read bounded to one scope" do
     test "carries that scope's audience", %{tenant: tenant} do
       group_id = group(tenant, "enforce")

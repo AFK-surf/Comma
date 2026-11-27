@@ -13,7 +13,7 @@ final class TaskListFilterOptionsTests: XCTestCase {
     func testStatusOffersEveryBoardColumnAndLabelNeedsTheCatalog() {
         let filter = TaskListFilter()
         XCTAssertEqual(filter.options(.status, tasks: [], labelIDs: []),
-                       ["inProgress", "needsReview", "done", "cancelled"])
+                       ["inProgress", "needsReview", "done", "cancelled", "loops"])
         XCTAssertEqual(filter.options(.label, tasks: [task("a")], labelIDs: []), [], "No catalog labels, no Label field")
         XCTAssertEqual(filter.options(.label, tasks: [], labelIDs: ["docs", "bug"]), ["docs", "bug", TaskListFilter.noLabel])
     }

@@ -2,6 +2,9 @@ defmodule BridgeForTeams.Schema.DailyBriefRun do
   @moduledoc """
   One daily brief: the team's (`team_brief`) or a member's (`personal_brief`),
   with its window, token use, coverage, and the text it wrote in `notes`.
+  A Slack brief keeps where Slack took it in `slack_channel_id` and
+  `slack_ts`; a Feishu or Lark brief in `provider_chat_id` and
+  `provider_message_id`.
   """
 
   use Ecto.Schema
@@ -29,6 +32,8 @@ defmodule BridgeForTeams.Schema.DailyBriefRun do
     field :error, :string
     field :slack_channel_id, :string
     field :slack_ts, :string
+    field :provider_chat_id, :string
+    field :provider_message_id, :string
     timestamps()
   end
 

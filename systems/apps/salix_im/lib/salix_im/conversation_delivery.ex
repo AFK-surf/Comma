@@ -2,6 +2,7 @@ defmodule SalixIM.ConversationDelivery do
   @moduledoc false
 
   alias SalixIM.{
+    AgentDeliveryPayload,
     ConversationAttachments,
     ConversationMessage,
     ProviderPrincipalRef,
@@ -68,11 +69,14 @@ defmodule SalixIM.ConversationDelivery do
            ConversationAttachments.materialize_delivery(
              agent_id,
              Map.put(rec, "message_content", local_file_content)
-           ) do
+           ),
+         {:ok, multi_session_deliveries} <- multi_session_pre_deliveries(rec, source_id) do
       trusted_inline_task_ref_ids = trusted_inline_task_ref_ids(rec, message_content)
 
       payload =
-        %{
+        rec
+        |> AgentDeliveryPayload.session_birth_attrs()
+        |> Map.merge(%{
           content: agent_message_content(message_content, trusted_inline_task_ref_ids),
           trusted_attachment_refs:
             combined_agent_attachment_refs(
@@ -81,16 +85,13 @@ defmodule SalixIM.ConversationDelivery do
             ),
           session_id: session_id,
           role: "user",
-          created_at: rec["message_created_at"],
           source_sent_at_ms: rec["message_created_at"],
           source_timezone: source_timezone(rec),
-          name: rec["delivery_session_name"] || rec["conversation_title"] || "Conversation",
-          billing_context: rec["delivery_billing_context"],
-          # Read only when this delivery creates the Session.
-          model: participant_payload(rec)["session_model"],
           trusted_origin: agent_trusted_origin(rec, source_id),
-          pre_deliveries: [source_context_delivery(rec, source_id, trusted_inline_task_ref_ids)]
-        }
+          pre_deliveries:
+            [source_context_delivery(rec, source_id, trusted_inline_task_ref_ids)] ++
+              multi_session_deliveries
+        })
         |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" or value == %{} end)
         |> Map.new()
 
@@ -103,12 +104,19 @@ defmodule SalixIM.ConversationDelivery do
       # connected. Participant delivery already has bounded durable retry
       # leases, so a reconnect can resume without accepting a broader route.
       {:error, reason}
-      when reason in [:local_file_unavailable, :local_file_import_timeout] ->
+      when reason in [
+             :local_file_unavailable,
+             :local_file_import_timeout,
+             :local_file_device_disconnected
+           ] ->
         {:error, reason, true}
 
       {:error, {:conversation_attachment, path, reason}} ->
         {:error, ConversationAttachments.error_message(path, reason),
          attachment_retryable?(reason)}
+
+      {:error, {:multi_session_catchup_unavailable, reason}} ->
+        {:error, {:multi_session_catchup_unavailable, reason}, true}
 
       {:error, reason} ->
         {:error, reason, false}
@@ -138,8 +146,15 @@ defmodule SalixIM.ConversationDelivery do
   defp agent_delivery_opts(rec, source_id) do
     opts = [source_message_id: source_id]
 
-    if meeting_completed_context?(rec), do: Keyword.put(opts, :no_wake, true), else: opts
+    if meeting_completed_context?(rec) or collaboration_context?(rec),
+      do: Keyword.put(opts, :no_wake, true),
+      else: opts
   end
+
+  # A Collaborative Task's Message that does not name its Worker is context
+  # for it, not a turn (`SalixIM.ConversationActor`, `context_only`).
+  defp collaboration_context?(%{"message_metadata" => %{"context_only" => true}}), do: true
+  defp collaboration_context?(_rec), do: false
 
   defp meeting_completed_context?(%{
          "source_actor_type" => "provider_system",
@@ -928,7 +943,7 @@ defmodule SalixIM.ConversationDelivery do
              id: "conversation-link:" <> to_string(rec["operation_ref"] || link),
              fallback: fallback,
              title: title,
-             subtitle: "Bridge for Teams",
+             subtitle: "Comma for Teams",
              body: "This Slack thread is connected to the Task.",
              actions: [%{id: "open_task", text: "Open Task", url: link}]
            }
@@ -1237,7 +1252,7 @@ defmodule SalixIM.ConversationDelivery do
     [
       Map.take(
         block,
-        ~w(type version ui_ref origin_task_id path file_name mime_type summary text blob_ref)
+        ~w(type version ui_ref origin_task_id path file_name mime_type title summary text blob_ref)
       )
     ]
   end
@@ -1345,6 +1360,98 @@ defmodule SalixIM.ConversationDelivery do
     }
   end
 
+  defp multi_session_pre_deliveries(
+         %{
+           "conversation_kind" => "agent_task",
+           "participant_role_label" => "worker",
+           "agent_group_id" => group_id,
+           "conversation_id" => conversation_id,
+           "participant_id" => participant_id,
+           "message_seq" => current_seq
+         } = rec,
+         source_id
+       )
+       when is_binary(group_id) and is_binary(conversation_id) and is_integer(current_seq) do
+    multi_session? =
+      rec["conversation_multi_session"] == true or
+        (is_binary(rec["participant_target_key"]) and rec["participant_target_key"] != "")
+
+    if not multi_session? do
+      {:ok, []}
+    else
+      case SalixIM.ConversationServer.get_group_conversation_task_worker_identities(
+             group_id,
+             conversation_id
+           ) do
+        {:ok, %{"workers" => workers}} when length(workers) >= 2 ->
+          source_start_seq =
+            if is_integer(rec["source_start_seq"]), do: rec["source_start_seq"], else: 0
+
+          scan_limit = SalixIM.TaskSessionSlots.catchup_scan_limit()
+          after_seq = max(max(current_seq - 1 - scan_limit, 0), source_start_seq)
+
+          prior_result =
+            if current_seq > source_start_seq + 1 do
+              case SalixIM.Conversations.list_group_conversation_messages(
+                     group_id,
+                     conversation_id,
+                     after_seq: after_seq,
+                     limit: scan_limit
+                   ) do
+                {:ok, msgs} -> {:ok, Enum.filter(msgs, &((&1["seq"] || 0) < current_seq))}
+                {:error, reason} -> {:error, {:multi_session_catchup_unavailable, reason}}
+              end
+            else
+              {:ok, []}
+            end
+
+          with {:ok, prior_messages} <- prior_result do
+            participant = %{
+              "participant_id" => participant_id,
+              "actor_type" => "agent",
+              "agent_id" => rec["participant_agent_id"],
+              "role_label" => "worker",
+              "target_key" => rec["participant_target_key"],
+              "state" => "active",
+              "notification_filter" =>
+                rec["participant_notification_filter"] ||
+                  %{"messages" => "mentioned", "statuses" => "none"},
+              "payload" => participant_payload(rec)
+            }
+
+            case SalixIM.TaskSessionSlots.build_catchup_summary(
+                   participant,
+                   workers,
+                   prior_messages,
+                   source_start_seq
+                 ) do
+              content when is_binary(content) and content != "" ->
+                {:ok,
+                 [
+                   %{
+                     source_message_id: source_id <> ":multi-session-context",
+                     role: "summary",
+                     content: content,
+                     created_at: rec["message_created_at"]
+                   }
+                 ]}
+
+              _ ->
+                {:ok, []}
+            end
+          end
+
+        {:ok, _single_worker} ->
+          {:ok, []}
+
+        {:error, reason} ->
+          {:error, {:multi_session_catchup_unavailable, reason}}
+      end
+    end
+  end
+
+  defp multi_session_pre_deliveries(_rec, _source_id), do: {:ok, []}
+
   # Scheduled Task provenance continuity is modeled in
   # tla/salix/ScheduledTaskFailure.tla. Initial dry-run rolling compatibility
   # is modeled separately in tla/salix/ScheduledTaskDryRunUpgrade.tla.
@@ -1355,6 +1462,8 @@ defmodule SalixIM.ConversationDelivery do
       "conversation_id" => rec["conversation_id"],
       "conversation_kind" => rec["conversation_kind"],
       "message_id" => rec["message_id"],
+      "thread_root_message_id" =>
+        if(rec["conversation_kind"] == "user_chat", do: rec["thread_root_message_id"]),
       "participant_id" => rec["participant_id"],
       "source_actor_type" => rec["source_actor_type"],
       # When the source Message entered its Conversation, sealed by the owner.
@@ -1452,20 +1561,24 @@ defmodule SalixIM.ConversationDelivery do
          "- provider: internal",
          "- source_message_id: #{source_id}",
          "- conversation_id: #{rec["conversation_id"]}",
-         source_context_line("conversation_kind", rec["conversation_kind"]),
-         source_context_line(
-           "message_created_at",
-           source_message_time(rec["message_created_at"])
-         ),
-         "- message_id: #{rec["message_id"]}",
-         "- agent_group_id: #{rec["agent_group_id"]}",
-         source_context_line("participant_id", rec["participant_id"]),
-         source_context_line("participant_role_label", rec["participant_role_label"]),
-         task_parent_context_line(rec)
+         source_context_line("conversation_kind", rec["conversation_kind"])
        ] ++
+         task_identity_context_lines(rec) ++
+         [
+           source_context_line(
+             "message_created_at",
+             source_message_time(rec["message_created_at"])
+           ),
+           "- message_id: #{rec["message_id"]}",
+           "- agent_group_id: #{rec["agent_group_id"]}",
+           source_context_line("participant_id", rec["participant_id"]),
+           source_context_line("participant_role_label", rec["participant_role_label"]),
+           task_parent_context_line(rec)
+         ] ++
          quick_chat_context_lines(rec) ++
          source_actor_context_lines_for_target(rec) ++
-         client_device_context_lines(rec) ++ provider_context_lines_for_target(rec))
+         client_device_context_lines(rec) ++
+         client_location_context_lines(rec) ++ provider_context_lines_for_target(rec))
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n")
 
@@ -1683,6 +1796,22 @@ defmodule SalixIM.ConversationDelivery do
   defp source_context_line(_key, ""), do: nil
   defp source_context_line(key, value), do: "- #{key}: #{value}"
 
+  defp task_identity_context_lines(%{"conversation_kind" => "agent_task"} = rec) do
+    title =
+      case rec["conversation_title"] do
+        value when is_binary(value) -> String.trim(value)
+        _ -> ""
+      end
+
+    [
+      if(title != "", do: "- conversation_title: " <> Jason.encode!(title)),
+      source_context_line("task_kind", rec["conversation_task_kind"])
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp task_identity_context_lines(_rec), do: []
+
   # A Task's delegator delivers the Worker's result, or its question, to the
   # Conversation the Task was made from. That Conversation is a stored Task
   # fact (`source_refs.parent_conversation_id`), named here beside the other
@@ -1739,6 +1868,23 @@ defmodule SalixIM.ConversationDelivery do
   end
 
   defp client_device_context_lines(_rec), do: []
+
+  # The sending phone's position, present only while its person shares it.
+  # Comma.Conversations validated it when the Message was accepted.
+  defp client_location_context_lines(%{"source_actor_type" => "user"} = rec) do
+    case get_in(rec, ["message_metadata", "client_location"]) do
+      %{"latitude" => _, "longitude" => _, "read_at" => _} = location ->
+        [
+          "- client_location: " <>
+            Jason.encode!(Map.take(location, ["latitude", "longitude", "accuracy_m", "read_at"]))
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  defp client_location_context_lines(_rec), do: []
 
   # A human sender's device timezone. Other senders, such as the Router and
   # the Task Worker, act for a human request: they use the timezone of the

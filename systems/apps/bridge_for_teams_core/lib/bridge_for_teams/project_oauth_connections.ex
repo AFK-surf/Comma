@@ -104,7 +104,7 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
 
   Provider `"secret"` keeps an API key or token for the whole group, under a
   required alias: the URL opens Salix's form, where the person types the value.
-  Its optional `"fields"` (`[%{"name", "label", "secret"}]`) asks for several
+  Its optional `"fields"` (`[%{"name", "label", "secret", "optional"}]`) asks for several
   named values instead (`SalixStore.OAuth.Adapters.Secret.fields/1`).
 
   Returns `{:ok, %{"authorization_url" => url, "state" => state}}` — the caller

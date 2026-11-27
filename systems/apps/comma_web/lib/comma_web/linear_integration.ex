@@ -60,7 +60,7 @@ defmodule CommaWeb.LinearIntegration do
   # when the attempt is gone; the random part is the OAuth state.
   defp start_attempt(user, session, workspace_id, kind, environment, carried) do
     state = environment <> "." <> new_token()
-    verifier = new_token()
+    verifier = pkce_verifier()
 
     attrs =
       Map.merge(carried, %{
@@ -157,8 +157,12 @@ defmodule CommaWeb.LinearIntegration do
           end
       end
     else
-      {:error, message} when is_binary(message) -> {:error, :linear_provider_unavailable}
-      {:error, _reason} = error -> error
+      {:error, message} when is_binary(message) ->
+        Logger.warning("Linear connect failed", step: "link", reason: message)
+        {:error, :linear_provider_unavailable}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -186,8 +190,12 @@ defmodule CommaWeb.LinearIntegration do
            }) do
       {:ok, result("installed", attempt, workspace, member)}
     else
-      {:error, message} when is_binary(message) -> {:error, :linear_provider_unavailable}
-      {:error, _reason} = error -> error
+      {:error, message} when is_binary(message) ->
+        Logger.warning("Linear connect failed", step: "install", reason: message)
+        {:error, :linear_provider_unavailable}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -517,4 +525,8 @@ defmodule CommaWeb.LinearIntegration do
     do: :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
 
   defp new_token, do: SystemsRuntime.Proc.random_bytes(24) |> Base.url_encode64(padding: false)
+
+  # RFC 7636 requires 43 to 128 characters; Linear rejects a shorter verifier.
+  defp pkce_verifier,
+    do: SystemsRuntime.Proc.random_bytes(32) |> Base.url_encode64(padding: false)
 end

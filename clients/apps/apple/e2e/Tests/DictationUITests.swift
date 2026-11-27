@@ -38,7 +38,7 @@ import XCTest
     }
 
     /// A recording started right after one cancelled while the recorder starts gets the microphone: the cancelled
-    /// one's stop comes first.
+    /// one's stop comes first. The ✓ in Send's corner ends it.
     func testARecordingStartedRightAfterACancelGetsTheMicrophone() throws {
         let (app, mic) = openComposerWithTheMicrophoneHeld()
         mic.tap()
@@ -48,7 +48,7 @@ import XCTest
         PerfSignal.releaseMicrophone.post()
         let stop = app.buttons["Stop dictation"]
         XCTAssertTrue(stop.waitUntilHittable())
-        stop.tap()
+        stop.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -22, dy: -22)).tap()
         expectWords(in: app)
     }
 

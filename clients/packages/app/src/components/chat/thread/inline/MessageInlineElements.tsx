@@ -9,7 +9,8 @@ import type {
   ChatInlineTask,
   ChatMessagePart,
 } from "@comma/chat-contract";
-import { useCommaMessages } from "@comma/i18n/react";
+import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { taskLoopStanding, taskLoopStop } from "../../../tasks/taskLoopLabels";
 import { useTopic, type ProductInboxItem } from "@comma/core-client";
 import { InlineTask, type InlineTaskProps } from "@comma/ui/components/inline-task";
 import { plainTextWithLinks } from "@comma/ui/components/markdown-stream/plainTextLinks";
@@ -384,6 +385,7 @@ export function MessageInlineTask({
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
+  const locale = useCommaLocale();
   const taskLinkAdapter = useContext(InlineTaskLinkAdapterContext);
   // Each opening of the card asks the core again (it reads again only once what it keeps is old); what it answered
   // last stays shown meanwhile.
@@ -391,11 +393,12 @@ export function MessageInlineTask({
   const [preview, setPreview] = useState<CommaConversationPreview>();
   const [revokedConversationId, setRevokedConversationId] = useState<string>();
   const conversationId = task.conversationId;
+  const taskGroupId = task.groupId ?? groupId;
   const { value: answer } = useTopic(
     asked && asked.conversationId === conversationId && live
       ? {
           topic: "taskPreview",
-          group: groupId,
+          group: taskGroupId,
           conversation: asked.conversationId,
           read: String(asked.read),
         }
@@ -406,10 +409,10 @@ export function MessageInlineTask({
     if (answer?.status === "ready") setPreview(answer.preview);
     if (answer?.status === "revoked") setRevokedConversationId(conversationId);
   }, [answer, asked, conversationId]);
-  const canonical = useTaskSummary(groupId, conversationId ?? "");
-  const archiveAction = useArchiveAction(groupId, conversationId ?? "");
+  const canonical = useTaskSummary(taskGroupId, conversationId ?? "");
+  const archiveAction = useArchiveAction(taskGroupId, conversationId ?? "");
   // Only this Task's item: another Task's update leaves this chip as it is.
-  const projectedTask = useProductInboxItem(groupId, conversationId ?? "");
+  const projectedTask = useProductInboxItem(taskGroupId, conversationId ?? "");
   const revoked = revokedConversationId === conversationId;
   const unavailable = task.unavailable || revoked || !conversationId;
   const currentPreview =
@@ -451,11 +454,23 @@ export function MessageInlineTask({
     currentPreview && currentPreview.updated_at > (canonical?.updated_at ?? 0)
       ? currentPreview
       : canonical;
-  const summary = {
+  // The preview read carries no Loop; the summary and the list do.
+  const loop = canonical?.loop ?? projectedTask?.loop;
+  const base = {
     ...taskSummary(task, currentPreview, projectedTask),
     ...(latest
-      ? { statusBucket: taskStatusBucket(latest.status), title: latest.title }
+      ? {
+          statusBucket: taskStatusBucket(latest.status, { loopState: loop?.state }),
+          title: latest.title,
+        }
       : {}),
+  };
+  const loopStop = taskLoopStop(base.statusBucket, loop, messages);
+  const loopStanding = taskLoopStanding(base.statusBucket, loop, messages, locale);
+  const summary = {
+    ...base,
+    ...(loopStop ? { loopStop } : {}),
+    ...(loopStanding ? { loopStanding } : {}),
   };
   const title = summary.title || messages.chat_ref_task();
   if (canonical?.status === "archived" || summary.statusBucket === "archived") {
@@ -471,8 +486,7 @@ export function MessageInlineTask({
     (id) => catalog?.labels.find((label) => label.id === id) ?? []
   );
   const badgeOrigin = taskOriginKey(latest?.origin);
-  // The preview read carries no Loop; the summary and the list do.
-  const badgeLoop = canonical?.loop ?? projectedTask?.loop;
+  const badgeLoop = loop;
   const badges =
     badgeLabels.length > 0 || badgeOrigin || badgeLoop ? (
       <TaskBadgeChips labels={badgeLabels} loop={badgeLoop} origin={badgeOrigin} />
@@ -485,7 +499,7 @@ export function MessageInlineTask({
   const target = inlineTaskLinkTarget(taskLinkAdapter, {
     ariaLabel: messages.tasks_open({ title }),
     conversationId,
-    groupId,
+    groupId: taskGroupId,
     title,
     workspaceId,
   });
@@ -522,7 +536,7 @@ export function taskSummary(
       preview?.id ??
       task.conversationId ??
       "unavailable",
-    statusBucket: taskStatusBucket(status),
+    statusBucket: taskStatusBucket(status, { loopState: projectedTask?.loop?.state }),
     title: projectedTask?.title ?? preview?.title ?? task.title ?? "",
     updatedAt: projectedTask?.updatedAt ?? preview?.updated_at ?? task.updatedAt ?? 0,
   };

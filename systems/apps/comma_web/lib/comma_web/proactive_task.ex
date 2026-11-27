@@ -28,8 +28,11 @@ defmodule CommaWeb.ProactiveTask do
   The Salix status observer. Queues one check of the Task. Returning an error
   keeps Salix's publication recovery, so the observation is retried.
   """
-  def task_status_changed(%{"agent_group_id" => group, "conversation_id" => task} = snapshot)
-      when is_binary(group) and is_binary(task) do
+  def task_status_changed(
+        %{"agent_group_id" => group, "conversation_id" => task, "owner_user_id" => owner} =
+          snapshot
+      )
+      when is_binary(group) and is_binary(task) and is_binary(owner) and owner != "" do
     # Only a Task that needs its owner queues work here. A Task that moves on
     # closes its matter at the next collection (`reconcile/3`), so other
     # status changes, of every product's Tasks, touch no Comma state.
@@ -155,6 +158,7 @@ defmodule CommaWeb.ProactiveTask do
       "action" => "present",
       "automatic" => true,
       "urgency" => "high",
+      "pool" => "agent",
       "key" => key,
       # A repeated status later in the Task is a new escalation: its status
       # version, not only its observation, names the handoff.

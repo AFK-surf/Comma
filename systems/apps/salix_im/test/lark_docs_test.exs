@@ -124,7 +124,7 @@ defmodule SalixIM.LarkDocsTest do
     @behaviour SalixIM.Ports.LarkUserAccounts
 
     @impl true
-    def list(_group_id) do
+    def list(_group_id, _acting) do
       {:ok,
        [
          %{"alias" => "lark-ray", "open_id" => "ou_ray", "name" => "Ray", "status" => "active"},
@@ -133,7 +133,39 @@ defmodule SalixIM.LarkDocsTest do
     end
 
     @impl true
-    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+    def access_token(_agent_id, alias_name, _acting), do: {:ok, "u-" <> alias_name}
+  end
+
+  defmodule OwnerAccounts do
+    @moduledoc "A member's own sign-in, there only for a read the port is told acts for them."
+    @behaviour SalixIM.Ports.LarkUserAccounts
+
+    @impl true
+    def list(_group_id, acting) do
+      {:ok,
+       if(owner?(acting),
+         do: [
+           %{
+             "alias" => "lark-member",
+             "open_id" => "ou_owner",
+             "name" => "Owner",
+             "status" => "active"
+           }
+         ],
+         else: []
+       )}
+    end
+
+    @impl true
+    def access_token(_agent_id, "lark-member", acting),
+      do: if(owner?(acting), do: {:ok, "u-owner"}, else: {:error, :not_found})
+
+    def access_token(_agent_id, _alias, _acting), do: {:error, :not_found}
+
+    defp owner?(acting),
+      do:
+        get_in(acting, ["trusted_origin", "principal_ref", "subject_id"]) == "owner" and
+          acting["connect_id"] == "cnx_lark_docs"
   end
 
   defmodule ManyAccounts do
@@ -141,7 +173,7 @@ defmodule SalixIM.LarkDocsTest do
     @behaviour SalixIM.Ports.LarkUserAccounts
 
     @impl true
-    def list(_group_id) do
+    def list(_group_id, _acting) do
       {:ok,
        [%{"alias" => "app", "open_id" => "ou_appy", "name" => "Appy", "status" => "active"}] ++
          for(
@@ -156,7 +188,7 @@ defmodule SalixIM.LarkDocsTest do
     end
 
     @impl true
-    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+    def access_token(_agent_id, alias_name, _acting), do: {:ok, "u-" <> alias_name}
   end
 
   setup do
@@ -1573,6 +1605,42 @@ defmodule SalixIM.LarkDocsTest do
         "connect_id" => @connect_id,
         "params" => params
       })
+    end
+
+    test "a read for the member reaches their own sign-in by itself, and no other read sees it",
+         ctx do
+      SystemsRuntime.put_env(:salix_im, :lark_user_accounts_mod, OwnerAccounts)
+
+      FakeLark.route(
+        "GET",
+        "/open-apis/drive/v1/files",
+        ok(%{"files" => [%{"name" => "Plans", "token" => "fld1"}], "has_more" => false})
+      )
+
+      call_for = fn api, principal_ref ->
+        SalixIM.Provider.call_api(ctx.worker_id, "lark", api, %{
+          "connect_id" => @connect_id,
+          "params" => %{},
+          "tool_context" => %{
+            "trusted_origin" => principal_ref && %{"principal_ref" => principal_ref}
+          }
+        })
+      end
+
+      owner = %{"subject_id" => "owner"}
+
+      assert {:ok, %{"accounts" => [%{"account" => "lark-member"}]}} =
+               call_for.("lark.list_accounts", owner)
+
+      assert {:ok, %{"files" => files}} = call_for.("lark.list_drive_files", owner)
+      assert Enum.map(files, & &1["account"]) == ["app", "lark-member"]
+
+      assert requests("GET", "/open-apis/drive/v1/files") |> Enum.map(& &1.authorization) ==
+               ["Bearer t-docs", "Bearer u-owner"]
+
+      for other <- [%{"subject_id" => "someone-else"}, nil] do
+        assert {:ok, %{"accounts" => []}} = call_for.("lark.list_accounts", other)
+      end
     end
 
     test "a search runs as the app and every signed-in account and names who found each meeting",

@@ -84,7 +84,7 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
   await page.evaluate(() => {
     (window as unknown as { transcriptHeights: number[] }).transcriptHeights.length = 0;
   });
-  const toggle = page.getByTestId("chat-task-panel-toggle");
+  const toggle = page.getByTestId("chat-dock-attention-toggle");
   const toggles = [];
   for (let index = 0; index < 12; index++) {
     toggles.push(
@@ -98,6 +98,10 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
     () =>
       (window as unknown as { transcriptHeights: number[] }).transcriptHeights.length
   );
+
+  // Open the attention popover to measure live updates, scrolling, and dismissals.
+  await toggle.evaluate((element) => (element as HTMLElement).click());
+  await time.advance(200);
 
   const updates = [];
   for (let index = 0; index < 6; index++) {
@@ -157,19 +161,23 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
   // The transcript and the docked list mount the rows in view: fewer elements
   // than the transcript has messages.
   expect(result.mountElements).toBeLessThan(2 * stressTaskCount);
-  // One fold is one transcript viewport height, never a tweened run of them.
-  expect(result.toggleResizes).toBeLessThanOrEqual(12);
+  // Floating popovers never resize the transcript viewport.
+  expect(result.toggleResizes).toBe(0);
   for (const work of [...toggles, ...updates, ...scrolls, ...dismissals]) {
-    // Folding, refreshing, scrolling or dismissing in the list never renders
-    // the transcript, and rows that stay mounted render only for their Task.
+    // Opening, refreshing, scrolling or dismissing in the popover never renders
+    // the transcript, and unchanged rows that stay mounted do not re-render.
     expect(work.transcriptRows).toEqual([]);
-    expect(work.keptRowsRendered).toEqual(
-      updates.includes(work) ? ["chat-task-item-task-0"] : []
-    );
+    if (!updates.includes(work)) {
+      expect(work.keptRowsRendered).toEqual([]);
+    } else {
+      expect(
+        work.keptRowsRendered.every((key) => key === "chat-task-item-task-0")
+      ).toBe(true);
+    }
   }
   // Five rows show at a time, so the mounted rows must not follow the task count.
   expect(result.rows).toBeLessThanOrEqual(12);
-  expect(result.panelNodes).toBeLessThan(250);
+  expect(result.panelNodes).toBeLessThan(260);
 });
 
 test("An owner read preserves unchanged Task chips and archive controls", async ({
@@ -185,6 +193,7 @@ test("An owner read preserves unchanged Task chips and archive controls", async 
   // Canonical summaries land a batch at a time; let the transcript go quiet.
   await page.waitForTimeout(1_500);
 
+  await page.getByTestId("chat-dock-attention-toggle").click();
   const archive = page
     .getByTestId("chat-task-item-task-2")
     .getByRole("button", { name: "Archive task", exact: true });

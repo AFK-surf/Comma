@@ -12,6 +12,18 @@ defmodule CommaWeb.ProactiveDelivery do
                true <- link.connect_id == connect_id and workspace["default_group_id"] == group,
                do: {:ok, user["id"]}
 
+        "imessage" ->
+          with {:ok, %{link: link, user: user, workspace: workspace}} <-
+                 Comma.IMessageLinks.resolve_sender(subject),
+               true <- link.connect_id == connect_id and workspace["default_group_id"] == group,
+               do: {:ok, user["id"]}
+
+        "line" ->
+          with {:ok, %{link: link, user: user, workspace: workspace}} <-
+                 Comma.LineLinks.resolve_sender(subject),
+               true <- link.connect_id == connect_id and workspace["default_group_id"] == group,
+               do: {:ok, user["id"]}
+
         "wechat" ->
           owner = connect["owner_user_id"]
 

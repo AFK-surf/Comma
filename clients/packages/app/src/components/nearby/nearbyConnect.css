@@ -189,6 +189,11 @@
   font-size: var(--text-sm, 14px);
 }
 
+/* An invite that could not be read says so where the email would be. */
+.comma-nearby__detail[data-error] {
+  color: var(--color-text-error-primary);
+}
+
 .comma-nearby__title,
 .comma-nearby__detail,
 .comma-nearby__action {

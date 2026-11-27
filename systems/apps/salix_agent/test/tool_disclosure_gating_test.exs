@@ -59,6 +59,36 @@ defmodule SalixAgent.ToolDisclosureGatingTest do
              Jason.decode!(result.content)
   end
 
+  test "IFC help guidance is conditional even when the model uses the outer envelope" do
+    entry = %{
+      "name" => "im_api.internal.label.list",
+      "summary" => "List labels",
+      "manual" => "Return labels available to this agent.",
+      "input_schema" => %{"type" => "object"}
+    }
+
+    ctx =
+      SalixAgent.TestSupport.with_plugin_projection(%{
+        runtime_kind: :internal,
+        llm_tool_envelope: true
+      })
+
+    disclosure = ToolDisclosure.materialize_prepared("router", :internal, ctx, [entry], [])
+    ctx = Map.put(ctx, :tool_disclosure, disclosure)
+
+    help = fn mode ->
+      SalixAgent.Tools.help(%{"tool" => entry["name"]}, Map.put(ctx, :ifc_mode, mode))
+      |> Jason.decode!()
+    end
+
+    off = help.(:off)
+    enabled = help.(:enforce)
+    assert off["manual"] == entry["manual"]
+    assert String.ends_with?(enabled["manual"], entry["manual"])
+    refute enabled["manual"] == off["manual"]
+    assert enabled["input_schema"] == off["input_schema"]
+  end
+
   test "management and label tools are discovered on demand without changing the prefix" do
     label = %{
       "name" => "im_api.internal.label.list",
@@ -89,5 +119,148 @@ defmodule SalixAgent.ToolDisclosureGatingTest do
 
     assert %{"tools" => []} =
              SalixAgent.Tools.help(%{"tool" => "calendar"}, denied) |> Jason.decode!()
+  end
+
+  test "a Router installs a Comma plugin without a help round; plugin management stays on demand" do
+    ctx = SalixAgent.TestSupport.with_plugin_projection(%{runtime_kind: :internal})
+    disclosure = ToolDisclosure.materialize_static("router", :internal, ctx)
+    visibility = Map.new(disclosure["tools"], &{&1["name"], &1["prompt_visibility"]})
+
+    assert visibility["plugin.request_install"] == "manual"
+
+    management =
+      ~w(plugin.definitions_list plugin.definition_create plugin.definition_update plugin.definition_get plugin.refs_put plugin.enable plugin.disable plugin.projection_get)
+
+    for name <- management, do: assert(visibility[name] == "hidden", name)
+
+    help =
+      SalixAgent.Tools.help(%{"tool" => "plugin"}, Map.put(ctx, :tool_disclosure, disclosure))
+      |> Jason.decode!()
+
+    listed = Enum.map(help["tools"], & &1["name"])
+    for name <- management, do: assert(name in listed, name)
+
+    worker = ToolDisclosure.materialize_static("worker", :internal, ctx)
+    refute Enum.any?(worker["tools"], &(&1["name"] == "plugin.request_install"))
+  end
+
+  test "triage_investigation workers pre-disclose triage tools and share a byte-identical system prompt across tasks" do
+    triage_manual = ~w(
+      im_api.internal.triage.read_source
+      im_api.internal.triage.read_context
+      im_api.internal.triage.read_memory
+      im_api.internal.triage.complete
+    )
+
+    triage_summary = ~w(
+      im_api.slack.get_channel_history
+      im_api.slack.get_thread_replies
+      im_api.slack.get_user_info
+      im_api.slack.search
+      im_api.slack.message_search
+      im_api.internal.station_task.list
+    )
+
+    im_entries =
+      Enum.map(triage_manual ++ triage_summary ++ ["im_api.slack.post_message"], fn name ->
+        %{
+          "name" => name,
+          "summary" => "Summary for #{name}.",
+          "manual" => "Manual for #{name}.",
+          "input_schema" => %{"type" => "object"}
+        }
+      end)
+
+    base_ctx =
+      SalixAgent.TestSupport.with_plugin_projection(%{
+        runtime_kind: :internal,
+        llm_tool_envelope: true
+      })
+
+    triage_ctx_1 =
+      Map.put(base_ctx, :trusted_origins, [
+        %{"triage_investigation" => %{"conversation_id" => "conv_triage_1"}}
+      ])
+
+    triage_ctx_2 =
+      Map.put(base_ctx, :trusted_origins, [
+        %{"triage_investigation" => %{"conversation_id" => "conv_triage_2"}}
+      ])
+
+    disclosure_1 =
+      ToolDisclosure.materialize_prepared("worker", :internal, triage_ctx_1, im_entries, [])
+
+    disclosure_2 =
+      ToolDisclosure.materialize_prepared("worker", :internal, triage_ctx_2, im_entries, [])
+
+    assert disclosure_1["triage_investigation"] == true
+    assert disclosure_2["triage_investigation"] == true
+
+    visibility_by_name = Map.new(disclosure_1["tools"], &{&1["name"], &1["prompt_visibility"]})
+
+    for name <- triage_manual do
+      assert visibility_by_name[name] == "manual", name
+    end
+
+    for name <- triage_summary do
+      assert visibility_by_name[name] == "summary", name
+    end
+
+    for name <-
+          ~w(composio.list_connections composio.list_tools composio.get_tool composio.execute) do
+      assert visibility_by_name[name] == "summary", name
+    end
+
+    assert visibility_by_name["im_api.slack.post_message"] == "hidden"
+
+    # Non-triage worker tools stay callable and helpable, but stay hidden from
+    # the initial uncached prompt listing.
+    env_exec = Enum.find(disclosure_1["tools"], &(&1["name"] == "env.exec"))
+    assert env_exec["prompt_visibility"] == "hidden"
+    assert env_exec["callable"] == true
+    assert env_exec["helpable"] == true
+
+    prompt_1 =
+      SalixAgent.ToolPolicy.session_prompt("worker", %{}, nil, :internal, disclosure_1, %{})
+
+    prompt_2 =
+      SalixAgent.ToolPolicy.session_prompt("worker", %{}, nil, :internal, disclosure_2, %{})
+
+    assert prompt_1 =~ "## Triage investigation protocol"
+    assert prompt_1 == prompt_2
+
+    # Ordinary worker without triage_investigation grant
+    ordinary_worker =
+      ToolDisclosure.materialize_prepared("worker", :internal, base_ctx, im_entries, [])
+
+    refute Map.has_key?(ordinary_worker, "triage_investigation")
+
+    ordinary_vis = Map.new(ordinary_worker["tools"], &{&1["name"], &1["prompt_visibility"]})
+
+    for name <- triage_manual ++ triage_summary ++ ["im_api.slack.post_message"] do
+      assert ordinary_vis[name] == "hidden", name
+    end
+
+    ordinary_prompt =
+      SalixAgent.ToolPolicy.session_prompt("worker", %{}, nil, :internal, ordinary_worker, %{})
+
+    refute ordinary_prompt =~ "## Triage investigation protocol"
+
+    # Router even with triage_origins in ctx never gets worker triage pre-disclosure
+    router_disclosure =
+      ToolDisclosure.materialize_prepared("router", :internal, triage_ctx_1, im_entries, [])
+
+    refute Map.has_key?(router_disclosure, "triage_investigation")
+
+    router_vis = Map.new(router_disclosure["tools"], &{&1["name"], &1["prompt_visibility"]})
+
+    for name <- triage_manual ++ triage_summary ++ ["im_api.slack.post_message"] do
+      assert router_vis[name] == "hidden", name
+    end
+
+    router_prompt =
+      SalixAgent.ToolPolicy.session_prompt("router", %{}, nil, :internal, router_disclosure, %{})
+
+    refute router_prompt =~ "## Triage investigation protocol"
   end
 end

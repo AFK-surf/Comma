@@ -67,7 +67,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
            definition &&
              definition
              |> row(listed.enablement_by_id, role, android)
-             |> Map.put("setup", setup(org, project, definition)),
+             |> Map.put("setup", setup(org, user, project, definition)),
          "android" => android
        }}
     end
@@ -170,7 +170,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
            end),
          {:ok, listed} <- list(org, user, project),
          {:ok, connection, mcps} <- find_connection(listed.definitions, plugin_id, connection_id) do
-      action = connect_action(connection, mcps)
+      action =
+        case params["action"] do
+          explicit when explicit in ["connect", "reconnect"] -> explicit
+          _ -> connect_action(connection, mcps)
+        end
 
       return_to =
         "#{base_url}/orgs/#{org.slug}/projects/#{project.id}/plugins/#{segment(plugin_id)}"
@@ -181,7 +185,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
         plugin_id,
         connection_id,
         return_to,
-        [force_reauthorize: action == "reconnect"] ++ credential_opts(params) ++ audit_opts(user)
+        [force_reauthorize: action == "reconnect"] ++
+          credential_opts(params) ++
+          colab_opts(params) ++
+          audit_opts(user)
       )
       |> connect_result()
     end
@@ -190,8 +197,19 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
   defp credential_opts(%{"config_values" => values}), do: [config_values: values]
   defp credential_opts(_params), do: []
 
+  defp colab_opts(params) when is_map(params) do
+    []
+    |> maybe_put_opt(:attempt_id, nonblank(params["attempt_id"]))
+    |> maybe_put_opt(:binding_id, nonblank(params["binding_id"]))
+  end
+
+  defp colab_opts(_params), do: []
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
   @doc "Disconnect a plugin credential from the plugin and its dependent MCP servers."
-  def disconnect(org, user, project, role, plugin_id, connection_id) do
+  def disconnect(org, user, project, role, plugin_id, connection_id, params \\ %{}) do
     with :ok <-
            authorize(role, fn ->
              denied(org, user, project, "connection.disconnect", "connection", %{
@@ -203,13 +221,16 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
              project.id,
              plugin_id,
              connection_id,
-             audit_opts(user)
+             maybe_put_opt(audit_opts(user), :binding_id, nonblank(params["binding_id"]))
            ) do
         {:ok, _value} -> {:ok, %{"notice" => gettext("Connection disconnected.")}}
         {:error, reason} -> setup_error(reason)
       end
     end
   end
+
+  defp connect_result({:ok, %{"configuration" => %{} = configuration}}),
+    do: {:ok, %{"configuration" => configuration}}
 
   defp connect_result({:ok, %{"authorization_url" => url}}) when is_binary(url) and url != "",
     do: {:ok, %{"redirect_url" => url}}
@@ -286,10 +307,21 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
 
   # ---- Setup: MCP servers and connections ----
 
-  defp setup(org, project, %{"setup_status" => %{"type" => "integration"} = status}) do
+  defp setup(org, user, project, %{"setup_status" => %{"type" => "integration"} = status}) do
     connections = Enum.filter(List.wrap(status["connections"]), &is_map/1)
     mcps = Enum.filter(List.wrap(status["mcps"]), &is_map/1)
-    public = &connection(org, project, &1, mcps)
+
+    colab_accounts =
+      if Enum.any?(connections, &(&1["kind"] == "oauth_code_paste")) do
+        case Plugins.list_colab_accounts(org.id, project.id, actor_user_id: user.id) do
+          {:ok, accounts} when is_list(accounts) -> accounts
+          _ -> []
+        end
+      else
+        []
+      end
+
+    public = &connection(org, project, &1, mcps, colab_accounts)
 
     servers =
       for mcp <- mcps,
@@ -318,9 +350,9 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
     }
   end
 
-  defp setup(_org, _project, _definition), do: nil
+  defp setup(_org, _user, _project, _definition), do: nil
 
-  defp connection(org, project, connection, mcps) do
+  defp connection(org, project, connection, mcps, colab_accounts) do
     kind = connection["kind"]
     dependent = Enum.filter(mcps, &(connection["id"] in auth_refs(&1)))
     messaging = kind == "im_connect"
@@ -342,9 +374,32 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
       "action" => if(messaging, do: nil, else: connect_action(connection, dependent)),
       # A Composio account is disconnected from the Composio connection list.
       "disconnectable" =>
-        kind not in ~w(im_connect composio) and connection["state"] == "connected",
+        kind not in ~w(im_connect composio) and
+          (connection["state"] == "connected" or
+             (kind == "oauth_code_paste" and connection["state"] == "reauthorization_required")),
       "integrations_href" =>
         if(messaging, do: integrations_href(org, project, connection["provider"]))
+    }
+    |> then(fn map ->
+      if kind == "oauth_code_paste" do
+        Map.put(map, "accounts", Enum.map(colab_accounts, &public_colab_account/1))
+      else
+        map
+      end
+    end)
+  end
+
+  defp public_colab_account(account) when is_map(account) do
+    %{
+      "binding_id" => account["binding_id"],
+      "alias" => account["alias"],
+      "email" => account["email"],
+      "status" => account["status"],
+      "state" => account["state"],
+      "ccu_balance" => account["ccu_balance"],
+      "ccu_rate_hourly" => account["ccu_rate_hourly"],
+      "eligible_gpus" => List.wrap(account["eligible_gpus"]),
+      "active_vm_count" => account["active_vm_count"] || 0
     }
   end
 
@@ -384,6 +439,12 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
   defp connect_action(%{"kind" => "managed_oauth", "state" => "connected"}, [_ | _] = mcps) do
     if Enum.all?(mcps, &(&1["state"] in @ready_mcp_states)), do: "reconnect", else: "connect"
   end
+
+  defp connect_action(
+         %{"kind" => "oauth_code_paste", "state" => "reauthorization_required"},
+         _mcps
+       ),
+       do: "reconnect"
 
   defp connect_action(%{"state" => "connected"}, _mcps), do: "reconnect"
   defp connect_action(_connection, _mcps), do: "connect"
@@ -500,6 +561,85 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
     do:
       {:error, 422, "credential_rejected",
        gettext("The service rejected this token. Check it and try again."), %{}}
+
+  defp setup_error({:wrong_google_account, email}) do
+    message =
+      if is_binary(email) and String.trim(email) != "" do
+        gettext(
+          "Sign in with %{email} to reconnect this Google Colab account, or disconnect it first to switch accounts.",
+          email: String.trim(email)
+        )
+      else
+        gettext(
+          "Sign in with the connected Google account to reconnect Google Colab, or disconnect it first to switch accounts."
+        )
+      end
+
+    {:error, 422, "wrong_google_account", message, %{}}
+  end
+
+  defp setup_error(:colab_account_in_use),
+    do:
+      {:error, 409, "colab_account_in_use",
+       gettext(
+         "Active or unconfirmed Google Colab VMs are still running. Stop them first, or reconnect the same Google account if authorization expired."
+       ), %{}}
+
+  defp setup_error(:missing_binding_id),
+    do:
+      {:error, 422, "missing_binding_id",
+       gettext("binding_id is required to disconnect a Google Colab account."), %{}}
+
+  defp setup_error(:not_found),
+    do:
+      {:error, 404, "not_found",
+       gettext("This connection or account was not found. Refresh and try again."), %{}}
+
+  defp setup_error(:colab_account_draining),
+    do:
+      {:error, 409, "colab_account_draining",
+       gettext("This Google Colab account is currently disconnecting. Retry shortly."), %{}}
+
+  defp setup_error(:single_account_limit_reached),
+    do:
+      {:error, 409, "single_account_limit_reached",
+       gettext("A Google Colab account is already connected to this swarm."), %{}}
+
+  defp setup_error(:oauth_exchange_in_progress),
+    do:
+      {:error, 409, "oauth_exchange_in_progress",
+       gettext("Authorization is already in progress. Retry shortly."), %{}}
+
+  defp setup_error(:attempt_invalidated),
+    do:
+      {:error, 409, "attempt_invalidated",
+       gettext("This authorization attempt was cancelled or superseded. Start again."), %{}}
+
+  defp setup_error(:scope_retired),
+    do: {:error, 409, "scope_retired", gettext("This swarm has been archived."), %{}}
+
+  defp setup_error(:already_connected),
+    do:
+      {:error, 409, "already_connected",
+       gettext("This account is already connected. Refresh the connection status and try again."),
+       %{}}
+
+  defp setup_error(:conflict),
+    do:
+      {:error, 409, "conflict",
+       gettext(
+         "Connection state changed concurrently. Refresh the connection status and try again."
+       ), %{}}
+
+  defp setup_error(:platform_unavailable),
+    do:
+      {:error, 503, "platform_unavailable",
+       gettext("Google Colab authorization is temporarily unavailable. Retry shortly."), %{}}
+
+  defp setup_error(:credential_address_mismatch),
+    do:
+      {:error, 422, "credential_address_mismatch",
+       gettext("Paste the key, or this ability's own address."), %{}}
 
   defp setup_error(:plugin_connection_unavailable),
     do:

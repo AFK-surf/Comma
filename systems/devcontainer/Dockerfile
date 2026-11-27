@@ -1,4 +1,4 @@
-FROM golang:1.27.3-trixie AS go
+FROM golang:1.27.4-trixie AS go
 
 FROM node:24.22.1-bookworm-slim AS node
 

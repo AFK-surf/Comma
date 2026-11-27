@@ -21,6 +21,7 @@ export function useCommaAppPreferences({ showsLaunchAtLogin = false } = {}) {
     keepAwakeWhenLidClosed: available && bridge.os === "macos",
     showInDock: available && bridge.os === "macos",
     showInMenuBar: available,
+    showComputerUseInNotch: available && bridge.os === "macos",
     showInNotch: available && bridge.os === "macos",
   };
   const showInSystemTray = available && bridge.os !== "macos";

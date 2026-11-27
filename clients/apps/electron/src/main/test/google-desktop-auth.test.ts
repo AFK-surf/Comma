@@ -169,6 +169,64 @@ describe("SystemBrowserGoogleAuth", () => {
     ).rejects.toThrow("Google sign-in could not be completed.");
   });
 
+  it("reaches Google's discovery through the fetch Main gives it, and reports why it failed", async () => {
+    // Main gives Electron's net.fetch, which follows the system proxy: Node's own fetch does not, so a VPN that sets
+    // only the system proxy left the desktop app unable to reach Google while the browser could.
+    const discoveryFetch = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+      });
+    });
+    const onFailure = vi.fn();
+    const openExternal = vi.fn(async () => {});
+    const auth = new SystemBrowserGoogleAuth({
+      fetch: discoveryFetch,
+      onFailure,
+      openExternal,
+    });
+
+    await expect(
+      auth.authenticate({ clientId: "desktop-client", nonce: "backend-nonce" })
+    ).rejects.toThrow("Google sign-in could not be completed.");
+    expect(String(discoveryFetch.mock.calls[0]?.[0])).toBe(
+      "https://accounts.google.com/.well-known/openid-configuration"
+    );
+    expect(onFailure).toHaveBeenCalledWith(
+      "TypeError: fetch failed <- Error: read ECONNRESET (ECONNRESET)"
+    );
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("logs a declined Google authorization without its callback parameters", async () => {
+    // oauth4webapi puts the whole callback query in the cause of an authorization error.
+    const onFailure = vi.fn();
+    const auth = new SystemBrowserGoogleAuth({
+      oidcAdapter: createAdapter({
+        validateAuthorizationResponse: vi.fn((_configuration, callbackUrl) => {
+          throw new Error("authorization response from the server is an error", {
+            cause: callbackUrl.searchParams,
+          });
+        }),
+      }),
+      onFailure,
+      openExternal: async (href) => {
+        const redirectUri = requiredParameter(new URL(href), "redirect_uri");
+        pendingResponses.push(
+          fetch(
+            `${redirectUri}?error=access_denied&error_description=private-detail&state=oauth-state`
+          )
+        );
+      },
+    });
+
+    await expect(
+      auth.authenticate({ clientId: "desktop-client", nonce: "backend-nonce" })
+    ).rejects.toThrow("Google sign-in could not be completed.");
+    expect(onFailure).toHaveBeenCalledWith(
+      "Error: authorization response from the server is an error <- URLSearchParams"
+    );
+  });
+
   it("times out while provider discovery never resolves without opening a browser", async () => {
     const openExternal = vi.fn(async () => {});
     const auth = new SystemBrowserGoogleAuth({

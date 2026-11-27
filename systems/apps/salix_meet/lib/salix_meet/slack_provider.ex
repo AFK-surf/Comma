@@ -140,12 +140,35 @@ defmodule SalixMeet.SlackProvider do
          "provider" => "slack"
        }}
     else
-      {:error, :terminal_thread} -> {:error, :meeting_thread_already_completed}
-      {:error, :thread_owned} -> {:error, :meeting_thread_owned}
-      {:error, _} = error -> error
-      false -> {:error, :invalid_meeting_source}
-      other -> {:error, other}
+      {:error, {:already_in_meeting, existing_id}} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      {:error, {:join_abandoned, {:already_in_meeting, existing_id}}} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      {:error, :terminal_thread} ->
+        {:error, :meeting_thread_already_completed}
+
+      {:error, :thread_owned} ->
+        {:error, :meeting_thread_owned}
+
+      {:error, _} = error ->
+        error
+
+      false ->
+        {:error, :invalid_meeting_source}
+
+      other ->
+        {:error, other}
     end
+  end
+
+  defp already_in_meeting_result(existing_id) do
+    base = %{"status" => "already_in_meeting", "provider" => "slack"}
+
+    if is_binary(existing_id) and trim(existing_id) != "",
+      do: Map.put(base, "meeting_id", trim(existing_id)),
+      else: base
   end
 
   @doc false
@@ -175,14 +198,35 @@ defmodule SalixMeet.SlackProvider do
            ) do
       {:ok, :handled}
     else
-      :ignored -> :ignored
-      {:error, :ignored} -> :ignored
-      {:error, :terminal_thread} -> {:ok, :handled}
-      {:error, :thread_owned} -> {:ok, :handled}
-      {:error, :ambiguous_meet_urls} -> {:ok, :handled}
-      {:error, _} = err -> err
-      false -> :ignored
-      other -> other
+      :ignored ->
+        :ignored
+
+      {:error, :ignored} ->
+        :ignored
+
+      {:error, {:already_in_meeting, _existing_id}} ->
+        notice_already_in_meeting(connect, event)
+
+      {:error, {:join_abandoned, {:already_in_meeting, _existing_id}}} ->
+        notice_already_in_meeting(connect, event)
+
+      {:error, :terminal_thread} ->
+        {:ok, :handled}
+
+      {:error, :thread_owned} ->
+        {:ok, :handled}
+
+      {:error, :ambiguous_meet_urls} ->
+        {:ok, :handled}
+
+      {:error, _} = err ->
+        err
+
+      false ->
+        :ignored
+
+      other ->
+        other
     end
   end
 
@@ -623,15 +667,21 @@ defmodule SalixMeet.SlackProvider do
             {:error, :terminal_thread}
 
           {:ok, :not_found} ->
-            claim_and_create_meeting(
-              connect,
-              meeting_agent,
-              envelope,
-              event,
-              request,
-              channel,
-              thread
-            )
+            case Store.find_active_google_meet(connect["group_id"], request["meet_url"]) do
+              {:ok, existing_id, _existing_state} ->
+                {:error, {:already_in_meeting, existing_id}}
+
+              :not_found ->
+                claim_and_create_meeting(
+                  connect,
+                  meeting_agent,
+                  envelope,
+                  event,
+                  request,
+                  channel,
+                  thread
+                )
+            end
 
           {:error, _} = error ->
             error
@@ -816,6 +866,26 @@ defmodule SalixMeet.SlackProvider do
   end
 
   defp maybe_notice_existing(_connect, _request, _state), do: :ok
+
+  defp notice_already_in_meeting(connect, event) do
+    channel = channel_id(event)
+    thread = thread_ts(event)
+    bot_token = trim(connect["bot_token"])
+
+    if channel != "" and thread != "" and bot_token != "" do
+      _ =
+        API.post_message(
+          API.installation(connect),
+          channel,
+          ":information_source: Already in this meeting.",
+          thread_ts: thread
+        )
+    end
+
+    {:ok, :handled}
+  rescue
+    _ -> {:ok, :handled}
+  end
 
   # Same meeting re-requested → reassure; a DIFFERENT meeting requested in a
   # thread that already holds an active one → say so (one meeting per thread).

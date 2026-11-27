@@ -214,5 +214,5 @@ internal fun ViewerPage.paused(): ImageView {
     }
 }
 
-private const val VIDEO_TAG = "viewer-video"
+internal const val VIDEO_TAG = "viewer-video"
 private const val PAUSED_TAG = "viewer-video-paused"

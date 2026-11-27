@@ -204,6 +204,20 @@ defmodule Salix.Bindings.LocalFileImportTest do
     refute Map.has_key?(params, "path")
   end
 
+  test "says a device that is away apart from a read that failed" do
+    defmodule AwayRefs do
+      def resolve_committed(_group_id, _conversation_id, _message, _ref),
+        do: {:error, :local_file_device_disconnected}
+    end
+
+    assert {:error, :local_file_device_disconnected} =
+             LocalFileImport.read_stream("grp1_exact", "cnv1_exact", "msg1_exact", @ref,
+               conversations: Conversations,
+               refs: AwayRefs,
+               connector: Connector
+             )
+  end
+
   test "fails closed before resolution when the exact canonical message does not match" do
     Process.put(:canonical_message, %{
       "actor_type" => "user",

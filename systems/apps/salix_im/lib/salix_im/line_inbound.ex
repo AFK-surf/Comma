@@ -128,7 +128,8 @@ defmodule SalixIM.LineInbound do
         "message_id" => message_id,
         "from_user_id" => sender,
         "from_username" => sender,
-        "event_type" => if(chat_type == "private", do: "line.message", else: "line.group_message"),
+        "event_type" =>
+          if(chat_type == "private", do: "line.message", else: "line.group_message"),
         "event_id" => text(event["webhookEventId"]),
         "source_sent_at_ms" => sent_at_ms,
         "source_actor_type" => "provider_user"

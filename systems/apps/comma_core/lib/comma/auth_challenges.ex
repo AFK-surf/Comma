@@ -282,6 +282,42 @@ defmodule Comma.AuthChallenges do
     end
   end
 
+  @doc """
+  Mails a 6-digit verification code to an external guest invited to a
+  Collaborative Task (`Comma.CollaborationGuests`).
+  """
+  def request_collaboration_guest_otp(email, collaborator_id, attrs)
+      when is_binary(email) and is_binary(collaborator_id) and is_map(attrs) do
+    with {:ok, normalized} <- Email.normalize_recipient(email) do
+      request_challenge(
+        normalized,
+        "collaboration_guest",
+        %{"collaborator_id" => collaborator_id},
+        attrs
+      )
+    end
+  end
+
+  @doc "Checks a 6-digit verification code for an external Collaborative Task guest."
+  def verify_collaboration_guest_otp(collaborator_id, attrs)
+      when is_binary(collaborator_id) and is_map(attrs) do
+    id = trim(attrs["challenge_id"] || attrs[:challenge_id])
+    code = trim(attrs["code"] || attrs[:code])
+
+    with true <- id != "" and code =~ ~r/^\d{6}$/,
+         {:ok, hashed_code} <- code_hash(id, "collaboration_guest", code),
+         {:ok, challenge} <- store_verify(id, hashed_code),
+         :ok <- require_purpose(challenge, "collaboration_guest"),
+         true <- challenge["collaborator_id"] == collaborator_id do
+      {:ok, challenge}
+    else
+      {:error, :rate_limited, _retry_after} = error -> error
+      {:error, :auth_unavailable} = error -> error
+      {:error, :auth_not_configured} -> {:error, :auth_unavailable}
+      _ -> {:error, :invalid_verification_code}
+    end
+  end
+
   # The database owns the credential. The existing auth key prevents database-only
   # readers from enumerating six-digit codes. Key rotation requires saving the code again.
   def review_code_hash(code) when is_binary(code) do
@@ -508,8 +544,9 @@ defmodule Comma.AuthChallenges do
     if expose_codes?(), do: Map.put(response, "code", code), else: response
   end
 
-  # Only the email login request exposes timing; it drives desktop resend and reentry.
-  defp challenge_timing("email_login", started_at) do
+  # Only email login and collaboration guest OTP expose timing; they drive resend UI.
+  defp challenge_timing(purpose, started_at)
+       when purpose in ["email_login", "collaboration_guest"] do
     elapsed_ms = SystemsClock.monotonic_time(:millisecond) - started_at
     cooldown = nonnegative_config(:resend_cooldown_seconds, @default_resend_cooldown_seconds)
 

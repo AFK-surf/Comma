@@ -61,6 +61,31 @@ const tabCases: {
     close: (sidebar) =>
       sidebar.closeChangesPage(host, sidebar.activeSession!.changesPages![0]!.id),
   },
+  {
+    name: "still.fail preview",
+    open: (sidebar) =>
+      sidebar.openStillfailPreview(host, {
+        id: "https://app.youdid.wtf/o/ws/st-1/chat%3Ac-1",
+        href: "https://app.youdid.wtf/o/ws/st-1/chat%3Ac-1",
+        workspaceId: host.workspaceId,
+      }),
+    close: (sidebar) =>
+      sidebar.closeStillfailPreview(
+        host,
+        sidebar.activeSession!.stillfailPreviews![0]!.id
+      ),
+  },
+  {
+    name: "mail preview",
+    open: (sidebar) =>
+      sidebar.openMailPreview(host, {
+        id: "https://outlook.live.com/owa/?ItemID=msg-1",
+        href: "https://outlook.live.com/owa/?ItemID=msg-1",
+        workspaceId: host.workspaceId,
+      }),
+    close: (sidebar) =>
+      sidebar.closeMailPreview(host, sidebar.activeSession!.mailPreviews![0]!.id),
+  },
 ];
 
 function useRegisteredSidebar() {
@@ -256,6 +281,85 @@ describe("the tab menu's actions", () => {
 
     act(() => result.current.setTabPinned(host, "b", false));
     expect(result.current.activeSession?.pinnedTabIds).toEqual(["a"]);
+  });
+});
+
+describe("a document's tab", () => {
+  const version = (messageId: string) => ({
+    attachmentIndex: 0,
+    conversationId: host.conversationId,
+    fileName: "plan.md",
+    groupId: host.groupId,
+    messageId,
+  });
+
+  it("shows an Agent's new version in the tab the document already has, where the reader left the sidebar", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result } = renderHook(useRegisteredSidebar, {
+      wrapper: ChatSidebarProvider,
+    });
+    act(() =>
+      result.current.openFilePreview(host, version("first"), { writer: "Comma" })
+    );
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.activeSession?.activeSurface).toBe("file");
+    const tab = result.current.activeSession!.filePreviews![0]!;
+    expect(tab).toMatchObject({ source: version("first"), writer: "Comma" });
+
+    // The reader moves to another tab and closes the sidebar; the next version disturbs neither.
+    act(() => result.current.addBrowserTab(host));
+    act(() => result.current.toggle(host));
+    act(() =>
+      result.current.openFilePreview(host, version("second"), { writer: "Comma" })
+    );
+    expect(result.current.isOpen).toBe(false);
+    expect(result.current.activeSession?.activeSurface).toBe("browser");
+    expect(result.current.activeSession?.filePreviews).toEqual([
+      { id: tab.id, source: version("second"), writer: "Comma" },
+    ]);
+
+    // A version the reader opens themself shows in the same tab, in front, with no writer.
+    act(() => result.current.openFilePreview(host, version("first")));
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.activeSession?.activeSurface).toBe("file");
+    expect(result.current.activeSession?.filePreviews).toEqual([
+      { id: tab.id, source: version("first") },
+    ]);
+  });
+
+  it("takes the reader's own sent version into the document's tab, and opens no tab for it", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result } = renderHook(useRegisteredSidebar, {
+      wrapper: ChatSidebarProvider,
+    });
+    // The reader's version of a document no tab shows opens none.
+    act(() => result.current.openFilePreview(host, version("mine"), {}));
+    expect(result.current.activeSession?.filePreviews ?? []).toEqual([]);
+
+    act(() =>
+      result.current.openFilePreview(host, version("first"), { writer: "Comma" })
+    );
+    act(() => result.current.openFilePreview(host, version("mine"), {}));
+    expect(result.current.activeSession?.filePreviews).toEqual([
+      expect.objectContaining({ source: version("mine") }),
+    ]);
+    expect(result.current.activeSession?.filePreviews?.[0]).not.toHaveProperty(
+      "writer"
+    );
+  });
+
+  it("keeps a tab for each file that is not a document", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result } = renderHook(useRegisteredSidebar, {
+      wrapper: ChatSidebarProvider,
+    });
+    act(() =>
+      result.current.openFilePreview(host, { ...version("first"), fileName: "a.pdf" })
+    );
+    act(() =>
+      result.current.openFilePreview(host, { ...version("second"), fileName: "a.pdf" })
+    );
+    expect(result.current.activeSession?.filePreviews).toHaveLength(2);
   });
 });
 

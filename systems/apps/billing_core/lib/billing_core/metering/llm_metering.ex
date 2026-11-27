@@ -12,6 +12,7 @@ defmodule BillingCore.LLMMetering do
 
     if present?(account_id) and not tenant_funded?(fact) do
       with {:ok, free?} <- free_router_call?(fact),
+           free? = free? and is_nil(settlement(fact)),
            result <-
              BillingCore.FeeControl.authorize(%{
                billing_account_id: account_id,
@@ -31,6 +32,7 @@ defmodule BillingCore.LLMMetering do
                row_context: fee_context(fact),
                source: "llm_metering",
                source_key: "fee:llm:#{source_key(fact)}",
+               settlement: settlement(fact),
                force_refresh:
                  fact[:force_refresh] || fact["force_refresh"] || fee_env(:force_refresh),
                probe: fact[:probe] || fact["probe"],
@@ -108,7 +110,8 @@ defmodule BillingCore.LLMMetering do
       entrypoint: entrypoint(fact),
       actor_type: actor_type(fact),
       tenant_account_pool: tenant_funded?(fact),
-      billing_exemption: fact[:billing_exemption]
+      billing_exemption: fact[:billing_exemption],
+      settlement: settlement(fact)
     }
     |> Map.update!(:usage, fn usage ->
       %{
@@ -151,7 +154,8 @@ defmodule BillingCore.LLMMetering do
           tenant_id: tenant_id(fact),
           group_id: group_id(fact),
           entrypoint: entrypoint(fact),
-          actor_type: actor_type(fact)
+          actor_type: actor_type(fact),
+          settlement: settlement(fact)
         })
 
       usage_components(fact) == [] ->
@@ -175,7 +179,8 @@ defmodule BillingCore.LLMMetering do
           tenant_id: tenant_id(fact),
           group_id: group_id(fact),
           entrypoint: entrypoint(fact),
-          actor_type: actor_type(fact)
+          actor_type: actor_type(fact),
+          settlement: settlement(fact)
         })
     end
   end
@@ -205,10 +210,23 @@ defmodule BillingCore.LLMMetering do
   end
 
   # The template resolver supplies this scope. Product request bodies cannot set it.
+  # A call with a settlement (a platform Router's platform key) is never
+  # tenant-funded.
   defp tenant_funded?(fact) do
-    fact[:tenant_account_pool] == true or fact["tenant_account_pool"] == true or
-      (surface(fact) == "comma" and
-         (fact[:credential_scope] || fact["credential_scope"]) == "tenant")
+    is_nil(settlement(fact)) and
+      (fact[:tenant_account_pool] == true or fact["tenant_account_pool"] == true or
+         (surface(fact) == "comma" and
+            (fact[:credential_scope] || fact["credential_scope"]) == "tenant"))
+  end
+
+  # How a platform Router's platform key settles its call
+  # (`BillingCore.FeeControl`): `record` charges 0, `deduct` spends credits,
+  # whatever the account's entitlement. Nil: the account's entitlement decides.
+  defp settlement(fact) do
+    case fact[:settlement] || fact["settlement"] do
+      settlement when settlement in ["record", "deduct"] -> settlement
+      _ -> nil
+    end
   end
 
   defp charge_status(fact, account_id) do

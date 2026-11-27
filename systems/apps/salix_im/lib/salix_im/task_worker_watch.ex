@@ -118,20 +118,17 @@ defmodule SalixIM.TaskWorkerWatch do
             capability: nil,
             group_id: nil,
             conversation_id: nil,
-            session_ref: nil,
+            # %{ {agent_id, session_id} => %{participant_id, agent_id, session_id, primary?, stop, attempts, card_activity} }
+            workers: %{},
             worker_agent_id: nil,
-            worker_participant_id: nil,
             delegator_agent_id: nil,
             # The Router while the Task's Loop runs: its notes are no delegations.
             loop_router_agent_id: nil,
-            stop: nil,
-            attempts: 0,
-            card_activity: nil,
             qq_card?: false,
             # The Router session, subscribed only while `review` is pending.
             router_ref: nil,
             router_participant_id: nil,
-            # %{result_seq, result_at, epoch, phase, attempts} for the Worker
+            # %{result_seq, result_at, epoch, phase, attempts, worker_ref} for the Worker
             # result whose Task status the Router has not decided yet.
             review: nil
 
@@ -177,20 +174,20 @@ defmodule SalixIM.TaskWorkerWatch do
   def handle_cast({:reconcile, _caller, _capability, _qq_card?}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info(
-        {:session_activity_updated, agent_id, session_id},
-        %{session_ref: {agent_id, session_id}} = state
-      ),
-      do: {:noreply, refresh_activity(state)}
+  def handle_info({:session_activity_updated, agent_id, session_id}, state) do
+    ref = {agent_id, session_id}
 
-  def handle_info(
-        {:session_activity_updated, agent_id, session_id},
-        %{router_ref: {agent_id, session_id}} = state
-      ),
-      do: {:noreply, refresh_router(state)}
+    cond do
+      Map.has_key?(state.workers, ref) ->
+        {:noreply, refresh_worker_activity(state, ref)}
 
-  def handle_info({:session_activity_updated, _agent_id, _session_id}, state),
-    do: {:noreply, state}
+      state.router_ref == ref ->
+        {:noreply, refresh_router(state)}
+
+      true ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(
         {:task_status_pending_timeout, router_ref, version, token},
@@ -201,15 +198,16 @@ defmodule SalixIM.TaskWorkerWatch do
   def handle_info({:task_status_pending_timeout, _ref, _version, _token}, state),
     do: {:noreply, state}
 
-  def handle_info(
-        {:task_worker_stopped_timeout, session_ref, version, token},
-        %{session_ref: session_ref, stop: {phase, version, _kind, _issue, _timer, token}} = state
-      )
-      when phase in [:scheduled, :retry],
-      do: {:noreply, handle_timeout(state, version)}
+  def handle_info({:task_worker_stopped_timeout, session_ref, version, token}, state) do
+    case Map.get(state.workers, session_ref) do
+      %{stop: {phase, ^version, _kind, _issue, _timer, ^token}}
+      when phase in [:scheduled, :retry] ->
+        {:noreply, handle_timeout(state, session_ref, version)}
 
-  def handle_info({:task_worker_stopped_timeout, _ref, _version, _token}, state),
-    do: {:noreply, state}
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(_message, state), do: {:noreply, state}
 
@@ -234,99 +232,185 @@ defmodule SalixIM.TaskWorkerWatch do
   defp watch(state, conversation) do
     with worker_agent_id when is_binary(worker_agent_id) and worker_agent_id != "" <-
            conversation["task_worker_agent_id"],
-         {:ok, worker} <- ConversationActor.get_agent_participant(state.owner, worker_agent_id),
-         session_id when is_binary(session_id) and session_id != "" <-
-           get_in(worker, ["payload", "session_id"]) do
-      state
-      |> attach({worker_agent_id, session_id})
-      |> Map.merge(%{
-        worker_agent_id: worker_agent_id,
-        worker_participant_id: worker["participant_id"],
-        delegator_agent_id: conversation["created_by_agent_id"]
-      })
-      |> refresh_activity()
+         {:ok, %{"workers" => roster_workers}} <-
+           ConversationActor.task_worker_identities(state.owner) do
+      salix_workers =
+        roster_workers
+        |> Enum.filter(fn w ->
+          SalixIM.ConversationSource.receives_messages?(w) and
+            is_binary(get_in(w, ["payload", "session_id"])) and
+            get_in(w, ["payload", "session_id"]) != ""
+        end)
+
+      if salix_workers == [] do
+        unwatch(state)
+      else
+        desired_refs =
+          Map.new(salix_workers, fn w ->
+            sid = get_in(w, ["payload", "session_id"])
+            ref = {w["agent_id"], sid}
+
+            {ref,
+             %{
+               participant_id: w["participant_id"],
+               agent_id: w["agent_id"],
+               session_id: sid,
+               primary?: w["primary"] == true
+             }}
+          end)
+
+        state =
+          %{
+            state
+            | worker_agent_id: worker_agent_id,
+              # A Collaborative Task's Router is told nothing of it.
+              delegator_agent_id:
+                if(match?(%{"collaboration" => %{}}, conversation["metadata"]),
+                  do: nil,
+                  else: conversation["created_by_agent_id"]
+                )
+          }
+          |> sync_workers(desired_refs)
+
+        Enum.reduce(Map.keys(state.workers), state, &refresh_worker_activity(&2, &1))
+      end
     else
       _ -> unwatch(state)
     end
   end
 
-  defp attach(%{session_ref: session_ref} = state, session_ref), do: state
+  defp sync_workers(state, desired_refs) do
+    removed = Map.keys(state.workers) -- Map.keys(desired_refs)
 
-  defp attach(state, {agent_id, session_id} = session_ref) do
-    state = unwatch(state)
+    state =
+      Enum.reduce(removed, state, fn {agent_id, session_id} = ref, acc ->
+        worker = Map.fetch!(acc.workers, ref)
+        cancel_worker_stop(worker)
+        _ = SessionActivity.unsubscribe(agent_id, session_id)
+        %{acc | workers: Map.delete(acc.workers, ref)}
+      end)
 
-    case SessionActivity.subscribe(agent_id, session_id) do
-      :ok ->
-        %{state | session_ref: session_ref}
+    Enum.reduce(desired_refs, state, fn {ref, info}, acc ->
+      case Map.get(acc.workers, ref) do
+        %{} = existing ->
+          {agent_id, session_id} = ref
 
-      {:error, reason} ->
-        Logger.warning(
-          "task worker watch #{state.conversation_id}: subscribe failed: #{inspect(reason)}"
-        )
+          subscribed? =
+            if Map.get(existing, :subscribed?, true) do
+              true
+            else
+              case SessionActivity.subscribe(agent_id, session_id) do
+                :ok -> true
+                {:error, _reason} -> false
+              end
+            end
 
-        state
-    end
+          updated =
+            existing
+            |> Map.merge(info)
+            |> Map.put(:subscribed?, subscribed?)
+
+          %{acc | workers: Map.put(acc.workers, ref, updated)}
+
+        nil ->
+          {agent_id, session_id} = ref
+
+          case SessionActivity.subscribe(agent_id, session_id) do
+            :ok ->
+              entry =
+                Map.merge(info, %{stop: nil, attempts: 0, card_activity: nil, subscribed?: true})
+
+              %{acc | workers: Map.put(acc.workers, ref, entry)}
+
+            {:error, reason} ->
+              Logger.warning(
+                "task worker watch #{acc.conversation_id}: subscribe failed: #{inspect(reason)}"
+              )
+
+              # Keep the worker tracked even when PubSub subscribe fails so
+              # workers_idle_status/1 never misses an active secondary session.
+              entry =
+                Map.merge(info, %{stop: nil, attempts: 0, card_activity: nil, subscribed?: false})
+
+              %{acc | workers: Map.put(acc.workers, ref, entry)}
+          end
+      end
+    end)
   end
 
-  defp unwatch(%{session_ref: nil} = state),
-    do: %{end_review(cancel_stop(state)) | stop: nil, card_activity: nil}
+  defp unwatch(%{workers: workers} = state) do
+    Enum.each(workers, fn {{agent_id, session_id}, worker} ->
+      cancel_worker_stop(worker)
+      _ = SessionActivity.unsubscribe(agent_id, session_id)
+    end)
 
-  defp unwatch(%{session_ref: {agent_id, session_id}} = state) do
-    _ = SessionActivity.unsubscribe(agent_id, session_id)
-    %{end_review(cancel_stop(state)) | session_ref: nil, stop: nil, card_activity: nil}
+    %{end_review(state) | workers: %{}}
   end
 
   # -- activity ----------------------------------------------------------------
 
-  defp refresh_activity(%{session_ref: nil} = state), do: state
+  defp refresh_worker_activity(state, {agent_id, session_id} = ref) do
+    if Map.has_key?(state.workers, ref) do
+      case SessionActivity.get(agent_id, session_id) do
+        {:ok, activity} when is_map(activity) ->
+          observe(state, ref, activity)
 
-  defp refresh_activity(%{session_ref: {agent_id, session_id}} = state) do
-    case SessionActivity.get(agent_id, session_id) do
-      {:ok, activity} when is_map(activity) ->
-        observe(state, activity)
-
-      _ ->
-        state
+        _ ->
+          state
+      end
+    else
+      state
     end
   end
 
-  defp observe(state, activity) do
-    state = notify_qq_activity(state, activity)
+  defp observe(state, ref, activity) do
+    state = notify_qq_activity(state, ref, activity)
+    worker = Map.fetch!(state.workers, ref)
 
     case monitored(activity) do
       {:ok, kind, version, issue} ->
-        case state.stop do
+        case worker.stop do
           {_phase, ^version, _kind, _issue, _timer, _token} ->
             state
 
           _ ->
-            schedule(state, kind, version, issue, activity)
+            schedule(state, ref, kind, version, issue, activity)
         end
 
       :not_monitored ->
-        # The Worker runs again: whatever it publishes next is decided afresh.
-        %{end_review(cancel_stop(state)) | stop: nil}
+        # A Worker runs again: cancel its stop timer and any pending review.
+        cancel_worker_stop(worker)
+        worker = %{worker | stop: nil, attempts: 0}
+        %{end_review(state) | workers: Map.put(state.workers, ref, worker)}
     end
   end
 
   # Reuse this subscription. No extra timer, per-tool notification or Group scan.
   # A missing card is retried when its initial publication reconciles the watch.
-  defp notify_qq_activity(%{qq_card?: true} = state, %{"state" => kind} = activity)
+  defp notify_qq_activity(%{qq_card?: true} = state, ref, %{"state" => kind} = activity)
        when kind in ~w(active error) do
-    fingerprint = {state.session_ref, kind, activity["issue"]}
+    worker = Map.fetch!(state.workers, ref)
+    fingerprint = {ref, kind, activity["issue"]}
 
-    if state.card_activity == fingerprint do
+    if worker.card_activity == fingerprint do
       state
     else
-      case ConversationActor.notify_qq_task_activity(state.owner, state.session_ref, activity) do
-        {:ok, _} -> %{state | card_activity: fingerprint}
-        _ -> state
+      case ConversationActor.notify_qq_task_activity(state.owner, ref, activity) do
+        {:ok, _} ->
+          %{state | workers: Map.put(state.workers, ref, %{worker | card_activity: fingerprint})}
+
+        _ ->
+          state
       end
     end
   end
 
-  defp notify_qq_activity(state, %{"state" => "stopped"}), do: %{state | card_activity: nil}
-  defp notify_qq_activity(state, _activity), do: state
+  defp notify_qq_activity(state, ref, %{"state" => "stopped"}) do
+    worker = Map.fetch!(state.workers, ref)
+    %{state | workers: Map.put(state.workers, ref, %{worker | card_activity: nil})}
+  end
+
+  defp notify_qq_activity(state, _ref, _activity), do: state
 
   # Consumer half of the activity version fence: timestamps may collide, so
   # only the writer-owned opaque revision identifies one stop.
@@ -340,19 +424,21 @@ defmodule SalixIM.TaskWorkerWatch do
 
   defp monitored(_activity), do: :not_monitored
 
-  defp schedule(state, kind, version, issue, activity) do
-    state = cancel_stop(state)
+  defp schedule(state, ref, kind, version, issue, activity) do
+    worker = Map.fetch!(state.workers, ref)
+    cancel_worker_stop(worker)
     token = Proc.make_ref()
     delay = remaining_grace(activity)
 
     timer =
       SystemsClock.send_after(
         Proc.self(),
-        {:task_worker_stopped_timeout, state.session_ref, version, token},
+        {:task_worker_stopped_timeout, ref, version, token},
         delay
       )
 
-    %{state | stop: {:scheduled, version, kind, issue, timer, token}, attempts: 0}
+    worker = %{worker | stop: {:scheduled, version, kind, issue, timer, token}, attempts: 0}
+    %{state | workers: Map.put(state.workers, ref, worker)}
   end
 
   # The grace runs from the stop the runtime reported, so a stop found late
@@ -370,23 +456,24 @@ defmodule SalixIM.TaskWorkerWatch do
   defp timestamp_ms(value) when is_integer(value) and value > 1_000_000_000, do: value * 1_000
   defp timestamp_ms(_value), do: nil
 
-  defp cancel_stop(%{stop: {_phase, _version, _kind, _issue, timer, _token}} = state)
+  defp cancel_worker_stop(%{stop: {_phase, _version, _kind, _issue, timer, _token}})
        when is_reference(timer) do
     SystemsClock.cancel_timer(timer)
-    state
+    :ok
   end
 
-  defp cancel_stop(state), do: state
+  defp cancel_worker_stop(_worker), do: :ok
 
   # -- decision ----------------------------------------------------------------
 
-  defp handle_timeout(state, version) do
-    {_phase, ^version, kind, issue, _timer, _token} = state.stop
+  defp handle_timeout(state, ref, version) do
+    worker = Map.fetch!(state.workers, ref)
+    {_phase, ^version, kind, issue, _timer, _token} = worker.stop
 
     with {:ok, %{"kind" => "agent_task", "status" => "active"} = conversation} <-
            ConversationActor.get_conversation(state.owner),
          true <- conversation["task_worker_agent_id"] == state.worker_agent_id,
-         {agent_id, session_id} = state.session_ref,
+         {agent_id, session_id} = ref,
          {:ok, activity} <- SessionActivity.get(agent_id, session_id),
          {:ok, ^kind, ^version, ^issue} <- monitored(activity),
          {:ok, messages} <-
@@ -395,69 +482,203 @@ defmodule SalixIM.TaskWorkerWatch do
              state.conversation_id,
              tail: @messages_window
            ) do
-      loop_runs? = SalixIM.TaskLoop.loop_runs?(conversation)
+      loop_result = SalixIM.TaskLoop.get(state.group_id, state.conversation_id)
+      loop_runs? = loop_running_active?(loop_result)
 
-      ids =
-        if loop_runs?, do: %{state | loop_router_agent_id: state.delegator_agent_id}, else: state
+      ids = %{
+        worker_participant_id: worker.participant_id,
+        worker_agent_id: worker.agent_id,
+        primary?: worker.primary?,
+        loop_router_agent_id: if(loop_runs?, do: state.delegator_agent_id)
+      }
+
+      state = retry_unsubscribed_workers(state)
 
       case decide(messages, ids, kind, issue, version) do
         {:review, epoch, result_seq, result_at} ->
-          state = %{state | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+          if router_decides_status?(conversation) and not loop_runs? do
+            case workers_idle_status(state) do
+              :idle ->
+                worker = %{worker | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+                state = %{state | workers: Map.put(state.workers, ref, worker)}
+                begin_review(state, ref, epoch, result_seq, result_at)
 
-          if router_decides_status?(conversation) and not loop_runs?,
-            do: begin_review(state, epoch, result_seq, result_at),
-            else: state
+              :error ->
+                retry_later(state, ref, version, kind, issue)
+
+              :busy ->
+                if any_unsubscribed_worker?(state) do
+                  retry_later(state, ref, version, kind, issue)
+                else
+                  worker = %{worker | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+                  %{state | workers: Map.put(state.workers, ref, worker)}
+                end
+            end
+          else
+            worker = %{worker | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+            %{state | workers: Map.put(state.workers, ref, worker)}
+          end
 
         decision ->
-          case act(state, decision, version, issue, activity) do
-            :error -> retry_later(state, version, kind, issue)
-            _done -> %{state | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+          case act(state, ref, worker, decision, version, issue, activity, loop_result) do
+            :error ->
+              retry_later(state, ref, version, kind, issue)
+
+            _done ->
+              # If a secondary worker just finished and all workers are now idle,
+              # check whether the primary worker had a deferred reviewable result.
+              if not worker.primary? and is_nil(state.review) and
+                   router_decides_status?(conversation) and not loop_runs? do
+                case workers_idle_status(state) do
+                  :idle ->
+                    worker = %{
+                      worker
+                      | stop: {:acted, version, kind, issue, nil, nil},
+                        attempts: 0
+                    }
+
+                    state = %{state | workers: Map.put(state.workers, ref, worker)}
+                    maybe_begin_deferred_primary_review(state, messages)
+
+                  :error ->
+                    retry_later(state, ref, version, kind, issue)
+
+                  :busy ->
+                    if any_unsubscribed_worker?(state) do
+                      retry_later(state, ref, version, kind, issue)
+                    else
+                      worker = %{
+                        worker
+                        | stop: {:acted, version, kind, issue, nil, nil},
+                          attempts: 0
+                      }
+
+                      %{state | workers: Map.put(state.workers, ref, worker)}
+                    end
+                end
+              else
+                worker = %{worker | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+                %{state | workers: Map.put(state.workers, ref, worker)}
+              end
           end
       end
     else
       _changed ->
         # The Task, the Worker or its activity moved on; re-observe from scratch.
-        %{state | stop: nil, attempts: 0} |> do_reconcile()
+        worker = %{worker | stop: nil, attempts: 0}
+        %{state | workers: Map.put(state.workers, ref, worker)} |> do_reconcile()
     end
+  end
+
+  defp maybe_begin_deferred_primary_review(state, messages) do
+    case Enum.find(state.workers, fn {_ref, w} -> w.primary? end) do
+      {primary_ref, primary} ->
+        ids = %{
+          worker_participant_id: primary.participant_id,
+          worker_agent_id: primary.agent_id,
+          primary?: true
+        }
+
+        case decide(messages, ids, :stopped, nil, nil) do
+          {:review, epoch, result_seq, result_at} ->
+            begin_review(state, primary_ref, epoch, result_seq, result_at)
+
+          _ ->
+            state
+        end
+
+      nil ->
+        state
+    end
+  end
+
+  defp any_unsubscribed_worker?(%{workers: workers}) do
+    Enum.any?(workers, fn {_ref, w} -> not Map.get(w, :subscribed?, true) end)
+  end
+
+  defp retry_unsubscribed_workers(%{workers: workers} = state) do
+    updated =
+      Map.new(workers, fn {{agent_id, session_id} = ref, w} ->
+        if Map.get(w, :subscribed?, true) do
+          {ref, w}
+        else
+          case SessionActivity.subscribe(agent_id, session_id) do
+            :ok -> {ref, Map.put(w, :subscribed?, true)}
+            {:error, _} -> {ref, w}
+          end
+        end
+      end)
+
+    %{state | workers: updated}
+  end
+
+  defp workers_idle_status(%{workers: workers}) do
+    Enum.reduce_while(workers, :idle, fn {{agent_id, session_id}, _worker}, acc ->
+      case SessionActivity.get(agent_id, session_id) do
+        {:ok, %{"state" => s}} when s in ["stopped", "error", "idle"] ->
+          {:cont, acc}
+
+        # Unwoken secondary sessions have no SessionActivity row yet and are idle.
+        {:error, :not_found} ->
+          {:cont, acc}
+
+        {:ok, _other} ->
+          {:halt, :busy}
+
+        {:error, _other} ->
+          {:cont, :error}
+      end
+    end)
   end
 
   # The stage is not done until its Message is durable. A failed append is
   # retried on a short timer; the same token discipline as the grace timer
   # applies, so a later stop supersedes a pending retry.
-  defp retry_later(state, version, kind, issue) do
-    attempts = state.attempts + 1
+  defp retry_later(state, ref, version, kind, issue) do
+    worker = Map.fetch!(state.workers, ref)
+    attempts = worker.attempts + 1
 
     if attempts > @max_attempts do
       Logger.warning(
-        "task worker watch #{state.conversation_id}: giving up on stop #{version} after #{state.attempts} failed appends"
+        "task worker watch #{state.conversation_id}: giving up on stop #{version} after #{worker.attempts} failed appends"
       )
 
-      %{state | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+      worker = %{worker | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
+      %{state | workers: Map.put(state.workers, ref, worker)}
     else
       token = Proc.make_ref()
 
       timer =
         SystemsClock.send_after(
           Proc.self(),
-          {:task_worker_stopped_timeout, state.session_ref, version, token},
+          {:task_worker_stopped_timeout, ref, version, token},
           @retry_base_ms * attempts
         )
 
-      %{state | stop: {:retry, version, kind, issue, timer, token}, attempts: attempts}
+      worker = %{worker | stop: {:retry, version, kind, issue, timer, token}, attempts: attempts}
+      %{state | workers: Map.put(state.workers, ref, worker)}
     end
   end
 
   @doc false
-  # `:none`, `{:nudge, epoch}`, `{:notify, epoch, reason}` or
+  # `:none`, `{:nudge, epoch, delegation_message_id}`, `{:notify, epoch, reason}` or
   # `{:review, epoch, result_seq, result_at_ms}` for the Task's recent
   # Messages, given the Worker's current stop (kind, issue, version).
   def decide(messages, %{} = ids, kind, issue, version) when is_list(messages) do
     worker_pid = ids.worker_participant_id
     worker_agent = ids.worker_agent_id
+    primary? = Map.get(ids, :primary?, true)
 
     by_worker? = fn m ->
-      (worker_pid != nil and m["participant_id"] == worker_pid) or
-        (worker_agent != nil and m["agent_id"] == worker_agent)
+      msg_pid = m["participant_id"]
+
+      cond do
+        is_binary(msg_pid) and msg_pid != "" and worker_pid != nil ->
+          msg_pid == worker_pid
+
+        true ->
+          worker_agent != nil and m["agent_id"] == worker_agent
+      end
     end
 
     # Milestones alone show the Worker at work, not a reply: a Worker that
@@ -471,7 +692,16 @@ defmodule SalixIM.TaskWorkerWatch do
     seq = fn m -> if is_integer(m["seq"]), do: m["seq"], else: 0 end
 
     given? = fn m ->
-      worker_pid == nil or ConversationMessage.addressed_to?(worker_pid, m)
+      cond do
+        worker_pid == nil ->
+          true
+
+        is_list(get_in(m, ["metadata", "wake_targets"])) ->
+          worker_pid in get_in(m, ["metadata", "wake_targets"])
+
+        true ->
+          ConversationMessage.addressed_to?(worker_pid, m)
+      end
     end
 
     # While a Loop runs, the Task's command, the Loop's wakes and people's
@@ -484,41 +714,90 @@ defmodule SalixIM.TaskWorkerWatch do
         watch_type.(m) != "task_command"
     end
 
+    # Passive context in a Collaborative Task is delivered without waking the
+    # Worker, so it is not a delegation the Worker owes a result for.
+    context_only? = fn m -> get_in(m, ["metadata", "context_only"]) == true end
+
+    # Messages with `wake_reason == "all_sessions"` obligate ONLY the primary worker.
+    non_obligated_all_sessions? = fn m ->
+      not primary? and get_in(m, ["metadata", "wake_reason"]) == "all_sessions"
+    end
+
     delegations =
       Enum.filter(
         messages,
-        &(given?.(&1) and not (by_worker?.(&1) or watch?.(&1) or loop_router_note?.(&1)))
+        &(given?.(&1) and
+            not (by_worker?.(&1) or watch?.(&1) or loop_router_note?.(&1) or
+                   context_only?.(&1) or non_obligated_all_sessions?.(&1)))
       )
 
-    epoch = delegations |> Enum.map(seq) |> Enum.max(fn -> 0 end)
+    latest_delegation = Enum.max_by(delegations, seq, fn -> nil end)
+    epoch = if(latest_delegation, do: seq.(latest_delegation), else: 0)
+    epoch_message_id = latest_delegation && latest_delegation["message_id"]
 
     since = fn pred -> Enum.any?(messages, fn m -> seq.(m) > epoch and pred.(m) end) end
     nudge? = fn m -> watch_type.(m) == @nudge_type end
     nudged_version = fn m -> get_in(m, ["metadata", "task_worker_watch", "activity_version"]) end
 
+    for_this_worker? = fn m ->
+      target_pid = get_in(m, ["metadata", "task_worker_watch", "target_participant_id"])
+
+      cond do
+        worker_pid == nil ->
+          true
+
+        is_binary(target_pid) and target_pid != "" ->
+          target_pid == worker_pid
+
+        watch_type.(m) == @nudge_type and
+            is_list(get_in(m, ["delivery_filter", "participant_ids"])) ->
+          worker_pid in get_in(m, ["delivery_filter", "participant_ids"])
+
+        true ->
+          true
+      end
+    end
+
     cond do
       # Nothing given, nothing published: the Worker owes no result.
-      delegations == [] and not Enum.any?(messages, by_worker?) -> :none
-      since.(replied?) -> review(messages, epoch, replied?, seq)
-      since.(&(watch_type.(&1) == @notify_type)) -> :none
-      kind == :error and issue in @blocking_failure_issues -> {:notify, epoch, issue}
+      delegations == [] and not Enum.any?(messages, by_worker?) ->
+        :none
+
+      since.(replied?) ->
+        review(messages, epoch, replied?, seq, primary?)
+
+      since.(&(watch_type.(&1) == @notify_type and for_this_worker?.(&1))) ->
+        :none
+
+      kind == :error and issue in @blocking_failure_issues ->
+        {:notify, epoch, issue}
+
       # The reminder answered this very stop: nothing new has happened, even
       # if a restarted actor is seeing the stop for the first time.
-      since.(&(nudge?.(&1) and nudged_version.(&1) == version)) -> :none
-      since.(nudge?) -> {:notify, epoch, "stopped_after_reminder"}
-      true -> {:nudge, epoch}
+      since.(&(nudge?.(&1) and for_this_worker?.(&1) and nudged_version.(&1) == version)) ->
+        :none
+
+      since.(&(nudge?.(&1) and for_this_worker?.(&1))) ->
+        {:notify, epoch, "stopped_after_reminder"}
+
+      true ->
+        {:nudge, epoch, epoch_message_id}
     end
   end
 
   # The Worker's latest result above the epoch, unless the Router was already
-  # told about that very result.
-  defp review(messages, epoch, replied?, seq) do
+  # told about that very result. Secondary workers only trigger review when
+  # explicitly mentioning the Router (`explicit_router_mention == true`).
+  defp review(messages, epoch, replied?, seq, primary?) do
     result =
       messages
       |> Enum.filter(&(seq.(&1) > epoch and replied?.(&1)))
       |> Enum.max_by(seq)
 
     result_seq = seq.(result)
+
+    review_eligible? =
+      primary? or get_in(result, ["metadata", "explicit_router_mention"]) == true
 
     notified? =
       Enum.any?(messages, fn m ->
@@ -527,7 +806,7 @@ defmodule SalixIM.TaskWorkerWatch do
       end)
 
     case timestamp_ms(result["created_at"]) do
-      result_at when is_integer(result_at) and not notified? ->
+      result_at when is_integer(result_at) and review_eligible? and not notified? ->
         {:review, epoch, result_seq, result_at}
 
       _ ->
@@ -552,10 +831,10 @@ defmodule SalixIM.TaskWorkerWatch do
     end
   end
 
-  defp begin_review(%{review: %{result_seq: result_seq}} = state, _epoch, result_seq, _at),
+  defp begin_review(%{review: %{result_seq: result_seq}} = state, _ref, _epoch, result_seq, _at),
     do: state
 
-  defp begin_review(state, epoch, result_seq, result_at) do
+  defp begin_review(state, worker_ref, epoch, result_seq, result_at) do
     state = end_review(state)
 
     with delegator when is_binary(delegator) and delegator != "" <- state.delegator_agent_id,
@@ -568,6 +847,7 @@ defmodule SalixIM.TaskWorkerWatch do
         | router_ref: {delegator, session_id},
           router_participant_id: router["participant_id"],
           review: %{
+            worker_ref: worker_ref,
             epoch: epoch,
             result_seq: result_seq,
             result_at: result_at,
@@ -668,17 +948,27 @@ defmodule SalixIM.TaskWorkerWatch do
     with {:ok, %{"kind" => "agent_task", "status" => "active"} = conversation} <-
            ConversationActor.get_conversation(state.owner),
          true <- conversation["task_worker_agent_id"] == state.worker_agent_id,
-         false <- SalixIM.TaskLoop.loop_runs?(conversation),
+         loop_result = SalixIM.TaskLoop.get(state.group_id, state.conversation_id),
+         false <- loop_running_active?(loop_result),
+         :idle <- workers_idle_status(state),
+         %{} = worker <- Map.get(state.workers, review.worker_ref),
          {:ok, messages} <-
            Conversations.list_group_conversation_messages(
              state.group_id,
              state.conversation_id,
              tail: @messages_window
            ),
-         {:review, epoch, ^result_seq, _at} <- decide(messages, state, :stopped, nil, nil),
+         ids = %{
+           worker_participant_id: worker.participant_id,
+           worker_agent_id: worker.agent_id,
+           primary?: worker.primary?
+         },
+         {:review, epoch, ^result_seq, _at} <- decide(messages, ids, :stopped, nil, nil),
          {:ok, activity} <- SessionActivity.get(agent_id, session_id),
          {:ok, ^version} <- router_settled(activity, review.result_at) do
-      case send_status_pending(state, epoch, result_seq) do
+      {:ok, loop_view} = loop_result
+
+      case send_status_pending(state, epoch, result_seq, loop_view) do
         :ok ->
           finish_review(state)
 
@@ -699,6 +989,9 @@ defmodule SalixIM.TaskWorkerWatch do
 
       {:ok, version} when is_binary(version) ->
         refresh_router(state)
+
+      :error ->
+        retry_review(state, version)
 
       {:error, _reason} ->
         retry_review(state, version)
@@ -725,51 +1018,77 @@ defmodule SalixIM.TaskWorkerWatch do
     end
   end
 
-  defp send_status_pending(state, epoch, result_seq) do
+  defp send_status_pending(state, epoch, result_seq, loop_view) do
     send_watch_message(
       state,
       state.router_participant_id,
       "task-worker-watch:status:#{result_seq}",
       @status_type,
-      status_pending_content(),
+      status_pending_content(loop_view),
       %{"epoch_seq" => epoch, "result_seq" => result_seq}
     )
   end
 
   # `:ok`, `:none` or `:error`; only `:error` leaves the stage open.
-  defp act(_state, :none, _version, _issue, _activity), do: :none
+  defp act(_state, _ref, _worker, :none, _version, _issue, _activity, _loop_result), do: :none
 
-  defp act(state, {:nudge, epoch}, version, issue, _activity) do
+  defp act(
+         state,
+         _ref,
+         worker,
+         {:nudge, epoch, reply_to_message_id},
+         version,
+         issue,
+         _activity,
+         _loop_result
+       ) do
+    key =
+      if worker.primary?,
+        do: "task-worker-watch:nudge:#{epoch}",
+        else: "task-worker-watch:nudge:#{epoch}:#{worker.participant_id}"
+
     send_watch_message(
       state,
-      state.worker_participant_id,
-      "task-worker-watch:nudge:#{epoch}",
+      worker.participant_id,
+      key,
       @nudge_type,
       nudge_content(issue),
-      %{"epoch_seq" => epoch, "activity_version" => version, "issue" => issue}
+      %{
+        "epoch_seq" => epoch,
+        "activity_version" => version,
+        "issue" => issue,
+        "target_participant_id" => worker.participant_id
+      },
+      reply_to_message_id: reply_to_message_id
     )
   end
 
-  defp act(state, {:notify, epoch, reason}, version, issue, activity) do
+  defp act(state, ref, worker, {:notify, epoch, reason}, version, issue, activity, loop_result) do
     with delegator when is_binary(delegator) and delegator != "" <- state.delegator_agent_id,
          {:ok, participant} <- ConversationActor.get_agent_participant(state.owner, delegator) do
+      key =
+        if worker.primary?,
+          do: "task-worker-watch:notify:#{epoch}",
+          else: "task-worker-watch:notify:#{epoch}:#{worker.participant_id}"
+
       result =
         send_watch_message(
           state,
           participant["participant_id"],
-          "task-worker-watch:notify:#{epoch}",
+          key,
           @notify_type,
-          notify_content(reason, activity),
+          notify_content(reason, activity, loop_state: loop_stop_state(loop_result)),
           %{
             "epoch_seq" => epoch,
             "activity_version" => version,
             "issue" => issue,
-            "reason" => reason
+            "reason" => reason,
+            "target_participant_id" => worker.participant_id
           }
         )
 
       if result == :ok and state.qq_card? do
-        ConversationActor.notify_qq_task_activity(state.owner, state.session_ref, activity)
+        ConversationActor.notify_qq_task_activity(state.owner, ref, activity)
       end
 
       result
@@ -787,13 +1106,25 @@ defmodule SalixIM.TaskWorkerWatch do
   # A watch Message into the Task of `ids` (`owner`, `group_id`,
   # `conversation_id`: this actor's state, or `SalixIM.StationTaskWatch`'s,
   # which reminds and notifies with the same Messages for a station Task).
-  def send_watch_message(%{owner: _} = state, participant_id, key, type, content, facts) do
-    case append_system_message(state, participant_id, %{
-           "idempotency_key" => key,
-           "role_label" => "runtime",
-           "content" => content,
-           "metadata" => %{"message_type" => type, "task_worker_watch" => facts}
-         }) do
+  def send_watch_message(
+        %{owner: _} = state,
+        participant_id,
+        key,
+        type,
+        content,
+        facts,
+        opts \\ []
+      ) do
+    attrs =
+      %{
+        "idempotency_key" => key,
+        "role_label" => "runtime",
+        "content" => content,
+        "metadata" => %{"message_type" => type, "task_worker_watch" => facts}
+      }
+      |> maybe_put_reply_to(opts[:reply_to_message_id])
+
+    case append_system_message(state, participant_id, attrs) do
       {:ok, _message} ->
         CommaLog.log("task_worker_watch_message", %{
           group_id: state.group_id,
@@ -814,6 +1145,12 @@ defmodule SalixIM.TaskWorkerWatch do
     end
   end
 
+  defp maybe_put_reply_to(attrs, message_id)
+       when is_binary(message_id) and message_id != "",
+       do: Map.put(attrs, "reply_to_message_id", message_id)
+
+  defp maybe_put_reply_to(attrs, _message_id), do: attrs
+
   # Test seam: injected append failures (`true`: the next one; an integer:
   # that many in a row), to exercise the retry path.
   defp append_system_message(state, participant_id, attrs) do
@@ -833,7 +1170,48 @@ defmodule SalixIM.TaskWorkerWatch do
 
   @doc false
   # Also `SalixIM.StationTaskWatch`'s, for a Task whose Worker is a station's.
-  def status_pending_content do
+  def status_pending_content(loop_view \\ nil)
+
+  def status_pending_content(%{"trigger" => %{}, "status" => "ended"} = view) do
+    reason = view["ended_reason"] || "ended"
+
+    "The Worker published its result in this Task and stopped, and your last turn ended " <>
+      "with the Task still active, so nobody is working on it. This Task's previous Background " <>
+      "Loop has already ended (#{reason}), so it is no longer automated and will not run again " <>
+      "on its own. Decide its status now with im_api.internal.update_conversation: " <>
+      "ready_for_review when the result reached the requester and a person still needs to review " <>
+      "or decide; completed when delivered with nothing left; failed when it cannot finish. " <>
+      "Or send the Worker new instructions, or if the requester asked to restore the recurring " <>
+      "schedule, call im_api.internal.task.update with loop and command. Keep it active only if " <>
+      "it is waiting for a person's answer. Do not resend a result you already delivered."
+  end
+
+  def status_pending_content(%{"trigger" => %{}, "status" => "pending"}) do
+    "The Worker published its result in this Task and stopped, and your last turn ended " <>
+      "with the Task still active, so nobody is working on it. This Task's requested Background " <>
+      "Loop is still pending (never created), so nothing will run on its own until the Worker " <>
+      "creates it. Send the Worker new instructions with im_api.internal.send_message to finish " <>
+      "setting up the Loop, or end the Task with im_api.internal.update_conversation (cancelled " <>
+      "or failed ends the requested Loop). Keep it active only if it is waiting for a person's " <>
+      "answer. Do not resend a result you already delivered."
+  end
+
+  def status_pending_content(%{"trigger" => %{}, "status" => status} = view) do
+    loop_state =
+      case {status, view["paused_by"]} do
+        {"paused", by} when is_binary(by) and by != "" -> "paused (#{by})"
+        {state, _} -> state
+      end
+
+    "The Worker published its result in this Task and stopped, and your last turn ended " <>
+      "with the Task still active, so nobody is working on it. This Task's Background Loop is " <>
+      "currently #{loop_state} rather than running. Keep the Task active while the Loop stays " <>
+      "paused or waiting to resume, send the Worker new instructions to resume or repair it, or " <>
+      "end the Task with im_api.internal.update_conversation (completed, cancelled, or failed) " <>
+      "only if the recurring Loop should stop for good. Do not resend a result you already delivered."
+  end
+
+  def status_pending_content(_loop_view) do
     "The Worker published its result in this Task and stopped, and your last turn ended " <>
       "with the Task still active, so nobody is working on it. Decide its status now with " <>
       "im_api.internal.update_conversation: ready_for_review when the result reached the " <>
@@ -858,51 +1236,142 @@ defmodule SalixIM.TaskWorkerWatch do
   end
 
   @doc false
-  def notify_content("provider_quota_exhausted", _activity) do
-    "The Worker for this Task is blocked (provider_quota_exhausted): the model provider " <>
+  def notify_content(reason, activity, opts \\ [])
+
+  def notify_content("provider_quota_exhausted", _activity, opts) do
+    loop_state = Keyword.get(opts, :loop_state)
+
+    "#{notify_subject(loop_state)} is blocked (provider_quota_exhausted): the model provider " <>
       "account it uses, the workspace's own API key or subscription, is out of credits or " <>
       "quota. Tell the requester to add funds or raise the limit with that provider; Comma " <>
       "credits do not fix this. Do not wait_for it again or retry it until that changes. " <>
-      "The Task has not completed; use im_api.internal.update_conversation to mark it failed."
+      blocked_notify_tail(loop_state, :fail_only)
   end
 
-  def notify_content("model_unavailable", _activity) do
-    "The Worker for this Task is blocked (model_unavailable): it cannot use its configured " <>
+  def notify_content("model_unavailable", _activity, opts) do
+    loop_state = Keyword.get(opts, :loop_state)
+
+    "#{notify_subject(loop_state)} is blocked (model_unavailable): it cannot use its configured " <>
       "model right now, and new instructions fail the same way. Tell the requester to choose " <>
       "another model for this Worker in Settings > Model & API, or, if the model service is " <>
       "temporarily out, to try again later. " <>
       "Do not wait_for it again or retry it until that changes. " <>
-      "The Task has not completed; use im_api.internal.update_conversation to mark it failed."
+      blocked_notify_tail(loop_state, :fail_only)
   end
 
-  def notify_content(reason, activity) when reason in ~w(quota_exhausted rate_limited) do
+  def notify_content(reason, activity, opts) when reason in ~w(quota_exhausted rate_limited) do
     # The activity was re-read and version-fenced in handle_timeout. Carry its
     # bounded runtime diagnosis, including a provider reset time when present.
     detail = activity["status"] |> text() |> String.slice(0, 320)
+    loop_state = Keyword.get(opts, :loop_state)
 
-    "The Worker for this Task is blocked (#{reason}). #{detail} " <>
+    "#{notify_subject(loop_state)} is blocked (#{reason}). #{detail} " <>
       "Tell the requester that the external Worker hit a usage limit and include the " <>
       "provider reset time if present; do not promise automatic recovery. " <>
       "Do not wait_for it again or retry it repeatedly while limited. " <>
-      "The Task has not completed; use im_api.internal.update_conversation to mark it failed, " <>
+      blocked_notify_tail(loop_state, :fail_or_retry)
+  end
+
+  def notify_content(reason, _activity, opts) when reason in @billing_denial_issues do
+    loop_state = Keyword.get(opts, :loop_state)
+
+    "#{notify_subject(loop_state)} is blocked by billing (#{reason}): the workspace cannot pay " <>
+      "for the Worker's model requests. Tell the requester that the workspace is out of " <>
+      "usage credits or its billing account is unavailable, and that they must add credits " <>
+      "or fix billing before #{if(loop_state == :active, do: "runs", else: "the Task")} can continue. " <>
+      "This is not a platform outage. Do not wait_for it again or retry it until billing changes. " <>
+      blocked_notify_tail(loop_state, :fail_only)
+  end
+
+  def notify_content(reason, _activity, opts) do
+    case Keyword.get(opts, :loop_state) do
+      :active ->
+        "The Worker for this Loop Task stopped without publishing a result for this run (#{reason}). " <>
+          "You are the Task creator and must decide: send it new instructions with " <>
+          "im_api.internal.send_message, keep the Task active so its Background Loop stays " <>
+          "scheduled, or mark the Task failed or cancelled with im_api.internal.update_conversation " <>
+          "only if the recurring Loop itself should end for good. Do not wait_for it again."
+
+      :paused ->
+        "The Worker for this Loop Task stopped without publishing a result (#{reason}). " <>
+          "Its Background Loop is currently paused rather than running, and has not ended. " <>
+          "Send it new instructions with im_api.internal.send_message to resume or repair the Loop, " <>
+          "or mark the Task failed or cancelled with im_api.internal.update_conversation only if " <>
+          "the recurring Loop should end for good. Do not wait_for it again."
+
+      :failed ->
+        "The Worker for this Loop Task stopped without publishing a result (#{reason}). " <>
+          "Its Background Loop is currently stopped in a failed state rather than running, and has " <>
+          "not ended. Send it new instructions with im_api.internal.send_message to repair the Loop, " <>
+          "or mark the Task failed or cancelled with im_api.internal.update_conversation if the " <>
+          "recurring Loop should end for good. Do not wait_for it again."
+
+      :pending ->
+        "The Worker for this Loop Task stopped without publishing a result (#{reason}) while its " <>
+          "requested Background Loop is still pending (never created), so nothing will run on its " <>
+          "own. Send it new instructions with im_api.internal.send_message to finish setup, or mark " <>
+          "the Task failed or cancelled with im_api.internal.update_conversation (which ends the " <>
+          "requested Loop). Do not wait_for it again."
+
+      nil ->
+        "The Worker for this Task stopped without publishing a result (#{reason}). " <>
+          "You are the Task creator and must decide: send it new instructions with " <>
+          "im_api.internal.send_message, mark the Task failed or cancelled with " <>
+          "im_api.internal.update_conversation, or create a new Task. Do not wait_for it again."
+    end
+  end
+
+  defp notify_subject(:active), do: "This run of the Loop Task"
+  defp notify_subject(_other), do: "The Worker for this Task"
+
+  defp blocked_notify_tail(:active, _mode) do
+    "Keep the Task active so its Background Loop stays scheduled; only mark it " <>
+      "failed or cancelled with im_api.internal.update_conversation if the " <>
+      "requester asks to stop the recurring Loop (ending the Task ends its Loop for good)."
+  end
+
+  defp blocked_notify_tail(:paused, _mode) do
+    "This Task's Background Loop is currently paused rather than running, but has not ended. " <>
+      "Keep the Task active so the Loop can be resumed once resolved; only mark it failed or " <>
+      "cancelled with im_api.internal.update_conversation if the requester asks to stop the " <>
+      "recurring Loop for good."
+  end
+
+  defp blocked_notify_tail(:failed, _mode) do
+    "This Task's Background Loop is currently stopped in a failed state rather than running, " <>
+      "so nothing will run on its own once resolved until the Worker repairs it via " <>
+      "im_api.internal.send_message; mark the Task failed or cancelled with " <>
+      "im_api.internal.update_conversation if the recurring Loop should end for good."
+  end
+
+  defp blocked_notify_tail(:pending, _mode) do
+    "This Task's requested Background Loop is still pending (never created), so nothing will " <>
+      "run on its own once resolved until the Worker receives instructions again with " <>
+      "im_api.internal.send_message, or mark the Task failed with " <>
+      "im_api.internal.update_conversation (which ends the requested Loop)."
+  end
+
+  defp blocked_notify_tail(nil, :fail_or_retry) do
+    "The Task has not completed; use im_api.internal.update_conversation to mark it failed, " <>
       "or explicitly arrange a later retry."
   end
 
-  def notify_content(reason, _activity) when reason in @billing_denial_issues do
-    "The Worker for this Task is blocked by billing (#{reason}): the workspace cannot pay " <>
-      "for the Worker's model requests. Tell the requester that the workspace is out of " <>
-      "usage credits or its billing account is unavailable, and that they must add credits " <>
-      "or fix billing before the Task can continue. This is not a platform outage. " <>
-      "Do not wait_for it again or retry it until billing changes. " <>
-      "The Task has not completed; use im_api.internal.update_conversation to mark it failed."
+  defp blocked_notify_tail(nil, :fail_only) do
+    "The Task has not completed; use im_api.internal.update_conversation to mark it failed."
   end
 
-  def notify_content(reason, _activity) do
-    "The Worker for this Task stopped without publishing a result (#{reason}). " <>
-      "You are the Task creator and must decide: send it new instructions with " <>
-      "im_api.internal.send_message, mark the Task failed or cancelled with " <>
-      "im_api.internal.update_conversation, or create a new Task. Do not wait_for it again."
-  end
+  defp loop_running_active?({:ok, %{"status" => "active"} = view}),
+    do: SalixIM.TaskLoop.running?(view)
+
+  defp loop_running_active?({:ok, _view}), do: false
+  defp loop_running_active?({:error, _reason}), do: true
+
+  defp loop_stop_state({:ok, %{"trigger" => %{}, "status" => "active"}}), do: :active
+  defp loop_stop_state({:ok, %{"trigger" => %{}, "status" => "paused"}}), do: :paused
+  defp loop_stop_state({:ok, %{"trigger" => %{}, "status" => "pending"}}), do: :pending
+  defp loop_stop_state({:ok, %{"trigger" => %{}, "status" => "failed"}}), do: :failed
+  defp loop_stop_state({:ok, _view}), do: nil
+  defp loop_stop_state({:error, _reason}), do: :active
 
   defp now, do: SystemsClock.system_time(:millisecond)
 

@@ -3,6 +3,7 @@ name: show-screen
 description: Show the user a live screen in the chat, as a card they open and drive in Comma. Use when they ask to see an app, an iOS Simulator, an Android emulator or phone, or their computer's screen (我要看 simulator, 启动起来我看看, show me the app). Do not send screenshots instead.
 metadata:
   displayName: Show a screen
+prompt_summary: "Show a live screen card (never a screenshot) when asked to view a device/simulator/app (我要看 simulator, 跑起来给我看, 启动起来我看看, show me the app)."
 ---
 
 # Show a screen

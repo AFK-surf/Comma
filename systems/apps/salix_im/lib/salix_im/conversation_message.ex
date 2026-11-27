@@ -75,6 +75,7 @@ defmodule SalixIM.ConversationMessage do
          {:ok, attrs} <- validate(attrs),
          :ok <- reject_owner_identity(attrs),
          :ok <- reject_agent_text_markers(attrs),
+         :ok <- reject_agent_serialized_content_blocks(attrs),
          :ok <- SalixIM.ConversationQuestion.prepare(attrs) do
       {:ok, attrs}
     end
@@ -120,8 +121,14 @@ defmodule SalixIM.ConversationMessage do
     # The request fingerprint describes caller input. Apply the server-selected
     # reply target afterward so retries retain the first committed Message,
     # including Messages written before automatic association.
-    case attrs[:default_reply_to_message_id] do
-      target when is_binary(target) -> Map.put_new(message, "reply_to_message_id", target)
+    message =
+      case attrs[:default_reply_to_message_id] do
+        target when is_binary(target) -> Map.put_new(message, "reply_to_message_id", target)
+        _ -> message
+      end
+
+    case attrs[:default_thread_root_message_id] do
+      root when is_binary(root) -> Map.put_new(message, "thread_root_message_id", root)
       _ -> message
     end
   end
@@ -208,6 +215,36 @@ defmodule SalixIM.ConversationMessage do
   def reject_agent_text_markers(_attrs), do: :ok
 
   @doc """
+  Rejects an agent-authored Message whose `text` block is a JSON-encoded array
+  of Comma content blocks (for example `[{"type":"text","text":"..."}]`).
+
+  Such strings leak internal block wire format to readers instead of rendering
+  as structured blocks. The sender must pass structured blocks directly in the
+  `content` list instead.
+
+  Enforced on append (`prepare/1`) only: persisted rows keep validating through
+  `validate/1`, so historical Messages remain readable.
+  """
+  @spec reject_agent_serialized_content_blocks(map()) :: :ok | {:error, term()}
+  def reject_agent_serialized_content_blocks(attrs) when is_map(attrs) do
+    if trim(attrs["actor_type"]) == "agent" and
+         has_serialized_content_block_array?(attrs["content"]) do
+      Logger.warning(
+        "salix_im rejected agent Message text containing a JSON-encoded content block array"
+      )
+
+      {:error,
+       {:bad_request,
+        "agent Message text block must not contain a JSON-encoded content block array; " <>
+          "pass structured content blocks directly in the content list instead"}}
+    else
+      :ok
+    end
+  end
+
+  def reject_agent_serialized_content_blocks(_attrs), do: :ok
+
+  @doc """
   Enforcement for agent text carrying a raw inline Task marker line.
 
   `:reject` (default) fails the append with an actionable error; `:off` keeps
@@ -269,7 +306,11 @@ defmodule SalixIM.ConversationMessage do
            is_integer(block["version"]) and block["version"] >= 1 and
              is_binary(block["ui_ref"]) and
              byte_size(block["ui_ref"]) in 1..100 and is_binary(block["path"]) and
-             String.starts_with?(block["path"], "/") and is_binary(block["summary"]) and
+             String.starts_with?(block["path"], "/") and
+             (is_nil(block["title"]) or
+                (is_binary(block["title"]) and String.length(block["title"]) in 1..200 and
+                   String.trim(block["title"]) != "")) and
+             is_binary(block["summary"]) and
              String.length(block["summary"]) in 1..4000 and block["text"] == block["summary"] and
              not Map.has_key?(block, "html") and not Map.has_key?(block, "script") and
              (is_nil(block["origin_task_id"]) or
@@ -437,7 +478,17 @@ defmodule SalixIM.ConversationMessage do
           "kind" => "agent_task",
           "presentation" => "inline"
         } = ref ->
-          map_size(ref) == 4 and Ids.valid_conversation_id?(conversation_id)
+          Ids.valid_conversation_id?(conversation_id) and
+            case Map.drop(ref, ~w(type conversation_id kind presentation)) do
+              empty when map_size(empty) == 0 ->
+                true
+
+              %{"group_id" => group_id} = extra when map_size(extra) == 1 ->
+                Ids.valid_group_id?(group_id)
+
+              _ ->
+                false
+            end
 
         _ref ->
           false
@@ -542,6 +593,17 @@ defmodule SalixIM.ConversationMessage do
         refs -> Map.put(delivery, @owner_inline_task_refs_v1_field, refs)
       end
 
+    # Product-managed Task kinds (such as desktop meetings) travel on the delivery
+    # so the Router can identify the Task even before reading its full history.
+    delivery =
+      case conversation["metadata"] do
+        %{"desktop_meeting" => %{} = meeting} when map_size(meeting) > 0 ->
+          Map.put(delivery, "conversation_task_kind", "desktop_meeting")
+
+        _other ->
+          delivery
+      end
+
     # The Task requester's device timezone, a display hint for Agent messages.
     delivery =
       case conversation["metadata"] do
@@ -635,6 +697,25 @@ defmodule SalixIM.ConversationMessage do
   end
 
   @doc """
+  Whether a committed Message carries an explicit visibility restriction:
+  `delivery_filter` non-nil (canonical `%{"participant_ids" => ids}` map or
+  legacy list) OR explicit `mentions` (`%{"participant_ids" => list}`),
+  matching `addressed_to?/2`. Truly public messages return `false`.
+  """
+  @spec explicit_visibility_restriction?(map()) :: boolean()
+  def explicit_visibility_restriction?(%{} = message) do
+    not is_nil(message["delivery_filter"]) or explicit_mentions_present?(message)
+  end
+
+  def explicit_visibility_restriction?(_message), do: false
+
+  defp explicit_mentions_present?(%{"mentions" => %{"participant_ids" => ids}})
+       when is_list(ids),
+       do: true
+
+  defp explicit_mentions_present?(_message), do: false
+
+  @doc """
   Whether a participant could already see a committed Message: it wrote the
   Message, or the Message was addressed to it.
   """
@@ -659,7 +740,10 @@ defmodule SalixIM.ConversationMessage do
       case participant["actor_type"] do
         "agent" ->
           trim(participant["agent_id"]) != "" and participant["state"] != "inactive" and
-            trim(participant["agent_id"]) != sender_agent_id
+            if(sender_participant_id != "",
+              do: participant_id != sender_participant_id,
+              else: trim(participant["agent_id"]) != sender_agent_id
+            )
 
         "provider" ->
           trim(participant["provider"]) != "" and participant["state"] != "inactive" and
@@ -676,9 +760,20 @@ defmodule SalixIM.ConversationMessage do
     %{"messages" => mode} = participant["notification_filter"]
 
     case mode do
-      "all" -> true
-      "mentioned" -> mentioned?(participant["participant_id"], message)
-      "none" -> false
+      "none" ->
+        false
+
+      _ ->
+        case get_in(message, ["metadata", "wake_targets"]) do
+          wake_targets when is_list(wake_targets) ->
+            participant["participant_id"] in wake_targets
+
+          _ ->
+            case mode do
+              "all" -> true
+              "mentioned" -> mentioned?(participant["participant_id"], message)
+            end
+        end
     end
   end
 
@@ -769,6 +864,62 @@ defmodule SalixIM.ConversationMessage do
   end
 
   defp agent_text_marker_lines(_content), do: []
+
+  defp has_serialized_content_block_array?(content) when is_list(content) do
+    Enum.any?(content, fn
+      %{"type" => "text", "text" => text} when is_binary(text) ->
+        serialized_content_block_array?(text)
+
+      _block ->
+        false
+    end)
+  end
+
+  defp has_serialized_content_block_array?(_content), do: false
+
+  defp serialized_content_block_array?(text) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    if String.starts_with?(trimmed, "[") and String.ends_with?(trimmed, "]") do
+      case Jason.decode(trimmed) do
+        {:ok, [_ | _] = items} -> Enum.all?(items, &serialized_content_block?/1)
+        _ -> false
+      end
+    else
+      false
+    end
+  end
+
+  defp serialized_content_block?(%{"type" => "text", "text" => text} = block)
+       when is_binary(text) and map_size(block) == 2,
+       do: true
+
+  defp serialized_content_block?(%{"type" => "dynamic_ui", "ui_ref" => ui_ref})
+       when is_binary(ui_ref),
+       do: true
+
+  defp serialized_content_block?(%{"type" => "conversation_ref", "conversation_id" => id})
+       when is_binary(id),
+       do: true
+
+  defp serialized_content_block?(%{"type" => "file", "path" => path}) when is_binary(path),
+    do: true
+
+  defp serialized_content_block?(%{"type" => "image", "path" => path}) when is_binary(path),
+    do: true
+
+  defp serialized_content_block?(%{"type" => "image", "file_ref" => %{"path" => path}})
+       when is_binary(path),
+       do: true
+
+  defp serialized_content_block?(%{"type" => "mini_app", "app_id" => id}) when is_binary(id),
+    do: true
+
+  defp serialized_content_block?(%{"type" => "local_file", "local_file_ref" => ref})
+       when is_binary(ref),
+       do: true
+
+  defp serialized_content_block?(_block), do: false
 
   defp emit_agent_text_marker_rejected(markers) do
     SystemsRuntime.Telemetry.execute(

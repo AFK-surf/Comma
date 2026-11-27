@@ -289,13 +289,19 @@ defmodule SalixEnv.LocalFileRefs do
   defp require_current_device(device, route) do
     owner = device["owner_user_id"] || get_in(device, ["meta", "owner_user_id"])
 
-    if device["status"] == "connected" and owner == route["owner_user_id"] and
-         device["device_id"] == route["stable_device_id"] and
-         is_binary(device["connector_run_id"]) and device["connector_run_id"] != "" and
-         is_integer(device["connection_generation"]) and device["connection_generation"] > 0 do
-      :ok
-    else
-      {:error, :local_file_unavailable}
+    cond do
+      owner != route["owner_user_id"] or device["device_id"] != route["stable_device_id"] ->
+        {:error, :local_file_unavailable}
+
+      device["status"] != "connected" ->
+        {:error, :local_file_device_disconnected}
+
+      is_binary(device["connector_run_id"]) and device["connector_run_id"] != "" and
+        is_integer(device["connection_generation"]) and device["connection_generation"] > 0 ->
+        :ok
+
+      true ->
+        {:error, :local_file_unavailable}
     end
   end
 

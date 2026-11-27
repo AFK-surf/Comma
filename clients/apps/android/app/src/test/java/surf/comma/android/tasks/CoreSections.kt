@@ -6,6 +6,6 @@ package surf.comma.android.tasks
  */
 internal fun coreSections(tasks: List<TaskSummary>): List<TaskSection> =
     listOf(TaskStatusBucket.IN_PROGRESS, TaskStatusBucket.NEEDS_REVIEW, TaskStatusBucket.DONE,
-        TaskStatusBucket.CANCELLED).map { bucket ->
+        TaskStatusBucket.CANCELLED, TaskStatusBucket.LOOPS).map { bucket ->
         TaskSection(bucket, tasks.filter { it.bucket == bucket }.sortedWith(TASK_RECENCY_ORDER).map { it.id })
     }

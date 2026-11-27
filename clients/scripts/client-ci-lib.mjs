@@ -121,6 +121,20 @@ export function synchCiChanged(paths) {
   );
 }
 
+// The Raycast extension is its own npm project. Its build type-checks the command files, which import
+// @raycast/api and are in no project of the clients' type check (scripts/check-typecheck-coverage.ts).
+const raycastRoot = "clients/apps/raycast/";
+
+export function raycastCiChanged(paths) {
+  return paths.some(
+    (path) =>
+      path === ".github/workflows/client-checks.yml" ||
+      path === "clients/scripts/client-ci.mjs" ||
+      path === "clients/scripts/client-ci-lib.mjs" ||
+      (path.startsWith(raycastRoot) && !path.endsWith(".md"))
+  );
+}
+
 export function appleCiChanged(paths) {
   return paths.some(
     (path) =>
@@ -249,6 +263,7 @@ const gateOutputs = {
   "e2e-test": "electron",
   "e2e-electron-shell": "electron",
   "synch-binary-smoke": "synch",
+  "raycast-extension": "raycast",
   storybook: "storybook",
   "storybook-e2e": "storybook",
   "website-smoke": "website",

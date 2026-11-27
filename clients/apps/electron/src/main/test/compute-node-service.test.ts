@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  ComputeNodeCommandError,
   ComputeNodeService,
   AgentVMMCommandAdapter,
   ComputeNodeSessionChangedError,
@@ -15,6 +16,8 @@ import type { MainClock } from "../clock";
 import type { HostPreparationState } from "../modules/compute-node/host-preparation";
 import { AccountComputeNodeService } from "../modules/compute-node/account-service";
 import { LocalComputeOperator } from "../modules/compute-node/local-operator";
+import type { LocalHostMaintenance } from "../modules/compute-node/host-maintenance";
+import type { HostMaintenanceState } from "@comma/native-bridge";
 import { ComputeNodeTicketNotRetryableError } from "../modules/compute-node/install-authorization";
 import { signedInSessionSnapshotSchema } from "@comma/session-contract";
 
@@ -368,7 +371,7 @@ it("automatically observes a successful native claim until the connection is rea
   await f.assertOneMutation();
 });
 
-it("bounds successful-claim observation across expiry and restart, and only an explicit Continue opens another window", async () => {
+it("bounds successful-claim observation while running and automatically resumes on restart", async () => {
   const f = await observingClaim();
   const request = f.service.state().currentRequest!.requestId;
   f.expire();
@@ -384,28 +387,15 @@ it("bounds successful-claim observation across expiry and restart, and only an e
   const restarted = await f.open();
   await restarted.refresh();
   expect(restarted.state()).toMatchObject({
-    problem: "continuation_paused",
+    status: "processing",
+    currentRequest: { requestId: request },
     operation: { outcome: "succeeded" },
   });
-  expect(f.timers.size).toBe(0);
-  await f.changeNative({ connected: true });
-  await restarted.refresh();
-  expect(restarted.state().status).toBe("ready");
   expect(restarted.state().problem).toBeUndefined();
-
-  await f.changeNative({ connected: false });
-  const missingWindow = await f.open();
-  await missingWindow.refresh();
-  expect(missingWindow.state()).toMatchObject({
-    problem: "continuation_paused",
-    primaryAction: "continue",
-    currentRequest: { requestId: request },
-  });
-  expect(f.timers.size).toBe(0);
-  await missingWindow.continue();
-  expect(missingWindow.state().status).toBe("processing");
+  expect(f.timers.size).toBe(1);
   await f.changeNative({ connected: true });
   expect((await f.fire()).status).toBe("ready");
+  expect(restarted.state().problem).toBeUndefined();
   await f.assertOneMutation();
 });
 
@@ -585,9 +575,11 @@ it("dispatches an accepted enable by its original kind and never revives termina
   await service.refresh();
   await service.continue();
   await service.continue();
-  expect(f.adapter.enable).toHaveBeenCalledTimes(2);
+  // open() automatically resumed the pending accepted-enable once, followed by two explicit continues.
+  expect(f.adapter.enable).toHaveBeenCalledTimes(3);
   expect(f.adapter.enable).toHaveBeenNthCalledWith(1, "accepted-enable", "reg-1");
   expect(f.adapter.enable).toHaveBeenNthCalledWith(2, "accepted-enable", "reg-1");
+  expect(f.adapter.enable).toHaveBeenNthCalledWith(3, "accepted-enable", "reg-1");
   expect(f.owner.configure).not.toHaveBeenCalled();
   expect(f.owner.authorize).not.toHaveBeenCalled();
   expect(f.owner.retry).not.toHaveBeenCalled();
@@ -596,11 +588,11 @@ it("dispatches an accepted enable by its original kind and never revives termina
 
   f.receipts.get("accepted-enable")!.retryable = false;
   await service.continue();
-  expect(f.adapter.enable).toHaveBeenCalledTimes(2);
+  expect(f.adapter.enable).toHaveBeenCalledTimes(3);
   expect(service.state().primaryAction).toBe("check_status");
   f.receipts.get("accepted-enable")!.outcome = "superseded";
   await service.continue();
-  expect(f.adapter.enable).toHaveBeenCalledTimes(2);
+  expect(f.adapter.enable).toHaveBeenCalledTimes(3);
   expect(service.state().currentRequest?.requestId).toBe("accepted-enable");
   expect(service.state().status).toBe("action_required");
 });
@@ -1560,4 +1552,1268 @@ it("does not rotate a ticket during automatic continuation of a retryable claim"
   ).toEqual([
     { command: "registration-claim", requestId: f.requestId, descriptor: false },
   ]);
+});
+
+/** A node with a saved claim and Registration, read through the real adapter at a helper path the test controls. */
+async function savedNode(helper: "missing" | "failing") {
+  const f = await fixture();
+  const helperPath = join(f.filePath + ".host", "agent-vmm-lifecycle");
+  if (helper === "failing") {
+    await mkdir(dirname(helperPath), { recursive: true });
+    await writeFile(helperPath, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  }
+  const intent = {
+    version: 5,
+    revision: 1,
+    desiredEnabled: true,
+    workspaceId: "workspace",
+    registrationId: "reg-1",
+    authorizationRequestId: "claim-1",
+    request: { requestId: "claim-1", kind: "configure" },
+    continuation: { deadlineAt: 1000 + 45 * 60_000 },
+  };
+  await writeFile(f.filePath, JSON.stringify(intent));
+  const timers = new Set<() => void>();
+  const service = await ComputeNodeService.open({
+    filePath: f.filePath,
+    adapter: new AgentVMMCommandAdapter(helperPath),
+    installAuthorization: f.owner,
+    platform: "darwin",
+    arch: "arm64",
+    clock: {
+      now: () => 1000,
+      setTimer: (_delay, run) => {
+        timers.add(run);
+        return () => {
+          timers.delete(run);
+        };
+      },
+    },
+    hostInstallation: async () => "not_installed",
+  });
+  await service.refresh();
+  return { ...f, service, timers, intent };
+}
+
+it("shows an uninstalled Host as uninstalled with Reinstall and keeps the saved request and Registration", async () => {
+  const f = await savedNode("missing");
+  expect(f.service.state()).toMatchObject({
+    status: "action_required",
+    problem: "host_uninstalled",
+    primaryAction: "update_host",
+    observed: { host: "absent" },
+    facets: { installationHealth: "absent" },
+    currentRequest: { requestId: "claim-1", kind: "configure" },
+    bindingRegistrationId: "reg-1",
+  });
+  expect(f.timers.size).toBe(0);
+  const saved = JSON.parse(await readFile(f.filePath, "utf8"));
+  expect(saved).toMatchObject({
+    registrationId: "reg-1",
+    authorizationRequestId: "claim-1",
+    request: f.intent.request,
+  });
+  expect(f.owner.authorize).not.toHaveBeenCalled();
+  expect(f.owner.retry).not.toHaveBeenCalled();
+});
+
+it("keeps a helper that exists but cannot be read as an unknown operation", async () => {
+  const f = await savedNode("failing");
+  expect(f.service.state()).toMatchObject({
+    status: "action_required",
+    problem: "operation_unknown",
+    primaryAction: "continue",
+  });
+});
+
+it("refreshes the node after a successful uninstall so it shows the uninstalled Host at once", async () => {
+  const f = await fixture();
+  let installation: "installed" | "not_installed" = "installed";
+  const uninstalled = {
+    installation: "not_installed" as const,
+    updateAvailable: false,
+    operation: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      action: "uninstall" as const,
+      dataPolicy: "preserve" as const,
+      phase: "completed" as const,
+      outcome: "succeeded" as const,
+    },
+  };
+  let settled: ((state: typeof uninstalled) => void) | undefined;
+  const maintenance = {
+    onHostReset: () => () => {},
+    onSettled: (listener: typeof settled) => {
+      settled = listener;
+      return () => {};
+    },
+    continuePending: async () => false,
+    state: async () => ({ installation, updateAvailable: false }),
+    maintain: async () => {
+      installation = "not_installed";
+      // Like the real maintenance, its listeners hear the success before the call returns.
+      settled?.(uninstalled);
+      return uninstalled;
+    },
+  } as unknown as LocalHostMaintenance;
+  const hostUninstalled = vi.spyOn(ComputeNodeService.prototype, "hostUninstalled");
+  const shown = deferred<void>();
+  const session = signedInSessionSnapshotSchema.parse({
+    contractVersion: 1,
+    authority: { authorityInstanceId: "main", kind: "electron_main" },
+    cleanup: { revocation: "idle" },
+    generation: 1,
+    revision: 1,
+    phase: "signed_in",
+    principal: { userId: "account", email: "account@example.test" },
+    session: {
+      audience: "https://example.test",
+      sessionId: "session",
+      expiresAtEpochSeconds: 1900000000,
+    },
+  });
+  const account = new AccountComputeNodeService(
+    {
+      filePath: f.filePath,
+      adapter: f.adapter,
+      installAuthorization: f.owner,
+      platform: "darwin",
+      arch: "arm64",
+      clock: f.clock,
+      onStateChanged: (state) => {
+        if (state.problem === "host_uninstalled") shown.resolve();
+      },
+    },
+    session,
+    undefined,
+    maintenance
+  );
+  await account.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  expect(account.state().status).toBe("ready");
+  f.adapter.observe = async () => ({
+    host: "ready",
+    connector: "ready",
+    readability: "unreadable",
+    salix: "unregistered",
+    registration: "unreadable",
+    reason: "helper_missing",
+  });
+  f.adapter.receipt = async () => {
+    throw Object.assign(new Error("helper absent"), { code: "ENOENT" });
+  };
+  await account.maintainHost({ action: "uninstall", dataPolicy: "preserve" });
+  await shown.promise;
+  expect(account.state()).toMatchObject({
+    status: "action_required",
+    problem: "host_uninstalled",
+    primaryAction: "update_host",
+    observed: { host: "absent" },
+  });
+  expect(hostUninstalled).toHaveBeenCalledTimes(1);
+});
+
+it("shows an uninstall and a reinstall that succeed on a background retry on the node", async () => {
+  const f = await fixture();
+  let settled: ((state: HostMaintenanceState) => void) | undefined;
+  let installation: HostMaintenanceState["installation"] = "installed";
+  const maintenance = {
+    onHostReset: () => () => {},
+    onSettled: (listener: typeof settled) => {
+      settled = listener;
+      return () => {};
+    },
+    continuePending: async () => true,
+    state: async () => ({ installation, updateAvailable: false }),
+  } as unknown as LocalHostMaintenance;
+  const hostUninstalled = vi.spyOn(ComputeNodeService.prototype, "hostUninstalled");
+  const hostReinstalled = vi.spyOn(ComputeNodeService.prototype, "hostReinstalled");
+  const session = signedInSessionSnapshotSchema.parse({
+    contractVersion: 1,
+    authority: { authorityInstanceId: "main", kind: "electron_main" },
+    cleanup: { revocation: "idle" },
+    generation: 1,
+    revision: 1,
+    phase: "signed_in",
+    principal: { userId: "account", email: "account@example.test" },
+    session: {
+      audience: "https://example.test",
+      sessionId: "session",
+      expiresAtEpochSeconds: 1900000000,
+    },
+  });
+  const account = new AccountComputeNodeService(
+    {
+      filePath: f.filePath,
+      adapter: f.adapter,
+      installAuthorization: f.owner,
+      platform: "darwin",
+      arch: "arm64",
+      clock: f.clock,
+    },
+    session,
+    undefined,
+    maintenance
+  );
+  await account.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  expect(account.state().status).toBe("ready");
+  const observe = f.adapter.observe,
+    receipt = f.adapter.receipt;
+  f.adapter.observe = async () => ({
+    host: "ready",
+    connector: "ready",
+    readability: "unreadable",
+    salix: "unregistered",
+    registration: "unreadable",
+    reason: "helper_missing",
+  });
+  f.adapter.receipt = async () => {
+    throw Object.assign(new Error("helper absent"), { code: "ENOENT" });
+  };
+  const succeeded = (requestId: string, action: "uninstall" | "reinstall") => ({
+    installation,
+    updateAvailable: false,
+    operation: {
+      requestId,
+      action,
+      dataPolicy: "preserve" as const,
+      phase: "completed" as const,
+      outcome: "succeeded" as const,
+    },
+  });
+  // The first try failed and returned; the retry timer later settles the same request.
+  installation = "not_installed";
+  settled!(succeeded("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", "uninstall"));
+  // The refresh queues behind the one the settled uninstall started.
+  await account.refresh();
+  expect(account.state()).toMatchObject({
+    status: "action_required",
+    problem: "host_uninstalled",
+    observed: { host: "absent" },
+  });
+  expect(hostUninstalled).toHaveBeenCalledTimes(1);
+
+  f.adapter.observe = observe;
+  if (receipt) f.adapter.receipt = receipt;
+  else delete f.adapter.receipt;
+  installation = "installed";
+  settled!(succeeded("bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", "reinstall"));
+  await account.refresh();
+  expect(account.state()).toMatchObject({ status: "ready" });
+  expect(hostReinstalled).toHaveBeenCalledTimes(1);
+});
+
+it("parses optional dataEpoch, deviceId, and deviceIdentityState from lifecycle status without failing on older helpers", async () => {
+  const newAdapter = new AgentVMMCommandAdapter("helper", async () =>
+    JSON.stringify({
+      contractVersion: 1,
+      hostInstalled: true,
+      hostLoaded: true,
+      hostReadable: true,
+      hostHealthy: true,
+      connectorInstalled: true,
+      connectorLoaded: true,
+      registrationRead: "present",
+      registrationState: "enabled",
+      dataEpoch: 3,
+      deviceId: "dev-mac-a",
+      deviceIdentityState: "ready",
+    })
+  );
+  await expect(newAdapter.observe("reg-1")).resolves.toMatchObject({
+    dataEpoch: 3,
+    deviceId: "dev-mac-a",
+    deviceIdentityState: "ready",
+    registration: "present",
+  });
+
+  const legacyAdapter = new AgentVMMCommandAdapter("helper", async () =>
+    JSON.stringify({
+      contractVersion: 1,
+      hostInstalled: true,
+      hostLoaded: true,
+      hostReadable: true,
+      hostHealthy: true,
+      connectorInstalled: false,
+      connectorLoaded: false,
+      registrationRead: "absent",
+    })
+  );
+  const legacy = await legacyAdapter.observe("reg-1");
+  expect(legacy.readability).toBe("readable");
+  expect(legacy.dataEpoch).toBeUndefined();
+  expect(legacy.deviceId).toBeUndefined();
+  expect(legacy.deviceIdentityState).toBeUndefined();
+});
+
+it("never falls into continuation_paused when local registration is absent and remote hostBound is true", async () => {
+  const f = await fixture();
+  await writeFile(
+    f.filePath,
+    JSON.stringify({
+      version: 5,
+      revision: 2,
+      desiredEnabled: true,
+      workspaceId: "workspace",
+      registrationId: "reg-bound",
+      request: { requestId: "req-bound", kind: "configure" },
+      continuation: { deadlineAt: 500 },
+    })
+  );
+  vi.mocked(f.owner.inspect).mockResolvedValue({
+    status: "stopped",
+    hostBound: true,
+    deviceId: "dev-original",
+    connected: false,
+    workActivity: "idle",
+  });
+  vi.mocked(f.adapter.observe).mockResolvedValue({
+    host: "ready",
+    connector: "absent",
+    readability: "readable",
+    salix: "unregistered",
+    registration: "absent",
+    deviceId: "dev-new",
+    deviceIdentityState: "ready",
+  });
+  const service = await f.open();
+  const observed = await service.refresh();
+  expect(observed.status).toBe("action_required");
+  expect(observed.problem).toBe("authorization_attention");
+  expect(f.owner.retry).not.toHaveBeenCalled();
+});
+
+it("routes absent local registration deterministically across retry (A), recover (B), confirmed local rebind (C1), and cross-machine protection (C2)", async () => {
+  // Branch A: remote.hostBound === false && status !== removed -> owner.retry + adapter.install
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-1",
+      })
+    );
+    vi.mocked(f.owner.inspect).mockResolvedValue({
+      status: "processing",
+      hostBound: false,
+      workActivity: "idle",
+    });
+    const service = await f.open();
+    await service.configure({ desiredEnabled: true, workspaceId: "workspace" });
+    expect(f.owner.retry).toHaveBeenCalledTimes(1);
+    expect(f.adapter.install).toHaveBeenCalledTimes(1);
+    expect(f.owner.revoke).not.toHaveBeenCalled();
+  }
+
+  // Branch B: remote.hostBound === true && same deviceId && deviceIdentityState === ready -> recover
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-1",
+      })
+    );
+    let recovered = false;
+    f.owner.recoveryDescriptor = vi.fn(() => '{"registration_id":"reg-1"}');
+    f.adapter.recover = vi.fn(async (requestId) => {
+      recovered = true;
+      const receipt: NativeRequestReceipt = {
+        requestId,
+        targetRegistrationId: "reg-1",
+        kind: "registration-recover",
+        outcome: "succeeded",
+      };
+      f.receipts.set(requestId, receipt);
+      return receipt;
+    });
+    vi.mocked(f.owner.inspect).mockImplementation(async () => ({
+      status: recovered ? "ready" : "action_required",
+      hostBound: true,
+      deviceId: "dev-same",
+      connected: recovered,
+      workActivity: "idle",
+    }));
+    vi.mocked(f.adapter.observe).mockImplementation(async () => ({
+      host: "ready",
+      connector: recovered ? "ready" : "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: recovered ? "present" : "absent",
+      deviceId: "dev-same",
+      deviceIdentityState: "ready",
+    }));
+    const service = await f.open();
+    const state = await service.configure({
+      desiredEnabled: true,
+      workspaceId: "workspace",
+    });
+    expect(f.owner.recoveryDescriptor).toHaveBeenCalledTimes(1);
+    expect(f.adapter.recover).toHaveBeenCalledTimes(1);
+    expect(f.owner.retry).not.toHaveBeenCalled();
+    expect(f.owner.revoke).not.toHaveBeenCalled();
+    expect(state.status).toBe("ready");
+  }
+
+  // Branch C1: local hostDataReset() or boundDeviceId match + remote.connected === false -> revoke -> save -> authorize -> install
+  {
+    const f = await fixture();
+    const events: string[] = [];
+    let currentReg = "reg-old";
+    let present = true;
+    let localDeviceId = "dev-before-reset";
+    vi.mocked(f.owner.inspect).mockImplementation(async ({ registrationId }) => ({
+      status: registrationId === "reg-new" ? "ready" : "action_required",
+      hostBound: true,
+      deviceId: registrationId === "reg-new" ? "dev-after-reset" : "dev-before-reset",
+      connected: registrationId === "reg-new",
+      workActivity: "idle",
+    }));
+    vi.mocked(f.adapter.observe).mockImplementation(async () => ({
+      host: "ready",
+      connector: present ? "ready" : "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: present ? "present" : "absent",
+      deviceId: localDeviceId,
+      deviceIdentityState: "ready",
+    }));
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-old",
+      })
+    );
+    const service = await f.open();
+    // Observe present once so boundDeviceId is persisted.
+    await service.refresh();
+    const afterPresent = JSON.parse(await readFile(f.filePath, "utf8"));
+    expect(afterPresent.boundDeviceId).toBe("dev-before-reset");
+
+    // Simulate Host data reset: local registration absent, new deviceId.
+    present = false;
+    localDeviceId = "dev-after-reset";
+    await service.hostDataReset();
+    const afterReset = JSON.parse(await readFile(f.filePath, "utf8"));
+    expect(afterReset.resetPendingRebind).toBe(true);
+
+    vi.mocked(f.owner.revoke).mockImplementation(async ({ registrationId }) => {
+      events.push(`revoke:${registrationId}`);
+      return "removed";
+    });
+    vi.mocked(f.owner.authorize).mockImplementation(async ({ requestId }) => {
+      // Verify old registrationId was cleared and new authorizationRequestId was persisted before authorize.
+      const savedBeforeAuthorize = JSON.parse(await readFile(f.filePath, "utf8"));
+      expect(savedBeforeAuthorize.registrationId).toBeUndefined();
+      expect(savedBeforeAuthorize.resetPendingRebind).toBeUndefined();
+      expect(savedBeforeAuthorize.authorizationRequestId).toBe(requestId);
+      events.push("authorize");
+      currentReg = "reg-new";
+      return {
+        registrationId: "reg-new",
+        descriptor: '{"registration_id":"reg-new"}',
+      };
+    });
+    vi.mocked(f.adapter.install).mockImplementation(async (requestId) => {
+      events.push("install");
+      present = true;
+      const receipt: NativeRequestReceipt = {
+        requestId: requestId!,
+        targetRegistrationId: currentReg,
+        kind: "registration-claim",
+        outcome: "succeeded",
+      };
+      f.receipts.set(requestId!, receipt);
+      return receipt;
+    });
+
+    const rebound = await service.configure({
+      desiredEnabled: true,
+      workspaceId: "workspace",
+    });
+    expect(events).toEqual(["revoke:reg-old", "authorize", "install"]);
+    expect(rebound.status).toBe("ready");
+    expect(rebound.bindingRegistrationId).toBe("reg-new");
+    const afterRebind = JSON.parse(await readFile(f.filePath, "utf8"));
+    expect(afterRebind.boundDeviceId).toBe("dev-after-reset");
+    expect(afterRebind.resetPendingRebind).toBeUndefined();
+  }
+
+  // Branch C2a: Migration Assistant copied userData to another Mac while original Mac is still connected -> NEVER revoke
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-live-other-mac",
+        boundDeviceId: "dev-original-mac",
+        resetPendingRebind: true,
+      })
+    );
+    vi.mocked(f.owner.inspect).mockResolvedValue({
+      status: "ready",
+      hostBound: true,
+      deviceId: "dev-original-mac",
+      connected: true,
+      workActivity: "idle",
+    });
+    vi.mocked(f.adapter.observe).mockResolvedValue({
+      host: "ready",
+      connector: "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: "absent",
+      deviceId: "dev-migrated-mac",
+      deviceIdentityState: "ready",
+    });
+    const service = await f.open();
+    const state = await service.configure({
+      desiredEnabled: true,
+      workspaceId: "workspace",
+    });
+    expect(f.owner.revoke).not.toHaveBeenCalled();
+    expect(f.owner.authorize).not.toHaveBeenCalled();
+    expect(state.status).toBe("action_required");
+    expect(state.problem).toBe("authorization_attention");
+  }
+
+  // Branch C2b: Missing remote.deviceId and no resetPendingRebind -> NEVER revoke
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-legacy",
+      })
+    );
+    vi.mocked(f.owner.inspect).mockResolvedValue({
+      status: "action_required",
+      hostBound: true,
+      connected: false,
+      workActivity: "idle",
+    });
+    vi.mocked(f.adapter.observe).mockResolvedValue({
+      host: "ready",
+      connector: "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: "absent",
+      deviceId: "dev-mac-x",
+      deviceIdentityState: "ready",
+    });
+    const service = await f.open();
+    const state = await service.configure({
+      desiredEnabled: true,
+      workspaceId: "workspace",
+    });
+    expect(f.owner.revoke).not.toHaveBeenCalled();
+    expect(f.owner.authorize).not.toHaveBeenCalled();
+    expect(state.status).toBe("action_required");
+    expect(state.problem).toBe("authorization_attention");
+    expect(state.primaryAction).toBe("recover");
+  }
+});
+
+it("replaces a fenced old request on hostDataReset so Continue completes revoke -> authorize -> install in one step", async () => {
+  const f = await fixture();
+  const oldBlockedId = "22222222-2222-4222-8222-222222222222";
+  await writeFile(
+    f.filePath,
+    JSON.stringify({
+      version: 5,
+      revision: 3,
+      desiredEnabled: true,
+      workspaceId: "workspace",
+      registrationId: "reg-old",
+      boundDeviceId: "dev-old",
+      request: { requestId: oldBlockedId, kind: "configure" },
+    })
+  );
+  let present = false;
+  let currentReg = "reg-old";
+  const events: string[] = [];
+  vi.mocked(f.adapter.receipt!).mockImplementation(async (requestId) => {
+    if (requestId === oldBlockedId) {
+      throw new ComputeNodeCommandError("request fenced by reset", "command_failed", {
+        code: "request_blocked",
+        reason: "local_owner_fence",
+        requestId: oldBlockedId,
+      });
+    }
+    return f.receipts.get(requestId);
+  });
+  vi.mocked(f.adapter.observe).mockImplementation(async () => ({
+    host: "ready",
+    connector: present ? "ready" : "absent",
+    readability: "readable",
+    salix: "unregistered",
+    registration: present ? "present" : "absent",
+    deviceId: "dev-after-reset",
+    deviceIdentityState: "ready",
+  }));
+  vi.mocked(f.owner.inspect).mockImplementation(async ({ registrationId }) => ({
+    status: registrationId === "reg-new" ? "ready" : "action_required",
+    hostBound: true,
+    deviceId: registrationId === "reg-new" ? "dev-after-reset" : "dev-old",
+    connected: registrationId === "reg-new",
+    workActivity: "idle",
+  }));
+  vi.mocked(f.owner.revoke).mockImplementation(async ({ registrationId }) => {
+    events.push(`revoke:${registrationId}`);
+    return "removed";
+  });
+  vi.mocked(f.owner.authorize).mockImplementation(async () => {
+    events.push("authorize");
+    currentReg = "reg-new";
+    return { registrationId: "reg-new", descriptor: '{"registration_id":"reg-new"}' };
+  });
+  vi.mocked(f.adapter.install).mockImplementation(async (requestId) => {
+    events.push("install");
+    present = true;
+    const receipt: NativeRequestReceipt = {
+      requestId: requestId!,
+      targetRegistrationId: currentReg,
+      kind: "registration-claim",
+      outcome: "succeeded",
+    };
+    f.receipts.set(requestId!, receipt);
+    return receipt;
+  });
+
+  const service = await f.open();
+  const afterReset = await service.hostDataReset();
+  expect(afterReset.status).toBe("action_required");
+  expect(afterReset.problem).toBe("continuation_paused");
+  expect(afterReset.primaryAction).toBe("continue");
+  expect(afterReset.currentRequest?.requestId).not.toBe(oldBlockedId);
+
+  const converged = await service.continue();
+  expect(events).toEqual(["revoke:reg-old", "authorize", "install"]);
+  expect(converged.status).toBe("ready");
+  expect(converged.bindingRegistrationId).toBe("reg-new");
+});
+
+it("offers Continue (not recover) when manual wipe satisfies confirmedLocalReset and converges on continue()", async () => {
+  const f = await fixture();
+  await writeFile(
+    f.filePath,
+    JSON.stringify({
+      version: 5,
+      revision: 2,
+      desiredEnabled: true,
+      workspaceId: "workspace",
+      registrationId: "reg-old",
+      boundDeviceId: "dev-before-wipe",
+    })
+  );
+  let present = false;
+  let currentReg = "reg-old";
+  const events: string[] = [];
+  vi.mocked(f.adapter.observe).mockImplementation(async () => ({
+    host: "ready",
+    connector: present ? "ready" : "absent",
+    readability: "readable",
+    salix: "unregistered",
+    registration: present ? "present" : "absent",
+    deviceId: "dev-after-wipe",
+    deviceIdentityState: "ready",
+  }));
+  vi.mocked(f.owner.inspect).mockImplementation(async ({ registrationId }) => ({
+    status: registrationId === "reg-new" ? "ready" : "action_required",
+    hostBound: true,
+    deviceId: registrationId === "reg-new" ? "dev-after-wipe" : "dev-before-wipe",
+    connected: registrationId === "reg-new",
+    workActivity: "idle",
+  }));
+  vi.mocked(f.owner.revoke).mockImplementation(async ({ registrationId }) => {
+    events.push(`revoke:${registrationId}`);
+    return "removed";
+  });
+  vi.mocked(f.owner.authorize).mockImplementation(async () => {
+    events.push("authorize");
+    currentReg = "reg-new";
+    return { registrationId: "reg-new", descriptor: '{"registration_id":"reg-new"}' };
+  });
+  vi.mocked(f.adapter.install).mockImplementation(async (requestId) => {
+    events.push("install");
+    present = true;
+    const receipt: NativeRequestReceipt = {
+      requestId: requestId!,
+      targetRegistrationId: currentReg,
+      kind: "registration-claim",
+      outcome: "succeeded",
+    };
+    f.receipts.set(requestId!, receipt);
+    return receipt;
+  });
+
+  const service = await f.open();
+  const observed = await service.refresh();
+  expect(observed.status).toBe("action_required");
+  expect(observed.problem).toBe("continuation_paused");
+  expect(observed.primaryAction).toBe("continue");
+
+  const converged = await service.continue();
+  expect(events).toEqual(["revoke:reg-old", "authorize", "install"]);
+  expect(converged.status).toBe("ready");
+  expect(converged.bindingRegistrationId).toBe("reg-new");
+});
+
+it("offers remove (not doomed recover) for C2 identity mismatch while preserving recover when remote deviceId is absent", async () => {
+  // C2a: connected === true on original Mac with mismatched deviceId -> primaryAction = "remove"
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-live",
+        boundDeviceId: "dev-origin",
+        resetPendingRebind: true,
+      })
+    );
+    vi.mocked(f.owner.inspect).mockResolvedValue({
+      status: "ready",
+      hostBound: true,
+      deviceId: "dev-origin",
+      connected: true,
+      workActivity: "idle",
+    });
+    vi.mocked(f.adapter.observe).mockResolvedValue({
+      host: "ready",
+      connector: "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: "absent",
+      deviceId: "dev-migrated",
+      deviceIdentityState: "ready",
+    });
+    const service = await f.open();
+    const observed = await service.refresh();
+    expect(observed.status).toBe("action_required");
+    expect(observed.problem).toBe("authorization_attention");
+    expect(observed.primaryAction).toBe("remove");
+  }
+
+  // C2b: connected === false, mismatched deviceId, but no boundDeviceId / resetPendingRebind -> primaryAction = "remove"
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-untracked",
+      })
+    );
+    vi.mocked(f.owner.inspect).mockResolvedValue({
+      status: "action_required",
+      hostBound: true,
+      deviceId: "dev-origin",
+      connected: false,
+      workActivity: "idle",
+    });
+    vi.mocked(f.adapter.observe).mockResolvedValue({
+      host: "ready",
+      connector: "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: "absent",
+      deviceId: "dev-other",
+      deviceIdentityState: "ready",
+    });
+    const service = await f.open();
+    const observed = await service.refresh();
+    expect(observed.status).toBe("action_required");
+    expect(observed.problem).toBe("authorization_attention");
+    expect(observed.primaryAction).toBe("remove");
+  }
+
+  // Legacy server without remote.deviceId -> primaryAction = "recover" remains backwards-compatible
+  {
+    const f = await fixture();
+    await writeFile(
+      f.filePath,
+      JSON.stringify({
+        version: 5,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        registrationId: "reg-legacy",
+      })
+    );
+    vi.mocked(f.owner.inspect).mockResolvedValue({
+      status: "action_required",
+      hostBound: true,
+      connected: false,
+      workActivity: "idle",
+    });
+    vi.mocked(f.adapter.observe).mockResolvedValue({
+      host: "ready",
+      connector: "absent",
+      readability: "readable",
+      salix: "unregistered",
+      registration: "absent",
+      deviceId: "dev-local",
+      deviceIdentityState: "ready",
+    });
+    const service = await f.open();
+    const observed = await service.refresh();
+    expect(observed.status).toBe("action_required");
+    expect(observed.problem).toBe("authorization_attention");
+    expect(observed.primaryAction).toBe("recover");
+  }
+});
+
+it("silently runs automaticUpdate once per release pair when enabled and idle, and resumes node after update", async () => {
+  const f = await fixture();
+  let maintenanceState: HostMaintenanceState = {
+    installation: "installed",
+    installedReleaseId: "old-release",
+    selectedReleaseId: "new-release",
+    updateAvailable: true,
+  };
+  const automaticUpdate = vi.fn(async (): Promise<HostMaintenanceState> => {
+    maintenanceState = {
+      installation: "installed",
+      installedReleaseId: "new-release",
+      selectedReleaseId: "new-release",
+      updateAvailable: false,
+      operation: {
+        requestId: "cccccccc-cccc-4ccc-cccc-cccccccccccc",
+        action: "update",
+        dataPolicy: "preserve",
+        phase: "completed",
+        outcome: "succeeded",
+      },
+    };
+    return maintenanceState;
+  });
+  const maintenance = {
+    onHostReset: () => () => {},
+    onSettled: () => () => {},
+    continuePending: async () => false,
+    state: async () => maintenanceState,
+    automaticUpdate,
+  } as unknown as LocalHostMaintenance;
+  const hostReinstalled = vi.spyOn(ComputeNodeService.prototype, "hostReinstalled");
+  const session = signedInSessionSnapshotSchema.parse({
+    contractVersion: 1,
+    authority: { authorityInstanceId: "main", kind: "electron_main" },
+    cleanup: { revocation: "idle" },
+    generation: 1,
+    revision: 1,
+    phase: "signed_in",
+    principal: { userId: "account", email: "account@example.test" },
+    session: {
+      audience: "https://example.test",
+      sessionId: "session",
+      expiresAtEpochSeconds: 1900000000,
+    },
+  });
+  const account = new AccountComputeNodeService(
+    {
+      filePath: f.filePath,
+      adapter: f.adapter,
+      installAuthorization: f.owner,
+      platform: "darwin",
+      arch: "arm64",
+      clock: f.clock,
+    },
+    session,
+    undefined,
+    maintenance
+  );
+  // Before enabling, silent auto-update does not run.
+  await account.hostMaintenanceState();
+  expect(automaticUpdate).not.toHaveBeenCalled();
+
+  await account.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  await account.refresh();
+  await account.hostMaintenanceState();
+  expect(automaticUpdate).toHaveBeenCalledTimes(1);
+  expect(hostReinstalled).toHaveBeenCalledTimes(1);
+
+  // Repeated refreshes for the same release pair do not loop.
+  maintenanceState = {
+    installation: "installed",
+    installedReleaseId: "old-release",
+    selectedReleaseId: "new-release",
+    updateAvailable: true,
+  };
+  await account.refresh();
+  expect(automaticUpdate).toHaveBeenCalledTimes(1);
+});
+
+it("automatically reconfigures back to ready after a reset reinstall when previously enabled", async () => {
+  const f = await fixture();
+  let present = false;
+  let currentReg = "reg-1";
+  let deviceId = "dev-before";
+  let remoteConnected = false;
+  const events: string[] = [];
+  vi.mocked(f.adapter.observe).mockImplementation(async () => ({
+    host: "ready",
+    connector: present ? "ready" : "absent",
+    readability: "readable",
+    salix: present ? "ready" : "unregistered",
+    registration: present ? "present" : "absent",
+    deviceId,
+    deviceIdentityState: "ready",
+  }));
+  vi.mocked(f.owner.inspect).mockImplementation(async ({ registrationId }) => ({
+    status: registrationId === currentReg && present ? "ready" : "action_required",
+    hostBound: true,
+    deviceId: registrationId === "reg-1" ? "dev-before" : "dev-after",
+    connected: registrationId === currentReg && remoteConnected,
+    workActivity: "idle",
+  }));
+  vi.mocked(f.owner.revoke).mockImplementation(async ({ registrationId }) => {
+    events.push(`revoke:${registrationId}`);
+    return "removed";
+  });
+  vi.mocked(f.owner.authorize).mockImplementation(async () => {
+    const nextReg = events.some((e) => e.startsWith("revoke:")) ? "reg-2" : "reg-1";
+    currentReg = nextReg;
+    events.push(`authorize:${nextReg}`);
+    return {
+      registrationId: nextReg,
+      descriptor: JSON.stringify({ registration_id: nextReg }),
+    };
+  });
+  vi.mocked(f.adapter.install).mockImplementation(async (requestId) => {
+    events.push(`install:${currentReg}`);
+    present = true;
+    remoteConnected = true;
+    const receipt: NativeRequestReceipt = {
+      requestId: requestId!,
+      targetRegistrationId: currentReg,
+      kind: "registration-claim",
+      outcome: "succeeded",
+    };
+    f.receipts.set(requestId!, receipt);
+    return receipt;
+  });
+
+  let onReset: (() => void) | undefined;
+  let onSettled: ((state: HostMaintenanceState) => void) | undefined;
+  const maintenance = {
+    onHostReset: (listener: () => void) => {
+      onReset = listener;
+      return () => {};
+    },
+    onSettled: (listener: (state: HostMaintenanceState) => void) => {
+      onSettled = listener;
+      return () => {};
+    },
+    continuePending: async () => false,
+    state: async (): Promise<HostMaintenanceState> => ({
+      installation: "installed",
+      updateAvailable: false,
+    }),
+    maintain: async (): Promise<HostMaintenanceState> => {
+      present = false;
+      remoteConnected = false;
+      deviceId = "dev-after";
+      onReset?.();
+      const settled: HostMaintenanceState = {
+        installation: "installed",
+        updateAvailable: false,
+        operation: {
+          requestId: "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+          action: "reinstall",
+          dataPolicy: "reset",
+          phase: "completed",
+          outcome: "succeeded",
+        },
+      };
+      onSettled?.(settled);
+      return settled;
+    },
+  } as unknown as LocalHostMaintenance;
+
+  const session = signedInSessionSnapshotSchema.parse({
+    contractVersion: 1,
+    authority: { authorityInstanceId: "main", kind: "electron_main" },
+    cleanup: { revocation: "idle" },
+    generation: 1,
+    revision: 1,
+    phase: "signed_in",
+    principal: { userId: "account", email: "account@example.test" },
+    session: {
+      audience: "https://example.test",
+      sessionId: "session",
+      expiresAtEpochSeconds: 1900000000,
+    },
+  });
+  const account = new AccountComputeNodeService(
+    {
+      filePath: f.filePath,
+      adapter: f.adapter,
+      installAuthorization: f.owner,
+      platform: "darwin",
+      arch: "arm64",
+      clock: f.clock,
+    },
+    session,
+    undefined,
+    maintenance
+  );
+  await account.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  expect(account.state().status).toBe("ready");
+
+  await account.maintainHost({ action: "reinstall", dataPolicy: "reset" });
+  await account.refresh();
+  expect(account.state().status).toBe("ready");
+  expect(account.state().bindingRegistrationId).toBe("reg-2");
+  expect(events).toEqual([
+    "authorize:reg-1",
+    "install:reg-1",
+    "revoke:reg-1",
+    "authorize:reg-2",
+    "install:reg-2",
+  ]);
+});
+
+it("falls back to exact request lookup when registration correlation hits a fenced prior claim, and rebinds cleanly across two-step uninstall+reset -> reinstall", async () => {
+  // 1. AgentVMMCommandAdapter.receipt falls back to `--request-id` alone when `--registration-id` hits a fenced prior claim.
+  {
+    const calls: string[][] = [];
+    const run = vi.fn(async (_bin: string, args: string[]) => {
+      calls.push(args);
+      if (args.includes("--registration-id")) {
+        throw new ComputeNodeCommandError(
+          "the local owner removed this registration or Host installation",
+          "command_failed",
+          {
+            code: "request_blocked",
+            reason: "local_owner_fence",
+            requestId: "11111111-1111-4111-8111-111111111111",
+          }
+        );
+      }
+      return "null";
+    });
+    const adapter = new AgentVMMCommandAdapter(
+      "/mock/agent-vmm-lifecycle",
+      run as never
+    );
+    const receipt = await adapter.receipt(
+      "22222222-2222-4222-8222-222222222222",
+      "reg-old"
+    );
+    expect(receipt).toBeUndefined();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain("--registration-id");
+    expect(calls[1]).not.toContain("--registration-id");
+  }
+
+  // 2. Two-step uninstall+reset -> reinstall+preserve revokes immediately on uninstall and rebinds back to ready on reinstall.
+  const f = await fixture();
+  let present = false;
+  let hostInstalled = true;
+  let currentReg = "reg-1";
+  let deviceId = "dev-before";
+  const events: string[] = [];
+  vi.mocked(f.adapter.observe).mockImplementation(async () =>
+    hostInstalled
+      ? {
+          host: "ready",
+          connector: present ? "ready" : "absent",
+          readability: "readable",
+          salix: present ? "ready" : "unregistered",
+          registration: present ? "present" : "absent",
+          deviceId,
+          deviceIdentityState: "ready",
+        }
+      : {
+          host: "absent",
+          connector: "absent",
+          readability: "unreadable",
+          salix: "unregistered",
+          registration: "unreadable",
+          reason: "helper_missing",
+        }
+  );
+  vi.mocked(f.owner.inspect).mockImplementation(async ({ registrationId }) => ({
+    status:
+      registrationId === currentReg && present
+        ? "ready"
+        : events.includes(`revoke:${registrationId}`)
+          ? "removed"
+          : "ready",
+    hostBound: true,
+    deviceId: registrationId === "reg-1" ? "dev-before" : "dev-after",
+    // Even if Gateway heartbeat has not timed out yet when uninstall/rebind runs:
+    connected: !events.includes(`revoke:${registrationId}`),
+    workActivity: "idle",
+  }));
+  vi.mocked(f.owner.revoke).mockImplementation(async ({ registrationId }) => {
+    events.push(`revoke:${registrationId}`);
+    return "removed";
+  });
+  const authRequestIds: string[] = [];
+  vi.mocked(f.owner.authorize).mockImplementation(async ({ requestId }) => {
+    authRequestIds.push(requestId);
+    const nextReg = events.some((e) => e.startsWith("revoke:")) ? "reg-2" : "reg-1";
+    currentReg = nextReg;
+    events.push(`authorize:${nextReg}`);
+    return {
+      registrationId: nextReg,
+      descriptor: JSON.stringify({ registration_id: nextReg }),
+    };
+  });
+  vi.mocked(f.adapter.install).mockImplementation(async (requestId) => {
+    events.push(`install:${currentReg}`);
+    present = true;
+    const receipt: NativeRequestReceipt = {
+      requestId: requestId!,
+      targetRegistrationId: currentReg,
+      kind: "registration-claim",
+      outcome: "succeeded",
+    };
+    f.receipts.set(requestId!, receipt);
+    return receipt;
+  });
+
+  let onReset: (() => void) | undefined;
+  let onSettled: ((state: HostMaintenanceState) => void) | undefined;
+  const maintenance = {
+    onHostReset: (listener: () => void) => {
+      onReset = listener;
+      return () => {};
+    },
+    onSettled: (listener: (state: HostMaintenanceState) => void) => {
+      onSettled = listener;
+      return () => {};
+    },
+    continuePending: async () => false,
+    state: async (): Promise<HostMaintenanceState> => ({
+      installation: hostInstalled ? "installed" : "not_installed",
+      updateAvailable: false,
+    }),
+    maintain: async (input: {
+      action: "uninstall" | "reinstall" | "update";
+      dataPolicy: "reset" | "preserve";
+    }): Promise<HostMaintenanceState> => {
+      if (input.action === "uninstall") {
+        present = false;
+        hostInstalled = false;
+        deviceId = "dev-after";
+        if (input.dataPolicy === "reset") onReset?.();
+        const settled: HostMaintenanceState = {
+          installation: "not_installed",
+          updateAvailable: false,
+          operation: {
+            requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            action: "uninstall",
+            dataPolicy: input.dataPolicy,
+            phase: "completed",
+            outcome: "succeeded",
+          },
+        };
+        onSettled?.(settled);
+        return settled;
+      }
+      hostInstalled = true;
+      const settled: HostMaintenanceState = {
+        installation: "installed",
+        updateAvailable: false,
+        operation: {
+          requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+          action: input.action,
+          dataPolicy: input.dataPolicy,
+          phase: "completed",
+          outcome: "succeeded",
+        },
+      };
+      onSettled?.(settled);
+      return settled;
+    },
+  } as unknown as LocalHostMaintenance;
+
+  const session = signedInSessionSnapshotSchema.parse({
+    contractVersion: 1,
+    authority: { authorityInstanceId: "main", kind: "electron_main" },
+    cleanup: { revocation: "idle" },
+    generation: 1,
+    revision: 1,
+    phase: "signed_in",
+    principal: { userId: "account", email: "account@example.test" },
+    session: {
+      audience: "https://example.test",
+      sessionId: "session",
+      expiresAtEpochSeconds: 1900000000,
+    },
+  });
+  const account = new AccountComputeNodeService(
+    {
+      filePath: f.filePath,
+      adapter: f.adapter,
+      installAuthorization: f.owner,
+      hostInstallation: async () => (hostInstalled ? "installed" : "not_installed"),
+      platform: "darwin",
+      arch: "arm64",
+      clock: f.clock,
+    },
+    session,
+    undefined,
+    maintenance
+  );
+  await account.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  expect(account.state().status).toBe("ready");
+
+  await account.maintainHost({ action: "uninstall", dataPolicy: "reset" });
+  await account.refresh();
+  expect(events).toEqual(["authorize:reg-1", "install:reg-1", "revoke:reg-1"]);
+  expect(account.state().status).toBe("action_required");
+  expect(account.state().problem).toBe("host_uninstalled");
+
+  await account.maintainHost({ action: "reinstall", dataPolicy: "preserve" });
+  await account.refresh();
+  expect(account.state().status).toBe("ready");
+  expect(account.state().problem).toBeUndefined();
+  expect(account.state().bindingRegistrationId).toBe("reg-2");
+  expect(authRequestIds).toHaveLength(2);
+  expect(authRequestIds[1]).not.toBe(authRequestIds[0]);
+  expect(events).toEqual([
+    "authorize:reg-1",
+    "install:reg-1",
+    "revoke:reg-1",
+    "authorize:reg-2",
+    "install:reg-2",
+  ]);
+
+  // 3. Disabling between uninstall+reset and reinstall+preserve keeps the node stopped.
+  await account.maintainHost({ action: "uninstall", dataPolicy: "reset" });
+  await account.refresh();
+  await account.configure({ desiredEnabled: false });
+  await account.maintainHost({ action: "reinstall", dataPolicy: "preserve" });
+  await account.refresh();
+  expect(account.state().desiredEnabled).toBe(false);
+  expect(authRequestIds).toHaveLength(2);
 });

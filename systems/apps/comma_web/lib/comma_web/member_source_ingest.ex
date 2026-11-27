@@ -152,6 +152,8 @@ defmodule CommaWeb.MemberSourceIngest do
         MemberSourceTriggers.ensure(workspace, profile.id)
         # The portrait tells the consumer which arrivals are the owner's.
         CommaWeb.MemberPortrait.enqueue(profile)
+        # Low-frequency public web mention radar for watched portrait terms.
+        CommaWeb.ProactiveWebRadar.enqueue(profile)
         # The same day's glossary refresh reads the same Home conversation.
         CommaWeb.MemberGlossary.enqueue(workspace["id"])
         # What the owner left open in their own messages, for the notebook.
@@ -159,9 +161,10 @@ defmodule CommaWeb.MemberSourceIngest do
         # The notebook shows each source's latest read.
         CommaWeb.ProactiveNotebook.enqueue(workspace["default_group_id"], owner)
 
-        if MemberSourceItems.pending?(profile.id),
-          do: with({:ok, _job} <- ProactiveCheck.enqueue(profile.id), do: {:ok, counts}),
-          else: {:ok, counts}
+        if MemberSourceItems.pending?(profile.id) or
+             CommaWeb.ProactiveMeetingPrep.due?(profile.id),
+           do: with({:ok, _job} <- ProactiveCheck.enqueue(profile.id), do: {:ok, counts}),
+           else: {:ok, counts}
       else
         {:ok, counts}
       end
@@ -277,8 +280,12 @@ defmodule CommaWeb.MemberSourceIngest do
       )
 
   # One pooled source as a collected fact. Consented mail keeps identities the
-  # mail Task projection and Routine attention items read.
+  # mail Task projection and Routine attention items read. Items already settled
+  # as resolved, dismissed, duplicate or unowned at this version are left out so
+  # Routine never re-recommends closed work.
   defp fact(%{state: state, items: items}) do
+    eligible = Enum.filter(items, &SalixStore.ProactiveKernel.routine_candidate?(&1.attention))
+
     %{
       "sourceId" => state.source_id,
       "appId" => state.toolkit,
@@ -286,12 +293,12 @@ defmodule CommaWeb.MemberSourceIngest do
       "appName" => state.app,
       "memberSubject" => state.subject,
       "bound" => state.bound,
-      "items" => Enum.map(items, &candidate/1),
+      "items" => Enum.map(eligible, &candidate/1),
       "data" =>
         if(state.toolkit in ~w(gmail outlook),
           do: %{
             "messages" =>
-              Enum.map(items, fn item ->
+              Enum.map(eligible, fn item ->
                 %{
                   "webUrl" => item.url,
                   "threadId" => item.provider_ids["threadId"],

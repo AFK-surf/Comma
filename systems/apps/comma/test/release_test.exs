@@ -83,8 +83,9 @@ defmodule Comma.ReleaseTest do
 
     assert Comma.Stations.SalixCopy.phase() == {:ok, :complete}
 
-    # Then Task search and the Task file index open, the Cloud VM cutover runs
-    # where the deployment retires the Cloud VM, then failed Workspace
+    # Then Task search opens and its titles get one-character grams, the Task
+    # file index opens, the Cloud VM cutover runs where the deployment retires
+    # the Cloud VM, the Tenant directory is filled, then failed Workspace
     # provisioning is requeued.
     assert %{"stage" => "conversation_search"} = decode_transfer_cursor(cursor)
     assert finish_transfer(cursor, 0) == "workspace_provisioning"
@@ -99,6 +100,16 @@ defmodule Comma.ReleaseTest do
       end)
 
     [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert %{"processed" => 0, "next_cursor" => titles_cursor} = Jason.decode!(body)
+    assert %{"stage" => "conversation_search_titles"} = decode_transfer_cursor(titles_cursor)
+
+    # Without a generation no title needs one-character grams.
+    output =
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(titles_cursor)
+      end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
     assert %{"processed" => 0, "next_cursor" => files_cursor} = Jason.decode!(body)
     assert %{"stage" => "task_files"} = decode_transfer_cursor(files_cursor)
 
@@ -109,6 +120,16 @@ defmodule Comma.ReleaseTest do
       end)
 
     [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert %{"processed" => 0, "next_cursor" => feed_cursor} = Jason.decode!(body)
+    assert %{"stage" => "task_feed"} = decode_transfer_cursor(feed_cursor)
+
+    # The test database's Task Feed backfill is complete: the stage opens nothing.
+    output =
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(feed_cursor)
+      end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
     assert %{"processed" => 0, "next_cursor" => cutover_cursor} = Jason.decode!(body)
     assert %{"stage" => "cloud_vm_cutover"} = decode_transfer_cursor(cutover_cursor)
 
@@ -116,6 +137,16 @@ defmodule Comma.ReleaseTest do
     output =
       capture_io(fn ->
         assert :ok = Comma.Release.transfer_agent_configuration_page(cutover_cursor)
+      end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert %{"processed" => 0, "next_cursor" => directory_cursor} = Jason.decode!(body)
+    assert %{"stage" => "tenant_directory"} = decode_transfer_cursor(directory_cursor)
+
+    # The Tenant directory backfill ran in the first pass: it runs no page.
+    output =
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(directory_cursor)
       end)
 
     [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)

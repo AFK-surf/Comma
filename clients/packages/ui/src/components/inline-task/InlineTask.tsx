@@ -133,7 +133,10 @@ export function InlineTask({
     children: (
       <>
         <span aria-hidden className="comma-inline-task-icon">
-          {taskStatusIcon(task.statusBucket)}
+          {taskStatusIcon(task.statusBucket, {
+            loopStop: task.loopStop,
+            loopStanding: task.loopStanding,
+          })}
         </span>
         <span className="comma-inline-task-title">{task.title}</span>
       </>

@@ -2,8 +2,12 @@ import { Button } from "@comma/ui/components/Button";
 import { Checkbox } from "@comma/ui/components/checkbox";
 import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
-import { useState } from "react";
-import type { BftConnectionStart, BftSecretField } from "./api";
+import { useEffect, useState } from "react";
+import type {
+  BftConnectionStart,
+  BftOAuthCodeConfiguration,
+  BftSecretField,
+} from "./api";
 import { DialogError, writeErrorMessage } from "./dialogs";
 import { humanize } from "./format";
 import { messages } from "./messages";
@@ -20,9 +24,15 @@ const t = messages.connections;
 
 export type ConnectionAction = "connect" | "reconnect" | "disconnect";
 
+export interface ConnectionOAuthSubmit {
+  key: string;
+  attemptId: string;
+  bindingId?: string;
+}
+
 export interface ConnectionRequest {
   label: string;
-  /** `managed_oauth`, `native_mcp_oauth`, `composio` or `secret`. */
+  /** `managed_oauth`, `native_mcp_oauth`, `composio`, `oauth_code_paste` or `secret`. */
   kind: string;
   action: ConnectionAction;
   dependentMcps: readonly string[];
@@ -39,13 +49,14 @@ export interface ConnectionRequest {
     required?: boolean;
     note?: (name: string) => string | undefined;
   };
-  credential?: { label: string; helpUrl: string } | undefined;
+  credential?: { key: string; label: string; helpUrl: string } | undefined;
   /** A secret: the reader may name several values instead of one; `run` receives them. */
   fields?: boolean;
-  /** The write: a provider address to open, or a notice when nothing is left to do. */
+  /** The write: a provider address to open, an OAuth code configuration, or a notice when nothing is left to do. */
   run: (
     input: string,
-    fields: readonly BftSecretField[]
+    fields: readonly BftSecretField[],
+    oauth?: ConnectionOAuthSubmit
   ) => Promise<BftConnectionStart>;
 }
 
@@ -113,23 +124,34 @@ export function openProvider(
  */
 export function useConnectionConfirm(onNotice: (notice: string) => void) {
   const [pending, setPending] = useState<ConnectionRequest | null>(null);
+  const [oauthConfig, setOauthConfig] = useState<BftOAuthCodeConfiguration | null>(
+    null
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+
+  const ask = (request: ConnectionRequest | null) => {
+    setOauthConfig(null);
+    setError(undefined);
+    setPending(request);
+  };
 
   const close = () => {
     if (busy) return;
     setPending(null);
+    setOauthConfig(null);
     setError(undefined);
   };
 
   const confirm = (
     request: ConnectionRequest,
     input: string,
-    fields: readonly BftSecretField[]
+    fields: readonly BftSecretField[],
+    oauth?: ConnectionOAuthSubmit
   ) => {
     setBusy(true);
     setError(undefined);
-    request.run(input.trim(), fields).then(
+    request.run(input.trim(), fields, oauth).then(
       (result) => {
         if ("redirect_url" in result) {
           // The page stays busy while the browser leaves for the provider.
@@ -139,7 +161,14 @@ export function useConnectionConfirm(onNotice: (notice: string) => void) {
           }
           return;
         }
+        if ("configuration" in result) {
+          setBusy(false);
+          setOauthConfig(result.configuration);
+          setError(result.configuration.error ?? undefined);
+          return;
+        }
         setBusy(false);
+        setOauthConfig(null);
         setPending(null);
         onNotice(result.notice);
       },
@@ -154,35 +183,55 @@ export function useConnectionConfirm(onNotice: (notice: string) => void) {
     <ConnectionDialog
       busy={busy}
       error={error}
+      oauthConfig={oauthConfig}
       onClose={close}
-      onConfirm={(input, fields) => confirm(pending, input, fields)}
+      onConfirm={(input, fields, oauth) => confirm(pending, input, fields, oauth)}
       request={pending}
     />
   ) : null;
 
-  return { ask: setPending, dialog };
+  return { ask, dialog };
 }
 
 function ConnectionDialog({
   request,
+  oauthConfig,
   busy,
   error,
   onConfirm,
   onClose,
 }: {
   request: ConnectionRequest;
+  oauthConfig: BftOAuthCodeConfiguration | null;
   busy: boolean;
   error: string | undefined;
-  onConfirm: (input: string, fields: readonly BftSecretField[]) => void;
+  onConfirm: (
+    input: string,
+    fields: readonly BftSecretField[],
+    oauth?: ConnectionOAuthSubmit
+  ) => void;
   onClose: () => void;
 }) {
   const [input, setInput] = useState("");
   const [fields, setFields] = useState<readonly FieldRow[]>([]);
+  const oauthAttemptId = oauthConfig?.attempt_id;
+  const oauthHelpUrl = oauthConfig?.help_url;
+  useEffect(() => {
+    if (oauthAttemptId || oauthHelpUrl) setInput("");
+  }, [oauthAttemptId, oauthHelpUrl]);
+
   const { action, kind } = request;
   const disconnect = action === "disconnect";
-  const body = disconnect ? t.disconnectBody : t.kindBodies[kind];
+  const body = disconnect
+    ? kind === "oauth_code_paste"
+      ? t.oauthCodeDisconnectBody
+      : t.disconnectBody
+    : oauthConfig
+      ? undefined
+      : t.kindBodies[kind];
   const footnote =
     disconnect ||
+    oauthConfig ||
     request.credential ||
     (action === "connect" && request.credentialConnected)
       ? undefined
@@ -190,9 +239,11 @@ function ConnectionDialog({
         ? t.reconnectNote
         : (t.kindConnectNotes[kind] ?? t.connectNote);
   const inputHint = request.input?.note?.(input.trim()) ?? request.input?.hint;
+  const trimmed = input.trim();
   const missing =
-    (!!request.credential && !/^[^\s]+$/.test(input.trim())) ||
-    (!!request.input?.required && input.trim() === "") ||
+    (!!oauthConfig && (trimmed.length === 0 || trimmed.length > 4096)) ||
+    (!oauthConfig && !!request.credential && !/^[^\s]+$/.test(trimmed)) ||
+    (!oauthConfig && !!request.input?.required && trimmed === "") ||
     fields.some(
       (field, index) =>
         field.name.trim() === "" ||
@@ -218,14 +269,30 @@ function ConnectionDialog({
               : t.connecting
             : disconnect
               ? t.disconnect
-              : request.credential
-                ? t.saveToken
-                : t.continue,
+              : oauthConfig
+                ? action === "reconnect"
+                  ? t.oauthCodeReconnect
+                  : t.oauthCodeConnect
+                : request.credential
+                  ? t.saveToken
+                  : t.continue,
           hierarchy: disconnect ? "destructive" : "primary",
           onPress: () =>
             onConfirm(
               input,
-              fields.map((field) => ({ name: field.name.trim(), secret: field.secret }))
+              fields.map((field) => ({
+                name: field.name.trim(),
+                secret: field.secret,
+              })),
+              oauthConfig
+                ? {
+                    key: oauthConfig.key,
+                    attemptId: oauthConfig.attempt_id,
+                    ...(oauthConfig.binding_id
+                      ? { bindingId: oauthConfig.binding_id }
+                      : {}),
+                  }
+                : undefined
             ),
           disabled: busy || missing,
         },
@@ -240,7 +307,34 @@ function ConnectionDialog({
     >
       <div className="bft-form">
         {body ? <p className="bft-dialog-note">{body}</p> : null}
-        {request.credential ? (
+        {oauthConfig ? (
+          <>
+            <p className="bft-dialog-note">{t.oauthCodeStep1}</p>
+            <div>
+              <a
+                className="bft-btn bft-btn-sm"
+                href={oauthConfig.help_url}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {t.signInWithGoogle}
+              </a>
+            </div>
+            <p className="bft-dialog-note">{t.oauthCodeStep2}</p>
+            <InputField
+              autoComplete="off"
+              className="w-full ph-no-capture"
+              disabled={busy}
+              fieldSize="sm"
+              label={oauthConfig.label}
+              maxLength={4096}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder={t.oauthCodePlaceholder}
+              type="text"
+              value={input}
+            />
+          </>
+        ) : request.credential ? (
           <>
             <InputField
               autoComplete="new-password"
@@ -253,14 +347,18 @@ function ConnectionDialog({
               maxLength={4096}
               value={input}
             />
-            <p className="bft-dialog-note bft-muted">{t.tokenNote}</p>
+            {/* X's token note names X's own billing and OAuth order; every
+                other key gets the general one. */}
+            <p className="bft-dialog-note bft-muted">
+              {request.credential.key === "X_BEARER_TOKEN" ? t.tokenNote : t.keyNote}
+            </p>
             <a
               className="bft-link"
               href={request.credential.helpUrl}
               target="_blank"
               rel="noopener noreferrer"
             >
-              {t.tokenHelp}
+              {request.credential.key === "X_BEARER_TOKEN" ? t.tokenHelp : t.keyHelp}
             </a>
           </>
         ) : null}

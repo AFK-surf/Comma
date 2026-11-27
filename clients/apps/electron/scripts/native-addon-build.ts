@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { arch } from "node:process";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   NativeInstallCache,
   copyNativeFile,
@@ -34,6 +35,17 @@ const addonBuildEnvironment = [
   "npm_config_python",
   "npm_config_msvs_version",
 ];
+/**
+ * The install prefix of the Node running this build, when it carries its own
+ * headers (Homebrew and the nodejs.org packages do). Without `--nodedir`,
+ * node-gyp downloads the same headers from nodejs.org into its cache.
+ */
+function localNodeDir() {
+  if (process.env.npm_config_nodedir) return undefined;
+  const prefix = resolve(dirname(process.execPath), "..");
+  return existsSync(resolve(prefix, "include/node/common.gypi")) ? prefix : undefined;
+}
+
 const addonToolchains = new Map<string, unknown>();
 function nativeAddonToolchain(nodeGypPath: string) {
   if (addonToolchains.has(nodeGypPath)) return addonToolchains.get(nodeGypPath);
@@ -55,6 +67,7 @@ export function buildNativeAddon({
   nodeGypPath,
   configuration,
   incremental,
+  nodeDir = localNodeDir(),
   runNodeGyp = (args, cwd) => run(nodeGypPath, args, cwd),
 }: {
   addonDir: string;
@@ -64,11 +77,14 @@ export function buildNativeAddon({
   nodeGypPath: string;
   configuration: "release" | "debug";
   incremental: boolean;
+  /** Node's headers for node-gyp; undefined lets node-gyp fetch them. */
+  nodeDir?: string;
   /** Runs node-gyp at nodeGypPath. Tests substitute an in-process node-gyp. */
   runNodeGyp?: (args: string[], cwd: string) => void;
 }) {
   const nodeGypConfiguration = configuration === "release" ? "Release" : "Debug";
   const flag = configuration === "release" ? "--release" : "--debug";
+  const headers = nodeDir ? [`--nodedir=${nodeDir}`] : [];
   const cache = new NativeInstallCache(
     resolve(addonDir, "build/comma-configuration.json"),
     incremental,
@@ -88,10 +104,10 @@ export function buildNativeAddon({
   if (reuse) {
     // GYP reads binding.gyp and included files. Make retains object files and
     // checks source/header dependencies and compiler command changes.
-    runNodeGyp(["configure", flag], addonDir);
+    runNodeGyp(["configure", flag, ...headers], addonDir);
     runNodeGyp(["build", flag], addonDir);
   } else {
-    runNodeGyp(["rebuild", flag], addonDir);
+    runNodeGyp(["rebuild", flag, ...headers], addonDir);
   }
   cache.save();
   copyNativeFile(

@@ -3,7 +3,7 @@ defmodule SalixMCP.Provider do
 
   @behaviour SalixAgent.Tools.MCP
 
-  alias SalixMCP.{Credentials, Gateway, Store}
+  alias SalixMCP.{Credentials, Gateway, HostedServices, Store}
 
   # Targets of MCP servers in the Comma desktop app, reached through the device's
   # Connector (SalixMCP.Connection client_mcp).
@@ -152,17 +152,115 @@ defmodule SalixMCP.Provider do
            Store.find_binding_by_alias(scope.tenant_id, scope.group_id, binding_alias),
          :ok <- requester_owns(binding, ctx),
          {:ok, tool_name} <- resolve_tool_name(binding, tool_alias) do
-      call = fn ->
-        Gateway.call_tool(scope.tenant_id, scope.group_id, binding["binding_id"], tool_name, args,
-          agent_id: agent_id,
-          session_id: ctx[:session_id] || ctx["session_id"],
-          tool_call_id: ctx[:tool_call_id] || ctx["tool_call_id"]
+      opts = [
+        agent_id: agent_id,
+        session_id: ctx[:session_id] || ctx["session_id"],
+        tool_call_id: ctx[:tool_call_id] || ctx["tool_call_id"]
+      ]
+
+      call = fn extra ->
+        Gateway.call_tool(
+          scope.tenant_id,
+          scope.group_id,
+          binding["binding_id"],
+          tool_name,
+          args,
+          opts ++ extra
         )
       end
 
-      if render_wait?(binding, tool_name, args),
-        do: wait_for_render(call, wait_deadline(ctx)),
-        else: call.()
+      cond do
+        HostedServices.per_requester?(binding["mcp_id"]) ->
+          call_as_requester(
+            binding,
+            call,
+            opts,
+            operation_id(binding["alias"] || binding_alias, tool_alias),
+            ctx
+          )
+
+        render_wait?(binding, tool_name, args) ->
+          wait_for_render(fn -> call.([]) end, wait_deadline(ctx))
+
+        true ->
+          call.([])
+      end
+    end
+  end
+
+  # A service where each person signs in with their own account: the call runs
+  # as the person who asked for the turn, with that person's token only. A
+  # person not signed in (or whose sign-in the server refuses) gets a sign-in
+  # link, and the call stays open until they have used it
+  # (`SalixAgent.Tools.MCP`). Work no person asked for is refused.
+  defp call_as_requester(binding, call, opts, operation_id, ctx, attempts \\ 2) do
+    with {:ok, requester} <- requester_principal(ctx) do
+      case Credentials.requester_headers(binding, requester) do
+        {:ok, headers} ->
+          case call.(auth_headers: headers) do
+            {:error, :requester_unauthorized} ->
+              :ok = Credentials.requester_sign_in_rejected(binding, requester)
+              sign_in(binding, call, requester, opts, operation_id, ctx, attempts)
+
+            result ->
+              result
+          end
+
+        {:error, :sign_in_required} ->
+          sign_in(binding, call, requester, opts, operation_id, ctx, attempts)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp sign_in(binding, call, requester, opts, operation_id, ctx, attempts) do
+    waiter = %{
+      "agent_id" => opts[:agent_id],
+      "session_id" => opts[:session_id],
+      "tool_call_id" => opts[:tool_call_id],
+      "tool_name" => operation_id
+    }
+
+    case Credentials.request_requester_sign_in(binding, requester, waiter) do
+      # The sign-in ended as this call asked for it: ask once more.
+      {:ok, %{"status" => "signed_in"}} when attempts > 1 ->
+        call_as_requester(binding, call, opts, operation_id, ctx, attempts - 1)
+
+      {:ok, %{"status" => "sign_in_required"} = pending} ->
+        {:ok, pending}
+
+      {:ok, _other} ->
+        {:error, "the sign-in could not start; ask again"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp person_key(origin) do
+    case SalixAgent.OAuthCredentials.acting_for(%{trusted_origin: origin}) do
+      key when is_binary(key) and key != "" -> {:ok, key}
+      _ -> {:error, "the person who asked is not known"}
+    end
+  end
+
+  # The person is the turn's sealed requester, never a model argument.
+  defp requester_principal(ctx) do
+    refusal =
+      "This service runs only as the person who asked, with their own account. It cannot run for a schedule, a Loop or other work no person asked for in this turn."
+
+    if unattended?(ctx) do
+      {:error, refusal}
+    else
+      origin = ctx[:trusted_origin] || ctx["trusted_origin"]
+
+      case SalixAgent.IFC.principal(origin) do
+        {:comma_user, _} -> person_key(origin)
+        {:provider_user, _, _} -> person_key(origin)
+        _nobody -> {:error, refusal}
+      end
     end
   end
 

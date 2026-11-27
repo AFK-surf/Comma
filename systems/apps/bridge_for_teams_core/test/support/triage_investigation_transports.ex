@@ -41,7 +41,7 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
     {:salix_agent, :exa_base_url},
     {:salix_agent, :env_dispatch},
     {:salix_agent, :mcp_provider_mod},
-    {:salix_store, :agent_vmm_host_http_client},
+    {:salix_store, :agent_vmm_session_caller},
     {:bridge_for_teams_core, @capture_key}
   ]
 
@@ -109,8 +109,8 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
 
     SystemsRuntime.put_env(
       :salix_store,
-      :agent_vmm_host_http_client,
-      __MODULE__.UnavailableComputeHTTP
+      :agent_vmm_session_caller,
+      __MODULE__.UnavailableComputeSession
     )
 
     SystemsRuntime.put_env(:bridge_for_teams_core, @capture_key, capture)
@@ -306,11 +306,14 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
     end
   end
 
-  defmodule UnavailableComputeHTTP do
+  defmodule UnavailableComputeSession do
     @moduledoc false
     alias BridgeForTeams.TriageInvestigationTransports, as: Transports
 
-    def post(_url, _body), do: Transports.unavailable(:compute_host, :post)
-    def post_import(_url, _headers), do: Transports.unavailable(:compute_host, :post_import)
+    def session_call(_instance_id, _session, "compute.image.import", _payload, _timeout_ms),
+      do: Transports.unavailable(:compute_host, :post_import)
+
+    def session_call(_instance_id, _session, _operation, _payload, _timeout_ms),
+      do: Transports.unavailable(:compute_host, :post)
   end
 end

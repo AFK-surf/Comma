@@ -10,7 +10,10 @@ const NATIVE_TYPES = new Set([
   "card-state",
   "error",
   "ready",
+  "map-snapshot",
 ]);
+/** The runtime's policy, plus the `data:` images of the map bases the app draws. */
+const nativeCsp = dynamicUiCsp.replace("img-src https:", "img-src https: data:");
 /** The largest message, as UTF-8 JSON, that reaches the app. */
 export const DYNAMIC_UI_WIRE_MAX_BYTES = 40_000;
 
@@ -41,7 +44,7 @@ export function installDynamicUiHost(native: (wire: string) => void) {
   frame.title = "Interactive content";
   const doc = dynamicUiDocument().replace(
     "<head>",
-    `<head><meta http-equiv="Content-Security-Policy" content="${dynamicUiCsp.replaceAll('"', "&quot;")}">`
+    `<head><meta http-equiv="Content-Security-Policy" content="${nativeCsp.replaceAll('"', "&quot;")}">`
   );
   const url = URL.createObjectURL(new Blob([doc], { type: "text/html" }));
   frame.src = url;
@@ -108,6 +111,10 @@ export function installDynamicUiHost(native: (wire: string) => void) {
         "*",
         [channel.port2]
       );
+    },
+    /** A map base the app drew for a card's `map-snapshot` request. */
+    mapSnapshot(id: string, src: string) {
+      if (!stopped) port?.postMessage({ type: "map-snapshot", id, src });
     },
     stop() {
       stopped = true;

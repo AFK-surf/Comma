@@ -30,6 +30,28 @@ struct ChatBubbleSurface<Label: View>: View {
     }
 }
 
+/// A person's message that came in from a chat platform takes that platform's bubble colour, the same values the
+/// desktop and Android draw (`clients/packages/app/src/components/chat/MessagePlatformBadge.tsx`). A message typed in
+/// a Comma app keeps the brand bubble.
+enum PlatformBubble {
+    /// `text` is nil where the default white reads on the fill.
+    struct Colors { let fill: Color; let text: Color? }
+
+    static func colors(_ platform: String?) -> Colors? {
+        switch platform {
+        case "wechat": Colors(fill: Color(hex: 0x9DF29F), text: Color(hex: 0x082D07))
+        case "telegram": Colors(fill: Color(hex: 0xB8EAF7), text: Color(hex: 0x082B3A))
+        case "signal": Colors(fill: Color(hex: 0x3B6DE3), text: nil)
+        case "slack": Colors(fill: Color(hex: 0x611F69), text: nil)
+        case "feishu", "lark": Colors(fill: Color(hex: 0x2C61E8), text: nil)
+        // Messages green differs by theme.
+        case "imessage": Colors(fill: CommaTheme.dynamic(light: 0x4BDE70, dark: 0x30D65B), text: nil)
+        case "discord": Colors(fill: Color(hex: 0x5865F2), text: nil)
+        default: nil
+        }
+    }
+}
+
 /// Text bubbles for one message: one bubble per Markdown block for assistants (from the tree the core parsed), one
 /// bubble for users.
 struct MessageBubbles: View {
@@ -40,12 +62,24 @@ struct MessageBubbles: View {
     /// An agent's message as the core parsed it, and the parts its Task chips name.
     var markdown: CoreJSON? = nil
     var parts: [ChatPart] = []
+    /// The chat platform a person's message came in from.
+    var platform: String? = nil
+    /// Another person's words in a Task together: on the left, in the incoming bubble.
+    var incoming = false
 
     var body: some View {
-        if isUser {
-            ChatBubbleSurface(fill: CommaTheme.brandSolid, tail: tail ? .trailing : .none, radius: radius) {
-                Text(Self.inline(text)).font(font).foregroundStyle(.white)
-                    .tint(.white)
+        if isUser && incoming {
+            ChatBubbleSurface(fill: CommaTheme.bubbleAssistant, tail: tail ? .leading : .none, radius: radius) {
+                Text(Self.inline(text)).font(font).foregroundStyle(CommaTheme.textPrimary)
+                    .padding(padding)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .selectableMessageText()
+        } else if isUser {
+            let colors = PlatformBubble.colors(platform)
+            ChatBubbleSurface(fill: colors?.fill ?? CommaTheme.brandSolid, tail: tail ? .trailing : .none, radius: radius) {
+                Text(Self.inline(text)).font(font).foregroundStyle(colors?.text ?? .white)
+                    .tint(colors?.text ?? .white)
                     .padding(padding)
                     .fixedSize(horizontal: false, vertical: true)
             }

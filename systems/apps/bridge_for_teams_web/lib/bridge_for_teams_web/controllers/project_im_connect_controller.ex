@@ -38,6 +38,7 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
          :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
          {:ok, project} <- require_project(conn, org, params["project"]),
          :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
+         :ok <- valid_member_scope(params["member_scope"]),
          {:ok, connect} <-
            ProjectIMConnects.create_project_connect(
              org.id,
@@ -59,9 +60,22 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
         }
       })
     else
-      error -> send_project_error(conn, error, "Could not create project Slack connect.")
+      {:error, :invalid_member_scope} ->
+        send_error(
+          conn,
+          400,
+          "invalid_member_scope",
+          "Pass member_scope as organization or external.",
+          %{}
+        )
+
+      error ->
+        send_project_error(conn, error, "Could not create project Slack connect.")
     end
   end
+
+  defp valid_member_scope(scope) when scope in [nil, "organization", "external"], do: :ok
+  defp valid_member_scope(_scope), do: {:error, :invalid_member_scope}
 
   def update_slack(conn, %{"connect_id" => connect_id} = params) do
     with {:ok, org} <- require_org(params["org"]),
@@ -82,7 +96,16 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
           conn,
           400,
           "missing_inbound_agent",
-          "Pass inbound_agent_id (the Router), inbound_tasks ({\"model\": <model choice or null>}) or auto_join_public_channels (true or false).",
+          "Pass inbound_agent_id (the Router), inbound_tasks ({\"model\": <model choice or null>}), auto_join_public_channels (true or false) or member_scope (organization or external).",
+          %{}
+        )
+
+      {:error, :invalid_member_scope} ->
+        send_error(
+          conn,
+          400,
+          "invalid_member_scope",
+          "Pass member_scope as organization (the workspace's members are the project's people) or external (only people granted by name).",
           %{}
         )
 
@@ -172,31 +195,63 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
   defp slack_attrs(params, %Project{} = project) do
     params
     |> Map.take(
-      ~w(app_id client_id client_secret signing_secret app_name inbound_agent_id inbound_tasks)
+      ~w(app_id client_id client_secret signing_secret app_name inbound_agent_id inbound_tasks member_scope)
     )
     |> Map.put_new("app_name", project.name)
   end
 
   # An update changes the inbound binding, whether the app joins new public
-  # channels by itself (`auto_join_public_channels`), or both.
+  # channels by itself (`auto_join_public_channels`), whose people the
+  # workspace's people are (`member_scope`), or any of them.
   defp update_slack_connect(conn, org, project, connect_id, params) do
     auto_join = params["auto_join_public_channels"]
-    inbound = require_inbound(params)
+    scope = params["member_scope"]
 
-    cond do
-      not is_boolean(auto_join) ->
-        with {:ok, inbound} <- inbound,
-             do: update_slack_inbound(conn, org, project, connect_id, inbound)
+    changes =
+      [
+        case require_inbound(params) do
+          {:ok, inbound} ->
+            fn -> update_slack_inbound(conn, org, project, connect_id, inbound) end
 
-      match?({:ok, _inbound}, inbound) ->
-        with {:ok, _connect} <-
-               update_slack_inbound(conn, org, project, connect_id, elem(inbound, 1)),
-             do: update_slack_auto_join(conn, org, project, connect_id, auto_join)
+          _absent ->
+            nil
+        end,
+        if(is_boolean(auto_join),
+          do: fn -> update_slack_auto_join(conn, org, project, connect_id, auto_join) end
+        ),
+        if(not is_nil(scope),
+          do: fn -> update_member_scope(conn, org, project, connect_id, scope) end
+        )
+      ]
+      |> Enum.reject(&is_nil/1)
 
-      true ->
-        update_slack_auto_join(conn, org, project, connect_id, auto_join)
+    case changes do
+      [] ->
+        require_inbound(params)
+
+      changes ->
+        Enum.reduce_while(changes, nil, fn change, _last ->
+          case change.() do
+            {:ok, _connect} = ok -> {:cont, ok}
+            error -> {:halt, error}
+          end
+        end)
     end
   end
+
+  defp update_member_scope(conn, org, project, connect_id, scope)
+       when scope in ["organization", "external"],
+       do:
+         ProjectIMConnects.update_project_connect_member_scope(
+           org.id,
+           project.id,
+           connect_id,
+           scope,
+           request_audit_opts(conn)
+         )
+
+  defp update_member_scope(_conn, _org, _project, _connect_id, _scope),
+    do: {:error, :invalid_member_scope}
 
   defp update_slack_inbound(conn, org, project, connect_id, inbound),
     do:

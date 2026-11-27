@@ -96,7 +96,7 @@ defmodule SalixAgent.Tools.OAuth do
       {"oauth.list_credentials",
        "List OAuth credential aliases available to this agent group.\n\n" <>
          "Returns one entry per (provider, alias) binding, including disabled bindings. " <>
-         "An entry with usable=false is another person's. Only entries with enabled=true and usable=true can be passed into credential_env on compute.exec, process.start, or env.exec. Token values are never returned.",
+         "An entry with usable=false is another person's, or its status is reauthorization_required or revoked: the provider refused its token, and the person reconnects it with oauth.request_authorization under the same alias. Only entries with enabled=true and usable=true can be passed into credential_env on compute.exec, process.start, or env.exec. Token values are never returned.",
        &__MODULE__.list_oauth_credentials/2, @normal_auto_wait_seconds},
       {"oauth.request_authorization",
        "Start a managed OAuth authorization flow for this agent group.\n\n" <>
@@ -104,7 +104,11 @@ defmodule SalixAgent.Tools.OAuth do
          "In a Comma conversation the app shows the user a request card with the reason and an authorize button: do not post the URL there. For an external provider the URL is NOT surfaced automatically: post it to the requester yourself; call the matching im_api.* operation directly when provider/connect/API are known, and use IM discovery/help only when those facts are missing. " <>
          "Returns a deferred result with the provider binding when completed. " <>
          "Use the resulting provider and alias in a credential_env entry on compute.exec, process.start, or env.exec, with env_var and value. " <>
-         "The credential belongs to the person who asked: only work done for them can use it. Pass shared: true only for an account the whole group is meant to use.",
+         "The credential belongs to the person who asked: only work done for them can use it. Pass shared: true only for an account the whole group is meant to use.\n\n" <>
+         "Before you ask for a secret, find out how the service authenticates, and ask only for what it needs. " <>
+         "A service on Comma's Plugins page installs with plugin.request_install, which asks for its own credentials. " <>
+         "A remote MCP server connects with mcp_manager.connect (reuse mcp_manager.definition_list before mcp_manager.definition_create); one with OAuth authorizes with mcp_manager.authorize. " <>
+         "When it takes an API key in its URL or a header, ask for that key here as a single-value secret and pass it to mcp_manager.connect in oauth_binding_refs: never have the person paste a key in the chat.",
        &__MODULE__.request_oauth_authorization/2, @user_interaction_auto_wait_seconds,
        @visible_request_opts},
       {"oauth.login_card", "Used by the sandbox's login tool: do not call it yourself.",
@@ -167,7 +171,11 @@ defmodule SalixAgent.Tools.OAuth do
     |> put_usage(enabled, provider, alias_)
     |> put_present("provider_account_name", binding["provider_account_name"])
     |> Map.put("personal", binding["owner"] not in [nil, ""])
-    |> Map.put("usable", OAuthCredentials.usable_by?(binding, acting_for))
+    |> Map.put(
+      "usable",
+      OAuthCredentials.usable_by?(binding, acting_for) and
+        binding["status"] not in ~w(reauthorization_required revoked)
+    )
     |> put_scopes(binding["scopes"])
     |> put_fields(binding["fields"])
   end
@@ -417,7 +425,7 @@ defmodule SalixAgent.Tools.OAuth do
     surface = conversation_surface(ctx)
     redirect_uri = redirect_uri!(provider)
     fields = requested_fields!(args, provider)
-    input = if fields == [], do: request_input(args, tenant, provider, surface, redirect_uri)
+    input = request_input(args, tenant, provider, surface, redirect_uri, fields)
 
     timeout_seconds =
       case raw(args, "timeout_seconds") do
@@ -706,8 +714,8 @@ defmodule SalixAgent.Tools.OAuth do
     if station_call?(ctx), do: SalixStore.Ids.new_session_id(), else: session_id(ctx)
   end
 
-  # The values a secret asks for by name. A card has one input, so a request
-  # with fields has no input: every surface gives the link to Salix's form.
+  # The values a secret asks for by name. A card asks for each of them; a
+  # surface without cards gives the link to Salix's form.
   defp requested_fields!(args, provider) do
     case {raw(args, "fields"), provider} do
       {nil, _provider} ->
@@ -727,13 +735,19 @@ defmodule SalixAgent.Tools.OAuth do
   # What the person's card asks them to fill in, before anything else happens.
   # Only a card asks for an app: a link in a provider chat proves no one's
   # standing in the Workspace (`CommaWeb.AgentRequestEndpoints`).
-  defp request_input(args, _tenant, "secret", surface, _redirect_uri) when is_map(surface) do
-    %{"kind" => "secret"}
+  defp request_input(args, _tenant, "secret", surface, _redirect_uri, fields)
+       when is_map(surface) do
+    # A kind of its own: a client that does not know it offers the form's link
+    # instead of one value's input.
+    if(fields == [],
+      do: %{"kind" => "secret"},
+      else: %{"kind" => "secret_fields", "fields" => fields}
+    )
     |> put_present("label", arg_or_nil(args, "label"))
     |> put_present("help_url", https_url(arg_or_nil(args, "help_url")))
   end
 
-  defp request_input(args, tenant, provider, surface, redirect_uri)
+  defp request_input(args, tenant, provider, surface, redirect_uri, _fields)
        when is_map(surface) and is_map_key(@own_app_consoles, provider) do
     wanted =
       if raw(args, "own_app") == true,
@@ -749,7 +763,7 @@ defmodule SalixAgent.Tools.OAuth do
     end
   end
 
-  defp request_input(_args, _tenant, _provider, _surface, _redirect_uri), do: nil
+  defp request_input(_args, _tenant, _provider, _surface, _redirect_uri, _fields), do: nil
 
   defp https_url("https://" <> _ = url), do: url
   defp https_url(_url), do: nil

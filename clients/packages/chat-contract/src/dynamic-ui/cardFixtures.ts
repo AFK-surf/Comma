@@ -15,6 +15,7 @@ import type {
   PlaceData,
   ProductData,
   RideData,
+  RouteData,
   ScheduleData,
   TableData,
   TicketData,
@@ -690,6 +691,58 @@ export const placeFixture: PlaceData = {
       href: "https://www.amap.com/",
     },
   ],
+};
+
+const placeSpots: Array<[number, number]> = [
+  [31.2318, 121.461],
+  [31.2232, 121.4466],
+  [31.2291, 121.4556],
+  [31.2212, 121.4392],
+];
+
+export const placeMapFixture: PlaceData = {
+  ...placeFixture,
+  places: placeFixture.places.map((place, index) => ({
+    ...place,
+    lat: placeSpots[index]![0],
+    lng: placeSpots[index]![1],
+  })),
+};
+
+export const placePinFixture: PlaceData = {
+  title: "Blue Bottle 兴业太古汇店",
+  source: "高德地图",
+  observedAt: "2026-09-22T09:03:00Z",
+  places: [{ ...placeMapFixture.places[0]!, note: "二楼有插座，适合办公" }],
+};
+
+export const routeFixture: RouteData = {
+  title: "开车去虹桥机场",
+  source: "高德地图",
+  observedAt: "2026-09-22T09:05:00Z",
+  origin: { name: "当前位置", address: "静安寺", lat: 31.2235, lng: 121.4456 },
+  destination: {
+    name: "虹桥国际机场 T2 航站楼",
+    address: "闵行区申贵路 1500 号",
+    lat: 31.1945,
+    lng: 121.3275,
+  },
+  mode: "drive",
+  duration: "28 分钟",
+  distance: "15.2 公里",
+  note: "走延安高架，目前畅通",
+  path: [
+    [31.2235, 121.4456],
+    [31.2214, 121.4352],
+    [31.2172, 121.4198],
+    [31.2101, 121.4021],
+    [31.2058, 121.3866],
+    [31.2034, 121.3712],
+    [31.2012, 121.3561],
+    [31.1979, 121.3409],
+    [31.1945, 121.3275],
+  ],
+  href: "https://uri.amap.com/navigation?to=121.3275,31.1945,虹桥T2&mode=car",
 };
 
 export const newsFixture: FeedData = {

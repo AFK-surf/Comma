@@ -32,7 +32,9 @@ class ChatTimelineAdapter :
     /** What a generated UI card does on this page. */
     internal var onOpenDynamicUi: ((surf.comma.android.dynamicui.DynamicUiTarget) -> Unit)? = null
     /** What a media tile does when it opens: the page's viewer over all its media. */
-    internal var onOpenMedia: ((PreparedChatMessage) -> Unit)? = null
+    internal var onOpenMedia: ((PreparedChatMessage, Int) -> Unit)? = null
+    /** Persistent expanded/browse state for multi-image group rows. */
+    internal var imageGroupHost: surf.comma.android.chat.live.ImageGroupHost? = null
     /** Rows mid-reveal; cells read their caret from it, card rows their opacity. */
     internal var reveals: TextRevealBook? = null
     /** Rows drawn by the send flight instead of by themselves; kept invisible through rebinds. */
@@ -65,7 +67,8 @@ class ChatTimelineAdapter :
             }
             if (view is AttachmentView) {
                 view.onSendFailed = { onSendFailed?.invoke(it) }
-                view.onOpenMedia = { item -> onOpenMedia?.invoke(item) != null }
+                view.onOpenMedia = { item, index -> onOpenMedia?.invoke(item, index) != null }
+                view.imageGroupHost = imageGroupHost
             }
             if (view is QuestionCardView) view.hostOf = { questionHost }
             if (view is AgentRequestCardView) view.hostOf = { requestHost }

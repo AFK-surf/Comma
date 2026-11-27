@@ -21,6 +21,7 @@ struct TaskDockContent: View {
                 .id(ObjectIdentifier(pane))
                 .safeAreaPadding(.bottom, state.bottomInset)
                 .safeAreaPadding(.horizontal, state.sideInset)
+                .environment(\.conversationKeyboardInset, state.keyboardOverlap)
                 // An iPhone in landscape with the keyboard up leaves less room than an empty conversation's message
                 // needs. Its frame then keeps to the room there is (both bounds, so it never grows to the
                 // conversation's height) and the conversation gives way upward, under the header, rather than
@@ -97,7 +98,8 @@ private struct TaskDockHeader: View {
     let actions: TaskDockActions
 
     var body: some View {
-        let task = store.taskSummary(id: pane.taskID ?? "")
+        let ownTask = pane.workspace.groupID == store.workspace?.groupID
+        let task = ownTask ? store.taskSummary(id: pane.taskID ?? "") : nil
         let pressed = state.titlePressed
         HStack(spacing: 12) {
             Button(action: actions.close) {

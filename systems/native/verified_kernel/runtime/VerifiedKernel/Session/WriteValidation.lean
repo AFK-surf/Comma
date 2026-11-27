@@ -179,7 +179,7 @@ private def standalone : List String :=
   ["tool_disclosure_revision", "skill_projection_revision", "runtime_context_version", "migration_notice_version"]
 
 private def failureReplyProviders : List String :=
-  ["telegram", "internal", "slack", "feishu", "imessage", "wechat", "signal"]
+  ["telegram", "internal", "slack", "feishu", "imessage", "wechat", "signal", "wecom"]
 
 /-! ## One event -/
 

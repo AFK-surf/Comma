@@ -17,6 +17,7 @@ defmodule Comma.RouterNotifications do
   alias Comma.Data.Workspace
   alias Comma.RouterNotifications.MessagePosition
   @page 100
+  @max_preview 140
 
   def snapshot(user, session, group_id) do
     with :ok <- unrestricted(session),
@@ -25,11 +26,25 @@ defmodule Comma.RouterNotifications do
     end
   end
 
+  def delivery_snapshot(user, session, group_id) do
+    with :ok <- unrestricted(session),
+         {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
+         {:ok, committed} <- reconcile_state(workspace) do
+      {:ok, Map.put(public(committed), "latest_preview", committed["latest_preview"])}
+    end
+  end
+
   # Each call reads at most one page of new canonical Messages. A queued
   # continuation owns larger backlogs, independent of phone/target cardinality.
   # The projection worker passes continue?: false and snoozes itself instead,
   # so one backlog page never has a second job racing on commit_page.
   def reconcile(workspace, opts \\ []) do
+    with {:ok, committed} <- reconcile_state(workspace, opts) do
+      {:ok, public(committed)}
+    end
+  end
+
+  defp reconcile_state(workspace, opts \\ []) do
     started = SystemsClock.monotonic_time()
     result = do_reconcile(workspace, Keyword.get(opts, :continue?, true))
 
@@ -52,7 +67,7 @@ defmodule Comma.RouterNotifications do
         if continue?, do: enqueue(workspace["id"])
         {:error, :router_notifications_pending}
       else
-        {:ok, public(committed)}
+        {:ok, committed}
       end
     else
       nil ->
@@ -197,6 +212,7 @@ defmodule Comma.RouterNotifications do
       "read_count" => 0,
       "latest_seq" => 0,
       "latest_message_id" => nil,
+      "latest_preview" => nil,
       "pending" => false
     }
 
@@ -239,6 +255,50 @@ defmodule Comma.RouterNotifications do
 
   defp visible_content?(_), do: false
 
+  defp message_preview(%{"actor_type" => "agent", "content" => content}),
+    do: content_preview(content)
+
+  defp message_preview(%{"platform_message" => %{"content" => content}}),
+    do: content_preview(content)
+
+  defp message_preview(_), do: nil
+
+  defp content_preview(text) when is_binary(text), do: preview_line(text)
+
+  defp content_preview(blocks) when is_list(blocks) do
+    blocks
+    |> Enum.flat_map(fn
+      %{"type" => "text", "text" => text} when is_binary(text) ->
+        case String.trim(text) do
+          "" -> []
+          trimmed -> [trimmed]
+        end
+
+      _ ->
+        []
+    end)
+    |> Enum.join(" ")
+    |> preview_line()
+  end
+
+  defp content_preview(_), do: nil
+
+  # One line, at most 140 characters, an ellipsis ending one cut short.
+  defp preview_line(text) do
+    case text |> String.replace(~r/\s+/u, " ") |> String.trim() do
+      "" ->
+        nil
+
+      clean ->
+        if String.length(clean) <= @max_preview,
+          do: clean,
+          else:
+            String.slice(clean, 0, @max_preview - 1)
+            |> String.trim_trailing()
+            |> Kernel.<>("…")
+    end
+  end
+
   # An unchanged position needs no Workspace row lock: callers include every
   # push, registration and badge read, which would otherwise contend per device.
   defp commit_changes(_workspace, expected, %{state: expected, messages: []}), do: {:ok, expected}
@@ -258,6 +318,7 @@ defmodule Comma.RouterNotifications do
             |> Map.put("total_count", ordinal)
             |> Map.put("latest_seq", message["seq"])
             |> Map.put("latest_message_id", message["message_id"])
+            |> Map.put("latest_preview", message_preview(message))
 
           {state,
            [

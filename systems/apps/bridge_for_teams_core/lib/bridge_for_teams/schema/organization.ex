@@ -107,7 +107,9 @@ defmodule BridgeForTeams.Schema.Organization do
 
   defp blank_to_nil(value), do: value
 
-  # The shape only; `BridgeForTeams.Models` checks choices against Salix.
+  # The shape only; `BridgeForTeams.Models` checks choices against Salix. An
+  # org default or allowed choice never holds the platform Router mark: only
+  # the platform admin gives it, to Routers.
   defp validate_model_choices(changeset) do
     changeset
     |> validate_change(:allowed_models, fn :allowed_models, choices ->
@@ -120,6 +122,7 @@ defmodule BridgeForTeams.Schema.Organization do
   defp validate_model_choice(field, choice),
     do: if(model_choice?(choice), do: [], else: [{field, "is invalid"}])
 
+  defp model_choice?(%{"platform" => true}), do: false
   defp model_choice?(%{"kind" => kind}) when is_binary(kind), do: true
   defp model_choice?(_choice), do: false
 

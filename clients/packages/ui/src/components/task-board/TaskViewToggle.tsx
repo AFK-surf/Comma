@@ -1,15 +1,16 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { useState, type ReactNode } from "react";
-import { BarsThreeIcon, LayoutColumnIcon } from "../icons";
+import { BarsThreeIcon, LayoutColumnIcon, ListBulletsIcon } from "../icons";
 import { cx } from "../utils";
 
-export type TaskView = "list" | "board";
+export type TaskView = "feed" | "list" | "board";
 
 export interface TaskViewToggleProps {
   value?: TaskView;
   defaultValue?: TaskView;
   onChange?: (view: TaskView) => void;
   disabled?: boolean;
+  feedLabel?: string;
   listLabel?: string;
   boardLabel?: string;
   className?: string;
@@ -27,6 +28,7 @@ export const TaskViewToggle = ({
   defaultValue = "board",
   onChange,
   disabled = false,
+  feedLabel,
   listLabel,
   boardLabel,
   className,
@@ -34,6 +36,7 @@ export const TaskViewToggle = ({
   const messages = useCommaMessages();
   const [internalValue, setInternalValue] = useState<TaskView>(value ?? defaultValue);
   const selected = value ?? internalValue;
+  const resolvedFeedLabel = feedLabel ?? messages.tasks_feed_view();
   const resolvedListLabel = listLabel ?? messages.tasks_list_view();
   const resolvedBoardLabel = boardLabel ?? messages.tasks_board_view();
 
@@ -71,6 +74,7 @@ export const TaskViewToggle = ({
     >
       {renderOption("list", resolvedListLabel, <BarsThreeIcon />)}
       {renderOption("board", resolvedBoardLabel, <LayoutColumnIcon />)}
+      {renderOption("feed", resolvedFeedLabel, <ListBulletsIcon />)}
     </fieldset>
   );
 };

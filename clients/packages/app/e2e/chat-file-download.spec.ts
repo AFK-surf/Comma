@@ -40,7 +40,10 @@ test("a worker file without bound bytes is descriptive, while an unavailable bou
       },
     ],
   });
-  let attachmentRequests = 0;
+  // The card reads the head of the file for its picture, and the preview reads it again.
+  let reads = 0;
+  const bothRead = Promise.withResolvers<void>();
+  let mediaRequests = 0;
   try {
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
@@ -48,7 +51,8 @@ test("a worker file without bound bytes is descriptive, while an unavailable bou
       token: "comma_sess_file_download",
     });
     await page.route("**/messages/msg_worker_file/attachments/*", async (route) => {
-      attachmentRequests += 1;
+      reads += 1;
+      if (reads === 2) bothRead.resolve();
       expect(route.request().url()).toMatch(/\/attachments\/2$/);
       await route.fulfill({
         status: 404,
@@ -60,7 +64,7 @@ test("a worker file without bound bytes is descriptive, while an unavailable bou
     await page.route(
       "**/messages/msg_worker_file/attachments/2/media",
       async (route) => {
-        attachmentRequests += 1;
+        mediaRequests += 1;
         await route.fulfill({
           status: 404,
           contentType: "application/json",
@@ -77,17 +81,18 @@ test("a worker file without bound bytes is descriptive, while an unavailable bou
       unbound.getByRole("button", { name: "Download", exact: true })
     ).toHaveCount(0);
     const bound = page
-      .locator(".chat-panel-file")
+      .locator(".chat-panel-preview-card")
       .filter({ hasText: "Apple_Report_2026.pdf" });
     await expect(
       bound.getByRole("button", { name: "Download", exact: true })
     ).toHaveCount(0);
     await bound
-      .getByRole("button", { name: "Preview Apple_Report_2026.pdf", exact: true })
+      .getByRole("button", { name: "Open Apple_Report_2026.pdf", exact: true })
       .click();
     const preview = page.getByTestId("file-preview-panel");
     await expect(preview.getByText("Could not preview this file.")).toBeVisible();
-    expect(attachmentRequests).toBe(1);
+    await bothRead.promise;
+    expect(reads).toBe(2);
     const download = preview.getByRole("button", {
       name: "Download Apple_Report_2026.pdf",
       exact: true,
@@ -102,7 +107,8 @@ test("a worker file without bound bytes is descriptive, while an unavailable bou
       page.getByText(/could not be saved to your Downloads folder/)
     ).toHaveCount(0);
     await expect(download).toBeDisabled();
-    expect(attachmentRequests).toBe(2);
+    expect(mediaRequests).toBe(1);
+    expect(reads).toBe(2);
   } finally {
     await stub.close();
   }
@@ -131,7 +137,10 @@ test("a temporary attachment failure can be retried to download the worker's byt
       },
     ],
   });
-  let attachmentRequests = 0;
+  // The card and the preview read parts of the file; a download reads it whole.
+  let partReads = 0;
+  const partsRead = Promise.withResolvers<void>();
+  let wholeReads = 0;
   let mediaRequests = 0;
   try {
     await installBrowserTestSession(page, {
@@ -145,7 +154,10 @@ test("a temporary attachment failure can be retried to download the worker's byt
     await page
       .context()
       .route("**/messages/msg_worker_retry/attachments/0", async (route) => {
-        attachmentRequests += 1;
+        if (route.request().headers().range) {
+          partReads += 1;
+          if (partReads === 2) partsRead.resolve();
+        } else wholeReads += 1;
         await route.fulfill({
           status: 200,
           contentType: "application/pdf",
@@ -175,12 +187,15 @@ test("a temporary attachment failure can be retried to download the worker's byt
     await page.goto(
       `/#/inbox/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`
     );
-    const file = page.locator(".chat-panel-file").filter({ hasText: "report.pdf" });
+    const file = page
+      .locator(".chat-panel-preview-card")
+      .filter({ hasText: "report.pdf" });
     await expect(
       file.getByRole("button", { name: "Download", exact: true })
     ).toHaveCount(0);
-    await file.getByRole("button", { name: "Preview report.pdf", exact: true }).click();
-    await expect.poll(() => attachmentRequests).toBe(1);
+    await file.getByRole("button", { name: "Open report.pdf", exact: true }).click();
+    await partsRead.promise;
+    expect(partReads).toBe(2);
     const retry = page
       .getByTestId("file-preview-panel")
       .getByRole("button", { name: "Download report.pdf", exact: true });
@@ -192,7 +207,7 @@ test("a temporary attachment failure can be retried to download the worker's byt
     ).toBeVisible();
     await expect(retry).toBeEnabled();
     expect(mediaRequests).toBe(1);
-    expect(attachmentRequests).toBe(1);
+    expect(wholeReads).toBe(0);
     const downloaded = page.waitForEvent("download");
     await retry.click();
     const download = await downloaded;
@@ -200,7 +215,8 @@ test("a temporary attachment failure can be retried to download the worker's byt
     expect(await download.failure()).toBeNull();
     expect(await readFile((await download.path())!)).toEqual(pdfBytes);
     expect(mediaRequests).toBe(2);
-    expect(attachmentRequests).toBe(2);
+    expect(wholeReads).toBe(1);
+    expect(partReads).toBe(2);
     expect(page.context().pages()).toEqual([page]);
   } finally {
     await stub.close();
@@ -230,9 +246,9 @@ test("an agent's file over 10 MB downloads without leaving the conversation or c
         return false;
       const first = url.pathname === "/archive-first";
       response.writeHead(200, {
-        "content-type": "application/zip",
+        "content-type": "application/octet-stream",
         "content-length": archive.length,
-        "content-disposition": `attachment; filename="${first ? "dataset.zip" : "dataset-copy.zip"}"`,
+        "content-disposition": `attachment; filename="${first ? "dataset.bin" : "dataset-copy.bin"}"`,
       });
       if (first) {
         response.write(archive.subarray(0, 4096));
@@ -253,8 +269,8 @@ test("an agent's file over 10 MB downloads without leaving the conversation or c
         content: [
           {
             type: "file",
-            file_name: "dataset.zip",
-            mime_type: "application/zip",
+            file_name: "dataset.bin",
+            mime_type: "application/octet-stream",
             blob_ref: { uuid: "u", hash: "h", size: archive.length },
           },
         ],
@@ -294,8 +310,8 @@ test("an agent's file over 10 MB downloads without leaving the conversation or c
     await prompt.fill(draft);
     await page
       .locator(".chat-panel-file")
-      .filter({ hasText: "dataset.zip" })
-      .getByRole("button", { name: "Preview dataset.zip", exact: true })
+      .filter({ hasText: "dataset.bin" })
+      .getByRole("button", { name: "Preview dataset.bin", exact: true })
       .click();
     const preview = page.getByTestId("file-preview-panel");
     await expect(
@@ -304,7 +320,7 @@ test("an agent's file over 10 MB downloads without leaving the conversation or c
     expect(stub.attachmentReads).toEqual([]);
 
     const downloadButton = preview.getByRole("button", {
-      name: "Download dataset.zip",
+      name: "Download dataset.bin",
       exact: true,
     });
     await downloadButton.click();
@@ -341,7 +357,7 @@ test("an agent's file over 10 MB downloads without leaving the conversation or c
     const firstDownload = await firstStarted;
     const firstFrame = (await firstRequest).frame();
     expect([page.mainFrame(), downloadFrame, failedFrame]).not.toContain(firstFrame);
-    expect(firstDownload.suggestedFilename()).toBe("dataset.zip");
+    expect(firstDownload.suggestedFilename()).toBe("dataset.bin");
     // The first response body is still held when another frame starts the second.
     const secondStarted = page.waitForEvent("download");
     const secondRequest = page.waitForRequest(targets[3]!);
@@ -351,7 +367,7 @@ test("an agent's file over 10 MB downloads without leaving the conversation or c
     expect([page.mainFrame(), downloadFrame, failedFrame, firstFrame]).not.toContain(
       secondFrame
     );
-    expect(secondDownload.suggestedFilename()).toBe("dataset-copy.zip");
+    expect(secondDownload.suggestedFilename()).toBe("dataset-copy.bin");
     expect((await readFile((await secondDownload.path())!)).equals(archive)).toBe(true);
     firstBodyHeld.resolve();
     expect((await readFile((await firstDownload.path())!)).equals(archive)).toBe(true);

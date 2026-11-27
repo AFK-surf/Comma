@@ -397,6 +397,26 @@ defmodule CommaWeb.AgentRequestEndpoints do
     end
   end
 
+  # A secret with fields: the values by name, all at once, as Salix's form posts
+  # them. They are checked before the one-time state is used, so a wrong answer
+  # leaves the request waiting.
+  defp fill(
+         "secret_fields",
+         %{"state" => state, "input" => %{"fields" => [_ | _] = fields}},
+         %{"fields" => values},
+         {group_id, _conversation_id, request_id, tenant_id}
+       )
+       when is_map(values) do
+    case fields_answer(fields, values) do
+      :ok ->
+        _page = SalixWeb.OAuthFlow.submit_secret(state, values)
+        CapabilityRequests.get(group_id, request_id, tenant_id)
+
+      {:error, message} ->
+        {:error, {:bad_request, message}}
+    end
+  end
+
   defp fill(
          "secret",
          %{"state" => state},
@@ -427,6 +447,27 @@ defmodule CommaWeb.AgentRequestEndpoints do
 
   defp fill(_kind, _oauth, _body, _where),
     do: {:error, {:bad_request, "the card's fields are required"}}
+
+  defp fields_answer(fields, values) do
+    names = Enum.map(fields, & &1["name"])
+    filled? = fn name -> is_binary(values[name]) and String.trim(values[name]) != "" end
+
+    cond do
+      not Enum.all?(values, fn {name, value} ->
+        name in names and is_binary(value) and byte_size(value) <= @max_input_bytes
+      end) ->
+        {:error, "the fields are #{Enum.join(names, ", ")}, each text of at most 64 KiB"}
+
+      not Enum.all?(fields, &(&1["optional"] == true or filled?.(&1["name"]))) ->
+        {:error, "fill in every required field"}
+
+      not Enum.any?(names, filled?) ->
+        {:error, "fill in at least one field"}
+
+      true ->
+        :ok
+    end
+  end
 
   defp loop(conn, user, session, {group_id, tenant_id, conversation_id} = scope) do
     SystemsRuntime.Proc.receive do

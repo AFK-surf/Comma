@@ -44,6 +44,7 @@ run() {
 
 run StripeCredits_Safety ok
 run StripeCredits_UnsafeUnpaidGrant violation
+run StripeCredits_UnsafeReplacedIssue violation
 
 run WebhookJournal_Safety ok WebhookJournal
 run WebhookJournal_UnsafeAck violation WebhookJournal

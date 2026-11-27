@@ -20,6 +20,7 @@ final class ConversationPane {
     /// Whether a draft is shown. Unlike `assistantDraft`, it changes once per reply, not once per token.
     private(set) var streamingReply = false
     private(set) var participantStatuses: [ParticipantStatus] = []
+    private(set) var workerSessions: [WorkerSession] = []
     private(set) var boundWorker: BoundWorker?
     /// Keeps a reply in one transcript row from thinking bubble to committed message.
     private(set) var replyRows = ReplyRowIdentity()
@@ -275,8 +276,9 @@ final class ConversationPane {
             if rows != replyRows { replyRows = rows }
         }
         if messages != next { messages = next }
-        let statuses = channel?.participantStatuses ?? [], worker = channel?.boundWorker
+        let statuses = channel?.participantStatuses ?? [], sessions = channel?.workerSessions ?? [], worker = channel?.boundWorker
         if participantStatuses != statuses { participantStatuses = statuses }
+        if workerSessions != sessions { workerSessions = sessions }
         if boundWorker != worker { boundWorker = worker }
         publishDraft(coalescing: coalescingDraft)
     }

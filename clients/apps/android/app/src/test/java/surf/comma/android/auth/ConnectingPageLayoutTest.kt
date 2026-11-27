@@ -137,7 +137,7 @@ class ConnectingPageLayoutTest {
     private fun body() = visible().filterIsInstance<TextView>().first { it !is Button && it !== title() && it.text.isNotEmpty() }
     private fun mark() = visible().filterIsInstance<ImageView>().single()
     private fun switchAccount() = text(R.string.auth_switch_account)
-    private fun spinner() = visible().single { it.javaClass.simpleName in setOf("ProgressBar", "ConnectionSpinner") }
+    private fun spinner() = visible().single { it.javaClass.simpleName in setOf("ActivityIndicator", "ConnectionSpinner") }
 
     /** The mark, the two lines of text and the spinner: what reads as the page's content. */
     private fun content() = listOf(mark(), title(), body(), spinner())

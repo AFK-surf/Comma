@@ -292,7 +292,13 @@ export class Models {
             ...(useCredits !== undefined ? { use_credits: useCredits } : {}),
             ...(name ? { name } : {}),
             ...(apiKey ? { api_key: apiKey } : {}),
-          }));
+          })).pipe(
+            Effect.tap(() =>
+              disabled !== undefined || apiKey
+                ? this.#reloadLent(workspace)
+                : Effect.void
+            )
+          );
         },
       },
       "models.offer": {
@@ -370,6 +376,7 @@ export class Models {
                   })
                 )
               ),
+              Effect.tap(() => this.#reloadLent(workspace)),
               this.#reloadOnConflict(workspace),
               Effect.as(null)
             );
@@ -415,7 +422,7 @@ export class Models {
             baseUrl,
             protocol,
             discover,
-          });
+          }).pipe(Effect.tap(() => this.#reloadLent(workspace)));
         },
       },
       "models.setAgentModel": {
@@ -1063,6 +1070,14 @@ export class Models {
           )
         );
     });
+  }
+
+  /**
+   * The Agents again after an API key was added, removed, turned on or off, or given a new key: the runtimes a
+   * sandbox can run on the accounts the workspace lends it (`task_place.sandbox_runtimes`) follow from those.
+   */
+  #reloadLent(workspace: string): Effect.Effect<void> {
+    return this.#reloadAgents(workspace);
   }
 
   /** The Agents again on every page of the workspace; a failed read leaves them. */

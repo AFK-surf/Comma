@@ -68,6 +68,17 @@ defmodule SalixAgent.Drive do
               size :: non_neg_integer()
             ) :: {:ok, write_result()} | {:error, term()}
 
+  @doc "Publishes `body` with options (e.g. `if_none_match: true`)."
+  @callback write(
+              group_id :: String.t(),
+              path :: String.t(),
+              body :: iodata() | Enumerable.t(),
+              size :: non_neg_integer(),
+              opts :: keyword()
+            ) :: {:ok, write_result()} | {:error, term()}
+
+  @optional_callbacks write: 5
+
   @callback delete(group_id :: String.t(), path :: String.t()) ::
               {:ok, delete_result()} | {:error, term()}
 
@@ -95,9 +106,26 @@ defmodule SalixAgent.Drive do
           {:ok, Enumerable.t(), non_neg_integer() | nil} | {:error, term()}
   def stream(ctx, path), do: call(ctx, :stream, [path])
 
-  @spec write(ctx(), String.t(), iodata() | Enumerable.t(), non_neg_integer()) ::
+  @spec write(ctx(), String.t(), iodata() | Enumerable.t(), non_neg_integer(), keyword()) ::
           {:ok, write_result()} | {:error, term()}
-  def write(ctx, path, body, size), do: call(ctx, :write, [path, body, size])
+  def write(ctx, path, body, size, opts \\ [])
+
+  def write(ctx, path, body, size, []), do: call(ctx, :write, [path, body, size])
+
+  def write(ctx, path, body, size, opts) when is_list(opts) do
+    mod = impl()
+
+    cond do
+      Code.ensure_loaded?(mod) and function_exported?(mod, :write, 5) ->
+        call(ctx, :write, [path, body, size, opts])
+
+      Keyword.get(opts, :if_none_match) == true ->
+        {:error, :unsupported}
+
+      true ->
+        call(ctx, :write, [path, body, size])
+    end
+  end
 
   @spec delete(ctx(), String.t()) :: {:ok, delete_result()} | {:error, term()}
   def delete(ctx, path), do: call(ctx, :delete, [path])

@@ -91,7 +91,9 @@ function among(tasks: TaskSummary[], hosted: TaskSummary[]): TaskSummary[] {
 /** An archived Task with the bucket it was archived from, made once per Task. */
 const archivedRow = madeOnce((task: TaskSummary) => ({
   ...task,
-  archived_from_bucket: taskStatusBucket(task.archived_from_status ?? task.status),
+  archived_from_bucket: taskStatusBucket(task.archived_from_status ?? task.status, {
+    loopState: task.loop?.state,
+  }),
 }));
 
 export class TasksArchive {

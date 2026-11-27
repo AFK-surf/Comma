@@ -24,3 +24,9 @@ Neither service lets Salix book a ride.
    `uber` path instead.
 
 Do not use community scrapers to book rides on these services.
+
+## Live Activity
+
+When tracking a user-shared ride ETA or pickup status, surface it via
+`live_activity.upsert` (`category: "car"`) and close it with
+`live_activity.end` on arrival or cancellation.

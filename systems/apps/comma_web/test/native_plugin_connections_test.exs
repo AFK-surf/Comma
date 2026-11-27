@@ -102,6 +102,38 @@ defmodule CommaWeb.NativePluginConnectionsTest do
             })
           )
 
+        "/linear/token" ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "access_token" => "linear-oauth-user",
+              "token_type" => "bearer",
+              "scope" => "read write"
+            })
+          )
+
+        "/linear/graphql" ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "data" => %{
+                "viewer" => %{
+                  "id" => "lin-user-1",
+                  "name" => "Test User",
+                  "email" => "linear@comma.test"
+                },
+                "organization" => %{"id" => "lin-org-1", "name" => "Comma"}
+              }
+            })
+          )
+
+        "/linear/revoke" ->
+          send_resp(conn, 200, "")
+
         "/x/me" ->
           conn
           |> put_resp_content_type("application/json")
@@ -120,7 +152,11 @@ defmodule CommaWeb.NativePluginConnectionsTest do
             do: SystemsRuntime.Proc.send(probe, {:cn_mcp_request, credential})
 
           cond do
-            credential in ["amap-user-key", "Bearer luckin-user-token"] ->
+            credential in [
+              "amap-user-key",
+              "Bearer luckin-user-token",
+              "Bearer fastmail-user-token"
+            ] ->
               SalixWeb.LocalOAuthMock.mcp_resource(conn)
 
             # AMap answers a wrong key with HTTP 200 and its own error body.
@@ -275,7 +311,7 @@ defmodule CommaWeb.NativePluginConnectionsTest do
           {:ok, body, conn} = read_body(conn)
           form = URI.decode_query(body)
           true = form["client_id"] == "cli_scanned"
-          true = "search:message" in String.split(form["scope"])
+          SystemsRuntime.put_env(:comma_web, :lark_member_scope, form["scope"])
 
           conn
           |> put_resp_content_type("application/json")
@@ -309,7 +345,8 @@ defmodule CommaWeb.NativePluginConnectionsTest do
                   "token_type" => "Bearer",
                   "expires_in" => 7200,
                   "refresh_token_expires_in" => 604_800,
-                  "scope" => Enum.join(SalixIM.Provider.Lark.Registration.member_scopes(), " ")
+                  "scope" =>
+                    Enum.join(SalixIM.Provider.Lark.Registration.member_scopes("lark"), " ")
                 }
 
               true ->
@@ -434,6 +471,7 @@ defmodule CommaWeb.NativePluginConnectionsTest do
       {:comma_web, :lark_member_confirmed},
       {:comma_web, :lark_member_open_id},
       {:comma_web, :lark_member_throttled},
+      {:comma_web, :lark_member_scope},
       {:salix_im, :lark_registration_base_urls},
       {:salix_im, :lark_api_base_url},
       {:salix_im, :feishu_api_base_url},
@@ -483,6 +521,12 @@ defmodule CommaWeb.NativePluginConnectionsTest do
         "revoke_url" => base <> "/v1/local-oauth/slack/revoke"
       },
       "notion" => %{"token_url" => base <> "/notion/token"},
+      "linear" => %{
+        "authorize_url" => base <> "/linear/authorize",
+        "token_url" => base <> "/linear/token",
+        "api_url" => base <> "/linear/graphql",
+        "revoke_url" => base <> "/linear/revoke"
+      },
       "lark" => lark_sign_in,
       "feishu" => lark_sign_in,
       "x" => %{
@@ -494,6 +538,7 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
     SystemsRuntime.put_env(:salix_mcp, :remote_target_overrides, %{
       "remote:notion" => base <> "/v1/local-oauth/mcp/resource",
+      "remote:linear" => base <> "/v1/local-oauth/mcp/resource",
       "remote:posthog" => base <> "/v1/local-oauth/mcp/resource",
       "remote:stripe" => base <> "/v1/local-oauth/mcp/resource",
       "remote:github" => base <> "/v1/local-oauth/mcp/resource",
@@ -501,6 +546,7 @@ defmodule CommaWeb.NativePluginConnectionsTest do
       "remote:x" => base <> "/x-mcp",
       "remote:amap" => base <> "/cn-mcp?key={AMAP_MAPS_API_KEY}",
       "remote:luckin" => base <> "/cn-mcp",
+      "remote:fastmail" => base <> "/cn-mcp",
       "remote:baidu-maps" => base <> "/cn-mcp-lenient?ak={BAIDU_MAP_API_KEY}",
       "remote:tencent-docs" => base <> "/v1/local-oauth/mcp/resource"
     })
@@ -545,6 +591,12 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
     {:ok, _} =
       OAuthApps.put(workspace["salix_tenant_id"], "notion", %{
+        "client_id" => "test",
+        "client_secret" => "test"
+      })
+
+    {:ok, _} =
+      OAuthApps.put(workspace["salix_tenant_id"], "linear", %{
         "client_id" => "test",
         "client_secret" => "test"
       })
@@ -607,6 +659,16 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     end
 
     assert %{"kind" => "managed_oauth", "state" => "needs_authorization"} = member_source.()
+
+    # The sign-in asks for what the Routine reads and what the bot reads and
+    # edits as the member, and for a refresh token.
+    asked = String.split(SystemsRuntime.get_env(:comma_web, :lark_member_scope))
+    assert "search:message" in asked and "docx:document:readonly" in asked
+
+    assert Enum.sort(asked) ==
+             Enum.sort(
+               SalixIM.Provider.Lark.Registration.member_scopes("lark") ++ ["offline_access"]
+             )
 
     assert {:ok, %{"registration" => %{"state" => "waiting", "step" => "member"}}} =
              PluginConnections.install(user, %{}, w["id"], "lark", %{
@@ -678,12 +740,44 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     assert binding["alias"] == "lark-member"
     assert binding["owner"] == "comma_user|" <> user["id"]
 
-    # The bot's own reads as a signed-in person (meetings, documents) never
-    # use it.
-    assert {:ok, []} = Salix.Bindings.IMLarkUserAccounts.list(w["default_group_id"])
+    # The bot's own reads as a signed-in person (meetings, documents) use it
+    # only for a call that acts for the member: as the Comma user, or as the
+    # Lark user who writes to their own bot. For anyone else, and for a call
+    # that acts for nobody, it does not exist.
+    {:ok, [%{"connect_id" => bot}]} =
+      SalixIM.ProviderConnects.list_group_im_connects(w["default_group_id"], "lark")
 
-    assert {:error, :not_found} =
-             Salix.Bindings.IMLarkUserAccounts.access_token("any", "lark-member")
+    reads_for = fn principal_ref ->
+      acting = %{
+        "trusted_origin" => principal_ref && %{"principal_ref" => principal_ref},
+        "connect_id" => bot,
+        "group_id" => w["default_group_id"]
+      }
+
+      {:ok, accounts} = Salix.Bindings.IMLarkUserAccounts.list(w["default_group_id"], acting)
+      {Enum.map(accounts, & &1["alias"]), acting}
+    end
+
+    assert {["lark-member"], owner} = reads_for.(%{"subject_id" => user["id"]})
+    agent_id = CommaWeb.TestWorkers.with_default_worker!(w)["default_worker_agent_id"]
+
+    assert {:ok, "member-token"} =
+             Salix.Bindings.IMLarkUserAccounts.access_token(agent_id, "lark-member", owner)
+
+    assert {["lark-member"], _} =
+             reads_for.(%{"connect_id" => bot, "subject_id" => "ou_member"})
+
+    for other <- [
+          nil,
+          %{"subject_id" => "another-user"},
+          %{"connect_id" => bot, "subject_id" => "ou_someone_else"},
+          %{"connect_id" => "another-bot", "subject_id" => "ou_member"}
+        ] do
+      assert {[], acting} = reads_for.(other)
+
+      assert {:error, :not_found} =
+               Salix.Bindings.IMLarkUserAccounts.access_token("any", "lark-member", acting)
+    end
 
     {:ok, grant} = SalixStore.OAuth.get(binding["connection_id"])
     :ok = SalixStore.OAuth.put(binding["connection_id"], %{grant | "expires_at" => 1})
@@ -1101,15 +1195,36 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     assert first["plugin"]["stations"]
     assert {:ok, _} = PluginConnections.install(user, %{}, w["id"], "stillfail")
 
-    assert {:ok, %{"stations" => [_, _] = stations}} =
+    assert {:ok, %{"stations" => [_, _] = stations, "notification_level" => "action_needed"}} =
              PluginConnections.stillfail_stations(user, %{}, w["id"], "stillfail")
 
     [gone, kept] = Enum.map(stations, & &1["id"])
 
-    assert {:ok, %{"stations" => [%{"id" => ^kept}]}} =
+    assert {:ok, %{"stations" => [%{"id" => ^kept}], "notification_level" => "action_needed"}} =
              PluginConnections.disconnect_stillfail_station(user, %{}, w["id"], "stillfail", gone)
 
     assert Enum.map(stillfail_devices(group), & &1["device_id"]) == [kept]
+
+    assert {:ok, %{"stations" => [%{"id" => ^kept}], "notification_level" => "issues"}} =
+             PluginConnections.set_stillfail_notification_level(
+               user,
+               %{},
+               w["id"],
+               "stillfail",
+               "issues"
+             )
+
+    assert {:ok, %{"stations" => [%{"id" => ^kept}], "notification_level" => "issues"}} =
+             PluginConnections.stillfail_stations(user, %{}, w["id"], "stillfail")
+
+    assert {:error, {:bad_request, _}} =
+             PluginConnections.set_stillfail_notification_level(
+               user,
+               %{},
+               w["id"],
+               "stillfail",
+               "invalid_level"
+             )
 
     assert {:ok, %{"connection" => %{"state" => "connected"}}} =
              PluginConnections.get(user, %{}, w["id"], "stillfail")
@@ -1522,6 +1637,14 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     assert completed["plugin"]["installed"]
     assert length(OAuthBindings.list(w["default_group_id"])) == 2
 
+    assert {:ok, %{"sources" => notion_sources}} =
+             PluginConnections.personal_sources(user, %{}, w["id"], "notion")
+
+    assert Enum.map(notion_sources, &{&1["connectionId"], &1["kind"]}) == [
+             {"notion-native", "native_mcp_oauth"},
+             {"notion-managed", "managed_oauth"}
+           ]
+
     [old_mcp] =
       OAuthBindings.list(w["default_group_id"])
       |> Enum.filter(&(&1["provider_kind"] == "remote_mcp"))
@@ -1555,6 +1678,49 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     assert OAuthBindings.list(w["default_group_id"]) == []
   end
 
+  test "Linear personal sources omit unused fallback MCP OAuth unless connected", %{
+    user: user,
+    workspace: w
+  } do
+    assert {:ok, install} = PluginConnections.install(user, %{}, w["id"], "linear")
+
+    SalixWeb.OAuthFlow.handle_callback("linear", %{
+      "state" => provider_state(install),
+      "code" => "test"
+    })
+
+    assert {:ok, completed} = verify(user, w, "linear", install)
+    assert completed["plugin"]["installed"]
+
+    assert {:ok,
+            %{
+              "sources" => [
+                %{"connectionId" => "linear-managed", "kind" => "managed_oauth"}
+              ]
+            }} = PluginConnections.personal_sources(user, %{}, w["id"], "linear")
+
+    assert {:ok, native} =
+             PluginConnections.reauthorize(user, %{}, w["id"], "linear", %{
+               "connection_id" => "linear-native"
+             })
+
+    Salix.Control.RemoteMCPOAuth.handle_callback(%{
+      "state" => provider_state(native),
+      "code" => "test"
+    })
+
+    assert {:ok, %{"sources" => sources}} =
+             PluginConnections.personal_sources(user, %{}, w["id"], "linear")
+
+    assert Enum.map(sources, &{&1["connectionId"], &1["kind"]}) == [
+             {"linear-native", "native_mcp_oauth"},
+             {"linear-managed", "managed_oauth"}
+           ]
+
+    assert {:ok, _} = PluginConnections.uninstall(user, %{}, w["id"], "linear")
+    assert OAuthBindings.list(w["default_group_id"]) == []
+  end
+
   test "Stripe installs after its MCP OAuth callback and binds Stripe's hosted MCP", %{
     user: user,
     workspace: w
@@ -1584,7 +1750,8 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
   for {plugin_id, key, value, seen} <- [
         {"amap", "AMAP_MAPS_API_KEY", "amap-user-key", "amap-user-key"},
-        {"luckin", "LUCKIN_MCP_TOKEN", "luckin-user-token", "Bearer luckin-user-token"}
+        {"luckin", "LUCKIN_MCP_TOKEN", "luckin-user-token", "Bearer luckin-user-token"},
+        {"fastmail", "FASTMAIL_MCP_TOKEN", "fastmail-user-token", "Bearer fastmail-user-token"}
       ] do
     test "#{plugin_id} installs with the user's key and sends it only to its MCP", %{
       user: user,
@@ -1593,12 +1760,21 @@ defmodule CommaWeb.NativePluginConnectionsTest do
       SystemsRuntime.put_env(:comma_web, :cn_mcp_probe, SystemsRuntime.Proc.self())
       assert {:ok, prompt} = PluginConnections.install(user, %{}, w["id"], unquote(plugin_id))
       assert prompt["configuration"]["key"] == unquote(key)
+
+      assert is_binary(prompt["configuration"]["label"]) and
+               prompt["configuration"]["label"] != ""
+
+      assert is_binary(prompt["configuration"]["helpUrl"]) and
+               prompt["configuration"]["helpUrl"] != ""
+
       refute prompt["plugin"]["installed"]
 
       assert {:error, :plugin_credential_rejected} =
                PluginConnections.install(user, %{}, w["id"], unquote(plugin_id), %{
                  "config_values" => %{unquote(key) => "wrong-key"}
                })
+
+      assert SalixMCP.Store.list_group_bindings(w["salix_tenant_id"], w["default_group_id"]) == []
 
       assert {:ok, plugins} = Comma.Plugins.list(user, %{}, w["id"])
       refute Enum.find(plugins, &(&1["id"] == unquote(plugin_id)))["installed"]

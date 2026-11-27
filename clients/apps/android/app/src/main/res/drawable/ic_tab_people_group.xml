@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconPeopleGroup2, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12.5 8.5C12.5 10.433 10.933 12 9 12C7.067 12 5.5 10.433 5.5 8.5C5.5 6.567 7.067 5 9 5C10.933 5 12.5 6.567 12.5 8.5Z"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M15.2539 5.00928C17.068 5.13971 18.4993 6.65279 18.4993 8.50016C18.4993 10.3475 17.068 11.8606 15.2539 11.991"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M3 19V17.765C3 16.0999 4.34315 14.75 6 14.75H12C13.6569 14.75 15 16.0999 15 17.765V19"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M20.9985 19V17.765C20.9985 16.0999 19.6553 14.75 17.9985 14.75H17.8984"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

@@ -4,7 +4,7 @@ Keep tests near their business or runtime boundary.
 
 ## Required Rules
 
-- Business behavior and user-visible changes need tests. An E2E test runs the whole chain through core, native-bridge, or server APIs, not rendered UI ([AGENTS.md](../AGENTS.md#end-to-end-tests)).
+- Business behavior and user-visible changes need tests. An E2E test runs the whole chain through core, native-bridge, or server APIs, not rendered UI ([clients/AGENTS.md](../clients/AGENTS.md#end-to-end-tests)).
 - A fix adds the smallest regression test that fails without it: Vitest for the core chain or components, Playwright for a window or OS failure. Maintenance with no stable behavior to assert is exempt.
 - Existing tests can cover a change. Review behavior and coverage instead of requiring a test-file edit.
 - Playwright P0 (`clients/e2e/p0`) is only for high-frequency user paths and runtime startup and isolation health. Put other client behavior in the closest package, app, E2E, or visual-regression suite.

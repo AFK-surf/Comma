@@ -28,8 +28,12 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
        }}
     end
 
-    def delete_feishu_tenant_app(tenant_id) do
-      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:delete_feishu_tenant_app, tenant_id})
+    def delete_feishu_tenant_app(tenant_id, app_id) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:delete_feishu_tenant_app, tenant_id, app_id}
+      )
+
       :ok
     end
   end
@@ -37,7 +41,7 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
   defmodule UnavailableSalixClient do
     @moduledoc false
     def put_feishu_tenant_app(_tenant_id, _attrs), do: {:error, :unavailable}
-    def delete_feishu_tenant_app(_tenant_id), do: {:error, :unavailable}
+    def delete_feishu_tenant_app(_tenant_id, _app_id), do: {:error, :unavailable}
   end
 
   setup do
@@ -332,24 +336,43 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     assert attrs["app_secret"] == "sso-secret"
   end
 
-  test "only one Feishu app can be bot-enabled per org until multi-route support lands" do
+  test "an org runs the group bot on several Feishu apps, and each leaves the bot store alone" do
     org = org!()
 
-    assert {:ok, _binding} =
+    assert {:ok, one} =
              FeishuAppBindings.upsert_binding(org.id, %{
                "app_id" => "cli_bot_one",
                "bot_enabled" => true,
                "app_secret" => "first-secret"
              })
 
-    assert {:error, :bot_app_already_enabled} =
+    assert {:ok, two} =
              FeishuAppBindings.upsert_binding(org.id, %{
                "app_id" => "cli_bot_two",
                "bot_enabled" => true,
                "app_secret" => "second-secret"
              })
 
-    refute FeishuAppBindings.get_binding_for_app(org.id, "cli_bot_two")
+    assert_received {:put_feishu_tenant_app, _tenant_id, %{"app_id" => "cli_bot_one"}}
+    assert_received {:put_feishu_tenant_app, _tenant_id, %{"app_id" => "cli_bot_two"}}
+
+    assert ["cli_bot_one", "cli_bot_two"] =
+             org.id |> FeishuAppBindings.list_configured_bot_bindings() |> Enum.map(& &1.app_id)
+
+    # Turning the bot off on one app removes that app's secrets only.
+    assert {:ok, _} =
+             FeishuAppBindings.upsert_binding(org.id, %{"id" => one.id, "bot_enabled" => false})
+
+    assert_received {:delete_feishu_tenant_app, tenant_id, "cli_bot_one"}
+    assert tenant_id == org.salix_tenant_id
+    refute_received {:delete_feishu_tenant_app, _tenant_id, "cli_bot_two"}
+
+    assert ["cli_bot_two"] =
+             org.id |> FeishuAppBindings.list_configured_bot_bindings() |> Enum.map(& &1.app_id)
+
+    assert {:ok, _} = FeishuAppBindings.delete_binding(org.id, two.id)
+    assert_received {:delete_feishu_tenant_app, _tenant_id, "cli_bot_two"}
+    assert [] = FeishuAppBindings.list_configured_bot_bindings(org.id)
   end
 
   test "an SSO-only binding does not fan out to the bot store" do
@@ -482,7 +505,7 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
                      }}
 
     assert tenant_id == org.salix_tenant_id
-    refute_received {:delete_feishu_tenant_app, _tenant_id}
+    refute_received {:delete_feishu_tenant_app, _tenant_id, _app_id}
   end
 
   test "disabling bot deletes the tenant Feishu app store" do
@@ -509,7 +532,7 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     refute updated.bot_enabled
     refute updated.app_secret_configured
     refute updated.verification_token_configured
-    assert_received {:delete_feishu_tenant_app, tenant_id}
+    assert_received {:delete_feishu_tenant_app, tenant_id, "cli_disable_bot"}
     assert tenant_id == org.salix_tenant_id
   end
 
@@ -532,7 +555,7 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     assert deleted.id == binding.id
     assert is_nil(FeishuAppBindings.get_binding_for_app(org.id, "cli_delete"))
     assert is_nil(Orgs.get_sso_connection(org.id))
-    assert_received {:delete_feishu_tenant_app, tenant_id}
+    assert_received {:delete_feishu_tenant_app, tenant_id, "cli_delete"}
     assert tenant_id == org.salix_tenant_id
   end
 end

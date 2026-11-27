@@ -402,6 +402,135 @@ defmodule SalixIM.MentionReplyLatencyTest do
     assert_received {[:salix, :agent_message, :reply], %{latency: 20_000}, %{provider: "lark"}}
   end
 
+  # One Slack message that mentions two apps of one group arrives once per app.
+  defp app_mention(source, connect, overrides \\ %{}) do
+    slack_mention(
+      source,
+      Map.merge(
+        %{connect_id: connect, group_id: "grp_1", workspace_id: "T1", message: "1.000000"},
+        overrides
+      )
+    )
+  end
+
+  # A Slack send through `connect` from an activation that holds `sources`.
+  defp app_reply(server, connect, context, overrides \\ %{}) do
+    Process.put(:salix_im_provider_tool_context, context)
+
+    Latency.reply(
+      "slack",
+      Map.merge(
+        %{"connect_id" => connect, "group_id" => "grp_1", "workspace_id" => "T1"},
+        overrides
+      ),
+      %{place: "C1", thread: ["1.000000"], at_ms: @now},
+      server
+    )
+
+    Process.delete(:salix_im_provider_tool_context)
+  end
+
+  test "a reply through another Slack app of the group answers the mention", %{time: time} do
+    server = start(:cross_connect, time) |> complete(time)
+
+    Latency.mention(app_mention("bridge-delivery", "con_bridge"), server)
+    app_reply(server, "con_new", %{"source_message_ids" => ["bridge-delivery"]})
+
+    assert gauges(server)["slack"] == {1, 0}
+    assert_received {[:salix, :agent_message, :reply], %{latency: 10_000}, %{provider: "slack"}}
+  end
+
+  test "one message delivered by two apps is one mention that either delivery answers",
+       %{time: time} do
+    server = start(:duplicate_apps, time) |> complete(time)
+
+    Latency.mention(app_mention("bridge-delivery", "con_bridge"), server)
+    Latency.mention(app_mention("new-delivery", "con_new"), server)
+    assert gauges(server)["slack"] == {1, 10_000}
+
+    # The activation of the Bridge delivery answers as the new app, and the
+    # activation of the second delivery then stays silent as a duplicate.
+    app_reply(server, "con_new", %{"source_message_ids" => ["bridge-delivery"]})
+    Latency.no_reply(["new-delivery"], server)
+
+    assert gauges(server)["slack"] == {1, 0}
+    assert_received {[:salix, :agent_message, :mention], %{count: 1}, %{provider: "slack"}}
+    refute_received {[:salix, :agent_message, :mention], _, _}
+    assert_received {[:salix, :agent_message, :reply], %{latency: 10_000}, _}
+    refute_received {[:salix, :agent_message, :no_reply], _, _}
+  end
+
+  test "a duplicate delivery's silence leaves the message to its other delivery", %{time: time} do
+    server = start(:duplicate_silence, time) |> complete(time)
+
+    Latency.mention(app_mention("bridge-delivery", "con_bridge"), server)
+    Latency.mention(app_mention("new-delivery", "con_new"), server)
+    Latency.no_reply(["new-delivery"], server)
+
+    assert gauges(server)["slack"] == {1, 10_000}
+    refute_received {[:salix, :agent_message, :no_reply], _, _}
+
+    Latency.no_reply(["bridge-delivery"], server)
+
+    assert gauges(server)["slack"] == {1, 0}
+    assert_received {[:salix, :agent_message, :no_reply], %{count: 1}, %{provider: "slack"}}
+    refute_received {[:salix, :agent_message, :reply], _, _}
+  end
+
+  test "a reply crosses no group or workspace and needs the activation's source",
+       %{time: time} do
+    server = start(:cross_isolation, time) |> complete(time)
+
+    Latency.mention(app_mention("bridge-delivery", "con_bridge"), server)
+    # The same Slack message reaches another group's app as its own mention.
+    Latency.mention(app_mention("other-group", "con_other", %{group_id: "grp_2"}), server)
+
+    holds = %{"source_message_ids" => ["bridge-delivery", "other-group"]}
+    app_reply(server, "con_other", holds, %{"group_id" => "grp_3"})
+    app_reply(server, "con_new", holds, %{"workspace_id" => "T2"})
+    # A nearby send in the thread from a turn that holds neither source.
+    app_reply(server, "con_new", %{"source_message_ids" => ["unrelated"]})
+
+    assert gauges(server)["slack"] == {1, 10_000}
+    refute_received {[:salix, :agent_message, :reply], _, _}
+
+    app_reply(server, "con_new", %{"source_message_ids" => ["bridge-delivery"]})
+
+    assert gauges(server)["slack"] == {1, 10_000}
+    assert_received {[:salix, :agent_message, :reply], %{latency: 10_000}, _}
+    refute_received {[:salix, :agent_message, :reply], _, _}
+
+    for _ <- 1..2,
+        do: assert_received({[:salix, :agent_message, :mention], %{count: 1}, _})
+  end
+
+  test "a replayed delivery and a continuation keep one obligation across apps",
+       %{time: time} do
+    server = start(:cross_replay, time) |> complete(time)
+
+    Latency.mention(app_mention("bridge-delivery", "con_bridge"), server)
+    Latency.mention(app_mention("bridge-delivery:redelivery:1", "con_bridge"), server)
+    Latency.mention(app_mention("new-delivery", "con_new"), server)
+
+    # The work comes back in a runtime continuation that inherits the Bridge
+    # delivery, under another current source.
+    app_reply(server, "con_new", %{
+      "source_message_id" => "next",
+      "source_message_ids" => ["next"],
+      "activation_source_message_ids" => ["bridge-delivery:redelivery:1", "next"]
+    })
+
+    # A late redelivery of either app adds nothing to the settled message.
+    Latency.mention(app_mention("new-delivery:redelivery:2", "con_new"), server)
+    Latency.mention(app_mention("late-delivery", "con_late"), server)
+
+    assert gauges(server)["slack"] == {1, 0}
+    assert_received {[:salix, :agent_message, :mention], %{count: 1}, _}
+    refute_received {[:salix, :agent_message, :mention], _, _}
+    assert_received {[:salix, :agent_message, :reply], %{latency: 10_000}, _}
+    refute_received {[:salix, :agent_message, :reply], _, _}
+  end
+
   test "a mention without a usable source time is rejected, not given zero", %{time: time} do
     server = start(:clock, time) |> complete(time)
 
@@ -507,6 +636,25 @@ defmodule SalixIM.MentionReplyLatencyTest do
 
       assert_received {[:salix, :agent_message, :reply], %{latency: 10_000}, _}
       refute_received {[:salix, :agent_message, :reply], _, _}
+    end
+
+    test "deliveries of one message on two pods are one mention on both" do
+      Latency.mention(app_mention("bridge-delivery", "con_bridge"), :pod_a)
+      assert Latency.sample(:pod_a) == :ok
+      Latency.mention(app_mention("new-delivery", "con_new"), :pod_b)
+      assert Latency.sample(:pod_b) == :ok
+
+      app_reply(:pod_b, "con_new", %{"source_message_ids" => ["bridge-delivery"]})
+      Latency.no_reply(["new-delivery"], :pod_a)
+      assert Latency.sample(:pod_b) == :ok
+
+      assert gauges(:pod_a)["slack"] == {1, 0}
+      assert gauges(:pod_b)["slack"] == {1, 0}
+      assert_received {[:salix, :agent_message, :mention], _, _}
+      refute_received {[:salix, :agent_message, :mention], _, _}
+      assert_received {[:salix, :agent_message, :reply], %{latency: 10_000}, _}
+      refute_received {[:salix, :agent_message, :reply], _, _}
+      refute_received {[:salix, :agent_message, :no_reply], _, _}
     end
 
     test "a replica that sees the reply first settles on the first pod's word", %{time: time} do

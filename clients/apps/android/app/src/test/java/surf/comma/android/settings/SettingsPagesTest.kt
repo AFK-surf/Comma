@@ -87,7 +87,9 @@ class SettingsPagesTest {
             render()
         }
         override fun toast(text: String, failure: Boolean) { toasts += text to failure }
+        override val locationSharing get() = sharing
     }
+    private var sharing: surf.comma.android.chat.live.LocationSharing? = null
     private val renders = mutableListOf<() -> Unit>()
     private val toasts = mutableListOf<Pair<String, Boolean>>()
     private val test = Workspace("wsp_test", "grp_test_1", "Test")
@@ -311,6 +313,87 @@ class SettingsPagesTest {
             as? android.text.method.PasswordTransformationMethod)
     }
 
+    /** A field dialog whose window reports the keyboard as [up]; the system's keyboard animations are driven by hand. */
+    private inner class KeyboardDialog(up: Boolean) {
+        val dialog: android.app.Dialog
+        private val root: View
+
+        init {
+            TextFieldDialog(activity, "Name", "Name the device.", "Kitchen",
+                android.text.InputType.TYPE_CLASS_TEXT, "Save", { true }) {}.show()
+            settle()
+            dialog = ShadowDialog.getLatestDialog()
+            root = dialog.findViewById<android.view.ViewGroup>(android.R.id.content).getChildAt(0)
+            report(up)
+        }
+
+        /** The window learns the keyboard's target first, as the platform reports it when an animation starts. */
+        private fun report(up: Boolean) {
+            val ime = androidx.core.view.WindowInsetsCompat.Type.ime()
+            androidx.core.view.ViewCompat.dispatchApplyWindowInsets(root, androidx.core.view.WindowInsetsCompat.Builder()
+                .setInsets(ime, androidx.core.graphics.Insets.of(0, 0, 0, if (up) 1008 else 0)).setVisible(ime, up).build())
+        }
+
+        /** Starts a keyboard animation towards [up]; the result ends it. */
+        fun move(up: Boolean): android.view.WindowInsetsAnimation {
+            val animation = android.view.WindowInsetsAnimation(android.view.WindowInsets.Type.ime(), null, 285)
+            root.dispatchWindowInsetsAnimationPrepare(animation)
+            report(up)
+            return animation
+        }
+
+        fun end(animation: android.view.WindowInsetsAnimation) = root.dispatchWindowInsetsAnimationEnd(animation)
+
+        fun cancel() {
+            dialog.findViewById<TextView>(R.id.settings_dialog_confirm).parent.let { it as android.view.ViewGroup }
+                .getChildAt(0).performClick()
+        }
+
+        /** Past the exit fade, short of the time limit. */
+        fun fadeOut() = ShadowLooper.idleMainLooper(300, TimeUnit.MILLISECONDS)
+    }
+
+    @Test fun closingWaitsForTheKeyboardToGoDownBeforeTheWindowGoes() {
+        val field = KeyboardDialog(up = true)
+        field.cancel()
+        val down = field.move(up = false)
+        field.fadeOut()
+        assertTrue("the window stays while the keyboard goes down", field.dialog.isShowing)
+        field.end(down)
+        assertFalse("the window goes as soon as the keyboard is down", field.dialog.isShowing)
+    }
+
+    @Test fun closingWhileTheKeyboardIsAlreadyGoingDownWaitsForIt() {
+        val field = KeyboardDialog(up = true)
+        val down = field.move(up = false)
+        field.cancel()
+        field.fadeOut()
+        assertTrue(field.dialog.isShowing)
+        field.end(down)
+        assertFalse(field.dialog.isShowing)
+    }
+
+    @Test fun closingWhileTheKeyboardComesUpWaitsForItToGoDownAgain() {
+        val field = KeyboardDialog(up = false)
+        val up = field.move(up = true)
+        field.cancel()
+        field.fadeOut()
+        field.end(up)
+        assertTrue("the end of the keyboard coming up does not let the window go", field.dialog.isShowing)
+        val down = field.move(up = false)
+        field.end(down)
+        assertFalse(field.dialog.isShowing)
+    }
+
+    @Test fun closingDoesNotWaitForeverForTheKeyboard() {
+        val field = KeyboardDialog(up = true)
+        field.cancel()
+        field.fadeOut()
+        assertTrue(field.dialog.isShowing)
+        ShadowLooper.idleMainLooper(300, TimeUnit.MILLISECONDS)
+        assertFalse(field.dialog.isShowing)
+    }
+
     @Test fun removingACommaDeviceAsksFirstThenRevokesAndDeletesIt() {
         assertHardwareRemoval("t-circle")
     }
@@ -431,6 +514,28 @@ class SettingsPagesTest {
         assertTrue(texts.contains(activity.getString(R.string.settings_theme_system)))
         assertTrue(texts.contains(activity.getString(R.string.settings_font_size_default)))
         assertTrue(texts.contains(activity.getString(R.string.settings_version_value, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)))
+    }
+
+    @Test fun shareLocationIsOffUntilTurnedOnAndTurnsOffAgain() {
+        org.robolectric.Shadows.shadowOf(activity.application)
+            .grantPermissions(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        sharing = surf.comma.android.chat.live.LocationSharing(activity, core, owner).apply { setForeground(true) }
+        settle()
+        val root = show(RootPage(ctx))
+        val row = find(root, R.id.settings_share_location) as SettingsRow
+        assertTrue(row.isVisible)
+        assertFalse(row.findSwitch().checked)
+
+        row.performClick()
+        // The first reading may wait for the system's bound on one read.
+        ShadowLooper.idleMainLooper(16, TimeUnit.SECONDS)
+        assertTrue(row.findSwitch().checked)
+        assertEquals(listOf(true), core.called("locationSharing.set").map { it.getBoolean("enabled") })
+
+        row.performClick()
+        settle()
+        assertFalse(row.findSwitch().checked)
+        assertEquals(listOf(true, false), core.called("locationSharing.set").map { it.getBoolean("enabled") })
     }
 
     @Test fun theReplyNotificationsRowShowsWhetherRepliesCanNotify() {
@@ -555,5 +660,25 @@ class SettingsPagesTest {
             assertEquals("\"${text.text}\" is cut short", 0, cut)
         }
         assertTrue("at most three lines", row.detail.lineCount <= 3)
+    }
+
+    @Test fun settingsPageLayoutZeroesOverlayBottomMarginWhileFooterIsVisible() {
+        val layout = SettingsPageLayout(activity, "Test", onBack = {})
+        val overlay = View(activity)
+        val footer = View(activity)
+        layout.overlay(overlay)
+        layout.footer(footer)
+        layout.applyInsets(top = 24, bottom = 48)
+        assertEquals(0, (overlay.layoutParams as android.widget.FrameLayout.LayoutParams).bottomMargin)
+        assertEquals(48, (footer.layoutParams as android.widget.LinearLayout.LayoutParams).bottomMargin)
+
+        val secondOverlay = View(activity)
+        layout.overlay(secondOverlay)
+        assertEquals(0, (secondOverlay.layoutParams as android.widget.FrameLayout.LayoutParams).bottomMargin)
+
+        footer.visibility = View.GONE
+        layout.syncFooterPadding()
+        assertEquals(48, (overlay.layoutParams as android.widget.FrameLayout.LayoutParams).bottomMargin)
+        assertEquals(48, (secondOverlay.layoutParams as android.widget.FrameLayout.LayoutParams).bottomMargin)
     }
 }

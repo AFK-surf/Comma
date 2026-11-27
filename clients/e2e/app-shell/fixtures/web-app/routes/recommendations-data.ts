@@ -29,7 +29,7 @@ export const settings = {
   sources: [source],
 };
 
-export const additionalMockCardTitles = [
+const additionalMockCardTitles = [
   "Team follow-ups",
   "Release checks",
   "Customer signals",

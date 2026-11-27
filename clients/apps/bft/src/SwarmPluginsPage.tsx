@@ -4,6 +4,8 @@ import { SearchIcon } from "@comma/ui/components/icons";
 import { Toggle } from "@comma/ui/components/toggle";
 import { useCallback, useEffect, useState } from "react";
 import type {
+  BftApi,
+  BftColabAccount,
   BftPluginConnection,
   BftPluginDraft,
   BftSwarmPlugin,
@@ -15,6 +17,7 @@ import {
   connectionKindLabel,
   useConnectionConfirm,
   type ConnectionAction,
+  type ConnectionRequest,
 } from "./connectionConfirm";
 import { writeErrorMessage } from "./dialogs";
 import { showFlash } from "./flash";
@@ -371,7 +374,7 @@ export const oauthFailed = (search: string) =>
  * with the credentials each depends on, and its other credentials. Admins
  * connect, reconnect and disconnect managed-OAuth, MCP and Composio
  * credentials after a confirmation; a messaging credential is set up on the
- * swarm's Connections page.
+ * swarm's Connections page, and a per-person sign-in has nothing to connect.
  */
 export function SwarmPluginPage({
   org,
@@ -407,33 +410,22 @@ export function SwarmPluginPage({
     navigate(path, { replace: true });
   }, [listPath, path]);
 
-  const ask = (credential: BftPluginConnection, action: ConnectionAction) =>
-    connection.ask({
-      label: credential.label,
-      kind: credential.kind,
-      action,
-      dependentMcps: credential.dependent_mcps,
-      credentialConnected: credential.state === "connected",
-      credential:
-        action !== "disconnect" && credential.credential_setup
-          ? {
-              label: credential.credential_setup.label,
-              helpUrl: credential.credential_setup.help_url,
-            }
-          : undefined,
-      run: (input) =>
-        action === "disconnect"
-          ? api.disconnectPlugin(org, project, pluginId, credential.id)
-          : api.connectPlugin(
-              org,
-              project,
-              pluginId,
-              credential.id,
-              credential.credential_setup
-                ? { [credential.credential_setup.key]: input }
-                : undefined
-            ),
-    });
+  const ask = (
+    credential: BftPluginConnection,
+    action: ConnectionAction,
+    account?: BftColabAccount
+  ) =>
+    connection.ask(
+      pluginConnectionRequest({
+        api,
+        org,
+        project,
+        pluginId,
+        credential,
+        action,
+        ...(account ? { account } : {}),
+      })
+    );
 
   return (
     <>
@@ -599,7 +591,82 @@ function UseSection({
   );
 }
 
-function Credentials({
+/**
+ * The confirmation of one credential write. A write to one Google account of
+ * an `oauth_code_paste` credential names the `binding_id` the reader chose
+ * when the dialog opened, never the credential as a whole: if another admin
+ * replaces the account meanwhile, confirming still names only the account
+ * the dialog showed, so it cannot disconnect the other account.
+ */
+export function pluginConnectionRequest({
+  api,
+  org,
+  project,
+  pluginId,
+  credential,
+  action,
+  account,
+}: {
+  api: Pick<BftApi, "connectPlugin" | "disconnectPlugin">;
+  org: string;
+  project: string;
+  pluginId: string;
+  credential: BftPluginConnection;
+  action: ConnectionAction;
+  account?: BftColabAccount;
+}): ConnectionRequest {
+  const targetBindingId = account?.binding_id;
+  return {
+    label: account ? `${credential.label} · ${accountName(account)}` : credential.label,
+    kind: credential.kind,
+    action,
+    dependentMcps: credential.dependent_mcps,
+    credentialConnected: credential.state === "connected",
+    credential:
+      action !== "disconnect" && credential.credential_setup
+        ? {
+            key: credential.credential_setup.key,
+            label: credential.credential_setup.label,
+            helpUrl: credential.credential_setup.help_url,
+          }
+        : undefined,
+    run: (input, _fields, oauth) => {
+      if (action === "disconnect") {
+        return api.disconnectPlugin(
+          org,
+          project,
+          pluginId,
+          credential.id,
+          targetBindingId
+        );
+      }
+      // A new account takes the binding the server named for this attempt.
+      const bindingId = targetBindingId ?? oauth?.bindingId;
+      return api.connectPlugin(org, project, pluginId, credential.id, {
+        action,
+        ...(oauth
+          ? { configValues: { [oauth.key]: input }, attemptId: oauth.attemptId }
+          : credential.credential_setup
+            ? { configValues: { [credential.credential_setup.key]: input } }
+            : {}),
+        ...(bindingId ? { bindingId } : {}),
+      });
+    },
+  };
+}
+
+const accountName = (account: BftColabAccount) =>
+  account.email ?? account.alias ?? account.binding_id;
+
+/** A Google account's state as a credential state. */
+const accountState = (account: BftColabAccount) =>
+  account.status === "reauthorization_required"
+    ? "reauthorization_required"
+    : account.state === "draining"
+      ? "degraded"
+      : "connected";
+
+export function Credentials({
   credentials,
   connectionsHref,
   manage,
@@ -609,61 +676,170 @@ function Credentials({
   /** Where a connected Composio account is disconnected. */
   connectionsHref: string;
   manage: boolean;
-  onAsk: (credential: BftPluginConnection, action: ConnectionAction) => void;
+  onAsk: (
+    credential: BftPluginConnection,
+    action: ConnectionAction,
+    account?: BftColabAccount
+  ) => void;
 }) {
   return (
     <ul aria-label={t.credentialsTitle} className="bft-list bft-credentials">
-      {credentials.map((credential) => (
-        <li className="bft-credential" key={credential.id}>
-          <div className="bft-credential-main">
-            <span className="bft-cell-main">{credential.label}</span>
-            <span className="bft-cell-sub">{connectionKindLabel(credential.kind)}</span>
-          </div>
-          <ConnectionState state={credential.state} />
-          {manage ? (
-            <div className="bft-credential-actions">
-              {credential.integrations_href ? (
-                <a
-                  aria-label={`${t.setUpMessaging} ${credential.label}`}
-                  className="bft-btn bft-btn-sm"
-                  href={credential.integrations_href}
-                  onClick={spaLinkClick}
-                >
-                  {t.setUpMessaging}
-                </a>
-              ) : null}
-              {credential.action ? (
-                <button
-                  aria-label={`${credential.action === "reconnect" ? t.reconnect : t.connect} ${credential.label}`}
-                  className="bft-btn bft-btn-sm"
-                  onClick={() => onAsk(credential, credential.action ?? "connect")}
-                  type="button"
-                >
-                  {credential.action === "reconnect" ? t.reconnect : t.connect}
-                </button>
-              ) : null}
-              {credential.disconnectable ? (
-                <button
-                  aria-label={`${t.disconnect} ${credential.label}`}
-                  className="bft-btn bft-btn-sm"
-                  onClick={() => onAsk(credential, "disconnect")}
-                  type="button"
-                >
-                  {t.disconnect}
-                </button>
-              ) : credential.kind === "composio" && credential.state === "connected" ? (
-                <a
-                  className="bft-link bft-credential-hint"
-                  href={`${connectionsHref}#composio`}
-                  onClick={spaLinkClick}
-                >
-                  {t.composioDisconnect}
-                </a>
-              ) : null}
-            </div>
-          ) : null}
-        </li>
-      ))}
+      {credentials.flatMap((credential) =>
+        credential.kind === "oauth_code_paste" && (credential.accounts?.length ?? 0) > 0
+          ? (credential.accounts ?? []).map((account) => (
+              <AccountRow
+                account={account}
+                credential={credential}
+                key={`${credential.id}:${account.binding_id}`}
+                manage={manage}
+                onAsk={onAsk}
+              />
+            ))
+          : [
+              <CredentialRow
+                connectionsHref={connectionsHref}
+                credential={credential}
+                key={credential.id}
+                manage={manage}
+                onAsk={onAsk}
+              />,
+            ]
+      )}
     </ul>
   );
+}
+
+/** One Google account of an `oauth_code_paste` credential, with its own writes. */
+function AccountRow({
+  credential,
+  account,
+  manage,
+  onAsk,
+}: {
+  credential: BftPluginConnection;
+  account: BftColabAccount;
+  manage: boolean;
+  onAsk: (
+    credential: BftPluginConnection,
+    action: ConnectionAction,
+    account?: BftColabAccount
+  ) => void;
+}) {
+  const name = accountName(account);
+  return (
+    <li className="bft-credential">
+      <div className="bft-credential-main">
+        <span className="bft-cell-main bft-truncate">{name}</span>
+        <span className="bft-cell-sub">{accountSubtitle(credential, account)}</span>
+      </div>
+      <ConnectionState state={accountState(account)} />
+      {manage ? (
+        <div className="bft-credential-actions">
+          <button
+            aria-label={`${t.reconnect} ${name}`}
+            className="bft-btn bft-btn-sm"
+            onClick={() => onAsk(credential, "reconnect", account)}
+            type="button"
+          >
+            {t.reconnect}
+          </button>
+          <button
+            aria-label={`${t.disconnect} ${name}`}
+            className="bft-btn bft-btn-sm"
+            onClick={() => onAsk(credential, "disconnect", account)}
+            type="button"
+          >
+            {t.disconnect}
+          </button>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function CredentialRow({
+  credential,
+  connectionsHref,
+  manage,
+  onAsk,
+}: {
+  credential: BftPluginConnection;
+  connectionsHref: string;
+  manage: boolean;
+  onAsk: (credential: BftPluginConnection, action: ConnectionAction) => void;
+}) {
+  // A Google Colab disconnect names an account; without one there is none to disconnect.
+  const disconnectable =
+    credential.disconnectable && credential.kind !== "oauth_code_paste";
+  return (
+    <li className="bft-credential">
+      <div className="bft-credential-main">
+        <span className="bft-cell-main">{credential.label}</span>
+        <span className="bft-cell-sub">{connectionKindLabel(credential.kind)}</span>
+      </div>
+      <ConnectionState state={credential.state} />
+      {manage ? (
+        <div className="bft-credential-actions">
+          {credential.integrations_href ? (
+            <a
+              aria-label={`${t.setUpMessaging} ${credential.label}`}
+              className="bft-btn bft-btn-sm"
+              href={credential.integrations_href}
+              onClick={spaLinkClick}
+            >
+              {t.setUpMessaging}
+            </a>
+          ) : null}
+          {credential.kind === "requester_mcp_oauth" ? (
+            <span className="bft-muted bft-credential-hint">{t.signInPerPerson}</span>
+          ) : credential.action ? (
+            <button
+              aria-label={`${credential.action === "reconnect" ? t.reconnect : t.connect} ${credential.label}`}
+              className="bft-btn bft-btn-sm"
+              onClick={() => onAsk(credential, credential.action ?? "connect")}
+              type="button"
+            >
+              {credential.action === "reconnect" ? t.reconnect : t.connect}
+            </button>
+          ) : null}
+          {disconnectable ? (
+            <button
+              aria-label={`${t.disconnect} ${credential.label}`}
+              className="bft-btn bft-btn-sm"
+              onClick={() => onAsk(credential, "disconnect")}
+              type="button"
+            >
+              {t.disconnect}
+            </button>
+          ) : credential.kind === "composio" && credential.state === "connected" ? (
+            <a
+              className="bft-link bft-credential-hint"
+              href={`${connectionsHref}#composio`}
+              onClick={spaLinkClick}
+            >
+              {t.composioDisconnect}
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function accountSubtitle(
+  credential: BftPluginConnection,
+  account: BftColabAccount
+): string {
+  const parts: string[] = [connectionKindLabel(credential.kind)];
+  const ccu = account.ccu_balance;
+  if (typeof ccu === "number" && Number.isFinite(ccu)) {
+    const formatted = new Intl.NumberFormat(undefined, {
+      maximumFractionDigits: 2,
+    }).format(ccu);
+    parts.push(messages.connections.cuBalance(formatted));
+  }
+  if (account.active_vm_count > 0) {
+    parts.push(messages.connections.activeVms(account.active_vm_count));
+  }
+  return parts.join(" · ");
 }

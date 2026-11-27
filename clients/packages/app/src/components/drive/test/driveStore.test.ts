@@ -148,6 +148,14 @@ describe("drive file helpers", () => {
     expect(driveFileKind({ name: "clip.mp4" })).toBe("video");
     expect(driveFileKind({ name: "notes.txt" })).toBe("text");
     expect(driveFileKind({ name: "deck.pdf" })).toBe("document");
+    // Chromium <img> cannot decode TIFF, so Drive lists keep the file glyph instead of a broken thumbnail.
+    expect(driveFileKind({ name: "scan.tif" })).toBe("document");
+    expect(
+      driveFileKind({
+        blob: new Blob([], { type: "image/tiff" }),
+        name: "scan.tiff",
+      })
+    ).toBe("document");
     expect(
       driveFileKind({
         blob: new Blob([], { type: "audio/wav" }),

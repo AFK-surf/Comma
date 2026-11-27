@@ -13,14 +13,15 @@ import {
   DevicesIcon,
   GlobeIcon,
   InviteIcon,
+  LockIcon,
   PaintBrushIcon,
   PeopleCircleIcon,
   SettingsIcon,
   ShapesPlusXSquareCircleIcon,
+  ShieldCheckIcon,
   SquareGridCircleIcon,
   TagLabelIcon,
   VideoIcon,
-  WindowCursorIcon,
   type IconProps,
 } from "../icons";
 import { TailscaleProviderLogo } from "../provider-brand-logos/TailscaleProviderLogo";
@@ -41,6 +42,7 @@ const TailscaleIcon = ({ className }: IconProps) => (
 
 const iconComponents = {
   general: SettingsIcon,
+  privacy: LockIcon,
   notifications: BellIcon,
   "archived-tasks": ArchiveIcon,
   "shared-tasks": GlobeIcon,
@@ -59,7 +61,7 @@ const iconComponents = {
   "usage-billing": CreditCard2Icon,
   devices: DevicesIcon,
   tailscale: TailscaleIcon,
-  "computer-use": WindowCursorIcon,
+  permissions: ShieldCheckIcon,
   "models-api-keys": ApiConnectionIcon,
   debug: BugIcon,
   about: CircleInfoIcon,

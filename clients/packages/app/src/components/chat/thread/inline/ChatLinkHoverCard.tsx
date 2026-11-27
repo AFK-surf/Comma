@@ -1,11 +1,21 @@
+import { uiClock } from "@comma/ui/clock";
 import { HoverCard } from "@comma/ui/components/hover-card";
-import { isValidElement, useMemo, type ReactElement, type ReactNode } from "react";
+import {
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   describeLinkDestination,
   LinkPreviewCard,
   LinkPreviewSkeleton,
   LinkProviderIcon,
   providerFromHref,
+  type CommaRecommendationLinkPreview,
 } from "../../../links/linkPreviewCards";
 import { useLinkPreview } from "../../../links/useLinkPreview";
 
@@ -34,6 +44,41 @@ export function ChatLinkHoverCard({
 }) {
   // Read lazily: nothing loads until the card first opens.
   const [preview, handleOpenChange] = useLinkPreview({ workspaceId, href });
+  const [cardOpen, setCardOpen] = useState(false);
+  // Hold the last rendered preview briefly during the HoverCard exit fade so
+  // unsubscribing on close does not flash the generic tile or shrink width
+  // mid-transition.
+  const [exitingPreview, setExitingPreview] = useState<{
+    href: string;
+    value: CommaRecommendationLinkPreview | "loading" | undefined;
+  }>({ href, value: undefined });
+
+  const onHoverOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        setExitingPreview({ href, value: preview });
+      } else {
+        setExitingPreview({ href, value: undefined });
+      }
+      setCardOpen(open);
+      handleOpenChange(open);
+    },
+    [handleOpenChange, href, preview]
+  );
+
+  useEffect(() => {
+    if (cardOpen || exitingPreview.value === undefined) return;
+    return uiClock.after(250, () => {
+      setExitingPreview({ href, value: undefined });
+    });
+  }, [cardOpen, exitingPreview.value, href]);
+
+  const renderedPreview = cardOpen
+    ? preview
+    : exitingPreview.href === href
+      ? exitingPreview.value
+      : undefined;
+
   const source = useMemo(() => providerFromHref(href), [href]);
   const label = useMemo(
     () => givenLabel?.trim() || anchorLabel(anchor, href),
@@ -41,18 +86,20 @@ export function ChatLinkHoverCard({
   );
 
   const destination = describeLinkDestination(href);
+
   return (
     <HoverCard
       className={
-        preview
+        renderedPreview
           ? "comma-recommendation-prompt-hover-card comma-recommendation-link-hover-card comma-recommendation-rich-link-hover-card"
           : "comma-recommendation-prompt-hover-card comma-recommendation-link-hover-card"
       }
+      closeDelay={180}
       content={
-        preview === "loading" ? (
+        renderedPreview === "loading" ? (
           <LinkPreviewSkeleton />
-        ) : preview ? (
-          <LinkPreviewCard preview={preview} source={source} />
+        ) : renderedPreview ? (
+          <LinkPreviewCard preview={renderedPreview} source={source} />
         ) : (
           <div className="comma-recommendation-link-preview">
             <span
@@ -70,7 +117,7 @@ export function ChatLinkHoverCard({
           </div>
         )
       }
-      onOpenChange={handleOpenChange}
+      onOpenChange={onHoverOpenChange}
       open={hoverOpen}
       placement="bottom start"
     >

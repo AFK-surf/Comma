@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@comma/test-utils/render";
+import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -13,7 +13,12 @@ const mock = vi.hoisted(() => ({
   state: {} as ComputeNodeState,
   host: {} as HostMaintenanceState,
   canManage: true,
+  projectionMissing: false,
+  observationPaused: false,
+  rows: [] as Record<string, unknown>[],
+  disk: undefined as LocalComputeOverview["disk"] | undefined,
   maintain: vi.fn(),
+  read: vi.fn(),
   resume: vi.fn(),
   abandon: vi.fn(),
   refresh: vi.fn(),
@@ -24,6 +29,7 @@ const mock = vi.hoisted(() => ({
   continue: vi.fn(),
   dispose: vi.fn(),
   environments: [] as LocalComputeOverview["environments"],
+  disposal: undefined as LocalComputeOverview["disposal"],
 }));
 vi.mock("@comma/native-bridge", async (original) => ({
   ...(await original<object>()),
@@ -52,12 +58,24 @@ vi.mock("../useComputeWorkloadsSection", () => ({
   useComputeWorkloadsSection: () => ({
     workspaceName: "Workspace A",
     close: vi.fn(),
-    canManage: mock.canManage,
-    projection: { environments: [], workloads: [], can_manage: mock.canManage },
-    rows: [],
+    canManage: mock.projectionMissing ? false : mock.canManage,
+    projection: mock.projectionMissing
+      ? undefined
+      : { environments: [], workloads: mock.rows, can_manage: mock.canManage },
+    error: mock.projectionMissing ? "Could not refresh workloads" : "",
+    rows: mock.rows,
+    observationPaused: mock.observationPaused,
     pending: false,
     refresh: mock.workloadRefresh,
     openCreate: vi.fn(),
+    workloadLabel: (item: { name?: string; id: string }) => item.name ?? item.id,
+    stateLabel: (item: { phase?: string }) =>
+      item.phase === "starting" ? "Preparing" : "Ready to use",
+    location: () => "Own device",
+    needsRetry: () => false,
+    openWorkload: vi.fn(),
+    openDialog: vi.fn(),
+    deleteLabel: () => "Delete",
   }),
 }));
 vi.mock("../useComputeRecoverySection", () => ({
@@ -73,12 +91,14 @@ const bridge = {
   platform: "electron",
   computeNode: {
     state: { subscribe: () => () => {} },
-    hostMaintenanceState: async () => mock.host,
+    hostMaintenanceState: mock.read,
     maintainHost: mock.maintain,
     resumeHostMaintenance: mock.resume,
     localOverview: async () => ({
       availability: "available",
       environments: mock.environments,
+      ...(mock.disk ? { disk: mock.disk, collectedAt: "2026-10-05T13:00:00Z" } : {}),
+      ...(mock.disposal ? { disposal: mock.disposal } : {}),
     }),
     disposeLocal: mock.dispose,
   },
@@ -115,6 +135,11 @@ beforeEach(() => {
     },
   ];
   mock.canManage = true;
+  mock.projectionMissing = false;
+  mock.observationPaused = false;
+  mock.rows = [];
+  mock.disk = undefined;
+  mock.disposal = undefined;
   mock.host = installed;
   mock.state = {
     status: "action_required",
@@ -145,6 +170,7 @@ beforeEach(() => {
   mock.remove.mockImplementation(async () => mock.state);
   mock.reset.mockImplementation(async () => mock.state);
   mock.maintain.mockResolvedValue(installed);
+  mock.read.mockImplementation(async () => mock.host);
   mock.abandon.mockResolvedValue(undefined);
 });
 afterEach(() => {
@@ -165,7 +191,32 @@ it("reopens a failed remove with one reason and continues the original action", 
   expect(mock.configure).not.toHaveBeenCalled();
 });
 
-it("shows software progress and storage in the same local settings page", async () => {
+it("keeps the primary sandbox action available when cloud workloads fail to load", async () => {
+  mock.projectionMissing = true;
+  mock.state = {
+    ...mock.state,
+    problem: "continuation_paused",
+    primaryAction: "continue",
+    currentRequest: { requestId: "setup-1", kind: "configure" },
+  };
+  const card = await show();
+  const button = card.getByRole("button", { name: "Continue enabling" });
+  await userEvent.click(button);
+  expect(mock.continue).toHaveBeenCalledTimes(1);
+});
+
+it("shows ready status and disk usage on the sandbox row when ready", async () => {
+  mock.state = { ...mock.state, status: "ready", desiredEnabled: true };
+  mock.disk = {
+    usedBytes: "1503238554",
+    capacityBytes: "68719476736",
+    importReservationBytes: "0",
+  };
+  const card = await show();
+  expect(card.getByText(/Ready, 1\.4 GiB used/)).toBeTruthy();
+});
+
+it("shows storage and maintenance sections in Sandbox storage & maintenance", async () => {
   mock.host = {
     ...installed,
     operation: {
@@ -177,109 +228,91 @@ it("shows software progress and storage in the same local settings page", async 
     },
   };
   await show();
-  await userEvent.click(screen.getByRole("button", { name: "Local settings" }));
-  expect(screen.getByRole("heading", { name: "Compute components" })).toBeTruthy();
-  expect(
-    screen.getByRole("heading", { name: "Compute component data disk" })
-  ).toBeTruthy();
-  expect(screen.getByText(/env-a/)).toBeTruthy();
-  expect(screen.queryByText("View progress")).toBeNull();
-});
-
-it("passes local deletion directly to the trusted native confirmation", async () => {
-  await show();
-  await userEvent.click(screen.getByRole("button", { name: "Local settings" }));
-  await userEvent.click(screen.getByRole("button", { name: /env-a.*Node actions/ }));
   await userEvent.click(
-    screen.getByRole("menuitem", { name: "Delete local environment" })
+    screen.getByRole("button", { name: "Sandbox storage & maintenance" })
   );
-  expect(mock.dispose).toHaveBeenCalledWith({ key: "local-env" });
-  expect(screen.queryByRole("dialog", { name: "Delete local environment" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Storage" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Maintenance & recovery" })).toBeTruthy();
+  expect(screen.getByText("Updating sandbox components…")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Continue maintenance" })).toBeTruthy();
 });
 
-it("shows one explicit registration-wide deletion for two remote environments and keeps their details", async () => {
-  mock.environments = [
-    {
-      key: "remote-a",
-      label: "env-a",
-      origin: "remote",
-      state: "unknown",
-      canDisposeLocal: true,
-      canReadWorkloads: false,
-      canOperate: false,
-      disposalScope: { key: "remote-a", label: "reg-scope" },
-    },
-    {
-      key: "remote-b",
-      label: "env-b",
-      origin: "remote",
-      state: "unknown",
-      canDisposeLocal: false,
-      canReadWorkloads: false,
-      canOperate: false,
-      disposalScope: { key: "remote-a", label: "reg-scope" },
-    },
-  ];
+it("confirms Restart & repair, Reset environment, and Uninstall in-app before calling maintainHost", async () => {
   await show();
-  await userEvent.click(screen.getByRole("button", { name: "Local settings" }));
-  expect(screen.getAllByText("Local data")).toHaveLength(3);
-  expect(screen.getByText("…env-a")).toBeTruthy();
-  expect(screen.getByText("…env-b")).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "reg-scope Node actions" }));
-  const remove = screen.getAllByRole("menuitem", { name: "Delete local data" });
-  expect(remove).toHaveLength(1);
-  expect(
-    screen.queryByRole("menuitem", { name: "Delete local environment" })
-  ).toBeNull();
-  await userEvent.click(remove[0]!);
-  expect(mock.dispose).toHaveBeenCalledWith({ key: "remote-a" });
+  await userEvent.click(
+    screen.getByRole("button", { name: "Sandbox storage & maintenance" })
+  );
+
+  // 1. Restart & repair
+  await userEvent.click(screen.getByRole("button", { name: "Restart & repair…" }));
+  expect(mock.maintain).not.toHaveBeenCalled();
+  const repairDialog = screen.getByRole("dialog");
+  await userEvent.click(
+    within(repairDialog).getByRole("button", { name: "Restart and repair" })
+  );
+  await waitFor(() =>
+    expect(mock.maintain).toHaveBeenCalledWith({
+      action: "reinstall",
+      dataPolicy: "preserve",
+    })
+  );
+  await waitFor(() =>
+    expect(
+      screen
+        .getByRole("button", { name: "Reset environment…" })
+        .hasAttribute("disabled")
+    ).toBe(false)
+  );
+
+  // 2. Reset environment
+  mock.maintain.mockClear();
+  await userEvent.click(screen.getByRole("button", { name: "Reset environment…" }));
+  expect(mock.maintain).not.toHaveBeenCalled();
+  const resetDialog = screen.getByRole("dialog");
+  await userEvent.click(
+    within(resetDialog).getByRole("button", { name: "Reset environment" })
+  );
+  await waitFor(() =>
+    expect(mock.maintain).toHaveBeenCalledWith({
+      action: "reinstall",
+      dataPolicy: "reset",
+    })
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Uninstall…" }).hasAttribute("disabled")
+    ).toBe(false)
+  );
+
+  // 3. Uninstall
+  mock.maintain.mockClear();
+  await userEvent.click(screen.getByRole("button", { name: "Uninstall…" }));
+  expect(mock.maintain).not.toHaveBeenCalled();
+  const uninstallDialog = screen.getByRole("dialog");
+  await userEvent.click(
+    within(uninstallDialog).getByRole("button", { name: "Uninstall components" })
+  );
+  await waitFor(() =>
+    expect(mock.maintain).toHaveBeenCalledWith({
+      action: "uninstall",
+      dataPolicy: "reset",
+    })
+  );
 });
 
-it("keeps explicit Update and Repair available when the source has no published version comparison", async () => {
+it("shows installed and target version in Diagnostic details", async () => {
   mock.host = {
     installation: "installed",
     installedReleaseId: "operator-release",
     updateAvailable: false,
   };
   await show();
-  await userEvent.click(screen.getByRole("button", { name: "Local settings" }));
+  await userEvent.click(
+    screen.getByRole("button", { name: "Sandbox storage & maintenance" })
+  );
   await userEvent.click(screen.getByText("Diagnostic details"));
   expect(screen.getByText("operator-release")).toBeTruthy();
   expect(screen.getByText("Version unknown")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Repair…" })).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "Update Agent VMM" }));
-  expect(mock.maintain).toHaveBeenCalledWith({
-    action: "update",
-    dataPolicy: "preserve",
-  });
-});
-
-it("keeps cloud details available when local activity and disk samples are unknown", async () => {
-  mock.environments = [
-    {
-      key: "remote-a",
-      label: "env-a",
-      origin: "remote",
-      state: "unknown",
-      canDisposeLocal: true,
-      canReadWorkloads: true,
-      canOperate: false,
-      disposalScope: { key: "remote-a", label: "reg-scope" },
-    },
-  ];
-  await show();
-  await userEvent.click(screen.getByRole("button", { name: "Local settings" }));
-  expect(screen.getByText("…env-a")).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: /env-a.*Node actions/ }));
-  expect(screen.getByRole("menuitem", { name: "Workloads" })).toBeTruthy();
-});
-
-it("hides Update for the installed official target while retaining Repair", async () => {
-  mock.host = { ...installed, installedReleaseId: "release" };
-  await show();
-  await userEvent.click(screen.getByRole("button", { name: "Local settings" }));
-  expect(screen.queryByRole("button", { name: "Update Agent VMM" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Repair…" })).toBeTruthy();
 });
 
 it("refreshes a ready workload projection only when native binding or operation facts change", async () => {
@@ -317,4 +350,140 @@ it("refreshes a ready workload projection only when native binding or operation 
   view.rerender(<Harness />);
   await act(async () => {});
   expect(mock.workloadRefresh).toHaveBeenCalledTimes(reads + 3);
+  mock.state = {
+    ...mock.state,
+    facets: { ...mock.state.facets, workActivity: "active" },
+  };
+  view.rerender(<Harness />);
+  await act(async () => {});
+  expect(mock.workloadRefresh).toHaveBeenCalledTimes(reads + 4);
+  act(() => window.dispatchEvent(new Event("focus")));
+  await act(async () => {});
+  expect(mock.workloadRefresh).toHaveBeenCalledTimes(reads + 5);
+});
+
+it("stops spinning a starting workload row when background observation is paused", async () => {
+  mock.state = { ...mock.state, status: "ready", desiredEnabled: true };
+  mock.rows = [
+    {
+      id: "w_service",
+      environment_id: "env",
+      kind: "service",
+      name: "Service",
+      desired_state: "ready",
+      observed_state: "pending",
+      phase: "starting",
+      generation: 1,
+      revision: 1,
+    },
+  ];
+  const view = render(<Harness />);
+  await act(async () => {});
+  const activeStatus = screen.getByText("Preparing").closest("output.compute-status")!;
+  expect(activeStatus.getAttribute("data-pending")).toBe("true");
+
+  mock.observationPaused = true;
+  view.rerender(<Harness />);
+  await act(async () => {});
+  expect(screen.getByRole("button", { name: "Continue checking" })).toBeTruthy();
+  const pausedStatus = screen.getByText("Preparing").closest("output.compute-status")!;
+  expect(pausedStatus.getAttribute("data-pending")).toBe("false");
+});
+
+/** Agent VMM after the person uninstalled it, keeping its data; Main kept the node's saved setup. */
+function uninstall() {
+  mock.host = {
+    installation: "not_installed",
+    selectedReleaseId: "release",
+    updateAvailable: false,
+    operation: {
+      requestId: failedRequest,
+      action: "uninstall",
+      dataPolicy: "preserve",
+      phase: "completed",
+      outcome: "succeeded",
+    },
+  };
+  mock.state = {
+    ...mock.state,
+    problem: "host_uninstalled",
+    primaryAction: "update_host",
+    currentRequest: { requestId: "claim-1", kind: "configure" },
+    observed: { ...mock.state.observed, host: "absent", connector: "absent" },
+    facets: { ...mock.state.facets, installationHealth: "absent" },
+  };
+}
+
+it("shows an uninstalled Agent VMM as a neutral row whose one action reinstalls it", async () => {
+  uninstall();
+  const card = await show();
+  const reason = card.getByText("Agent VMM is uninstalled");
+  expect(reason.getAttribute("data-attention")).toBeNull();
+  const reinstall = card.getByRole("button", { name: "Keep data and reinstall" });
+  expect(card.queryByRole("button", { name: "Check status" })).toBeNull();
+  await userEvent.click(reinstall);
+  expect(mock.maintain).toHaveBeenCalledWith({
+    action: "reinstall",
+    dataPolicy: "preserve",
+  });
+});
+
+it("shows one disk line while Agent VMM is uninstalled", async () => {
+  uninstall();
+  mock.disposal = { requestId: failedRequest, outcome: "unknown" };
+  await show();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Sandbox storage & maintenance" })
+  );
+  expect(
+    screen.getAllByText("Reinstall Agent VMM to see data disk usage.")
+  ).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Keep data and reinstall" })).toBeTruthy();
+});
+
+it("says once that disk usage is unavailable when an installed Agent VMM gives no sample", async () => {
+  await show();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Sandbox storage & maintenance" })
+  );
+  expect(screen.getAllByText("Data disk usage is unavailable.")).toHaveLength(1);
+});
+
+it("reads the local maintenance record again when Check status is selected", async () => {
+  mock.host = { ...installed, recordUnreadable: true };
+  const card = await show();
+  expect(card.getByText(/Cannot read the compute record/)).toBeTruthy();
+  const reads = mock.read.mock.calls.length;
+  mock.host = installed;
+  await userEvent.click(card.getByRole("button", { name: "Check status" }));
+  expect(mock.refresh).toHaveBeenCalled();
+  expect(mock.read.mock.calls.length).toBeGreaterThan(reads);
+  expect(card.queryByText(/Cannot read the compute record/)).toBeNull();
+});
+
+it("shows a failed request as preparing while Continue maintenance is submitted", async () => {
+  const failed = {
+    requestId: failedRequest,
+    action: "reinstall" as const,
+    dataPolicy: "preserve" as const,
+    phase: "failed" as const,
+    failedPhase: "installing" as const,
+    outcome: "failed" as const,
+  };
+  mock.host = { ...installed, operation: failed };
+  let finish!: (state: HostMaintenanceState) => void;
+  mock.resume.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+  );
+  const card = await show();
+  expect(card.getByText(/Comma could not install the components/)).toBeTruthy();
+  await userEvent.click(card.getByRole("button", { name: "Continue maintenance" }));
+  expect(mock.resume).toHaveBeenCalledWith({ requestId: failedRequest });
+  expect(card.getByText("Preparing maintenance")).toBeTruthy();
+  expect(card.queryByText(/Comma could not install the components/)).toBeNull();
+  expect(card.queryByRole("button", { name: "Continue maintenance" })).toBeNull();
+  await act(async () => finish({ ...installed, operation: failed }));
 });

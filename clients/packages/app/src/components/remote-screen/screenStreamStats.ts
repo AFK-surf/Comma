@@ -9,9 +9,10 @@ export type ScreenAgentPointer = NonNullable<StationState["agentPointer"]>;
 
 /**
  * What a view's statistics show, as it comes (still.fail's web/src/screen/ScreenPanel.tsx `NetChip`): the picture's
- * codec and size (its config), how the station makes it (`state.video`) and how late its frames are (`state.latency`),
- * and the frames and their bytes counted as they come, which the panel reads each second while it is open. Each is
- * absent where it is not had: the frames are counted from the first.
+ * codec and size (its config), how the station makes it (`state.video`), how late its frames are (`state.latency`),
+ * its path's round trip and packet loss (`state.rtt`, `state.loss`, as they change), and the frames and their bytes
+ * counted as they come, which the panel reads each second while it is open. Each is absent where it is not had: the
+ * frames are counted from the first.
  */
 export type ScreenStreamStats = {
   codec?: string | undefined;
@@ -19,6 +20,10 @@ export type ScreenStreamStats = {
   height?: number | undefined;
   video?: StationState["video"];
   latency?: StationState["latency"];
+  /** The round trip on the view's path, in ms. */
+  rtt?: number | undefined;
+  /** The station's packets lost on the view's path over the last seconds, in % (0..100). */
+  loss?: number | undefined;
   frames?: number | undefined;
   bytes?: number | undefined;
 };
@@ -53,4 +58,33 @@ export function bitrateText(bps: number): string {
 /** A codec as people name it. */
 export function codecText(codec: string): string {
   return codec === "h264" ? "H.264" : codec === "h265" ? "H.265" : codec.toUpperCase();
+}
+
+/** How a view's link fares, as its figures and the bars are coloured: well, weak or bad. */
+export type ScreenLinkTone = "ok" | "warn" | "bad";
+
+const TONE_RANK: Record<ScreenLinkTone, number> = { ok: 0, warn: 1, bad: 2 };
+
+/** A round trip's tone: under 300 ms well, under 1 s weak, else bad. */
+export function rttTone(rtt: number | undefined): ScreenLinkTone {
+  return rtt === undefined || rtt < 300 ? "ok" : rtt < 1000 ? "warn" : "bad";
+}
+
+/** Packet loss's tone: under 1% well, under 10% weak, else bad. */
+export function lossTone(loss: number | undefined): ScreenLinkTone {
+  return loss === undefined || loss < 1 ? "ok" : loss < 10 ? "warn" : "bad";
+}
+
+/** The link's tone: the worse of its round trip's and its packet loss's. */
+export function linkTone(
+  stats: Pick<ScreenStreamStats, "rtt" | "loss"> | undefined
+): ScreenLinkTone {
+  const rtt = rttTone(stats?.rtt);
+  const loss = lossTone(stats?.loss);
+  return TONE_RANK[loss] > TONE_RANK[rtt] ? loss : rtt;
+}
+
+/** Packet loss as the statistics say it: 0%, 2.5%, 28.6%. */
+export function lossText(loss: number): string {
+  return loss <= 0 ? "0%" : `${loss.toFixed(1)}%`;
 }

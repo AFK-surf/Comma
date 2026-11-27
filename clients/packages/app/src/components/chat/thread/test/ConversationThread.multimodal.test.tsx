@@ -7,6 +7,7 @@ import {
   waitFor,
   within,
 } from "@comma/test-utils/render";
+import userEvent from "@testing-library/user-event";
 import type { CommaNativeBridge } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,8 @@ import {
   normalizeServerMessages,
 } from "@comma/core/chat";
 import { messageMarkdown } from "@comma/core/markdown";
+import { installUiClock } from "@comma/ui/clock";
+import { createVirtualUiClock } from "@comma/ui/clock/virtual";
 
 // Keep MarkdownStream, the trusted inline compiler, and every attachment
 // component real. Only the image byte/lease boundary is supplied by the test.
@@ -155,6 +158,101 @@ describe("real chat Markdown and attachment composition", () => {
     );
     expect(container.querySelectorAll("img")).toHaveLength(1);
     expect(screen.queryByTestId("chat-attachment-file-msg_coding_image-0")).toBeNull();
+  });
+
+  it("projects an agent wire message with 4 ordered image blocks into one start-aligned deck and flips front card on Next", async () => {
+    const user = userEvent.setup();
+    const projected = normalizeServerMessages(
+      [
+        {
+          message_id: "msg_agent_4img_e2e",
+          kind: "message",
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          content: [
+            { type: "text", text: "Generated four variants:" },
+            ...[1, 2, 3, 4].map((index) => ({
+              type: "image",
+              file_name: `gen-${index}.png`,
+              mime_type: "image/png",
+              path: `/uploads/tasks/cnv_wire_e2e/post/${index}-gen-${index}.png`,
+              blob_ref: {
+                kind: "blob",
+                uuid: String(index).repeat(32).slice(0, 32),
+                hash: String(index).repeat(64).slice(0, 64),
+                size: 67,
+              },
+            })),
+          ],
+        },
+      ],
+      [],
+      "agent_task",
+      "cnv_wire_e2e"
+    );
+
+    expect(projected).toHaveLength(1);
+    const projectedMessage = projected[0]!;
+    expect(projectedMessage.messageId).toBe("msg_agent_4img_e2e");
+    expect(projectedMessage.attachments).toHaveLength(4);
+    expect(
+      projectedMessage.attachments.map((att) => ({
+        attachmentIndex: att.attachmentIndex,
+        blockType: att.blockType,
+        fileName: att.fileName,
+      }))
+    ).toEqual([
+      { attachmentIndex: 1, blockType: "image", fileName: "gen-1.png" },
+      { attachmentIndex: 2, blockType: "image", fileName: "gen-2.png" },
+      { attachmentIndex: 3, blockType: "image", fileName: "gen-3.png" },
+      { attachmentIndex: 4, blockType: "image", fileName: "gen-4.png" },
+    ]);
+
+    const preview = vi.fn(async () => ({ url: previewUrl, release: vi.fn() }));
+    const core = createScriptedCore();
+    const { container } = render(
+      core.wrap(
+        <ConversationThread
+          conversationId="cnv_wire_e2e"
+          groupId="grp_1"
+          messages={projected}
+          onDiscard={noop}
+          onPreviewLocalFile={preview}
+          onRetry={noop}
+          workspaceId="wsp_1"
+        />
+      )
+    );
+
+    await screen.findByRole("img", { name: "gen-1.png" });
+    const groups = container.querySelectorAll(
+      '.chat-panel-image-group[data-align="start"]'
+    );
+    expect(groups).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "4 Images" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    const cards = [
+      ...groups[0]!.querySelectorAll<HTMLButtonElement>(".chat-panel-image-group-card"),
+    ];
+    expect(cards).toHaveLength(4);
+    expect(cards.map((card) => card.dataset.stackPos)).toEqual([
+      "0",
+      "r1",
+      "r2",
+      "hidden-right",
+    ]);
+    expect(cards[0]?.querySelector("img")).toHaveAttribute("alt", "gen-1.png");
+    expect(cards[1]?.querySelector("img")).toHaveAttribute("alt", "gen-2.png");
+    expect(cards[2]?.querySelector("img")).toHaveAttribute("alt", "gen-3.png");
+    expect(cards[3]?.querySelector("img")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Show next image" }));
+    expect(cards.map((card) => card.dataset.stackPos)).toEqual(["l1", "0", "r1", "r2"]);
+    expect(cards[1]?.querySelector("img")).toHaveAttribute("alt", "gen-2.png");
+    expect(cards[0]?.querySelector("img")).toHaveAttribute("alt", "gen-1.png");
   });
 
   it("draws a reply's workspace-path image from its attachment instead of loading the path", async () => {
@@ -537,9 +635,14 @@ describe("real chat Markdown and attachment composition", () => {
     );
     const image = await screen.findByRole("img", { name: "diagram.png" });
     await waitFor(() => expect(image).toHaveAttribute("src", previewUrl));
-    // An agent's image keeps its own ratio instead of a cropped group card.
-    expect(article.querySelectorAll(".comma-chat-inline-image")).toHaveLength(1);
-    expect(article.querySelectorAll(".chat-panel-image-group-card")).toHaveLength(0);
+    // Agent images route through start-aligned ChatPanelImageGroup; a single
+    // image marks data-single="true" so it keeps its own aspect ratio.
+    expect(
+      article.querySelector(
+        '.chat-panel-image-group[data-align="start"][data-single="true"]'
+      )
+    ).not.toBeNull();
+    expect(article.querySelectorAll(".chat-panel-image-group-card")).toHaveLength(1);
     for (const [index, name] of [
       "report.pdf",
       "recording.mp3",
@@ -598,6 +701,57 @@ describe("real chat Markdown and attachment composition", () => {
       "Please review **these** files"
     );
     expect(container.querySelector("audio, video")).toBeNull();
+  });
+
+  it("puts a picture that comes after the preview deadline in its card's place", async () => {
+    const clock = createVirtualUiClock();
+    const uninstall = installUiClock(clock);
+    try {
+      let late!: (preview: LocalFilePreview) => void;
+      const latePreview = new Promise<LocalFilePreview>((resolve) => {
+        late = resolve;
+      });
+      const preview = vi.fn((ref: unknown) =>
+        ref === `lfi1_${"b".repeat(43)}`
+          ? latePreview
+          : Promise.resolve({ url: previewUrl, release: vi.fn() })
+      );
+      const photos: ChatMessage["attachments"] = ["a", "b"].map((letter) => ({
+        blockType: "image",
+        fileName: `${letter}.jpg`,
+        localFileRef: `lfi1_${letter.repeat(43)}`,
+        mimeType: "image/jpeg",
+        size: 67,
+      }));
+      const { container } = render(
+        <ConversationThread
+          messages={[message("msg_photos", "user", "", { attachments: photos })]}
+          groupId="grp_1"
+          workspaceId="wsp_1"
+          onDiscard={noop}
+          onRetry={noop}
+          onPreviewLocalFile={preview}
+        />
+      );
+      await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
+      act(() => clock.advance(20_000));
+
+      // The one that came shows; the late one is its card while it loads on.
+      await screen.findByRole("img", { name: "a.jpg" });
+      expect(screen.getByTestId("chat-attachment-file-msg_photos-1")).toHaveTextContent(
+        "b.jpg"
+      );
+
+      await act(async () => late({ url: previewUrl, release: vi.fn() }));
+      await screen.findByRole("img", { name: "b.jpg" });
+      expect(screen.queryByTestId("chat-attachment-file-msg_photos-1")).toBeNull();
+      expect(container.querySelectorAll(".chat-panel-image-group-card")).toHaveLength(
+        2
+      );
+      expect(preview).toHaveBeenCalledTimes(2);
+    } finally {
+      uninstall();
+    }
   });
 
   describe("agent inline media", () => {
@@ -687,9 +841,13 @@ describe("real chat Markdown and attachment composition", () => {
 
       const image = await screen.findByRole("img", { name: "chart.png" });
       expect(image).toHaveAttribute("src", previewUrl);
-      expect(container.querySelectorAll(".comma-chat-inline-image")).toHaveLength(1);
+      expect(
+        container.querySelector(
+          '.chat-panel-image-group[data-align="start"][data-single="true"]'
+        )
+      ).not.toBeNull();
       expect(container.querySelectorAll(".chat-panel-image-group-card")).toHaveLength(
-        0
+        1
       );
       expect(preview).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1061,8 +1219,8 @@ describe("a streaming reply beside mounted history", () => {
 
 describe("a Task Worker's reply to a runtime message", () => {
   it("shows the runtime message's preview with Comma's mark", () => {
-    // The Worker answers the runtime's nudge after another thread's reply
-    // crossed it, so the nudge shows as a preview above the answer.
+    // The Worker answers a visible runtime message (e.g. a loop wake) after
+    // another thread's reply crossed it, so it shows as a preview above the answer.
     const messages = normalizeServerMessages(
       [
         {
@@ -1077,11 +1235,11 @@ describe("a Task Worker's reply to a runtime message", () => {
           kind: "message",
           actor_type: "system",
           role_label: "runtime",
-          metadata: { message_type: "task_worker_nudge" },
+          metadata: { message_type: "task_loop" },
           content: [
             {
               type: "text",
-              text: "Your session stopped without publishing a result Message.",
+              text: "Scheduled loop run started.",
             },
           ],
         },

@@ -26,6 +26,7 @@ import {
   type ConversationFileSource,
 } from "../../runtime-files/fileSources";
 import type { ChatParticipantStatus } from "@comma/core/chat";
+import { filePreviewKind } from "../file-preview/FilePreviewContent";
 import { focusScreenWindow } from "../remote-screen/screenWindows";
 
 export type ChatSidebarHost = {
@@ -96,7 +97,26 @@ export type ChatSidebarChangesPage = {
   revision: number;
 };
 
-export type ChatSidebarFilePreview = { id: string; source: ConversationFileSource };
+export type ChatSidebarFilePreview = {
+  id: string;
+  source: ConversationFileSource;
+  /** The Agent whose new version of a document this is, sent while the reader was in its chat: the tab types it in. */
+  writer?: string | undefined;
+};
+
+/**
+ * A file preview's tab. A Markdown document has one tab in its conversation whichever message carries it: a later
+ * version of it shows in the same tab.
+ */
+export const filePreviewTabId = (source: ConversationFileSource) =>
+  filePreviewKind(source.fileName, source.mimeType) === "markdown"
+    ? JSON.stringify([
+        "document",
+        source.groupId,
+        source.conversationId,
+        source.fileName,
+      ])
+    : conversationFileSourceKey(source);
 
 /** A computer's screen, live, as a tab: the big screen of a computer-use session. */
 export type ChatSidebarScreenPage = {
@@ -112,6 +132,11 @@ export type ChatSidebarScreenPage = {
   target?: "display" | "models" | undefined;
   /** One of the computer's devices this page shows, instead of the computer's own screen. */
   screen?: ListedScreen | undefined;
+  /**
+   * The Task whose sandbox `device` is, for the screen of one: the page only looks (no Control, nothing else of the
+   * device), and its view asks the sandbox to show the screen while it is open (`coding.screen`).
+   */
+  task?: string | undefined;
 };
 
 /** A screen page's id: one tab per computer and set of apps. */
@@ -134,6 +159,22 @@ export type ChatSidebarAppPage = {
   name: string;
   /** The Version a Task's card previews; the app's live Version where not given. */
   version?: number | undefined;
+  /** Present when opened from a collaborative Task: runs under the collaboration access scope. */
+  collaboration?: { group: string; task: string } | undefined;
+};
+
+export type ChatSidebarStillfailPreview = {
+  id: string;
+  href: string;
+  title?: string | undefined;
+  workspaceId: string;
+};
+
+export type ChatSidebarMailPreview = {
+  id: string;
+  href: string;
+  title?: string | undefined;
+  workspaceId: string;
 };
 
 export type ChatSidebarSurface =
@@ -144,7 +185,9 @@ export type ChatSidebarSurface =
   | "history"
   | "file"
   | "screen"
-  | "changes";
+  | "changes"
+  | "stillfail"
+  | "mail";
 
 export type ChatSidebarSession = {
   activeBrowserPageId?: string | undefined;
@@ -164,6 +207,10 @@ export type ChatSidebarSession = {
   activeScreenPageId?: string | undefined;
   appPages?: ChatSidebarAppPage[];
   activeAppPageId?: string | undefined;
+  stillfailPreviews?: ChatSidebarStillfailPreview[];
+  activeStillfailPreviewId?: string | undefined;
+  mailPreviews?: ChatSidebarMailPreview[];
+  activeMailPreviewId?: string | undefined;
   /** Tabs the reader pinned, by tab id, in the order they were pinned: they lead the strip. */
   pinnedTabIds?: string[] | undefined;
 };
@@ -182,6 +229,8 @@ export type ChatSidebarContextValue = {
   closeChangesPage: (host: ChatSidebarHost, pageId: string) => void;
   closeScreenPage: (host: ChatSidebarHost, pageId: string) => void;
   closeAppPage: (host: ChatSidebarHost, pageId: string) => void;
+  closeStillfailPreview: (host: ChatSidebarHost, previewId: string) => void;
+  closeMailPreview: (host: ChatSidebarHost, previewId: string) => void;
   /** Opens a web page's address again in a new tab right after it, and selects it. */
   duplicateBrowserPage: (host: ChatSidebarHost, pageId: string) => void;
   getNativeBrowserCapacityBlockedEpoch: (sessionId: string) => number | undefined;
@@ -191,7 +240,16 @@ export type ChatSidebarContextValue = {
   openBrowser: (host: ChatSidebarHost, target: ChatSidebarBrowserTarget) => void;
   openChat: (host: ChatSidebarHost, target: ChatSidebarConversationTarget) => void;
   openDrivePreview: (host: ChatSidebarHost, preview: ChatSidebarDrivePreview) => void;
-  openFilePreview: (host: ChatSidebarHost, source: ConversationFileSource) => void;
+  /**
+   * Opens a file's tab and shows it. With `revision`, the file is a document just sent in the chat: a tab that shows
+   * an earlier version of it takes this one where it stands. With no such tab, an Agent's document (`writer`) opens a
+   * new one in front, and the reader's own opens none.
+   */
+  openFilePreview: (
+    host: ChatSidebarHost,
+    source: ConversationFileSource,
+    revision?: { writer?: string | undefined }
+  ) => void;
   selectFilePreview: (host: ChatSidebarHost, id: string) => void;
   closeFilePreview: (host: ChatSidebarHost, id: string) => void;
   openSessionHistory: (
@@ -209,6 +267,13 @@ export type ChatSidebarContextValue = {
   ) => void;
   /** Opens (or returns to) a Mini App's tab. */
   openApp: (host: ChatSidebarHost, target: Omit<ChatSidebarAppPage, "id">) => void;
+  /** Opens (or focuses) a still.fail conversation preview tab. */
+  openStillfailPreview: (
+    host: ChatSidebarHost,
+    preview: ChatSidebarStillfailPreview
+  ) => void;
+  /** Opens (or focuses) an Outlook/Gmail email preview tab. */
+  openMailPreview: (host: ChatSidebarHost, preview: ChatSidebarMailPreview) => void;
   registerHost: (
     host: ChatSidebarHost,
     options?: { commaCenter?: boolean | undefined; owner?: object | undefined }
@@ -230,6 +295,18 @@ export type ChatSidebarContextValue = {
   selectChangesPage: (host: ChatSidebarHost, pageId: string) => void;
   selectScreenPage: (host: ChatSidebarHost, pageId: string) => void;
   selectAppPage: (host: ChatSidebarHost, pageId: string) => void;
+  selectStillfailPreview: (host: ChatSidebarHost, previewId: string) => void;
+  updateStillfailPreviewTitle: (
+    host: ChatSidebarHost,
+    previewId: string,
+    title: string
+  ) => void;
+  selectMailPreview: (host: ChatSidebarHost, previewId: string) => void;
+  updateMailPreviewTitle: (
+    host: ChatSidebarHost,
+    previewId: string,
+    title: string
+  ) => void;
   setTabPinned: (host: ChatSidebarHost, tabId: string, pinned: boolean) => void;
   toggle: (host: ChatSidebarHost) => void;
   toggleActive: () => void;
@@ -297,6 +374,8 @@ const emptySession = (): ChatSidebarSession => ({
   screenPages: [],
   changesPages: [],
   appPages: [],
+  stillfailPreviews: [],
+  mailPreviews: [],
 });
 
 export function activeSidebarChat(session: ChatSidebarSession | undefined) {
@@ -327,6 +406,13 @@ export const driveSidebarHost: ChatSidebarHost = {
 /** The Apps gallery's apps open beside it on one shared host, as Drive's previews do. */
 export const appsSidebarHost: ChatSidebarHost = {
   conversationId: "__global_apps__",
+  groupId: "__global__",
+  workspaceId: "__global__",
+};
+
+/** Tasks is not a conversation, so Monoid pages opened from the board hang off one shared host. */
+export const tasksSidebarHost: ChatSidebarHost = {
+  conversationId: "__global_tasks__",
   groupId: "__global__",
   workspaceId: "__global__",
 };
@@ -524,6 +610,16 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     if (bridge.platform !== "electron") return undefined;
     return bridge.browserSidebar.onOpenTabRequested(({ tabId, url }) => {
       setRegistry((current) => openRequestedBrowserTab(current, tabId, url));
+    });
+  }, []);
+
+  useEffect(() => {
+    const bridge = getNativeBridge();
+    if (bridge.platform !== "electron") return undefined;
+    // Removing the page is enough: the retained-sessions effect below closes
+    // its native session, which settles Main's pending close request.
+    return bridge.browserSidebar.onCloseTabRequested(({ tabId }) => {
+      setRegistry((current) => closeRequestedBrowserTab(current, tabId));
     });
   }, []);
 
@@ -914,65 +1010,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
 
   const closeBrowserPage = useCallback<ChatSidebarContextValue["closeBrowserPage"]>(
     (host, pageId) => {
-      setRegistry((current) => {
-        const key = chatSidebarHostKey(host);
-        const session = current.sessions.get(key);
-        if (!session) return current;
-        const pageIndex = session.browserPages.findIndex((page) => page.id === pageId);
-        if (pageIndex < 0) return current;
-
-        const browserPages = session.browserPages.filter((page) => page.id !== pageId);
-        const sessions = new Map(current.sessions);
-        sessions.delete(key);
-
-        if (
-          browserPages.length === 0 &&
-          !session.chats.length &&
-          session.drivePreviews.length === 0 &&
-          !session.historyPages?.length &&
-          !session.filePreviews?.length &&
-          !session.screenPages?.length &&
-          !session.changesPages?.length &&
-          !session.appPages?.length
-        ) {
-          touchSidebarSession(sessions, key, emptySession());
-          return finishSidebarTabClose(current, sessions, host);
-        }
-
-        const closingActive =
-          session.activeSurface === "browser" && session.activeBrowserPageId === pageId;
-        let activeBrowserPageId = session.activeBrowserPageId;
-        let activeSurface = session.activeSurface;
-
-        if (browserPages.length === 0) {
-          activeBrowserPageId = undefined;
-          if (closingActive)
-            activeSurface = session.chats.length
-              ? "chat"
-              : session.drivePreviews.length
-                ? "drive"
-                : "history";
-        } else if (closingActive) {
-          const next =
-            browserPages[Math.min(pageIndex, browserPages.length - 1)] ??
-            browserPages[0];
-          activeBrowserPageId = next?.id;
-          activeSurface = "browser";
-        } else if (
-          activeBrowserPageId &&
-          !browserPages.some((page) => page.id === activeBrowserPageId)
-        ) {
-          activeBrowserPageId = browserPages[0]?.id;
-        }
-
-        touchSidebarSession(sessions, key, {
-          ...session,
-          activeBrowserPageId,
-          activeSurface,
-          browserPages,
-        });
-        return finishSidebarTabClose(current, sessions, host);
-      });
+      setRegistry((current) =>
+        closeBrowserPageInRegistry(current, chatSidebarHostKey(host), pageId)
+      );
     },
     []
   );
@@ -1018,19 +1058,44 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
   );
 
   const openFilePreview = useCallback<ChatSidebarContextValue["openFilePreview"]>(
-    (host, source) => {
-      const id = conversationFileSourceKey(source);
+    (host, source, revision) => {
+      const id = filePreviewTabId(source);
+      const preview: ChatSidebarFilePreview = {
+        id,
+        source,
+        ...(revision?.writer ? { writer: revision.writer } : {}),
+      };
       setRegistry((current) => {
+        const shown = current.sessions
+          .get(chatSidebarHostKey(host))
+          ?.filePreviews?.some((item) => item.id === id);
+        // A new version of a document already in a tab reaches that tab and moves nothing: the reader may be
+        // reading another tab, or have the sidebar closed.
+        if (revision && !shown && !revision.writer) return current;
+        if (revision && shown)
+          return {
+            ...current,
+            sessions: updateSidebarSession(current.sessions, host, (session) => ({
+              ...session,
+              filePreviews: (session.filePreviews ?? []).map((item) =>
+                item.id === id ? preview : item
+              ),
+            })),
+          };
         const sessions = updateSidebarSession(current.sessions, host, (session) => ({
           ...session,
           activeSurface: "file",
           activeFilePreviewId: id,
-          filePreviews: [
-            ...(session.filePreviews ?? [])
-              .filter((preview) => preview.id !== id)
-              .slice(-(maxBrowserSidebarSessionsPerOwner - 1)),
-            { id, source },
-          ],
+          filePreviews: shown
+            ? (session.filePreviews ?? []).map((item) =>
+                item.id === id ? preview : item
+              )
+            : [
+                ...(session.filePreviews ?? []).slice(
+                  -(maxBrowserSidebarSessionsPerOwner - 1)
+                ),
+                preview,
+              ],
         }));
         return {
           ...current,
@@ -1168,7 +1233,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           !session.filePreviews?.length &&
           !session.screenPages?.length &&
           !session.changesPages?.length &&
-          !session.appPages?.length
+          !session.appPages?.length &&
+          !session.stillfailPreviews?.length &&
+          !session.mailPreviews?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
           return finishSidebarTabClose(current, sessions, host);
@@ -1467,6 +1534,234 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const openStillfailPreview = useCallback<
+    ChatSidebarContextValue["openStillfailPreview"]
+  >((host, preview) => {
+    setRegistry((current) => {
+      const sessions = updateSidebarSession(current.sessions, host, (session) => {
+        const existing = session.stillfailPreviews ?? [];
+        const shown = existing.find((item) => item.id === preview.id);
+        const merged = shown
+          ? {
+              ...shown,
+              ...preview,
+              title: preview.title ?? shown.title,
+            }
+          : preview;
+        return {
+          ...session,
+          activeSurface: "stillfail",
+          activeStillfailPreviewId: preview.id,
+          stillfailPreviews: shown
+            ? existing.map((item) => (item.id === preview.id ? merged : item))
+            : [...existing.slice(-23), merged],
+        };
+      });
+      return {
+        ...current,
+        sessions,
+        openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
+      };
+    });
+  }, []);
+
+  const selectStillfailPreview = useCallback<
+    ChatSidebarContextValue["selectStillfailPreview"]
+  >((host, previewId) => {
+    setRegistry((current) => {
+      const key = chatSidebarHostKey(host);
+      const session = current.sessions.get(key);
+      if (!session?.stillfailPreviews?.some((item) => item.id === previewId)) {
+        return current;
+      }
+      const sessions = new Map(current.sessions);
+      touchSidebarSession(sessions, key, {
+        ...session,
+        activeSurface: "stillfail",
+        activeStillfailPreviewId: previewId,
+      });
+      return { ...current, sessions };
+    });
+  }, []);
+
+  const updateStillfailPreviewTitle = useCallback<
+    ChatSidebarContextValue["updateStillfailPreviewTitle"]
+  >((host, previewId, title) => {
+    setRegistry((current) => {
+      const key = chatSidebarHostKey(host);
+      const session = current.sessions.get(key);
+      const existing = session?.stillfailPreviews;
+      if (!session || !existing) return current;
+      const target = existing.find((item) => item.id === previewId);
+      if (!target || target.title === title) return current;
+      const sessions = new Map(current.sessions);
+      touchSidebarSession(sessions, key, {
+        ...session,
+        stillfailPreviews: existing.map((item) =>
+          item.id === previewId ? { ...item, title } : item
+        ),
+      });
+      return { ...current, sessions };
+    });
+  }, []);
+
+  const closeStillfailPreview = useCallback<
+    ChatSidebarContextValue["closeStillfailPreview"]
+  >((host, previewId) => {
+    setRegistry((current) => {
+      const key = chatSidebarHostKey(host);
+      const session = current.sessions.get(key);
+      const index =
+        session?.stillfailPreviews?.findIndex((item) => item.id === previewId) ?? -1;
+      if (!session || index < 0) return current;
+      const stillfailPreviews = session.stillfailPreviews!.filter(
+        (item) => item.id !== previewId
+      );
+      const closingActive =
+        session.activeSurface === "stillfail" &&
+        session.activeStillfailPreviewId === previewId;
+      const sessions = new Map(current.sessions);
+      const activeStillfailPreviewId =
+        session.activeStillfailPreviewId === previewId
+          ? stillfailPreviews[Math.min(index, stillfailPreviews.length - 1)]?.id
+          : session.activeStillfailPreviewId;
+      const activeSurface =
+        closingActive && !stillfailPreviews.length
+          ? session.chats.length
+            ? "chat"
+            : session.browserPages.length
+              ? "browser"
+              : session.drivePreviews.length
+                ? "drive"
+                : session.changesPages?.length
+                  ? "changes"
+                  : "history"
+          : session.activeSurface;
+      touchSidebarSession(sessions, key, {
+        ...session,
+        stillfailPreviews,
+        activeStillfailPreviewId,
+        activeSurface,
+      });
+      return finishSidebarTabClose(current, sessions, host);
+    });
+  }, []);
+
+  const openMailPreview = useCallback<ChatSidebarContextValue["openMailPreview"]>(
+    (host, preview) => {
+      setRegistry((current) => {
+        const sessions = updateSidebarSession(current.sessions, host, (session) => {
+          const existing = session.mailPreviews ?? [];
+          const shown = existing.find((item) => item.id === preview.id);
+          const merged = shown
+            ? {
+                ...shown,
+                ...preview,
+                title: preview.title ?? shown.title,
+              }
+            : preview;
+          return {
+            ...session,
+            activeSurface: "mail",
+            activeMailPreviewId: preview.id,
+            mailPreviews: shown
+              ? existing.map((item) => (item.id === preview.id ? merged : item))
+              : [...existing.slice(-23), merged],
+          };
+        });
+        return {
+          ...current,
+          sessions,
+          openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
+        };
+      });
+    },
+    []
+  );
+
+  const selectMailPreview = useCallback<ChatSidebarContextValue["selectMailPreview"]>(
+    (host, previewId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        if (!session?.mailPreviews?.some((item) => item.id === previewId)) {
+          return current;
+        }
+        const sessions = new Map(current.sessions);
+        touchSidebarSession(sessions, key, {
+          ...session,
+          activeSurface: "mail",
+          activeMailPreviewId: previewId,
+        });
+        return { ...current, sessions };
+      });
+    },
+    []
+  );
+
+  const updateMailPreviewTitle = useCallback<
+    ChatSidebarContextValue["updateMailPreviewTitle"]
+  >((host, previewId, title) => {
+    setRegistry((current) => {
+      const key = chatSidebarHostKey(host);
+      const session = current.sessions.get(key);
+      const existing = session?.mailPreviews;
+      if (!session || !existing) return current;
+      const target = existing.find((item) => item.id === previewId);
+      if (!target || target.title === title) return current;
+      const sessions = new Map(current.sessions);
+      touchSidebarSession(sessions, key, {
+        ...session,
+        mailPreviews: existing.map((item) =>
+          item.id === previewId ? { ...item, title } : item
+        ),
+      });
+      return { ...current, sessions };
+    });
+  }, []);
+
+  const closeMailPreview = useCallback<ChatSidebarContextValue["closeMailPreview"]>(
+    (host, previewId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        const index =
+          session?.mailPreviews?.findIndex((item) => item.id === previewId) ?? -1;
+        if (!session || index < 0) return current;
+        const mailPreviews = session.mailPreviews!.filter(
+          (item) => item.id !== previewId
+        );
+        const closingActive =
+          session.activeSurface === "mail" && session.activeMailPreviewId === previewId;
+        const sessions = new Map(current.sessions);
+        const activeMailPreviewId =
+          session.activeMailPreviewId === previewId
+            ? mailPreviews[Math.min(index, mailPreviews.length - 1)]?.id
+            : session.activeMailPreviewId;
+        const activeSurface =
+          closingActive && !mailPreviews.length
+            ? session.chats.length
+              ? "chat"
+              : session.stillfailPreviews?.length
+                ? "stillfail"
+                : session.browserPages.length
+                  ? "browser"
+                  : session.drivePreviews.length
+                    ? "drive"
+                    : "history"
+            : session.activeSurface;
+        touchSidebarSession(sessions, key, {
+          ...session,
+          mailPreviews,
+          activeMailPreviewId,
+          activeSurface,
+        });
+        return finishSidebarTabClose(current, sessions, host);
+      });
+    },
+    []
+  );
+
   const selectHistoryPage = useCallback<ChatSidebarContextValue["selectHistoryPage"]>(
     (host, pageId) => {
       setRegistry((current) => {
@@ -1585,6 +1880,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       closeChangesPage,
       closeScreenPage,
       closeAppPage,
+      closeStillfailPreview,
+      closeMailPreview,
       duplicateBrowserPage,
       getActiveHost,
       getNativeBrowserCapacityBlockedEpoch,
@@ -1598,6 +1895,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       openCodingChanges,
       openScreen,
       openApp,
+      openStillfailPreview,
+      openMailPreview,
       registerHost,
       registerPendingHost,
       recordNativeBrowserState,
@@ -1608,12 +1907,16 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectChangesPage,
       selectScreenPage,
       selectAppPage,
+      selectStillfailPreview,
+      selectMailPreview,
       setTabPinned,
       toggle,
       toggleActive,
       trailingRef,
       updateBrowserPage,
       updateBrowserPageMetadata,
+      updateStillfailPreviewTitle,
+      updateMailPreviewTitle,
     }),
     [
       addBrowserTab,
@@ -1624,6 +1927,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       closeChangesPage,
       closeScreenPage,
       closeAppPage,
+      closeStillfailPreview,
+      closeMailPreview,
       duplicateBrowserPage,
       getActiveHost,
       getNativeBrowserCapacityBlockedEpoch,
@@ -1637,6 +1942,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       openCodingChanges,
       openScreen,
       openApp,
+      openStillfailPreview,
+      openMailPreview,
       registerHost,
       registerPendingHost,
       recordNativeBrowserState,
@@ -1647,11 +1954,15 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectChangesPage,
       selectScreenPage,
       selectAppPage,
+      selectStillfailPreview,
+      selectMailPreview,
       setTabPinned,
       toggle,
       toggleActive,
       updateBrowserPage,
       updateBrowserPageMetadata,
+      updateStillfailPreviewTitle,
+      updateMailPreviewTitle,
     ]
   );
   const value = useMemo<ChatSidebarContextValue>(
@@ -1768,6 +2079,34 @@ export function useRegisterChatSidebarHost(
   ]);
 }
 
+/**
+ * Registers a sidebar host when inside `ChatSidebarProvider`, and safely no-ops
+ * when rendered standalone without one (e.g. isolated route tests).
+ */
+export function useOptionalRegisterChatSidebarHost(
+  host: ChatSidebarHost | undefined,
+  options?: { awaitingHost?: boolean | undefined; commaCenter?: boolean | undefined }
+) {
+  const actions = useOptionalChatSidebarActions();
+  const [owner] = useState(() => ({}));
+  const conversationId = host?.conversationId;
+  const groupId = host?.groupId;
+  const workspaceId = host?.workspaceId;
+  const awaitingHost = options?.awaitingHost === true;
+  const commaCenter = options?.commaCenter === true;
+
+  useLayoutEffect(() => {
+    if (!actions) return undefined;
+    if (!conversationId || !groupId || !workspaceId) {
+      return awaitingHost ? actions.registerPendingHost(owner) : undefined;
+    }
+    return actions.registerHost(
+      { conversationId, groupId, workspaceId },
+      { commaCenter, owner }
+    );
+  }, [actions, awaitingHost, conversationId, commaCenter, groupId, owner, workspaceId]);
+}
+
 export function chatSidebarHostKey(host: ChatSidebarHost) {
   return JSON.stringify([host.groupId, host.conversationId]);
 }
@@ -1838,6 +2177,96 @@ function openRequestedBrowserTab(
     openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
     sessions,
   };
+}
+
+function closeBrowserPageInRegistry(
+  current: ChatSidebarRegistry,
+  key: string,
+  pageId: string
+): ChatSidebarRegistry {
+  const session = current.sessions.get(key);
+  if (!session) return current;
+  const pageIndex = session.browserPages.findIndex((page) => page.id === pageId);
+  if (pageIndex < 0) return current;
+
+  const browserPages = session.browserPages.filter((page) => page.id !== pageId);
+  const sessions = new Map(current.sessions);
+  sessions.delete(key);
+
+  if (
+    browserPages.length === 0 &&
+    !session.chats.length &&
+    session.drivePreviews.length === 0 &&
+    !session.historyPages?.length &&
+    !session.filePreviews?.length &&
+    !session.screenPages?.length &&
+    !session.changesPages?.length &&
+    !session.appPages?.length &&
+    !session.stillfailPreviews?.length &&
+    !session.mailPreviews?.length
+  ) {
+    touchSidebarSession(sessions, key, emptySession());
+    return finishSidebarTabCloseForKey(current, sessions, key);
+  }
+
+  const closingActive =
+    session.activeSurface === "browser" && session.activeBrowserPageId === pageId;
+  let activeBrowserPageId = session.activeBrowserPageId;
+  let activeSurface = session.activeSurface;
+
+  if (browserPages.length === 0) {
+    activeBrowserPageId = undefined;
+    if (closingActive)
+      activeSurface = session.chats.length
+        ? "chat"
+        : session.drivePreviews.length
+          ? "drive"
+          : "history";
+  } else if (closingActive) {
+    const next =
+      browserPages[Math.min(pageIndex, browserPages.length - 1)] ?? browserPages[0];
+    activeBrowserPageId = next?.id;
+    activeSurface = "browser";
+  } else if (
+    activeBrowserPageId &&
+    !browserPages.some((page) => page.id === activeBrowserPageId)
+  ) {
+    activeBrowserPageId = browserPages[0]?.id;
+  }
+
+  touchSidebarSession(sessions, key, {
+    ...session,
+    activeBrowserPageId,
+    activeSurface,
+    browserPages,
+  });
+  return finishSidebarTabCloseForKey(current, sessions, key);
+}
+
+/**
+ * Closes the browser page Main asked for by its tab id (an agent's
+ * `close-tab`), the same way the person closing that tab does. A tab id is
+ * the page id the renderer handed Main when it opened the page, so it names
+ * at most one page; one that is already gone leaves the registry unchanged.
+ */
+function closeRequestedBrowserTab(
+  current: ChatSidebarRegistry,
+  tabId: string
+): ChatSidebarRegistry {
+  for (const [key, session] of current.sessions) {
+    if (!session.browserPages.some((page) => page.id === tabId)) continue;
+    // The person's close unpins the tab first; do the same.
+    const pinnedTabIds = session.pinnedTabIds?.filter((id) => id !== tabId);
+    const unpinned =
+      pinnedTabIds?.length === session.pinnedTabIds?.length
+        ? current
+        : {
+            ...current,
+            sessions: new Map(current.sessions).set(key, { ...session, pinnedTabIds }),
+          };
+    return closeBrowserPageInRegistry(unpinned, key, tabId);
+  }
+  return current;
 }
 
 /**
@@ -1940,7 +2369,14 @@ function finishSidebarTabClose(
   sessions: ReadonlyMap<string, ChatSidebarSession>,
   host: ChatSidebarHost
 ): ChatSidebarRegistry {
-  const key = chatSidebarHostKey(host);
+  return finishSidebarTabCloseForKey(current, sessions, chatSidebarHostKey(host));
+}
+
+function finishSidebarTabCloseForKey(
+  current: ChatSidebarRegistry,
+  sessions: ReadonlyMap<string, ChatSidebarSession>,
+  key: string
+): ChatSidebarRegistry {
   const session = sessions.get(key);
   const hasTabs =
     session &&
@@ -1951,7 +2387,9 @@ function finishSidebarTabClose(
       (session.filePreviews?.length ?? 0) > 0 ||
       (session.screenPages?.length ?? 0) > 0 ||
       (session.changesPages?.length ?? 0) > 0 ||
-      (session.appPages?.length ?? 0) > 0);
+      (session.appPages?.length ?? 0) > 0 ||
+      (session.stillfailPreviews?.length ?? 0) > 0 ||
+      (session.mailPreviews?.length ?? 0) > 0);
   if (hasTabs || !current.openSessionKeys.has(key)) return { ...current, sessions };
   const openSessionKeys = new Set(current.openSessionKeys);
   openSessionKeys.delete(key);
@@ -2133,7 +2571,9 @@ function limitBrowserPageSessions(
       !session.filePreviews?.length &&
       !session.screenPages?.length &&
       !session.changesPages?.length &&
-      !session.appPages?.length
+      !session.appPages?.length &&
+      !session.stillfailPreviews?.length &&
+      !session.mailPreviews?.length
     ) {
       sessions.delete(hostKey);
       continue;

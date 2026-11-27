@@ -1,0 +1,142 @@
+{
+  "name": "proactive_execution_2026_11_25",
+  "description": "Evaluates Phase 4 Home Router handoff delivery and one-tap multi-machine execution card generation across actionable PR/station/sandbox/draft handoffs and negative controls (read-only FYI praise and login OTP code).",
+  "now": "2026-11-25T06:00:00Z",
+  "locale": "zh-CN",
+  "owner_email": "kai@example.com",
+  "stations": [
+    {
+      "id": "dev_mini",
+      "name": "Pengs-Mac-Mini-2",
+      "connected": true,
+      "workspace": {"name": "Peng", "station": "Pengs-Mac-Mini-2"}
+    },
+    {
+      "id": "dev_offline",
+      "name": "Offline-Win",
+      "connected": false,
+      "workspace": {"name": "Peng", "station": "Offline-Win"}
+    }
+  ],
+  "station_rows": [
+    {
+      "station_id": "stn_mini",
+      "device_id": "dev_mini",
+      "thread": "CHAT/1795577429.312000",
+      "title": "Fix Cue PR #5590 billing sandbox allowlist",
+      "status": "in_progress",
+      "created_by": "kai@example.com",
+      "last_activity_at": 1795585800000,
+      "waits_for": [],
+      "note": "Investigating AFK-surf/Cue PR #5590 staging smoke-test allowlist",
+      "url": "https://still.fail/chats/c_pr5590"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "pr_review_with_active_station_chat",
+      "decision": "interrupt",
+      "item": {
+        "decision": "interrupt",
+        "role": "act",
+        "toolkit": "github",
+        "title": "Alex Chen asked whether staging smoke-test bots should be allowlisted on PR #5590",
+        "url": "https://github.com/AFK-surf/Cue/pull/5590",
+        "excerpt": "Can we allowlist staging smoke-test bot accounts alongside cue.surf and comma.surf in Cue PR #5590?",
+        "assessment": {"role": "act", "code": false, "cost": "Blocks Comma 1.0.4 release"}
+      },
+      "suggested_text": "Alex Chen 在 [PR #5590](https://github.com/AFK-surf/Cue/pull/5590) 上询问 staging 冒烟测试机器人账号是否也要加入 TestFlight 沙盒积分允许列表，影响 1.0.4 发布放行。",
+      "expect": {
+        "has_question": true,
+        "recommended_mentions_any": ["Pengs-Mac-Mini-2", "Mac", "继续", "会话", "still.fail", "5590"],
+        "choice_count_min": 2,
+        "choice_count_max": 4,
+        "has_close_or_dismiss_choice": true,
+        "confirm_tool": "im_api.internal.send_message",
+        "confirm_target_contains": "station:stn_mini:CHAT/1795577429.312000"
+      }
+    },
+    {
+      "name": "pr_bug_no_active_chat_offers_sandbox_and_station",
+      "decision": "interrupt",
+      "item": {
+        "decision": "interrupt",
+        "role": "act",
+        "toolkit": "github",
+        "title": "Medalsmith PR #12 blocked on shader export regression",
+        "url": "https://github.com/motion-space/medalsmith/pull/12",
+        "excerpt": "Reviewer requested fix for 2048px transparent PNG export alpha halo in motion-space/medalsmith PR #12.",
+        "assessment": {"role": "act", "code": false, "cost": "Blocks Acme demo"}
+      },
+      "suggested_text": "Medalsmith [PR #12](https://github.com/motion-space/medalsmith/pull/12) 审阅要求修复 2048px 透明底 PNG 导出的边缘白边回归，影响 Acme 演示。",
+      "expect": {
+        "has_question": true,
+        "recommended_mentions_any": ["Sandbox", "云端", "PR", "12", "Mac", "Pengs-Mac-Mini-2"],
+        "choice_count_min": 2,
+        "choice_count_max": 4,
+        "has_close_or_dismiss_choice": true,
+        "confirm_tool": "im_api.internal.task.create",
+        "confirm_target_contains": "medalsmith"
+      }
+    },
+    {
+      "name": "meeting_prep_signal_offers_draft_card",
+      "decision": "signal",
+      "item": {
+        "decision": "signal",
+        "role": "calendar",
+        "relationship": "upcoming_meeting_prep",
+        "toolkit": "googlecalendar",
+        "title": "Medalsmith × Acme 联名徽章方案同步",
+        "url": "https://calendar.google.com/event/evt_acme_sync",
+        "excerpt": "Starts in 20 minutes. Attendees: Lena Wu <lena@acme.example>.",
+        "assessment": {"role": "calendar", "signal": true, "code": false, "cost": ""}
+      },
+      "suggested_text": "20 分钟后与 Lena Wu 开 Medalsmith × Acme 同步会。她在[会前邮件](https://outlook.office.com/mail/inbox/id/lena_pre_meeting)里请你确认 2048px 透明底 PNG 导出和 50 枚联名徽章商用报价。",
+      "expect": {
+        "has_question": true,
+        "recommended_mentions_any": ["草稿", "回复", "准备", "要点", "报价", "draft"],
+        "choice_count_min": 2,
+        "choice_count_max": 3,
+        "has_close_or_dismiss_choice": true,
+        "confirm_tool": "proactive.act",
+        "confirm_target_contains": "draft"
+      }
+    },
+    {
+      "name": "negative_control_pure_praise_signal_no_question_card",
+      "decision": "signal",
+      "item": {
+        "decision": "signal",
+        "role": "reference",
+        "relationship": "web_mention_of_your_work",
+        "toolkit": "web_radar",
+        "title": "DEX 周刊 #373 特别推荐 Medalsmith",
+        "url": "https://dexweekly.example/issues/373",
+        "excerpt": "dingyi 称赞 Medalsmith 把涂鸦和 SVG 变成金属珐琅质感 3D 勋章的交互非常惊艳。",
+        "assessment": {"role": "reference", "signal": true, "code": false, "cost": ""}
+      },
+      "suggested_text": "[DEX 周刊 #373](https://dexweekly.example/issues/373) 特别推荐了你维护的 Medalsmith，称赞它把涂鸦和 SVG 做成金属珐琅质感 3D 勋章的交互很惊艳。",
+      "expect": {
+        "has_question": false
+      }
+    },
+    {
+      "name": "negative_control_login_code_no_question_card",
+      "decision": "interrupt",
+      "item": {
+        "decision": "interrupt",
+        "role": "act",
+        "toolkit": "gmail",
+        "title": "GitHub login verification code",
+        "url": "https://mail.google.com/mail/u/0/#inbox/otp_1",
+        "excerpt": "Your GitHub verification code is 849201. Expires in 10 minutes.",
+        "assessment": {"role": "act", "code": true, "cost": "Code expires in 10 minutes"}
+      },
+      "suggested_text": "GitHub 登录验证码为 849201（10 分钟内有效）；如非本人操作请忽略并检查账户安全。",
+      "expect": {
+        "has_question": false
+      }
+    }
+  ]
+}

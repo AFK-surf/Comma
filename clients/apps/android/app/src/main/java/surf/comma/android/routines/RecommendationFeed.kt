@@ -6,15 +6,14 @@ import surf.comma.android.tasks.TaskStatusBucket
 import surf.comma.android.tasks.TaskSummary
 
 /**
- * The workspace's Routines briefing as the phone shows it: a summary, a few cards, and the connected
- * sources they come from. Read from `GET /workspaces/:id/recommendations`. Prompt references are
+ * The workspace's Routines briefing as the phone shows it: a few cards, and the connected sources they
+ * come from. The briefing's summary prose stays on the wire and is not read. Read from `GET /workspaces/:id/recommendations`. Prompt references are
  * resolved here; unknown card templates keep only their server-authored fallback text.
  */
 data class RecommendationFeed(
     /** `empty`, `fresh`, `refreshing`, `stale` or `error`. */
     val state: String,
     val sources: List<RecommendationSource> = emptyList(),
-    val summary: List<RecommendationPart> = emptyList(),
     val cards: List<RecommendationCard> = emptyList(),
     /** Identifies the snapshot; a new briefing has a new generation. */
     val generation: Long? = null,
@@ -24,16 +23,6 @@ data class RecommendationFeed(
     /** A source is needed before a refresh can generate anything. */
     val canRefresh: Boolean get() = sources.any { it.enabled }
 
-    /** The summary's prose without the briefing's title, which the server puts first as a paragraph of its own. */
-    val summaryBody: List<RecommendationPart>
-        get() {
-            val first = summary.firstOrNull() as? RecommendationPart.Text ?: return summary
-            val split = first.text.indexOf("\n\n")
-            if (split < 0) return summary
-            val rest = first.text.substring(split + 2)
-            return (if (rest.isEmpty()) emptyList() else listOf(RecommendationPart.Text(rest))) + summary.drop(1)
-        }
-
     /** The source a card or chip names: by connection id, else by app id. */
     fun source(id: String?): RecommendationSource? =
         id?.let { key -> sources.firstOrNull { it.connectionId == key || it.appId == key } }
@@ -42,18 +31,34 @@ data class RecommendationFeed(
     fun source(card: RecommendationCard): RecommendationSource? = if (card.sourceIds.size == 1) source(card.sourceIds[0]) else null
 
     /**
-     * Home's platform cards: the briefing's cards in server order, most pressing first, then each enabled
-     * source no card names. A disabled source without a card is left out.
+     * Home's platform cards: the briefing's cards in server order, most pressing first, merged by single
+     * connection, then each enabled source no card names. A disabled source without a card is left out.
      */
     val platforms: List<PlatformRoutine>
         get() {
-            val used = mutableSetOf<String>()
+            val grouped = mutableListOf<Triple<String, RecommendationSource?, MutableList<RecommendationCard>>>()
+            val indexByConnection = mutableMapOf<String, Int>()
             val named = cards.flatMap { it.sourceIds }.mapNotNull { source(it)?.connectionId }.toSet()
-            val all = cards.map { card ->
+            for (card in cards) {
                 val source = source(card)
-                val id = source?.connectionId?.takeIf(used::add) ?: card.id
-                PlatformRoutine(id, source, card)
-            } + sources.filter { it.enabled && it.connectionId !in named }.map { PlatformRoutine(it.connectionId, it, null) }
+                if (source != null) {
+                    val existing = indexByConnection[source.connectionId]
+                    if (existing != null) {
+                        grouped[existing].third += card
+                    } else {
+                        indexByConnection[source.connectionId] = grouped.size
+                        grouped += Triple(source.connectionId, source, mutableListOf(card))
+                    }
+                } else {
+                    grouped += Triple(card.id, null, mutableListOf(card))
+                }
+            }
+            for (source in sources) {
+                if (source.enabled && source.connectionId !in named) {
+                    grouped += Triple(source.connectionId, source, mutableListOf())
+                }
+            }
+            val all = grouped.map { (id, source, list) -> PlatformRoutine(id, source, list.toList()) }
             val repeated = all.groupBy { it.name }.filterValues { it.size > 1 }.keys
             return all.map { if (it.name in repeated) it.copy(connectionLabel = it.source?.label) else it }
         }
@@ -76,7 +81,6 @@ data class RecommendationFeed(
             return RecommendationFeed(
                 state = state,
                 sources = sources,
-                summary = RecommendationPart.parse(snapshot.optJSONArray("summary")),
                 cards = objects(snapshot.optJSONArray("cards")).take(6).mapNotNull { RecommendationCard.parse(it, prompts) },
                 generation = if (snapshot.has("generation") && !snapshot.isNull("generation")) snapshot.optLong("generation") else null,
             )
@@ -249,27 +253,56 @@ sealed interface RecommendationAction {
 }
 
 /**
- * One platform card on Home: a connected app's briefing card, or an enabled app the briefing has nothing
- * from yet. Two connections of the same app are two platforms.
+ * One platform card on Home: a connected app's briefing cards, or an enabled app the briefing has nothing
+ * from yet. Two connections of the same app are two platforms; several cards from one connection merge.
  */
 data class PlatformRoutine(
     val id: String,
     val source: RecommendationSource?,
-    val card: RecommendationCard?,
+    val cards: List<RecommendationCard>,
     /** The connected account, set only when another platform shows the same name, to tell the two apart. */
     val connectionLabel: String? = null,
 ) {
+    constructor(
+        id: String,
+        source: RecommendationSource?,
+        card: RecommendationCard?,
+        connectionLabel: String? = null,
+    ) : this(id, source, listOfNotNull(card), connectionLabel)
+
+    val card: RecommendationCard? get() = cards.firstOrNull()
+
+    val fallbackTexts: List<String> get() = cards.mapNotNull { it.fallbackText }
+
     val name: String get() = source?.appName ?: card?.title.orEmpty()
 
     /** The name a sheet heads the platform with: its account too when two platforms share the name. */
     val heading: String get() = connectionLabel?.let { "$name · $it" } ?: name
 
-    /** The card's items the member can still act on. A row standing for one Task shows only while that Task is open. */
-    fun preTasks(task: (String) -> TaskSummary?): List<RecommendationItem> =
-        card?.items.orEmpty().filter { item -> item.linkedTaskId?.let { isOpen(task(it)) } ?: true }
+    /** The cards' items the member can still act on. Repeated per-card ids are prefixed with their card id. */
+    fun preTasks(task: (String) -> TaskSummary?): List<RecommendationItem> {
+        val seen = mutableSetOf<String>()
+        return cards.flatMap { card ->
+            card.items.mapNotNull { item ->
+                val uniqueId = if (seen.add(item.id)) {
+                    item.id
+                } else {
+                    var candidate = "${card.id}:${item.id}"
+                    var suffix = 2
+                    while (!seen.add(candidate)) {
+                        candidate = "${card.id}:${item.id}:$suffix"
+                        suffix += 1
+                    }
+                    candidate
+                }
+                if (item.linkedTaskId?.let { isOpen(task(it)) } == false) return@mapNotNull null
+                if (uniqueId == item.id) item else item.copy(id = uniqueId)
+            }
+        }
+    }
 
     /** Whether the platform has anything for a sheet to draw: pre-tasks, or the card's own words. */
-    fun hasPreTasks(task: (String) -> TaskSummary?): Boolean = card?.fallbackText != null || preTasks(task).isNotEmpty()
+    fun hasPreTasks(task: (String) -> TaskSummary?): Boolean = fallbackTexts.isNotEmpty() || preTasks(task).isNotEmpty()
 
     companion object {
         /**

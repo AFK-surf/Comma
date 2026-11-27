@@ -6736,6 +6736,20 @@
       ]
     },
     {
+      "id": "comma-20261114040000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261114040000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261114040000_allow_raycast_paired_sessions.exs",
+      "checksum": "sha256:51909c5a4a8743e319d621f1d9df38959aec93f62289d5e895d5a6627b9faa13",
+      "postconditions": [
+        "postgres.comma_auth_sessions.client_kind_valid=raycast-added-new-writes-enforced",
+        "postgres.comma_auth_sessions.source_method_valid=raycast-pairing-added-new-writes-enforced",
+        "postgres.comma_auth_sessions.watch_parent_valid=watch-and-raycast-pairing-require-parent-new-writes-enforced"
+      ],
+      "repair": "transaction_rollback_then_exact_retry; after_commit_forward_repair_preserving_sessions"
+    },
+    {
       "id": "salix-20261104100000",
       "owner": "salix_store",
       "store": "postgres",
@@ -6828,6 +6842,377 @@
         "postgres.column/salix_station_task_index.waits_for=nullable",
         "postgres.column/salix_station_task_index.note=nullable",
         "postgres.column/salix_station_task_index.url=nullable"
+      ]
+    },
+    {
+      "id": "salix-20261112200000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261112200000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261112200000_add_router_to_salix_station_task_index.exs",
+      "checksum": "sha256:029c4f52d8df4279f6acc8e33993954d1b0db22eae49a548b6fd86d4cc7a0ca4",
+      "postconditions": [
+        "postgres.column/salix_station_task_index.router=not-null-default-false"
+      ]
+    },
+    {
+      "id": "bridge-20261113000101",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261113000101,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261113000101_daily_brief_alias_github.exs",
+      "checksum": "sha256:edfe26d1f2e6417a26d45a6fb8d83767f073413eb576817338faefafb206eac5",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261113000101=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "salix-20261114100000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261114100000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261114100000_create_tenant_directory.exs",
+      "checksum": "sha256:2ffa2da33fb62ae04b77187626b07db5df02ddcd887a6384ed9e25b14a32394f",
+      "postconditions": [
+        "postgres.table/tenant_directory=present",
+        "postgres.constraint/tenant_directory.tenant_directory_product_valid=present",
+        "postgres.index/tenant_directory_created=present",
+        "postgres.index/tenant_directory_product_created=present",
+        "postgres.index/tenant_directory_name_trgm=present",
+        "postgres.index/tenant_directory_id_trgm=present"
+      ]
+    },
+    {
+      "id": "comma-20261114100100",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261114100100,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261114100100_index_completed_oban_jobs_for_pruner.exs",
+      "checksum": "sha256:68f0d40881a06ec08e310c0a77c6fbcddee600247ec43bb620fcb99e44307bd4",
+      "execution": {
+        "transactional": false,
+        "idempotent": true
+      },
+      "postconditions": [
+        "postgres.index/public.oban_jobs_state_scheduled_at_index=valid"
+      ],
+      "repair": "drop_invalid_concurrent_index_then_rerun_exact_version"
+    },
+    {
+      "id": "comma-20261114120000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261114120000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261114120000_create_document_shares.exs",
+      "checksum": "sha256:554a45f3177006cd81001fa1a6306302264d318a34ee3d587b6e32007bf87ef7",
+      "postconditions": [
+        "comma_core.migration-ledger/20261114120000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261116060001",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261116060001,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261116060001_create_departments_and_search_grants.exs",
+      "checksum": "sha256:8e8a3ef64974f3856ffa4d20e41a4ab0eac7c016b75535b700cbfee87d0f63e1",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261116060001=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "billing-20261117000101",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20261117000101,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20261117000101_add_teams_subscription_policy.exs",
+      "checksum": "sha256:6fe62b728f937a9a11bb0d56dceb9c3970ed94e48704dcb6956cbd5e3358bf64",
+      "postconditions": [
+        "billing_core.migration-ledger/20261117000101=teams-subscription-policy-and-paid-cycle-index-ready"
+      ]
+    },
+    {
+      "id": "salix-20261117060000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261117060000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261117060000_add_ifc_bot_presence.exs",
+      "checksum": "sha256:5c242757e6bbaf30cbb163dee2d79d9dac6b6a606263e119d651d678cbc82497",
+      "postconditions": [
+        "postgres.column/ifc_scope_facts.bot_present=present"
+      ]
+    },
+    {
+      "id": "salix-20261119140000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261119140000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261119140000_key_feishu_tenant_apps_by_app_id.exs",
+      "checksum": "sha256:7472c3534b8be1cf915f5a84e703121b9ed2232df1fd41763b9b923e09048f7b",
+      "compatibility": {
+        "oldRuntimeRead": true,
+        "oldRuntimeWrite": false
+      },
+      "postconditions": [
+        "postgres.constraint/feishu_tenant_apps_pkey=ready"
+      ]
+    },
+    {
+      "id": "bridge-20261118080001",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261118080001,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261118080001_create_owner_notifications.exs",
+      "checksum": "sha256:5bfb128cf32a5811c2d57119b328930767078ce6aedfdd47eab4cc436a2959a6",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261118080001=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261119060001",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261119060001,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261119060001_daily_brief_feishu_lark.exs",
+      "checksum": "sha256:b73c342f8b4ecf9fe25be93dbaa616d964b09f9ef2deeeba4ea9dc2a0b62d69c",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261119060001=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261119150000",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261119150000,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261119150000_multi_swarm_daily_brief.exs",
+      "checksum": "sha256:ed3cd10b1db5ba059417d70230aad33cf67df5d6fff11b25349de03a810af726",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261119150000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "salix-20261119160000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261119160000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261119160000_lark_suite_triage.exs",
+      "checksum": "sha256:0a6556b9f1eca71ff950d64cb92d67d77e94d59d6d6fbb8f6f3bc78a79dceef1",
+      "postconditions": [
+        "postgres.table/lark_suite_triage_sources=present",
+        "postgres.table/lark_suite_triage_chats=present",
+        "postgres.table/lark_suite_triage_batches=present",
+        "postgres.index/lark_suite_triage_chats_active_owner_idx=present",
+        "postgres.index/lark_suite_triage_batches_collecting_idx=present"
+      ]
+    },
+    {
+      "id": "bridge-20261119170000",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261119170000,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261119170000_add_daily_brief_member_station_task_notified.exs",
+      "checksum": "sha256:8b6b290d8bb5faaeb80748511c7fe5a7863932dd091807b12f996ed3f82c3bde",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261119170000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "billing-20261120000101",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20261120000101,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20261120000101_add_m2square_orders.exs",
+      "checksum": "sha256:cc51b8bce88e3e8ea72cf394db05e73aae0b9b6f1d0f3d988d4e15108b993908",
+      "postconditions": [
+        "billing_core.migration-ledger/20261120000101=m2square-orders-table-and-indexes-ready"
+      ]
+    },
+    {
+      "id": "comma-20261120130000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261120130000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261120130000_create_comma_live_statuses.exs",
+      "checksum": "sha256:78f6be38e7396855f79c3e120715de20b2a722a89bf28f35e04934ea390fc08d",
+      "postconditions": [
+        "comma_core.migration-ledger/20261120130000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "comma-20261120140000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261120140000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261120140000_create_comma_task_collaborators.exs",
+      "checksum": "sha256:1940586be2743bc8be5a6c91fceebadf041538657bc661f5996bcc93406f3ac0",
+      "postconditions": [
+        "comma_core.migration-ledger/20261120140000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "comma-20261121000000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261121000000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261121000000_add_invited_email_to_comma_task_collaborators.exs",
+      "checksum": "sha256:8532e98fa90aad0257c082c3d3b9dbad00f268b8f3bead24819c8ab080ae4e14",
+      "postconditions": [
+        "comma_core.migration-ledger/20261121000000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "comma-20261123000000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261123000000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261123000000_shared_tasks_phase2.exs",
+      "checksum": "sha256:2954c71ec10b1fef36b1f31b95be12e65ccb8e5397b38d9ec0033c27020e9600",
+      "postconditions": [
+        "comma_core.migration-ledger/20261123000000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261123043000",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261123043000,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261123043000_add_all_departments_search_grant.exs",
+      "checksum": "sha256:200b16fb3b63398f93d61452da9647b28352a0cc343c62ae80834193df22f17c",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261123043000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "billing-20261123090001",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20261123090001,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20261123090001_index_provider_payment_grants.exs",
+      "checksum": "sha256:ca6b48d6ee2071645f3a4184cf6dbaf09f119adfe4a621783b9ad7c37ca6ffbc",
+      "execution": {
+        "transactional": false,
+        "idempotent": true,
+        "timeoutSeconds": 900
+      },
+      "postconditions": [
+        "postgres.credit_grants.provider-payment-id-index-ready"
+      ],
+      "repair": "concurrent_index_retry"
+    },
+    {
+      "id": "salix-20261124040000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261124040000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261124040000_index_recent_meeting_group_projections.exs",
+      "checksum": "sha256:01405c2d4a24ab91e2a20de6bf10ef1ed3a2e71e9daed127b61c3bde1ee81da1",
+      "execution": {
+        "transactional": false,
+        "idempotent": true,
+        "timeoutSeconds": 900
+      },
+      "postconditions": [
+        "postgres.index/meeting_group_projections_group_recent_idx=valid"
+      ],
+      "repair": "concurrent_index_retry"
+    },
+    {
+      "id": "comma-20261124050000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261124050000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261124050000_add_task_request_sender_hidden_at.exs",
+      "checksum": "sha256:cc62829ae5e0d5f775b4e71abbb7f19b9e6295b014f00da025c5a70f66504fe1",
+      "postconditions": [
+        "comma_core.migration-ledger/20261124050000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "salix-20261124090000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261124090000,
+      "phase": "expand",
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261124090000_create_colab_vm_leases.exs",
+      "checksum": "sha256:e2ed7c1d3a696fad31230808ea7fb45234f8d436e93023f5a80dec75b28e4154",
+      "postconditions": [
+        "postgres.table/colab_vm_leases=present",
+        "postgres.index/colab_vm_leases_account_endpoint_uidx=present",
+        "postgres.index/colab_vm_leases_owner_idx=present",
+        "postgres.index/colab_vm_leases_capacity_idx=present",
+        "postgres.index/colab_vm_leases_reap_idx=present",
+        "postgres.index/colab_vm_leases_idle_idx=present",
+        "postgres.index/colab_vm_leases_sub_unconfirmed_idx=present",
+        "postgres.index/colab_vm_leases_group_account_idx=present",
+        "postgres.table/colab_accounts=present",
+        "postgres.index/colab_accounts_group_alias_uidx=present",
+        "postgres.index/colab_accounts_group_sub_uidx=present",
+        "postgres.index/colab_accounts_group_state_idx=present",
+        "postgres.index/colab_accounts_retired_idx=present",
+        "postgres.table/colab_group_install_states=present",
+        "postgres.index/colab_group_install_states_unsynced_idx=present",
+        "postgres.table/colab_oauth_attempts=present",
+        "postgres.index/colab_oauth_attempts_group_status_idx=present",
+        "postgres.index/colab_oauth_attempts_expires_idx=present",
+        "postgres.table/colab_retired_scopes=present"
+      ]
+    },
+    {
+      "id": "salix-20261125030000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261125030000,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261125030000_index_salix_conversations_archive_status.exs",
+      "checksum": "sha256:1f2bbfe0ce0d7eefe4bda10a7a7b9a94a35d7383661a98aa92a0c7ae76615671",
+      "execution": {
+        "transactional": false,
+        "idempotent": true,
+        "timeoutSeconds": 900
+      },
+      "postconditions": [
+        "postgres.index/salix_conversations_group_unarchived=valid",
+        "postgres.index/salix_conversations_group_kind_unarchived=valid",
+        "postgres.index/salix_conversations_group_status=valid"
+      ],
+      "repair": "concurrent_index_retry"
+    },
+    {
+      "id": "salix-20261125050000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261125050000,
+      "phase": "expand",
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261125050000_add_participants_to_salix_station_task_index.exs",
+      "checksum": "sha256:5716e7fb66541117e3523da604eee0d0d2493c9406f6d91968bca366a791c4b4",
+      "postconditions": [
+        "postgres.column/salix_station_task_index.participants=not-null-default-empty-array"
+      ]
+    },
+    {
+      "id": "salix-20261125090000",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261125090000,
+      "phase": "expand",
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261125090000_create_salix_session_handoffs.exs",
+      "checksum": "sha256:6960d183400762636b7dd2b4b796be65b114c9ca54f8ed00d537ada5fef757c9",
+      "postconditions": [
+        "postgres.table/salix_session_handoffs=present"
+      ]
+    },
+    {
+      "id": "salix-20261126000100",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261126000100,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261126000100_create_salix_task_feed_entries.exs",
+      "checksum": "sha256:44afc66dbe5c836ccb18a695317cb37198a4f7894b26ad28b3170b3649e48ef9",
+      "postconditions": [
+        "postgres.table/salix_task_feed_entries=present",
+        "postgres.index/salix_task_feed_entries_cluster_uidx=valid",
+        "postgres.index/salix_task_feed_entries_group_feed_idx=valid",
+        "postgres.index/salix_task_feed_entries_group_attention_idx=valid",
+        "postgres.index/salix_task_feed_entries_conversation_idx=valid"
       ]
     }
   ],
@@ -6963,6 +7348,18 @@
     {
       "before": "salix-20261011110001",
       "after": "comma-20261011100001"
+    },
+    {
+      "before": "comma-20260930100000",
+      "after": "comma-20261114040000"
+    },
+    {
+      "before": "comma-20261002100001",
+      "after": "comma-20261114040000"
+    },
+    {
+      "before": "comma-20261019120000",
+      "after": "comma-20261114040000"
     }
   ]
 }

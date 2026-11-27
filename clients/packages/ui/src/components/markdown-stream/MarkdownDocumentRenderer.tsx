@@ -45,6 +45,8 @@ export interface MarkdownDocumentRendererProps extends PresentationProps {
   wrapRoot?: (element: ReactNode, index: number) => ReactNode;
   /** Group prose roots and isolate rich blocks without splitting the document. */
   blockPresentation?: MarkdownBlockPresentation;
+  /** True when the host renders relative document images directly. */
+  hasPictureRenderer?: boolean;
 }
 
 /**
@@ -59,6 +61,7 @@ export function MarkdownDocumentRenderer({
   liveRootStart = 0,
   wrapRoot,
   blockPresentation = "document",
+  hasPictureRenderer = false,
   ...props
 }: MarkdownDocumentRendererProps) {
   const generatedId = useId();
@@ -207,8 +210,11 @@ export function MarkdownDocumentRenderer({
   }, [context, liveContext, customComponents, callerScopeRevision]);
 
   const slots = useMemo(
-    () => markdownPresentationSlots(nodes, blockPresentation),
-    [nodes, blockPresentation]
+    () =>
+      markdownPresentationSlots(nodes, blockPresentation, {
+        hasPictureRenderer,
+      }),
+    [nodes, blockPresentation, hasPictureRenderer]
   );
   const snapshot = useMemo(
     () => ({

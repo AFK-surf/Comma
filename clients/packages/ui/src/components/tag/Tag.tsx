@@ -8,17 +8,18 @@ export type TagSize = "sm" | "md" | "lg";
 export type TagColor = "gray" | "brand" | "error" | "warning" | "success";
 
 const colorClasses: Record<TagColor, string> = {
-  gray: "bg-primary text-secondary border-primary",
-  brand: "bg-utility-brand-50 text-utility-brand-700 border-utility-brand-200",
-  error: "bg-utility-error-50 text-utility-error-700 border-utility-error-200",
-  warning: "bg-utility-warning-50 text-utility-warning-700 border-utility-warning-200",
-  success: "bg-utility-success-50 text-utility-success-700 border-utility-success-200",
+  gray: "border border-primary bg-primary text-secondary",
+  brand:
+    "bg-[color:var(--comma-badge-brand-bg)] text-[color:var(--comma-badge-brand-fg)]",
+  error: "bg-[color:var(--comma-badge-error-bg)] text-utility-error-700",
+  warning: "bg-[color:var(--comma-badge-warning-bg)] text-utility-warning-700",
+  success: "bg-[color:var(--comma-badge-success-bg)] text-utility-success-700",
 };
 
 const sizeClasses: Record<TagSize, string> = {
-  sm: "px-2 py-0.5 text-xs gap-1",
-  md: "px-2.5 py-0.5 text-sm gap-1",
-  lg: "px-2.5 py-1 text-sm gap-1.5",
+  sm: "px-2 py-0.5 text-xs leading-4 gap-1",
+  md: "px-2.5 py-0.5 text-xs leading-[18px] gap-1",
+  lg: "px-2.5 py-1 text-sm leading-5 gap-1.5",
 };
 
 export interface TagProps extends HTMLAttributes<HTMLSpanElement> {
@@ -40,7 +41,7 @@ export const Tag = ({
   return (
     <span
       className={cx(
-        "inline-flex items-center rounded-md border font-medium",
+        "inline-flex items-center rounded-[5px] whitespace-nowrap font-medium",
         colorClasses[color],
         sizeClasses[size],
         className

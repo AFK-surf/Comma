@@ -48,7 +48,7 @@ import surf.comma.android.ui.theme.DesignTypography.Level
 import java.io.File
 
 /**
- * The restricted runtime shared by the Apps tab, shared links and chat previews. Back suspends a run that can continue
+ * The restricted runtime shared by the Apps pages, shared links and chat previews. Back suspends a run that can continue
  * and Close ends it. Publication stays in trusted host controls: the menu offers Publish while the build review of
  * the previewed Version still matches.
  */

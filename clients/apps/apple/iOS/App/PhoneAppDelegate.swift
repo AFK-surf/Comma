@@ -12,6 +12,7 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     /// The voice call, created with the store and living as long as the process.
     @Published private(set) var call: CallController?
     let activity: TaskActivityCoordinator
+    let liveStatusActivity: LiveStatusActivityCoordinator
     /// Asks for an App Store rating once the member accepted enough results.
     private let reviewPrompt = ReviewPrompt()
     private let makeStore: @MainActor () throws -> CommaStore
@@ -20,6 +21,8 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     private var foregroundTask: Task<Void, Never>?
     private(set) var activityConfigurationTask: Task<Void, Never>?
     private var appleCredentialObservation: AnyCancellable?
+    /// The App Store's transactions as they arrive (renewals, approved Ask to Buy), from launch on.
+    private var storeUpdates: Task<Void, Never>?
     let system = PhoneNotificationSystem()
     var pendingRoute: (route: NativeNotificationRoute, boundary: Int, accountID: String?)?
     private(set) var sceneActive = UIApplication.shared.applicationState == .active
@@ -32,13 +35,15 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     let badgePermission: @MainActor () async -> Bool
 
     override convenience init() {
-        self.init(activity: TaskActivityCoordinator())
+        self.init(activity: TaskActivityCoordinator(), liveStatusActivity: LiveStatusActivityCoordinator())
     }
 
     init(activity: TaskActivityCoordinator = TaskActivityCoordinator(),
+         liveStatusActivity: LiveStatusActivityCoordinator = LiveStatusActivityCoordinator(),
          makeStore: @escaping @MainActor () throws -> CommaStore = {
              let configuration = try AppConfiguration.current()
-             return CommaStore(configuration: configuration, runtime: try CoreRuntime.make(baseURL: configuration.baseURL))
+             let runtime = try CoreRuntime.make(baseURL: configuration.baseURL, storageSuffix: configuration.storageSuffix)
+             return CommaStore(configuration: configuration, runtime: runtime)
          }, notificationSetup: (@MainActor (PhoneAppDelegate, CommaStore) throws -> Void)? = nil,
          badgePermission: @escaping @MainActor () async -> Bool = {
         await UNUserNotificationCenter.current().notificationSettings().badgeSetting == .enabled
@@ -48,6 +53,7 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         self.badgePermission = badgePermission
         self.setBadge = setBadge
         self.activity = activity
+        self.liveStatusActivity = liveStatusActivity
         self.makeStore = makeStore
         self.notificationSetup = notificationSetup
         super.init()
@@ -66,6 +72,8 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     /// ActivityKit can launch the process without creating a SwiftUI scene.
     func launch(state: UIApplication.State) {
         sceneActive = state == .active
+        PerformanceRecord.shared.startIfNeeded()
+        TouchIndicator.shared.watch()
         beginBootstrap()
     }
 
@@ -83,8 +91,18 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
             else { try configure(store: value) }
             wireRuntime(value)
             store = value
+            storeUpdates = StoreKitPurchases.observe { [weak self] in self?.settleStorePurchases() }
             let call = CallController(store: value)
             value.beforeLogout = { [weak call] in await call?.signOut() }
+            value.beforeBackendSwitch = { [weak self, weak call] in
+                await call?.signOut()
+                guard let self else { return }
+                await self.activityConfigurationTask?.value
+                await self.activity.stop()
+                await self.liveStatusActivity.stop()
+                await self.activity.settleRegistrations()
+                await self.liveStatusActivity.settleRegistrations()
+            }
             self.call = call
             configurationError = nil
             PhonePairingBridge.shared.configure(store: value) { [weak self] in await self?.bootstrap() }
@@ -93,8 +111,17 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
                 await value.start()
                 await self.activityConfigurationTask?.value
                 await self.activity.settleRegistrations()
+                await self.liveStatusActivity.settleRegistrations()
             }
         } catch { configurationError = error.localizedDescription }
+    }
+
+    /// Reports the App Store's unfinished transactions to the server, which records them for their own Billing Account,
+    /// then finishes them (`billing.storeSettle`). Without a session they wait for the next sign-in.
+    func settleStorePurchases() {
+        guard let store, store.session != nil else { return }
+        let core = store.core
+        Task { _ = try? await core.call("billing.storeSettle", [:]) }
     }
 
     /// A scene joins the launch task and then enables the existing foreground product path.
@@ -115,6 +142,8 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
             await self.activityConfigurationTask?.value
             guard self.sceneActive else { value.suspend(); return }
             await self.activity.retry()
+            await self.liveStatusActivity.retry()
+            await value.refreshLiveStatuses()
         }
         foregroundTask = worker
         await worker.value
@@ -131,6 +160,15 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
             }
         }
         value.onActivityFailure = { [weak self] _ in self?.activity.reportRefreshFailure() }
+        value.onLiveStatusesSnapshot = { [weak self, weak value] items, workspace in
+            guard let value else { return }
+            let boundary = value.boundaryToken
+            Task { [weak self, weak value] in
+                guard let self, let value, self.sceneActive, value.isCurrent(boundary), value.workspace?.id == workspace.id,
+                      value.liveStatuses == items else { return }
+                await self.liveStatusActivity.apply(items)
+            }
+        }
         value.onAuthBoundaryChanged = { [weak self] in self?.authenticationBoundaryChanged() }
         value.onSessionChanged = { [weak self, weak value] session in
             guard let self, let value else { return }
@@ -151,6 +189,7 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
             Task { [weak self, weak value] in
                 guard let self, let value, value.automaticallyFollowTasks == enabled else { return }
                 await self.activity.setAutomaticFollowing(enabled)
+                await self.liveStatusActivity.setAutomaticFollowing(enabled)
             }
         }
         value.onWorkAccepted = { [reviewPrompt] in Task { await reviewPrompt.workAccepted() } }
@@ -177,7 +216,10 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
                   value.workspace?.id == workspace?.id else { return }
             if let session, let workspace {
                 await self.configureActivity(session: session, workspace: workspace, store: value, boundary: boundary)
-            } else if session == nil { await self.activity.stop() }
+            } else if session == nil {
+                await self.activity.stop()
+                await self.liveStatusActivity.stop()
+            }
         }
     }
 
@@ -186,12 +228,19 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
               let bundleID = Bundle.main.bundleIdentifier,
               let channel = try? store.activityNotificationChannel(workspace: workspace, environment: environment,
                   bundleID: bundleID, locale: Self.notificationLocale),
+              let liveStatusChannel = try? store.liveStatusNotificationChannel(workspace: workspace, environment: environment,
+                  bundleID: bundleID, locale: Self.notificationLocale),
               store.isCurrent(boundary), store.session?.id == session.id, store.workspace?.id == workspace.id else { return }
         await activity.configure(accountID: session.user.id, workspace: workspace, origin: store.configuration.baseURL.absoluteString,
                                  automaticFollowing: store.automaticallyFollowTasks, channel: channel)
+        await liveStatusActivity.configure(accountID: session.user.id, workspace: workspace, origin: store.configuration.baseURL.absoluteString,
+                                           automaticFollowing: store.automaticallyFollowTasks, channel: liveStatusChannel)
         guard store.isCurrent(boundary), store.session?.id == session.id, store.workspace?.id == workspace.id else { return }
         if sceneActive, let snapshot = store.taskActivity {
             await activity.apply(CommaApp.projection(snapshot, workspace: workspace))
+        }
+        if sceneActive, let items = store.liveStatuses {
+            await liveStatusActivity.apply(items)
         }
     }
 
@@ -202,7 +251,9 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         store.taskNotifications = TaskNotificationController(origin: store.configuration.baseURL.absoluteString,
             bundleID: bundleID, environment: try store.configuration.pushEnvironment, locale: Self.notificationLocale,
-            preferences: FileTaskNotificationPreferences(url: directory.appendingPathComponent("task-notifications.json")), system: system)
+            preferences: FileTaskNotificationPreferences(
+                url: directory.appendingPathComponent("task-notifications\(store.configuration.storageSuffix).json")),
+            system: system)
         store.router.onVisibilityChanged = { [weak self] in self?.synchronizeBadge() }
         UNUserNotificationCenter.current().delegate = self
         // APNs acquisition is independent of ordinary-alert consent and does not prompt.

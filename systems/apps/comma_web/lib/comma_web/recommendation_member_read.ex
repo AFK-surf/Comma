@@ -18,7 +18,8 @@ defmodule CommaWeb.RecommendationMemberRead do
   def within(deadline, fun) do
     task = SystemsRuntime.Task.async(fun)
 
-    case SystemsClock.yield(task, max(deadline - now(), 0)) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, max(deadline - now(), 0)) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       {:exit, reason} -> exit(reason)
       nil -> {:error, :member_read_deadline}
@@ -69,17 +70,29 @@ defmodule CommaWeb.RecommendationMemberRead do
   def warn(data, []), do: data
   def warn(data, [reason | _]), do: Map.put(data, :source_warnings, [reason])
 
-  # Server errors, throttling and dropped connections usually clear on the next
-  # attempt. Authorization, missing records and invalid answers do not.
-  defp transient?({kind, status})
-       when kind in [:http, :member_provider_http, :oauth_provider_http] and is_integer(status),
-       do: status == 429 or status >= 500
+  # Provider-specific error codes returned over HTTP 2xx/4xx that represent
+  # temporary throttling or server faults (Feishu/Lark 99991400 frequency limit,
+  # 99991429 rate limit, 99991500/99991503 internal errors; Slack ratelimited).
+  @throttled_provider_codes ~w(99991400 99991429 ratelimited)
+  @transient_provider_codes ~w(99991400 99991429 99991500 99991503 ratelimited)
 
-  defp transient?({:transport, _reason}), do: true
-  defp transient?(:oauth_provider_unavailable), do: true
-  defp transient?(_reason), do: false
+  @doc """
+  Whether a provider error is likely transient (throttling, server error,
+  transport failure or deadline) rather than a permanent permission, missing
+  record or malformed answer.
+  """
+  def transient?({kind, status})
+      when kind in [:http, :member_provider_http, :oauth_provider_http] and is_integer(status),
+      do: status == 429 or status >= 500
+
+  def transient?({:member_provider_error, code}) when code in @transient_provider_codes, do: true
+  def transient?({:transport, _reason}), do: true
+  def transient?(:oauth_provider_unavailable), do: true
+  def transient?(:member_read_deadline), do: true
+  def transient?(_reason), do: false
 
   defp throttled?({_kind, 429}), do: true
+  defp throttled?({:member_provider_error, code}) when code in @throttled_provider_codes, do: true
   defp throttled?(_reason), do: false
 
   defp now, do: SystemsClock.monotonic_time(:millisecond)

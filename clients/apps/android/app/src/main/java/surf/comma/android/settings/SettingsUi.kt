@@ -340,13 +340,17 @@ internal class SettingsPageLayout(
         setPadding(0, context.dp(8), 0, context.dp(32))
         adapter = this@SettingsPageLayout.adapter
     }
+    /** The list and what a page lays over it ([overlay]). */
+    private val body = FrameLayout(context)
+    private var footerView: View? = null
+    private var insetBottom = 0
     val bar = FrameLayout(context)
     /** Beside the title at the trailing edge: a page's own actions. */
     val trailing = LinearLayout(context).apply {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
     }
-    private val hairline = View(context).apply {
+    internal val hairline = View(context).apply {
         setBackgroundColor(context.color(R.color.token_border_primary))
         alpha = 0f
     }
@@ -384,19 +388,28 @@ internal class SettingsPageLayout(
         })
         bar.addView(hairline, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, 1, Gravity.BOTTOM))
         addView(bar, LayoutParams(LayoutParams.MATCH_PARENT, context.dp(52)))
-        addView(list, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
+        body.addView(list, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(body, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                val scrolled = list.canScrollVertically(-1)
+                // The first row's own edge, not the list's scroll offset: a list estimates that offset from the
+                // first row it finds with height, so a hidden first section (no search yet) read as scrolled.
+                val first = list.getChildAt(0)
+                val scrolled = first != null && (list.getChildAdapterPosition(first) > 0 || first.top < list.paddingTop)
                 if ((hairline.alpha > 0f) != scrolled) hairline.animate().alpha(if (scrolled) 1f else 0f)
                     .setDuration(DesignMotion.durationMillis(DesignMotion.stateChange)).start()
             }
         })
     }
 
-    /** Appends [view] as the next list item, [top] dp below the previous one. */
+    /** Appends [view] as the next list item, [top] dp below the previous one; hidden, it takes no room, gap included. */
     fun section(view: View, top: Int = 24) = apply {
-        val item = FrameLayout(context).apply {
+        val item = object : FrameLayout(context) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                if (view.visibility == View.GONE) setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 0)
+                else super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }.apply {
             setPadding(context.dp(16), if (items.isEmpty()) 0 else context.dp(top), context.dp(16), 0)
             addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
             layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
@@ -405,13 +418,56 @@ internal class SettingsPageLayout(
         adapter.notifyItemInserted(items.lastIndex)
     }
 
+    private val hasVisibleFooter: Boolean get() = footerView?.isVisible == true
+    private val overlayBottomMargin: Int get() = if (hasVisibleFooter) 0 else insetBottom
+
+    /**
+     * Lays [view] over the list, filling the room between the bar and the bottom inset, as an iOS page's overlay
+     * does: an empty state centred there stays in the middle of what the member sees, not under the bar.
+     */
+    fun overlay(view: View) = apply {
+        body.addView(view, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            bottomMargin = overlayBottomMargin
+        })
+    }
+
+    /** Pins [view] below the scrolling list, above the bottom inset (tab bar / navigation bar). */
+    fun footer(view: View) = apply {
+        footerView?.let(::removeView)
+        footerView = view
+        addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = insetBottom
+        })
+        syncFooterLayout()
+    }
+
+    /** Recomputes list bottom padding and overlay margins after toggling a pinned footer's visibility. */
+    fun syncFooterPadding() {
+        syncFooterLayout()
+    }
+
+    private fun syncFooterLayout() {
+        val hasFooter = hasVisibleFooter
+        list.setPadding(0, list.paddingTop, 0, if (hasFooter) context.dp(16) else context.dp(32) + insetBottom)
+        // Each overlay lays out again: a new bottom inset alone leaves the body's own size, and so its measure, unchanged.
+        // When a visible footer is pinned below the body, it already carries [insetBottom], so overlays need none.
+        val overlayMargin = overlayBottomMargin
+        for (index in 1 until body.childCount) body.getChildAt(index).let { overlay ->
+            overlay.layoutParams = (overlay.layoutParams as FrameLayout.LayoutParams).apply { bottomMargin = overlayMargin }
+        }
+    }
+
     /** Every section, attached to the list or not (the list only lays out what is on screen). */
     internal val sections: List<View> get() = items
 
     /** Status and navigation bar insets; the page draws edge to edge. */
     fun applyInsets(top: Int, bottom: Int) {
         (bar.layoutParams as LayoutParams).topMargin = top
-        list.setPadding(0, list.paddingTop, 0, context.dp(32) + bottom)
+        insetBottom = bottom
+        footerView?.let { footer ->
+            footer.layoutParams = (footer.layoutParams as LayoutParams).apply { bottomMargin = bottom }
+        }
+        syncFooterLayout()
         requestLayout()
     }
 }

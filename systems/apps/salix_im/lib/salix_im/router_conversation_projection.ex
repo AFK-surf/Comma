@@ -1,14 +1,16 @@
 defmodule SalixIM.RouterConversationProjection do
   @moduledoc "Read-only projection for a group's fixed Router conversation."
 
-  alias SalixIM.{ConversationIds, Conversations, GroupDirectory}
+  alias SalixIM.{ConversationIds, Conversations, GroupDirectory, RouterConversationInput}
 
   @message_limit 200
 
   def get_group_router_conversation(group_id) do
     with {:ok, group} <- GroupDirectory.get_group(group_id),
-         {:ok, conversation_id} <- ConversationIds.group_router(group) do
-      Conversations.get_group_conversation(group_id, conversation_id)
+         {:ok, conversation_id} <- ConversationIds.group_router(group),
+         {:ok, conversation} <- Conversations.get_group_conversation(group_id, conversation_id) do
+      {:ok,
+       Map.update(conversation, "title", nil, &RouterConversationInput.normalize_router_title/1)}
     end
   end
 

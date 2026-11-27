@@ -150,6 +150,188 @@ describe("chat follow-up placeholder", () => {
     expect(core.asked.map((topic) => topic.message)).toEqual(["msg_a1", "msg_a2"]);
   });
 
+  it("offers no follow-up under an open question card, and asks once answered", async () => {
+    const core = scriptedCore();
+    const openCardMessage = message("msg_q1", "assistant", "Choose one.", {
+      parts: [
+        {
+          kind: "question",
+          messageId: "msg_q1",
+          prompt: "Choose one?",
+          choices: [
+            { id: "c1", label: "Option A" },
+            { id: "c2", label: "Option B" },
+          ],
+          multiSelect: false,
+          allowOther: true,
+          state: { status: "open" },
+        },
+      ],
+    });
+    const { setState } = renderConversation({
+      core,
+      state: settled({ messages: [openCardMessage] }),
+    });
+
+    await act(async () => {});
+    expect(suggestionInput()).toBeNull();
+    expect(core.asked).toEqual([]);
+
+    setState(
+      settled({
+        messages: [
+          message("msg_q1", "assistant", "Choose one.", {
+            parts: [
+              {
+                kind: "question",
+                messageId: "msg_q1",
+                prompt: "Choose one?",
+                choices: [
+                  { id: "c1", label: "Option A" },
+                  { id: "c2", label: "Option B" },
+                ],
+                multiSelect: false,
+                allowOther: true,
+                state: { status: "answered", choiceIds: ["c1"] },
+              },
+            ],
+          }),
+        ],
+      })
+    );
+
+    await waitFor(() => expect(core.asked).toHaveLength(1));
+  });
+
+  it("offers no follow-up under a Task's brief, before its Worker has answered", async () => {
+    const core = scriptedCore();
+    const { setState } = renderConversation({
+      core,
+      state: settled({
+        messages: [message("msg_brief", "assistant", "Build it.", { brief: true })],
+      }),
+    });
+
+    await act(async () => {});
+    expect(core.asked).toEqual([]);
+    expect(suggestionInput()).toBeNull();
+
+    setState(
+      settled({
+        messages: [
+          message("msg_brief", "assistant", "Build it.", { brief: true }),
+          message("msg_a1", "assistant", "Built."),
+        ],
+      })
+    );
+    await waitFor(() => expect(suggestionInput()).toBeTruthy());
+  });
+
+  it("offers no follow-up while a Task's Worker is at work", async () => {
+    const core = scriptedCore();
+    renderConversation({
+      core,
+      state: settled({
+        participantStatuses: [
+          {
+            actorRole: "worker",
+            conversationId: "cnv_1",
+            participantId: "par_w",
+            state: "active",
+            status: "working",
+            updatedAt: 1,
+          },
+        ],
+      }),
+    });
+
+    await act(async () => {});
+    expect(core.asked).toEqual([]);
+    expect(suggestionInput()).toBeNull();
+  });
+
+  it("offers no follow-up while a started Task's sandbox starts, and offers the reply's once it is ready", async () => {
+    const core = scriptedCore();
+    const task = (state: string) =>
+      settled({
+        conversation: {
+          id: "cnv_1",
+          group_id: "grp_1",
+          kind: "agent_task",
+          status: "in_progress",
+          title: "Task",
+        },
+        messages: [
+          message("msg_brief", "assistant", "Build it.", { brief: true }),
+          message("msg_a1", "assistant", "Built."),
+        ],
+        participantStatuses: [],
+        taskRun: {
+          place: {
+            kind: "sandbox",
+            state,
+            repo: { owner: "AFK-surf", name: "Cue", branch: "fix/task" },
+          },
+          vendor: "anthropic",
+        },
+      });
+    const { setState } = renderConversation({ core, state: task("starting") });
+
+    const slot = await screen.findByTestId("participant-status-slot");
+    await act(async () => {});
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(slot).toHaveTextContent("Working");
+    expect(core.asked).toEqual([]);
+    expect(suggestionInput()).toBeNull();
+
+    setState(task("ready"));
+    await waitFor(() => expect(suggestionInput()).toBeTruthy());
+    expect(core.asked.map((topic) => topic.message)).toEqual(["msg_a1"]);
+  });
+
+  it.each([
+    {
+      name: "a request the Router brought in",
+      newest: message("msg_req", "assistant", "Fix the login page.", {
+        routerRequest: true,
+      }),
+    },
+    {
+      name: "a run whose model cannot start",
+      newest: message("msg_blocked", "assistant", "The model cannot start.", {
+        messageType: "task_run_blocked",
+      }),
+    },
+    {
+      name: "a system notice",
+      newest: message("msg_switched", "assistant", "Switched to another model.", {
+        actorType: "system",
+        messageType: "task_run_switched",
+      }),
+    },
+    {
+      name: "a person's message not answered yet",
+      newest: message("msg_u2", "user", "Now add tests."),
+    },
+  ])("offers no follow-up when the newest message is $name", async ({ newest }) => {
+    const core = scriptedCore();
+    renderConversation({
+      core,
+      state: settled({
+        messages: [
+          message("msg_u1", "user", "Refactor the parser"),
+          message("msg_a1", "assistant", "Done — here is the diff."),
+          newest,
+        ],
+      }),
+    });
+
+    await screen.findByText("Done — here is the diff.");
+    await act(async () => {});
+    expect(core.asked).toEqual([]);
+    expect(suggestionInput()).toBeNull();
+  });
+
   it.each([
     { name: "renders nothing when the core has no suggestions", value: [] },
     { name: "renders nothing while the core is still asking", value: null },
@@ -182,6 +364,14 @@ const defaultSuggestions: ChatSuggestion[] = [
   { id: "sug_2", label: "Add tests", prompt: "Add tests for the new parser." },
 ];
 
+const unavailableHistory = {
+  available: false,
+  start: 0,
+  total: 0,
+  items: [],
+  usage: null,
+};
+
 /**
  * A core answering `chatSuggestions` with `answer(topic)` (the default suggestions when it gives undefined), and the
  * topics the UI asked, in order.
@@ -199,6 +389,8 @@ function scriptedCore(
     onSubscribe: (topic) => {
       if (topic.topic === "chatSuggestions") asked.push(topic);
     },
+    // A coding Task's sandbox that is not running answers no history.
+    calls: (name) => (name === "coding.history" ? unavailableHistory : null),
   });
   return { asked, wrap: core.wrap };
 }

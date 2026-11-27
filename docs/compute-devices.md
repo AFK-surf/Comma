@@ -51,7 +51,7 @@ The page reads this station on entry/focus, one request per edit; an uncertain r
 Project/Swarm/Group owns Compute Environments; Device access is separate. Bound offline requests. Input awaits READY. Recovery repairs hints without Session polls.
 Preserve bindings, accepted input, tool deadlines and receipts. Explicit targets and accepted work keep their selected machine.
 See [deadlines](agent-runtime.md).
-VMM gateway secrets are separate from [Comma secrets](release-operations.md).
+VMM server TLS and compute runtime secrets are separate from [Comma secrets](release-operations.md).
 VMM Host and user Device disk disposal needs owner approval; Cloudflare Group VMs follow the policy below.
 Compute uses [billing facts](billing-models.md), not delayed usage telemetry.
 
@@ -59,7 +59,7 @@ Authorized Worker selection wakes archived Cloudflare Workloads with a 30s deman
 A ready Group VM archives after `idle_archive_ms` (5 minutes) with no Salix operation, no agent settle after one, and no Task Message its station posted or was given. A station that refuses to park waits the idle period again, doubled per refusal in a row, at most four times, until the VM is used again.
 See [Tasks](../systems/station/docs/tasks.md) for station wake when Salix cannot give a Task Message to an unconnected Group VM station.
 
-Shell Host tunnels keep their gRPC connection while idle, until session expiry, revocation, or transport loss; a Host request that finds the tunnel gone marks the current session stale and its ready Workload pending.
+Shell Host sessions stay open while idle, until session expiry, revocation, or transport loss. A Host request that finds the session gone marks it stale and its ready Workload pending.
 [Compute reconciliation](architecture/DOMAIN_CONCEPTS.md#group-compute-lifecycle) replaces missing, stale, or expired shell sessions.
 Discovery reports observed state without a Host probe and does not guarantee current execution availability.
 
@@ -79,10 +79,9 @@ See [settings](product-features.md#compute-node-settings-and-initialization) for
 
 ## Automatic Station placement
 
-Each authorized Registration prepares a VMM Station. New configurations use `tools.access=full`; existing settings stay.
-Automatic Tasks prefer VMM, the requester's authorized physical Station, then enabled Cloudflare. Receipts keep targets on retry.
-Managed Stations use cloud-authorized profiles; physical logins require owner opt-in.
-A Router Task for one of several computers needs the person's word.
+Authorized Registrations prepare VMM Stations (`tools.access=full`). Order: [agent runtime](agent-runtime.md); receipts keep targets.
+Managed Stations/sandboxes use cloud profiles; physical logins need owner opt-in. Prompts/placement allow only profiled runtimes.
+Explicit or automatic Router placement to one of several computers needs the person's word (Comma and external IMs); ask when uncertain.
 
 ## Cloud VM data policy
 
@@ -124,7 +123,7 @@ Group Stations and Task sandboxes share execution and connection authorization. 
   Idle shutdown reports unpublished work. Neither it nor turn completion commits or pushes.
   5 minutes with no heartbeat, or no Task status read after a wake, makes it `failed`. A sandbox L4ES no longer runs is `lost`; an active Task gets one notice.
 - Recovery: a Message resumes a `stopped`, `lost`, `failed` or `ended` sandbox, unless the Task ended: the Router answers. So does a reopen with an unanswered Message. Not a notice, event, or Message in a failed start. L4ES starts it from its disk.
-  A refused start (409), or one pending on its disk 150 s after the start, is remade on a new disk unless still stopping; Task is told.
+  A 409-refused start, a failed one on an unused disk (2x) or one pending on its disk 150 s is remade unless stopping; the last is told.
   Replacement waits until L4ES says the old run stopped. An unknown invite or stop result authorizes no second carrier.
   A new Station resumes from the pushed branch.
 - Completion: completed, cancelled, failed and archived Tasks end their sandbox. Failed stops retry each minute by name.

@@ -10,6 +10,7 @@ import {
   TrashCanIcon,
 } from "@comma/ui/components/icons";
 import { InputField } from "@comma/ui/components/input";
+import { SettingsSectionView } from "@comma/ui/components/settings-panel";
 import {
   Menu,
   MenuItem,
@@ -30,10 +31,12 @@ import { InlineTextEditor } from "./InlineTextEditor";
 import { LabelColorPicker } from "./LabelColorPicker";
 import type {
   CommaTaskLabel,
+  CommaTaskLabelApprovalPolicy,
   CommaTaskLabelCatalog,
   CommaTaskLabelProposal,
 } from "@comma/core/api-schemas";
 import { LabelProposalList } from "./LabelProposalList";
+import { isLabelProposalPolicy } from "./labelProposalPolicy";
 
 export type TaskLabelDraft = { name: string; color: string; description?: string };
 
@@ -57,6 +60,14 @@ export interface TaskLabelsPageProps {
   /** Requests awaiting approval or needing attention after Task application failed. */
   pendingProposals: readonly CommaTaskLabelProposal[];
   proposalTitle: (proposal: CommaTaskLabelProposal) => string;
+  /** Whether Comma may change labels without asking: the Group's server-owned policy. */
+  approvalPolicy?: {
+    value: CommaTaskLabelApprovalPolicy;
+    disabled: boolean;
+    /** The last change was not saved. */
+    failed?: boolean;
+    onChange: (policy: CommaTaskLabelApprovalPolicy) => void;
+  };
 }
 
 // Tailwind only emits classes it can see, so each swatch is a literal.
@@ -303,6 +314,7 @@ export function TaskLabelsPage({
   onViewProposalTask,
   pendingProposals,
   proposalTitle,
+  approvalPolicy,
 }: TaskLabelsPageProps) {
   const messages = useCommaMessages();
   const [filter, setFilter] = useState("");
@@ -356,6 +368,38 @@ export function TaskLabelsPage({
           {messages.settings_labels_description()}
         </p>
       </header>
+
+      {approvalPolicy ? (
+        <SettingsSectionView
+          section={{
+            id: "labels.policy",
+            title: "",
+            items: [
+              {
+                id: "permissions.label-changes",
+                title: messages.settings_label_changes(),
+                description: messages.settings_label_changes_description(),
+                ...(approvalPolicy.failed
+                  ? { errorMessage: messages.settings_label_changes_failed() }
+                  : {}),
+                control: {
+                  type: "dropdown",
+                  value: approvalPolicy.value,
+                  disabled: approvalPolicy.disabled,
+                  placeholder: messages.settings_label_changes_ask(),
+                  items: [
+                    { id: "ask", label: messages.settings_label_changes_ask() },
+                    { id: "auto", label: messages.settings_label_changes_auto() },
+                  ],
+                  onChange: (value) => {
+                    if (isLabelProposalPolicy(value)) approvalPolicy.onChange(value);
+                  },
+                },
+              },
+            ],
+          }}
+        />
+      ) : null}
 
       <div className="comma-task-labels-toolbar">
         <InputField

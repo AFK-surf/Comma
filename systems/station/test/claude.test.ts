@@ -131,6 +131,21 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     await until((e) => e.some((x) => x.type === "closed"));
   });
 
+  test("on a machine that brings a browser, claude is given its server beside the station's", async () => {
+    const d = new ClaudeDriver({ data, env: { ...process.env, COMMA_BROWSER_MCP_CONFIG: "/etc/comma/browser-mcp.json", DISPLAY: ":99" } });
+    drivers.push(d);
+    const o = options();
+    const { push, until } = listen();
+    const session = await d.open(o, push);
+    await session.prompt("say:hello");
+    await until(ended(1));
+    const argv: string[] = JSON.parse(readFileSync(o.dump, "utf8").trim()).argv;
+    const { mcpServers } = JSON.parse(argv[argv.indexOf("--mcp-config") + 1]!);
+    assert.deepEqual(Object.keys(mcpServers), ["comma", "playwright"]);
+    assert.deepEqual(mcpServers.playwright, { type: "stdio", command: "playwright-mcp", args: ["--config", "/etc/comma/browser-mcp.json"], env: { DISPLAY: ":99" } });
+    await session.dispose();
+  });
+
   test("a failed result is told apart by what claude said; is_error decides, not subtype", async () => {
     const d = driver();
     const { events, push, until } = listen();

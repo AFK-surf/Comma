@@ -1350,6 +1350,115 @@ defmodule SalixWeb.RouterTest do
     assert treq(:get, "/v1/runtime/agent-groups/#{group_id}/im/connects").body == []
   end
 
+  test "two Feishu apps of one tenant each verify and sign in with their own secrets" do
+    start_supervised!(MockIMProviderAPI)
+    port = start_bandit_retry!(fn p -> {Bandit, plug: MockIMProviderAPI, port: p} end)
+    SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
+    SalixIM.Provider.Feishu.API.reset_token_cache()
+
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
+
+    [rd, fin] =
+      for dept <- ["rd", "fin"] do
+        app_id = "cli_#{dept}_#{suffix}"
+
+        assert {:ok, _} =
+                 Salix.Control.Tenants.put_feishu_tenant_app(tenant_id(), %{
+                   "app_id" => app_id,
+                   "app_secret" => "secret-#{dept}",
+                   "verification_token" => "verify-#{dept}",
+                   "encrypt_key" => "encrypt-#{dept}"
+                 })
+
+        group_id = create_test_group("Feishu #{dept} #{suffix}")["group_id"]
+
+        connect =
+          treq(:post, "/v1/runtime/agent-groups/#{group_id}/im/providers/feishu/connects",
+            json: %{app_name: dept, app_id: app_id}
+          )
+
+        assert connect.status == 201
+
+        %{
+          dept: dept,
+          app_id: app_id,
+          group_id: group_id,
+          connect_id: connect.body["connect_id"]
+        }
+      end
+
+    # Saving the second app left the first one's secrets in place.
+    assert {:ok, %{"app_secret" => "secret-rd"}} =
+             Salix.Control.Tenants.get_feishu_tenant_app(tenant_id(), rd.app_id)
+
+    challenge = fn app, token ->
+      Req.request!(
+        method: :post,
+        url: base() <> "/v1/im/feishu/events",
+        headers: [{"content-type", "application/json"}],
+        retry: false,
+        json: %{
+          "type" => "url_verification",
+          "app_id" => app.app_id,
+          "token" => token,
+          "challenge" => "chal-" <> app.dept
+        }
+      )
+    end
+
+    for {app, other} <- [{rd, fin}, {fin, rd}] do
+      # Each connect checked its app's own App Secret with Feishu, and mints
+      # its own tenant token.
+      assert Enum.any?(
+               MockIMProviderAPI.requests(),
+               &(&1[:params] == %{"app_id" => app.app_id, "app_secret" => "secret-#{app.dept}"})
+             )
+
+      refute Enum.any?(
+               MockIMProviderAPI.requests(),
+               &(&1[:params] == %{"app_id" => app.app_id, "app_secret" => "secret-#{other.dept}"})
+             )
+
+      assert {:ok, connect} =
+               ProviderConnects.get_active_connect_by_id(app.group_id, app.connect_id, "feishu")
+
+      assert {:ok, "tenant-token-" <> app_id} =
+               SalixIM.Provider.Feishu.API.tenant_access_token(connect)
+
+      assert app_id == app.app_id
+
+      # Its callbacks verify with its own token only.
+      ok = challenge.(app, "verify-#{app.dept}")
+      assert ok.status == 200
+      assert ok.body == %{"challenge" => "chal-" <> app.dept}
+      assert challenge.(app, "verify-#{other.dept}").status == 401
+
+      # The Run check sends its own (encrypted) challenge round the real callback.
+      assert {:ok, %{"ok" => true}} =
+               SalixIM.FeishuChecks.callback_preflight_for_connect(%{
+                 "connect_id" => app.connect_id
+               })
+    end
+
+    # Rotating one app's token keeps its App Secret and leaves the other app alone.
+    assert {:ok, _} =
+             Salix.Control.Tenants.put_feishu_tenant_app(tenant_id(), %{
+               "app_id" => rd.app_id,
+               "verification_token" => "verify-rd-2"
+             })
+
+    assert {:ok, %{"app_secret" => "secret-rd", "verification_token" => "verify-rd-2"}} =
+             Salix.Control.Tenants.get_feishu_tenant_app(tenant_id(), rd.app_id)
+
+    assert {:ok, %{"verification_token" => "verify-fin"}} =
+             Salix.Control.Tenants.get_feishu_tenant_app(tenant_id(), fin.app_id)
+
+    # Removing one app's secrets stops only that app.
+    assert :ok = Salix.Control.Tenants.delete_feishu_tenant_app(tenant_id(), rd.app_id)
+    assert challenge.(rd, "verify-rd-2").status != 200
+    assert challenge.(fin, "verify-fin").status == 200
+  end
+
   test "Feishu provider webhook verifies, routes, and dedupes into the group router session" do
     start_supervised!(MockIMProviderAPI)
     port = start_bandit_retry!(fn p -> {Bandit, plug: MockIMProviderAPI, port: p} end)

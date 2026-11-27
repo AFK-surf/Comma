@@ -678,6 +678,86 @@ defmodule SalixAgent.StateTest do
       assert InternalSession.terminal_reply_source_scope(apps) == nil
     end
 
+    test "flat DM follow-ups batch and join an unanswered activation until a reply is sent" do
+      imessage = fn source, msg_id ->
+        %{
+          type: "queue_append",
+          session_id: "s1",
+          kind: "user_message",
+          wake: true,
+          dedupe_key: source,
+          payload: %{
+            source_message_id: source,
+            content: source,
+            trusted_origin: %{
+              "provider" => "imessage",
+              "source_actor_type" => "provider_user",
+              "source_message_id" => source,
+              "provider_context" => %{
+                "connect_id" => "imc-1",
+                "chat_id" => "+8613800138000",
+                "message_id" => msg_id
+              }
+            }
+          }
+        }
+      end
+
+      initial =
+        reduce_session([
+          %{type: "session_created", session_id: "s1"},
+          imessage.("im-1", "pho_1")
+        ])
+
+      {events1, true, _hwm1} = materialize(initial)
+      open = SessionData.apply_events(initial, events1)
+
+      # A follow-up arriving while the activation is still researching joins the open activation.
+      with_followup =
+        SessionData.apply_events(open, [
+          overtake_context("im-2"),
+          imessage.("im-2", "pho_2"),
+          thread_input("other-thread", "provider_user", "t9", 2_000)
+        ])
+
+      {events2, true, _hwm2} = materialize(with_followup)
+      deliveries2 = Enum.filter(events2, &(&1["type"] == "delivery"))
+
+      assert Enum.map(deliveries2, & &1["source_message_id"]) ==
+               ["im-2:source-context", "im-2"]
+
+      merged =
+        with_followup
+        |> SessionData.apply_events(events2)
+        |> InternalSession.open()
+
+      assert %{"source_message_id" => "im-2"} =
+               InternalSession.terminal_reply_source_scope(merged)
+
+      # Once the activation attempts an outbound send, active_unanswered_thread is nil
+      # and a later follow-up stays queued for the next activation.
+      answered =
+        merged
+        |> InternalSession.export()
+        |> SessionData.apply_event(%{
+          type: "assistant",
+          session_id: "s1",
+          message_id: 10,
+          content: "",
+          tool_calls: [
+            %{
+              "id" => "send-1",
+              "name" => "call",
+              "args" => %{"tool" => "im_api.imessage.send_message", "params" => %{"text" => "ok"}}
+            }
+          ]
+        })
+        |> SessionData.apply_event(imessage.("im-3", "pho_3"))
+
+      assert InternalSession.active_unanswered_thread(InternalSession.open(answered)) == nil
+      assert {[], false, 0} = materialize(answered)
+    end
+
     test "a Loop or schedule with no authority beside a person leaves their reply scope" do
       activation = fn inputs ->
         queued = reduce_session([%{type: "session_created", session_id: "s1"} | inputs])

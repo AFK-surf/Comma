@@ -5,12 +5,15 @@ defmodule SalixIM.IFCSourceRefs do
 
   `ifc_provenance` is the audience a Task inherited from the sources its
   creation declared; `ifc_members` is who it is shared with; `ifc_requester`
-  is the person whose Task it is. All are written
+  is the person whose Task it is; `origin_chat` is the chat the Task was asked
+  for in (provider, connect, scope and chat type, or the internal
+  Conversation), which cross-Group search reads. All are written
   once, server-side, by the operation that creates the Task, from the
   dispatcher's evidence. Declaring them protected keeps the generic
   conversation API — and therefore any agent — from introducing, changing or
   removing them.
   """
 
-  def protected_source_ref_keys, do: ["ifc_provenance", "ifc_members", "ifc_requester"]
+  def protected_source_ref_keys,
+    do: ["ifc_provenance", "ifc_members", "ifc_requester", "origin_chat"]
 end

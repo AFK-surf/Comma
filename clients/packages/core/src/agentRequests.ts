@@ -3,7 +3,7 @@
 // first decision wins); the core only shows them and passes a person's decline on. Connecting an account ends its
 // request on the server, when the provider's callback verifies it.
 //
-// `agentLocationRequests` is what an open phone answers on its own: the pending location requests the person's own
+// `agentLocationRequests` is what an open phone or computer answers on its own: the pending location requests the person's own
 // messages led to, in every Group, without their coordinates.
 //
 // Bounds: one stream per shown Conversation (an `agentRequests` topic while a surface shows it) and one for
@@ -74,6 +74,22 @@ const requestSchema = lazySchema(() =>
             kind: z.literal("secret"),
             label: text.optional(),
             help_url: httpsPage,
+          }),
+          z.object({
+            kind: z.literal("secret_fields"),
+            label: text.optional(),
+            help_url: httpsPage,
+            fields: z
+              .array(
+                z.object({
+                  name: text,
+                  label: text.optional(),
+                  secret: z.boolean().optional(),
+                  optional: z.boolean().optional(),
+                })
+              )
+              .min(1)
+              .max(8),
           }),
           z.object({
             kind: z.literal("app"),
@@ -161,6 +177,19 @@ function decodeInput(
   if (input.kind === "device") return { kind: "device", code: input.code };
   if (input.kind === "open" || input.kind === "paste") return { kind: input.kind };
   const helpUrl = input.help_url ? { helpUrl: input.help_url } : {};
+  // On the card a secret with fields is a secret that asks for each of them.
+  if (input.kind === "secret_fields")
+    return {
+      kind: "secret",
+      ...(input.label ? { label: input.label } : {}),
+      ...helpUrl,
+      fields: input.fields.map((field) => ({
+        name: field.name,
+        label: field.label || field.name,
+        secret: field.secret !== false,
+        optional: field.optional === true,
+      })),
+    };
   return input.kind === "secret"
     ? { kind: "secret", ...(input.label ? { label: input.label } : {}), ...helpUrl }
     : {

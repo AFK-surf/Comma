@@ -15,6 +15,9 @@ export type SimOp =
   | { op: "button"; name: "home" | "app_switcher" | "lock" | "keyboard" }
   | { op: "paste"; text: string }
   | { op: "pose"; name: string }
+  | { op: "hinge"; degrees: number; ms: number }
+  | { op: "orient"; turn: number; screen?: "cover" | "inner"; hinge?: number }
+  | { op: "frames"; panel: boolean }
   | { op: "rotate" }
   | { op: "button"; name: "volume_up" | "volume_down" }
   /// A hardware button by its HID usage (the device's case, sim-chrome.ts), held from `down` until it comes up.
@@ -90,6 +93,12 @@ export class SimInput {
         return this.#text(e.text);
       case "pose":
         return e.name === "closed" || e.name === "open" ? [{ op: "pose", name: e.name }] : [];
+      case "hinge":
+        return [{ op: "hinge", degrees: e.degrees, ms: e.ms }];
+      case "orient":
+        return [{ op: "orient", turn: e.degrees / 90, ...(e.screen ? { screen: e.screen } : {}), ...(e.hinge !== undefined ? { hinge: e.hinge } : {}) }];
+      case "frames":
+        return [{ op: "frames", panel: e.panel }];
       case "button":
         return [{ op: "hid", page: e.page, usage: e.usage, down: e.down }];
       case "device":

@@ -62,9 +62,12 @@ defmodule Comma.AccountDeletion do
     {"comma_recommendation_profiles", :user_id},
     {"comma_member_source_consents", :user_id},
     {"comma_task_shares", :created_by},
+    {"comma_document_shares", :created_by},
     {"comma_task_requests", :sender_user_id},
     {"comma_task_request_grants", :grantee_user_id},
     {"comma_task_request_grants", :created_by},
+    {"comma_task_collaborators", :user_id},
+    {"comma_task_collaborators", :host_user_id},
     {"comma_provider_user_links", :user_id},
     {"comma_task_panel_dismissals", :user_id},
     {"comma_assistant_chat_bindings", :user_id},
@@ -142,8 +145,9 @@ defmodule Comma.AccountDeletion do
       since = SystemsClock.system_time(:second)
 
       case Repo.transaction(fn -> delete_locked(user_id, hash, now) end) do
-        {:ok, avatar_ids} ->
+        {:ok, {avatar_ids, guest_collaborator_ids}} ->
           Comma.Stations.Revocations.publish_since(user_id, since)
+          Enum.each(guest_collaborator_ids, &Comma.CollaborationGuests.broadcast_revoked/1)
           Enum.each(avatar_ids, &enqueue_avatar_cleanup/1)
           Comma.Analytics.identify(user_id)
           :ok
@@ -295,6 +299,25 @@ defmodule Comma.AccountDeletion do
     from(a in UserAvatar, where: a.id in ^avatar_ids)
     |> Repo.update_all(set: [status: "cleanup", updated_at: now])
 
+    collaboration_groups =
+      Repo.all(
+        from(c in Comma.Data.TaskCollaborator,
+          join: w in Workspace,
+          on: w.id == c.workspace_id,
+          where: c.host_user_id == ^user_id and c.group_id != w.salix_group_id,
+          distinct: true,
+          select: %{"salix_tenant_id" => w.salix_tenant_id, "group_id" => c.group_id}
+        )
+      )
+
+    guest_collaborator_ids =
+      Repo.all(
+        from(c in Comma.Data.TaskCollaborator,
+          where: c.host_user_id == ^user_id and is_nil(c.user_id),
+          select: c.id
+        )
+      )
+
     for {table, column} <- @owned_rows do
       from(r in table, where: field(r, ^column) == ^user_id) |> Repo.delete_all()
     end
@@ -328,13 +351,16 @@ defmodule Comma.AccountDeletion do
         status: "pending",
         attempt: 0,
         external_idempotency_key: "account_deletion:" <> user_id,
-        metadata: %{"workspace_ids" => workspace_ids}
+        metadata: %{
+          "workspace_ids" => workspace_ids,
+          "collaboration_groups" => collaboration_groups
+        }
       },
       Comma.Workers.AccountDeletion.new(%{"operation_id" => operation_id})
     )
     |> Repo.transaction()
     |> case do
-      {:ok, _changes} -> avatar_ids
+      {:ok, _changes} -> {avatar_ids, guest_collaborator_ids}
       {:error, _step, reason, _changes} -> Repo.rollback(reason)
     end
   end

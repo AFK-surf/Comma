@@ -18,6 +18,8 @@ defmodule SalixAgent.SkillFrontmatter do
 
   def parse(_content), do: %{}
 
+  @valid_roles ~w(router worker)
+
   @doc "Validate activation and return catalog metadata for SKILL.md."
   def metadata(content, defaults \\ %{}) do
     fields = Map.merge(defaults, parse(content))
@@ -39,6 +41,43 @@ defmodule SalixAgent.SkillFrontmatter do
          |> Map.put("instruction_bytes", byte_size(body))}
     end
   end
+
+  @doc """
+  Strictly parse and validate `roles` metadata for shipped built-in skills.
+
+  Kept separate from `metadata/2` so custom user/Group skills with arbitrary
+  frontmatter fields remain accepted by `SkillStore`.
+  """
+  @spec parse_builtin_roles(term()) :: {:ok, [String.t()] | nil} | {:error, String.t()}
+  def parse_builtin_roles(nil), do: {:ok, nil}
+  def parse_builtin_roles(""), do: {:ok, nil}
+
+  def parse_builtin_roles(roles) when is_list(roles) do
+    normalized =
+      roles
+      |> Enum.map(&(&1 |> to_string() |> String.trim() |> String.downcase()))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    if normalized != [] and Enum.all?(normalized, &(&1 in @valid_roles)) do
+      {:ok, normalized}
+    else
+      {:error, "roles must be a comma-separated list of router or worker"}
+    end
+  end
+
+  def parse_builtin_roles(raw) when is_binary(raw) do
+    raw
+    |> String.trim()
+    |> String.trim_leading("[")
+    |> String.trim_trailing("]")
+    |> String.split(",", trim: true)
+    |> Enum.map(&scalar/1)
+    |> parse_builtin_roles()
+  end
+
+  def parse_builtin_roles(_),
+    do: {:error, "roles must be a comma-separated list of router or worker"}
 
   def body(content) do
     case Regex.run(~r/\A---\r?\n.*?\r?\n---(?:\r?\n|\z)(.*)\z/s, content) do
@@ -105,7 +144,8 @@ defmodule SalixAgent.SkillFrontmatter do
   end
 
   defp maybe_put(acc, key, value)
-       when key in ["name", "description", "summary", "activation"] and value != "",
+       when key in ["name", "description", "summary", "prompt_summary", "activation", "roles"] and
+              value != "",
        do: Map.put(acc, key, value)
 
   defp maybe_put(acc, _key, _value), do: acc

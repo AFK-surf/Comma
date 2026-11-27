@@ -2,10 +2,9 @@ defmodule Comma.Notifications do
   @moduledoc "Auth Session-owned APNs addresses and bounded current-state delivery."
   import Ecto.Query
   alias Comma.{Accounts, Conversations, Repo, RouterNotifications, Workspaces}
-  alias Comma.Notifications.{APNs, Target}
+  alias Comma.Notifications.{APNs, Delivery, Target}
 
   @page 100
-  @lease_seconds 120
   @device_statuses ~w(ready_for_review escalated completed failed)
   @attention ~w(ready_for_review escalated)
   @activity_schema "tasks_v1"
@@ -89,29 +88,48 @@ defmodule Comma.Notifications do
               ],
           else: extra
 
-      case Repo.insert(Target.changeset(%Target{}, values),
-             conflict_target: [:auth_session_id, :kind],
-             on_conflict:
-               {:replace,
-                [
-                  :id,
-                  :token,
-                  :environment,
-                  :bundle_id,
-                  :locale,
-                  :workspace_id,
-                  :group_id,
-                  :conversation_id,
-                  :activity_id,
-                  :activity_schema,
-                  :activity_started_at,
-                  :router_last_sent_badge,
-                  :expires_at,
-                  :updated_at,
-                  :delivery_lease_until
-                ] ++ extra},
-             returning: true
-           ) do
+      case Repo.transaction(fn ->
+             if kind == "device" and is_binary(values.token) do
+               # One physical app installation owns a device APNs token. Re-registering it
+               # under a newer Auth Session retires stale Session targets with that token so
+               # the phone does not receive duplicate alerts.
+               Repo.delete_all(
+                 from(t in Target,
+                   where:
+                     t.kind == "device" and t.token == ^values.token and
+                       t.environment == ^values.environment and t.bundle_id == ^bundle_id and
+                       t.auth_session_id != ^session["id"]
+                 )
+               )
+             end
+
+             case Repo.insert(Target.changeset(%Target{}, values),
+                    conflict_target: [:auth_session_id, :kind],
+                    on_conflict:
+                      {:replace,
+                       [
+                         :id,
+                         :token,
+                         :environment,
+                         :bundle_id,
+                         :locale,
+                         :workspace_id,
+                         :group_id,
+                         :conversation_id,
+                         :activity_id,
+                         :activity_schema,
+                         :activity_started_at,
+                         :router_last_sent_badge,
+                         :expires_at,
+                         :updated_at,
+                         :delivery_lease_until
+                       ] ++ extra},
+                    returning: true
+                  ) do
+               {:ok, target} -> target
+               {:error, _} -> Repo.rollback(:invalid_push_registration)
+             end
+           end) do
         {:ok, target} ->
           if kind == "live_activity", do: acknowledge_activity(target)
           wake_listener(target.group_id)
@@ -360,50 +378,8 @@ defmodule Comma.Notifications do
 
   def deliver_router(target_id), do: with_lease(target_id, &deliver_router_leased/1)
 
-  defp with_lease(target_id, fun) do
-    case claim(target_id) do
-      {:ok, target} ->
-        try do
-          fun.(target)
-        after
-          release(target)
-        end
-
-      error ->
-        error
-    end
-  end
-
-  defp claim(target_id) do
-    now = SystemsClock.utc_now()
-
-    from(t in Target,
-      where:
-        t.id == ^target_id and
-          (is_nil(t.delivery_lease_until) or t.delivery_lease_until < ^now),
-      select: t
-    )
-    |> Repo.update_all(set: [delivery_lease_until: DateTime.add(now, @lease_seconds)])
-    |> case do
-      {1, [target]} ->
-        {:ok, target}
-
-      {0, _} ->
-        if Repo.exists?(from(t in Target, where: t.id == ^target_id)),
-          do: {:error, :delivery_busy},
-          else: :obsolete
-    end
-  end
-
-  defp release(target), do: leased(target) |> Repo.update_all(set: [delivery_lease_until: nil])
-
-  # Rotation replaces the row ID and clears the lease; an older lease then
-  # writes nothing to the replacement address.
-  defp leased(target),
-    do:
-      from(t in Target,
-        where: t.id == ^target.id and t.delivery_lease_until == ^target.delivery_lease_until
-      )
+  defp with_lease(target_id, fun), do: Delivery.with_lease(Target, target_id, fun)
+  defp leased(target), do: Delivery.leased(target)
 
   defp deliver_leased(%{kind: "device"} = target, task_id) do
     with {:ok, user, session} <- authority(target) do
@@ -463,7 +439,7 @@ defmodule Comma.Notifications do
 
   defp deliver_router_leased(%{kind: "device"} = target) do
     with {:ok, user, session} <- authority(target),
-         {:ok, router} <- RouterNotifications.snapshot(user, session, target.group_id) do
+         {:ok, router} <- RouterNotifications.delivery_snapshot(user, session, target.group_id) do
       latest = router["latest_seq"] || 0
       badge = router["unread_count"] || 0
 
@@ -695,55 +671,12 @@ defmodule Comma.Notifications do
   defp future?(nil), do: false
   defp future?(date), do: DateTime.compare(date, SystemsClock.utc_now()) == :gt
 
-  defp authority(target) do
-    with true <- DateTime.compare(target.expires_at, SystemsClock.utc_now()) == :gt,
-         {:ok, user, session} <- Accounts.resolve_session_id(target.auth_session_id),
-         :ok <- unrestricted(session),
-         {:ok, workspace} <- Workspaces.authorize_group(user, session, target.group_id),
-         true <- workspace["id"] == target.workspace_id do
-      {:ok, user, session}
-    else
-      false -> {:error, :target_revoked}
-      error -> error
-    end
-  end
+  defp authority(target), do: Delivery.authority(target)
 
-  defp delivery_error(target, {:error, reason})
-       when reason in [
-              :not_found,
-              :forbidden,
-              :revoked,
-              :expired,
-              :disabled,
-              :invalid_token,
-              :target_revoked
-            ],
-       do: remove(target)
+  defp delivery_error(target, error),
+    do: Delivery.delivery_error(target, error, :invalid_task_projection)
 
-  defp delivery_error(_target, {:error, _} = error), do: error
-  defp delivery_error(_target, _), do: {:error, :invalid_task_projection}
-
-  defp send_authorized(target, payload) do
-    # An exact owner read may wait on another node. Recheck revocation and Group
-    # ownership after that wait, immediately before entering the APNs transport.
-    with true <- DateTime.compare(target.expires_at, SystemsClock.utc_now()) == :gt,
-         {:ok, user, session} <- Accounts.resolve_session_id(target.auth_session_id),
-         :ok <- unrestricted(session),
-         {:ok, workspace} <- Workspaces.authorize_group(user, session, target.group_id),
-         true <- workspace["id"] == target.workspace_id,
-         true <- Repo.exists?(leased(target)) do
-      APNs.send(target, payload)
-    else
-      false ->
-        {:error, :target_revoked}
-
-      {:error, reason} when reason in [:not_found, :forbidden, :revoked, :expired, :disabled] ->
-        {:error, :target_revoked}
-
-      {:error, _} = error ->
-        error
-    end
-  end
+  defp send_authorized(target, payload), do: Delivery.send_authorized(target, payload)
 
   defp alert_payload(target, task, badge) do
     aps = %{
@@ -768,8 +701,9 @@ defmodule Comma.Notifications do
       if alert?,
         do:
           Map.merge(aps, %{
-            "alert" => %{"title" => "Comma", "body" => router_label(target.locale)},
-            "sound" => "default"
+            "alert" => %{"title" => "Comma", "body" => router_body(router, target.locale)},
+            "sound" => "default",
+            "thread-id" => "router:" <> target.workspace_id
           }),
         else: aps
 
@@ -783,6 +717,12 @@ defmodule Comma.Notifications do
       "message_id" => router["latest_message_id"]
     }
   end
+
+  defp router_body(%{"latest_preview" => preview}, _locale)
+       when is_binary(preview) and preview != "",
+       do: preview
+
+  defp router_body(_router, locale), do: router_label(locale)
 
   defp router_label("zh-Hans"), do: "Router 有新消息。"
   defp router_label(_), do: "You have a new Router message."
@@ -798,16 +738,9 @@ defmodule Comma.Notifications do
   defp status_label("completed", _), do: "A task is complete."
   defp status_label("failed", _), do: "A task couldn’t finish."
 
-  defp normalize_locale("zh-Hans"), do: "zh-Hans"
-  defp normalize_locale(_), do: "en-US"
-
-  defp remove(target) do
-    Repo.delete_all(leased(target))
-    :obsolete
-  end
-
-  defp unrestricted(%{"session_source" => "user_login", "restricted" => false}), do: :ok
-  defp unrestricted(_), do: {:error, :forbidden}
+  defp normalize_locale(locale), do: Delivery.normalize_locale(locale)
+  defp remove(target), do: Delivery.remove(target)
+  defp unrestricted(session), do: Delivery.unrestricted(session)
   defp lifetime("live_activity"), do: 8 * 60 * 60
   defp lifetime(_), do: 30 * 24 * 60 * 60
 

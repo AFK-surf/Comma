@@ -51,7 +51,6 @@ const toolWork = new Map<string, ToolWork>([
   ["agent.update", "workerUpdate"],
   ["agent.rebind_runtime", "workerUpdate"],
   ["agent.archive", "workerUpdate"],
-  ["email.send_to_owners", "email"],
   ["composio.execute", "pluginUse"],
   ["composio.list_toolkits", "pluginUse"],
   ["composio.list_tools", "pluginUse"],

@@ -40,7 +40,11 @@ export function paintContextSelectionHighlight(
     ...new Set(
       connected.flatMap((range) => {
         const around = range.commonAncestorContainer;
-        const element = around instanceof Element ? around : around.parentElement;
+        let element = around instanceof Element ? around : around.parentElement;
+        // An editor reads a change to its own DOM as an edit of its text, and takes the selection from the page
+        // again with it. The scope of a selection in an editor is what holds the editor.
+        while (element instanceof HTMLElement && element.isContentEditable)
+          element = element.parentElement;
         return element ? [element] : [];
       })
     ),

@@ -14,12 +14,20 @@ import {
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { Button as AriaButton } from "react-aria-components";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type { CommaConversation, CommaTaskLabel } from "@comma/core/api-schemas";
 import type { ChatTaskActivity } from "@comma/chat-contract";
 import type { TaskFile, TaskLoop } from "@comma/core-client";
 import { LabelDot } from "../../tasks/labelColor";
-import type { TasksFilterLink } from "../../tasks/taskChips";
+import { ChipLabelText, type TasksFilterLink } from "../../tasks/taskChips";
+import { taskLoopStanding, taskLoopStop } from "../../tasks/taskLoopLabels";
 import { TaskOriginIcon, taskOriginKey, taskOriginLabel } from "../../tasks/taskOrigin";
 import { TaskRequestPersonSection } from "../../tasks/TaskRequestPersonSection";
 import { TaskLabelPicker } from "./labels/TaskLabelPicker";
@@ -35,9 +43,10 @@ import { TaskActivitySection } from "./TaskActivitySection";
 import { TaskFilesSection } from "./TaskFilesSection";
 import { TaskLoopSection } from "./TaskLoopSection";
 import { useTaskLabelsCatalog } from "./labels/useTaskLabelsCatalog";
-import type { ChatTaskRun } from "@comma/core/chat";
+import type { ChatTaskRun, ChatWorkerSession } from "@comma/core/chat";
 import { WorkerModelMark } from "../thread/activity/WorkerModelMark";
 import { taskRunModel, taskRunPlace } from "./taskRunLabel";
+import { WorkerSessionsRoster } from "./WorkerSessionsRoster";
 
 export type TaskDetailsStatusState = "idle" | "pending" | "failed";
 
@@ -62,6 +71,8 @@ export interface TaskDetailsPanelProps {
   loop?: TaskLoop | undefined;
   /** Where the Task runs and its model; the panel names no Agent. */
   run?: ChatTaskRun | undefined;
+  /** Active worker sessions on a multi-session Task (rendered only when > 1). */
+  workerSessions?: readonly ChatWorkerSession[] | undefined;
   /**
    * A coding Task's sandbox, where the panel's coding actions and reads go (its changes, record, terminal and pull
    * request); absent where the panel only shows the Task.
@@ -75,6 +86,8 @@ export interface TaskDetailsPanelProps {
   onSwitchRun?: (() => void) | undefined;
   /** Opens the Tasks page narrowed to the clicked property. */
   onOpenTasksFilter?: ((filter: TasksFilterLink) => void) | undefined;
+  /** A section of the people of a Task together, under its properties; none for any other Task. */
+  members?: ReactNode;
   /** Opens a file the Task's Agents attached (the sidebar's file preview); without it no Files section shows. */
   onOpenFile?: ((file: TaskFile) => void) | undefined;
   /** Adds one of those files to this chat's message by reference (a file row's context menu). */
@@ -88,6 +101,8 @@ export interface TaskDetailsPanelProps {
   onSetLabels?: ((labelIds: string[]) => unknown) | undefined;
   /** Whether the Task can carry labels at all: without, no Label section. */
   labeled?: boolean | undefined;
+  /** Whether the viewer is shown the Task's Properties (its status and where it came from): without, none. */
+  properties?: boolean | undefined;
   /** Reads the Task's history the Activity has not read yet (`activity.earlier`). */
   onReadEarlierActivity?: (() => void) | undefined;
   /** Shows an Activity step's message in the Task chat; absent where no chat is shown. */
@@ -151,6 +166,7 @@ export function TaskDetailsPanel({
   conversation,
   groupId,
   run,
+  workerSessions,
   coding,
   onOpenCodingChanges,
   onOpenCodingTerminal,
@@ -163,14 +179,16 @@ export function TaskDetailsPanel({
   onSetLabels,
   onSetStatus,
   labeled = true,
+  properties = true,
   loop,
   open,
   statusState = "idle",
   layout = "column",
+  members,
 }: TaskDetailsPanelProps) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
-  const bucket = taskStatusBucket(conversation.status);
+  const bucket = taskStatusBucket(conversation.status, { loopState: loop?.state });
   const origin = taskOriginKey(conversation.origin);
   const runModel = run ? taskRunModel(messages, run.model) : undefined;
   const platform =
@@ -298,7 +316,10 @@ export function TaskDetailsPanel({
   const statusPill = (
     <>
       <span aria-hidden className="comma-icon-slot size-5 shrink-0 [&_svg]:size-5">
-        {taskStatusIcon(bucket)}
+        {taskStatusIcon(bucket, {
+          loopStop: taskLoopStop(bucket, loop, messages),
+          loopStanding: taskLoopStanding(bucket, loop, messages, locale),
+        })}
       </span>
       {taskStatusBucketLabel(bucket, locale)}
     </>
@@ -322,103 +343,107 @@ export function TaskDetailsPanel({
       data-testid="task-details-panel"
     >
       <div className="comma-task-panel-inner">
-        <section
-          className="comma-task-panel-section"
-          data-testid="task-panel-properties"
-        >
-          <h2 className="comma-task-panel-heading">
-            {messages.task_panel_properties()}
-          </h2>
-          <div className="comma-task-panel-row">
-            <MenuTrigger>
-              <AriaButton
-                isDisabled={!statusMenuEnabled}
-                data-interactive={statusMenuEnabled ? "true" : undefined}
-                className="comma-task-panel-pill"
-                data-status-pending={statusState === "pending" ? "true" : undefined}
-                data-status={bucket}
-                data-testid="task-conversation-status"
-              >
-                {statusPill}
-              </AriaButton>
-              <MenuPopover placement="bottom start">
-                <Menu
-                  aria-label={messages.task_panel_status_menu()}
-                  onAction={onStatusAction}
-                >
-                  <MenuItem
-                    icon={taskStatusIcon(bucket, { spins: false })}
-                    // A stable id: React Aria refuses an item whose id changes,
-                    // and the current status changes while the menu is mounted.
-                    id={currentStatusKey}
-                    key={currentStatusKey}
-                    shortcut={<CheckIcon />}
-                    textValue={taskStatusBucketLabel(bucket, locale)}
-                  >
-                    {taskStatusBucketLabel(bucket, locale)}
-                  </MenuItem>
-                  {statusTargets.map((target) => (
-                    <MenuItem
-                      icon={taskStatusIcon(target.bucket)}
-                      id={target.bucket}
-                      isDisabled={statusState === "pending"}
-                      key={target.bucket}
-                      textValue={taskStatusBucketLabel(target.bucket, locale)}
-                    >
-                      {taskStatusBucketLabel(target.bucket, locale)}
-                    </MenuItem>
-                  ))}
-                </Menu>
-              </MenuPopover>
-            </MenuTrigger>
-          </div>
-          {statusState === "failed" ? (
-            <p className="comma-task-panel-feedback" role="alert">
-              {messages.task_panel_status_failed()}
-            </p>
-          ) : null}
-          {origin && !requester ? (
+        {properties ? (
+          <section
+            className="comma-task-panel-section"
+            data-testid="task-panel-properties"
+          >
+            <h2 className="comma-task-panel-heading">
+              {messages.task_panel_properties()}
+            </h2>
             <div className="comma-task-panel-row">
-              {onOpenTasksFilter ? (
+              <MenuTrigger>
+                <AriaButton
+                  isDisabled={!statusMenuEnabled}
+                  data-interactive={statusMenuEnabled ? "true" : undefined}
+                  className="comma-task-panel-pill"
+                  data-status-pending={statusState === "pending" ? "true" : undefined}
+                  data-status={bucket}
+                  data-testid="task-conversation-status"
+                >
+                  {statusPill}
+                </AriaButton>
+                <MenuPopover placement="bottom start">
+                  <Menu
+                    aria-label={messages.task_panel_status_menu()}
+                    onAction={onStatusAction}
+                  >
+                    <MenuItem
+                      icon={taskStatusIcon(bucket, { spins: false })}
+                      // A stable id: React Aria refuses an item whose id changes,
+                      // and the current status changes while the menu is mounted.
+                      id={currentStatusKey}
+                      key={currentStatusKey}
+                      shortcut={<CheckIcon />}
+                      textValue={taskStatusBucketLabel(bucket, locale)}
+                    >
+                      {taskStatusBucketLabel(bucket, locale)}
+                    </MenuItem>
+                    {statusTargets.map((target) => (
+                      <MenuItem
+                        icon={taskStatusIcon(target.bucket)}
+                        id={target.bucket}
+                        isDisabled={statusState === "pending"}
+                        key={target.bucket}
+                        textValue={taskStatusBucketLabel(target.bucket, locale)}
+                      >
+                        {taskStatusBucketLabel(target.bucket, locale)}
+                      </MenuItem>
+                    ))}
+                  </Menu>
+                </MenuPopover>
+              </MenuTrigger>
+            </div>
+            {statusState === "failed" ? (
+              <p className="comma-task-panel-feedback" role="alert">
+                {messages.task_panel_status_failed()}
+              </p>
+            ) : null}
+            {origin && !requester ? (
+              <div className="comma-task-panel-row">
+                {onOpenTasksFilter ? (
+                  <button
+                    className="comma-task-panel-pill"
+                    data-interactive="true"
+                    data-origin={origin}
+                    data-testid="task-panel-origin"
+                    onClick={() => onOpenTasksFilter({ platform: origin })}
+                    type="button"
+                  >
+                    <TaskOriginIcon origin={origin} />
+                    {originLabel}
+                  </button>
+                ) : (
+                  <span
+                    className="comma-task-panel-pill"
+                    data-origin={origin}
+                    data-testid="task-panel-origin"
+                  >
+                    <TaskOriginIcon origin={origin} />
+                    {originLabel}
+                  </span>
+                )}
+              </div>
+            ) : null}
+            {platform ? (
+              <div className="comma-task-panel-row" data-testid="task-panel-platform">
                 <button
                   className="comma-task-panel-pill"
-                  data-interactive="true"
-                  data-origin={origin}
-                  data-testid="task-panel-origin"
-                  onClick={() => onOpenTasksFilter({ platform: origin })}
                   type="button"
+                  disabled={!onOpenTasksFilter}
+                  data-interactive={onOpenTasksFilter ? "true" : undefined}
+                  data-platform={platform}
+                  onClick={() => onOpenTasksFilter?.({ clientPlatform: platform })}
                 >
-                  <TaskOriginIcon origin={origin} />
-                  {originLabel}
+                  <PlatformIcon platform={platform} />
+                  {createdOnLabel(platform)}
                 </button>
-              ) : (
-                <span
-                  className="comma-task-panel-pill"
-                  data-origin={origin}
-                  data-testid="task-panel-origin"
-                >
-                  <TaskOriginIcon origin={origin} />
-                  {originLabel}
-                </span>
-              )}
-            </div>
-          ) : null}
-          {platform ? (
-            <div className="comma-task-panel-row" data-testid="task-panel-platform">
-              <button
-                className="comma-task-panel-pill"
-                type="button"
-                disabled={!onOpenTasksFilter}
-                data-interactive={onOpenTasksFilter ? "true" : undefined}
-                data-platform={platform}
-                onClick={() => onOpenTasksFilter?.({ clientPlatform: platform })}
-              >
-                <PlatformIcon platform={platform} />
-                {createdOnLabel(platform)}
-              </button>
-            </div>
-          ) : null}
-        </section>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {members}
 
         {requester ? (
           <TaskRequestPersonSection
@@ -448,7 +473,7 @@ export function TaskDetailsPanel({
                     type="button"
                   >
                     <LabelDot color={label.color} />
-                    {label.name}
+                    <ChipLabelText text={label.name} />
                   </button>
                 ) : (
                   <span
@@ -457,7 +482,7 @@ export function TaskDetailsPanel({
                     key={label.id}
                   >
                     <LabelDot color={label.color} />
-                    {label.name}
+                    <ChipLabelText text={label.name} />
                   </span>
                 )
               )}
@@ -518,6 +543,11 @@ export function TaskDetailsPanel({
           />
         ) : null}
 
+        <WorkerSessionsRoster
+          primaryModelFallback={runModel ?? undefined}
+          sessions={workerSessions}
+        />
+
         {run ? (
           <section
             className="comma-task-panel-section"
@@ -541,7 +571,7 @@ export function TaskDetailsPanel({
                 </span>
               </div>
             )}
-            {runModel || onSwitchRun ? (
+            {(workerSessions?.length ?? 0) <= 1 && (runModel || onSwitchRun) ? (
               <div className="comma-task-panel-row" data-testid="task-panel-run-model">
                 {onSwitchRun ? (
                   // The model opens the picker that runs the Task on another one.
@@ -619,7 +649,9 @@ export function TaskDetailsPanel({
             activity={activity}
             onReadEarlier={onReadEarlierActivity}
             onRevealStep={onRevealActivityStep}
-            working={bucket === "in_progress" && activityWorking}
+            working={
+              (bucket === "in_progress" || bucket === "loops") && activityWorking
+            }
           />
         ) : null}
       </div>

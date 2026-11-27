@@ -17,17 +17,17 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import { liveClock } from "../ops/fibers.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
-import { archiveText, readArchive, threadFile, writeCompressed } from "./archive.ts";
+import { archiveText, readArchive, readArchiveBackwards, threadFile, writeCompressed } from "./archive.ts";
 import {
   type Attachment, type AutoTitle, type CardAnswer, type EntryRow, type JobNotice, type JobRow, type Json, type Membership,
   type MessageRow, type NewMessage, type NewSession, type PendingMessage, type ProcessRow, type ProfileStatus,
   type Quote, type RanIn, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type TaskIndexRow, type TaskMark,
   type TaskStatus, type ThreadRow, type ThreadSummary,
   type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, AUTO, I64_MAX, MANUAL, COMMA_STATION_SURFACE, attachment,
-  byBytes, cardOf, jsonList, mergeEntries, onlyMilestones, optionsCard, parsed, quote, takeChars, toEntry, toJob, toMembership,
+  byBytes, cardOf, jsonList, mergeEntries, onlyMilestones, optionsCard, parsed, quote, storedDeliverToSlots, takeChars, toEntry, toJob, toMembership,
   toMessage, toSession, toSessionThread, toThread, toTurnSummary,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addAutoTitleColumns, addClientColumn, addMilestonesColumn, addRuntimeSessionRuntimeColumn, addTaskAnsweredColumn, addTaskLabelsColumn, addTaskSentColumn, addTaskStartColumn, addWatchColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addAutoTitleColumns, addClientColumn, addMilestonesColumn, addMultiSessionTaskColumns, addRuntimeSessionRuntimeColumn, addTaskAnsweredColumn, addTaskLabelsColumn, addTaskSentColumn, addTaskStartColumn, addWatchColumn } from "./schema.ts";
 import * as usage from "./usage.ts";
 
 export * from "./rows.ts";
@@ -99,6 +99,7 @@ export class Store {
       addTaskLabelsColumn(db);
       addMilestonesColumn(db);
       addRuntimeSessionRuntimeColumn(db);
+      addMultiSessionTaskColumns(db);
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } catch (e) {
       db.close();
@@ -458,6 +459,7 @@ export class Store {
       this.#tx(() => {
         const threads: number[] = this.#all("SELECT thread FROM thread_sessions WHERE session = ?", key).map((r) => r.thread);
         this.#run("DELETE FROM thread_sessions WHERE session = ?", key);
+        this.#run("DELETE FROM task_session_slots WHERE session = ?", key);
         this.#run("DELETE FROM deliveries WHERE session = ?", key);
         this.#run("DELETE FROM turns WHERE session_key = ?", key);
         this.#run("DELETE FROM runtime_sessions WHERE session_key = ?", key);
@@ -475,6 +477,7 @@ export class Store {
           removed.push(thread);
           this.#run("DELETE FROM deliveries WHERE thread = ?", thread);
           this.#run("DELETE FROM entries WHERE thread = ?", thread);
+          this.#run("DELETE FROM entry_ts_index WHERE thread = ?", thread);
           this.#run("DELETE FROM reads WHERE thread = ?", thread);
           this.#run("DELETE FROM items WHERE thread = ?", thread);
           this.#run("DELETE FROM dismissed WHERE thread = ?", thread);
@@ -582,13 +585,151 @@ export class Store {
     });
   }
 
+  /// Atomically creates a new session, optionally opens a new thread, joins `thread_sessions`,
+  /// optionally registers `tasks_elsewhere` (primary), upserts `task_session_slots`, and resets
+  /// + inserts initial `task_session_claims` in a single SQLite transaction. Emits `session` and
+  /// `thread` change events only AFTER commit; if any step fails, all tables roll back cleanly
+  /// with 0 change events emitted.
+  openTaskSessionAtomic(params: {
+    session: NewSession;
+    existingThreadId: number | null;
+    newThread?: { surface: string; channel: string; threadTs: string; title: string | null; createdBy: string | null };
+    connect: string;
+    slot: string;
+    isPrimary: boolean;
+    answered: number;
+    claimToken: string;
+    inviteId?: string;
+    taskElsewhere?: { station: string; task: string };
+  }): ThreadRow {
+    const { session, existingThreadId, newThread, connect, slot, isPrimary, answered, claimToken, inviteId, taskElsewhere } = params;
+    return this.#with((changes) => {
+      const { thread, added, createdThread } = this.#tx(() => {
+        this.#run(
+          `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          session.key,
+          session.connect,
+          session.scope ?? "thread",
+          session.title ?? null,
+          session.createdBy ?? null,
+          session.runtime,
+          session.profile,
+          flag(session.profilePinned ?? false),
+          session.model ?? null,
+          session.effort ?? null,
+          session.workspace,
+          session.cwd ?? null,
+          session.runtimeSessionId ?? null,
+          session.token,
+          session.createdAt,
+          session.lastActiveAt,
+          latestNote(),
+          optFlag(session.fast),
+        );
+
+        let resolved: ThreadRow | null = existingThreadId !== null ? this.getThread(existingThreadId) : null;
+        let madeNew = false;
+        if (resolved === null) {
+          if (!newThread) throw new Error("cannot join: task thread missing");
+          this.#run(
+            "INSERT OR IGNORE INTO threads (surface, channel, thread_ts, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            newThread.surface,
+            newThread.channel,
+            newThread.threadTs,
+            newThread.title,
+            newThread.createdBy,
+            this.now(),
+            session.key,
+          );
+          resolved = this.threadAt(newThread.surface, newThread.channel, newThread.threadTs);
+          if (resolved === null) throw new Error(`thread ${newThread.surface} ${newThread.channel}/${newThread.threadTs} not made`);
+          madeNew = true;
+        }
+
+        const joined =
+          this.#run(
+            "INSERT OR IGNORE INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
+            resolved.id,
+            session.key,
+            connect,
+            this.now(),
+          ) > 0;
+
+        if (taskElsewhere) {
+          this.#run(
+            "INSERT OR IGNORE INTO tasks_elsewhere (thread, station, task, answered) VALUES (?, ?, ?, ?)",
+            resolved.id,
+            taskElsewhere.station,
+            taskElsewhere.task,
+            answered,
+          );
+        }
+
+        const tokenOrNull = claimToken === "" ? null : claimToken;
+        const inviteIdOrNull = inviteId && inviteId !== "" ? inviteId : null;
+        const committedInt = claimToken === "" ? 1 : 0;
+        if (isPrimary) {
+          this.#run(
+            `INSERT INTO task_session_slots (thread, slot, session, is_primary, answered, claim_token, claim_shared, claim_committed, invite_id) VALUES (?, ?, ?, 1, ?, ?, 0, ?, ?)
+             ON CONFLICT (thread, slot) DO UPDATE SET session = excluded.session, is_primary = 1, answered = MAX(task_session_slots.answered, excluded.answered), claim_token = excluded.claim_token, claim_shared = 0, claim_committed = excluded.claim_committed, invite_id = excluded.invite_id`,
+            resolved.id,
+            slot,
+            session.key,
+            answered,
+            tokenOrNull,
+            committedInt,
+            inviteIdOrNull,
+          );
+        } else {
+          this.#run(
+            `INSERT INTO task_session_slots (thread, slot, session, is_primary, answered, claim_token, claim_shared, claim_committed, invite_id) VALUES (?, ?, ?, 0, ?, ?, 0, ?, ?)
+             ON CONFLICT (thread, slot) DO UPDATE SET session = excluded.session, answered = MAX(task_session_slots.answered, excluded.answered), claim_token = excluded.claim_token, claim_shared = 0, claim_committed = excluded.claim_committed, invite_id = excluded.invite_id`,
+            resolved.id,
+            slot,
+            session.key,
+            answered,
+            tokenOrNull,
+            committedInt,
+            inviteIdOrNull,
+          );
+        }
+
+        this.#run("DELETE FROM task_session_claims WHERE thread = ? AND slot = ?", resolved.id, slot);
+        if (claimToken !== "") {
+          this.#run(
+            "INSERT OR IGNORE INTO task_session_claims (thread, slot, session, claim_token) VALUES (?, ?, ?, ?)",
+            resolved.id,
+            slot,
+            session.key,
+            claimToken,
+          );
+        }
+
+        return { thread: resolved, added: joined, createdThread: madeNew };
+      });
+
+      if (createdThread && newThread?.surface === COMMA_STATION_SURFACE) {
+        this.#indexTasks([{ type: "thread", id: thread.id, entries: [] }]);
+      }
+      changes.push({ type: "session", key: session.key });
+      if (added) {
+        changes.push({ type: "thread", id: thread.id, entries: [] });
+      }
+      return thread;
+    });
+  }
+
   /// Makes a session no longer take part in a thread: it hears nothing more of it, and what was pending for it there is
   /// not handed to it. False if it did not take part.
   leaveThread(thread: number, session: string): boolean {
     return this.#with((changes) => {
       const left = this.#tx(() => {
         const gone = this.#run("DELETE FROM thread_sessions WHERE thread = ? AND session = ?", thread, session) > 0;
-        if (gone) this.#run("DELETE FROM deliveries WHERE thread = ? AND session = ? AND delivered_at IS NULL", thread, session);
+        if (gone) {
+          this.#run("DELETE FROM task_session_slots WHERE thread = ? AND session = ?", thread, session);
+          this.#run("DELETE FROM deliveries WHERE thread = ? AND session = ? AND delivered_at IS NULL", thread, session);
+        }
         return gone;
       });
       if (left) {
@@ -596,6 +737,252 @@ export class Store {
         changes.push({ type: "thread", id: thread, entries: [] });
       }
       return left;
+    });
+  }
+
+  /// Atomically releases a fenced claim on a task slot and, when no claims or committed
+  /// holders remain, removes the session from the thread along with its slot, claims, and
+  /// undelivered messages, emitting `session` and `thread` change events only when a
+  /// membership was actually removed.
+  /// Atomically confirms a slot claim inside one SQLite transaction:
+  /// - Refuses any claim_token already recorded in `task_revoked_claims`.
+  /// - When `task_session_claims` has holder rows for `(thread, slot, session)`, requires
+  ///   an exact `task_session_claims` match (never falling back to `task_session_slots.claim_token`).
+  /// - Only when `totalClaims === 0` (provably legacy row without claims rows) falls back to
+  ///   `task_session_slots.claim_token` and backfills a committed `task_session_claims` row.
+  confirmTaskSlotClaim(
+    station: string,
+    task: string,
+    thread: number,
+    slot: string,
+    session: string,
+    claimToken: string,
+  ): boolean {
+    if (station === "" || task === "" || slot === "" || session === "" || claimToken === "") return false;
+    return this.#tx(() => {
+      if (this.isClaimRevoked(station, task, slot, claimToken)) return false;
+      const totalClaims = (
+        this.#one(
+          "SELECT COUNT(*) AS c FROM task_session_claims WHERE thread = ? AND slot = ? AND session = ?",
+          thread,
+          slot,
+          session,
+        ) as { c: number }
+      ).c;
+      if (totalClaims > 0) {
+        const updated = this.#run(
+          `UPDATE task_session_claims
+           SET committed = 1
+           WHERE thread = ? AND slot = ? AND session = ? AND claim_token = ?`,
+          thread,
+          slot,
+          session,
+          claimToken,
+        );
+        if (updated > 0) {
+          this.#run(
+            "UPDATE task_session_slots SET claim_committed = 1 WHERE thread = ? AND slot = ? AND session = ?",
+            thread,
+            slot,
+            session,
+          );
+          return true;
+        }
+        return false;
+      }
+      const legacyUpdated = this.#run(
+        `UPDATE task_session_slots
+         SET claim_committed = 1
+         WHERE thread = ? AND slot = ? AND session = ? AND claim_token = ?`,
+        thread,
+        slot,
+        session,
+        claimToken,
+      );
+      if (legacyUpdated > 0) {
+        this.#run(
+          `INSERT OR IGNORE INTO task_session_claims (thread, slot, session, claim_token, committed)
+           VALUES (?, ?, ?, ?, 1)`,
+          thread,
+          slot,
+          session,
+          claimToken,
+        );
+        return true;
+      }
+      return false;
+    });
+  }
+
+  leaveTaskSlotFenced(
+    thread: number,
+    targetSession: string,
+    targetSlot: string,
+    claimToken: string,
+    station = "",
+    task = "",
+  ): {
+    kept: boolean;
+    removed: boolean;
+    sessionToStop: string | null;
+    resolvedSlot: string;
+    resolvedSession: string;
+    remainingClaims: number;
+    committedClaimMatch: boolean;
+  } {
+    return this.#with((changes) => {
+      const outcome = this.#tx(() => {
+        const writeTombstone = (slotForTombstone: string) => {
+          if (claimToken !== "" && station !== "" && task !== "" && slotForTombstone !== "") {
+            this.#run(
+              `INSERT OR IGNORE INTO task_revoked_claims (station, task, slot, claim_token, revoked_at)
+               VALUES (?, ?, ?, ?, ?)`,
+              station,
+              task,
+              slotForTombstone,
+              claimToken,
+              this.now(),
+            );
+          }
+        };
+
+        const syncSlotClaimToken = (slotName: string, sessionKey: string) => {
+          const nextHolder = this.#one(
+            `SELECT claim_token FROM task_session_claims
+             WHERE thread = ? AND slot = ? AND session = ?
+             ORDER BY committed DESC, rowid ASC
+             LIMIT 1`,
+            thread,
+            slotName,
+            sessionKey,
+          ) as { claim_token: string } | undefined;
+          this.#run(
+            "UPDATE task_session_slots SET claim_token = ? WHERE thread = ? AND slot = ? AND session = ?",
+            nextHolder?.claim_token ?? null,
+            thread,
+            slotName,
+            sessionKey,
+          );
+        };
+
+        const slotRow = (
+          targetSession !== ""
+            ? this.#one(
+                "SELECT slot, session, claim_committed, claim_shared, claim_token FROM task_session_slots WHERE thread = ? AND session = ?",
+                thread,
+                targetSession,
+              )
+            : this.#one(
+                "SELECT slot, session, claim_committed, claim_shared, claim_token FROM task_session_slots WHERE thread = ? AND slot = ?",
+                thread,
+                targetSlot,
+              )
+        ) as { slot: string; session: string; claim_committed: number; claim_shared: number; claim_token: string | null } | undefined;
+
+        let resolvedSlot = targetSlot;
+        if (claimToken !== "") {
+          if (!slotRow) {
+            writeTombstone(resolvedSlot);
+            return { kept: false, removed: false, sessionToStop: null, resolvedSlot, resolvedSession: "", remainingClaims: 0, committedClaimMatch: false };
+          }
+          resolvedSlot = slotRow.slot;
+          const totalClaims = (
+            this.#one(
+              "SELECT COUNT(*) AS c FROM task_session_claims WHERE thread = ? AND slot = ? AND session = ?",
+              thread,
+              slotRow.slot,
+              slotRow.session,
+            ) as { c: number }
+          ).c;
+          // Any committed or shared slot session is NEVER removed or stopped by a fenced claim leave.
+          if (slotRow.claim_committed !== 0 || slotRow.claim_shared !== 0) {
+            const claimRow = this.#one(
+              "SELECT committed FROM task_session_claims WHERE thread = ? AND slot = ? AND claim_token = ? LIMIT 1",
+              thread,
+              slotRow.slot,
+              claimToken,
+            ) as { committed: number } | undefined;
+            const committedClaimMatch =
+              claimRow?.committed === 1 ||
+              (totalClaims === 0 &&
+                slotRow.claim_committed !== 0 &&
+                slotRow.claim_shared === 0 &&
+                slotRow.claim_token === claimToken &&
+                !this.isClaimRevoked(station, task, slotRow.slot, claimToken));
+            if (!committedClaimMatch) {
+              this.#run(
+                "DELETE FROM task_session_claims WHERE thread = ? AND slot = ? AND claim_token = ? AND committed = 0",
+                thread,
+                slotRow.slot,
+                claimToken,
+              );
+              if (slotRow.claim_token === claimToken) {
+                syncSlotClaimToken(slotRow.slot, slotRow.session);
+              }
+              writeTombstone(slotRow.slot);
+            }
+            const rem = (
+              this.#one("SELECT COUNT(*) AS c FROM task_session_claims WHERE thread = ? AND slot = ?", thread, slotRow.slot) as { c: number }
+            ).c;
+            return {
+              kept: true,
+              removed: false,
+              sessionToStop: null,
+              resolvedSlot: slotRow.slot,
+              resolvedSession: slotRow.session,
+              remainingClaims: rem,
+              committedClaimMatch,
+            };
+          }
+          const delChanges = this.#run(
+            "DELETE FROM task_session_claims WHERE thread = ? AND slot = ? AND claim_token = ?",
+            thread,
+            slotRow.slot,
+            claimToken,
+          );
+          const rem = (
+            this.#one("SELECT COUNT(*) AS c FROM task_session_claims WHERE thread = ? AND slot = ?", thread, slotRow.slot) as { c: number }
+          ).c;
+          if (delChanges === 0 || rem > 0) {
+            if (delChanges > 0 && slotRow.claim_token === claimToken) {
+              syncSlotClaimToken(slotRow.slot, slotRow.session);
+            }
+            writeTombstone(slotRow.slot);
+            return {
+              kept: true,
+              removed: false,
+              sessionToStop: null,
+              resolvedSlot: slotRow.slot,
+              resolvedSession: slotRow.session,
+              remainingClaims: rem,
+              committedClaimMatch: false,
+            };
+          }
+        }
+
+        const resolvedSession = slotRow?.session ?? targetSession;
+        if (slotRow) resolvedSlot = slotRow.slot;
+        let sessionToStop: string | null = null;
+        if (resolvedSession !== "") {
+          const gone = this.#run("DELETE FROM thread_sessions WHERE thread = ? AND session = ?", thread, resolvedSession) > 0;
+          if (gone) {
+            this.#run("DELETE FROM deliveries WHERE thread = ? AND session = ? AND delivered_at IS NULL", thread, resolvedSession);
+            sessionToStop = resolvedSession;
+          }
+          this.#run("DELETE FROM task_session_slots WHERE thread = ? AND session = ?", thread, resolvedSession);
+          if (slotRow) {
+            this.#run("DELETE FROM task_session_claims WHERE thread = ? AND slot = ?", thread, slotRow.slot);
+          }
+        }
+        writeTombstone(resolvedSlot);
+        return { kept: false, removed: sessionToStop !== null, sessionToStop, resolvedSlot, resolvedSession, remainingClaims: 0, committedClaimMatch: false };
+      });
+
+      if (!outcome.kept && outcome.sessionToStop !== null) {
+        changes.push({ type: "session", key: outcome.sessionToStop });
+        changes.push({ type: "thread", id: thread, entries: [] });
+      }
+      return outcome;
     });
   }
 
@@ -695,6 +1082,8 @@ export class Store {
           card: card ?? (options === undefined ? undefined : optionsCard(options)),
           at: m.at ?? this.now(),
           milestones: m.milestones && m.milestones.length > 0 ? [...m.milestones] : undefined,
+          deliverToSlots: Array.isArray(m.deliverToSlots) ? [...m.deliverToSlots] : undefined,
+          visibleToSlots: Array.isArray(m.visibleToSlots) ? [...m.visibleToSlots] : undefined,
         },
         changes,
       );
@@ -846,6 +1235,128 @@ export class Store {
       return messages.slice(Math.max(0, messages.length - limit));
     }
     return this.#all("SELECT * FROM merged WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?", thread, before, limit).map(toMessage).reverse();
+  }
+
+  /// Whether `thread` is currently archived to disk.
+  isThreadArchived(thread: number): boolean {
+    return this.#isArchived(thread);
+  }
+
+  /// O(1) lookup of an entry's monotonic `n` by `(thread, ts)` via `entry_ts_index`
+  /// (preserved when a thread is archived to disk; backfilled once for legacy archived threads).
+  entryNByTs(thread: number, ts: string): number | null {
+    const indexed = this.#one("SELECT n FROM entry_ts_index WHERE thread = ? AND ts = ?", thread, ts);
+    if (indexed !== undefined) return indexed.n;
+    if (!this.#isArchived(thread)) {
+      const hot = this.#one("SELECT n FROM entries WHERE thread = ? AND ts = ?", thread, ts);
+      if (hot !== undefined) {
+        this.#run("INSERT OR IGNORE INTO entry_ts_index (thread, ts, n) VALUES (?, ?, ?)", thread, ts, hot.n);
+        return hot.n;
+      }
+      return null;
+    }
+    const threadRow = this.#one("SELECT ts_indexed FROM threads WHERE id = ?", thread);
+    if (threadRow !== undefined && threadRow.ts_indexed === 1) return null;
+    // Legacy archive created before `entry_ts_index` or incomplete index: backfill all entries once.
+    const entries = readArchive(this.#threadFile(thread));
+    this.#tx(() => {
+      for (const e of entries) {
+        if (e.ts !== null && e.ts !== "") {
+          this.#run("INSERT OR IGNORE INTO entry_ts_index (thread, ts, n) VALUES (?, ?, ?)", thread, e.ts, e.n);
+        }
+      }
+      this.#run("UPDATE threads SET ts_indexed = 1 WHERE id = ?", thread);
+    });
+    const after = this.#one("SELECT n FROM entry_ts_index WHERE thread = ? AND ts = ?", thread, ts);
+    return after !== undefined ? after.n : null;
+  }
+
+  /// Visibility-aware paginated history for multi-session TASK_SURFACE threads (shared logic for hot DB & archive):
+  /// scans backward in bounded chunks up to a hard `maxScan` budget (default 500) so an all-invisible history
+  /// never triggers an unbounded full-table scan, returning `{ messages, nextBefore }`.
+  /// `nextBefore` uses a raw `entry.n` cursor (`"n:<minN>"`) so 500 consecutive milestones or invisible entries
+  /// never stall pagination or drop earlier visible messages.
+  messagesBeforeForSlotPaged(
+    thread: number,
+    n: number | null,
+    limit: number,
+    slot: string | null,
+    maxScan = 500,
+  ): { messages: MessageRow[]; nextBefore: string | null; decoded?: number } {
+    if (limit <= 0) return { messages: [], nextBefore: null };
+    const before = n ?? I64_MAX;
+    const isVisible = (vis: string[] | undefined): boolean =>
+      !Array.isArray(vis) || (slot !== null && vis.includes(slot));
+
+    if (this.#isArchived(thread)) {
+      let visibleCount = 0;
+      const { entries, decoded, exhausted, scannedMinN } = readArchiveBackwards(
+        this.#threadFile(thread),
+        before,
+        maxScan,
+        (e) => {
+          if (e.kind === "message" && isVisible(e.visibleToSlots)) {
+            visibleCount++;
+            return visibleCount >= limit;
+          }
+          return false;
+        },
+      );
+      const visByN = new Map<number, string[] | undefined>();
+      for (const e of entries) {
+        if (e.kind === "message") visByN.set(e.n, e.visibleToSlots);
+      }
+      const merged = mergeEntries(entries);
+      const visible = merged.filter((m) => isVisible(visByN.get(m.n)));
+      const page = visible.slice(Math.max(0, visible.length - limit));
+      return {
+        messages: page,
+        nextBefore: !exhausted && page.length < limit && scannedMinN !== null ? `n:${scannedMinN}` : null,
+        decoded,
+      };
+    }
+
+    const collected: MessageRow[] = [];
+    let cursor = before;
+    let scanned = 0;
+    let scannedMinN: number | null = null;
+    let exhausted = false;
+    const chunkSize = Math.max(limit * 2, 50);
+    while (collected.length < limit && scanned < maxScan) {
+      const take = Math.min(chunkSize, maxScan - scanned);
+      const rows = this.#all(
+        "SELECT m.*, e.visible_to_slots AS _vis FROM merged m JOIN entries e ON e.thread = m.thread AND e.n = m.n WHERE m.thread = ? AND m.n < ? ORDER BY m.n DESC LIMIT ?",
+        thread,
+        cursor,
+        take,
+      );
+      if (rows.length === 0) {
+        exhausted = true;
+        break;
+      }
+      for (const row of rows) {
+        cursor = row.n;
+        scannedMinN = scannedMinN === null ? row.n : Math.min(scannedMinN, row.n);
+        scanned++;
+        const vis = storedDeliverToSlots(row._vis);
+        if (isVisible(vis)) {
+          collected.push(toMessage(row));
+          if (collected.length >= limit) break;
+        }
+      }
+      if (rows.length < take) {
+        exhausted = true;
+        break;
+      }
+    }
+    return {
+      messages: collected.reverse(),
+      nextBefore: !exhausted && collected.length < limit && scannedMinN !== null ? `n:${scannedMinN}` : null,
+    };
+  }
+
+  messagesBeforeForSlot(thread: number, n: number | null, limit: number, slot: string | null): MessageRow[] {
+    return this.messagesBeforeForSlotPaged(thread, n, limit, slot).messages;
   }
 
   // ── deliveries ──
@@ -1919,8 +2430,12 @@ export class Store {
     writeCompressed(path, archiveText(entries));
     try {
       this.#tx(() => {
+        this.#run(
+          "INSERT OR IGNORE INTO entry_ts_index (thread, ts, n) SELECT thread, ts, n FROM entries WHERE thread = ? AND ts IS NOT NULL AND ts <> ''",
+          thread,
+        );
         this.#run("DELETE FROM entries WHERE thread = ?", thread);
-        this.#run("UPDATE threads SET archived_at = ? WHERE id = ?", this.now(), thread);
+        this.#run("UPDATE threads SET archived_at = ?, ts_indexed = 1 WHERE id = ?", this.now(), thread);
       });
     } catch (e) {
       rmSync(path, { force: true });
@@ -1953,9 +2468,121 @@ export class Store {
     return entries;
   }
 
+  /// Canonical human person ID for a Task session (`start.person`), used for usage attribution.
+  setSessionPerson(key: string, person: string | null): void {
+    this.#run("UPDATE sessions SET person = ?1 WHERE key = ?2", person, key);
+  }
+
+  /// Whether entry `(thread, n)` was already delivered to `session`.
+  deliveredToSession(thread: number, session: string, n: number): boolean {
+    return this.#one("SELECT 1 FROM deliveries WHERE thread = ? AND n = ? AND session = ? AND delivered_at IS NOT NULL", thread, n, session) !== undefined;
+  }
+
+  /// Highest host `seq` (stored as integer prefix of `entries.ts`) actually delivered to `session` in `thread`.
+  lastDeliveredSeq(thread: number, session: string): number {
+    const r = this.#one(
+      `SELECT MAX(CAST(e.ts AS INTEGER)) AS seq FROM deliveries d
+       JOIN entries e ON e.thread = d.thread AND e.n = d.n
+       WHERE d.thread = ? AND d.session = ? AND d.delivered_at IS NOT NULL AND e.ts IS NOT NULL`,
+      thread, session,
+    );
+    return typeof r?.seq === "number" && Number.isSafeInteger(r.seq) && r.seq > 0 ? r.seq : 0;
+  }
+
+  /// Slot binding of `session` in a multi-session Task `thread`, if any.
+  taskSlotOf(thread: number, session: string): { slot: string; session: string; isPrimary: boolean; answered: number } | null {
+    const r = this.#one("SELECT slot, session, is_primary, answered FROM task_session_slots WHERE thread = ? AND session = ? LIMIT 1", thread, session);
+    return r ? { slot: r.slot, session: r.session, isPrimary: r.is_primary === 1, answered: r.answered ?? 0 } : null;
+  }
+
+  /// All slot bindings for Task `thread`, primary first.
+  taskSlots(thread: number): { slot: string; session: string; isPrimary: boolean; answered: number; claimCommitted: boolean }[] {
+    return this.#all(
+      "SELECT slot, session, is_primary, answered, claim_committed FROM task_session_slots WHERE thread = ? ORDER BY is_primary DESC, slot",
+      thread,
+    ).map((r) => ({
+      slot: r.slot,
+      session: r.session,
+      isPrimary: r.is_primary === 1,
+      answered: r.answered ?? 0,
+      claimCommitted: r.claim_committed !== 0,
+    }));
+  }
+
+  /// Latest Task roster persisted from `task.put` / `task.invite`, if any.
+  taskRoster(thread: number): Json[] | null {
+    const r = this.#one("SELECT roster FROM tasks_elsewhere WHERE thread = ?", thread);
+    const list = parsed(r?.roster);
+    return Array.isArray(list) ? list : null;
+  }
+
+  /// Persists a revocation tombstone for `(station, task, slot, claimToken)` so a delayed
+  /// `task.invite` arriving after a fenced `task.leave` is permanently rejected without
+  /// creating an orphan session.
+  recordRevokedClaim(station: string, task: string, slot: string, claimToken: string): void {
+    if (station === "" || task === "" || slot === "" || claimToken === "") return;
+    this.#run(
+      `INSERT OR IGNORE INTO task_revoked_claims (station, task, slot, claim_token, revoked_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      station,
+      task,
+      slot,
+      claimToken,
+      this.now(),
+    );
+  }
+
+  /// Returns true when `(station, task, slot, claimToken)` has been fenced-revoked.
+  isClaimRevoked(station: string, task: string, slot: string, claimToken: string): boolean {
+    if (station === "" || task === "" || slot === "" || claimToken === "") return false;
+    return (
+      this.#one(
+        `SELECT 1 FROM task_revoked_claims
+         WHERE station = ? AND task = ? AND slot = ? AND claim_token = ?
+         LIMIT 1`,
+        station,
+        task,
+        slot,
+        claimToken,
+      ) !== undefined
+    );
+  }
+
+  /// Clears revocation tombstones for a Task when its whole thread leaves this Station.
+  clearRevokedClaims(station: string, task: string): void {
+    if (station === "" || task === "") return;
+    this.#run("DELETE FROM task_revoked_claims WHERE station = ? AND task = ?", station, task);
+  }
+
+  /// Visibility slot list for entry (thread, n): undefined means visible to all slots.
+  entryVisibleToSlots(thread: number, n: number): string[] | undefined {
+    if (this.#isArchived(thread)) {
+      const e = this.#archivedEntries(thread).find((row) => row.n === n && row.kind === "message");
+      return e?.visibleToSlots;
+    }
+    const row = this.#one("SELECT visible_to_slots FROM entries WHERE thread = ? AND n = ?", thread, n);
+    return row ? storedDeliverToSlots(row.visible_to_slots) : undefined;
+  }
+
+  /// Updates the authoritative `visible_to_slots` on an already-inserted message (e.g. when
+  /// authoritative `task.put` arrives for a locally-echoed `chatPost` on a multi-session Task).
+  updateEntryVisibility(thread: number, ts: string, visibleToSlots: string[] | null): void {
+    const encoded = visibleToSlots === null ? null : JSON.stringify(visibleToSlots);
+    this.#run("UPDATE entries SET visible_to_slots = ? WHERE thread = ? AND ts = ? AND kind = 'message'", encoded, thread, ts);
+  }
+
+  updateEntryAttachments(thread: number, ts: string, attachments: Attachment[]): void {
+    this.#run(
+      "UPDATE entries SET attachments = ? WHERE thread = ? AND ts = ? AND kind = 'message'",
+      jsonList<Attachment>(attachments, attachment),
+      thread,
+      ts,
+    );
+  }
+
   #insertEntry(e: EntryRow): void {
     this.#run(
-      "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, options, card, at, agent_identity, milestones) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, options, card, at, agent_identity, milestones, deliver_to_slots, visible_to_slots) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       e.thread, e.n, e.kind, e.target, e.ts, e.authorKind, e.author, e.text,
       jsonList<Attachment>(e.attachments, attachment), jsonList<Quote>(e.quotes, quote),
       e.declared, e.client, e.profile,
@@ -1964,7 +2591,12 @@ export class Store {
       e.at,
       e.agentIdentity === undefined ? null : JSON.stringify(e.agentIdentity),
       e.milestones === undefined ? null : JSON.stringify(e.milestones),
+      e.deliverToSlots === undefined ? null : JSON.stringify(e.deliverToSlots),
+      e.visibleToSlots === undefined ? null : JSON.stringify(e.visibleToSlots),
     );
+    if (e.ts !== null && e.ts !== "") {
+      this.#run("INSERT OR IGNORE INTO entry_ts_index (thread, ts, n) VALUES (?, ?, ?)", e.thread, e.ts, e.n);
+    }
   }
 }
 

@@ -13,6 +13,11 @@ import surf.comma.android.voice.CallState
 import surf.comma.android.voice.MICROPHONE_ACCESS_MESSAGE
 
 class CallPresentationTest {
+    @Test fun keyLimitShowsActionableMessage() {
+        assertEquals(CallStatus.Text(R.string.devices_problem_limit),
+            CallPresentation.status(over(CallPhase.Failed, CallResult.KeyLimit), false))
+    }
+
     private fun live(phase: CallPhase, connectedAt: Long? = null) =
         CallControllerState(id = 7, busy = true, call = CallState(phase = phase), connectedAtElapsedRealtime = connectedAt)
 

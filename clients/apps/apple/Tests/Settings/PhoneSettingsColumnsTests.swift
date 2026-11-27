@@ -47,7 +47,7 @@ import UIKit
         }
         root.view.frame = window.bounds
         try await settle(window)
-        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? ShellTabBarController }.first)
+        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? any ShellBar }.first)
         let tabs = try XCTUnwrap(bar.parent)
         let page = try XCTUnwrap(tabs.children.first { $0 !== bar && !$0.view.isHidden })
         XCTAssertLessThan(page.view.safeAreaInsets.left, window.bounds.width * 0.2,

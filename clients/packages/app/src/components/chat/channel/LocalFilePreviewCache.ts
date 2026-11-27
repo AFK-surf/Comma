@@ -4,7 +4,8 @@ const MAX_CONCURRENT_LOCAL_FILE_PREVIEW_LOADS = 4;
 const MAX_PENDING_LOCAL_FILE_PREVIEWS = 50;
 
 type LocalFilePreviewLoader = (
-  previewRef: ChatImagePreviewRef
+  previewRef: ChatImagePreviewRef,
+  signal: AbortSignal
 ) => Promise<Uint8Array | undefined>;
 
 type PreviewWaiter = {
@@ -16,6 +17,8 @@ type PreviewWaiter = {
 type PreviewEntry = {
   /** Other keys this entry answers for (`alias`), dropped with it. */
   aliases: Set<string>;
+  /** Stops its load once nobody waits for it, so its slot goes to the next. */
+  controller: AbortController | undefined;
   key: string;
   leaseCount: number;
   previewRef: ChatImagePreviewRef;
@@ -26,7 +29,7 @@ type PreviewEntry = {
 };
 
 /**
- * Renderer-owned, session-local presentation cache for bounded PNG previews.
+ * Renderer-owned, session-local presentation cache for bounded image previews.
  *
  * Acquisition work is bounded independently of mounted presentations: fifty
  * pending sources and four native loads. Ready URLs belong to their consumers;
@@ -48,13 +51,26 @@ export class LocalFilePreviewCache {
   /** An alias key, and the key of the held entry it is served by. */
   readonly #aliases = new Map<string, string>();
   readonly #load: LocalFilePreviewLoader;
+  readonly #stops: (previewRef: ChatImagePreviewRef) => boolean;
   #activeLoads = 0;
   #pendingEntries = 0;
   #disposed = false;
   #queue: PreviewEntry[] = [];
 
-  constructor({ load }: { load: LocalFilePreviewLoader }) {
+  /**
+   * `stops`: whether a load of the ref ends once its signal aborts. One that
+   * does not (a host read that takes no signal) is kept while it runs, so an
+   * acquisition that comes back joins it instead of reading the file again.
+   */
+  constructor({
+    load,
+    stops = () => false,
+  }: {
+    load: LocalFilePreviewLoader;
+    stops?: (previewRef: ChatImagePreviewRef) => boolean;
+  }) {
     this.#load = load;
+    this.#stops = stops;
   }
 
   acquire(
@@ -80,6 +96,7 @@ export class LocalFilePreviewCache {
 
     const entry: PreviewEntry = {
       aliases: new Set(),
+      controller: undefined,
       key,
       leaseCount: 0,
       previewRef,
@@ -131,6 +148,7 @@ export class LocalFilePreviewCache {
     this.#entries.clear();
     this.#pendingEntries = 0;
     for (const entry of entries) {
+      if (entry.state === "loading") entry.controller?.abort();
       entry.aliases.clear();
       entry.retirement += 1;
       if (entry.url) this.#revoke(entry.url);
@@ -226,9 +244,10 @@ export class LocalFilePreviewCache {
 
       entry.state = "loading";
       this.#activeLoads += 1;
+      entry.controller = new AbortController();
       let result: Promise<Uint8Array | undefined>;
       try {
-        result = Promise.resolve(this.#load(entry.previewRef));
+        result = Promise.resolve(this.#load(entry.previewRef, entry.controller.signal));
       } catch {
         result = Promise.resolve(undefined);
       }
@@ -343,6 +362,18 @@ export class LocalFilePreviewCache {
 
   #retireUnusedQueuedEntry(entry: PreviewEntry) {
     if (
+      entry.state === "loading" &&
+      entry.waiters.size === 0 &&
+      entry.leaseCount === 0 &&
+      this.#entries.get(entry.key) === entry &&
+      this.#stops(entry.previewRef)
+    ) {
+      // Its load answers once stopped, and only then frees its slot.
+      entry.controller?.abort();
+      this.#retireUnavailable(entry);
+      return;
+    }
+    if (
       entry.state !== "queued" ||
       entry.waiters.size !== 0 ||
       entry.leaseCount !== 0 ||
@@ -384,6 +415,14 @@ function previewMediaType(bytes: Uint8Array) {
     bytes[11] === 0x50
   ) {
     return "image/webp";
+  }
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return "image/jpeg";
   }
   return "image/png";
 }

@@ -48,9 +48,10 @@ class AgentLocationAnswersTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val core = Core()
     private var allowed = true
+    private var sharing = true
     private val reads = ArrayList<(DeviceLocation.Reading) -> Unit>()
     private val answers = AgentLocationAnswers(RuntimeEnvironment.getApplication(), core, scope,
-        allowed = { allowed }, read = { _, done -> reads += done })
+        allowed = { allowed }, read = { _, done -> reads += done }, shared = { sharing })
 
     private fun asked(vararg ids: String) {
         core.requests.value = JSONArray(ids.map {
@@ -85,6 +86,29 @@ class AgentLocationAnswersTest {
         answers.setForeground(true)
         asked("cap-1")
         assertEquals(0, reads.size)
+        assertFalse(answers.answering("cap-1"))
+    }
+
+    @Test fun `with sharing off, the card asks even with location allowed, until the person turns it on`() {
+        sharing = false
+        answers.setForeground(true)
+        asked("cap-1")
+        assertEquals(0, reads.size)
+        assertFalse(answers.answering("cap-1"))
+        // Always share on the card, or Settings: the request still waiting is answered.
+        sharing = true
+        answers.sharingChanged()
+        assertEquals(1, reads.size)
+        assertTrue(answers.answering("cap-1"))
+    }
+
+    @Test fun `sharing turned off while the phone reads sends nothing`() {
+        answers.setForeground(true)
+        asked("cap-1")
+        sharing = false
+        reads.single()(DeviceLocation.Reading.At(35.67, 139.76, 20f))
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals(emptyList<JSONObject>(), core.shared)
         assertFalse(answers.answering("cap-1"))
     }
 

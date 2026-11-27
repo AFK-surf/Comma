@@ -6,13 +6,13 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.view.isEmpty
 import surf.comma.android.R
 import surf.comma.android.scroll.widget.ScrollContainer
 import surf.comma.android.settings.SettingsRow
 import surf.comma.android.settings.SettingsSection
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.kit.dp
 import surf.comma.android.ui.kit.label
 import surf.comma.android.ui.theme.DesignFonts
@@ -43,7 +43,7 @@ internal class ToolPage(private val context: Context) {
     fun section(title: CharSequence? = null): SettingsSection = SettingsSection(context, title).also { add(it) }
 
     fun progress() = add(FrameLayout(context).apply {
-        addView(ProgressBar(context), FrameLayout.LayoutParams(context.dp(28), context.dp(28), Gravity.CENTER))
+        addView(ActivityIndicator(context), FrameLayout.LayoutParams(context.dp(20), context.dp(20), Gravity.CENTER))
         minimumHeight = context.dp(56)
     })
 

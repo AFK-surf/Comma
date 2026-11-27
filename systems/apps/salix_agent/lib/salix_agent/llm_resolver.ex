@@ -21,6 +21,20 @@ defmodule SalixAgent.LlmResolver do
   @callback resolve_record(agent_record :: map()) :: {:ok, map() | nil} | {:error, term()}
   @optional_callbacks resolve_record: 1
 
+  @triage_effort_floor_order ~w(high medium)
+  @effort_rank %{
+    nil => 0,
+    "" => 0,
+    "none" => 0,
+    "minimal" => 1,
+    "low" => 2,
+    "medium" => 3,
+    "high" => 4,
+    "xhigh" => 5,
+    "max" => 6,
+    "ultra" => 7
+  }
+
   @spec resolve(String.t()) :: {:ok, map() | nil} | {:error, term()}
   def resolve(agent_id) do
     case SystemsRuntime.get_env(:salix_agent, :llm_resolver) do
@@ -35,14 +49,70 @@ defmodule SalixAgent.LlmResolver do
   """
   @spec resolve_session(String.t(), term()) :: {:ok, term()} | {:error, term()}
   def resolve_session(agent_id, session) do
-    case session_model(session) do
-      nil ->
-        resolve_runtime(agent_id)
+    result =
+      case session_model(session) do
+        nil ->
+          resolve_runtime(agent_id)
 
-      model ->
-        with {:ok, record} <- SalixAgent.Control.get_record(agent_id) do
-          session_llm(model, record["tenant_id"])
-        end
+        model ->
+          with {:ok, record} <- SalixAgent.Control.get_record(agent_id) do
+            session_llm(model, record["tenant_id"])
+          end
+      end
+
+    case result do
+      {:ok, llm} -> {:ok, apply_triage_reasoning_floor(llm, session)}
+      other -> other
+    end
+  end
+
+  @doc """
+  Raises `reasoning_effort` to the triage investigation floor when the session
+  or round context is a triage investigation and the resolved catalog model
+  supports a higher effort level.
+  """
+  @spec apply_triage_reasoning_floor(term(), term()) :: term()
+  def apply_triage_reasoning_floor(llm_opts, session_or_context) when is_map(llm_opts) do
+    with true <- triage_investigation?(session_or_context),
+         model_id when is_binary(model_id) <-
+           llm_opts["catalog_model"] || llm_opts[:catalog_model] || llm_opts["model"] ||
+             llm_opts[:model],
+         {:ok, %{"efforts" => [_ | _] = efforts}} <- SalixAgent.Models.get(model_id),
+         floor when is_binary(floor) <- Enum.find(@triage_effort_floor_order, &(&1 in efforts)),
+         current = llm_opts["reasoning_effort"] || llm_opts[:reasoning_effort],
+         true <- Map.get(@effort_rank, current, 0) < Map.fetch!(@effort_rank, floor) do
+      put_reasoning_effort(llm_opts, floor)
+    else
+      _ -> llm_opts
+    end
+  end
+
+  def apply_triage_reasoning_floor(llm_opts, _session_or_context), do: llm_opts
+
+  defp triage_investigation?(session) when SalixAgent.InternalSession.is_session(session) do
+    source_ids = SalixAgent.InternalSession.current_source_ids(session)
+    origins = SalixAgent.InternalSession.current_turn_trusted_origins(session, source_ids)
+    Enum.any?(origins, &triage_origin?/1)
+  end
+
+  defp triage_investigation?(ctx) when is_map(ctx) do
+    triage_origin?(ctx[:trusted_origin] || ctx["trusted_origin"]) or
+      Enum.any?(List.wrap(ctx[:trusted_origins] || ctx["trusted_origins"]), &triage_origin?/1) or
+      ctx[:triage_investigation] == true or
+      ctx["triage_investigation"] == true
+  end
+
+  defp triage_investigation?(_other), do: false
+
+  defp triage_origin?(origin),
+    do: is_map(origin) and is_map(origin["triage_investigation"])
+
+  defp put_reasoning_effort(llm_opts, floor) do
+    if Map.has_key?(llm_opts, :reasoning_effort) or
+         (map_size(llm_opts) > 0 and Enum.all?(Map.keys(llm_opts), &is_atom/1)) do
+      Map.put(llm_opts, :reasoning_effort, floor)
+    else
+      Map.put(llm_opts, "reasoning_effort", floor)
     end
   end
 

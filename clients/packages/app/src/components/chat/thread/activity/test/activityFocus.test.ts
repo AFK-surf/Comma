@@ -59,6 +59,72 @@ describe("selectActivityFocusTarget", () => {
     });
   });
 
+  it("never follows a Task that ended or was archived", () => {
+    const ended: ActivityFocusTaskRef[] = [
+      ...created,
+      { conversationId: "t_cancelled", statusBucket: "cancelled", title: "Cancelled" },
+      { conversationId: "t_review", statusBucket: "needs_review", title: "Review" },
+    ];
+    const resolvedTasks = new Map([
+      ["t_x_done", { statusBucket: "done" as const, title: "X done" }],
+      ["t_x_cancelled", { statusBucket: "cancelled" as const }],
+      ["t_x_archived", { statusBucket: "archived" as const, title: "X archived" }],
+      ["t_x_running", { statusBucket: "in_progress" as const, title: "X running" }],
+    ]);
+    const workingConversationIds = [
+      "t_cancelled",
+      "t_a",
+      "t_done",
+      "t_x_done",
+      "t_x_cancelled",
+      "t_x_archived",
+      "t_review",
+      "t_x_running",
+    ];
+    expect(
+      selectActivityFocusTarget({
+        createdTasks: ended,
+        currentTurnKey: "turn_2",
+        participantStatus: { ...router, workingConversationIds },
+        resolvedTasks,
+      })
+    ).toEqual({
+      mode: "following",
+      tasks: [
+        created[2],
+        ended[5],
+        {
+          conversationId: "t_x_running",
+          statusBucket: "in_progress",
+          title: "X running",
+        },
+      ],
+    });
+
+    // Only ended Tasks: the Router's own wait words the slot, else nothing.
+    const onlyEnded = ["t_cancelled", "t_done", "t_x_done", "t_x_archived"];
+    expect(
+      selectActivityFocusTarget({
+        createdTasks: ended,
+        currentTurnKey: "turn_2",
+        participantStatus: {
+          ...router,
+          waiting: true,
+          workingConversationIds: onlyEnded,
+        },
+        resolvedTasks,
+      })
+    ).toEqual({ mode: "waiting", tasks: [created[2], created[3]] });
+    expect(
+      selectActivityFocusTarget({
+        createdTasks: ended,
+        currentTurnKey: "turn_2",
+        participantStatus: { ...router, workingConversationIds: onlyEnded },
+        resolvedTasks,
+      })
+    ).toBeUndefined();
+  });
+
   it("waits on the current turn's running Tasks, else on every running Task", () => {
     const waiting = { ...router, waiting: true };
     expect(
@@ -171,6 +237,38 @@ describe("resolveActivityFocus", () => {
       statusBucket: "in_progress",
       title: "Elsewhere",
       worker: worker(false),
+    });
+  });
+
+  it("drops followed Tasks that turn out to have ended, and says nothing if none is left", () => {
+    const facts = {
+      groupId: "group",
+      titles: new Map([
+        ["t_x", { statusBucket: "cancelled" as const, title: "X" }],
+        ["t_y", { statusBucket: "in_progress" as const, title: "Y" }],
+      ]),
+      workers: new Map(),
+    };
+    expect(
+      resolveActivityFocus(
+        {
+          mode: "following",
+          tasks: [{ conversationId: "t_x" }, created[1]!, { conversationId: "t_y" }],
+        },
+        facts
+      )?.tasks.map((task) => task.conversationId)
+    ).toEqual(["t_y"]);
+    expect(
+      resolveActivityFocus(
+        { mode: "following", tasks: [{ conversationId: "t_x" }, created[1]!] },
+        facts
+      )
+    ).toBeUndefined();
+    // A wait with no running Task still words the slot.
+    expect(resolveActivityFocus({ mode: "waiting", tasks: [] }, facts)).toEqual({
+      groupId: "group",
+      mode: "waiting",
+      tasks: [],
     });
   });
 

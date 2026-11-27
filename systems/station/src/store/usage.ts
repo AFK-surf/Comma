@@ -2,6 +2,7 @@
 // turn it was in, whom that turn worked for, in which thread and on which profile. The Store's usage methods call these.
 import type { DatabaseSync } from "node:sqlite";
 import { type Json, COMMA_STATION_SURFACE } from "./rows.ts";
+import { TASK_SURFACE } from "../tasks/names.ts";
 
 /// A model call read from a transcript. Tokens as the provider bills them.
 export type UsageCall = {
@@ -66,13 +67,25 @@ export function usageActiveSessions(db: DatabaseSync, since: number): string[] {
   return (db.prepare("SELECT DISTINCT session_key FROM turns WHERE ended_at IS NULL OR ended_at >= ?").all(since) as Json[]).map((r) => r.session_key);
 }
 
+/// Normalizes a usage person key: strips any synthetic agent requester (`*@agents.salix`) and legacy `slack:task:` prefix.
+export function canonicalUsagePerson(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.endsWith("@agents.salix")) return null;
+  if (trimmed.startsWith("slack:task:")) {
+    const stripped = trimmed.slice("slack:task:".length).trim();
+    return stripped === "" || stripped.endsWith("@agents.salix") ? null : stripped;
+  }
+  return trimmed;
+}
+
 /// usage_turns: a session's turns, oldest first, each with whom it worked for. Turns from before stations said so are
 /// worked out: a turn that answered messages is for the first person whose message it took, in that message's thread;
-/// any other goes on with the work of the one before. What is still unknown is the session's: its creator, its own chat,
-/// its profile.
+/// any other goes on with the work of the one before. What is still unknown is the session's: its canonical person
+/// (`start.person` for Task sessions), else its non-agent creator, its own chat, its profile.
 export function usageTurns(db: DatabaseSync, session: string): UsageTurn[] {
-  const row = db.prepare("SELECT created_by, profile FROM sessions WHERE key = ?").get(session) as Json;
-  const creator: string | null = row ? row.created_by : null;
+  const row = db.prepare("SELECT created_by, profile, person FROM sessions WHERE key = ?").get(session) as Json;
+  const creator: string | null = row ? (canonicalUsagePerson(row.person) ?? canonicalUsagePerson(row.created_by)) : null;
   const profile: string = row ? row.profile : "";
   const homeRow = db
     .prepare("SELECT id FROM threads WHERE home = ?1 UNION ALL SELECT thread FROM (SELECT thread FROM thread_sessions WHERE session = ?1 ORDER BY joined_at LIMIT 1) LIMIT 1")
@@ -80,16 +93,16 @@ export function usageTurns(db: DatabaseSync, session: string): UsageTurn[] {
   const home: number | null = homeRow ? homeRow.id : null;
   const turns = db.prepare("SELECT id, kind, started_at, profile, person, thread FROM turns WHERE session_key = ? ORDER BY started_at").all(session) as Json[];
   // The people's messages the session took, as they were delivered (only needed for turns from before).
-  const delivered: [number, string, number][] = turns.some((t) => t.person === null)
+  const delivered: [number, string, number][] = turns.some((t) => canonicalUsagePerson(t.person) === null)
     ? (
         db
           .prepare(
-            `SELECT d.delivered_at AS at, CASE WHEN t.surface = ?2 THEN e.author ELSE 'slack:' || ts.connect || ':' || e.author END AS who, e.thread AS thread
+            `SELECT d.delivered_at AS at, CASE WHEN t.surface IN (?2, ?3) THEN e.author ELSE 'slack:' || ts.connect || ':' || e.author END AS who, e.thread AS thread
              FROM deliveries d JOIN entries e ON e.thread = d.thread AND e.n = d.n JOIN threads t ON t.id = d.thread
              JOIN thread_sessions ts ON ts.thread = d.thread AND ts.session = d.session
              WHERE d.session = ?1 AND d.delivered_at IS NOT NULL AND e.author_kind = 'person' ORDER BY d.delivered_at`,
           )
-          .all(session, COMMA_STATION_SURFACE) as Json[]
+          .all(session, COMMA_STATION_SURFACE, TASK_SURFACE) as Json[]
       ).map((r) => [r.at, r.who, r.thread])
     : [];
   const out: UsageTurn[] = [];
@@ -100,7 +113,7 @@ export function usageTurns(db: DatabaseSync, session: string): UsageTurn[] {
     const candidate = delivered[next];
     const first = t.kind === "input" && candidate !== undefined && candidate[0] < end ? candidate : null;
     const previous = out.at(-1)?.of ?? null;
-    const person = t.person ?? first?.[1] ?? previous?.person ?? creator;
+    const person = canonicalUsagePerson(t.person) ?? canonicalUsagePerson(first?.[1]) ?? previous?.person ?? creator;
     const thread = t.thread ?? first?.[2] ?? previous?.thread ?? home;
     out.push({ id: t.id, startedAt: t.started_at, of: { turn: t.id, person, thread, profile: t.profile ?? profile } });
   });

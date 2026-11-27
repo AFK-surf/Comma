@@ -4,7 +4,7 @@ defmodule SalixWeb.L4ESRecent do
   that it has the release's sandbox image, and that its members are a given
   set. Each sandbox create asks for both; while an entry is fresh (10
   minutes), the calls that would find it so are skipped. A changed member
-  set or another image is another entry, so it is synced at once.
+  set replaces that workspace's remembered set after sync. Another image has its own entry.
 
   L4ES stays the source of truth: a change made in L4ES itself is found at
   the latest when the entry expires, and a create L4ES refuses forgets the

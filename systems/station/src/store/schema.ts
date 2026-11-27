@@ -322,6 +322,64 @@ CREATE TABLE IF NOT EXISTS task_arrivals (
   message TEXT NOT NULL,
   PRIMARY KEY (thread, seq)
 );
+-- Indexed per-slot pending arrivals (tasks.ts): keeps task.status {all: true} strictly O(active_slots)
+-- without scanning or parsing task_arrivals JSON on every status poll.
+CREATE TABLE IF NOT EXISTS task_arrival_slots (
+  thread INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  slot TEXT NOT NULL,
+  PRIMARY KEY (thread, seq, slot)
+);
+-- O(1) per-slot pending arrival counts maintained transactionally with task_arrivals/task_arrival_slots.
+CREATE TABLE IF NOT EXISTS task_arrival_counts (
+  thread INTEGER NOT NULL,
+  slot TEXT NOT NULL,
+  pending_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (thread, slot)
+);
+-- Multi-session Task slots on this Station (tasks.ts): maps each slot in a Task thread to its local Session,
+-- whether it is the primary (Lead) slot, and the host seq through which this slot has answered.
+CREATE TABLE IF NOT EXISTS task_session_slots (
+  thread INTEGER NOT NULL,
+  slot TEXT NOT NULL,
+  session TEXT NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 0,
+  answered INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (thread, slot)
+);
+CREATE INDEX IF NOT EXISTS task_session_slots_session ON task_session_slots (session);
+-- Per-slot delivery completion for Task messages (decoupled from entry insertion so attachment copies and deliveries
+-- can resume per slot after a crash).
+CREATE TABLE IF NOT EXISTS task_slot_deliveries (
+  thread INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  slot TEXT NOT NULL,
+  session TEXT NOT NULL DEFAULT '',
+  delivered_at INTEGER NOT NULL,
+  PRIMARY KEY (thread, seq, slot, session)
+);
+-- Persisted permanent refusal decisions keyed by Salix invite_id, so a Salix restart or backoff
+-- persistence failure replaying the same invite_id replays the original refusal without creating a session.
+CREATE TABLE IF NOT EXISTS task_invite_decisions (
+  invite_id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  slot TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_invite_decisions_conv ON task_invite_decisions (group_id, conversation_id);
+-- Persisted revocation tombstones for fenced task.leave(claim_token), preventing out-of-order
+-- delayed task.invite(claim_token) from creating an orphan session after leave already settled.
+CREATE TABLE IF NOT EXISTS task_revoked_claims (
+  station TEXT NOT NULL,
+  task TEXT NOT NULL,
+  slot TEXT NOT NULL,
+  claim_token TEXT NOT NULL,
+  revoked_at INTEGER NOT NULL,
+  PRIMARY KEY (station, task, slot, claim_token)
+);
 -- The station's own facts by name: task_index_epoch (made once, on the first open that has the Task index) and
 -- task_index_rev (the Task index's last rev).
 CREATE TABLE IF NOT EXISTS meta (
@@ -478,4 +536,177 @@ export function addRuntimeSessionRuntimeColumn(db: DatabaseSync): void {
 /// on its post; a post with nothing else is a "milestone" entry). Entries from before it have none.
 export function addMilestonesColumn(db: DatabaseSync): void {
   if (!has(db, "entries", "milestones")) db.exec("ALTER TABLE entries ADD COLUMN milestones TEXT");
+}
+
+/// add_multi_session_task_columns: columns added for multi-session Tasks without bumping schema version 12.
+/// - entries.deliver_to_slots: JSON array of slot names targeted by a Task message (NULL for legacy/broadcast).
+/// - entries.visible_to_slots: JSON array of slot names allowed to see a Task message (NULL = visible to all slots).
+/// - tasks_elsewhere.roster: latest Task roster JSON from task.put / task.invite.
+/// - sessions.person: canonical human person ID for Task sessions (start.person), avoiding synthetic agent IDs.
+/// - task_slot_deliveries.session: part of PRIMARY KEY (thread, seq, slot, session) so replacing a slot's session re-delivers.
+export function addMultiSessionTaskColumns(db: DatabaseSync): void {
+  if (!has(db, "entries", "deliver_to_slots")) db.exec("ALTER TABLE entries ADD COLUMN deliver_to_slots TEXT");
+  if (!has(db, "entries", "visible_to_slots")) db.exec("ALTER TABLE entries ADD COLUMN visible_to_slots TEXT");
+  if (!has(db, "tasks_elsewhere", "roster")) db.exec("ALTER TABLE tasks_elsewhere ADD COLUMN roster TEXT");
+  if (!has(db, "sessions", "person")) db.exec("ALTER TABLE sessions ADD COLUMN person TEXT");
+  if (!has(db, "task_session_slots", "claim_token")) db.exec("ALTER TABLE task_session_slots ADD COLUMN claim_token TEXT");
+  if (!has(db, "task_session_slots", "claim_shared")) db.exec("ALTER TABLE task_session_slots ADD COLUMN claim_shared INTEGER NOT NULL DEFAULT 0");
+  if (!has(db, "task_session_slots", "claim_committed")) {
+    db.exec("ALTER TABLE task_session_slots ADD COLUMN claim_committed INTEGER NOT NULL DEFAULT 0");
+    db.exec("UPDATE task_session_slots SET claim_committed = 1 WHERE claim_token IS NULL OR claim_shared = 1");
+  }
+  if (!has(db, "task_session_slots", "invite_id")) db.exec("ALTER TABLE task_session_slots ADD COLUMN invite_id TEXT");
+  if (!has(db, "threads", "ts_indexed")) db.exec("ALTER TABLE threads ADD COLUMN ts_indexed INTEGER NOT NULL DEFAULT 0");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_session_claims (
+      thread INTEGER NOT NULL,
+      slot TEXT NOT NULL,
+      session TEXT NOT NULL,
+      claim_token TEXT NOT NULL,
+      committed INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (thread, slot, claim_token)
+    );
+    CREATE TABLE IF NOT EXISTS task_revoked_claims (
+      station TEXT NOT NULL,
+      task TEXT NOT NULL,
+      slot TEXT NOT NULL,
+      claim_token TEXT NOT NULL,
+      revoked_at INTEGER NOT NULL,
+      PRIMARY KEY (station, task, slot, claim_token)
+    );
+    CREATE TABLE IF NOT EXISTS entry_ts_index (
+      thread INTEGER NOT NULL,
+      ts TEXT NOT NULL,
+      n INTEGER NOT NULL,
+      PRIMARY KEY (thread, ts)
+    );
+  `);
+  if (!has(db, "task_session_claims", "committed")) {
+    db.exec("ALTER TABLE task_session_claims ADD COLUMN committed INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!has(db, "task_slot_deliveries", "session")) {
+    db.exec(`
+      ALTER TABLE task_slot_deliveries RENAME TO task_slot_deliveries_old;
+      CREATE TABLE task_slot_deliveries (
+        thread INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        slot TEXT NOT NULL,
+        session TEXT NOT NULL DEFAULT '',
+        delivered_at INTEGER NOT NULL,
+        PRIMARY KEY (thread, seq, slot, session)
+      );
+      INSERT INTO task_slot_deliveries (thread, seq, slot, session, delivered_at)
+      SELECT thread, seq, slot, '', delivered_at FROM task_slot_deliveries_old;
+      DROP TABLE task_slot_deliveries_old;
+    `);
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_arrival_slots (
+      thread INTEGER NOT NULL,
+      seq INTEGER NOT NULL,
+      slot TEXT NOT NULL,
+      PRIMARY KEY (thread, seq, slot)
+    );
+    CREATE TABLE IF NOT EXISTS task_arrival_counts (
+      thread INTEGER NOT NULL,
+      slot TEXT NOT NULL,
+      pending_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (thread, slot)
+    );
+  `);
+  // Deterministically rebuild task_arrival_slots & task_arrival_counts from existing task_arrivals
+  // in one transaction on DB open, excluding already-answered or already-delivered items so
+  // upgrades/crash recoveries neither report false 0 nor inflate pending with settled arrivals.
+  db.exec("BEGIN");
+  try {
+    db.exec("DELETE FROM task_arrival_slots; DELETE FROM task_arrival_counts;");
+    const arrivals = db.prepare("SELECT thread, seq, message FROM task_arrivals").all() as {
+      thread: number;
+      seq: number;
+      message: string;
+    }[];
+    if (arrivals.length > 0) {
+      const slotRows = db
+        .prepare("SELECT thread, slot, session, answered FROM task_session_slots")
+        .all() as { thread: number; slot: string; session: string; answered: number }[];
+      const slotsByThread = new Map<number, Map<string, { session: string; answered: number }>>();
+      for (const r of slotRows) {
+        let m = slotsByThread.get(r.thread);
+        if (!m) {
+          m = new Map();
+          slotsByThread.set(r.thread, m);
+        }
+        m.set(r.slot, { session: r.session, answered: r.answered ?? 0 });
+      }
+      const elsewhereRows = db
+        .prepare("SELECT thread, answered FROM tasks_elsewhere")
+        .all() as { thread: number; answered: number }[];
+      const elsewhereAnswered = new Map<number, number>();
+      for (const r of elsewhereRows) elsewhereAnswered.set(r.thread, r.answered ?? 0);
+
+      const deliveredRows = db
+        .prepare("SELECT thread, seq, slot, session FROM task_slot_deliveries")
+        .all() as { thread: number; seq: number; slot: string; session: string }[];
+      const deliveredSet = new Set<string>();
+      for (const d of deliveredRows) deliveredSet.add(`${d.thread}:${d.seq}:${d.slot}:${d.session}`);
+
+      const insSlot = db.prepare("INSERT OR IGNORE INTO task_arrival_slots (thread, seq, slot) VALUES (?, ?, ?)");
+      const incCount = db.prepare(
+        `INSERT INTO task_arrival_counts (thread, slot, pending_count) VALUES (?, ?, 1)
+         ON CONFLICT (thread, slot) DO UPDATE SET pending_count = pending_count + 1`,
+      );
+      for (const row of arrivals) {
+        let rawSlots: string[] = ["*"];
+        try {
+          const parsed = JSON.parse(row.message) as { deliver_to_slots?: unknown; visible_to_slots?: unknown };
+          rawSlots = arrivalTargetSlots(parsed);
+        } catch {}
+        const threadSlots = slotsByThread.get(row.thread);
+        if (threadSlots && threadSlots.size > 0) {
+          const expanded = rawSlots.includes("*") ? [...threadSlots.keys()] : rawSlots;
+          for (const s of new Set(expanded)) {
+            const info = threadSlots.get(s);
+            if (info) {
+              if (row.seq <= info.answered) continue;
+              if (deliveredSet.has(`${row.thread}:${row.seq}:${s}:${info.session}`)) continue;
+            }
+            const r = insSlot.run(row.thread, row.seq, s);
+            if (r.changes > 0) incCount.run(row.thread, s);
+          }
+        } else {
+          const ans = elsewhereAnswered.get(row.thread) ?? 0;
+          if (row.seq <= ans) continue;
+          for (const s of new Set(rawSlots)) {
+            const r = insSlot.run(row.thread, row.seq, s);
+            if (r.changes > 0) incCount.run(row.thread, s);
+          }
+        }
+      }
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {}
+    throw e;
+  }
+}
+
+export function arrivalTargetSlots(
+  message: { deliver_to_slots?: unknown; visible_to_slots?: unknown } | null | undefined,
+): string[] {
+  const hasDeliver = Array.isArray(message?.deliver_to_slots);
+  const hasVisible = Array.isArray(message?.visible_to_slots);
+  if (!hasDeliver && !hasVisible) return ["*"];
+  const deliverList = hasDeliver
+    ? [...new Set((message!.deliver_to_slots as unknown[]).filter((s): s is string => typeof s === "string" && s !== ""))]
+    : null;
+  const visibleList = hasVisible
+    ? [...new Set((message!.visible_to_slots as unknown[]).filter((s): s is string => typeof s === "string" && s !== ""))]
+    : null;
+  if (deliverList !== null && visibleList !== null) {
+    const visSet = new Set(visibleList);
+    return deliverList.filter((s) => visSet.has(s));
+  }
+  return deliverList ?? visibleList ?? [];
 }

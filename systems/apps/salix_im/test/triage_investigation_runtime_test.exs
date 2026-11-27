@@ -11,7 +11,9 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
   alias SalixAgent.TestSupport.SessionData
 
   defmodule Ports do
-    def authorize_target(_, _, _), do: :ok
+    def authorize_target(_, _, _),
+      do: Agent.get(__MODULE__, &Map.get(&1, :authorize_target_result, :ok))
+
     def prepare(_, _, _), do: raise("Stale investigation must not reach Task creation")
     def complete(_, _, _), do: raise("No model belongs in the runtime boundary regression")
 
@@ -19,8 +21,19 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
       do: raise("No model belongs in the runtime boundary regression")
 
     def read_thread(_, _, _) do
-      state = Agent.get(__MODULE__, & &1)
-      if state[:source_unavailable], do: {:error, :source_unavailable}, else: {:ok, state.page}
+      Agent.get_and_update(__MODULE__, fn state ->
+        cond do
+          state[:source_unavailable] ->
+            {{:error, :source_unavailable}, state}
+
+          is_list(state[:pages]) and state[:pages] != [] ->
+            [next | rest] = state[:pages]
+            {{:ok, next}, Map.put(state, :pages, rest)}
+
+          true ->
+            {{:ok, state.page}, state}
+        end
+      end)
     end
 
     def notify_conversation(agent, source),
@@ -156,6 +169,24 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
       case Agent.get(__MODULE__, &Map.get(&1, :post_error)) do
         nil -> {:ok, result}
         reason -> {:error, reason}
+      end
+    end
+  end
+
+  defmodule HistoryPorts do
+    defdelegate read_thread(scope, thread_ts, opts), to: Ports
+
+    def history(scope, opts) do
+      Agent.update(Ports, fn state ->
+        Map.update(state, :history_calls, [{scope, opts}], &(&1 ++ [{scope, opts}]))
+      end)
+
+      key = if Keyword.has_key?(opts, :latest), do: :history_before, else: :history_after
+
+      case Agent.get(Ports, &Map.get(&1, key, :empty)) do
+        :raise -> raise "clickhouse history failed"
+        :empty -> {:ok, %{messages: [], next_cursor: nil, has_more?: false}}
+        other -> other
       end
     end
   end
@@ -647,6 +678,21 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
     assert :ok = InvestigationAuthority.authorize_call(memory_read, ctx)
 
+    station_tasks_read = %{
+      read
+      | name: "im_api.internal.station_task.list",
+        args: %{"source" => "stillfail", "query" => "rollout"}
+    }
+
+    assert {:read, %{}} =
+             SalixAgent.IFC.Destination.describe(
+               station_tasks_read.name,
+               station_tasks_read.args,
+               ctx
+             )
+
+    assert :ok = InvestigationAuthority.authorize_call(station_tasks_read, ctx)
+
     discovery = %{read | name: "mcp.list", args: %{"kind" => "tools"}}
     assert :ok = InvestigationAuthority.authorize_call(discovery, ctx)
     assert [{:execute, _}] = SalixAgent.IFC.Check.authorize([{:execute, discovery}], ctx)
@@ -735,7 +781,30 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
     for {name, args} <- [
           {"web.search", %{"query" => "public product documentation"}},
-          {"web.read_pages", %{"urls" => ["https://example.com/docs"]}}
+          {"web.read_pages", %{"urls" => ["https://example.com/docs"]}},
+          {"composio.list_connections", %{}},
+          {"composio.list_tools", %{"toolkit" => "github"}},
+          {"composio.get_tool", %{"tool_slug" => "GITHUB_GET_A_PULL_REQUEST"}},
+          {"composio.execute",
+           %{
+             "tool_slug" => "GITHUB_GET_A_PULL_REQUEST",
+             "arguments" => %{"owner" => "AFK-surf", "repo" => "Cue", "pull_number" => 5533}
+           }},
+          {"composio.execute",
+           %{
+             "tool_slug" => "GITHUB_LIST_PULL_REQUESTS",
+             "arguments" => %{"owner" => "AFK-surf", "repo" => "Cue"}
+           }},
+          {"composio.execute",
+           %{
+             "tool_slug" => "LINEAR_GET_LINEAR_ISSUE",
+             "arguments" => %{"issue_id" => "ENG-123"}
+           }},
+          {"composio.execute",
+           %{
+             "tool_slug" => "NOTION_SEARCH_NOTION_PAGE",
+             "arguments" => %{"query" => "release"}
+           }}
         ] do
       research = %{call | name: name, args: args, ifc: %{"sources" => []}}
       assert :ok = InvestigationAuthority.authorize_call(research, ctx)
@@ -746,6 +815,30 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
       assert [{:blocked, _}] =
                SalixAgent.IFC.Check.authorize([{:execute, private_research}], ctx)
+    end
+
+    for {name, args} <- [
+          {"composio.execute",
+           %{
+             "tool_slug" => "GITHUB_CREATE_AN_ISSUE",
+             "arguments" => %{"owner" => "AFK-surf", "repo" => "Cue", "title" => "x"}
+           }},
+          {"composio.execute",
+           %{
+             "tool_slug" => "GITHUB_MERGE_A_PULL_REQUEST",
+             "arguments" => %{"owner" => "AFK-surf", "repo" => "Cue", "pull_number" => 1}
+           }},
+          {"composio.execute",
+           %{"tool_slug" => "GMAIL_SEND_EMAIL", "arguments" => %{"to" => "a@b.com"}}},
+          {"composio.execute",
+           %{"tool_slug" => "LINEAR_RUN_QUERY_OR_MUTATION", "arguments" => %{"query" => "{}"}}},
+          {"composio.delete_connection", %{"connected_account_id" => "ca_1"}},
+          {"composio.request_connection", %{"toolkit" => "github"}}
+        ] do
+      denied = %{call | name: name, args: args, ifc: %{"sources" => []}}
+
+      assert {:error, :triage_investigation_scope_denied} =
+               InvestigationAuthority.authorize_call(denied, ctx)
     end
 
     private_reply = put_in(call, [:ifc, "sources"], [SalixAgent.IFC.result_ref("private-read")])
@@ -1160,6 +1253,380 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     assert_completed(f)
   end
 
+  test "internal.triage.read_source attaches bounded bidirectional channel_context without altering source_snapshot" do
+    f = fixture!()
+    # Default Ports does not export history/2, so channel_context is omitted.
+    refute Map.has_key?(read_source!(f), "channel_context")
+
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, HistoryPorts)
+    long_text = String.duplicate("企业版额度", 40)
+
+    before_messages = [
+      # Same ts as current thread_ts (must be excluded even if reader ignored inclusive: false)
+      %{
+        "ts" => "1789113600.000001",
+        "user" => "U_HUMAN",
+        "text" => "Original question"
+      },
+      # Newer prior message (bot)
+      %{
+        "ts" => "1789113500.000002",
+        "bot_id" => "B_OTHER",
+        "user" => "",
+        "subtype" => "bot_message",
+        "reply_count" => 0,
+        "text" => long_text
+      },
+      # Older prior message (human with thread replies)
+      %{
+        "ts" => "1789113400.000001",
+        "thread_ts" => "1789113400.000001",
+        "user" => "U_PEER",
+        "subtype" => "",
+        "reply_count" => 3,
+        "text" => "We topped up Gemini Ultra accounts earlier"
+      }
+    ]
+
+    after_messages = [
+      # Newer follow-up message in channel
+      %{
+        "ts" => "1789113700.000002",
+        "user" => "U_PEER2",
+        "text" => "Enterprise login is supported via #6548"
+      },
+      # Older follow-up message in channel
+      %{
+        "ts" => "1789113650.000001",
+        "user" => "U_PEER",
+        "text" => "Checking now"
+      },
+      # Same ts as current thread_ts (must be excluded)
+      %{
+        "ts" => "1789113600.000001",
+        "user" => "U_HUMAN",
+        "text" => "Original question"
+      }
+    ]
+
+    Agent.update(Ports, fn state ->
+      state
+      |> Map.put(:history_calls, [])
+      |> Map.put(
+        :history_before,
+        {:ok, %{messages: before_messages, next_cursor: nil, has_more?: false}}
+      )
+      |> Map.put(
+        :history_after,
+        {:ok, %{messages: after_messages, next_cursor: nil, has_more?: false}}
+      )
+    end)
+
+    source = read_source!(f)
+
+    expected_scope = %{
+      "tenant_id" => f.router["tenant_id"],
+      "workspace_id" => "T_TEST",
+      "channel_id" => "C_TEST"
+    }
+
+    assert [{^expected_scope, before_opts}, {^expected_scope, after_opts}] =
+             Agent.get(Ports, & &1[:history_calls])
+
+    assert before_opts[:latest] == "1789113600.000001"
+    assert before_opts[:inclusive] == false
+    assert before_opts[:limit] == 10
+
+    assert after_opts[:oldest] == "1789113600.000001"
+    assert after_opts[:inclusive] == false
+    assert after_opts[:limit] == 5
+
+    assert %{"before" => [older, newer], "after" => [after_older, after_newer]} =
+             source["channel_context"]
+
+    assert older == %{
+             "ts" => "1789113400.000001",
+             "thread_ts" => "1789113400.000001",
+             "user" => "U_PEER",
+             "actor_kind" => "human",
+             "reply_count" => 3,
+             "text" => "We topped up Gemini Ultra accounts earlier"
+           }
+
+    assert newer["ts"] == "1789113500.000002"
+    assert newer["bot_id"] == "B_OTHER"
+    assert newer["actor_kind"] == "agent"
+    assert newer["subtype"] == "bot_message"
+    refute Map.has_key?(newer, "user")
+    refute Map.has_key?(newer, "reply_count")
+    assert String.valid?(newer["text"])
+    assert byte_size(newer["text"]) <= 300
+    assert byte_size(newer["text"]) < byte_size(long_text)
+
+    assert after_older == %{
+             "ts" => "1789113650.000001",
+             "user" => "U_PEER",
+             "actor_kind" => "human",
+             "text" => "Checking now"
+           }
+
+    assert after_newer == %{
+             "ts" => "1789113700.000002",
+             "user" => "U_PEER2",
+             "actor_kind" => "human",
+             "text" => "Enterprise login is supported via #6548"
+           }
+
+    # source_snapshot and freshness remain bound strictly to the thread messages.
+    assert length(source["messages"]) == 1
+
+    assert {:ok, _} =
+             complete(f, source, %{
+               "kind" => "silence",
+               "reason_code" => "no_useful_addition",
+               "reason" => "Checked bidirectional channel context",
+               "source_refs" => []
+             })
+
+    assert_completed(f)
+  end
+
+  test "internal.triage.read_source degrades gracefully on one-sided or full channel history failure" do
+    f = fixture!()
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, HistoryPorts)
+
+    # One-sided failure: before succeeds, after fails -> still returns before + empty after
+    Agent.update(Ports, fn state ->
+      state
+      |> Map.put(
+        :history_before,
+        {:ok,
+         %{
+           messages: [%{"ts" => "1789113400.000001", "user" => "U_PEER", "text" => "Prior note"}],
+           next_cursor: nil,
+           has_more?: false
+         }}
+      )
+      |> Map.put(:history_after, {:error, :unavailable})
+    end)
+
+    source_partial = read_source!(f)
+
+    assert %{
+             "before" => [
+               %{
+                 "ts" => "1789113400.000001",
+                 "user" => "U_PEER",
+                 "actor_kind" => "human",
+                 "text" => "Prior note"
+               }
+             ],
+             "after" => []
+           } = source_partial["channel_context"]
+
+    # Both sides return error -> channel_context omitted
+    Agent.update(Ports, fn state ->
+      state
+      |> Map.put(:history_before, {:error, :unavailable})
+      |> Map.put(:history_after, {:error, :unavailable})
+    end)
+
+    source_err = read_source!(f)
+    refute Map.has_key?(source_err, "channel_context")
+    assert length(source_err["messages"]) == 1
+
+    # Both sides raise -> channel_context omitted
+    Agent.update(Ports, fn state ->
+      state
+      |> Map.put(:history_before, :raise)
+      |> Map.put(:history_after, :raise)
+    end)
+
+    source_raise = read_source!(f)
+    refute Map.has_key?(source_raise, "channel_context")
+    assert length(source_raise["messages"]) == 1
+  end
+
+  test "internal.triage.complete returns actionable validation errors without tainting source_snapshot" do
+    f = fixture!()
+    source = read_source!(f)
+
+    assert {:error, reply_err} =
+             complete(f, source, %{
+               "kind" => "reply",
+               "text" => "Helpful answer",
+               "source_refs" => [],
+               "reason" => "Extra field not allowed"
+             })
+
+    assert is_binary(reply_err)
+    assert reply_err =~ "invalid_triage_completion:"
+    assert reply_err =~ "reply decision requires exact keys"
+
+    assert {:error, silence_err} =
+             complete(f, source, %{
+               "kind" => "silence",
+               "reason_code" => "not_a_valid_code",
+               "reason" => "No reply needed",
+               "source_refs" => []
+             })
+
+    assert is_binary(silence_err)
+    assert silence_err =~ "invalid_triage_completion:"
+    assert silence_err =~ "already_handled, no_useful_addition, or insufficient_evidence"
+
+    assert {:error, reaction_err} =
+             complete(f, source, %{
+               "kind" => "reaction",
+               "emoji" => "eyes",
+               "source_refs" => []
+             })
+
+    assert is_binary(reaction_err)
+    assert reaction_err =~ "invalid_triage_completion:"
+    assert reaction_err =~ "exactly 1"
+
+    assert {:error, kind_err} =
+             complete(f, source, %{
+               "kind" => "noop",
+               "source_refs" => []
+             })
+
+    assert is_binary(kind_err)
+    assert kind_err =~ "invalid_triage_completion:"
+    assert kind_err =~ "reply, reaction, or silence"
+
+    # The same source_snapshot remains valid and accepts a well-formed silence decision.
+    assert {:ok, _} =
+             complete(f, source, %{
+               "kind" => "silence",
+               "reason_code" => "no_useful_addition",
+               "reason" => "Validation errors did not taint the snapshot",
+               "source_refs" => []
+             })
+
+    assert_completed(f)
+  end
+
+  test "internal.triage.read_source attaches redacted stillfail_coordination when overlapping still.fail sessions exist" do
+    f = fixture!()
+    device_id = "dev_sf_#{ULID.generate()}"
+    {:ok, sf} = SalixStore.StillfailStations.ensure(f.router["tenant_id"], f.group, device_id)
+
+    seed_stillfail_rows = fn rows ->
+      assert {:ok, _} =
+               SalixStore.StationTaskIndex.apply_page(sf, device_id, %{
+                 "epoch" => "e-#{ULID.generate()}",
+                 "reset" => true,
+                 "through" => length(rows),
+                 "rows" => rows
+               })
+    end
+
+    # 1. Unrelated still.fail session -> no stillfail_coordination key
+    seed_stillfail_rows.([
+      %{
+        "thread" => "CHAT/unrelated-1",
+        "rev" => 1,
+        "title" => "Unrelated secret task",
+        "status" => "in_progress",
+        "created_by" => "alice@example.com",
+        "created_at" => 1_000,
+        "last_activity_at" => 2_000,
+        "note" => "Private note should never appear",
+        "url" => "https://still.fail/c/private-1"
+      }
+    ])
+
+    source_none = read_source!(f)
+    refute Map.has_key?(source_none, "stillfail_coordination")
+
+    # 2. Same Slack thread active in_progress session -> defer_silence_already_handled, redacted
+    seed_stillfail_rows.([
+      %{
+        "thread" => "SLACK/C_TEST/1789113600.000001",
+        "rev" => 1,
+        "title" => "Secret internal prod triage title",
+        "status" => "in_progress",
+        "created_by" => "alice@example.com",
+        "created_at" => 1_000,
+        "last_activity_at" => 3_000,
+        "note" => "Secret private note",
+        "url" => "https://still.fail/c/secret-thread",
+        "waits_for" => ["bob@example.com"]
+      }
+    ])
+
+    source_defer = read_source!(f)
+
+    assert source_defer["stillfail_coordination"] == %{
+             "disposition" => "defer_silence_already_handled"
+           }
+
+    encoded_defer = Jason.encode!(source_defer["stillfail_coordination"])
+    refute encoded_defer =~ "Secret internal"
+    refute encoded_defer =~ "Secret private"
+    refute encoded_defer =~ "still.fail/c/secret-thread"
+    refute encoded_defer =~ "alice@example.com"
+    refute encoded_defer =~ "bob@example.com"
+
+    assert {:ok, _} =
+             complete(f, source_defer, %{
+               "kind" => "silence",
+               "reason_code" => "already_handled",
+               "reason" => "Active still.fail session is already handling this thread",
+               "source_refs" => []
+             })
+
+    assert_completed(f)
+
+    # 3. PR status question + blocked still.fail session (need + card:login) -> surface_blocker_with_follow_up
+    f2 = fixture!()
+    device_id2 = "dev_sf_#{ULID.generate()}"
+    {:ok, sf2} = SalixStore.StillfailStations.ensure(f2.router["tenant_id"], f2.group, device_id2)
+
+    Agent.update(Ports, fn state ->
+      [first | rest] = state.page.messages
+      updated = Map.put(first, "text", "Did https://github.com/AFK-surf/Cue/pull/5451 land yet?")
+      put_in(state, [:page, :messages], [updated | rest])
+    end)
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(sf2, device_id2, %{
+               "epoch" => "e-pr-1",
+               "reset" => true,
+               "through" => 1,
+               "rows" => [
+                 %{
+                   "thread" => "CHAT/pr-5451",
+                   "rev" => 1,
+                   "title" => "Fix PR https://github.com/AFK-surf/Cue/pull/5451 private secret",
+                   "status" => "needs_review",
+                   "attention" => "need",
+                   "labels" => ["card:login"],
+                   "created_by" => "alice@example.com",
+                   "created_at" => 1_000,
+                   "last_activity_at" => 4_000,
+                   "note" => "Private login token note",
+                   "url" => "https://still.fail/c/private-pr"
+                 }
+               ]
+             })
+
+    source_blocker = read_source!(f2)
+
+    assert source_blocker["stillfail_coordination"] == %{
+             "disposition" => "surface_blocker_with_follow_up",
+             "card_kind" => "login",
+             "recommended_recheck_hours" => 1
+           }
+
+    encoded_blocker = Jason.encode!(source_blocker["stillfail_coordination"])
+    refute encoded_blocker =~ "private secret"
+    refute encoded_blocker =~ "Private login token note"
+    refute encoded_blocker =~ "still.fail/c/private-pr"
+  end
+
   defp notify_worker(f) do
     {:ok, %{"participants" => members}} =
       Conversations.list_group_conversation_participants(f.group, f.task)
@@ -1479,6 +1946,105 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
   defp read_source!(f) do
     assert {:ok, source} = api(f, "internal.triage.read_source", %{})
     source
+  end
+
+  test "transient authority error preserves retryability on the same reservation while permanent mismatch fails closed" do
+    f = fixture!(skip_task_creation: true)
+    %{router: router, worker: worker, group: group, obligation: obligation, grant: grant} = f
+
+    attrs = %{
+      "client_request_id" => "triage-delegation:#{obligation}:0",
+      "title" => "Inspect source",
+      "content" => "Inspect source",
+      "source_refs" => %{"triage_investigation" => grant}
+    }
+
+    {:ok, task} =
+      ConversationServer.reserve_task_conversation_id(group, router["agent_id"], worker, attrs)
+
+    create_attrs =
+      attrs
+      |> Map.put("schedule", %{"schedule_id" => nil, "command" => attrs["content"]})
+      |> Map.put("initial_message_attrs", %{
+        "actor_type" => "agent",
+        "agent_id" => router["agent_id"],
+        "content" => attrs["content"],
+        "client_request_id" => "delegate-task-" <> task
+      })
+
+    # Permanent authority mismatch still fails closed.
+    Agent.update(
+      Ports,
+      &Map.put(&1, :authorize_target_result, {:error, :delegation_authority_changed, false})
+    )
+
+    assert {:error, :triage_investigation_not_authorized} =
+             TaskConversationInput.create_with_id(
+               group,
+               task,
+               router["agent_id"],
+               worker,
+               create_attrs
+             )
+
+    # Transient authority error propagates as retryable instead of permanent denial.
+    Agent.update(
+      Ports,
+      &Map.put(&1, :authorize_target_result, {:error, :delegation_authority_unavailable, true})
+    )
+
+    assert {:error, :delegation_authority_unavailable} =
+             TaskConversationInput.create_with_id(
+               group,
+               task,
+               router["agent_id"],
+               worker,
+               create_attrs
+             )
+
+    # Retry with the same client_request_id reuses the exact reserved conversation_id.
+    Agent.update(Ports, &Map.put(&1, :authorize_target_result, :ok))
+
+    assert {:ok, ^task} =
+             ConversationServer.reserve_task_conversation_id(
+               group,
+               router["agent_id"],
+               worker,
+               attrs
+             )
+
+    assert {:ok, _} =
+             TaskConversationInput.create_with_id(
+               group,
+               task,
+               router["agent_id"],
+               worker,
+               create_attrs
+             )
+  end
+
+  test "read_source returns an explicit error when freshness reports stale" do
+    f = fixture!([])
+
+    Agent.update(Ports, fn state ->
+      [original_msg | _] = state.page.messages
+
+      newer_reply = %{
+        "message_ts" => "1789113605.000001",
+        "message_ts_us" => 1_789_113_605_000_001,
+        "version" => 3_578_227_210_000_002,
+        "actor_kind" => "user",
+        "actor_id" => "U_OTHER",
+        "text" => "Already resolved!"
+      }
+
+      Map.put(state, :pages, [
+        state.page,
+        %{state.page | messages: [original_msg, newer_reply]}
+      ])
+    end)
+
+    assert {:error, :triage_source_stale} = api(f, "internal.triage.read_source", %{})
   end
 
   defp complete(f, source, decision),

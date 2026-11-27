@@ -33,6 +33,10 @@ defmodule BillingCommerce do
   defdelegate get_active_provider_customer(attrs), to: ProviderCustomers, as: :get_active_customer
   defdelegate bind_provider_customer(attrs), to: ProviderCustomers, as: :bind_customer
 
+  defdelegate get_provider_customer_by_id(attrs),
+    to: ProviderCustomers,
+    as: :get_customer_by_provider_id
+
   defdelegate upsert_provider_customer_from_event(attrs),
     to: ProviderCustomers,
     as: :upsert_from_provider_event

@@ -15,7 +15,7 @@ defmodule BridgeForTeams.Memberships do
   """
   import Ecto.Query
 
-  alias BridgeForTeams.{Observability, Projects, Repo, StationMembers}
+  alias BridgeForTeams.{Observability, Repo, StationMembers}
   alias BridgeForTeams.Schema.{OrgMembership, OrgSsoIdentity, Project, ProjectMembership}
 
   @org_rank %{"owner" => 3, "admin" => 2, "member" => 1}
@@ -23,10 +23,42 @@ defmodule BridgeForTeams.Memberships do
 
   @doc "Add or update a user's org membership/role."
   @spec put_org_member(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
-          {:ok, OrgMembership.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, OrgMembership.t()} | {:error, Ecto.Changeset.t() | atom()}
   def put_org_member(org_id, user_id, role, opts \\ []) do
+    Repo.transaction(fn ->
+      org =
+        Repo.one!(
+          from o in BridgeForTeams.Schema.Organization, where: o.id == ^org_id, lock: "FOR UPDATE"
+        )
+
+      existing = Repo.get_by(OrgMembership, org_id: org_id, user_id: user_id)
+
+      with :ok <- available_seat(org, existing),
+           {:ok, membership} <- do_put_org_member(org_id, user_id, role, opts) do
+        membership
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp available_seat(_org, %OrgMembership{}), do: :ok
+
+  defp available_seat(org, nil) do
+    case BillingCore.TeamsAccess.check(org.billing_account_id) do
+      {:ok, :unmanaged} ->
+        :ok
+
+      {:ok, seats} ->
+        if count_org_members(org.id) < seats, do: :ok, else: {:error, :teams_seat_limit}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp do_put_org_member(org_id, user_id, role, opts) do
     existing = Repo.get_by(OrgMembership, org_id: org_id, user_id: user_id)
-    old_role = existing && existing.role
 
     changeset =
       (existing || %OrgMembership{})
@@ -35,8 +67,7 @@ defmodule BridgeForTeams.Memberships do
     insert_or_update_with_optional_audit(
       changeset,
       opts,
-      fn membership -> record_org_member_audit(org_id, user_id, existing, membership, opts) end,
-      fn membership -> maybe_sync_org_owner_emails(org_id, old_role, membership.role) end
+      fn membership -> record_org_member_audit(org_id, user_id, existing, membership, opts) end
     )
   end
 
@@ -45,7 +76,6 @@ defmodule BridgeForTeams.Memberships do
           {:ok, ProjectMembership.t()} | {:error, Ecto.Changeset.t()}
   def put_project_member(project_id, user_id, role, opts \\ []) do
     existing = Repo.get_by(ProjectMembership, project_id: project_id, user_id: user_id)
-    old_role = existing && existing.role
 
     changeset =
       (existing || %ProjectMembership{})
@@ -56,8 +86,7 @@ defmodule BridgeForTeams.Memberships do
       opts,
       fn membership ->
         record_project_member_audit(project_id, user_id, existing, membership, opts)
-      end,
-      fn membership -> maybe_sync_project_owner_emails(project_id, old_role, membership.role) end
+      end
     )
   end
 
@@ -279,6 +308,21 @@ defmodule BridgeForTeams.Memberships do
     |> Repo.aggregate(:count, :id)
   end
 
+  @doc "Return the email of an active org owner in one indexed query, or nil."
+  @spec first_owner_email(Ecto.UUID.t()) :: String.t() | nil
+  def first_owner_email(org_id) do
+    from(m in OrgMembership,
+      join: u in assoc(m, :user),
+      where:
+        m.org_id == ^org_id and m.role == "owner" and u.status == "active" and
+          not is_nil(u.email) and u.email != "",
+      order_by: [asc: m.created_at, asc: u.id],
+      select: u.email,
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   @doc "Remove an org membership."
   @spec remove_org_member(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok | {:error, term()}
   def remove_org_member(org_id, user_id, opts \\ []) do
@@ -319,7 +363,6 @@ defmodule BridgeForTeams.Memberships do
 
              %OrgMembership{} = membership ->
                with {:ok, _deleted} <- Repo.delete(membership) do
-                 :ok = maybe_sync_org_owner_emails(org_id, membership.role, nil)
                  :ok
                else
                  {:error, reason} -> Repo.rollback(reason)
@@ -355,7 +398,6 @@ defmodule BridgeForTeams.Memberships do
 
              %ProjectMembership{} = membership ->
                with {:ok, _deleted} <- Repo.delete(membership) do
-                 :ok = maybe_sync_project_owner_emails(project_id, membership.role, nil)
                  :ok
                else
                  {:error, reason} -> Repo.rollback(reason)
@@ -427,11 +469,10 @@ defmodule BridgeForTeams.Memberships do
   # Membership writes run in a transaction so the audit row and the Salix
   # owner-email reconcile row (transactional outbox) commit atomically with
   # the membership itself.
-  defp insert_or_update_with_optional_audit(changeset, opts, audit_fun, post_fun) do
+  defp insert_or_update_with_optional_audit(changeset, opts, audit_fun) do
     Repo.transaction(fn ->
       with {:ok, membership} <- Repo.insert_or_update(changeset),
            {:ok, _audit} <- maybe_audit(opts, audit_fun, membership) do
-        :ok = post_fun.(membership)
         membership
       else
         {:error, reason} -> Repo.rollback(reason)
@@ -441,25 +482,6 @@ defmodule BridgeForTeams.Memberships do
 
   defp maybe_audit(opts, audit_fun, membership) do
     if audit_enabled?(opts), do: audit_fun.(membership), else: {:ok, nil}
-  end
-
-  # The Salix group's owner_emails only changes when the project-admin set
-  # does: an explicit project "admin" grant appearing/disappearing, or an org
-  # owner/admin membership (implied admin on every swarm) changing.
-  defp maybe_sync_project_owner_emails(project_id, old_role, new_role) do
-    if old_role != new_role and "admin" in [old_role, new_role] do
-      Projects.enqueue_owner_emails_sync(project_id)
-    end
-
-    :ok
-  end
-
-  defp maybe_sync_org_owner_emails(org_id, old_role, new_role) do
-    if old_role != new_role and Enum.any?([old_role, new_role], &(&1 in ["owner", "admin"])) do
-      Projects.enqueue_owner_emails_sync_for_org(org_id)
-    end
-
-    :ok
   end
 
   defp remove_org_member_with_audit(org_id, user_id, opts) do
@@ -479,7 +501,6 @@ defmodule BridgeForTeams.Memberships do
                         "org_member",
                         opts
                       ) do
-                 :ok = maybe_sync_org_owner_emails(org_id, membership.role, nil)
                  :ok
                else
                  {:error, reason} -> Repo.rollback(reason)
@@ -510,7 +531,6 @@ defmodule BridgeForTeams.Memberships do
                         opts,
                         project
                       ) do
-                 :ok = maybe_sync_project_owner_emails(project_id, membership.role, nil)
                  :ok
                else
                  nil -> Repo.rollback(:project_not_found)

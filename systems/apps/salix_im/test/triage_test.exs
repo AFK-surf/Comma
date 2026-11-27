@@ -89,6 +89,19 @@ defmodule SalixIM.TriageTest do
     %{server: server, authority: authority, namespace: namespace}
   end
 
+  test "Runtime defaults to 30s debounce_ms and 2m max_wait_ms while keeping :infinity supported" do
+    namespace = "triage-defaults-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    default_runtime = start_runtime(namespace, [])
+    default_state = :sys.get_state(default_runtime)
+    assert default_state.debounce_ms == 30_000
+    assert default_state.max_wait_ms == 120_000
+
+    unbounded_runtime = start_runtime(namespace <> "-inf", max_wait_ms: :infinity)
+    unbounded_state = :sys.get_state(unbounded_runtime)
+    assert unbounded_state.debounce_ms == 30_000
+    assert unbounded_state.max_wait_ms == :infinity
+  end
+
   test "batches a thread into one authoritative run and replays it offline", ctx do
     %{server: server, authority: authority, namespace: namespace} = ctx
 

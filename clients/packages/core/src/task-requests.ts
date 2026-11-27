@@ -7,12 +7,22 @@
 // Bounds: one read of four bounded lists (at most 50 or 100 rows each) and the workspace's own-request mode per page
 // shown (`prefer`) and per change; each change is one request.
 import { lazySchema } from "@comma/chat-contract";
-import { CoreError, Priority, share, type Topic, type Value } from "@comma/core-kernel";
+import {
+  CoreError,
+  Priority,
+  share,
+  type Topic,
+  type Value,
+  utf8,
+} from "@comma/core-kernel";
 import { Effect, Option } from "effect";
 import { z } from "zod";
 import { route } from "./api.ts";
 import type {
+  FileSource,
   ProviderUserLink,
+  TaskRequestContact,
+  TaskRequestPerson,
   TaskRequestRun,
   TaskRequestGrant,
   TaskRequestIncoming,
@@ -58,6 +68,8 @@ const grantSchema = lazySchema(() =>
       invite_url: z.string().optional(),
       invite_expires_at: z.number().nullable().optional(),
       created_at: z.number().nullable(),
+      accepted_at: z.number().nullable().optional(),
+      from_invite: z.boolean().optional(),
     })
     .strip()
 );
@@ -76,7 +88,6 @@ const incomingSchema = lazySchema(() =>
       title: z.string(),
       content: z.string(),
       status: statusSchema,
-      accepted_as: z.enum(["task", "router"]).nullable().optional(),
       decline_reason: z.string().nullable(),
       task: z
         .object({ group_id: z.string().nullable(), id: z.string() })
@@ -149,9 +160,12 @@ const params = {
   optional(raw: unknown, name: string, max: number): string | undefined {
     const v = (raw as Record<string, unknown> | null)?.[name];
     if (v === undefined || v === null) return undefined;
-    if (typeof v !== "string" || v.length > max)
+    if (typeof v !== "string" || v.length > max * 4)
       throw CoreError.invalid(`${name} is invalid`);
-    return v.trim() === "" ? undefined : v.trim();
+    const trimmed = v.trim();
+    if (trimmed === "") return undefined;
+    if (utf8(trimmed).length > max) throw CoreError.invalid(`${name} is invalid`);
+    return trimmed;
   },
   mode(raw: unknown): "review" | "auto_accept" {
     const v = (raw as Record<string, unknown> | null)?.mode;
@@ -172,7 +186,9 @@ const runtime = (provider: string, model?: string) => ({
 function placement(run: TaskRequestRun): Record<string, unknown> {
   switch (run.kind) {
     case "cloud":
-      return { model: { kind: "catalog", model: run.model, allow_paid: true } };
+      return run.model
+        ? { model: { kind: "catalog", model: run.model, allow_paid: true } }
+        : { runs_on: { kind: "salix" } };
     case "sandbox":
       return {
         runs_on: { kind: "sandbox" },
@@ -213,13 +229,128 @@ type Shown = TaskRequestsValue;
 const empty: Shown = {
   workspace: null,
   incoming: null,
+  received: null,
   grants: null,
   targets: null,
   sent: null,
   links: null,
   own: null,
+  people: null,
   error: false,
 };
+
+const targetFull = (target: TaskRequestTarget) =>
+  target.sent_today >= target.daily_limit || target.pending >= target.pending_limit;
+
+/** The later of two times (seconds), either of which may be unknown. */
+const later = (a: number | null, b: number | null | undefined) =>
+  b != null && (a === null || b > a) ? b : a;
+
+const contactName = (c: TaskRequestContact) => c.name || c.email || "";
+
+/**
+ * The people of a page's lists (People): each grantee and each target's owner once, by user id, with what either may
+ * send the other and when the two last had to do with each other. The latest first, then by name.
+ */
+export function contactsOf(
+  workspace: string | null,
+  grants: readonly TaskRequestGrant[],
+  targets: readonly TaskRequestTarget[],
+  incoming: readonly TaskRequestIncoming[],
+  sent: readonly TaskRequestSent[]
+): TaskRequestContact[] {
+  const byId = new Map<string, TaskRequestContact>();
+  const of = (person: TaskRequestPerson) => {
+    let contact = byId.get(person.id);
+    if (!contact) {
+      contact = {
+        id: person.id,
+        name: person.name,
+        email: person.email,
+        avatar: null,
+        sends: null,
+        receives: [],
+        waiting: null,
+        lastAt: null,
+        lastTitle: null,
+      };
+      byId.set(person.id, contact);
+    }
+    contact.name ??= person.name;
+    contact.email ??= person.email;
+    return contact;
+  };
+  for (const target of targets) {
+    const owner = target.workspace.owner;
+    if (!owner) continue;
+    const contact = of(owner);
+    contact.receives.push({
+      grant: target.grant_id,
+      workspace: target.workspace.name,
+      full: targetFull(target),
+    });
+    // A target's avatar is read through its grant, which the person holds.
+    if (owner.avatar_id && !contact.avatar)
+      contact.avatar = {
+        source: "target-avatar",
+        grant: target.grant_id,
+        revision: owner.avatar_id,
+      };
+  }
+  for (const grant of grants) {
+    if (grant.status !== "active" || !grant.grantee) continue;
+    const contact = of(grant.grantee);
+    contact.sends = { grant: grant.id, mode: grant.mode };
+    contact.lastAt = later(contact.lastAt, grant.created_at);
+    if (!contact.avatar && workspace && grant.grantee.avatar_id)
+      contact.avatar = {
+        source: "grant-avatar",
+        workspace,
+        grant: grant.id,
+        revision: grant.grantee.avatar_id,
+      };
+  }
+  // The latest request either way names what the two last had to do with each other.
+  const latest = new Map<string, number>();
+  const note = (contact: TaskRequestContact, at: number | null, title: string) => {
+    if (at === null || (latest.get(contact.id) ?? -1) >= at) return;
+    latest.set(contact.id, at);
+    contact.lastTitle = title;
+  };
+  // Requests either way: only of people still in the lists.
+  for (const request of incoming) {
+    const contact = request.sender && byId.get(request.sender.id);
+    if (!contact) continue;
+    if (request.status === "pending")
+      contact.waiting = {
+        count: (contact.waiting?.count ?? 0) + 1,
+        // The list is the latest first: the last pending one came first.
+        first: request.id,
+      };
+    contact.lastAt = later(contact.lastAt, request.created_at);
+    note(contact, request.created_at, request.title);
+    if (!contact.avatar && workspace && request.sender?.avatar_id) {
+      const avatar: FileSource = {
+        source: "sender-avatar",
+        workspace,
+        request: request.id,
+        revision: request.sender.avatar_id,
+      };
+      contact.avatar = avatar;
+    }
+  }
+  for (const request of sent) {
+    const contact = request.workspace?.owner && byId.get(request.workspace.owner.id);
+    if (!contact) continue;
+    const at = request.task_updated_at ?? request.decided_at ?? request.created_at;
+    contact.lastAt = later(contact.lastAt, at);
+    note(contact, at, request.title);
+  }
+  return [...byId.values()].toSorted(
+    (a, b) =>
+      (b.lastAt ?? 0) - (a.lastAt ?? 0) || contactName(a).localeCompare(contactName(b))
+  );
+}
 
 export class TaskRequests {
   readonly #ctx: Ctx;
@@ -254,6 +385,15 @@ export class TaskRequests {
         kernel.store.invalidate(topic);
         this.#live.run(topic, this.#load(topic));
       }
+    });
+
+    // A new account's Workspace is made after sign-in: a page read before it was ready reads again once it is, so
+    // its invite links and grants are there without a reload.
+    workspaces.onChange(() => {
+      for (const topic of this.#topics())
+        if (!this.#shown.get(String(topic.prefer ?? ""))?.workspace)
+          // Read without asking for the list again: that asking is what tells this listener.
+          this.#live.run(topic, this.#load(topic, false));
     });
 
     const change = <S extends z.ZodType>(
@@ -326,19 +466,16 @@ export class TaskRequests {
           const request = params.string(p, "request");
           const title = params.optional(p, "title", 200);
           const content = params.optional(p, "content", 16_000);
-          const to = (p as { to?: unknown } | null)?.to ?? "task";
-          if (to !== "task" && to !== "router")
-            throw CoreError.invalid("to is task or router");
           const run = (p as { run?: TaskRequestRun } | null)?.run;
           return change(
             "POST",
             ownerPath(workspace, route`/task-requests/${request}/accept`),
             incomingSchema,
             {
-              to,
+              to: "task",
               ...(title === undefined ? {} : { title }),
               ...(content === undefined ? {} : { content }),
-              ...(run && to === "task" ? placement(run) : {}),
+              ...(run ? placement(run) : {}),
             }
           ).pipe(Effect.map((accepted) => ({ task: accepted.task })));
         },
@@ -479,6 +616,39 @@ export class TaskRequests {
           ).pipe(Effect.as(null));
         },
       },
+      "collaborations.start": {
+        doing: true,
+        run: (p) => {
+          const workspace = params.string(p, "workspace");
+          const people = (p as { people?: unknown } | null)?.people ?? [];
+          const emails = (p as { emails?: unknown } | null)?.emails ?? [];
+          if (
+            !Array.isArray(people) ||
+            !Array.isArray(emails) ||
+            people.length + emails.length === 0 ||
+            people.some((id) => typeof id !== "string" || id === "") ||
+            emails.some((email) => typeof email !== "string" || !email.includes("@"))
+          )
+            throw CoreError.invalid("people is required");
+          const content = params.string(p, "content", 16_000).trim();
+          if (!content) throw CoreError.invalid("content is required");
+          return change(
+            "POST",
+            ownerPath(workspace, "/collaborations"),
+            z
+              .object({
+                task: z.object({ id: z.string(), group_id: z.string() }).strip(),
+              })
+              .strip(),
+            {
+              people,
+              ...(emails.length > 0 ? { emails } : {}),
+              content,
+              client_request_id: params.string(p, "key", 128),
+            }
+          );
+        },
+      },
       "taskRequests.withdraw": {
         doing: true,
         run: (p) => {
@@ -487,6 +657,17 @@ export class TaskRequests {
             "POST",
             route`/v1/comma/sent-task-requests/${request}/withdraw`,
             sentSchema
+          ).pipe(Effect.as(null));
+        },
+      },
+      "taskRequests.hide": {
+        doing: true,
+        run: (p) => {
+          const request = params.string(p, "request");
+          return change(
+            "DELETE",
+            route`/v1/comma/sent-task-requests/${request}`,
+            z.object({ hidden: z.literal(true) }).strip()
           ).pipe(Effect.as(null));
         },
       },
@@ -512,14 +693,14 @@ export class TaskRequests {
   }
 
   /** The workspace a page prefers (the one it is in), else the first; then both sides' lists. */
-  #load(topic: Topic): Effect.Effect<void> {
+  #load(topic: Topic, askWorkspaces = true): Effect.Effect<void> {
     const prefer = String(topic.prefer ?? "");
     return Effect.gen({ self: this }, function* () {
       const ctx = this.#ctx;
       const account = yield* ctx.session.account().pipe(Effect.option);
       if (Option.isNone(account)) return;
       const known = this.#workspaces.list(account.value);
-      if (!known?.some((w) => w.id === prefer))
+      if (askWorkspaces && !known?.some((w) => w.id === prefer))
         yield* this.#workspaces.refresh(Priority.shown).pipe(Effect.ignore);
       const list = this.#workspaces.list(account.value) ?? [];
       const workspace = (list.find((w) => w.id === prefer) ?? list[0])?.id ?? null;
@@ -528,7 +709,11 @@ export class TaskRequests {
       const [incoming, grants, targets, sent, links, own] = yield* Effect.all(
         [
           workspace
-            ? get(ownerPath(workspace, "/task-requests"), page(incomingSchema))
+            ? // Every status: a person's page keeps what they asked after it is answered.
+              get(
+                ownerPath(workspace, "/task-requests?status=all"),
+                page(incomingSchema)
+              )
             : Effect.succeedNone,
           workspace
             ? get(ownerPath(workspace, "/task-request-grants"), z.array(grantSchema))
@@ -543,24 +728,46 @@ export class TaskRequests {
         { concurrency: "unbounded" }
       );
       const was = this.#shown.get(prefer) ?? empty;
+      const shownReceived = value(
+        Option.map(incoming, (p) => p.data as TaskRequestIncoming[]),
+        was.received
+      );
+      const shownIncoming =
+        shownReceived &&
+        shownReceived.filter((request) => request.status === "pending");
+      const shownGrants = value(
+        grants as Option.Option<TaskRequestGrant[]>,
+        was.grants
+      );
+      const shownTargets = value(
+        Option.map(targets, (p) => p.data as TaskRequestTarget[]),
+        was.targets
+      );
+      const shownSent = value(
+        Option.map(sent, (p) => p.data as TaskRequestSent[]),
+        was.sent
+      );
       // Read again whole: what did not change stays as it was (keep.ts).
       this.#shown.set(
         prefer,
         share(was, {
           workspace,
-          incoming: value(
-            Option.map(incoming, (p) => p.data as TaskRequestIncoming[]),
-            was.incoming
-          ),
-          grants: value(grants as Option.Option<TaskRequestGrant[]>, was.grants),
-          targets: value(
-            Option.map(targets, (p) => p.data as TaskRequestTarget[]),
-            was.targets
-          ),
-          sent: value(
-            Option.map(sent, (p) => p.data as TaskRequestSent[]),
-            was.sent
-          ),
+          incoming: shownIncoming,
+          received: shownReceived,
+          grants: shownGrants,
+          targets: shownTargets,
+          sent: shownSent,
+          // Without a workspace there are no grants: its people are those it may send to.
+          people:
+            shownTargets && (shownGrants || !workspace)
+              ? contactsOf(
+                  workspace,
+                  shownGrants ?? [],
+                  shownTargets,
+                  shownReceived ?? [],
+                  shownSent ?? []
+                )
+              : null,
           links: value(
             Option.map(links, (p) => p.data as ProviderUserLink[]),
             was.links

@@ -56,7 +56,7 @@ async function renderShortcutHarness() {
       view.container
         .querySelector<HTMLElement>("status-indicator")
         ?.shadowRoot?.querySelectorAll('[role="radio"]')
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   });
   const indicator = view.container.querySelector<HTMLElement>("status-indicator");
   return { changes, getByRole: view.getByRole, indicator };
@@ -80,12 +80,12 @@ describe("StatusIndicator Storybook integration", () => {
         container
           .querySelector<HTMLElement>("status-indicator")
           ?.shadowRoot?.querySelectorAll('[role="radio"]')
-      ).toHaveLength(4);
+      ).toHaveLength(5);
     });
     const indicator = container.querySelector<HTMLElement>("status-indicator");
 
     const icons = indicator?.shadowRoot?.querySelectorAll(".icon svg");
-    expect(icons).toHaveLength(4);
+    expect(icons).toHaveLength(5);
     for (const icon of icons ?? []) {
       expect(icon.querySelector("path")).toHaveAttribute("stroke-width", "2");
     }
@@ -113,10 +113,10 @@ describe("StatusIndicator Storybook integration", () => {
       selectedStatus?.focus();
     });
     await user.keyboard("{End}");
-    expect(indicator).toHaveAttribute("value", "cancel");
+    expect(indicator).toHaveAttribute("value", "loops");
     expect(
       indicator?.shadowRoot?.querySelector('[role="radio"][aria-checked="true"]')
-    ).toHaveTextContent("Cancel");
+    ).toHaveTextContent("Automated");
 
     await user.keyboard("{Home}");
     expect(indicator).toHaveAttribute("value", "in-progress");
@@ -143,7 +143,7 @@ describe("StatusIndicator Storybook integration", () => {
         container
           .querySelector<HTMLElement>("status-indicator")
           ?.shadowRoot?.querySelectorAll('[role="radio"]')
-      ).toHaveLength(4);
+      ).toHaveLength(5);
     });
     const indicator = container.querySelector<HTMLElement>("status-indicator");
     document.documentElement.setAttribute("data-comma-reduced-motion", "true");
@@ -165,8 +165,8 @@ describe("StatusIndicator Storybook integration", () => {
     });
     await user.keyboard("{End}");
 
-    expect(items?.[3]).toHaveAttribute("aria-checked", "true");
-    expect(items?.[3]?.style.width).toBe(selectedWidth);
+    expect(items?.[4]).toHaveAttribute("aria-checked", "true");
+    expect(items?.[4]?.style.width).toBe(selectedWidth);
     expect(items?.[0]?.style.width).not.toBe(selectedWidth);
   });
 
@@ -179,7 +179,7 @@ describe("StatusIndicator Storybook integration", () => {
       const lazyIndicator = container.querySelector<HTMLElement>("status-indicator");
       expect(
         lazyIndicator?.shadowRoot?.querySelectorAll('[role="radio"]')
-      ).toHaveLength(4);
+      ).toHaveLength(5);
       expect(
         lazyIndicator?.shadowRoot?.querySelector("style[data-comma-reduced-motion]")
       ).toBeInTheDocument();
@@ -235,7 +235,7 @@ describe("StatusIndicator Storybook integration", () => {
       key: "¡",
       shiftKey: true,
     });
-    expect(indicator).toHaveAttribute("value", "cancel");
+    expect(indicator).toHaveAttribute("value", "loops");
     expect(changes).toEqual(statusIds);
   });
 

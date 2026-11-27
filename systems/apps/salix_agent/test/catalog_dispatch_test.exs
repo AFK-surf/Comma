@@ -1,7 +1,7 @@
 defmodule SalixAgent.CatalogDispatchTest do
   use SystemsClock.Case, async: false
 
-  alias SalixAgent.{AccountPool, ModelChoice}
+  alias SalixAgent.{AccountPool, ModelChoice, PlatformRouter}
   alias SalixAgent.SubscriptionStore, as: Store
 
   setup do
@@ -623,6 +623,178 @@ defmodule SalixAgent.CatalogDispatchTest do
     assert {first["id"], second["id"]} == {fresh["id"], plan["id"]}
   end
 
+  describe "a platform Router" do
+    setup %{tenant: tenant} do
+      platform = AccountPool.platform_tenant()
+
+      on_exit(fn ->
+        Store.query("DELETE FROM subscription_accounts WHERE tenant_id=$1", [platform])
+        PlatformRouter.delete(tenant)
+      end)
+
+      {:ok, platform_key} = key(platform, "openrouter", "sk-or-v1-platform-router-0000")
+      {:ok, platform_key: platform_key}
+    end
+
+    test "serves on platform keys first, then the tenant's subscriptions; its keys only when the record allows pay-per-use",
+         %{tenant: tenant, platform_key: platform_key} do
+      subscription(tenant, "codex")
+      {:ok, _} = key(tenant, "openai", "sk-proj-0123456789abcdef")
+
+      assert {:ok, %{"allow_paid" => false}} =
+               PlatformRouter.put(tenant, %{"model" => "gpt-5.5", "billing" => "record"})
+
+      route = marked_route(tenant, "gpt-5.5")
+      assert route["platform"] == true
+      refute route["allow_paid"]
+
+      # The platform key serves, and the meta names what served it.
+      assert {:ok, opts} = AccountPool.dispatch(route, &{:ok, &1})
+      assert opts["api_key"] == "sk-or-v1-platform-router-0000"
+      assert opts["credential_scope"] == "platform"
+      assert opts["funding"] == %{"scope" => "platform", "billing" => "record"}
+
+      attempts = fn -> Enum.reverse(Process.get(:attempts, [])) end
+
+      record_attempt = fn opts ->
+        Process.put(:attempts, [opts["base_url"] | Process.get(:attempts, [])])
+      end
+
+      # A platform key refused before output: the tenant's subscription serves.
+      platform_fails = fn opts ->
+        record_attempt.(opts)
+
+        if opts["api_key"] == "sk-or-v1-platform-router-0000",
+          do: {:error, %{"status" => 429}},
+          else: {:ok, opts}
+      end
+
+      assert {:ok, opts} = AccountPool.dispatch(route, platform_fails)
+      assert opts["base_url"] == "subscription://worker/v1"
+      assert opts["funding"] == %{"scope" => "tenant", "billing" => "record"}
+      assert attempts.() == ["https://openrouter.ai/api/v1", "subscription://worker/v1"]
+
+      # No subscription serves either: the tenant's API key is not tried, and
+      # the stop is the platform attempt's.
+      only_tenant_key = fn opts ->
+        record_attempt.(opts)
+
+        if opts["api_key"] == "sk-proj-0123456789abcdef",
+          do: {:ok, opts},
+          else: {:error, %{"status" => 429}}
+      end
+
+      Process.delete(:attempts)
+      assert {:error, meta} = AccountPool.dispatch(route, only_tenant_key)
+      assert meta["funding"] == %{"source" => "platform"}
+      assert attempts.() == ["https://openrouter.ai/api/v1", "subscription://worker/v1"]
+
+      # When nothing serves, the stop is the platform's and names no platform Profile.
+      assert {:error, meta} =
+               AccountPool.dispatch(route, fn _ ->
+                 {:error, %{"status" => 402, "body" => "insufficient_quota"}}
+               end)
+
+      assert meta["funding"] == %{"source" => "platform"}
+      refute inspect(meta) =~ platform_key["id"]
+      refute inspect(meta) =~ "sk-or-v1-platform-router-0000"
+
+      # The record allows pay-per-use: the tenant's key serves past the
+      # subscriptions, funded by the tenant. The record decides, so the stored
+      # choice without `allow_paid` does not keep the key out.
+      assert {:ok, %{"allow_paid" => true}} =
+               PlatformRouter.put(tenant, %{
+                 "model" => "gpt-5.5",
+                 "billing" => "record",
+                 "allow_paid" => "true"
+               })
+
+      subscription(tenant, "codex")
+      Process.delete(:attempts)
+      assert {:ok, opts} = AccountPool.dispatch(route, only_tenant_key)
+      assert opts["api_key"] == "sk-proj-0123456789abcdef"
+      assert opts["funding"] == %{"scope" => "tenant", "billing" => "record"}
+      assert hd(attempts.()) == "https://openrouter.ai/api/v1"
+      assert List.last(attempts.()) == "https://api.openai.com/v1"
+
+      # Turned off again without re-applying: a stored choice that still
+      # allows pay-per-use does not keep the key path.
+      assert {:ok, %{"allow_paid" => false}} =
+               PlatformRouter.put(tenant, %{"model" => "gpt-5.5", "billing" => "record"})
+
+      paid = marked_route(tenant, "gpt-5.5", true)
+      assert paid["platform"] == true
+      assert paid["allow_paid"] == true
+      assert paid["base_url"] == "catalog://"
+
+      subscription(tenant, "codex")
+      Process.delete(:attempts)
+      assert {:error, _meta} = AccountPool.dispatch(paid, only_tenant_key)
+      refute "https://api.openai.com/v1" in attempts.()
+
+      # Cleared, no platform key serves and the choice's own `allow_paid`
+      # applies; nothing is platform-funded.
+      :ok = PlatformRouter.delete(tenant)
+      subscription(tenant, "codex")
+      assert {:ok, opts} = AccountPool.dispatch(route, &{:ok, &1})
+      assert opts["base_url"] == "subscription://worker/v1"
+      refute Map.has_key?(opts, "funding")
+
+      Process.delete(:attempts)
+      assert {:error, _meta} = AccountPool.dispatch(route, only_tenant_key)
+      refute "https://api.openai.com/v1" in attempts.()
+      refute "https://openrouter.ai/api/v1" in attempts.()
+
+      Process.delete(:attempts)
+      assert {:ok, opts} = AccountPool.dispatch(paid, only_tenant_key)
+      assert opts["api_key"] == "sk-proj-0123456789abcdef"
+      assert opts["credential_scope"] == "tenant"
+      refute Map.has_key?(opts, "funding")
+      refute "https://openrouter.ai/api/v1" in attempts.()
+
+      # A tenant with no Profile of its own gets the usual stop.
+      bare = SalixStore.Ids.new_tenant_id()
+
+      assert {:error, error} =
+               AccountPool.dispatch(marked_route(bare, "gpt-5.5"), fn _ ->
+                 flunk("no platform key without the record")
+               end)
+
+      assert error["reason"] == "model_unavailable"
+    end
+
+    test "in deduct billing a fee refusal skips the platform keys", %{tenant: tenant} do
+      assert {:ok, _} =
+               PlatformRouter.put(tenant, %{"model" => "gpt-5.5", "billing" => "deduct"})
+
+      refuse = fn -> {:error, %{reason: "insufficient_credits"}} end
+      refused = Map.put(marked_route(tenant, "gpt-5.5"), "platform_admit", refuse)
+
+      # No subscription of the tenant serves, and its API key is not tried
+      # without pay-per-use: the stop is the refusal.
+      {:ok, _} = key(tenant, "openai", "sk-proj-0123456789abcdef")
+
+      assert {:error, error} =
+               AccountPool.dispatch(refused, fn _ ->
+                 flunk("a refused platform key must not serve")
+               end)
+
+      assert error["error_class"] == "billing_unavailable"
+      assert error["reason"] == "insufficient_credits"
+      assert error["retryable"] == false
+
+      # The tenant's subscription serves past the refusal.
+      subscription(tenant, "codex")
+      assert {:ok, opts} = AccountPool.dispatch(refused, &{:ok, &1})
+      assert opts["funding"] == %{"scope" => "tenant", "billing" => "deduct"}
+
+      # Admitted, the platform key serves.
+      admitted = Map.put(refused, "platform_admit", fn -> :ok end)
+      assert {:ok, opts} = AccountPool.dispatch(admitted, &{:ok, &1})
+      assert opts["funding"] == %{"scope" => "platform", "billing" => "deduct"}
+    end
+  end
+
   test "pinning an API key is choosing to pay for it", %{tenant: tenant} do
     {:ok, openai} = key(tenant, "openai", "sk-proj-0123456789abcdef")
     subscription = subscription(tenant, "codex")
@@ -656,6 +828,17 @@ defmodule SalixAgent.CatalogDispatchTest do
         tenant
       )
 
+    route
+  end
+
+  # The route of a Router holding the platform Router's marked choice.
+  defp marked_route(tenant, model, allow_paid \\ false) do
+    choice = %{"kind" => "catalog", "model" => model, "platform" => true}
+    choice = if allow_paid, do: Map.put(choice, "allow_paid", true), else: choice
+    {:ok, record} = ModelChoice.record(choice, tenant)
+    assert record["provider_config"]["platform"] == true
+    assert {:ok, %{} = route} = ModelChoice.llm_config(record)
+    assert route["catalog_model"] == model
     route
   end
 

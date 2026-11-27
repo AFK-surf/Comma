@@ -37,8 +37,8 @@ After core rollout, `SalixWeb.Migrations.CloudVMCutover` runs once when `SALIX_C
 ## Tool calls from a Task's station
 
 The agent in a [sandbox Task](compute-devices.md#coding-sandboxes) calls Salix registry tools as the Task's Worker, over the station's own connection: the station tools `salix_tools` and `salix_call {tool, args}`, and the `comma` command in the sandbox (`comma tools | describe <tool> | call <tool> [--json]`, JSON out), which calls those two tools through the station's MCP endpoint of the session that runs it. The requests are `task.tools` and `task.tool_call` ([station protocol](../systems/station/docs/tasks.md)). No Comma or Salix credential enters the sandbox.
-Salix (`SalixWeb.StationTasks.tool_call/2`) takes a call only from a Session taking part in the Task, from the device of the Task's current sandbox, over that Workload generation's connection: another device, Session or a replaced sandbox is an error, as for `task.app_deploy`. Only a sandbox station offers the tools (L4ES starts it with `SALIX_CONNECTOR_JOIN=1`): a person's own machine, a Group's Cloud VM or a VMM Station offers none, and Salix refuses them.
-The call runs through `SalixAgent.SessionToolDispatch` as the Worker Agent, with the Worker's own tool disclosure ([SalixAgent.StationToolCalls](../systems/apps/salix_agent/lib/salix_agent/station_tool_calls.ex)): a sandbox calls what a Worker on the Group's Cloud VM or a Station calls in Salix, including `env.*` (with `credential_env`) and `preview.*`, and nothing the Worker could not call. The context is the one the Worker's own round builds (`SalixAgent.RoundConfig`): its tool disclosure, plugin projection and skills under `/.runtime/skills`. `fs.*` is the Worker's files (`/drive/...` is the Workspace's Drive); `im_api.internal.read_conversation` without a `conversation_id` reads this Task's conversation. `im_api.internal.task.create` makes one sandbox Task of the Worker's own ([above](#where-a-task-runs)); its answer names a Task made for this Task's owner and no record's content, so it goes back whatever the mode.
+Salix (`SalixWeb.StationTasks.tool_call/2`) accepts a call only from a Session in the Task, from the device of its current sandbox, over that Workload generation's connection: any other device, Session or sandbox returns an error, as for `task.app_deploy`. Only a sandbox station offers the tools (`SALIX_CONNECTOR_JOIN=1`): a person's machine, Group Cloud VM or VMM Station offers none, and Salix refuses them.
+The call runs through `SalixAgent.SessionToolDispatch` as the Worker Agent, with the Worker's own tool disclosure ([SalixAgent.StationToolCalls](../systems/apps/salix_agent/lib/salix_agent/station_tool_calls.ex)): a sandbox calls what a Worker on the Group's Cloud VM or a Station calls in Salix, including `env.*` (with `credential_env`) and `preview.*`, and nothing else. The context is the one the Worker's own round builds (`SalixAgent.RoundConfig`): its tool disclosure, plugin projection and skills under `/.runtime/skills`. `fs.*` is the Worker's files (`/drive/...` is the Workspace's Drive); `im_api.internal.read_conversation` without a `conversation_id` reads this Task's conversation. `im_api.internal.task.create` makes one sandbox Task of the Worker's own ([above](#where-a-task-runs)); its answer names a Task made for this Task's owner and no record's content, so it goes back whatever the mode.
 The call acts for the person whose Task it is (its Comma owner, else the Slack or Feishu person in `ifc_requester`), never for the Worker (an agent's id commands no effect, IFC §3.1): its origin is the delegated-principal wrapper `{schedule, "station:<device>", person}` under the Task conversation's label (`SalixAgent.IFC.station_origin/3`, `provider: "schedule"`, the one form the kernel reads a sealed principal from with no Session behind it). Under audit or enforce the activation wire is a Session of one input, the call sealed with that origin; a Task with no person is refused before any dispatch (`no_requester`).
 Returning a result to the sandbox is an egress: the Group's one Task Worker holds every Task's files, and a read never filters inside Salix. A labelled result is for the sandbox only when the Task's owner is a reader of its label by the kernel's reading of the Group's facts (`SalixIFC.reader?/3`); a result for someone else, an agent-private one (a read that labelled nothing) or one whose readers are unknown is not (`label_not_this_task`), nor is one the dispatcher did not label at all (`label_unknown`), a tool's own failure text excepted, and so is the answer of `im_api.internal.task.create`, the new Task's id and title. The verdict is archived as an IFC decision and the Group's mode decides as for a round: under enforce the refusal stands and the prepared writes are dropped; under audit it is recorded and the result goes back. A Group with the check off labels nothing and is not affected.
 A call's `fs.*` writes commit to the Worker's workspace as a round's do (`SalixAgent.WorkspaceEvents`); `/drive/...` writes take effect as the tool runs; session events are dropped. Bounds: 4 calls in flight per station, arguments at most 1 MiB, a result at most 1 MiB (`truncated` when cut), and an answer within the tool's own timeout plus 5 s, at most 19 minutes (`StationToolCalls.deadline_ms/2`; the station and Codex wait 20 minutes), after which the station is told the call timed out; it may still have taken effect. A refused call answers `{error, message}` (`args_too_large`, `too_many_calls`, `no_requester`); a tool's own failure answers `error: true` with its text. Every call is archived as the Worker's tool call, logged (`station tool call`: Task, session, tool, outcome, duration, result bytes) and counted as `station_tool_call`.
@@ -62,14 +62,14 @@ A bounded dependency error is a valid terminal outcome; unbounded silent retry i
 Accepted pending input must survive owner restart and compaction.
 Model calls and capacity backoff permit bounded input admission. Storage recovery still blocks it.
 Slot release notifies one eligible owner. Watches use the global dependency limit, one per owner. Timers cover missed wakes and full watch sets.
-Reports and a thread's requests batch at activation; `ifc.request` picks requester.
+Reports and one thread or DM's requests batch at activation and before a reply; `ifc.request` picks requester.
 Between activations a person precedes other bot, app, schedule, and Loop requests up to 5 min older.
 A late provider request or compactor must not drop fresh input.
 Keep durable input identity separate from model context.
 A summary authorizes no additional disclosure or tool requests.
 Compaction preserves runtime label facts through the host transformation.
 Manual and automatic compaction share durable continuation boundaries.
-Compaction commits an archive target; its worker publishes history and does bounded cleanup. [Storage](storage-search.md) covers sealing, recovery.
+Compaction commits archive target, redacted summary fact; its worker publishes history, bounded cleanup ([Storage](storage-search.md), [Handoff](salix/README.md)).
 
 A canonical Router in a generic `wait_for` can yield to a queued human request.
 A running async tool does not own that slot; its call record and source provenance survive.
@@ -77,7 +77,7 @@ Yield neither cancels the tool nor reports its result as the new request's.
 Active rounds, `auto_wait`, reply repair, and blocking provider obligations keep their guards.
 The yield commit rechecks the wait and transcript after current-source runtime input.
 Yield neither ensures progress during storage failure nor interrupts a model request.
-Active Routers cannot yield; queue pressure prompts delegation. Answered Slack activations with a person queued only reply, delegate or `end_turn` (`QueueYieldGuard`); an unanswered `done` needs `no_reply` (`UnansweredPersonGuard`).
+Active Routers cannot yield; queue pressure prompts delegation. `FollowupReplyGuard` holds a first reply when a same-thread follow-up is queued; answered Slack turns with a person queued use `QueueYieldGuard`; an unanswered `done` needs `no_reply` (`UnansweredPersonGuard`).
 IM and Comma guards keep queued input and send authorization.
 
 Two consecutive unsettled rounds retire the turn; rounds of only refused (`guidance`) calls do not count.
@@ -131,7 +131,7 @@ The storage revision identifies the submission. It is not a content hash or a se
 Existing domain owners handle later work. Durable aliases and frontiers identify accepted inputs. Workspace effects retain their operation identity.
 The async terminal owner retains results within its existing retry budget. Recovery reads tool receipts or marks calls interrupted; it never reruns the tool.
 A synchronous result without an independent receipt can become interrupted after storage errors; it is not retained indefinitely.
-Failed compaction does not adopt its summary; a later attempt reloads and checks the summary and cutoff. Control errors also reload before later work.
+Failed compaction does not adopt its summary; a later attempt reloads and checks summary and cutoff. Control errors reload before later work.
 
 Input acknowledgments, including duplicates, and later effects wait for the fence.
 A working-state ledger hit cannot confirm durable acceptance.
@@ -187,5 +187,5 @@ Session transactions derive `next_run_at` from the existing immediate-work reaso
 Post-commit notifications carry an address and SQL revision. They are hints with no execution authority.
 The recovery worker pages due Sessions, Capability expiry, and result delivery within its existing page and time budgets.
 A short PostgreSQL dispatch reservation limits duplicate wake requests. It does not consume inputs or change the Session revision.
-Owner acquisition still uses the Agent epoch. Startup also pages internal Sessions with work reasons, including work without a deadline.
+Owner acquisition still uses the Agent epoch. Startup pages internal Sessions with work reasons, including work without a deadline.
 Wait timeout identity and admission stay in the Session owner. No separate S3 timer registration is required.

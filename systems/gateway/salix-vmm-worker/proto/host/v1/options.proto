@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package agentvmm.host.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/AFK-surf/agent-vmm/api/host/v1;hostv1";
+
+// MethodPolicy marks runtime method behavior used by the session owner instead of method-name
+// heuristics.
+message MethodPolicy {
+  bool session_lock_exempt = 1;
+}
+
+extend google.protobuf.MethodOptions {
+  MethodPolicy method_policy = 1000;
+}

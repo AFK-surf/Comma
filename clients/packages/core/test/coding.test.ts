@@ -237,7 +237,11 @@ describe("coding sessions", () => {
       })
       .on("POST", `${BASE}/sessions/cnv_1/terminal`, {
         url: "https://l4es.test/c#a=x&sandbox=t-1-g1",
-      });
+      })
+      .on("POST", `${BASE}/sessions/cnv_1/screen`, { device_id: "dev-sbx-cnv_1" })
+      .on("POST", `${BASE}/sessions/cnv_2/screen`, () =>
+        json(403, { error: "forbidden" })
+      );
 
     expect(
       await t.client.call("coding.session", { workspaceId: WS, taskId: "cnv_1" })
@@ -321,6 +325,13 @@ describe("coding sessions", () => {
     ).toEqual({
       url: "https://l4es.test/c#a=x&sandbox=t-1-g1",
     });
+    // The Device its sandbox's screen is viewed on, for the Task's owner; another member is told why not.
+    expect(
+      await t.client.call("coding.screen", { workspaceId: WS, taskId: "cnv_1" })
+    ).toEqual({ deviceId: "dev-sbx-cnv_1" });
+    await expect(
+      t.client.call("coding.screen", { workspaceId: WS, taskId: "cnv_2" })
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it("edits, makes ready and merges the branch's pull request on GitHub, sandbox or not", async () => {

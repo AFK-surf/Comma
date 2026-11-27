@@ -10,7 +10,8 @@ defmodule SalixStore.OAuth.Adapters.Secret do
   a password, a tenant id): the request names them (`fields/1`), the form asks
   for each, and the connection record keeps them in order under `"fields"`, next
   to where a single value keeps its `"access_token"`. `credential_env` names a
-  field by its `value`. Only a secret field's value is redacted from output.
+  field by its `value`. Only a secret field's value is redacted from output. A
+  field marked optional may be left empty: the record then leaves it out.
   """
   @behaviour SalixStore.OAuth.Adapter
 
@@ -28,10 +29,11 @@ defmodule SalixStore.OAuth.Adapters.Secret do
 
   @doc """
   The fields a request asks for, normalized to `[%{"name", "label", "secret"}]`
-  in their order; nil or `[]` is a single value. A name is letters, digits and
+  in their order, with `"optional" => true` on a field the person may leave
+  empty; nil or `[]` is a single value. A name is letters, digits and
   `_`, starts with a letter, has at most 32 characters, is unique ignoring case
   and is not `access_token` or `client_id`; at most 8 fields. `label` (what the
-  form shows) defaults to the name, `secret` to true.
+  form shows) defaults to the name, `secret` to true, `optional` to false.
   """
   @spec fields(term()) :: {:ok, [map()]} | {:error, String.t()}
   def fields(nil), do: {:ok, []}
@@ -56,7 +58,7 @@ defmodule SalixStore.OAuth.Adapters.Secret do
   end
 
   def fields(list) when is_list(list), do: {:error, "a secret has at most #{@max_fields} fields"}
-  def fields(_other), do: {:error, "fields must be a list of {name, label, secret}"}
+  def fields(_other), do: {:error, "fields must be a list of {name, label, secret, optional}"}
 
   defp field(entry) when is_map(entry) do
     name = entry |> get("name") |> to_text()
@@ -76,17 +78,21 @@ defmodule SalixStore.OAuth.Adapters.Secret do
       get(entry, "secret") not in [nil, true, false] ->
         {:error, "field #{name}: secret must be true or false"}
 
+      get(entry, "optional") not in [nil, true, false] ->
+        {:error, "field #{name}: optional must be true or false"}
+
       true ->
-        {:ok,
-         %{
-           "name" => name,
-           "label" => if(label == "", do: name, else: label),
-           "secret" => get(entry, "secret") != false
-         }}
+        %{
+          "name" => name,
+          "label" => if(label == "", do: name, else: label),
+          "secret" => get(entry, "secret") != false
+        }
+        |> then(&if(get(entry, "optional") == true, do: Map.put(&1, "optional", true), else: &1))
+        |> then(&{:ok, &1})
     end
   end
 
-  defp field(_entry), do: {:error, "fields must be a list of {name, label, secret}"}
+  defp field(_entry), do: {:error, "fields must be a list of {name, label, secret, optional}"}
 
   defp get(map, key), do: Map.get(map, key, Map.get(map, String.to_atom(key)))
 
@@ -119,27 +125,34 @@ defmodule SalixStore.OAuth.Adapters.Secret do
       else: {:ok, req["redirect_uri"] <> "?" <> URI.encode_query(%{"state" => req["state"]})}
   end
 
-  # A request with fields takes exactly those, each a value of its own.
+  # A request with fields takes only those, each a value of its own: every
+  # required one, and an optional one when it is not empty.
   @impl true
   def exchange_code(_app, %{"fields" => [_ | _] = wanted}, values) when is_map(values) do
-    given = Map.keys(values) |> Enum.map(&to_string/1) |> Enum.sort()
+    values = Map.new(values, fn {name, value} -> {to_string(name), value} end)
     names = Enum.map(wanted, & &1["name"])
+    required = for field <- wanted, field["optional"] != true, do: field["name"]
 
-    if given != Enum.sort(names) do
+    if Enum.any?(Map.keys(values), &(&1 not in names)) or
+         Enum.any?(required, &(not Map.has_key?(values, &1))) do
       {:error, "expected the fields #{Enum.join(names, ", ")}"}
     else
       Enum.reduce_while(Enum.reverse(wanted), {:ok, []}, fn field, {:ok, acc} ->
-        case value(values[field["name"]]) do
-          {:ok, value} ->
+        case {value(values[field["name"]]), field["optional"]} do
+          {{:ok, value}, _optional} ->
             {:cont,
              {:ok,
               [%{"name" => field["name"], "secret" => field["secret"], "value" => value} | acc]}}
 
-          {:error, reason} ->
+          {{:error, "the value is empty"}, true} ->
+            {:cont, {:ok, acc}}
+
+          {{:error, reason}, _optional} ->
             {:halt, {:error, "#{field["name"]}: #{reason}"}}
         end
       end)
       |> case do
+        {:ok, []} -> {:error, "fill in at least one field"}
         {:ok, fields} -> {:ok, tokens(nil, fields)}
         error -> error
       end
@@ -197,7 +210,7 @@ defmodule SalixStore.OAuth.Adapters.Secret do
 
       nil ->
         {:error,
-         "secret: no field #{inspect(value)}; its fields are #{Enum.map_join(fields, ", ", & &1["name"])}"}
+         "secret: no field #{inspect(value)} (not asked for, or an optional field left empty); its fields are #{Enum.map_join(fields, ", ", & &1["name"])}"}
     end
   end
 

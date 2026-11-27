@@ -14,7 +14,6 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import surf.comma.android.scroll.widget.ScrollContainer
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -40,6 +39,7 @@ import surf.comma.android.ui.connection.ConnectionErrorView
 import surf.comma.android.ui.connection.ConnectionSpinner
 import surf.comma.android.ui.connection.connectionAvailability
 import surf.comma.android.ui.composer.ButtonScale
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignTypography
@@ -51,7 +51,7 @@ class AuthActivity : ComponentActivity() {
     private lateinit var connectionError: ConnectionErrorController
 
     private lateinit var google: MaterialButton
-    private lateinit var googleProgress: ProgressBar
+    private lateinit var googleProgress: ActivityIndicator
     private lateinit var googleMessage: TextView
 
     private lateinit var emailBox: TextInputLayout
@@ -78,7 +78,7 @@ class AuthActivity : ComponentActivity() {
 
     private lateinit var bottomBar: View
     private lateinit var primary: MaterialButton
-    private lateinit var primaryProgress: ProgressBar
+    private lateinit var primaryProgress: ActivityIndicator
 
     private var previousChallenge: String? = null
     private var previousState: AuthState? = null
@@ -286,8 +286,8 @@ class AuthActivity : ComponentActivity() {
             rippleColor = ColorStateList.valueOf(text and 0x00FFFFFF or 0x1F000000)
             setOnClickListener { signInWithGoogle() }
         }
-        googleProgress = ProgressBar(this).apply {
-            indeterminateTintList = ColorStateList.valueOf(text)
+        googleProgress = ActivityIndicator(this).apply {
+            color = text
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             isVisible = false
         }
@@ -368,8 +368,8 @@ class AuthActivity : ComponentActivity() {
             setTextColor(getColor(android.R.color.white))
             setOnClickListener { submit() }
         }
-        primaryProgress = ProgressBar(this).apply {
-            indeterminateTintList = ColorStateList.valueOf(getColor(android.R.color.white))
+        primaryProgress = ActivityIndicator(this).apply {
+            color = getColor(android.R.color.white)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             isVisible = false
         }

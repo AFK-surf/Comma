@@ -458,4 +458,68 @@ describe("HomeTasks", () => {
     });
     expect(container.querySelector('[data-state="new"]')).toBeNull();
   });
+
+  it("shows automated Loop tasks in their own loops bucket and switches cleanly with in_progress", async () => {
+    const onOpenTask = vi.fn();
+    const oneShot: TaskSummaryViewModel = {
+      ...task("one-shot", "in_progress", 3),
+      title: "Fix release script",
+    };
+    const scheduledLoop: TaskSummaryViewModel = {
+      ...task("loop-daily", "loops", 2),
+      title: "Daily AI radar",
+      loopStanding: {
+        kind: "scheduled",
+        text: "Every day at 9:00 AM",
+        nextRunText: "Next run Nov 22, 9:00 AM",
+      },
+    };
+    const watchingLoop: TaskSummaryViewModel = {
+      ...task("loop-watch", "loops", 1),
+      title: "Watch PR CI",
+      loopStanding: {
+        kind: "event_triggered",
+        text: "Pull request updated",
+      },
+    };
+    const all = [
+      oneShot,
+      scheduledLoop,
+      watchingLoop,
+      task("review-a", "needs_review", 4),
+    ];
+
+    const { getAllByTestId, getByText, queryByText, rerender } = render(
+      <HomeTasks
+        onOpenTask={onOpenTask}
+        onStatusChange={vi.fn()}
+        status="in_progress"
+        tasks={all}
+      />
+    );
+
+    expect(getAllByTestId("home-task-card")).toHaveLength(1);
+    expect(getByText("Fix release script")).toBeVisible();
+    expect(queryByText("Daily AI radar")).toBeNull();
+    expect(queryByText("Watch PR CI")).toBeNull();
+
+    rerender(
+      <HomeTasks
+        onOpenTask={onOpenTask}
+        onStatusChange={vi.fn()}
+        status="loops"
+        tasks={all}
+      />
+    );
+
+    await waitFor(() => {
+      expect(getAllByTestId("home-task-card")).toHaveLength(2);
+    });
+    expect(getByText("Daily AI radar")).toBeVisible();
+    expect(getByText("Watch PR CI")).toBeVisible();
+    expect(queryByText("Fix release script")).toBeNull();
+
+    await userEvent.click(getByText("Daily AI radar"));
+    expect(onOpenTask).toHaveBeenCalledWith(scheduledLoop);
+  });
 });

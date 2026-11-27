@@ -92,37 +92,38 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
 
   defp plan_status(group_id, plan_id) when is_binary(plan_id) and plan_id != "" do
     case MeetingPlan.get(group_id, plan_id) do
-      {:ok, plan} ->
-        preparation = plan["preparation"] || %{}
-
-        %{
-          "status" => plan["status"] || "unknown",
-          "conversation_id" => plan["conversation_id"],
-          "revision" => plan["revision"],
-          "updated_at" => plan["updated_at"],
-          "settings_revision" =>
-            if(plan["managed_calendar"] == true, do: preparation["policy_revision"]),
-          "preparation" => %{
-            "decision_at" => preparation["decision_at"],
-            "publish_start_at" => preparation["publish_start_at"],
-            "publish_deadline_at" => preparation["publish_deadline_at"],
-            "research_decision" => preparation["research_decision"],
-            "deadline_status" => preparation["deadline_status"],
-            "card_status" => preparation["card_status"],
-            "research_started" => is_map(preparation["research_task"]),
-            "report_available" => is_binary(preparation["report"]) and preparation["report"] != ""
-          }
-        }
-
-      {:error, :not_found} ->
-        %{"status" => "missing"}
-
-      {:error, _reason} ->
-        %{"status" => "unavailable"}
+      {:ok, plan} -> plan_summary(plan)
+      {:error, :not_found} -> %{"status" => "missing"}
+      {:error, _reason} -> %{"status" => "unavailable"}
     end
   end
 
   defp plan_status(_group_id, _plan_id), do: %{"status" => "missing"}
+
+  @doc false
+  # The plan facts a status read shows; no report, baseline or recipient.
+  def plan_summary(plan) do
+    preparation = plan["preparation"] || %{}
+
+    %{
+      "status" => plan["status"] || "unknown",
+      "conversation_id" => plan["conversation_id"],
+      "revision" => plan["revision"],
+      "updated_at" => plan["updated_at"],
+      "settings_revision" =>
+        if(plan["managed_calendar"] == true, do: preparation["policy_revision"]),
+      "preparation" => %{
+        "decision_at" => preparation["decision_at"],
+        "publish_start_at" => preparation["publish_start_at"],
+        "publish_deadline_at" => preparation["publish_deadline_at"],
+        "research_decision" => preparation["research_decision"],
+        "deadline_status" => preparation["deadline_status"],
+        "card_status" => preparation["card_status"],
+        "research_started" => is_map(preparation["research_task"]),
+        "report_available" => is_binary(preparation["report"]) and preparation["report"] != ""
+      }
+    }
+  end
 
   defp autojoin_status(meeting_id) do
     case Store.get(meeting_id) do
@@ -277,7 +278,8 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
 
   defp health(_runtime, _projection, 0, 0, 0), do: {"ok", "eligible_meetings_projected"}
 
-  defp public_title(value) when is_binary(value) do
+  @doc false
+  def public_title(value) when is_binary(value) do
     value
     |> OccurrenceQualification.redact_google_meet_urls()
     |> String.slice(0, 256)
@@ -287,7 +289,7 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
     end
   end
 
-  defp public_title(_value), do: "Calendar meeting"
+  def public_title(_value), do: "Calendar meeting"
 
   defp trim(value), do: value |> to_string() |> String.trim()
 end

@@ -31,6 +31,7 @@ defmodule CommaWeb.Application do
     SystemsRuntime.put_env(:salix_im, :channel_links, CommaWeb.ChannelLinkTools)
     SystemsRuntime.put_env(:salix_agent, :proactive_mail_adapter, CommaWeb.ProactiveMail)
     SystemsRuntime.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
+    SystemsRuntime.put_env(:salix_agent, :live_activity_adapter, CommaWeb.LiveActivityTools)
     SystemsRuntime.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
     SystemsRuntime.put_env(:salix_im, :linear_agent_session_adapter, CommaWeb.LinearAgentSession)
 
@@ -41,6 +42,14 @@ defmodule CommaWeb.Application do
     )
 
     SystemsRuntime.put_env(:salix_im, :task_status_observer, CommaWeb.TaskStatusObserver)
+
+    SystemsRuntime.put_env(
+      :salix_web,
+      :station_task_index_observer,
+      CommaWeb.ProactiveStationTask
+    )
+
+    SystemsRuntime.put_env(:salix_im, :station_task_observer, CommaWeb.ProactiveStationTask)
     SalixEnv.Registry.observe_device_connects(CommaWeb.DeviceSetupOffers)
     SystemsRuntime.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
     SystemsRuntime.put_env(:salix_agent, :stations, CommaWeb.Stations)
@@ -75,7 +84,10 @@ defmodule CommaWeb.Application do
     SystemsRuntime.put_env(:salix_im, :mini_apps, CommaWeb.MiniAppPort)
     SystemsRuntime.put_env(:salix_im, :task_panel_dismissals, CommaWeb.TaskPanelDismissalPort)
     SystemsRuntime.put_env(:salix_im, :task_requests, CommaWeb.TaskRequestTools)
+    SystemsRuntime.put_env(:salix_im, :collaborations, CommaWeb.CollaborationEndpoints)
     SystemsRuntime.put_env(:salix_web, :mini_app_deploys, CommaWeb.MiniAppPort)
+    # Salix gives stations the links of the Tasks they take part in (CommaWeb.TaskLinkPort).
+    SystemsRuntime.put_env(:salix_web, :task_links, CommaWeb.TaskLinkPort)
     SystemsRuntime.put_env(:salix_web, :composio_signal_mod, CommaWeb.MemberSourceTriggers)
 
     children =
@@ -87,6 +99,7 @@ defmodule CommaWeb.Application do
         CommaWeb.IMessageRuntime.child_specs() ++
         CommaWeb.IMessagePhotonRuntime.child_specs() ++
         CommaWeb.NativePushListener.child_specs() ++
+        maybe_colab_install_reconciler() ++
         [
           {Bandit,
            plug: CommaWeb.Router,
@@ -114,6 +127,14 @@ defmodule CommaWeb.Application do
   end
 
   defp maybe_pubsub_child(_name), do: []
+
+  defp maybe_colab_install_reconciler do
+    if SystemsRuntime.get_env(:comma_web, :colab_install_reconciler_enabled, true) do
+      [CommaWeb.ColabInstallReconciler]
+    else
+      []
+    end
+  end
 
   defp pubsub_server do
     SystemsRuntime.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)

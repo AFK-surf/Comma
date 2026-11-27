@@ -39,6 +39,7 @@
 .comma-hover-card[data-exiting] {
   filter: blur(0);
   transition-duration: var(--motion-duration-hover-card-exit);
+  transition-timing-function: var(--motion-easing-sharp-in);
 }
 
 /* Without motion: a card that takes over from another enters at once and the

@@ -7,11 +7,13 @@
 //                                 frame and whenever these change; the next video frame is a key frame.
 //   2 video     station → client  1 byte flags (bit 0: key frame), 8 bytes timestamp (µs, big-endian), length-prefixed
 //                                 NAL units (AVCC), parameter sets in the config only.
-//   3 state     station → client  JSON {control?, switches?, refused?, latency?, video?, cursor?, ended?, endedCode?, orientation?,
-//                                 pose?, timing?, agent?, agentPointer?}: `control` whether the view drives the screen now (first state, and the answer
+//   3 state     station → client  JSON {control?, switches?, refused?, latency?, rtt?, loss?, video?, cursor?, ended?, endedCode?,
+//                                 orientation?, pose?, timing?, agent?, agentPointer?}: `control` whether the view drives the screen now (first state, and the answer
 //                                 to each `control` frame, with `refused` saying why when Control was asked and not let);
 //                                 `switches` in the first state: the view takes `control` frames; `latency` {frame,
-//                                 before} each second while frames come; `video` {capture, encoder?, hardware?} how the
+//                                 before} each second while frames come; `rtt` the chosen path's round trip (ms) and
+//                                 `loss` the station's packets lost on it over the last 10 s (0..100 %), as they change
+//                                 (not to a preview); `video` {capture, encoder?, hardware?} how the
 //                                 pictures are made; `cursor` {x, y, shape} the pointer (0..1 of the picture, a CSS
 //                                 cursor's name, `none` hidden) where the pictures leave it out; `orientation` and
 //                                 `pose` how a device stands; `timing` in the first state: the station logs each
@@ -479,7 +481,13 @@ export type ScreenAsk = {
    */
   quality?: ScreenQuality;
   /** `#rrggbb`: shown where the picture has no window. */
-  background?: string; /**
+  background?: string;
+  /**
+   * A foldable's picture as its panel draws it, never turned (a client that draws the device turned, in 3D): its UI's
+   * turn plays on it live, and its state says `panel`. Never of a preview. A station from before turns it.
+   */
+  panel?: boolean;
+  /**
    * The running device the client picked, as the list said it (`ScreenListed.instance`): a device's id names a place
    * another may take. Required to view a screen the list gives an instance; another is refused 409.
    */

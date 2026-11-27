@@ -12,11 +12,16 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.animation.AnimationUtils
+import android.graphics.drawable.GradientDrawable
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
+import androidx.dynamicanimation.animation.DynamicAnimation
+import androidx.dynamicanimation.animation.FloatPropertyCompat
 import surf.comma.android.R
 import surf.comma.android.ui.connection.ConnectionSpinner
 import surf.comma.android.ui.theme.DesignMotion
+import surf.comma.android.ui.theme.DesignSpring
 import surf.comma.android.ui.theme.DesignTypography
 import kotlin.math.floor
 import kotlin.math.max
@@ -24,11 +29,12 @@ import kotlin.math.min
 
 /**
  * What fills the composer's capsule while it dictates: the waveform while it records, then the note and spinner while
- * it transcribes. It lies over the capsule at the same size. [ComposerView] holds the capsule collapsed to one row
+ * it transcribes. Recording, a ✓ takes Send's corner so the way to end it shows; a tap on it ends the recording, as one
+ * anywhere on the capsule does, and the waveform stops short of it. It lies over the capsule at the same size. [ComposerView] holds the capsule collapsed to one row
  * until the dictation ends. It is laid out at all times, so showing it costs no layout.
  */
 internal class DictationCapsule(context: Context, style: ComposerStyle, level: () -> Float) : FrameLayout(context) {
-    private val waveform = DictationWaveformView(context, style, level)
+    private val waveform = DictationWaveformView(context, style, level, trailing = style.dp(ComposerRow.SLOT_DP))
     private val note = TextView(context).apply {
         style.applyText(this, DesignTypography.Level.SMALL)
         setTextColor(style.textTertiary)
@@ -36,6 +42,21 @@ internal class DictationCapsule(context: Context, style: ComposerStyle, level: (
         gravity = Gravity.CENTER_VERTICAL
     }
     private val spinner = ConnectionSpinner(context).apply { color = style.textTertiary }
+    /** Send's circle in its corner, with a ✓. The capsule takes its taps. */
+    private val done = ImageView(context).apply {
+        setImageResource(R.drawable.ic_composer_check)
+        setColorFilter(style.onBrand)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(style.brand)
+        }
+        val inset = style.dp((DONE_DP - CHECK_DP) / 2)
+        setPadding(inset, inset, inset, inset)
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        DONE_SCALE.setValue(this, DesignMotion.unseenScale)
+    }
+    private val doneSpring = DesignSpring(done, DONE_SCALE, DesignMotion.springScale, DynamicAnimation.MIN_VISIBLE_CHANGE_SCALE)
 
     init {
         visibility = INVISIBLE
@@ -51,6 +72,10 @@ internal class DictationCapsule(context: Context, style: ComposerStyle, level: (
         note.alpha = 0f
         addView(note, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT, Gravity.START).apply {
             marginStart = style.dp(16)
+        })
+        val circle = style.dp(DONE_DP)
+        addView(done, LayoutParams(circle, circle, Gravity.END or Gravity.CENTER_VERTICAL).apply {
+            marginEnd = (style.dp(ComposerRow.SLOT_DP) - circle) / 2
         })
         spinner.visibility = INVISIBLE
         val ring = style.dp(SPINNER_DP)
@@ -85,6 +110,8 @@ internal class DictationCapsule(context: Context, style: ComposerStyle, level: (
             note.alpha = 0f
         }
         spinner.visibility = if (transcribing) VISIBLE else INVISIBLE
+        // It grows in from half its size and shrinks back there as the spinner takes its corner.
+        doneSpring.animateTo(if (recording) 1f else DesignMotion.unseenScale)
         if (phase == DictationPhase.IDLE) {
             animate().alpha(0f).setDuration(fade).setInterpolator(DesignMotion.softInOut)
                 .withEndAction { visibility = INVISIBLE }.start()
@@ -93,6 +120,19 @@ internal class DictationCapsule(context: Context, style: ComposerStyle, level: (
 
     private companion object {
         const val SPINNER_DP = 18
+        /** Send's circle and its glyph. */
+        const val DONE_DP = 32
+        const val CHECK_DP = 28
+
+        /** Both axes at once, with the opacity that goes with the scale. */
+        val DONE_SCALE = object : FloatPropertyCompat<View>("dictationDone") {
+            override fun getValue(view: View) = view.scaleX
+            override fun setValue(view: View, value: Float) {
+                view.scaleX = value
+                view.scaleY = value
+                view.alpha = DesignMotion.seenAt(value)
+            }
+        }
     }
 }
 
@@ -106,7 +146,13 @@ internal class DictationCapsule(context: Context, style: ComposerStyle, level: (
  * draws nothing.
  */
 @SuppressLint("ViewConstructor")
-internal class DictationWaveformView(context: Context, style: ComposerStyle, private val level: () -> Float) : View(context) {
+internal class DictationWaveformView(
+    context: Context,
+    style: ComposerStyle,
+    private val level: () -> Float,
+    /** The trailing corner, in pixels, where no bar draws: bars enter at its leading edge. */
+    private val trailing: Int = 0,
+) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = style.textPrimary }
     private val bar = RectF()
     private val barWidth = style.dp(BAR_WIDTH_DP)
@@ -163,13 +209,16 @@ internal class DictationWaveformView(context: Context, style: ComposerStyle, pri
         val moving = ComposerStyle.motionEnabled
         // With animations off, the strip steps a bar at a time and bars arrive at their height.
         val offset = if (moving) strip.travelled else strip.entered.toFloat()
-        val origin = width - offset * barStep
+        val end = (width - trailing).toFloat()
+        val origin = end - offset * barStep
         val first = floor(-origin / barStep).toInt()
         val middle = height / 2f
         val radius = barWidth / 2f
+        val saved = canvas.save()
+        canvas.clipRect(0f, 0f, end, height.toFloat())
         for (index in first until strip.entered) {
             val x = origin + index * barStep
-            if (x > width) break
+            if (x > end) break
             val resting = index < 0
             paint.alpha = if (resting) RESTING_ALPHA else 255
             val full = if (resting) barWidth else barWidth + strip.height(index) * (maxHeight - barWidth)
@@ -177,6 +226,7 @@ internal class DictationWaveformView(context: Context, style: ComposerStyle, pri
             bar.set(x, middle - tall / 2f, x + barWidth, middle + tall / 2f)
             canvas.drawRoundRect(bar, radius, radius, paint)
         }
+        canvas.restoreToCount(saved)
         if (!running) return
         if (moving) postInvalidateOnAnimation() else postInvalidateDelayed(DictationStrip.INTERVAL_MS)
     }

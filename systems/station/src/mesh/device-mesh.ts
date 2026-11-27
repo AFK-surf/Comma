@@ -5,7 +5,14 @@
 // key in one Group; neither fits a desktop, and a roster row would show the computer to every member.
 //
 // A computer is its owner's. A credential is admitted only for the owner of the device in that Group: another member,
-// or a read-only one, is refused here whatever Salix issued them. Salix says again about each minute what it says of the
+// or a read-only one, is refused here whatever Salix issued them.
+//
+// A Task's sandbox (`looks`) is told its Task's owner in the owner's place, and that one only looks at its screen: they
+// do not drive it, are served no other route, and no access setting stands in the way, as a sandbox has none. It asks
+// Salix nothing and Salix keeps nothing for it: Salix says the facts when the Task's owner asks to see the screen, and
+// again each time their client asks while it views (about a minute apart). What such a station was told stands for
+// STALE_MS from when it last heard, so a view that closed, a role taken back and a Salix that cannot reach the station
+// all end the same way, and the endpoint closes with no one admitted. Salix says again about each minute what it says of the
 // Group, so a lost role is usually heard of within that: a refresh period, not a promise, as a push can be late or lost.
 //
 // A run seen to drop (a blip to Salix) leaves what is open running for at most GRACE_MS and never past the credential's
@@ -20,6 +27,8 @@ import { type Admitted, type Revocation, readOnly, revoked, verifyMember } from 
 
 /// How long what is open outlives a run after its drop was detected.
 export const GRACE_MS = 60_000;
+/// How long what a Task's sandbox was told stands with no word from Salix since: three of a viewing client's asks.
+export const STALE_MS = 180_000;
 
 export type DeviceMeshFacts = {
   workspace: string;
@@ -66,12 +75,25 @@ export class DeviceMeshAdmissions {
   /// The runs that dropped, each with what ends its grace.
   readonly #dropped = new Map<object, () => void>();
   readonly #listeners = new Set<() => void>();
+  /// The runs of a station that `looks`, each with what ends its facts when Salix says nothing more.
+  readonly #stale = new Map<object, () => void>();
+  readonly #staleMs: number;
+  /// This station is a Task's sandbox: the one it admits only looks at its screens (the header).
+  readonly looks: boolean;
+
+  constructor(options: { looks?: boolean; staleMs?: number } = {}) {
+    this.looks = options.looks === true;
+    this.#staleMs = options.staleMs ?? STALE_MS;
+  }
 
   /// What the run `via` was told now; null: it admits no one (it ended, or Salix took its facts back).
   set(via: object, facts: DeviceMeshFacts | null): void {
     this.#dropped.get(via)?.();
     this.#dropped.delete(via);
+    this.#stale.get(via)?.();
+    this.#stale.delete(via);
     if (facts) {
+      if (this.looks) this.#stale.set(via, wall.after(this.#staleMs, () => this.set(via, null)));
       this.#runs.set(via, facts);
       // The run that replaces one that dropped is the one that knows: what it says stands, a revocation above all.
       for (const [other, cancel] of this.#dropped) {
@@ -113,7 +135,7 @@ export class DeviceMeshAdmissions {
   }
 
   mayControl(admitted: Admitted): boolean {
-    return this.holds(admitted) && !readOnly(admitted.viewer);
+    return !this.looks && this.holds(admitted) && !readOnly(admitted.viewer);
   }
 
   /// The member `credential` names, when it is this device's owner; a refusal otherwise.

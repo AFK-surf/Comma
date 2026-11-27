@@ -20,6 +20,7 @@ import { loadKey } from "../cloud/key.ts";
 import { readState, writeState } from "../cloud/state.ts";
 import { version } from "../ops/version.ts";
 import { type ConnectorConfig, applyConfigFile, normalizeConfig, parseArgs, validateConfig } from "./config.ts";
+import { makeComputerUseDaemons } from "./computer-use.ts";
 import { type StationProfiles, makeConnector } from "./connector.ts";
 import { type ArchiveState, archiveName } from "./durable-archive.ts";
 import type { StationTaskIndex } from "./task-index.ts";
@@ -128,6 +129,7 @@ export const ConnectorLive = (argv: string[], workloadCredential: string) =>
       mkdirSync(join(data, "connector"), { recursive: true, mode: 0o700 });
       // The computer's one access value, which every device connection of the station follows.
       const access = computerAccess(agents.config);
+      const computerUseDaemons = makeComputerUseDaemons();
       const index = stationTaskIndex(store);
       // The station's statistics, its own and those of outside sources brought in here (stats/module.ts).
       const stats = yield* statsLayer(store, data);
@@ -142,7 +144,11 @@ export const ConnectorLive = (argv: string[], workloadCredential: string) =>
           const tasks = {
             handle: (method: string, params: Record<string, unknown>) => agents.tasks.handle(host, { ...params, method }),
             models: () => agents.tasks.models(host),
-            listen: (changed: () => void) => agents.config.listen(changed),
+            browsing: () => agents.tasks.browsing(),
+            listen: (changed: () => void) => {
+              const stops = [agents.config.listen(changed), agents.tasks.onBrowsing(changed)];
+              return () => stops.forEach((stop) => stop());
+            },
             attach: (ask: ((request: Record<string, unknown>) => Promise<unknown>) | null) => agents.tasks.attachHost(host, ask),
           };
           yield* Effect.addFinalizer(() => Effect.sync(() => agents.tasks.attachHost(host, null)));
@@ -159,6 +165,7 @@ export const ConnectorLive = (argv: string[], workloadCredential: string) =>
                 index: index(host),
                 stats: stats.forHost(host),
                 screens,
+                computerUseDaemons,
                 android: android.agents,
                 // A desktop Workspace's connection: its owner may choose the local sign-in from a Comma conversation.
                 accounts: host.startsWith(INSTANCE_HOST) ? { chooseLocal: (runtime, by) => agents.accounts.chooseLocalForHost(host, runtime, by) } : undefined,
@@ -203,13 +210,14 @@ export const ConnectorLive = (argv: string[], workloadCredential: string) =>
  * What an instance runner needs of a connector: its scope or a device's access, changed in place, the metadata that
  * says so, and the device's next credential.
  */
-export type InstanceConnector = Pick<Connector, "currentScope" | "setCurrentScope" | "deviceAccess" | "publishCachedMetadata" | "writeStatusMetadataSent" | "renewCredential">;
+export type InstanceConnector = Pick<Connector, "currentScope" | "setCurrentScope" | "deviceAccess" | "publishCachedMetadata" | "writeStatusMetadataSent" | "renewCredential" | "setProxy">;
 
 /**
  * Runs a connector for each `<id>.json` in `dir` (until the caller's scope closes): started when its file appears,
- * changed in place when only its scope or its credential changed, started again when anything else did, stopped when
- * it goes. A new credential is the app's renewal before the current one expires: the running connection presents it
- * and keeps its requests and processes. A device connection's file whose scope alone changed is the app setting the
+ * changed in place when only its scope, its credential or its proxy changed, started again when anything else did,
+ * stopped when it goes. A new credential is the app's renewal before the current one expires: the running connection
+ * presents it and keeps its requests and processes. A new proxy is for the next dial: the running connection is not
+ * dialed again for it. A device connection's file whose scope alone changed is the app setting the
  * computer's access the 2-level way (scope "" is full, local_file_read is read): every device connection then follows
  * it. Its scope otherwise says nothing once the computer has a value.
  */
@@ -247,9 +255,10 @@ export function connectorInstances(
           yield* stop(id);
           continue;
         }
-        // Only the access or the credential changed: the running connection changes them in place.
-        if (current && sameButScopeAndToken(current.cfg, next)) {
+        // Only the access, the credential or the proxy changed: the running connection changes them in place.
+        if (current && differOnlyInWhatChangesInPlace(current.cfg, next)) {
           current.raw = raw;
+          if (current.cfg.proxy !== next.proxy) yield* current.connector.setProxy(next.proxy);
           if (current.cfg.token !== next.token) yield* current.connector.renewCredential(next.token);
           if (next.deviceMode && current.cfg.scope !== next.scope) {
             yield* current.connector.deviceAccess({ allow_operations: next.scope === "" }).pipe(
@@ -295,9 +304,9 @@ export function connectorInstances(
   });
 }
 
-/** Two configurations that differ in their scope or their device credential alone. */
-function sameButScopeAndToken(a: ConnectorConfig, b: ConnectorConfig): boolean {
-  const strip = (cfg: ConnectorConfig) => JSON.stringify({ ...cfg, scope: "", token: "", env: undefined, systemInfoInterval: undefined, workspaceArchiveIdle: undefined, workspaceArchiveRestoreTimeout: undefined });
+/** Two configurations that differ in their scope, their device credential or their proxy alone. */
+function differOnlyInWhatChangesInPlace(a: ConnectorConfig, b: ConnectorConfig): boolean {
+  const strip = (cfg: ConnectorConfig) => JSON.stringify({ ...cfg, scope: "", token: "", proxy: "", env: undefined, systemInfoInterval: undefined, workspaceArchiveIdle: undefined, workspaceArchiveRestoreTimeout: undefined });
   return strip(a) === strip(b);
 }
 

@@ -128,13 +128,20 @@ defmodule SalixMeet.PreparationTask do
     Call meeting.preparation.record_decision. Adapt research to the meeting's
     purpose, cadence and agenda: prior follow-ups and relevant changes since then.
     #{source_instructions(plan)}
-    Find the latest completed occurrence of THIS meeting before its current start.
-    Verify dates and read its full human transcript or exchange, including continuation pages.
-    Read newer public discussions. Cover changes since that occurrence ended, not just
-    since midnight. Honor another period stated for this meeting. With no prior occurrence,
-    use its agenda and recent evidence. Resolve assignments from originals. Proposals are
-    not ownership. Bot summaries are only leads. Old status or an updated thread is not new work.
-    Check names in public writing.
+    Start on the notice channel/chat with operation recent_meetings to list completed
+    meetings across titles (verify every fact via read_shared_source; also check
+    history/search when status is partial or unavailable).
+    Find the latest completed occurrence of THIS meeting before its current start, verify dates
+    and read its full human transcript or exchange, including continuation pages.
+    Also scan intervening completed notice-channel meetings regardless of title (via replies or
+    history_window) as leads, and read an intervening meeting's full human transcript or exchange
+    when its topics or decisions overlap with this meeting or prior follow-ups so cleared or
+    pivoted topics are superseded rather than resurfaced.
+    Read newer public discussions since that occurrence ended (or the meeting's stated period).
+    Expand relevant unexpanded_threads and continuation pages before claiming an outcome is
+    unrecorded. With no prior occurrence, use its agenda, recent_meetings and recent evidence.
+    Resolve assignments from originals. Proposals are not ownership. Bot summaries are only leads.
+    Old status or an updated thread is not new work. Check names in public writing.
     Post a checkpoint within two minutes. Do not schedule or monitor passively.
 
     Finish by #{get_in(plan, ["preparation", "publish_start_at"])} Unix ms. Reserve until
@@ -156,14 +163,14 @@ defmodule SalixMeet.PreparationTask do
 
   defp source_instructions(plan) do
     if get_in(plan, ["publication_target", "provider"]) in ["feishu", "lark"] do
-      "Use meeting.preparation.read_shared_source: one chat per call, operation history or " <>
-        "replies. Start from the notice chat; other chats must be public groups of the organization. " <>
-        "Private groups, DMs and team memory are unavailable. Naming an integration grants no access. " <>
-        "Do not ask Router."
+      "Use meeting.preparation.read_shared_source: one chat per call, operation recent_meetings, " <>
+        "history or replies. Start from the notice chat; other chats must be public groups of the " <>
+        "organization. Private groups, DMs and team memory are unavailable. Naming an integration " <>
+        "grants no access. Do not ask Router."
     else
       "Use meeting.preparation.read_shared_source: one public Slack channel per call, operation " <>
-        "history, replies, search or file. Start from the notice channel. Private channels, " <>
-        "DMs and team memory are unavailable. Naming an integration grants no access. Do not ask Router."
+        "recent_meetings, history, replies, search or file. Start from the notice channel. Private " <>
+        "channels, DMs and team memory are unavailable. Naming an integration grants no access. Do not ask Router."
     end
   end
 

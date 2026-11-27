@@ -31,6 +31,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)complete:(uint64_t)identifier json:(nullable NSData *)json error:(nullable NSString *)error bytes:(nullable NSData *)bytes;
 /// Stops the core and waits for its thread to end (unless called on that thread: then it ends once the call returns).
 - (void)close;
+/// Turns per-task timing of the core's JS loop on or off for the device's performance record.
++ (void)setPerfTimingEnabled:(BOOL)enabled;
+/// What the core's thread spent its time on since last asked, over `spanMs` (empty when nothing ran).
++ (NSString *)takePerfSummaryForSpanMs:(double)spanMs;
 @end
 
 NS_ASSUME_NONNULL_END

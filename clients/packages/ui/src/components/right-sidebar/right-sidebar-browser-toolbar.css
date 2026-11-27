@@ -8,7 +8,7 @@
   }
 }
 
-/* The icon's scale; it is not visible at half its size or less (AGENTS.md,
+/* The icon's scale; it is not visible at half its size or less (clients/AGENTS.md,
    Client UI), so its opacity follows the scale rather than a curve of its own. */
 @property --comma-right-sidebar-browser-icon-scale {
   syntax: "<number>";

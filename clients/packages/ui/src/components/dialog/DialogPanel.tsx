@@ -26,6 +26,7 @@ export const DialogPanel = ({
   showCloseButton = false,
   variant = "default",
   titleLeading,
+  titleTrailing,
   input,
   onClose,
   actions,
@@ -52,9 +53,18 @@ export const DialogPanel = ({
               />
             </>
           ) : null}
-          <h2 id={resolvedTitleId} className={dialogComposeTitle}>
+          <h2
+            id={resolvedTitleId}
+            // A chip as title keeps its focus ring: only words are cut short.
+            className={cx(dialogComposeTitle, typeof title === "string" && "truncate")}
+          >
             {title}
           </h2>
+          {titleTrailing ? (
+            <div className="ml-auto flex shrink-0 items-center text-xs text-secondary">
+              {titleTrailing}
+            </div>
+          ) : null}
         </div>
         {children}
         <DialogActions {...definedProps({ actions })} />

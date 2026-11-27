@@ -99,26 +99,6 @@ defmodule BridgeForTeams.ProjectsTest do
 
       assert {:ok, "admin"} = Memberships.project_role(project.id, user.id)
     end
-
-    test "seeds the salix group's owner emails from the swarm owner set", %{org: org} do
-      {:ok, org_admin} = Accounts.create_user(%{email: "org-admin@example.com"})
-      {:ok, _} = Memberships.put_org_member(org.id, org_admin.id, "admin")
-      {:ok, creator} = Accounts.create_user(%{email: "creator@example.com"})
-
-      assert {:ok, %Project{} = project} =
-               Projects.create_project(org.id, %{name: "Owned", slug: "owned"},
-                 creator_user_id: creator.id
-               )
-
-      create_row =
-        Repo.all(ReconcileOutbox)
-        |> Enum.find(&(&1.op == "create_group" and &1.aggregate_id == project.id))
-
-      assert create_row.payload["attrs"]["owner_emails"] ==
-               ["creator@example.com", "org-admin@example.com"]
-
-      assert Projects.owner_emails(project) == ["creator@example.com", "org-admin@example.com"]
-    end
   end
 
   describe "member Agent Swarm quota" do

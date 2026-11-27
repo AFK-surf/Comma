@@ -1,19 +1,23 @@
 import SwiftUI
 import UIKit
 
-/// The tabs' pages under the system tab bar. Every page stays on screen, the selected one shown and the others
+/// The tabs' pages under the tab bar. Every page stays on screen, the selected one shown and the others
 /// hidden, so a switch only hides one page and shows another. Hosted by the bar's own controller, a page left the
 /// window on every switch and was drawn again from scratch on its return, a hitch each time. The bar's controller
 /// lies over the pages with an empty stand-in for each tab (`ShellTabBarController`).
 final class ShellTabsController<Page: View>: UIViewController {
-    private let bar: ShellTabBarController
+    private let bar: any ShellBar
     private var pages: [AppTab: UIHostingController<HostedContent<Page>>] = [:]
     private let pagesView = UIView()
     private var selection: AppTab
     private var contentLeadingInset: CGFloat
 
     init(store: CommaStore, navigation: AppNavigation, bar state: ShellTabBar, contentLeadingInset: CGFloat = 0, page: (AppTab) -> HostedContent<Page>) {
-        bar = ShellTabBarController(store: store, navigation: navigation, bar: state)
+        if #available(iOS 26.0, *) {
+            bar = ShellTabBarController(store: store, navigation: navigation, bar: state)
+        } else {
+            bar = SystemShellTabBarController(store: store, navigation: navigation, bar: state)
+        }
         selection = state.selection
         self.contentLeadingInset = contentLeadingInset
         super.init(nibName: nil, bundle: nil)
@@ -53,9 +57,11 @@ final class ShellTabsController<Page: View>: UIViewController {
         var barFrame = view.bounds
         // Duo owns one vertical system bar for the full viewport. On other devices the
         // bottom tab bar belongs to the trailing content column.
-        if !usesVerticalBar {
-            barFrame.origin.x += contentLeadingInset
-            barFrame.size.width = max(0, barFrame.width - contentLeadingInset)
+        if !usesVerticalBar, contentLeadingInset > 0 {
+            // The column starts after the leading safe area, which a phone on its side has.
+            let leading = view.safeAreaInsets.left + contentLeadingInset
+            barFrame.origin.x += leading
+            barFrame.size.width = max(0, barFrame.width - leading)
         }
         if bar.view.frame != barFrame { bar.view.frame = barFrame }
         bar.view.layoutIfNeeded()
@@ -65,6 +71,7 @@ final class ShellTabsController<Page: View>: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        if contentLeadingInset > 0 { view.setNeedsLayout() }
         invalidatePageInsets()
     }
 
@@ -80,9 +87,9 @@ final class ShellTabsController<Page: View>: UIViewController {
 
     private func pageInsets(for tab: AppTab, base: UIEdgeInsets) -> UIEdgeInsets {
         var room = base
-        // Settings owns both columns from the start. Its persistent master slides between them;
+        // Settings and People own both columns from the start. Their persistent master slides between them;
         // changing the page's safe area during a push would resize and replace its contents.
-        if tab != .settings || pages[tab]?.rootView.environment.settingsColumnsFolded == nil {
+        if !tab.ownsShellColumns || pages[tab]?.rootView.environment.shellColumnsFolded == nil {
             room.left += contentLeadingInset
         }
         return room
@@ -132,10 +139,10 @@ final class ShellTabsController<Page: View>: UIViewController {
 /// Gives a touch to the bar only where the bar answers it: everywhere else the bar's controller is its empty stand-in,
 /// and the touch belongs to the page under it.
 private final class ShellTabsView: UIView {
-    private weak var bar: UITabBarController?
+    private weak var bar: (any ShellBar)?
     private weak var pages: UIView?
 
-    init(bar: UITabBarController, pages: UIView) {
+    init(bar: any ShellBar, pages: UIView) {
         self.bar = bar
         self.pages = pages
         super.init(frame: .zero)
@@ -148,15 +155,7 @@ private final class ShellTabsView: UIView {
             return nil
         }
         guard let bar, let pages, bar.isViewLoaded else { return super.hitTest(point, with: event) }
-        if let hit = bar.view.hitTest(convert(point, to: bar.view), with: event), drawsBar(hit, in: bar) { return hit }
+        if let hit = bar.view.hitTest(convert(point, to: bar.view), with: event), bar.drawsBar(hit) { return hit }
         return pages.hitTest(convert(point, to: pages), with: event)
-    }
-
-    /// Whether `hit` is part of the bar: not the bar controller's own view, nor the stand-in, its subviews or the
-    /// views that hold it.
-    private func drawsBar(_ hit: UIView, in bar: UITabBarController) -> Bool {
-        guard hit !== bar.view else { return false }
-        guard let standIn = bar.selectedViewController?.view else { return true }
-        return !standIn.isDescendant(of: hit) && !hit.isDescendant(of: standIn)
     }
 }

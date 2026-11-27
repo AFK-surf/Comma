@@ -294,7 +294,7 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 Agent Swarm 的 \textbf{Connections} 页面分为两部分：
 
 \begin{itemize}
-  \item \textbf{Messaging}：成员通过哪些消息渠道联系 Agent Swarm，以及 Agent Swarm 在哪里回复。目前支持 Feishu、Slack、QQ、Telegram 和 Signal。
+  \item \textbf{Messaging}：成员通过哪些消息渠道联系 Agent Swarm，以及 Agent Swarm 在哪里回复。目前支持 Feishu、Slack、QQ、Telegram、企业微信和 Signal。
   \item \textbf{Accounts}：Agent 代表团队使用的第三方帐号，包括 OAuth 帐号和通过 Composio 连接的应用。
 \end{itemize}
 
@@ -326,6 +326,17 @@ Agent Swarm 的所有成员都可以查看此页面。只有 Agent Swarm 管理�
 \end{enumerate}
 
 应用权限或事件订阅发生变化后，请重新完成页面给出的检查。停用或删除 connect 前，先通知仍在使用对应群聊或频道的成员。
+
+\subsection{聊天里的人是否是组织的人}
+
+连接 Slack、Feishu 或 Lark 只表示机器人可以在那里对话。那里的人是否是组织自己的人，由管理员在 \textbf{Connections} 中为每个连接单独设置，它决定聊天里没有 Dashboard 帐号的人能否让 Agent 使用 Agent Swarm 的工作站：
+
+\begin{itemize}
+  \item \textbf{组织的人}（默认）：这个 Slack 工作区或 Feishu、Lark 企业自己的成员都是 Agent Swarm 的人，不用登录即可使用工作站。Feishu 和 Lark 按应用的可用范围判断；Slack 只算工作区的正式成员，访客、来自其他组织的人（Slack Connect）、机器人和已停用的帐号不算。他们还需要有组织邮箱。
+  \item \textbf{外部}：那里的人可以和机器人对话，但不是组织的人，不能使用工作站。管理员可以在这个连接上按姓名搜索并授权个别人，授权可设为 1 天、7 天、30 天或不过期，每个连接最多 100 人。
+\end{itemize}
+
+每次使用工作站时都会重新检查。较早创建、没有设置过的连接按“组织的人”处理。
 
 \subsection{连接 Telegram}
 
@@ -367,6 +378,30 @@ QQ 通过 QQ 开放平台的机器人接入。每个机器人连接一个 Agent 
 \end{itemize}
 
 一个 QQ 机器人同一时间只能连接一个 Agent Swarm。更换 AppSecret 后，用同一个 AppID 再次添加即可更新凭证。
+
+\subsection{连接企业微信}
+
+企业微信通过“智能机器人”的 API 模式接入，使用长连接，不需要回调地址。每个机器人连接一个 Agent Swarm，成员可以和机器人单聊，也可以在群里 @机器人。
+
+\begin{enumerate}
+  \item 在企业微信管理后台打开“工作台 → 智能机器人”，新建机器人，选择 \textbf{API 模式} 和 \textbf{使用长连接}，复制 \textbf{Bot ID} 和 \textbf{Secret}。建议由企业的超级管理员创建机器人：这样企业微信给出的是成员在企业里的账号，否则是企业微信另外生成的 ID。
+  \item 把机器人的可见范围设为要使用它的成员或部门。
+  \item 进入 Agent Swarm 的 \textbf{Connections}，在 \textbf{WeCom} 部分点击 \textbf{Add WeCom bot}，填入 Bot ID 和 Secret 并点击 \textbf{Connect}。
+  \item 在企业微信里单聊机器人，或把它拉进群并 @它 发送一条消息，确认消息由预期的 Agent Swarm 处理。
+\end{enumerate}
+
+使用时请注意企业微信的几项规则：
+
+\begin{itemize}
+  \item \textbf{一条长连接}：每个机器人同一时间只能有一条长连接。不要在别处使用同一个机器人，也不要使用管理后台的“调试”，否则 Agent Swarm 的连接会被挤掉，要过一段时间才会自动恢复。
+  \item \textbf{群消息}：机器人只能加入企业内部群，不能加入有外部联系人的群。在群里，机器人只收得到 @它 的消息，看不到群里的其他对话。图片、语音、文件和视频只能在单聊里发给机器人。语音消息按企业微信给出的识别文字理解。
+  \item \textbf{主动发消息}：成员或群给机器人发过消息后，机器人才能向这个单聊或群主动发消息，例如任务完成后发回结果。
+  \item \textbf{频率}：每个会话每分钟最多 30 条、每小时最多 1000 条消息。
+  \item \textbf{消息不能修改}：机器人不会更新已发出的消息，进展和结果都以新消息发出。
+  \item \textbf{文件}：机器人可以发送图片（10 MB 以内）和文件（20 MB 以内）。
+\end{itemize}
+
+一个企业微信机器人同一时间只能连接一个 Agent Swarm。更换 Secret 后，用同一个 Bot ID 再次添加即可更新凭证。
 
 \subsection{连接 Lark}
 

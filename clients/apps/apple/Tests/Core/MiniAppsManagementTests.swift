@@ -249,12 +249,13 @@ final class MiniAppsManagementTests: XCTestCase {
         let publication = try XCTUnwrap(model.publication(for: try XCTUnwrap(model.versions.first { $0.number == 2 })))
         let card = try XCTUnwrap(MiniAppCardValue(["appId": "a1", "appVersion": 2, "name": "Reading tracker",
                                                  "summary": "Keep a reading list and summarize your notes.", "conversationId": "build"]))
-        let navigation = AppNavigation(tab: .apps)
+        let navigation = AppNavigation(tab: .settings)
+        navigation.settingsPath = [.apps]
         let screens: [(String, AnyView)] = [
-            ("Apps main tab", AnyView(ShellTabs(store: harness.store, activity: TaskActivityCoordinator(), query: HomeTaskQuery())
+            ("Settings Apps page", AnyView(ShellTabs(store: harness.store, activity: TaskActivityCoordinator(), query: HomeTaskQuery())
                 .environment(navigation).environment(InboxModel()))),
             ("Home task search", AnyView(VStack { HomeHeader(store: harness.store, openBriefing: {}, openSearch: {}); Spacer() }.background(CommaTheme.bgPrimary))),
-            ("Mini Apps list", AnyView(MiniAppsView(store: harness.store, workspace: workspace).environment(navigation))),
+            ("Mini Apps list", AnyView(NavigationStack { MiniAppsView(store: harness.store, workspace: workspace) }.environment(navigation))),
             ("Mini App versions", AnyView(NavigationStack { MiniAppDetailView(store: harness.store, workspace: workspace, appID: "a1") })),
             ("Mini App publication", AnyView(MiniAppPublishView(model: model, publication: publication))),
             ("Mini App chat card", AnyView(VStack { MiniAppChatCard(app: card, open: {}).environment(\.inlineTaskStore, harness.store); Spacer() }.padding(GroupedSurface.margin).background(CommaTheme.bgPrimary))),
@@ -322,7 +323,8 @@ final class MiniAppsManagementTests: XCTestCase {
         window.frame = scene.coordinateSpace.bounds
         let session = MiniAppSession(core: harness.core)
         let original = scene.windows.first(where: \.isKeyWindow)
-        let navigation = AppNavigation(tab: .apps)
+        let navigation = AppNavigation(tab: .settings)
+        navigation.settingsPath = [.apps]
         harness.store.profileRead = true
         harness.store.tasksLoaded = true
         harness.core.serve("miniApps") { _ in ["status": "ready", "apps": [Self.app()]] }

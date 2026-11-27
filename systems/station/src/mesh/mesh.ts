@@ -114,7 +114,8 @@ export const MeshLive = Layer.effectDiscard(
       const { screens: simulatorScreens, simulators } = yield* SimulatorsService;
       // Those started, not yet listed: a second start of one would only fail on its lock.
       const starting = new Set<string>();
-      // Who may is the owner's connection's already (serveDeviceComma); a view also goes by the computer's access.
+      // Who may is the owner's connection's already (serveDeviceComma); a view also goes by the computer's access. In a
+      // Task's sandbox the Task's owner looks at its display, whatever that access, and does not drive (device-mesh.ts).
       const screens = makeScreenViews({
         sources: () => [...(helpers.current() ? sources : []), ...(windowsDesktop ? [windowsDesktop] : []), ...(linuxDesktop ? [linuxDesktop] : []), ...devices.list(), ...simulatorScreens.list()],
         devices: {
@@ -146,6 +147,7 @@ export const MeshLive = Layer.effectDiscard(
         },
         simulators,
         access: () => accessOf(agents.config.raw()),
+        looks: () => admissions.looks,
         up: isUp,
         mayView: (member) => admissions.mayView(member),
         mayControl: (member) => admissions.mayControl(member),

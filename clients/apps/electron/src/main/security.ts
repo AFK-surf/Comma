@@ -249,6 +249,10 @@ export function installSessionSecurity(
           check.requestingUrl === miniAppRuntimeUrl &&
           Boolean(webContents && isAllowedUrl(webContents.getURL(), app))
         );
+      // Location too: Settings follows the page's geolocation permission to say when sharing is blocked, and a
+      // refused check reads as blocked while the position arrives.
+      if (permission === "geolocation")
+        return appTop(check.requestingUrl ?? requestingOrigin, check.isMainFrame);
       return (
         permission === "media" &&
         (check.mediaType === "audio" || check.mediaType === "video") &&

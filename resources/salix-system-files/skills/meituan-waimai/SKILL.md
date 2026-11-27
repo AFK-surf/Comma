@@ -35,3 +35,9 @@ alternative.
 Before 提交订单, show shop, items and options, address, time, coupons, and
 total, and wait for confirmation. Merchants can refuse cancellation after they
 accept the order.
+
+## Live Activity
+
+After placing an order, track preparation and rider ETA on the Dynamic Island
+with `live_activity.upsert` (`category: "delivery"`), and call
+`live_activity.end` when delivered or cancelled.

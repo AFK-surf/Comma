@@ -13,7 +13,11 @@ defmodule SystemsClock.Case do
   it heads. Registered processes, a supervisor's children under ids of their
   own, an application the test started or restarted, a dependency's
   processes and ExUnit's own are left alone: they are the node's long-lived
-  services, restarted or started on first use.
+  services, restarted or started on first use. A registered process still
+  linked to the test process is the test's own and is stopped: ExUnit runs
+  the exit callbacks on the test's reply, and the test process can be gone
+  before its exit reached what it linked, which then still holds its name
+  when the next test starts.
 
   A synchronous test also fails, before it starts, when one of those services
   holds a timer on the clock that the node was not told about
@@ -40,7 +44,8 @@ defmodule SystemsClock.Case do
     # No other test runs now: a service that holds a timer is the node's own.
     if @node_timers, do: SystemsClock.NodeTimers.check!()
     before = processes()
-    ExUnit.Callbacks.on_exit({__MODULE__, :isolate}, fn -> stop_left(before) end)
+    test = self()
+    ExUnit.Callbacks.on_exit({__MODULE__, :isolate}, fn -> stop_left(before, test) end)
   end
 
   @doc false
@@ -57,12 +62,12 @@ defmodule SystemsClock.Case do
   @doc false
   # The processes started since `before` (`processes/0`) and still alive,
   # stopped from the roots of their trees down; returns what was stopped, by
-  # kind.
-  def stop_left(before) do
+  # kind. A registered one is stopped only while linked to `test`.
+  def stop_left(before, test \\ nil) do
     quiesce()
     own = own_applications()
     new = for pid <- started_since(processes(), before, []), pid != self(), do: pid
-    infos = for pid <- new, info = left_info(pid), do: {pid, info}
+    infos = for pid <- new, info = left_info(pid, test), do: {pid, info}
 
     # An application the test started or restarted: its master is its own
     # group leader and the group leader of every process of its tree.
@@ -185,10 +190,11 @@ defmodule SystemsClock.Case do
       pid != self() and
         Process.info(pid, :status) not in [nil, status: :waiting, status: :suspended]
 
-  defp left_info(pid) do
+  defp left_info(pid, test) do
     # Only the dictionary entries it needs: a whole dictionary can be large.
     with [
-           {:registered_name, []},
+           {:registered_name, name},
+           {:links, links},
            {:group_leader, group_leader},
            {:monitors, monitors},
            {{:dictionary, :"$initial_call"}, own_call},
@@ -197,12 +203,14 @@ defmodule SystemsClock.Case do
          ] <-
            Process.info(pid, [
              :registered_name,
+             :links,
              :group_leader,
              :monitors,
              {:dictionary, :"$initial_call"},
              {:dictionary, :"$ancestors"},
              :initial_call
            ]),
+         true <- name == [] or test in links,
          {module, _function, _arity} = kind <-
            if(own_call == :undefined, do: initial_call, else: own_call),
          false <- String.starts_with?(Atom.to_string(module), "Elixir.ExUnit"),

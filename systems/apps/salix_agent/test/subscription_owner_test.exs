@@ -23,6 +23,18 @@ defmodule SalixAgent.SubscriptionOwnerTest do
               {:subscription, id, %{"type" => "error", "status" => status, "code" => code}}
             )
 
+          # Part of a stream, then an error.
+          {:partial, status, code} ->
+            SystemsRuntime.Proc.send(
+              reply_to,
+              {:subscription, id, %{"type" => "data", "data" => Base.encode64("data: {}\n\n")}}
+            )
+
+            SystemsRuntime.Proc.send(
+              reply_to,
+              {:subscription, id, %{"type" => "error", "status" => status, "code" => code}}
+            )
+
           _ ->
             SystemsRuntime.Proc.send(
               reply_to,
@@ -957,6 +969,345 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     assert accounts |> Enum.map(& &1["id"]) |> Enum.uniq() |> length() == 7
   end
 
+  test "an unexpired rejected credential refreshes once and the model request succeeds", %{
+    tenant: tenant
+  } do
+    owner = SystemsRuntime.Proc.self()
+    a = account(tenant, %{"prepared" => true})
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/prepare" ->
+          assert cmd["body"]["force_refresh"] == true
+          SystemsRuntime.Proc.send(owner, :forced_refresh)
+          reply(cmd)
+
+        "/v1/responses" ->
+          case cmd["credential"]["credentials"]["access_token"] do
+            "old-token" -> {:error, 401, "auth_unavailable"}
+            "rotated" -> %{"ok" => true}
+          end
+      end
+    end)
+
+    assert {:final, "ok", %{}} = AccountPool.dispatch(config(tenant), &model_request/1)
+    assert_received :forced_refresh
+    refute_received :forced_refresh
+    assert {:ok, %{"status" => "ok"}} = Store.get(tenant, a["id"])
+  end
+
+  test "a second authentication rejection requires sign-in without looping", %{tenant: tenant} do
+    owner = SystemsRuntime.Proc.self()
+    a = account(tenant, %{"prepared" => true})
+
+    server(fn cmd ->
+      if cmd["op"] == "/prepare" do
+        SystemsRuntime.Proc.send(owner, :forced_refresh)
+        reply(cmd)
+      else
+        SystemsRuntime.Proc.send(owner, :model_request)
+        {:error, 401, "auth_unavailable"}
+      end
+    end)
+
+    assert {:error,
+            %{
+              "status" => 401,
+              "reason" => "subscription_authentication_required",
+              "retryable" => false,
+              "funding" => %{"source" => "codex"}
+            }} = AccountPool.dispatch(config(tenant), &model_request/1)
+
+    assert_received :forced_refresh
+    refute_received :forced_refresh
+    assert_received :model_request
+    assert_received :model_request
+    refute_received :model_request
+    assert {:ok, %{"status" => "login", "refresh_deadline" => nil}} = Store.get(tenant, a["id"])
+
+    # A later send keeps the actionable cause instead of degrading to generic 503.
+    assert {:error, %{"reason" => "subscription_authentication_required"}} =
+             AccountPool.dispatch(config(tenant), fn _ -> flunk("signed-out account executed") end)
+  end
+
+  test "failed credential exchange leaves the subscription requiring sign-in", %{tenant: tenant} do
+    a = account(tenant, %{"prepared" => true})
+    server(fn _ -> {:error, 401, "auth_unavailable"} end)
+    assert {:error, %{"status" => 401}} = AccountPool.dispatch(config(tenant), &model_request/1)
+    assert {:ok, %{"status" => "login"}} = Store.get(tenant, a["id"])
+  end
+
+  test "a started response is never replayed for credential recovery", %{tenant: tenant} do
+    a = account(tenant, %{"prepared" => true})
+
+    server(fn cmd ->
+      assert cmd["op"] == "/v1/responses"
+      {:error, 401, "auth_unavailable"}
+    end)
+
+    assert {:error, %{"status" => 401} = error} =
+             AccountPool.dispatch(config(tenant), &model_request/1, fn -> true end)
+
+    refute error["reason"] == "subscription_authentication_required"
+
+    assert {:ok, %{"status" => "ok"}} = Store.get(tenant, a["id"])
+  end
+
+  test "a late 401 uses credentials from a concurrent sign-in without refreshing them", %{
+    tenant: tenant
+  } do
+    a = account(tenant, %{"prepared" => true, "credential_revision" => Store.id()})
+
+    server(fn cmd ->
+      assert cmd["op"] == "/v1/responses"
+
+      case cmd["credential"]["credentials"]["access_token"] do
+        "old-token" ->
+          {:ok, cipher} = Store.seal(tenant, a["id"], %{"access_token" => "signed-in"})
+
+          {:ok, _} =
+            Store.apply_background(tenant, a["id"], fn _ -> true end, fn current ->
+              Map.merge(current, %{"credentials" => cipher, "credential_revision" => Store.id()})
+            end)
+
+          {:error, 401, "auth_unavailable"}
+
+        "signed-in" ->
+          %{"ok" => true}
+      end
+    end)
+
+    assert {:final, "ok", %{}} = AccountPool.dispatch(config(tenant), &model_request/1)
+    assert {:ok, %{"status" => "ok"}} = Store.get(tenant, a["id"])
+  end
+
+  test "401 recovery claims a single refresh while other requests cannot exchange the token", %{
+    tenant: tenant
+  } do
+    owner = SystemsRuntime.Proc.self()
+    account(tenant, %{"prepared" => true})
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/prepare" ->
+          SystemsRuntime.Proc.send(owner, {:recovering, SystemsRuntime.Proc.self()})
+
+          SystemsRuntime.Proc.receive do
+            :continue -> reply(cmd)
+          end
+
+        "/v1/responses" ->
+          case cmd["credential"]["credentials"]["access_token"] do
+            "old-token" -> {:error, 401, "auth_unavailable"}
+            "rotated" -> %{"ok" => true}
+          end
+      end
+    end)
+
+    task =
+      SystemsRuntime.Task.async(fn -> AccountPool.dispatch(config(tenant), &model_request/1) end)
+
+    settle_receive({:recovering, request})
+
+    assert {:error, %{"status" => 503}} =
+             AccountPool.dispatch(config(tenant), fn _ ->
+               flunk("claimed credentials executed")
+             end)
+
+    SystemsRuntime.Proc.send(request, :continue)
+    assert {:final, "ok", %{}} = settled_await(task)
+    refute_received {:recovering, _}
+  end
+
+  test "two in-flight 401s share recovery without falsely requiring sign-in", %{tenant: tenant} do
+    owner = SystemsRuntime.Proc.self()
+    account(tenant, %{"prepared" => true})
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/prepare" ->
+          SystemsRuntime.Proc.send(owner, {:refresh_claimed, SystemsRuntime.Proc.self()})
+
+          SystemsRuntime.Proc.receive do
+            :continue -> reply(cmd)
+          end
+
+        "/v1/responses" ->
+          if cmd["credential"]["credentials"]["access_token"] == "old-token" do
+            SystemsRuntime.Proc.send(owner, {:old_request, SystemsRuntime.Proc.self()})
+
+            SystemsRuntime.Proc.receive do
+              :reject -> {:error, 401, "auth_unavailable"}
+            end
+          else
+            %{"ok" => true}
+          end
+      end
+    end)
+
+    first =
+      SystemsRuntime.Task.async(fn -> AccountPool.dispatch(config(tenant), &model_request/1) end)
+
+    settle_receive({:old_request, request1})
+
+    second =
+      SystemsRuntime.Task.async(fn -> AccountPool.dispatch(config(tenant), &model_request/1) end)
+
+    settle_receive({:old_request, request2})
+    SystemsRuntime.Proc.send(request1, :reject)
+    settle_receive({:refresh_claimed, exchange})
+    SystemsRuntime.Proc.send(request2, :reject)
+
+    assert {:error, %{"status" => 503, "retryable" => true, "retry_after_ms" => delay} = error} =
+             settled_await(second)
+
+    assert delay > 0 and delay <= 10_000
+    refute error["reason"] == "subscription_authentication_required"
+    SystemsRuntime.Proc.send(exchange, :continue)
+    assert {:final, "ok", %{}} = settled_await(first)
+    assert {:final, "ok", %{}} = AccountPool.dispatch(config(tenant), &model_request/1)
+  end
+
+  test "temporary refresh failure releases its claim and a later request recovers", %{
+    tenant: tenant
+  } do
+    a = account(tenant, %{"prepared" => true})
+    calls = SystemsRuntime.Atomics.new(1, [])
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/prepare" ->
+          if SystemsRuntime.Atomics.add_get(calls, 1, 1) == 1,
+            do: {:error, 503, "worker_unavailable"},
+            else: reply(cmd)
+
+        "/v1/responses" ->
+          if cmd["credential"]["credentials"]["access_token"] == "old-token",
+            do: {:error, 401, "auth_unavailable"},
+            else: %{"ok" => true}
+      end
+    end)
+
+    assert {:error, %{"status" => 503, "retryable" => true}} =
+             AccountPool.dispatch(config(tenant), &model_request/1)
+
+    assert {:ok, %{"status" => "ok"}} = Store.get(tenant, a["id"])
+    assert {:final, "ok", %{}} = AccountPool.dispatch(config(tenant), &model_request/1)
+  end
+
+  test "Claude authentication_error refreshes the subscription and recovers", %{tenant: tenant} do
+    account(tenant, %{"prepared" => true, "source" => "claude"})
+
+    {:ok, route} =
+      AccountPool.resolve_config(
+        %{"account_pool" => "claude", "model" => "claude-sonnet-4-6"},
+        tenant
+      )
+
+    server(fn cmd ->
+      if cmd["op"] == "/prepare" do
+        assert cmd["body"]["force_refresh"] == true
+        assert cmd["body"]["provider"] == "claude"
+        reply(cmd)
+      else
+        if cmd["credential"]["credentials"]["access_token"] == "old-token",
+          do: {:error, 401, "authentication_error"},
+          else: %{"ok" => true}
+      end
+    end)
+
+    assert {:final, "ok", %{}} = AccountPool.dispatch(route, &model_request/1)
+  end
+
+  test "exhausting the attempt budget cannot sign out an account that was not refreshed", %{
+    tenant: tenant
+  } do
+    accounts = for _ <- 1..10, do: account(tenant, %{"prepared" => true})
+    calls = SystemsRuntime.Atomics.new(1, [])
+
+    server(fn cmd ->
+      assert cmd["op"] == "/v1/responses"
+
+      if SystemsRuntime.Atomics.add_get(calls, 1, 1) < 10,
+        do: {:error, 403, "model_unavailable"},
+        else: {:error, 401, "auth_unavailable"}
+    end)
+
+    assert {:error, %{"status" => 503, "retryable" => true}} =
+             AccountPool.dispatch(config(tenant), &model_request/1)
+
+    assert SystemsRuntime.Atomics.get(calls, 1) == 10
+
+    for account <- accounts do
+      assert {:ok, %{"status" => "ok"}} = Store.get(tenant, account["id"])
+    end
+  end
+
+  for provider <- ["kimi-code", "grok", "gemini"] do
+    @recovery_excluded_provider provider
+    test "#{provider} keeps 401 cooldown without attempting unsupported credential recovery", %{
+      tenant: tenant
+    } do
+      provider = @recovery_excluded_provider
+      a = account(tenant, %{"prepared" => true, "source" => provider})
+
+      {:ok, route} =
+        AccountPool.resolve_config(%{"account_pool" => provider, "model" => "test-model"}, tenant)
+
+      server(fn cmd ->
+        refute cmd["op"] == "/prepare"
+        {:error, 401, "auth_unavailable"}
+      end)
+
+      assert {:error, %{"status" => 401} = error} = AccountPool.dispatch(route, &model_request/1)
+      refute error["reason"] == "subscription_authentication_required"
+      assert {:ok, saved} = Store.get(tenant, a["id"])
+      assert saved["status"] == "ok"
+      assert saved["cooldown_until"] > SystemsClock.system_time(:millisecond)
+
+      assert {:error, %{"status" => 503, "retry_after_ms" => delay}} =
+               AccountPool.dispatch(route, fn _ -> flunk("cooling account executed") end)
+
+      assert delay > 0 and delay <= 30_000
+    end
+  end
+
+  test "reauthorization guidance respects tenant, pin, disabled account and model policy", %{
+    tenant: tenant
+  } do
+    a = account(tenant, %{"status" => "login", "disabled_models" => ["gpt-5.5"]})
+
+    assert {:ok, nil} =
+             Store.reauthorization_account(tenant, "codex", "gpt-5.5", a["id"], "gpt-5.5")
+
+    assert {:ok, nil} =
+             Store.reauthorization_account(
+               SalixStore.Ids.new_tenant_id(),
+               "codex",
+               "gpt-5.5",
+               a["id"],
+               nil
+             )
+
+    assert {:ok, nil} = Store.reauthorization_account(tenant, "codex", "gpt-5.5", Store.id(), nil)
+
+    {:ok, _} =
+      Store.apply_background(tenant, a["id"], fn _ -> true end, fn record ->
+        Map.merge(record, %{"disabled_models" => [], "disabled" => true})
+      end)
+
+    assert {:ok, nil} = Store.reauthorization_account(tenant, "codex", "gpt-5.5", a["id"], nil)
+  end
+
+  defp model_request(opts) do
+    path = if opts["protocol"] == "anthropic", do: "/v1/messages", else: "/v1/responses"
+
+    case opts["transport"].("subscription://worker" <> path, json: %{"model" => opts["model"]}) do
+      {:ok, %{status: 200}} -> {:final, "ok", %{}}
+      {:ok, %{status: status}} -> {:error, %{"status" => status}}
+    end
+  end
+
   test "one refresher, persisted credentials before execution, and no refresh token in inference",
        %{tenant: tenant} do
     owner = SystemsRuntime.Proc.self()
@@ -1140,6 +1491,28 @@ defmodule SalixAgent.SubscriptionOwnerTest do
         do: refute(log =~ secret)
 
     assert Logger.metadata() == previous
+  end
+
+  test "a failure of this node's worker does not cool the account down" do
+    for answer <- [{:error, 503, "worker_down"}, {:partial, 503, "worker_down"}] do
+      tenant = SalixStore.Ids.new_tenant_id()
+      server(fn cmd -> if cmd["op"] == "/v1/responses", do: answer, else: reply(cmd) end)
+      a = account(tenant)
+
+      call = fn opts ->
+        into = fn {:data, _}, acc -> {:cont, acc} end
+
+        case opts["transport"].("https://worker/v1/responses", json: %{}, into: into) do
+          {:ok, %{status: status}} -> {:error, %{"status" => status}}
+          {:error, _, _} -> {:error, %{"status" => 503}}
+        end
+      end
+
+      assert {:error, %{"status" => 503}} = AccountPool.dispatch(config(tenant), call)
+      {:ok, saved} = Store.get(tenant, a["id"])
+      refute Map.has_key?(saved, "cooldown_until"), inspect(answer)
+      stop_supervised!(Worker)
+    end
   end
 
   test "legacy import preserves identity, credentials and disabled state without overwriting", %{

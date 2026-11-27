@@ -109,7 +109,7 @@ struct TaskDetailsCard<Header: View>: View {
             }
         }
         .task(id: open) {
-            if open { await pane.loadLabelCatalog() }
+            if open, pane.workspace.groupID == store.workspace?.groupID { await pane.loadLabelCatalog() }
         }
     }
 

@@ -21,11 +21,13 @@ defmodule SalixWeb.GitHub do
   `:github_not_connected` / `:github_reauthorization_required`.
   """
   def token(tenant, group) do
-    with {:ok, binding} <- github_binding(group),
+    oauth_group = SalixWeb.CodingSandboxes.github_group_id(group)
+
+    with {:ok, binding} <- github_binding(oauth_group),
          {:ok, %{"TOKEN" => token}} <-
            Salix.Bindings.MCPCredentials.resolve(%{
              "tenant_id" => tenant,
-             "group_id" => group,
+             "group_id" => oauth_group,
              "oauth_binding_refs" => %{
                "TOKEN" => %{
                  "binding_id" => binding["binding_id"],
@@ -34,6 +36,7 @@ defmodule SalixWeb.GitHub do
                }
              }
            }) do
+      remember_connection(token, binding["connection_id"])
       {:ok, %{token: token, expires_at: expires_at(binding)}}
     else
       {:error, :github_not_connected} = error ->
@@ -47,6 +50,29 @@ defmodule SalixWeb.GitHub do
       _ ->
         {:error, :github_not_connected}
     end
+  end
+
+  # The calls below take a bare token. The process that resolved it keeps
+  # (one slot) which connection its latest token came from, so a 401 for that
+  # token marks the connection for reauthorization and Plugins asks for a
+  # reconnect. A token resolved in another process is not marked.
+  defp remember_connection(token, connection_id) when is_binary(connection_id),
+    do: Process.put({__MODULE__, :connection}, {:crypto.hash(:sha256, token), connection_id})
+
+  defp remember_connection(_token, _connection_id), do: :ok
+
+  defp refused(token) do
+    hash = :crypto.hash(:sha256, token)
+
+    case Process.get({__MODULE__, :connection}) do
+      {^hash, connection_id} ->
+        SalixStore.OAuth.mark_token_refused(connection_id, token, refreshable: :keep)
+
+      _ ->
+        :ok
+    end
+
+    {:error, :github_reauthorization_required}
   end
 
   defp github_binding(group) do
@@ -760,7 +786,7 @@ defmodule SalixWeb.GitHub do
         {:ok, body}
 
       {:ok, %Req.Response{status: 401}} ->
-        {:error, :github_reauthorization_required}
+        refused(token)
 
       {:ok, %Req.Response{status: status}} ->
         {:error, {:github, status}}
@@ -796,7 +822,7 @@ defmodule SalixWeb.GitHub do
         {:ok, body}
 
       {:ok, %Req.Response{status: 401}} ->
-        {:error, :github_reauthorization_required}
+        refused(token)
 
       {:ok, %Req.Response{status: status, body: body}} ->
         {:error, {:github, status, github_message(body)}}

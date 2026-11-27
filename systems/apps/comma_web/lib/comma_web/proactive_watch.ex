@@ -39,6 +39,7 @@ defmodule CommaWeb.ProactiveWatch do
          {:ok, binding} <- source_binding(args["source"], workspace, user),
          :ok <- related_binding(args["related"], workspace, user, binding),
          :ok <- trigger_supported(args["trigger"], binding),
+         :ok <- poll_interval_supported(args["poll_interval_ms"] || 0, binding),
          {:ok, row, prior} <- program(args, ctx, workspace, user, home, binding),
          {:ok, result} <- enable(row, prior, args["trigger"], ctx) do
       {:ok, Map.take(result, ~w(loop_id status name))}
@@ -79,12 +80,12 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
-  # Composio triggers belong to Composio accounts. Plugin MCP, internal and
-  # Routine reads poll; reject a trigger before an existing watch is paused.
+  # Composio triggers belong to Composio accounts. Plugin MCP, internal, web
+  # and Routine reads poll; reject a trigger before an existing watch is paused.
   defp trigger_supported(nil, _binding), do: :ok
 
   defp trigger_supported(trigger, binding) do
-    if binding["toolkit"] != "internal" and binding["kind"] != "managed_oauth" and
+    if binding["toolkit"] not in ~w(internal web) and binding["kind"] != "managed_oauth" and
          is_binary(trigger["slug"]) and
          String.starts_with?(trigger["slug"], String.upcase(binding["toolkit"]) <> "_"),
        do: :ok,
@@ -320,7 +321,7 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
-  def current_consent(%{"toolkit" => "internal"}), do: :ok
+  def current_consent(%{"toolkit" => toolkit}) when toolkit in ~w(internal web), do: :ok
 
   # The managed grant is current while the same connection still backs
   # the Group's active binding. A reconnect or removal retires the watch.
@@ -432,7 +433,54 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
+  def source_binding(%{"tool" => "web.search", "arguments" => args}, workspace, user)
+      when is_map(args) do
+    query = if is_binary(args["query"]), do: String.trim(args["query"]), else: ""
+
+    if Map.keys(args) == ["query"] and byte_size(query) in 1..200 do
+      {:ok, %{"toolkit" => "web", "workspace_id" => workspace["id"], "user_id" => user}}
+    else
+      {:error, :proactive_source_required}
+    end
+  end
+
+  def source_binding(%{"tool" => "web.read_pages", "arguments" => args}, workspace, user)
+      when is_map(args) do
+    urls = web_watch_urls(args)
+
+    if Map.keys(args) == ["urls"] and urls != [] and length(urls) <= 3 and
+         Enum.all?(
+           urls,
+           &(not String.contains?(&1, ",") and SalixAgent.Tools.Web.public_url?(&1))
+         ) do
+      {:ok, %{"toolkit" => "web", "workspace_id" => workspace["id"], "user_id" => user}}
+    else
+      {:error, :proactive_source_required}
+    end
+  end
+
   def source_binding(_, _, _), do: {:error, :proactive_source_required}
+
+  @web_watch_min_poll_ms 900_000
+
+  defp poll_interval_supported(interval, %{"toolkit" => "web"}) do
+    if is_integer(interval) and interval >= @web_watch_min_poll_ms,
+      do: :ok,
+      else: {:error, :invalid_proactive_watch}
+  end
+
+  defp poll_interval_supported(_interval, _binding), do: :ok
+
+  defp web_watch_urls(%{"urls" => urls}) when is_list(urls) do
+    if Enum.all?(urls, &is_binary/1) do
+      cleaned = Enum.map(urls, &String.trim/1)
+      if Enum.all?(cleaned, &(&1 != "")), do: cleaned, else: []
+    else
+      []
+    end
+  end
+
+  defp web_watch_urls(_args), do: []
 
   defp managed_toolkit("mcp." <> rest) do
     case String.split(rest, ".", parts: 2) do
@@ -518,6 +566,9 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
+  defp decode_read("web.search", content) when is_binary(content),
+    do: {:ok, %{"text" => String.slice(content, 0, 12_000)}}
+
   defp decode_read(tool, content) do
     case managed_toolkit(tool) do
       {:ok, _} -> {:ok, CommaWeb.ProactiveSourceProjection.project(content)}
@@ -526,24 +577,83 @@ defmodule CommaWeb.ProactiveWatch do
   end
 
   @doc """
-  The Loop host's result hook: a pinned plugin MCP read reaches the watch
-  program as one bounded JSON object. Other results pass unchanged.
+  The Loop host's result hook: a pinned plugin MCP or proactive web watch read
+  reaches the watch program as one bounded JSON object. Other results pass
+  unchanged.
   """
   def project_result(row, tool, content) do
-    if tool in pinned_tools(row),
+    if tool in pinned_tools(row) or (web_watch?(row) and tool in ~w(web.search web.read_pages)),
       do: Jason.encode!(loop_projection(tool, content)),
       else: content
   end
+
+  defp web_watch?(row),
+    do: get_in(row, ["config", "comma_proactive", "toolkit"]) == "web"
 
   # A thread grows at its end, where a reply must stay visible to the watch.
   defp loop_projection("mcp.slack.slack_read_thread", content),
     do: CommaWeb.ProactiveSourceProjection.newest(content)
 
+  # Strip per-request Exa metadata so unchanged web pages match the previous
+  # observation byte-for-byte in `watch.c`, and attach a full-content SHA-256
+  # digest so tail changes past the bounded text truncation still trigger.
+  defp loop_projection("web.read_pages", content) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, %{} = map} ->
+        stripped = Map.drop(map, ~w(requestId costDollars))
+        digest = canonical_digest(stripped)
+
+        stripped
+        |> Jason.encode!()
+        |> CommaWeb.ProactiveSourceProjection.project()
+        |> Map.put("content_sha256", digest)
+
+      _ ->
+        content
+        |> CommaWeb.ProactiveSourceProjection.project()
+        |> Map.put("content_sha256", content_digest(content))
+    end
+  end
+
+  defp loop_projection("web.search", content) when is_binary(content) do
+    content
+    |> CommaWeb.ProactiveSourceProjection.project()
+    |> Map.put("content_sha256", content_digest(content))
+  end
+
   defp loop_projection(_tool, content), do: CommaWeb.ProactiveSourceProjection.project(content)
+
+  defp canonical_digest(value) do
+    value
+    |> canonical_encode()
+    |> content_digest()
+  end
+
+  defp content_digest(binary) when is_binary(binary) do
+    :crypto.hash(:sha256, binary) |> Base.encode16(case: :lower) |> String.slice(0, 16)
+  end
+
+  defp canonical_encode(map) when is_map(map) do
+    entries =
+      map
+      |> Enum.sort_by(fn {k, _v} -> to_string(k) end)
+      |> Enum.map_join(",", fn {k, v} ->
+        Jason.encode!(to_string(k)) <> ":" <> canonical_encode(v)
+      end)
+
+    "{" <> entries <> "}"
+  end
+
+  defp canonical_encode(list) when is_list(list) do
+    "[" <> Enum.map_join(list, ",", &canonical_encode/1) <> "]"
+  end
+
+  defp canonical_encode(scalar), do: Jason.encode!(scalar)
 
   def provider(%{"tool" => "recommendation.read"}), do: "Routine"
   def provider(nil), do: "Gmail"
   def provider(%{"tool" => "im_api.internal.read_conversation"}), do: "Comma"
+  def provider(%{"tool" => tool}) when tool in ~w(web.search web.read_pages), do: "Web"
 
   def provider(%{"tool" => "mcp." <> _ = tool}) do
     case managed_toolkit(tool) do
@@ -568,15 +678,32 @@ defmodule CommaWeb.ProactiveWatch do
     internal? = spec["tool"] == "im_api.internal.read_conversation"
 
     rows =
-      if is_list(data["messages"]), do: data["messages"], else: [data]
+      cond do
+        is_list(data["messages"]) -> data["messages"]
+        is_list(data["results"]) -> data["results"]
+        true -> [data]
+      end
+
+    station_hosted? =
+      internal? and
+        (data["hosted_on_station"] == true or
+           Enum.any?(rows, &(is_map(&1) and is_binary(&1["author_kind"]))))
 
     rows =
-      if internal?,
-        do:
+      cond do
+        station_hosted? ->
+          Enum.filter(rows, fn row ->
+            is_map(row) and row["author_kind"] in ~w(person agent user)
+          end)
+
+        internal? ->
           Enum.filter(rows, fn row ->
             is_map(row) and row["kind"] == "message" and row["actor_type"] in ~w(user agent)
-          end),
-        else: rows
+          end)
+
+        true ->
+          rows
+      end
 
     rows = Enum.take(rows, -20)
 
@@ -584,17 +711,17 @@ defmodule CommaWeb.ProactiveWatch do
       Enum.map(rows, fn row ->
         body =
           Enum.find_value(~w(body messageText description text), fn key ->
-            if is_binary(row[key]), do: row[key]
+            if is_binary(row[key]) and row[key] != "", do: row[key]
           end)
 
         body =
-          body || mime_preview(row) ||
+          body || station_milestone_preview(row) || mime_preview(row) ||
             List.wrap(row["content"])
             |> Enum.filter(&is_map/1)
             |> Enum.map_join("\n", &(&1["text"] || ""))
 
         message = %{
-          "message_id" => to_string(row["message_id"] || row["id"] || "source"),
+          "message_id" => to_string(row["message_id"] || row["id"] || row["seq"] || "source"),
           "body" => headline(row, body),
           "from" => author(row)
         }
@@ -616,6 +743,12 @@ defmodule CommaWeb.ProactiveWatch do
     result = if internal?, do: Map.take(result, ~w(conversation_id)), else: result
     Map.put(result, "messages", messages)
   end
+
+  defp station_milestone_preview(%{"milestones" => [_ | _] = milestones}) do
+    milestones |> Enum.filter(&is_binary/1) |> Enum.join("; ") |> then(&if(&1 != "", do: &1))
+  end
+
+  defp station_milestone_preview(_row), do: nil
 
   # A pull request, issue or page names its title and state above its text.
   defp headline(row, body) do
@@ -643,9 +776,15 @@ defmodule CommaWeb.ProactiveWatch do
 
   defp author(row) do
     Enum.find_value(
-      [row["from"], dig(row, ["user", "login"]), dig(row, ["creator", "name"])],
+      [
+        row["from"],
+        row["author"],
+        dig(row, ["user", "login"]),
+        dig(row, ["creator", "name"]),
+        row["author_kind"]
+      ],
       "",
-      fn value -> if is_binary(value), do: value end
+      fn value -> if is_binary(value) and value != "", do: value end
     )
   end
 

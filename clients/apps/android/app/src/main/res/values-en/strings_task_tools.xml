@@ -95,6 +95,7 @@
     <string name="new_task_cloud">Comma cloud</string>
     <string name="new_task_code">Write code</string>
     <string name="new_task_default_model">Default</string>
+    <string name="new_task_builtin_model">Comma built-in</string>
     <string name="new_task_models_unavailable">Model settings are unavailable in this workspace.</string>
     <string name="new_task_create">Create task</string>
     <string name="new_task_default_branch">Default branch</string>

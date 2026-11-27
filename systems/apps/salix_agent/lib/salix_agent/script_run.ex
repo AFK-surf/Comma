@@ -372,7 +372,12 @@ defmodule SalixAgent.ScriptRun do
 
     tool_call =
       %{id: "script-host:" <> random_id(), name: name, args: tool_args}
-      |> then(&if(ifc, do: Map.put(&1, :ifc, ifc), else: &1))
+      |> then(
+        &if(SalixAgent.IFC.Declaration.present?(%{args: args}),
+          do: Map.put(&1, :ifc, ifc),
+          else: &1
+        )
+      )
 
     [result] = SessionToolDispatch.execute([tool_call], ctx)
 

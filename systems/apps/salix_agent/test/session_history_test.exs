@@ -36,13 +36,27 @@ defmodule SalixAgent.SessionHistoryTest do
           |> Enum.filter(
             &(&1["seq"] <= ceiling and {&1["seq"], &1["part"]} < {before, part} and
                 ((is_nil(q) and &1["part"] == 0) or
-                   (is_binary(q) and String.contains?(&1["text"], q))))
+                   (is_list(q) and &1["kind"] != "fact" and
+                      Enum.all?(q, fn t -> String.contains?(&1["text"], t) end))))
           )
           |> Enum.sort_by(&{&1["seq"], &1["part"]}, :desc)
           |> Enum.take(limit)
 
         {:ok, rows}
       end
+    end
+
+    def summaries(a, s, kind, terms, ceiling, limit) do
+      rows =
+        (Process.get({:cold, a, s}) || [])
+        |> Enum.filter(
+          &(&1["seq"] <= ceiling and &1["tool_name"] == kind and
+              Enum.any?(terms, fn t -> String.contains?(&1["text"], t) end))
+        )
+        |> Enum.sort_by(&{&1["seq"], &1["part"]}, :desc)
+        |> Enum.take(limit)
+
+      {:ok, rows}
     end
   end
 
@@ -165,6 +179,165 @@ defmodule SalixAgent.SessionHistoryTest do
     assert search(ctx, %{"session_id" => "other"})["complete"] == false
     assert {:ok, head} = Source.read(agent, @session)
     assert {:ok, %{kind: "tool_result"}} = Source.record(agent, head, 1)
+  end
+
+  test "search matches every term of a multi-word query in any order", %{agent: agent, ctx: ctx} do
+    state = state(agent, 3)
+
+    messages = [
+      %{
+        id: 1,
+        seq: 1,
+        role: "assistant",
+        content: "Saved the Telethon login to /tg/session_string.txt"
+      },
+      %{id: 2, seq: 2, role: "user", content: "watch Shadow TPOM on Telegram"},
+      %{id: 3, seq: 3, role: "user", content: "unrelated"}
+    ]
+
+    save(%{state | messages: messages})
+    Worker.index(agent, @session)
+
+    seqs = fn query -> Enum.map(search(ctx, %{"query" => query})["results"], & &1["seq"]) end
+
+    assert seqs.("telegram 沙箱 安装 telethon 登录") == []
+    assert seqs.("session_string telethon") == [1]
+    assert seqs.("tpom  Shadow") == [2]
+    assert seqs.("telethon shadow") == []
+
+    assert search(ctx, %{"query" => Enum.map_join(1..9, " ", &"t#{&1}")})["error"] ==
+             "history_unavailable_or_invalid_request"
+  end
+
+  @scope ["scope|w1|C1"]
+
+  defp summary_fact(seq, text, label \\ ["scope|w1|C1"]) do
+    %{
+      "seq" => seq,
+      "kind" => "compaction_summary",
+      "source" => "compaction",
+      "event" => %{
+        "summary" => text,
+        "compacted_through" => seq,
+        "summary_sequence" => seq,
+        "label" => label
+      }
+    }
+  end
+
+  test "search results hold original records; replaced summaries are episodes, all summaries replay",
+       %{agent: agent, ctx: ctx} do
+    state = state(agent, 4)
+
+    messages = [
+      %{
+        id: 1,
+        seq: 1,
+        role: "user",
+        content: "send the morning brief to Telegram",
+        ifc: %{"label" => ["public"]}
+      },
+      %{
+        id: 2,
+        seq: 3,
+        role: "user",
+        content: "fix the Telegram markdown",
+        ifc: %{"label" => ["public"]}
+      }
+    ]
+
+    # seq 2 was replaced by the compaction that moved compacted_seq to 3; seq 4
+    # is the summary still in model context.
+    save(%{
+      state
+      | messages: messages,
+        compacted_seq: 3,
+        events: [
+          summary_fact(
+            2,
+            "## Telegram account\n- Telethon login on the Mac for the Telegram account\n- session ~/.tg_user.session"
+          ),
+          summary_fact(4, "## Brief\n- sent to Telegram chat 335416158 via telethon")
+        ]
+    })
+
+    Worker.index(agent, @session)
+
+    result = search(ctx, %{"query" => "telethon telegram"})
+    assert result["results"] == []
+    assert [%{"seq" => 2, "matched_terms" => 2} = first] = result["episodes"]
+    assert first["snippet"] =~ "telethon login on the mac for the telegram account"
+
+    telegram = search(ctx, %{"query" => "telegram"})
+    assert Enum.map(telegram["results"], & &1["seq"]) == [3, 1]
+    assert Enum.map(telegram["episodes"], & &1["seq"]) == [2]
+
+    # No episode matches: no episodes key.
+    refute Map.has_key?(search(ctx, %{"query" => "markdown"}), "episodes")
+
+    # Replay: the listing and get read every summary, the current one included.
+    listed = History.list(%{}, ctx) |> Jason.decode!()
+    assert Enum.map(listed["results"], & &1["seq"]) == [4, 3, 2, 1]
+    assert History.get(%{"seq" => 4}, ctx) |> Jason.decode!() |> Map.get("text") =~ "335416158"
+    assert History.get(%{"seq" => 2}, ctx) |> Jason.decode!() |> Map.get("text") =~ "tg_user"
+
+    next = search(ctx, %{"query" => "telegram", "limit" => 1})
+
+    refute Map.has_key?(
+             search(ctx, %{"query" => "telegram", "cursor" => next["next_cursor"]}),
+             "episodes"
+           )
+
+    # Labels: one item per result, then one per episode, in order. A public
+    # result and a channel-scoped episode do not make the answer agent-private.
+    ifc_ctx = Map.put(ctx, :ifc, %{})
+
+    assert {:tool_ifc, content, [], %{"label" => label, "items" => items}} =
+             History.search(%{"query" => "telegram"}, ifc_ctx)
+
+    decoded = Jason.decode!(content)
+    assert length(items) == length(decoded["results"]) + length(decoded["episodes"])
+    assert Enum.map(items, & &1["index"]) == [0, 1, 2]
+    assert Enum.map(items, & &1["label"]) == [["public"], ["public"], @scope]
+    assert label == SalixAgent.IFC.FileLabels.join_encoded(["public"], @scope)
+    refute "agent_private" in label
+
+    assert {:tool_ifc, _content, [], %{"items" => [%{"label" => @scope}]}} =
+             History.get(%{"seq" => 4}, ifc_ctx)
+
+    assert {:tool_ifc, content, [], %{"items" => items}} =
+             History.search(%{"query" => "markdown"}, ifc_ctx)
+
+    assert length(items) == length(Jason.decode!(content)["results"])
+  end
+
+  test "a summary longer than one index part ranks by the terms of all its parts", %{
+    agent: agent,
+    ctx: ctx
+  } do
+    state = state(agent, 3)
+    filler = String.duplicate("x", 450)
+    long = "alpha opened the run\n" <> String.duplicate("filler line\n", 750) <> "beta closed it"
+    assert String.length(long) > 8_500
+
+    save(%{
+      state
+      | messages: [%{id: 1, seq: 3, role: "user", content: "next"}],
+        compacted_seq: 3,
+        events: [
+          summary_fact(1, long),
+          summary_fact(2, "## Notes\n" <> filler <> "\n- the zebra key decided it\n- done")
+        ]
+    })
+
+    Worker.index(agent, @session)
+
+    assert [%{"seq" => 1, "matched_terms" => 2}] =
+             search(ctx, %{"query" => "alpha beta"})["episodes"]
+
+    assert [%{"seq" => 2, "snippet" => snippet}] = search(ctx, %{"query" => "zebra"})["episodes"]
+    assert snippet =~ "the zebra key decided it"
+    assert String.length(snippet) <= 400
   end
 
   test "an unimported legacy source cannot masquerade as an empty complete PG history", %{
@@ -398,6 +571,83 @@ defmodule SalixAgent.SessionHistoryTest do
     after
       :telemetry.detach(id)
     end
+  end
+
+  defmodule Elsewhere do
+    @moduledoc false
+    alias SalixAgent.Placement.LocalFleet
+    def ensure_started(agent, opts), do: LocalFleet.ensure_started(agent, opts)
+    def stop_existing(agent, opts), do: LocalFleet.stop_existing(agent, opts)
+    def placed_here?(_agent), do: false
+  end
+
+  test "a node leaves a Session placed on another node to that node's visit", %{agent: agent} do
+    save(state(agent, 40))
+    assert %{indexed: 0, target: 40} = Hot.state(agent, @session)
+    old = SystemsRuntime.get_env(:salix_agent, :placement)
+    on_exit(fn -> restore_placement(old) end)
+    SystemsRuntime.put_env(:salix_agent, :placement, Elsewhere)
+
+    # The node this Agent is placed on is inside a visit and holds the row.
+    {:ok, visits} =
+      Repo.transaction(fn ->
+        Repo.query!(
+          "SELECT indexed_through FROM agent_session_history_states WHERE agent_id=$1 AND session_id=$2 FOR UPDATE",
+          [agent, @session]
+        )
+
+        SystemsRuntime.Task.async(fn -> discover_and_visit(agent) end) |> settled_await()
+      end)
+
+    assert visits == []
+
+    restore_placement(nil)
+    assert [:ok] = discover_and_visit(agent)
+    assert %{indexed: 40, target: 40} = Hot.state(agent, @session)
+  end
+
+  test "a visit with nothing to index or hand off does not wait on the history row", %{
+    agent: agent
+  } do
+    save(state(agent, 40))
+    assert :ok = Worker.index(agent, @session)
+    assert %{indexed: 40, target: 40, cold: 0, transfer_ready: true} = Hot.state(agent, @session)
+
+    # Another visit or a Session commit holds the row.
+    {:ok, outcome} =
+      Repo.transaction(fn ->
+        Repo.query!(
+          "SELECT indexed_through FROM agent_session_history_states WHERE agent_id=$1 AND session_id=$2 FOR UPDATE",
+          [agent, @session]
+        )
+
+        SystemsRuntime.Task.async(fn -> visit(agent) end) |> settled_await()
+      end)
+
+    assert outcome == :ok
+  end
+
+  defp restore_placement(nil), do: SystemsRuntime.delete_env(:salix_agent, :placement)
+  defp restore_placement(old), do: SystemsRuntime.put_env(:salix_agent, :placement, old)
+
+  # One pass of this node's Worker over the due pages, then the visit its
+  # Scheduler starts for this Session. Rows other tests left are discarded.
+  defp discover_and_visit(agent, state \\ %{cursor: nil, archive_cursor: nil}) do
+    {:noreply, next} = Worker.handle_info(:tick, state)
+    queued = Worker.take_key({agent, @session})
+    for {key, _} <- Worker.pending_hints(), do: Worker.take_key(key)
+
+    cond do
+      queued -> [visit(agent)]
+      next.cursor -> discover_and_visit(agent, next)
+      true -> []
+    end
+  end
+
+  defp visit(agent) do
+    Worker.index(agent, @session)
+  rescue
+    error in Postgrex.Error -> error.postgres.code
   end
 
   defp pending_addresses(cursor \\ nil, acc \\ []) do

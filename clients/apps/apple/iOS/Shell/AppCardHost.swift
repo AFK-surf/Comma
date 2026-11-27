@@ -34,6 +34,18 @@ extension CommaTheme {
     static let cardRadius: CGFloat = 32
 }
 
+extension UIView {
+    func clipToAppCardCorners() {
+        clipsToBounds = true
+        layer.cornerCurve = .continuous
+        if #available(iOS 26.0, *) {
+            cornerConfiguration = .corners(radius: .containerConcentric(minimum: CommaTheme.cardRadius))
+        } else {
+            layer.cornerRadius = CommaTheme.cardRadius
+        }
+    }
+}
+
 /// The full-size host resolves the display's corners before its child surfaces reserve room for the dock.
 /// Keep each corner independent: Duo's outer display has small corners along one edge.
 struct DisplayCornerRadii: Equatable {
@@ -71,7 +83,7 @@ struct HostedContent<Content: View>: View {
             .environment(\.dynamicTypeSize, environment.dynamicTypeSize)
             .environment(\.layoutDirection, environment.layoutDirection)
             .environment(\.homeTaskColumn, environment.homeTaskColumn)
-            .environment(\.settingsColumnsFolded, environment.settingsColumnsFolded)
+            .environment(\.shellColumnsFolded, environment.shellColumnsFolded)
     }
 }
 
@@ -83,7 +95,7 @@ struct HostedEnvironment: Equatable {
     let dynamicTypeSize: DynamicTypeSize
     let layoutDirection: LayoutDirection
     let homeTaskColumn: Bool
-    let settingsColumnsFolded: Bool?
+    let shellColumnsFolded: Bool?
 
     init(_ values: EnvironmentValues) {
         locale = values.locale
@@ -91,7 +103,7 @@ struct HostedEnvironment: Equatable {
         dynamicTypeSize = values.dynamicTypeSize
         layoutDirection = values.layoutDirection
         homeTaskColumn = values.homeTaskColumn
-        settingsColumnsFolded = values.settingsColumnsFolded
+        shellColumnsFolded = values.shellColumnsFolded
     }
 }
 

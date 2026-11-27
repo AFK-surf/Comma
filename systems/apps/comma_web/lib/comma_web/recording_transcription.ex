@@ -10,7 +10,7 @@ defmodule CommaWeb.RecordingTranscription do
 
   alias SalixAgent.AudioTranscriber
 
-  @max_bytes 30 * 1024 * 1024
+  @max_bytes SalixLlm.AudioChunker.max_audio_bytes()
   @timeout_ms 610_000
 
   def call(conn, opts \\ []) do
@@ -54,7 +54,7 @@ defmodule CommaWeb.RecordingTranscription do
             error(conn, 400, "The recording is empty.")
 
           {:error, conn, :too_large} ->
-            error(conn, 413, "ASR accepts recordings up to 30 MiB. The audio remains in Drive.")
+            error(conn, 413, "ASR accepts recordings up to 256 MiB. The audio remains in Drive.")
 
           {:error, conn, _} ->
             error(conn, 400, "The recording upload failed.")

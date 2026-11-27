@@ -3,6 +3,7 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -604,6 +605,8 @@ describe("Host preparation", () => {
       "ready",
     ]);
     expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
+    // The published Host needs neither its archive nor its extraction.
+    expect(await readdir(config.directory)).not.toContain(".prepared");
     expect(
       (
         await readFile(join(config.appPath, "Contents", "MacOS", "agent-vmm-host"))
@@ -932,6 +935,11 @@ describe("Host preparation", () => {
     await expect(
       readFile(join(config.directory, ".pending-update.json"))
     ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      (await readdir(config.directory)).filter(
+        (name) => name.startsWith(".Agent VMM Host.") || name === ".prepared"
+      )
+    ).toEqual([]);
   });
 
   it("reports build failure without falling back to downloading or changing the installed Host", async () => {
@@ -1014,6 +1022,46 @@ describe("Host preparation", () => {
     expect(requests[0]).toEqual({});
     expect(requests[1]).toEqual({ range: `bytes=${half}-`, "if-range": '"v1"' });
     expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
+    expect(await readdir(config.directory)).not.toContain(".prepared");
+  });
+
+  it("removes other requests' bundles and the download cache only while no other preparer holds the directory", async () => {
+    const config = resolveHostConfiguration("prod", {}, await temporary());
+    const preparation = new AgentVMMHostPreparation(config, async () => "");
+    const kept = join(config.directory, ".Agent VMM Host.comma-update-kept.app");
+    for (const name of [
+      ".maintenance-aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      ".maintenance-bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb",
+      ".prepared",
+      ".Agent VMM Host.comma-update-old.app",
+      ".Agent VMM Host.comma-update-kept.app",
+    ])
+      await mkdir(join(config.directory, name), { recursive: true });
+    await writeFile(
+      join(config.directory, ".pending-update.json"),
+      JSON.stringify({ sourceApp: kept })
+    );
+    const names = async () => (await readdir(config.directory)).toSorted();
+    const before = await names();
+    const holder = new DatabaseSync(join(config.directory, ".prepare.sqlite"));
+    holder.exec("BEGIN IMMEDIATE");
+    await preparation.cleanupMaintenance(undefined, true);
+    holder.close();
+    expect(await names()).toEqual([...before, ".prepare.sqlite"].toSorted());
+    await preparation.cleanupMaintenance("bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb", true);
+    expect(await names()).toEqual([
+      ".Agent VMM Host.comma-update-kept.app",
+      ".maintenance-bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb",
+      ".pending-update.json",
+      ".prepare.sqlite",
+      ".prepared",
+    ]);
+    await preparation.cleanupMaintenance(undefined, true);
+    expect(await names()).toEqual([
+      ".Agent VMM Host.comma-update-kept.app",
+      ".pending-update.json",
+      ".prepare.sqlite",
+    ]);
   });
 
   it("distinguishes a missing lifecycle helper from an installed but unreadable runtime", async () => {

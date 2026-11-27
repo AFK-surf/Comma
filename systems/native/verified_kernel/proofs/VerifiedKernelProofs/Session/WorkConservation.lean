@@ -151,6 +151,8 @@ theorem batch_plan {state : Term} {items selected consumes : List Term} {ack : T
   · obtain ⟨⟨leading, deferred⟩, j'', hs, h⟩ := bind_ok h
     have partition := split_partition hs
     obtain ⟨wait, j''', _, h⟩ := bind_ok h
+    obtain ⟨openThread, j_t, _, h⟩ := bind_ok h
+    obtain ⟨followups, j_f, _, h⟩ := bind_ok h
     obtain ⟨taken, j'''', ht, h⟩ := bind_ok h
     have eq := pure_ok h
     cases eq

@@ -1,6 +1,8 @@
 ---
 name: codex
 description: Use Codex CLI for ChatGPT login and stdio app-server subagent workflows for repository implementation tasks.
+roles: worker
+prompt_summary: "Run, authenticate, or debug Codex CLI and Codex app-server on a connected machine or sandbox."
 ---
 
 # Codex
@@ -25,7 +27,7 @@ Reuse known targets without repeating discovery.
   codex --version || true
   codex login status 2>&1 || true
   ```
-- If the user says Bridge must not edit code directly, Codex must make repository file changes; Bridge may inspect, test, commit, push, and create/update PRs.
+- If the user says Comma must not edit code directly, Codex must make repository file changes; Comma may inspect, test, commit, push, and create/update PRs.
 - Use the GitHub skill for clone/fetch/push/PR/review/checks work.
 
 ## ChatGPT Login
@@ -74,7 +76,7 @@ Use when the user asks to log in or re-authenticate Codex with a ChatGPT account
 
 ## Codex as a Stdio Subagent
 
-Use this when Codex should implement repository changes while Bridge supervises. This is the preferred path when the user says Bridge should not edit files directly.
+Use this when Codex should implement repository changes while Comma supervises. This is the preferred path when the user says Comma should not edit files directly.
 
 ### Setup
 
@@ -120,8 +122,8 @@ Relay approval requests through the supervising host. See the
      "method": "initialize",
      "params": {
        "clientInfo": {
-         "name": "bridge",
-         "title": "Bridge",
+         "name": "comma",
+         "title": "Comma",
          "version": "0.1.0"
        },
        "capabilities": { "experimentalApi": true }
@@ -137,7 +139,7 @@ Relay approval requests through the supervising host. See the
      "method": "thread/start",
      "params": {
        "cwd": "/path/to/repo",
-       "developerInstructions": "You are running inside Codex app-server stdio. Bridge is orchestrating and must not edit repository files directly; you must make requested file changes. Inspect targeted files, avoid broad binary/asset scans, run focused tests when practical, and leave changes uncommitted.",
+       "developerInstructions": "You are running inside Codex app-server stdio. Comma is orchestrating and must not edit repository files directly; you must make requested file changes. Inspect targeted files, avoid broad binary/asset scans, run focused tests when practical, and leave changes uncommitted.",
        "experimentalRawEvents": false,
        "persistExtendedHistory": true
      }

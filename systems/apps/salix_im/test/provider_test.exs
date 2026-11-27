@@ -479,6 +479,19 @@ defmodule SalixIM.ProviderTest do
             "result" => %{"message_id" => 77, "chat" => %{"id" => "sent"}}
           })
 
+        {"POST", ["bot" <> token, "setMyCommands"]} ->
+          record(%{
+            kind: :telegram_api,
+            token: token,
+            method: "setMyCommands",
+            params: decode_request_body(raw)
+          })
+
+          # A token of `999:` stands for a bot whose command list Telegram refuses.
+          if String.starts_with?(token, "999:"),
+            do: json(conn, 400, %{"ok" => false, "description" => "Bad Request"}),
+            else: json(conn, 200, %{"ok" => true, "result" => true})
+
         {"POST", ["bot" <> token, method]} when method in ["sendMessage", "sendRichMessage"] ->
           params = decode_request_body(raw)
 
@@ -2195,7 +2208,7 @@ defmodule SalixIM.ProviderTest do
           "type" => "card",
           "block_id" => block_id,
           "title" => %{"type" => "mrkdwn", "text" => ^title},
-          "subtitle" => %{"type" => "mrkdwn", "text" => "Bridge for Teams"},
+          "subtitle" => %{"type" => "mrkdwn", "text" => "Comma for Teams"},
           "body" => %{
             "type" => "mrkdwn",
             "text" => "This Slack thread is connected to the Task."
@@ -2645,6 +2658,84 @@ defmodule SalixIM.ProviderTest do
   # CI runner can take longer than two seconds to settle an async tool result.
   # Settles until the condition holds; it fails on clock time if it never does.
   defp eventually(fun, _retries \\ nil), do: settle_until(fun)
+
+  defp seed_feishu_thread_connect(tenant, group_id, connect_id) do
+    seed_connect(group_id, connect_id, "feishu", %{
+      "tenant_id" => tenant,
+      "status" => "connected",
+      "app_id" => "cli_" <> connect_id,
+      "app_name" => "Bridge",
+      "app_secret" => "fs-secret",
+      "verification_token" => "verify-token",
+      "bot_open_id" => "ou_bot"
+    })
+  end
+
+  # One person's group message of a Feishu thread, delivered by the callback.
+  defp feishu_thread_event(connect, message_id, thread_id, chat_id, opts \\ []) do
+    mentions =
+      if opts[:mention],
+        do: [%{"key" => "@_user_1", "id" => %{"open_id" => "ou_bot"}, "name" => "Bridge"}],
+        else: []
+
+    envelope = %{
+      "schema" => "2.0",
+      "header" => %{
+        "event_type" => "im.message.receive_v1",
+        "app_id" => connect["app_id"],
+        "token" => "verify-token"
+      },
+      "event" => %{
+        "sender" => %{"sender_id" => %{"open_id" => "ou_person"}, "sender_type" => "user"},
+        "message" => %{
+          "message_id" => message_id,
+          "chat_id" => chat_id,
+          "chat_type" => "group",
+          "thread_id" => thread_id,
+          "message_type" => "text",
+          "mentions" => mentions,
+          "content" => Jason.encode!(%{"text" => "the numbers are in the sheet"})
+        }
+      }
+    }
+
+    SalixIM.ProviderHTTP.handle_feishu_event(connect, envelope, [], Jason.encode!(envelope))
+  end
+
+  defp feishu_router_inputs(group_id, source_id) do
+    {:ok, conversation} = SalixIM.RouterConversationInput.ensure(group_id)
+
+    {:ok, messages} =
+      Conversations.list_group_conversation_messages(group_id, conversation["conversation_id"],
+        limit: 50
+      )
+
+    Enum.filter(
+      messages,
+      &(get_in(&1, ["agent_input", :trusted_origin, "source_message_id"]) == source_id)
+    )
+  end
+
+  # The Router of a second Group of the same tenant.
+  defp other_group_router!(tenant) do
+    group_id = SalixStore.Ids.new_group_id(tenant)
+
+    router =
+      SalixAgent.TestSupport.create_control_agent!(SalixStore.Ids.new_agent_id(group_id), %{
+        "tenant_id" => tenant,
+        "group_id" => group_id,
+        "name" => "Other Router",
+        "role" => "router"
+      })
+
+    {:ok, _group} =
+      SalixStore.CasRecord.update(
+        Keys.ctl_group(group_id),
+        &Map.put(&1, "router_agent_id", router["agent_id"])
+      )
+
+    router["agent_id"]
+  end
 
   defp deterministic_feishu_uuid(api, target, operation_ref) do
     digest =
@@ -6878,6 +6969,35 @@ defmodule SalixIM.ProviderTest do
       assert req.params["exclude_archived"] == "true"
     end
 
+    test "slack.list_channels keeps DM peer and conversation kind for im and mpim", %{
+      agent_id: agent_id,
+      slack_connect_id: connect_id
+    } do
+      MockSlack.respond("conversations.list", %{
+        "ok" => true,
+        "channels" => [
+          %{"id" => "D1", "is_im" => true, "user" => "U42"},
+          %{"id" => "D2", "is_im" => true, "user" => ""},
+          %{"id" => "G1", "name" => "mpdm-a--b-1", "is_mpim" => true, "is_private" => true},
+          %{"id" => "C1", "name" => "general", "is_im" => false, "is_mpim" => false}
+        ]
+      })
+
+      assert {:ok, %{"channels" => channels}} =
+               call(agent_id, "slack", "slack.list_channels", connect_id, %{
+                 "types" => "im,mpim"
+               })
+
+      assert channels == [
+               %{"id" => "D1", "name" => nil, "is_im" => true, "user" => "U42"},
+               %{"id" => "D2", "name" => nil, "is_im" => true},
+               %{"id" => "G1", "name" => "mpdm-a--b-1", "is_mpim" => true, "is_private" => true},
+               %{"id" => "C1", "name" => "general"}
+             ]
+
+      assert MockSlack.last_request("conversations.list").params["types"] == "im,mpim"
+    end
+
     test "slack.list_users defaults, filters deleted users, and returns pagination", %{
       agent_id: agent_id,
       slack_connect_id: connect_id
@@ -8736,7 +8856,7 @@ defmodule SalixIM.ProviderTest do
       }
 
       assert {:error,
-              "im_api.internal.send_message accepts only conversation_id, content, request_id, delivery_filter, mentions, reply_to_message_id"} =
+              "im_api.internal.send_message accepts only conversation_id, content, request_id, delivery_filter, mentions, reply_to_message_id, source_message_id"} =
                call(
                  activation_worker["agent_id"],
                  "internal",
@@ -9379,7 +9499,7 @@ defmodule SalixIM.ProviderTest do
         })
 
       assert {:error,
-              "im_api.internal.send_message accepts only conversation_id, content, request_id, delivery_filter, mentions, reply_to_message_id"} =
+              "im_api.internal.send_message accepts only conversation_id, content, request_id, delivery_filter, mentions, reply_to_message_id, source_message_id"} =
                call(agent_id, "internal", "internal.send_message", "internal", %{
                  "conversation_id" => protected_conversation["conversation_id"],
                  "request_id" => "ordinary-clear-protected-refs",
@@ -9941,29 +10061,39 @@ defmodule SalixIM.ProviderTest do
       assert Jason.decode!(message.params["content"]) == %{"image_key" => "image-key-1"}
     end
 
-    test "explicit text keeps the text as written and breaks only at-tags", %{
+    test "explicit text keeps the text as written; an unlisted at-tag sends nothing", %{
       agent_id: agent_id,
       feishu_connect_id: connect_id
     } do
+      params = %{
+        "receive_id" => "oc_1",
+        "text" => ~s(Owner: <at user_id="ou_alice">Alice</at> & `session:<key>`),
+        "format" => "text",
+        "mentions" => [%{"user_id" => "ou_alice", "name" => "Alice"}],
+        "mention_all" => false
+      }
+
+      for {tag, id} <- [
+            {~s(<at user_id="all">all</at>), "all"},
+            {~s(<AT user_id="ou_eve">Eve</AT>), "ou_eve"}
+          ] do
+        assert {:error, error} =
+                 call(agent_id, "feishu", "feishu.send_text", connect_id, %{
+                   params
+                   | "text" => params["text"] <> " " <> tag
+                 })
+
+        assert error =~ id
+      end
+
+      assert MockProviderRuntime.requests(:feishu_message) == []
+
       assert {:ok, %{"message_id" => "om_sent"}} =
-               call(agent_id, "feishu", "feishu.send_text", connect_id, %{
-                 "receive_id" => "oc_1",
-                 "text" =>
-                   ~s(<at user_id="all">all</at> & <AT user_id="ou_eve">Eve</AT> `session:<key>`),
-                 "format" => "text",
-                 "mentions" => [%{"user_id" => "ou_alice", "name" => "Alice"}],
-                 "mention_all" => false
-               })
+               call(agent_id, "feishu", "feishu.send_text", connect_id, params)
 
       [message] = MockProviderRuntime.requests(:feishu_message)
       text = message.params["content"] |> Jason.decode!() |> Map.fetch!("text")
-
-      # Feishu shows `&lt;` as typed, so only the at-tags change: a zero-width
-      # space after `<` keeps them from mentioning anyone.
-      assert text ==
-               ~s(<at user_id="ou_alice">Alice</at> <\u200Bat user_id="all">all<\u200B/at> & <\u200BAT user_id="ou_eve">Eve<\u200B/AT> `session:<key>`)
-
-      refute text =~ ~s(<at user_id="all">)
+      assert text == ~s(Owner: <at user_id="ou_alice">Alice</at> & `session:<key>`)
     end
 
     test "structured_mentions is refused and nothing is sent", %{
@@ -10460,10 +10590,16 @@ defmodule SalixIM.ProviderTest do
         }
       ])
 
-      assert {:ok, _} =
+      assert {:error, _} =
                call(agent_id, "feishu", "feishu.update_message", connect_id, %{
                  "message_id" => "om_bot",
                  "text" => ~s(after <at user_id="all">all</at>)
+               })
+
+      assert {:ok, _} =
+               call(agent_id, "feishu", "feishu.update_message", connect_id, %{
+                 "message_id" => "om_bot",
+                 "text" => "after"
                })
 
       assert {:ok, _} =
@@ -10484,7 +10620,7 @@ defmodule SalixIM.ProviderTest do
       assert update.params["msg_type"] == "post"
 
       assert SalixIM.Provider.Feishu.Message.text(update.params) ==
-               ~S(after \<at user\_id="all"\>all\</at\>)
+               "after"
 
       assert [%{message_id: "om_bot"}] = MockProviderRuntime.requests(:feishu_delete_message)
 
@@ -10559,6 +10695,178 @@ defmodule SalixIM.ProviderTest do
                connect,
                "oc_thread",
                "omt_thread"
+             )
+    end
+
+    test "Feishu Router leaves a thread on request; a mention still reaches it and its next reply follows the thread",
+         %{tenant: tenant, group_id: group_id, agent_id: router_id} do
+      SalixAgent.LLM.Mock.script([{:final, "ack"}, {:final, "ack"}, {:final, "ack"}])
+      connect = seed_feishu_thread_connect(tenant, group_id, "fs-thread-leave")
+      leave = %{"chat_id" => "oc_thread", "thread_id" => "omt_thread"}
+
+      # The bot answered in the thread, so it follows the thread.
+      assert {:ok, _sent} =
+               call(router_id, "feishu", "feishu.reply_text", "fs-thread-leave", %{
+                 "message_id" => "om_top",
+                 "chat_id" => "oc_thread",
+                 "reply_in_thread" => true,
+                 "text" => "on it"
+               })
+
+      assert {:ok, %{ok: true, status: "queued"}} =
+               feishu_thread_event(connect, "om_before_leave", "omt_thread", "oc_thread")
+
+      # A Worker cannot leave a thread for the Router.
+      {:ok, worker} =
+        create_control_agent(
+          %{"name" => "Thread worker", "group_id" => group_id, "role" => "worker"},
+          tenant
+        )
+
+      assert {:error, "operation is not available to this agent role"} =
+               call(worker["agent_id"], "feishu", "feishu.leave_thread", "fs-thread-leave", leave)
+
+      assert {:ok, %{"status" => "left", "chat_id" => "oc_thread", "thread_id" => "omt_thread"}} =
+               call(router_id, "feishu", "feishu.leave_thread", "fs-thread-leave", leave)
+
+      refute SalixIM.ProviderConnects.feishu_thread_participating?(
+               connect,
+               "oc_thread",
+               "omt_thread"
+             )
+
+      # People go on without a mention: nothing reaches the Router.
+      assert {:error, {:ignored, :no_bot_mention}} =
+               feishu_thread_event(connect, "om_after_leave", "omt_thread", "oc_thread")
+
+      # A mention still does.
+      assert {:ok, %{ok: true, status: "queued"}} =
+               feishu_thread_event(connect, "om_mention", "omt_thread", "oc_thread",
+                 mention: true
+               )
+
+      # The Router's next reply in the thread follows it again.
+      assert {:ok, _sent} =
+               call(router_id, "feishu", "feishu.reply_text", "fs-thread-leave", %{
+                 "message_id" => "om_mention",
+                 "chat_id" => "oc_thread",
+                 "thread_id" => "omt_thread",
+                 "text" => "back"
+               })
+
+      assert {:ok, %{ok: true, status: "queued"}} =
+               feishu_thread_event(connect, "om_follow_again", "omt_thread", "oc_thread")
+
+      # Leaving a thread never followed changes nothing and says so the same way.
+      assert {:ok, %{"status" => "left"}} =
+               call(router_id, "feishu", "feishu.leave_thread", "fs-thread-leave", %{
+                 "chat_id" => "oc_thread",
+                 "thread_id" => "omt_never"
+               })
+    end
+
+    test "Feishu thread handed to a Task: its messages enter the Task, and the Task answers in it",
+         %{tenant: tenant, group_id: group_id, agent_id: router_id} do
+      connect = seed_feishu_thread_connect(tenant, group_id, "fs-thread-task")
+
+      {conversation_id, worker_id} =
+        create_slack_task!(tenant, group_id, router_id, "Own the Feishu thread")
+
+      {other_id, _other_worker} = create_slack_task!(tenant, group_id, router_id, "Another Task")
+
+      MockProviderRuntime.feishu_messages([
+        %{
+          "message_id" => "om_source",
+          "chat_id" => "oc_team",
+          "thread_id" => "omt_team",
+          "root_id" => "om_root",
+          "msg_type" => "text"
+        },
+        %{
+          "message_id" => "om_elsewhere",
+          "chat_id" => "oc_team",
+          "thread_id" => "omt_other",
+          "msg_type" => "text"
+        }
+      ])
+
+      params = %{
+        "conversation_id" => conversation_id,
+        "chat_id" => "oc_team",
+        "thread_id" => "omt_team",
+        "message_id" => "om_source"
+      }
+
+      bind = fn agent_id, params ->
+        call(agent_id, "feishu", "feishu.bind_thread_to_task", "fs-thread-task", params)
+      end
+
+      # The named message must be of the named chat and thread.
+      assert {:error, "message_id is not a message of thread_id"} =
+               bind.(router_id, %{params | "message_id" => "om_elsewhere"})
+
+      assert {:error, "message_id does not belong to chat_id"} =
+               bind.(router_id, %{params | "chat_id" => "oc_other"})
+
+      # A Worker, and the Router of another Group, cannot bind.
+      {:ok, worker} =
+        create_control_agent(
+          %{"name" => "Binding worker", "group_id" => group_id, "role" => "worker"},
+          tenant
+        )
+
+      assert {:error, "operation is not available to this agent role"} =
+               bind.(worker["agent_id"], params)
+
+      assert {:error, "connect not found"} = bind.(other_group_router!(tenant), params)
+
+      assert {:ok, %{"binding_status" => "created", "participant_id" => participant_id}} =
+               bind.(router_id, params)
+
+      assert {:ok, %{"binding_status" => "exists", "participant_id" => ^participant_id}} =
+               bind.(router_id, params)
+
+      assert {:error, "this Feishu thread is already bound to another Task"} =
+               bind.(router_id, %{params | "conversation_id" => other_id})
+
+      # A person goes on in the thread without a mention: the Task gets it,
+      # the Router does not.
+      assert {:ok, %{ok: true, status: "queued"}} =
+               feishu_thread_event(connect, "om_follow", "omt_team", "oc_team")
+
+      source_id = "im_provider:feishu:fs-thread-task:om_follow"
+
+      assert {:ok, messages} =
+               Conversations.list_group_conversation_messages(group_id, conversation_id,
+                 limit: 50
+               )
+
+      assert [message] = Enum.filter(messages, &(&1["source_message_id"] == source_id))
+      assert message["participant_id"] == participant_id
+      assert message["actor_type"] == "provider_user"
+      assert message["user_id"] == "ou_person"
+      assert feishu_router_inputs(group_id, source_id) == []
+
+      # The Task's visible reply answers the thread's root, in the thread.
+      assert {:ok, %{"inserted" => true}} =
+               ConversationServer.append_group_conversation_agent_message(
+                 group_id,
+                 conversation_id,
+                 worker_id,
+                 %{"content" => "Read the sheet.", "client_request_id" => "feishu-thread-reply"}
+               )
+
+      assert eventually(fn ->
+               Enum.any?(MockProviderRuntime.requests(:feishu_reply), fn reply ->
+                 reply.message_id == "om_root" and reply.params["reply_in_thread"] == true and
+                   reply.params["content"] =~ "Read the sheet."
+               end)
+             end)
+
+      # The person's own message is not sent back to the thread.
+      refute Enum.any?(
+               MockProviderRuntime.requests(:feishu_reply),
+               &(&1.params["content"] =~ "the numbers are in the sheet")
              )
     end
   end
@@ -11066,7 +11374,7 @@ defmodule SalixIM.ProviderTest do
       on_exit(fn -> restore(:salix_im, :sandboxes_mod, previous_sandboxes) end)
 
       assert {:error,
-              "a Worker's Task takes content, title, runs_on, repo, model only, not agent_id"} =
+              "a Worker's Task takes content, title, runs_on, repo, model, files only, not agent_id"} =
                call(
                  worker["agent_id"],
                  "internal",
@@ -11473,10 +11781,22 @@ defmodule SalixIM.ProviderTest do
                  %{"tool_context" => %{"role" => "router", "agent" => %{"role" => "router"}}}
                )
 
-      assert {:error, "im_api.internal.task.list accepts only cursor and limit"} =
+      assert {:error, "im_api.internal.task.list accepts only cursor, limit, archive, status"} =
                call(agent_id, "internal", "internal.task.list", "internal", %{
                  "query" => "no title filter"
                })
+
+      assert {:error, "archive must be one of exclude, only, include"} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{
+                 "archive" => "invalid"
+               })
+
+      assert {:error, status_err} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{
+                 "status" => "archive"
+               })
+
+      assert status_err =~ "archived"
 
       assert {:error, "limit must be an integer between 1 and 1000"} =
                call(agent_id, "internal", "internal.task.list", "internal", %{"limit" => 1001})
@@ -12606,6 +12926,214 @@ defmodule SalixIM.ProviderTest do
                  "internal",
                  base
                )
+
+      assert {:error, archive_err} =
+               call(
+                 agent_id,
+                 "internal",
+                 "internal.update_conversation",
+                 "internal",
+                 Map.put(base, "status", "archive")
+               )
+
+      assert archive_err =~ "im_api.internal.task.archive"
+
+      assert {:error, "Use im_api.internal.task.archive to archive a Task"} =
+               call(
+                 agent_id,
+                 "internal",
+                 "internal.update_conversation",
+                 "internal",
+                 Map.put(base, "status", "archived")
+               )
+    end
+
+    test "im_api.internal.task.archive and unarchive handle batches through TaskArchive",
+         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      done_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Done task"
+        })["conversation_id"]
+
+      review_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Review task"
+        })["conversation_id"]
+
+      active_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Active task"
+        })["conversation_id"]
+
+      chat_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "user_chat",
+          "title" => "Chat"
+        })["conversation_id"]
+
+      assert {:ok, _} =
+               ConversationServer.update_group_conversation(group_id, done_id, %{
+                 "status" => "completed"
+               })
+
+      assert {:ok, _} =
+               ConversationServer.update_group_conversation(group_id, review_id, %{
+                 "status" => "ready_for_review"
+               })
+
+      assert {:ok, archived} =
+               call(agent_id, "internal", "internal.task.archive", "internal", %{
+                 "conversation_ids" => [done_id, review_id, active_id, chat_id, done_id]
+               })
+
+      assert archived["archived_count"] == 2
+      assert archived["failed_count"] == 2
+
+      by_id = Map.new(archived["results"], &{&1["conversation_id"], &1})
+
+      assert %{"archived" => true, "status" => "archived", "archived_from_status" => "completed"} =
+               by_id[done_id]
+
+      assert %{
+               "archived" => true,
+               "status" => "archived",
+               "archived_from_status" => "ready_for_review"
+             } = by_id[review_id]
+
+      assert %{"archived" => false, "error" => active_err} = by_id[active_id]
+      assert active_err =~ "not_finished"
+      assert %{"archived" => false, "error" => "Only Tasks can be archived"} = by_id[chat_id]
+
+      # Archiving an already-archived Task succeeds idempotently.
+      assert {:ok, %{"archived_count" => 1, "failed_count" => 0}} =
+               call(agent_id, "internal", "internal.task.archive", "internal", %{
+                 "conversation_ids" => [done_id]
+               })
+
+      # Unarchiving restores original statuses and is idempotent on non-archived Tasks.
+      assert {:ok, restored} =
+               call(agent_id, "internal", "internal.task.unarchive", "internal", %{
+                 "conversation_ids" => [done_id, review_id, active_id]
+               })
+
+      assert restored["unarchived_count"] == 3
+      assert restored["failed_count"] == 0
+      restored_by_id = Map.new(restored["results"], &{&1["conversation_id"], &1})
+      assert restored_by_id[done_id]["status"] == "completed"
+      assert restored_by_id[review_id]["status"] == "ready_for_review"
+      assert restored_by_id[active_id]["status"] == "active"
+
+      # Outsider Router cannot archive conversations it is not a participant of.
+      assert {:ok, outsider} =
+               create_control_agent(
+                 %{"name" => "Archive outsider", "group_id" => group_id, "role" => "router"},
+                 tenant
+               )
+
+      assert {:ok, %{"archived_count" => 0, "failed_count" => 1, "results" => [denied]}} =
+               call(outsider["agent_id"], "internal", "internal.task.archive", "internal", %{
+                 "conversation_ids" => [done_id]
+               })
+
+      assert denied["error"] == "current Agent is not a Conversation participant"
+
+      # Workers and malformed params are rejected.
+      assert {:ok, worker} =
+               create_control_agent(
+                 %{"name" => "Archive worker", "group_id" => group_id, "role" => "worker"},
+                 tenant
+               )
+
+      assert {:error, "operation is not authorized for this agent role"} =
+               call(worker["agent_id"], "internal", "internal.task.archive", "internal", %{
+                 "conversation_ids" => [done_id]
+               })
+
+      assert {:error, "conversation_ids must be a non-empty array"} =
+               call(agent_id, "internal", "internal.task.archive", "internal", %{
+                 "conversation_ids" => []
+               })
+    end
+
+    test "im_api.internal.task.list excludes archived Tasks by default and supports archive and status filters",
+         %{group_id: group_id, agent_id: agent_id} do
+      done_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Completed task"
+        })["conversation_id"]
+
+      archived_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Archived task"
+        })["conversation_id"]
+
+      active_id =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Active task"
+        })["conversation_id"]
+
+      assert {:ok, _} =
+               ConversationServer.update_group_conversation(group_id, done_id, %{
+                 "status" => "completed"
+               })
+
+      assert {:ok, before_archive} =
+               ConversationServer.update_group_conversation(group_id, archived_id, %{
+                 "status" => "completed"
+               })
+
+      assert {:ok, _} =
+               ConversationServer.set_task_archived(
+                 group_id,
+                 archived_id,
+                 :archive,
+                 before_archive["updated_at"]
+               )
+
+      assert {:ok, %{"tasks" => default_tasks}} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{})
+
+      default_ids = Enum.map(default_tasks, & &1["task_id"])
+      assert done_id in default_ids
+      assert active_id in default_ids
+      refute archived_id in default_ids
+
+      assert {:ok, %{"tasks" => completed_tasks}} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{
+                 "status" => "completed"
+               })
+
+      assert Enum.map(completed_tasks, & &1["task_id"]) == [done_id]
+
+      assert {:ok, %{"tasks" => archived_only}} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{
+                 "archive" => "only"
+               })
+
+      assert Enum.map(archived_only, & &1["task_id"]) == [archived_id]
+
+      assert {:ok, %{"tasks" => archived_by_status}} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{
+                 "status" => "archived"
+               })
+
+      assert Enum.map(archived_by_status, & &1["task_id"]) == [archived_id]
+
+      assert {:ok, %{"tasks" => all_tasks}} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{
+                 "archive" => "include"
+               })
+
+      all_ids = Enum.map(all_tasks, & &1["task_id"])
+      assert archived_id in all_ids
+      assert done_id in all_ids
+      assert active_id in all_ids
     end
 
     test "update_conversation_titles renames a batch with emoji and reports each entry",
@@ -18437,6 +18965,115 @@ defmodule SalixIM.ProviderTest do
                  connect_id,
                  %{"allowed_chat_ids" => "-1001"}
                )
+    end
+
+    test "a new token gives the bot its task commands; a refusal keeps the connect",
+         %{tenant: tenant, group_id: group_id} do
+      commands = fn token ->
+        MockProviderRuntime.requests(:telegram_api)
+        |> Enum.filter(&(&1.method == "setMyCommands" and &1.token == token))
+        |> Enum.map(fn request -> Enum.map(request.params["commands"], & &1["command"]) end)
+      end
+
+      # Telegram refuses the list: the connect is made all the same.
+      assert {:ok, %{"connect_id" => refused}} =
+               SalixIM.ProviderConnects.create_telegram_im_connect(tenant, group_id, %{
+                 "bot_token" => "999:refused"
+               })
+
+      assert commands.("999:refused") == [~w(newgpttask newclaudetask)]
+      assert :ok = SalixIM.ProviderConnects.delete_im_connect(tenant, group_id, refused)
+
+      assert {:ok, %{"connect_id" => connect_id}} =
+               SalixIM.ProviderConnects.create_telegram_im_connect(tenant, group_id, %{
+                 "bot_token" => "123:abc"
+               })
+
+      # The list has no control commands: a Telegram chat cannot run them.
+      assert commands.("123:abc") == [~w(newgpttask newclaudetask)]
+
+      # Changing the chats checks no token and sends nothing to Telegram.
+      assert {:ok, _connect} =
+               SalixIM.ProviderConnects.update_telegram_im_connect(
+                 tenant,
+                 group_id,
+                 connect_id,
+                 %{"allowed_chat_ids" => ["-1001"]}
+               )
+
+      assert length(commands.("123:abc")) == 1
+
+      assert {:ok, _connect} =
+               SalixIM.ProviderConnects.update_telegram_im_connect(
+                 tenant,
+                 group_id,
+                 connect_id,
+                 %{"bot_token" => "123:rotated"}
+               )
+
+      assert commands.("123:rotated") == [~w(newgpttask newclaudetask)]
+
+      # A Comma product bot has no task commands.
+      assert {:ok, _managed} =
+               SalixIM.ProviderConnects.ensure_managed_telegram_im_connect(tenant, group_id, %{
+                 "bot_token" => "123:managed",
+                 "telegram_user_id" => "42"
+               })
+
+      assert commands.("123:managed") == []
+    end
+
+    test "a task command of a new message is a task request for this bot",
+         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      previous_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+      SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, FakeAgentDelivery)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :fake_agent_delivery_test_pid,
+        SystemsRuntime.Proc.self()
+      )
+
+      on_exit(fn ->
+        restore(:salix_im, :agent_delivery_mod, previous_delivery)
+        SystemsRuntime.delete_env(:salix_im, :fake_agent_delivery_test_pid)
+      end)
+
+      connect = allowed_telegram_connect(tenant, group_id, ["-1001"])
+      chat = %{"id" => -1001, "type" => "supergroup", "title" => "Ours"}
+
+      deliver = fn update_id, text, kind ->
+        update = put_in(telegram_update(update_id, chat), ["message", "text"], text)
+
+        update =
+          if kind == "message",
+            do: update,
+            else: %{"update_id" => update_id, kind => update["message"]}
+
+        assert {:ok, :queued} = SalixIM.ProviderHTTP.handle_telegram_update(connect, update)
+        settle_receive({:agent_delivery, ^agent_id, payload, opts})
+        {payload.content, opts}
+      end
+
+      {task, opts} = deliver.(451, "/newgpttask@Bridge_Bot 修一下 CI", "message")
+      refute opts[:no_wake]
+      assert task =~ "Create a task using a Codex worker. Task content: 修一下 CI"
+      refute task =~ "/newgpttask"
+
+      {ask, _opts} = deliver.(452, "/NewClaudeTask", "message")
+      assert ask =~ "without a task description"
+      assert ask =~ "what Claude task"
+
+      # An edit never creates a second task.
+      {edited, _opts} = deliver.(453, "/newgpttask 修一下 CI", "edited_message")
+      assert edited =~ "/newgpttask 修一下 CI"
+      refute edited =~ "Create a task"
+
+      # A command for another bot is context for this one.
+      {other, other_opts} = deliver.(454, "/newgpttask@other_bot 修一下 CI", "message")
+      assert other_opts[:no_wake] == true
+      assert other =~ "/newgpttask@other_bot"
+      refute other =~ "Create a task"
     end
 
     test "one bot serves one connect until that connect is deleted",

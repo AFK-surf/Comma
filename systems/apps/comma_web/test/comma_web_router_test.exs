@@ -2318,7 +2318,25 @@ defmodule CommaWeb.RouterTest do
       SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired)
     end)
 
-    assert %{"sandboxes" => true, "cloud_vm_retired" => false} = agent_models.()["task_place"]
+    assert %{"sandboxes" => true, "cloud_vm_retired" => false} =
+             task_place = agent_models.()["task_place"]
+
+    # The runtimes a new sandbox can run: none here, with no account lent to
+    # sandboxes and no platform model, so the New task window offers none.
+    # The Workspace's Anthropic API key runs Claude there.
+    assert task_place["sandbox_runtimes"] == []
+
+    :post
+    |> json_conn("/v1/comma/workspaces/#{workspace["id"]}/subscription-accounts", %{
+      "credential_kind" => "provider_api_key",
+      "source" => "anthropic",
+      "api_key" => "sk-ant-secret-0123456789"
+    })
+    |> user_auth(session["token"])
+    |> call()
+    |> expect_json(200)
+
+    assert agent_models.()["task_place"]["sandbox_runtimes"] == ["claude"]
     assert read.(%{"limit" => 3})["cloud_vm"]["device_id"] == cloud
 
     # Retired, the Cloud VM stays listed while the workspace still has one

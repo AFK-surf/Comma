@@ -18,6 +18,8 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
          %{workspace_id: "T1", complete?: true, channels: [%{id: "C1", name: "sales"}], gaps: %{}}}
 
     def daily_brief_read_window(%{channel_id: "C1", after_us: after_us, before_us: before_us}) do
+      extra = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_window, [])
+
       messages =
         for {ts, text} <- [{"1792720000.000100", "<@UALICE1> 这个报价怎么算？"}],
             us = trunc(String.to_float(ts) * 1_000_000),
@@ -27,12 +29,60 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
                 %{name: "eyes", users: ["UALICE1"]}
               ])
 
+      messages =
+        messages ++
+          for %{ts: ts} = m <- extra,
+              us = trunc(String.to_float(ts) * 1_000_000),
+              us > after_us and us < before_us,
+              do:
+                Map.merge(
+                  message(ts, m.thread, m.author, m.text),
+                  Map.take(m, [:actor_kind, :reactions])
+                )
+
       {:ok, %{messages: messages, has_more?: false, next_cursor: nil}}
     end
 
     def daily_brief_member_threads(_request), do: {:ok, %{threads: [], complete?: true}}
 
     def daily_brief_active_channels(_request), do: {:ok, %{}}
+
+    def daily_brief_issue_states(request) do
+      owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:issue_states, request})
+      {:ok, %{"acme/app#42" => "draft"}}
+    end
+
+    def daily_brief_member_login(request) do
+      owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:member_login, request})
+      {:ok, "alice-gh"}
+    end
+
+    def daily_brief_member_pulls(request) do
+      owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:member_pulls, request})
+
+      {:ok,
+       [
+         %{
+           repo: "acme/app",
+           number: "77",
+           title: "报价单导出",
+           state: "merged",
+           closed_at: "2026-10-23T12:00:00Z",
+           others: ["UZAN"]
+         },
+         %{
+           repo: "acme/app",
+           number: "70",
+           title: "上个月的",
+           state: "merged",
+           closed_at: "2026-09-01T01:00:00Z",
+           others: []
+         }
+       ]}
+    end
 
     def daily_brief_direct_messages(request) do
       owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
@@ -161,7 +211,8 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
 
       for key <- ~w(daily_brief_test_owner daily_brief_test_post daily_brief_test_compose
                     daily_brief_test_team_compose daily_brief_test_links
-                    daily_brief_test_direct daily_brief_test_mine)a,
+                    daily_brief_test_direct daily_brief_test_mine
+                    daily_brief_test_window)a,
           do: SystemsRuntime.delete_env(:bridge_for_teams_core, key)
     end)
 
@@ -239,7 +290,278 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
     tomorrow = DateTime.add(@now, 86_400)
     member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases)
     assert {:ok, _} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, tomorrow))
-    assert_received {:mine, %{"followups" => [%{"what" => "回报价", "due" => "周五"}]}}
+
+    assert_received {:mine,
+                     %{
+                       "followups" => [%{"what" => "回报价", "due" => "周五"}],
+                       "closed" => [%{"what" => "合同", "on" => "2026-10-23"}]
+                     }}
+
+    # What was closed is kept for a week, then let go.
+    later = DateTime.add(@now, 9 * 86_400)
+    member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases)
+    assert {:ok, _} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, later))
+    # Nor does a follow-up with no news for a week stay on the list.
+    assert_received {:mine, %{"closed" => [], "followups" => []}}
+  end
+
+  test "the pull requests a follow-up names are looked up, by the links briefs have seen",
+       ctx do
+    assert {:ok, first} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+    assert_received {:mine, %{"issues" => []}}
+
+    first
+    |> Ecto.Changeset.change(
+      notes:
+        Map.merge(first.notes, %{
+          "mine" => [
+            %{"kind" => "decide", "what" => "合并 #42", "owner" => "me", "status" => "open"}
+          ],
+          "issues" => %{"42" => "https://github.com/acme/app/pull/42"}
+        })
+    )
+    |> Repo.update!()
+
+    tomorrow = DateTime.add(@now, 86_400)
+    member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases)
+    assert {:ok, run} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, tomorrow))
+
+    assert_received {:issue_states,
+                     %{agent_id: "agt", issues: [%{repo: "acme/app", number: "42"}]}}
+
+    assert_received {:mine, %{"issues" => [%{"ref" => "#42", "state" => "draft"}]}}
+    assert_received {:compose, %{"issues" => [%{"ref" => "#42", "state" => "draft"}]}}
+    assert run.notes["issues"] == %{"42" => "https://github.com/acme/app/pull/42"}
+  end
+
+  test "a member with a GitHub login gets the pull requests it closed in the window", ctx do
+    assert {:ok, _} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+    refute_received {:member_pulls, _}
+    assert_received {:mine, %{"my_prs" => []}}
+
+    Repo.insert!(%BridgeForTeams.Schema.DailyBriefAlias{
+      member_id: ctx.alice.id,
+      term: "alice-dev",
+      kind: "github"
+    })
+
+    member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases, force: true)
+    tomorrow = DateTime.add(@now, 86_400)
+
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [])
+    {:ok, _} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, tomorrow))
+    assert_received {:member_pulls, %{agent_id: "agt", login: "alice-dev"}}
+    assert_received {:mine, %{"my_prs" => prs}}
+    assert [%{"ref" => "#77", "state" => "merged", "others" => "UZAN"}] = prs
+  end
+
+  test "the member's own words are \"你\"; an ask with no answer from them is marked", ctx do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [
+      %{ts: "1792719000.000100", thread: nil, author: "UBOB1", text: "<@UALICE1> 合同签了吗？"},
+      %{ts: "1792719100.000100", thread: nil, author: "UBOB1", text: "<@UALICE1> 发票呢？"},
+      %{ts: "1792719200.000100", thread: "1792719100.000100", author: "UALICE1", text: "发票我来开"},
+      %{
+        ts: "1792719300.000100",
+        thread: "1792719100.000100",
+        author: "UBOB1",
+        text: "抬头用哪个主体？"
+      },
+      %{
+        ts: "1792719400.000100",
+        thread: "1792719100.000100",
+        author: "UBOB1",
+        text: "<@UCAROL1> 税号发一下？"
+      },
+      %{
+        ts: "1792719500.000100",
+        thread: nil,
+        author: "UBOB1",
+        text: "<@UALICE1> 周五能发版吗？",
+        reactions: [%{name: "+1", users: ["UALICE1"]}]
+      }
+    ])
+
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+    assert_received {:compose, %{"items" => items}}
+    by_text = Map.new(items, &{&1["text"], &1})
+
+    assert by_text["发票我来开"]["by"] == "你"
+    assert by_text["@UALICE1 合同签了吗？"]["to_me"] == true
+    # A follow-up question in a thread the member already spoke in waits on them,
+    # unless it mentions someone else.
+    assert by_text["抬头用哪个主体？"]["to_me"] == true
+    refute by_text["@UCAROL1 税号发一下？"]["to_me"]
+    # An "eyes" reaction only means the member is looking at it, not that they answered;
+    # a confirming reaction ("+1") or a later reply in the thread answers it.
+    assert by_text["@UALICE1 这个报价怎么算？"]["to_me"] == true
+    refute by_text["@UALICE1 发票呢？"]["to_me"]
+    refute by_text["@UALICE1 周五能发版吗？"]["to_me"]
+  end
+
+  test "the last word of the member's thread that turns to them waits on them", ctx do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [
+      %{ts: "1792719000.000100", thread: nil, author: "UALICE1", text: "Windows 上聊天页没滚到底"},
+      %{
+        ts: "1792719100.000100",
+        thread: "1792719000.000100",
+        author: "UBOT1",
+        actor_kind: "bot",
+        text: "复现不了。下面两个任选一个就能继续：装 station，或者告诉我版本号"
+      },
+      %{ts: "1792719200.000100", thread: nil, author: "UALICE1", text: "pin-shot 发了"},
+      %{
+        ts: "1792719300.000100",
+        thread: "1792719200.000100",
+        author: "UBOB1",
+        text: "想加自动更新，但是跟你说的不联网冲突了"
+      },
+      %{ts: "1792719400.000100", thread: nil, author: "UALICE1", text: "报价单做完了"},
+      %{ts: "1792719500.000100", thread: "1792719400.000100", author: "UBOB1", text: "你看下格式"},
+      %{ts: "1792719600.000100", thread: "1792719400.000100", author: "UBOB1", text: "好像没问题了"}
+    ])
+
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+    assert_received {:compose, %{"items" => items}}
+    by_text = Map.new(items, &{&1["text"], &1})
+
+    assert by_text["复现不了。下面两个任选一个就能继续：装 station，或者告诉我版本号"]["to_me"] == true
+    assert by_text["想加自动更新，但是跟你说的不联网冲突了"]["to_me"] == true
+    # Only the thread's last word: a later message moved on.
+    refute by_text["你看下格式"]["to_me"]
+  end
+
+  test "a bot's meeting notes that name the member reach their brief whole", ctx do
+    Repo.insert!(%BridgeForTeams.Schema.DailyBriefAlias{
+      member_id: ctx.alice.id,
+      term: "Alice Wang",
+      kind: "name"
+    })
+
+    notes =
+      "Meeting Summary: 全员会\nAttendees: Bob, Alice Wang\n" <>
+        String.duplicate("议题讨论。", 200) <> "\n决定：TestFlight 渠道停掉。"
+
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [
+      %{
+        ts: "1792719000.000100",
+        thread: "1792718000.000100",
+        author: "UBOT1",
+        actor_kind: "bot",
+        text: notes
+      }
+    ])
+
+    member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases, force: true)
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, member, @opts)
+    assert_received {:compose, %{"items" => items}}
+    assert Enum.any?(items, &String.ends_with?(&1["text"], "决定：TestFlight 渠道停掉。"))
+  end
+
+  test "the team brief looks up the state of pull requests and issues in the window", ctx do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [
+      %{
+        ts: "1792719000.000100",
+        thread: nil,
+        author: "UBOB1",
+        text: "修好了 <https://github.com/acme/app/pull/10|github.com/acme/app/pull/10>"
+      },
+      %{
+        ts: "1792719100.000100",
+        thread: nil,
+        author: "UBOB1",
+        text: "顺手看下裸编号 #42 状态"
+      }
+    ])
+
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+
+    assert_received {:team_compose, %{"issues" => [%{"ref" => "#42", "state" => "draft"}]}}
+  end
+
+  test "a member's GitHub login is found by their name once and kept", ctx do
+    assert {:ok, first} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+
+    first
+    |> Ecto.Changeset.change(
+      notes: Map.put(first.notes, "issues", %{"42" => "https://github.com/acme/app/pull/42"})
+    )
+    |> Repo.update!()
+
+    Repo.insert!(%BridgeForTeams.Schema.DailyBriefAlias{
+      member_id: ctx.alice.id,
+      term: "Alice Wang",
+      kind: "name"
+    })
+
+    member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases, force: true)
+    tomorrow = DateTime.add(@now, 86_400)
+    assert {:ok, run} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, tomorrow))
+    assert_received {:member_login, %{orgs: ["acme"], names: ["Alice Wang"]}}
+    assert_received {:member_pulls, %{login: "alice-gh"}}
+    assert run.notes["github"] == "alice-gh"
+
+    later = DateTime.add(@now, 2 * 86_400)
+    assert {:ok, _} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, later))
+    refute_received {:member_login, _}
+    assert_received {:member_pulls, %{login: "alice-gh"}}
+  end
+
+  test "a draft that leaves out where the member said a lot is written again", ctx do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [
+      %{ts: "1792720050.000100", thread: "1792720050.000100", author: "UALICE1", text: "配货一"},
+      %{ts: "1792720100.000100", thread: "1792720050.000100", author: "UALICE1", text: "配货二"},
+      %{ts: "1792720150.000100", thread: "1792720050.000100", author: "UALICE1", text: "配货三"}
+    ])
+
+    assert {:ok, run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+    assert_received {:compose, %{"my_talk" => [%{"refs" => refs} | _]} = first}
+    refute Map.has_key?(first, "draft")
+    assert length(String.split(refs)) == 3
+    assert_received {:compose, %{"draft" => _, "missing" => [%{"refs" => ^refs}]}}
+    assert run.input_tokens == 14
+  end
+
+  test "a thread the briefs tell brings the replies that ended it", ctx do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :daily_brief_test_window, [
+      %{
+        ts: "1792720100.000100",
+        thread: "1792600000.000100",
+        author: "UBOTX",
+        actor_kind: "bot",
+        text: "报价单已经发给客户了"
+      },
+      %{ts: "1792720050.000100", thread: nil, author: "UBOB1", text: "<@UALICE1> 网络怎么配？"},
+      %{
+        ts: "1792720080.000100",
+        thread: "1792720050.000100",
+        author: "UBOTX",
+        actor_kind: "bot",
+        text: "方案写完了：先查哪一层饱和"
+      },
+      # Someone answering the plan does not hide it.
+      %{
+        ts: "1792720090.000100",
+        thread: "1792720050.000100",
+        author: "UBOB1",
+        text: "<@UALICE1> 好，按这个方案先测"
+      }
+    ])
+
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+
+    for items <- [
+          receive(do: ({:team_compose, %{"items" => items}} -> items)),
+          receive(do: ({:compose, %{"items" => items}} -> items))
+        ] do
+      question = Enum.find(items, &(&1["text"] =~ "报价怎么算"))
+      ending = Enum.find(items, &(&1["text"] == "报价单已经发给客户了"))
+      assert ending["t"] == question["t"]
+      refute ending["earlier"]
+      # A thread's first message carries no thread; its replies still end it.
+      root = Enum.find(items, &(&1["text"] =~ "网络怎么配"))
+      plan = Enum.find(items, &(&1["text"] =~ "方案写完了"))
+      assert plan["t"] && plan["t"] == root["t"]
+    end
   end
 
   test "a member who turned direct messages on gets them read into their brief", ctx do
@@ -252,6 +574,95 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
     assert run.coverage["direct_messages"] == "read"
     assert_received {:posted, %{blocks: blocks}}
     refute inspect(blocks) =~ "direct-messages/connect"
+  end
+
+  test "the member's own words in a channel shared with another company are read", ctx do
+    {:ok, alice} = BridgeForTeams.DailyBrief.DirectMessages.enable(ctx.alice, "conn-1")
+
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :daily_brief_test_direct,
+      {:ok,
+       %{
+         messages: [
+           %{
+             channel_id: "CEXT1",
+             channel_name: "pm-tool",
+             kind: "shared",
+             ts: "1792720100.000100",
+             thread_ts: nil,
+             author: "UALICE1",
+             bot?: false,
+             text: "看板要给 agent 留 CLI",
+             permalink: "https://acme.slack.com/archives/CEXT1/p1792720100000100"
+           }
+         ],
+         complete?: true
+       }}
+    )
+
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, alice, @opts)
+    assert_received {:compose, %{"items" => items}}
+
+    # Others' answers there are not read, so the model is told.
+    assert %{"by" => "你", "text" => "看板要给 agent 留 CLI", "only_mine" => true} =
+             Enum.find(items, &(&1["in"] == "#pm-tool"))
+  end
+
+  test "earlier briefs are not read back as news; the member's replies to them are", ctx do
+    {:ok, alice} = BridgeForTeams.DailyBrief.DirectMessages.enable(ctx.alice, "conn-1")
+    assert {:ok, _first} = Delivery.deliver(ctx.settings, alice, @opts)
+    assert_received {:compose, _}
+
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :daily_brief_test_direct,
+      {:ok,
+       %{
+         messages: [
+           %{
+             channel_id: "D_BOT",
+             kind: "im",
+             ts: "1792806500.000100",
+             thread_ts: nil,
+             author: "UBRIEFBOT",
+             bot?: false,
+             text: "一句话：#4973 还等你点合并",
+             permalink: nil
+           },
+           %{
+             channel_id: "D_BOT",
+             kind: "im",
+             ts: "1792806550.000100",
+             thread_ts: nil,
+             author: "UALICE1",
+             bot?: false,
+             text: "声音那条修了吧",
+             permalink: nil
+           },
+           %{
+             channel_id: "D9",
+             kind: "im",
+             ts: "1792806600.000100",
+             thread_ts: nil,
+             author: "UBOB1",
+             bot?: false,
+             text: "私下说：报价先别发",
+             permalink: nil
+           }
+         ],
+         complete?: true
+       }}
+    )
+
+    tomorrow = DateTime.add(@now, 86_400)
+    member = Repo.reload!(alice) |> Repo.preload(:aliases)
+    assert {:ok, _} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, tomorrow))
+    assert_received {:compose, %{"items" => items}}
+    texts = Enum.map(items, & &1["text"])
+    assert "私下说：报价先别发" in texts
+    assert %{"in" => "回复简报"} = Enum.find(items, &(&1["text"] == "声音那条修了吧"))
+    refute Enum.any?(texts, &(&1 =~ "#4973"))
   end
 
   test "a revoked grant turns direct messages off and the brief is still sent", ctx do
@@ -415,7 +826,10 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
     assert run.notes == %{
              "brief" =>
                "先回 <@UBOB1> 的报价。<https://acme.slack.com/archives/C1/p1792720000000100|#sales · 10/23 09:46> · <slack://channel?team=T1&id=C1&thread_ts=1792600000.000100&message=1792720000.000100|打开>",
-             "mine" => []
+             "mine" => [],
+             "closed" => [],
+             "issues" => %{},
+             "github" => nil
            }
   end
 

@@ -6,25 +6,32 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
   aliases, replies in a thread the member wrote in, or is the member's own.
   P1 reasons: it names one of the member's project terms, or a person wrote
   it in one of the member's main channels. A bot message counts only when it
-  mentions the member, replies in a thread the member wrote in, or is in a
-  main channel the member reads with its bot messages.
+  mentions or names the member (meeting notes list who attended), replies in
+  a thread the member wrote in, or is in a main channel the member reads with
+  its bot messages.
   """
 
   @p0 [:mention, :alias, :thread, :own]
+  # A bot's short notice that names someone ("XP deployed") is not theirs to
+  # read; meeting notes listing who attended run to thousands of characters.
+  @write_up_length 800
 
   @type member :: %{
-          slack_user_id: String.t(),
+          user_id: String.t(),
           alias_pattern: Regex.t() | nil,
           project_pattern: Regex.t() | nil,
           threads: MapSet.t({String.t(), String.t()}),
           channels: %{humans: MapSet.t(String.t()), bots: MapSet.t(String.t())}
         }
 
-  @doc "Builds the per-member matcher once per run."
+  @doc """
+  Builds the per-member matcher once per run. `user_id` is the member's id in
+  the provider: a Slack user id, or a Feishu or Lark open id.
+  """
   @spec member(String.t(), [%{term: String.t(), kind: String.t()}], [map()], map()) :: member()
-  def member(slack_user_id, aliases, threads, channels \\ nil) do
+  def member(user_id, aliases, threads, channels \\ nil) do
     %{
-      slack_user_id: slack_user_id,
+      user_id: user_id,
       alias_pattern:
         pattern(for %{kind: kind, term: term} <- aliases, kind in ["name", "handle"], do: term),
       project_pattern: pattern(for %{kind: "project", term: term} <- aliases, do: term),
@@ -36,9 +43,13 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
   @spec reasons(map(), member()) :: [atom()]
   def reasons(message, member) do
     text = message.text || ""
-    own? = message.actor_id == member.slack_user_id
+    own? = message.actor_id == member.user_id
     bot? = message.actor_kind in ["bot", "app"]
-    mention? = String.contains?(text, "<@#{member.slack_user_id}>")
+
+    # Slack writes a mention into the text; Feishu and Lark name it apart.
+    mention? =
+      String.contains?(text, "<@#{member.user_id}>") or
+        member.user_id in List.wrap(message[:mentions])
 
     cond do
       own? ->
@@ -47,6 +58,8 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
       bot? ->
         [
           {:mention, mention?},
+          {:alias,
+           String.length(text) >= @write_up_length and matches?(member.alias_pattern, text)},
           {:thread, MapSet.member?(member.threads, {message.channel_id, thread_of(message)})},
           {:channel, MapSet.member?(member.channels.bots, message.channel_id)}
         ]
@@ -54,15 +67,22 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
         |> Enum.map(&elem(&1, 0))
 
       true ->
-        [
-          {:mention, mention?},
-          {:alias, matches?(member.alias_pattern, text)},
-          {:thread, MapSet.member?(member.threads, {message.channel_id, thread_of(message)})},
-          {:project, matches?(member.project_pattern, text)},
-          {:channel, MapSet.member?(member.channels.humans, message.channel_id)}
-        ]
-        |> Enum.filter(&elem(&1, 1))
-        |> Enum.map(&elem(&1, 0))
+        base =
+          [
+            {:mention, mention?},
+            {:alias, matches?(member.alias_pattern, text)},
+            {:thread, MapSet.member?(member.threads, {message.channel_id, thread_of(message)})},
+            {:project, matches?(member.project_pattern, text)},
+            {:channel, MapSet.member?(member.channels.humans, message.channel_id)}
+          ]
+          |> Enum.filter(&elem(&1, 1))
+          |> Enum.map(&elem(&1, 0))
+
+        if base == [] and jev_recall_promoted?(message) do
+          [:jev_recall]
+        else
+          base
+        end
     end
   end
 
@@ -70,8 +90,21 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
   def tier(reasons) do
     cond do
       Enum.any?(reasons, &(&1 in @p0)) -> :p0
-      :project in reasons or :channel in reasons -> :p1
+      :project in reasons or :channel in reasons or :jev_recall in reasons -> :p1
       true -> nil
+    end
+  end
+
+  defp jev_recall_promoted?(message) when is_map(message) do
+    case message[:jev_recall_bp] || message["jev_recall_bp"] do
+      prob_bp when is_integer(prob_bp) ->
+        SalixStore.ProactiveKernel.gate_jev_decision(%{
+          mode: :recall,
+          probability_bp: prob_bp
+        }) == :promote
+
+      _ ->
+        false
     end
   end
 

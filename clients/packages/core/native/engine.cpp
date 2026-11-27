@@ -7,8 +7,11 @@
 #include <sys/random.h>
 #endif
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -17,6 +20,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <hermes/hermes.h>
 #include <jsi/jsi.h>
@@ -79,6 +83,44 @@ void randomBytes(char* out, size_t n) {
 #endif
 }
 
+std::atomic<bool> gPerfTiming{false};
+
+struct PerfStats {
+  std::mutex mutex;
+  std::unordered_map<std::string, std::pair<long, double>> by;
+};
+
+PerfStats& perfStats() {
+  static PerfStats stats;
+  return stats;
+}
+
+void perfTally(const std::string& what, double ms) {
+  auto& stats = perfStats();
+  std::lock_guard<std::mutex> lock(stats.mutex);
+  auto& entry = stats.by[what];
+  entry.first += 1;
+  entry.second += ms;
+}
+
+/// Extracts the operation name from a JSON message sent by the UI without a full JSON parse.
+std::string perfAsked(const std::string& json) {
+  auto at = [&](const char* key) -> std::string {
+    size_t k = json.find(key);
+    if (k == std::string::npos) return "";
+    k += std::strlen(key);
+    size_t e = json.find('"', k);
+    return e == std::string::npos ? "" : json.substr(k, std::min<size_t>(e - k, 60));
+  };
+  std::string call = at("\"call\":\"");
+  if (!call.empty()) return "app:" + call;
+  std::string topic = at("\"topic\":\"");
+  if (!topic.empty()) return "app:sub " + topic;
+  if (json.find("\"unsubscribe\"") != std::string::npos) return "app:unsubscribe";
+  if (json.find("\"cancel\"") != std::string::npos) return "app:cancel";
+  return "app:?";
+}
+
 }  // namespace
 
 struct Engine::State {
@@ -96,6 +138,9 @@ struct Engine::State {
   std::multimap<double, uint64_t> dues;
   bool stopping = false;
   bool dead = false;
+  /// Core-thread-only labels for per-task perf timing while `gPerfTiming` is on.
+  std::string perfTask = "task";
+  std::unordered_map<uint64_t, std::string> perfOps;
 
 #if defined(COMMA_MESH)
   /// What the mesh's threads answer through: it outlives this core (an answer coming as the core goes finds none).
@@ -186,7 +231,14 @@ struct Engine::State {
   /// The answer to operation `id`, given to the script on its thread.
   void answer(uint64_t id, std::optional<std::string> json, std::optional<std::string> error,
               std::optional<std::string> bytes) {
-    post([id, json = std::move(json), error = std::move(error), bytes = std::move(bytes)](jsi::Runtime& rt) {
+    post([this, id, json = std::move(json), error = std::move(error), bytes = std::move(bytes)](jsi::Runtime& rt) {
+      if (!perfOps.empty()) {
+        auto it = perfOps.find(id);
+        if (it != perfOps.end()) {
+          perfTask = it->second;
+          perfOps.erase(it);
+        }
+      }
       jsi::Value j = json && !error ? jsi::Value(jsi::String::createFromUtf8(rt, *json)) : jsi::Value::null();
       jsi::Value e = error ? jsi::Value(jsi::String::createFromUtf8(rt, *error)) : jsi::Value::null();
       jsi::Value b = bytes ? jsi::Value(arrayBuffer(rt, bytes->data(), bytes->size())) : jsi::Value::undefined();
@@ -214,6 +266,9 @@ struct Engine::State {
       if (n > 3 && a[3].isObject() && a[3].asObject(rt).isArrayBuffer(rt)) {
         jsi::ArrayBuffer b = a[3].asObject(rt).getArrayBuffer(rt);
         bytes.emplace(reinterpret_cast<const char*>(b.data(rt)), b.size(rt));
+      }
+      if (gPerfTiming.load(std::memory_order_relaxed) && op != "abort" && perfOps.size() < 4096) {
+        perfOps[id] = (op.rfind("mesh.", 0) == 0 ? op : "host:" + op);
       }
 #if defined(COMMA_MESH)
       if (op.rfind("mesh.", 0) == 0) {
@@ -292,13 +347,18 @@ Engine::~Engine() {
 }
 
 void Engine::receive(std::string json) {
-  state_->post([json = std::move(json)](jsi::Runtime& rt) {
+  std::string what = gPerfTiming.load(std::memory_order_relaxed) ? perfAsked(json) : std::string();
+  State* state = state_.get();
+  state_->post([state, json = std::move(json), what = std::move(what)](jsi::Runtime& rt) {
+    if (!what.empty()) state->perfTask = what;
     State::core(rt).getPropertyAsFunction(rt, "receive").callWithThis(rt, State::core(rt), jsi::String::createFromUtf8(rt, json));
   });
 }
 
 void Engine::rejected(std::string lease, int status) {
-  state_->post([lease = std::move(lease), status](jsi::Runtime& rt) {
+  State* state = state_.get();
+  state_->post([state, lease = std::move(lease), status](jsi::Runtime& rt) {
+    state->perfTask = "rejected";
     State::core(rt).getPropertyAsFunction(rt, "rejected").callWithThis(rt, State::core(rt), jsi::String::createFromUtf8(rt, lease), jsi::Value(status));
   });
 }
@@ -367,6 +427,9 @@ void Engine::run() {
       if (s.stopping) break;
     }
     if (s.dead) continue;
+    bool perf = gPerfTiming.load(std::memory_order_relaxed);
+    double perfT0 = perf ? clockMs(CLOCK_MONOTONIC) : 0.0;
+    s.perfTask = task ? "task" : "timer";
     try {
       if (task) task(*rt);
       else rt->global().getPropertyAsFunction(*rt, "commaTimer").call(*rt, jsi::Value(double(timer)));
@@ -374,8 +437,45 @@ void Engine::run() {
     } catch (const std::exception& e) {
       s.fatal(e.what());
     }
+    if (perf) perfTally(s.perfTask, clockMs(CLOCK_MONOTONIC) - perfT0);
+    else if (!s.perfOps.empty()) s.perfOps.clear();
   }
   rt.reset();
+}
+
+void Engine::setPerfTiming(bool enabled) {
+  gPerfTiming.store(enabled, std::memory_order_relaxed);
+  if (!enabled) {
+    auto& stats = perfStats();
+    std::lock_guard<std::mutex> lock(stats.mutex);
+    stats.by.clear();
+  }
+}
+
+std::string Engine::takePerfSummary(double spanMs) {
+  std::vector<std::pair<std::string, std::pair<long, double>>> all;
+  {
+    auto& stats = perfStats();
+    std::lock_guard<std::mutex> lock(stats.mutex);
+    if (stats.by.empty()) return {};
+    all.assign(stats.by.begin(), stats.by.end());
+    stats.by.clear();
+  }
+  std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+  double totalMs = 0.0;
+  long totalTasks = 0;
+  for (const auto& entry : all) {
+    totalMs += entry.second.second;
+    totalTasks += entry.second.first;
+  }
+  char buf[1024];
+  double denom = spanMs > 1.0 ? spanMs : 1.0;
+  int at = std::snprintf(buf, sizeof buf, "busy=%.0f%% tasks=%ld", totalMs * 100.0 / denom, totalTasks);
+  for (size_t i = 0; i < std::min<size_t>(all.size(), 6) && at > 0 && size_t(at) < sizeof buf; ++i) {
+    at += std::snprintf(buf + at, sizeof buf - size_t(at), "%s%.0fms/%ld %s",
+                        i ? " | " : " ", all[i].second.second, all[i].second.first, all[i].first.c_str());
+  }
+  return std::string(buf);
 }
 
 }  // namespace comma

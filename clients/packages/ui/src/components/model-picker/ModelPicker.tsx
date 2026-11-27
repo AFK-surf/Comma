@@ -4,7 +4,7 @@ import {
   Dialog as AriaDialog,
   DialogTrigger,
 } from "react-aria-components";
-import { ChevronDownIcon, ChevronRightSmallIcon } from "../icons";
+import { ChevronDownIcon, ChevronRightSmallIcon, PlusSmallIcon } from "../icons";
 import { MenuPopover } from "../menu";
 import { ScrollArea } from "../scroll-area";
 import { Toggle } from "../toggle";
@@ -69,6 +69,8 @@ export interface ModelPickerProps {
   disabled?: boolean;
   /** Off when the model runs on its own sign-in, so there is no account to choose. */
   chooseAccount?: boolean;
+  /** Secondary action in the model list (for example, adding a profile). */
+  action?: { label: string; onPress: () => void };
   /** Each choice takes effect at once. */
   onChange: (value: ModelPickerValue) => void;
 }
@@ -96,6 +98,7 @@ export function ModelPicker({
   labels,
   disabled,
   chooseAccount = true,
+  action,
   onChange,
 }: ModelPickerProps) {
   const valueId = useId();
@@ -168,6 +171,13 @@ export function ModelPicker({
       setAwaitingEffort(false);
       onChange(picked);
     }
+  };
+
+  const runAction = () => {
+    if (!action) return;
+    setAwaitingEffort(false);
+    setOpen(false);
+    action.onPress();
   };
 
   return (
@@ -282,13 +292,30 @@ export function ModelPicker({
                       ))}
                     </fieldset>
                   ))}
-                  {listed.length === 0 ? (
+                  {words && listed.length === 0 ? (
                     <p className="px-md py-xs text-xs text-tertiary">
                       {labels.noMatch}
                     </p>
                   ) : null}
                 </div>
               </ScrollArea>
+              {action ? (
+                <div
+                  className={cx(
+                    "pt-xs",
+                    !(chosen && chooseAccount) && "border-t border-secondary"
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="flex w-full min-w-0 cursor-pointer items-center gap-sm rounded-md px-md py-xs text-left text-sm text-secondary outline-none hover:bg-secondary hover:text-primary focus-visible:bg-secondary focus-visible:text-primary"
+                    onClick={runAction}
+                  >
+                    <PlusSmallIcon className="size-4 shrink-0 text-tertiary" />
+                    <span className="truncate">{action.label}</span>
+                  </button>
+                </div>
+              ) : null}
             </section>
             {chosen ? (
               <section

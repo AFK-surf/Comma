@@ -14,8 +14,10 @@ defmodule SalixAgent.IFC.Check do
 
     * `:audit` — the effect executes whatever the verdict says. This is how a
       Group measures would-be denials before anyone is blocked, and why
-      audit mode can never change an outcome.
-    * `:enforce` — a denial becomes a `guidance` result (rule A) and the call
+      permission denials in audit do not block execution. Tool parameter
+      errors are handled before this permission check.
+    * `:easy` — only IM reader authority restricts the effect.
+    * `:enforce` (Hard) — a denial becomes a `guidance` result (rule A) and the call
       never reaches the Tools seam; an allow carries its `Evidence` forward
       so the provider adapter can render the provenance footer (rule B).
 
@@ -121,7 +123,7 @@ defmodule SalixAgent.IFC.Check do
         results
         |> Enum.zip(read_flags(results, calls, ctx))
         |> Enum.map(fn {result, read?} ->
-          stamp_result_label(result, read?, round)
+          result |> stamp_result_label(read?, round) |> stamp_view(ctx)
         end)
     end
   end
@@ -130,10 +132,27 @@ defmodule SalixAgent.IFC.Check do
 
   @doc false
   def stamp_result(result, call, ctx, round) do
-    stamp_result_label(result, read?(call, ctx), round)
+    result |> stamp_result_label(read?(call, ctx), round) |> stamp_view(ctx)
   end
 
+  # This is physical prompt provenance, not authority for the current effect.
+  # Only the request builder supplies it; tool-supplied values cannot lower it.
+  defp stamp_view(result, %{ifc_view_label: label}) when is_list(label) do
+    put_ifc(result, Map.put(result.ifc, "view_label", label))
+  end
+
+  defp stamp_view(result, _ctx), do: result
+
   defp stamp_result_label(result, _read?, nil), do: result
+
+  defp stamp_result_label(%{ifc_local_diagnostic: true} = result, read?, round) do
+    items = result.ifc["items"]
+
+    original =
+      result |> Map.drop([:ifc_local_diagnostic, :ifc]) |> stamp_result_label(read?, round)
+
+    put_ifc(original, Map.put(original.ifc, "items", items))
+  end
 
   defp stamp_result_label(result, read?, round) do
     case result_label(result) do
@@ -229,6 +248,15 @@ defmodule SalixAgent.IFC.Check do
     request =
       declaration.request || Context.default_request(wire || %{}) || ""
 
+    if IFC.mode(Map.get(ctx, :ifc_mode)) == :easy and
+         not SalixIFC.easy_protected?(items, declaration.sources) do
+      {:execute, admit_unrestricted(call, wire, declaration, ctx)}
+    else
+      resolve_effect(call, name, args, descriptor, ctx, wire, declaration, items, request)
+    end
+  end
+
+  defp resolve_effect(call, name, args, descriptor, ctx, wire, declaration, items, request) do
     case timed_resolve(request_payload(descriptor, declaration, items, wire, ctx)) do
       {:ok, reply} ->
         reply = own_audience_destination(reply, descriptor, declaration, items)
@@ -261,14 +289,11 @@ defmodule SalixAgent.IFC.Check do
   # about the decision is special-cased: with a destination that carries every
   # restriction its sources carry, `flow_ok` simply holds, which is precisely
   # what "this note is not leaving the audience it came from" means.
-  #
-  # `sources: :context` is the honest fail-closed reading — the model declared
-  # nothing, so the note inherits the whole context's audience.
   defp own_audience_destination(reply, %{"kind" => "memory_scoped"}, declaration, items) do
     source_items =
       case declaration.sources do
         :context -> items
-        refs -> Enum.filter(items, &(&1.ref in refs))
+        refs when is_list(refs) -> Enum.filter(items, &(&1.ref in refs))
       end
 
     label =
@@ -303,7 +328,7 @@ defmodule SalixAgent.IFC.Check do
           if is_nil(declaration.request) and Context.several_senders?(wire) do
             {:deny, %Reason{clause: :invalid_input, detail: :request_required}}
           else
-            kernel_decide(in_place(effect, activation), activation, items, facts)
+            kernel_decide(in_place(effect, activation), activation, items, facts, mode)
           end
 
         :error ->
@@ -340,7 +365,7 @@ defmodule SalixAgent.IFC.Check do
       {:audit, {:deny, _reason}} ->
         {:execute, keep_requester(call, wire)}
 
-      {:enforce, {:deny, reason}} ->
+      {enforcing, {:deny, reason}} when enforcing in [:enforce, :easy] ->
         {:blocked, refuse(call, reason, items, facts, wire, reply)}
     end
   end
@@ -365,6 +390,18 @@ defmodule SalixAgent.IFC.Check do
     cursor
     |> SalixIFC.transfer_resume(IFC.consume_receipt(request))
     |> spend_receipts_step(ctx)
+  end
+
+  # No IM permission decision is needed, but durable writes must keep their
+  # source labels and creator. Otherwise a later read becomes unlabelled.
+  defp admit_unrestricted(call, wire, declaration, ctx) do
+    call = keep_requester(call, wire)
+
+    Map.put(call, :ifc_evidence, %{
+      "sources_label" => Context.round_label(wire || %{}, [declaration.sources]),
+      "requester" => Map.get(call, :ifc_requester) || IFC.unchecked_creator(ctx),
+      "declassified" => []
+    })
   end
 
   # Audit changes no outcome, so a Task created by a denied effect still needs
@@ -482,13 +519,13 @@ defmodule SalixAgent.IFC.Check do
     }
   end
 
-  # Everything the decision can touch: the sources the effect declared (or
-  # the whole context when it declared none) plus the activation's own scope.
+  # Everything the decision can touch: the explicit sources plus the
+  # activation's own scope.
   defp atoms(declaration, items, wire) do
     source_items =
       case declaration.sources do
         :context -> items
-        refs -> Enum.filter(items, &(&1.ref in refs))
+        refs when is_list(refs) -> Enum.filter(items, &(&1.ref in refs))
       end
 
     scope = Map.get(wire || %{}, "source_scope", [])
@@ -570,11 +607,14 @@ defmodule SalixAgent.IFC.Check do
   # Archive and failure
   # ---------------------------------------------------------------------------
 
-  defp kernel_decide(effect, activation, items, facts) do
+  defp kernel_decide(effect, activation, items, facts, mode) do
     started = SystemsClock.monotonic_time()
 
     try do
-      result = SalixIFC.decide(effect, activation, items, facts)
+      result =
+        if mode == :easy,
+          do: SalixIFC.decide_easy(effect, activation, items, facts),
+          else: SalixIFC.decide(effect, activation, items, facts)
 
       outcome =
         case result do
@@ -676,7 +716,7 @@ defmodule SalixAgent.IFC.Check do
       "error" => inspect(reason)
     })
 
-    if IFC.mode(Map.get(ctx, :ifc_mode)) == :enforce do
+    if IFC.mode(Map.get(ctx, :ifc_mode)) in [:enforce, :easy] do
       {:blocked,
        Guidance.result(call, %Reason{clause: :invalid_input, detail: :facts_unavailable})}
     else

@@ -601,6 +601,72 @@ The record uses the Postgres outbox `qq_mirror_outbox` and the ClickHouse table
 `qq_messages`. It is on wherever ClickHouse is configured.
 `qq_mirror.enabled: false` in the Salix config turns it off.
 
+### WeCom bot
+
+A WeCom (企业微信) AI bot in API mode connects to one Agent Swarm through its
+long connection. The behavior is in the moduledocs of `SalixIM.WeComSocket`,
+`SalixIM.WeComSocketRuntime`, `SalixIM.WeComInbound`, `SalixIM.WeComFiles`, and
+`SalixIM.Provider.WeCom`.
+
+Setup:
+
+1. In the WeCom admin console, open 工作台 → 智能机器人 and create a bot. Choose
+   API mode and the long connection (使用长连接). Copy the Bot ID and the Secret.
+   A super admin of the organization should create the bot. Then each `userid`
+   is the person's organization account. Otherwise it is an ID that WeCom makes.
+2. Set the bot's 可见范围 to the people who will use it.
+   The bot joins only internal groups, not groups with external contacts.
+3. Connect it on the Swarm Connections page, or with `bft wecom connect`.
+   Salix checks the credentials by subscribing once on
+   `wss://openws.work.weixin.qq.com`.
+
+Operator notes:
+
+- WeCom keeps one long connection per bot. A new subscription takes the bot
+  from the old one. Do not run the bot anywhere else, the console's 调试 too.
+  The socket takes the bot back after 5 seconds, then waits longer each time
+  it is taken again within 15 minutes, up to 10 minutes.
+- One node in the cluster holds each socket, under the lease
+  `ctl/im/wecom-socket/<connect_id>`. A send from another node reaches it
+  through the `:pg` scope `SalixIM.WeComPG`.
+- The socket opens outbound to `openws.work.weixin.qq.com:443`. Attachments
+  download from `*.myqcloud.com`. No inbound address or IP allowlist is needed.
+- A group sends the bot only text and mixed messages that mention it. Images,
+  voice, files, and videos come only from private chats.
+- WeCom takes at most 30 messages a minute and 1000 an hour per chat. A send
+  to a chat that never wrote to the bot fails.
+
+Data abilities (`SalixMCP.HostedServices`, plugins `wecom-msg`, `wecom-mail`,
+`wecom-doc`, `wecom-todo`, `wecom-schedule`, `wecom-meeting`, `wecom-disk`,
+`wecom-contact`):
+
+1. In the bot's 可使用权限, grant an ability. 查看使用方式 shows its address,
+   `https://qyapi.weixin.qq.com/mcp/v2/bot/<ability>?apikey=…`. Each ability
+   has its own key.
+2. On the Swarm Plugins page, enable the ability's plugin and paste the key or
+   that ability's whole address (another address is refused). Salix runs one
+   read-only tool with it. WeCom answers a bad key with errcode 850001 inside
+   a successful result.
+
+Rules:
+
+- The data is that of the bot's creator (多人使用 shares the creator's
+  permissions). Like any connected account, it serves the whole Agent Swarm:
+  everyone who can reach the Swarm on any channel can use it, and the Swarm's
+  history is shared. Connect the abilities only to a Swarm whose people may
+  read that data.
+- Results carry the Group's audience. A WeCom group has no member list, so its
+  readers are unknown and IFC under `enforce` refuses data sent to it. Set an
+  internal group's audience on the Data policy page to serve it. IFC depends
+  on the agent declaring the sources it uses; it is not hard isolation.
+- Write tools (send mail, share documents, send messages) reach people outside
+  the Swarm. Plugins turn whole abilities on and off: turning off mail removes
+  reading and sending mail together; one write tool cannot be turned off alone.
+- Grants expire after seven days (the console shows the date). A call with an
+  expired, revoked or replaced key fails as `credential_invalid`
+  (`SalixMCP.Gateway`), and the agent tells the person to have the ability
+  granted again. Grant it again and paste the new key.
+
 ### Lark bot
 
 A custom app of the Lark open platform (`open.larksuite.com`) connects to one

@@ -37,7 +37,7 @@ defmodule SalixAgent.SSH.Audience do
         {:ok, nil}
 
       {:ok, tag} ->
-        case cleared?(ctx, tag) do
+        case SalixAgent.IFC.mode(Map.get(ctx, :ifc_mode)) == :easy or cleared?(ctx, tag) do
           true -> {:ok, tag}
           false -> {:error, refused(fingerprint)}
           :unavailable -> {:error, unavailable(fingerprint)}
@@ -121,6 +121,9 @@ defmodule SalixAgent.SSH.Audience do
 
   defp attach({content, events}, ifc) when is_binary(content) and is_list(events),
     do: {:tool_ifc, content, events, ifc}
+
+  defp attach({:tool_failure, _, _, _, _, _} = failure, ifc),
+    do: {:tool_ifc, failure, ifc}
 
   defp attach(content, ifc) when is_binary(content), do: {:tool_ifc, content, [], ifc}
   defp attach(result, _ifc), do: result

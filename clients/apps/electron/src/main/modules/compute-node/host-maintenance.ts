@@ -87,9 +87,15 @@ export class HostRecoveryInterruptsWorkError extends Error {}
 /** Main stores the user's confirmed request and frozen artifact. Native alone owns execution verdicts. */
 export class LocalHostMaintenance {
   private executing: Promise<HostMaintenanceState> | undefined;
+  /** The cleanup that an idle read started. A new request waits for it. */
+  private tidying: Promise<void> | undefined;
   private readonly resetListeners = new Set<() => void>();
+  private readonly settledListeners = new Set<(state: HostMaintenanceState) => void>();
+  /** The request whose success the listeners last heard, so each success is told once. */
+  private settledRequestId: string | undefined;
   private cancel: (() => void) | undefined;
   private backoff = 0;
+  private lastExecutionError: { requestId: string; message: string } | undefined;
   constructor(
     private readonly preparation: AgentVMMHostPreparation,
     private readonly journalDirectory: string,
@@ -100,12 +106,20 @@ export class LocalHostMaintenance {
       "currentDisposalRequest" | "supersedeAfterHostReset"
     >,
     private readonly processes: HostProcessControl = systemProcessControl(run),
-    private readonly clock: MainClock = realMainClock
+    private readonly clock: MainClock = realMainClock,
+    private readonly log?: (line: string) => void
   ) {}
   onHostReset(listener: () => void) {
     this.resetListeners.add(listener);
     return () => {
       this.resetListeners.delete(listener);
+    };
+  }
+  /** A request that this Main ran succeeded, on the first try or on a background retry. */
+  onSettled(listener: (state: HostMaintenanceState) => void) {
+    this.settledListeners.add(listener);
+    return () => {
+      this.settledListeners.delete(listener);
     };
   }
   private get journalPath() {
@@ -139,14 +153,26 @@ export class LocalHostMaintenance {
       : this.preparation.config.lifecyclePath;
   }
   private async receipt(intent?: Intent): Promise<NativeReceipt | undefined> {
-    const output = JSON.parse(
-      await this.run(
+    // Main saves the staged source before it hands a request to native, so native has no receipt for it yet.
+    if (intent && !intent.sourceApp) return undefined;
+    let raw: string;
+    try {
+      raw = await this.run(
         this.helper(intent),
         ["maintenance-status", "--service-type", "auto"],
         JSON.stringify(intent ? { requestId: intent.requestId } : {}),
         5_000
+      );
+    } catch (error) {
+      // No installed helper without a request, or a staged helper that the running request restores.
+      if (
+        (error as NodeJS.ErrnoException).code === "ENOENT" &&
+        (!intent || this.executing)
       )
-    );
+        return undefined;
+      throw error;
+    }
+    const output = JSON.parse(raw);
     if (output === null) return undefined;
     // Unified native read also returns registration receipts. They remain native-owned and are not software tasks.
     if (!output.action || !["update", "reinstall", "uninstall"].includes(output.action))
@@ -190,6 +216,8 @@ export class LocalHostMaintenance {
     } catch {
       if (intent) recordUnreadable = true;
     }
+    if (!this.executing && !recordUnreadable && (!intent || settled(receipt)))
+      await this.tidy(intent, installation === "installed");
     const operation =
       receipt && receipt.outcome !== "superseded"
         ? this.project(receipt)
@@ -200,6 +228,9 @@ export class LocalHostMaintenance {
               dataPolicy: intent.dataPolicy,
               phase: "preparing" as const,
               outcome: "pending" as const,
+              ...(this.lastExecutionError?.requestId === intent.requestId
+                ? { problem: this.lastExecutionError.message.slice(0, 2000) }
+                : {}),
             }
           : undefined;
     return hostMaintenanceStateSchema.parse({
@@ -303,9 +334,16 @@ export class LocalHostMaintenance {
     input: HostMaintenanceInput,
     requireCurrent?: () => void
   ) {
-    if (this.executing && input.action === "uninstall") {
+    if (
+      this.executing &&
+      (input.action === "uninstall" || input.dataPolicy === "reset")
+    ) {
       const previous = await this.intent();
-      if (previous) await this.stopExecutor(previous.requestId);
+      if (previous)
+        await this.stopExecutor(
+          previous.requestId,
+          previous.sourceApp === this.preparation.retainedApp
+        );
       const current = this.executing;
       await Promise.race([current, clockSleep(this.clock, 10_000)]);
       if (this.running())
@@ -364,7 +402,11 @@ export class LocalHostMaintenance {
         receipt.outcome !== "superseded"
       ) {
         intent.supersedesRequestId = receipt.requestId;
-        await this.stopExecutor(receipt.requestId);
+        await this.stopExecutor(
+          receipt.requestId,
+          previous?.requestId === receipt.requestId &&
+            previous.sourceApp === this.preparation.retainedApp
+        );
       }
       if (input.dataPolicy === "reset") {
         const disposal = await this.localDisposals?.currentDisposalRequest();
@@ -372,6 +414,10 @@ export class LocalHostMaintenance {
       }
       requireCurrent?.();
       await this.save(intent);
+      // The earlier requests' bundles: the new request no longer needs them.
+      await this.preparation
+        .cleanupMaintenance(requestId, false)
+        .catch(() => undefined);
       requireCurrent?.();
       return this.execute(intent, false, requireCurrent);
     });
@@ -411,49 +457,88 @@ export class LocalHostMaintenance {
     if (before?.outcome === "succeeded" || before?.outcome === "superseded")
       return this.state();
     if (before?.outcome === "failed" && !before.retryable) return this.state();
+    if (
+      intent.action === "uninstall" &&
+      !this.preparation.config.sourcePath &&
+      !this.preparation.config.downloadUrlOverride &&
+      intent.artifact.release_id !== publishedHost.release_id
+    ) {
+      intent.artifact = publishedHost;
+      await this.save(intent);
+    }
+    if (this.lastExecutionError?.requestId === intent.requestId)
+      this.lastExecutionError = undefined;
+    let executionError: string | undefined;
     try {
-      await this.preparation.stageMaintenance(
-        intent.requestId,
-        () => {},
-        intent.artifact,
-        async (staged) => {
-          requireCurrent?.();
-          if (intent.sourceApp && intent.sourceApp !== staged.sourceApp)
-            throw new Error("The confirmed maintenance artifact changed.");
-          Object.assign(intent, staged);
-          await this.save(intent);
-          await access(this.helper(intent));
-          requireCurrent?.();
-          await this.run(
-            this.helper(intent),
-            ["host-maintain", "--service-type", "auto"],
-            JSON.stringify({
-              version: 1,
-              requestId: intent.requestId,
-              action: intent.action,
-              dataPolicy: intent.dataPolicy,
-              targetApp: intent.targetApp,
-              ...(intent.supersedesRequestId
-                ? { supersedesRequestId: intent.supersedesRequestId }
-                : {}),
-              ...(intent.action !== "uninstall"
-                ? {
-                    sourceApp: intent.sourceApp,
-                    targetReleaseId: intent.targetReleaseId,
-                  }
-                : {}),
-              confirmSharedHost: true,
-              ...(explicit ? { continue: true } : {}),
-              ...(intent.dataPolicy === "reset" ? { confirmDataDeletion: true } : {}),
-            }),
-            15 * 60_000
-          );
-        }
+      const consume = async (staged: {
+        sourceApp: string;
+        targetReleaseId: string;
+      }) => {
+        requireCurrent?.();
+        // An uninstall installs no artifact: any helper that native accepts may continue it.
+        if (
+          intent.action !== "uninstall" &&
+          intent.sourceApp &&
+          intent.sourceApp !== staged.sourceApp
+        )
+          throw new Error("The confirmed maintenance artifact changed.");
+        Object.assign(intent, staged);
+        await this.save(intent);
+        await access(this.helper(intent));
+        requireCurrent?.();
+        await this.run(
+          this.helper(intent),
+          ["host-maintain", "--service-type", "auto"],
+          JSON.stringify({
+            version: 1,
+            requestId: intent.requestId,
+            action: intent.action,
+            dataPolicy: intent.dataPolicy,
+            targetApp: intent.targetApp,
+            ...(intent.supersedesRequestId
+              ? { supersedesRequestId: intent.supersedesRequestId }
+              : {}),
+            ...(intent.action !== "uninstall"
+              ? {
+                  sourceApp: intent.sourceApp,
+                  targetReleaseId: intent.targetReleaseId,
+                }
+              : {}),
+            confirmSharedHost: true,
+            ...(explicit ? { continue: true } : {}),
+            ...(intent.dataPolicy === "reset" ? { confirmDataDeletion: true } : {}),
+          }),
+          15 * 60_000
+        );
+      };
+      if (
+        intent.action !== "uninstall" ||
+        !(await this.preparation.stageUninstall(() => {}, consume, intent.artifact))
+      )
+        await this.preparation.stageMaintenance(
+          intent.requestId,
+          () => {},
+          intent.artifact,
+          consume
+        );
+    } catch (error) {
+      executionError = formatMaintenanceError(error);
+      this.log?.(
+        `host maintenance ${intent.action} (${intent.dataPolicy}) failed: ${executionError}`
       );
-    } catch {
-      /* The native receipt, including an unknown result, is read below. */
     }
     const receipt = await this.receipt(intent);
+    if (receipt) {
+      if (this.lastExecutionError?.requestId === intent.requestId)
+        this.lastExecutionError = undefined;
+    } else if (executionError) {
+      this.lastExecutionError = {
+        requestId: intent.requestId,
+        message: executionError,
+      };
+    }
+    if (settled(receipt))
+      await this.settle(intent.requestId, true).catch(() => undefined);
     if (receipt?.outcome === "succeeded" && intent.dataPolicy === "reset") {
       if (intent.disposalRequestId)
         await this.localDisposals?.supersedeAfterHostReset(
@@ -477,12 +562,68 @@ export class LocalHostMaintenance {
         }
       );
     }
-    return this.state();
+    const state = await this.state();
+    const operation = state.operation;
+    if (
+      operation?.outcome === "succeeded" &&
+      operation.requestId !== this.settledRequestId
+    ) {
+      this.settledRequestId = operation.requestId;
+      for (const listener of this.settledListeners) listener(state);
+    }
+    return state;
+  }
+  /**
+   * Keeps the helper of a settled request outside its bundle, then removes the bundles and, with `prepared`, the
+   * download cache. Runs under the maintenance lock. It saves no record that native removed with a data reset.
+   */
+  private async settle(requestId: string | undefined, prepared: boolean) {
+    const intent = await this.intent();
+    if (intent && intent.requestId !== requestId) return;
+    if (intent?.sourceApp && intent.sourceApp !== this.preparation.retainedApp) {
+      if (!(await this.preparation.retainHelper(this.helper(intent)))) return;
+      intent.sourceApp = this.preparation.retainedApp;
+      await this.save(intent);
+    }
+    await this.preparation.cleanupMaintenance(undefined, prepared);
+  }
+  /**
+   * An idle read removes what an older Comma, or an interrupted cleanup, left after a settled request. It skips when
+   * another process holds the maintenance lock; a later read tries again.
+   */
+  private async tidy(read: Intent | undefined, installed: boolean) {
+    if (this.tidying || this.executing) return;
+    const unmoved =
+      !!read?.sourceApp && read.sourceApp !== this.preparation.retainedApp;
+    if (
+      !unmoved &&
+      !(await this.preparation.maintenanceLeftovers(undefined, installed)).length
+    )
+      return;
+    this.tidying = (async () => {
+      let lock: DatabaseSync | undefined;
+      try {
+        if (read) {
+          lock = new DatabaseSync(join(this.journalDirectory, "comma.sqlite"));
+          lock.exec("BEGIN IMMEDIATE");
+          const intent = await this.intent();
+          if (intent && !settled(await this.receipt(intent))) return;
+          await this.settle(intent?.requestId, installed);
+        } else await this.preparation.cleanupMaintenance(undefined, installed);
+      } catch {
+        /* Cleanup never changes what the read reports. */
+      } finally {
+        lock?.close();
+        this.tidying = undefined;
+      }
+    })();
+    await this.tidying;
   }
   private running() {
     return !!this.executing;
   }
   private async exclusive(action: () => Promise<HostMaintenanceState>) {
+    while (this.tidying) await this.tidying;
     if (this.executing) throw new Error("Local maintenance is already running.");
     const work = (async () => {
       await mkdir(this.journalDirectory, { recursive: true, mode: 0o700 });
@@ -511,9 +652,21 @@ export class LocalHostMaintenance {
       "agent-vmm-lifecycle"
     );
   }
-  private async stopExecutor(requestId: string) {
+  /** Stops the executor of `requestId`; `retained`: it runs from the retained helper rather than its own bundle. */
+  private async stopExecutor(requestId: string, retained = false) {
     if (!/^[a-f0-9-]{36}$/.test(requestId)) return;
     let pids = await this.processes.find(this.frozenHelper(requestId));
+    if (retained)
+      pids.push(
+        ...(await this.processes.find(
+          join(
+            this.preparation.retainedApp,
+            "Contents",
+            "Helpers",
+            "agent-vmm-lifecycle"
+          )
+        ))
+      );
     for (const pid of pids) this.processes.signal(pid, "SIGTERM");
     pids = await this.waitForExit(pids, STOP_TERM_MS);
     for (const pid of pids) this.processes.signal(pid, "SIGKILL");
@@ -540,4 +693,29 @@ function phaseOfStage(
         : stage === "settled"
           ? "checking"
           : "preparing";
+}
+
+/** Native has ended this request: nothing continues it. */
+function settled(receipt: NativeReceipt | undefined) {
+  return (
+    receipt?.outcome === "succeeded" ||
+    receipt?.outcome === "superseded" ||
+    (receipt?.outcome === "failed" && !receipt.retryable)
+  );
+}
+
+function formatMaintenanceError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return (
+    raw
+      .replace(/https?:\/\/[^\s]+/gi, (match) => {
+        try {
+          const url = new URL(match);
+          return `${url.origin}${url.pathname}`;
+        } catch {
+          return "[url]";
+        }
+      })
+      .slice(0, 2000) || "Host maintenance failed."
+  );
 }

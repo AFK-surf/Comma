@@ -299,9 +299,12 @@ class ChatViewTest {
         })!!
         assertEquals(listOf(MessagePart.Text("Merge them, please.")), answer.parts)
 
-        // A card the core could not have made (one choice) is no card.
-        val broken = asking(choices = JSONArray().put(JSONObject().put("id", "c1").put("label", "Only")))
-        assertNull(display(message(6, "agent") { put("content", JSONArray().put(broken)) }))
+        // A single-choice card (e.g. a Monoid confirmation card) is valid; a card with zero choices is not.
+        val single = asking(choices = JSONArray().put(JSONObject().put("id", "c1").put("label", "Only")))
+        val singleShown = display(message(6, "agent") { put("content", JSONArray().put(single)) })!!
+        assertEquals(listOf(QuestionChoice("c1", "Only")), (singleShown.parts.single() as MessagePart.Question).question.choices)
+        val broken = asking(choices = JSONArray())
+        assertNull(display(message(7, "agent") { put("content", JSONArray().put(broken)) }))
     }
 
     @Test fun `a question card's images and answer go to the core apart from the draft`() = runBlocking {

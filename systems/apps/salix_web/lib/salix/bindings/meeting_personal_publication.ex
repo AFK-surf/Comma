@@ -31,21 +31,49 @@ defmodule Salix.Bindings.MeetingPersonalPublication do
       {:settle, _} ->
         expire(group_id, plan_id)
 
+      {:error, :stale_dispatch_revision} ->
+        supersede(group_id, plan_id, opts)
+
       {:error, reason}
       when reason in [
-             :stale_dispatch_revision,
              :meeting_plan_inactive,
              :calendar_event_cancelled,
              :calendar_event_changed,
              :calendar_event_not_found
            ] ->
-        case MeetingPlan.settle_card(group_id, plan_id, reason, opts) do
-          {:settle, _} -> expire(group_id, plan_id)
-          error -> error
-        end
+        settle(group_id, plan_id, reason, opts)
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  # The event changed since the last calendar scan. Planning it again now
+  # mints the new revision's personal notice; this revision's notice is then
+  # superseded, not lost. A plan that does not get a new revision settles. A
+  # failed reconcile may have rotated the revision already, so it retries
+  # rather than settling the new revision's notice.
+  defp supersede(group_id, plan_id, opts) do
+    with {:ok, old} <- MeetingPlan.get(group_id, plan_id),
+         {:ok, current} <- MeetingPlan.reconcile_occurrence(group_id, old["occurrence_ref"]) do
+      revision = is_map(current) && get_in(current, ["preparation", "dispatch_revision"])
+
+      if is_binary(revision) and current["status"] == "planned" and
+           revision != get_in(old, ["preparation", "dispatch_revision"]) do
+        with :ok <- PersonalPreparation.expire(old) do
+          MeetingPlan.report_settled(group_id, plan_id, "personal", :superseded)
+          {:ok, :fired}
+        end
+      else
+        settle(group_id, plan_id, :stale_dispatch_revision, opts)
+      end
+    end
+  end
+
+  defp settle(group_id, plan_id, reason, opts) do
+    case MeetingPlan.settle_card(group_id, plan_id, reason, opts) do
+      {:settle, _} -> expire(group_id, plan_id)
+      error -> error
     end
   end
 

@@ -112,15 +112,43 @@ defmodule SalixAgent.StationToolCalls do
       %{
         "name" => name,
         "description" => description(entry),
-        "input_schema" => ToolDisclosure.entry_schema(entry) || %{}
+        "input_schema" =>
+          declaration_schema(ToolDisclosure.entry_schema(entry) || %{}, name, ctx.ifc_mode)
       }
     end)
   end
 
+  defp declaration_schema(schema, _name, :off), do: schema
+
+  defp declaration_schema(schema, name, _mode) do
+    schema
+    |> IFC.Declaration.for_tool(name)
+    |> update_in(["properties", "ifc", "properties", "sources", "description"], fn description ->
+      description <>
+        " For a Station Task call, src:q-1 identifies this call's content under the Task's label. This boundary has no Salix session history."
+    end)
+  end
+
+  # A registry tool's full description, plus what the Worker's disclosure
+  # appended to its summary for this Group (`ToolDisclosure`: the authorized
+  # target Groups of `group.search_conversations`, an Inspector policy), so the
+  # station's agent reads what a round in Salix reads.
   defp description(%{"name" => name} = entry) do
+    summary = to_string(entry["summary"] || "")
+
     case Tools.find_entry(name) do
-      nil -> to_string(entry["summary"] || "")
-      found -> Tools.entry_description(found)
+      nil ->
+        summary
+
+      found ->
+        base = Tools.entry_summary(found)
+
+        if String.starts_with?(summary, base) do
+          Tools.entry_description(found) <>
+            binary_part(summary, byte_size(base), byte_size(summary) - byte_size(base))
+        else
+          Tools.entry_description(found)
+        end
     end
   end
 
@@ -202,6 +230,9 @@ defmodule SalixAgent.StationToolCalls do
     do: SystemsRuntime.Registry.unregister_match(@registry, device_id, slot)
 
   defp execute(ref, tool, args, slot) do
+    declared? = IFC.Declaration.present?(%{args: args})
+    {args, ifc} = IFC.Declaration.lift(args)
+
     call = %{
       id:
         "station:" <>
@@ -210,6 +241,8 @@ defmodule SalixAgent.StationToolCalls do
       name: tool,
       args: args
     }
+
+    call = if declared?, do: Map.put(call, :ifc, ifc), else: call
 
     with [result] <- SessionToolDispatch.execute([call], tool_ctx(ref, call)),
          :ok <- readable(ref, result, call),
@@ -279,7 +312,7 @@ defmodule SalixAgent.StationToolCalls do
         :ok
 
       mode ->
-        verdict = reader_verdict(ref, result, call)
+        verdict = reader_verdict(ref, result, call, mode)
         archive_verdict(ref, call, mode, verdict)
 
         case {mode, verdict} do
@@ -289,7 +322,7 @@ defmodule SalixAgent.StationToolCalls do
           {:audit, _refused} ->
             :ok
 
-          {:enforce, refused} ->
+          {enforcing, refused} when enforcing in [:enforce, :easy] ->
             discard(result)
             refused
         end
@@ -299,15 +332,15 @@ defmodule SalixAgent.StationToolCalls do
   # The answer to a Task creation names the Task this call made for this
   # Task's requester (its parent's owner), and no record's content: it is the
   # sandbox's to read, whatever label the dispatcher gave the call.
-  defp reader_verdict(_ref, _result, %{name: @task_create}), do: :ok
-  defp reader_verdict(ref, result, _call), do: reader_verdict(ref, result)
+  defp reader_verdict(_ref, _result, %{name: @task_create}, _mode), do: :ok
+  defp reader_verdict(ref, result, _call, mode), do: reader_verdict(ref, result, mode)
 
-  defp reader_verdict(ref, result) do
+  defp reader_verdict(ref, result, mode) do
     case Map.get(result, :ifc) || Map.get(result, "ifc") do
       %{"label" => encoded} when is_list(encoded) ->
         label = SalixIFC.Codec.decode_label(encoded, SalixIFC.Label.new([:agent_private]))
 
-        if SalixIFC.Label.public?(label) or reader?(ref, label, encoded),
+        if SalixIFC.Label.public?(label) or reader?(ref, label, encoded, mode),
           do: :ok,
           else:
             {:refused, "label_not_this_task",
@@ -347,7 +380,18 @@ defmodule SalixAgent.StationToolCalls do
     )
   end
 
-  defp reader?(ref, label, encoded) do
+  defp reader?(ref, label, encoded, :easy) do
+    if SalixIFC.easy_protected?(
+         [%SalixIFC.Item{ref: "result", label: label, integrity: :data}],
+         :context
+       ),
+       do: resolve_reader(ref, label, encoded, :easy),
+       else: true
+  end
+
+  defp reader?(ref, label, encoded, mode), do: resolve_reader(ref, label, encoded, mode)
+
+  defp resolve_reader(ref, label, encoded, mode) do
     case person(ref) do
       nil ->
         false
@@ -366,7 +410,11 @@ defmodule SalixAgent.StationToolCalls do
 
         case IFC.resolve(request) do
           {:ok, reply} ->
-            SalixIFC.reader?(person, label, SalixIFC.Codec.decode_facts(reply)) == true
+            facts = SalixIFC.Codec.decode_facts(reply)
+
+            if mode == :easy,
+              do: SalixIFC.easy_reader?(person, label, facts) == true,
+              else: SalixIFC.reader?(person, label, facts) == true
 
           {:error, _} ->
             false

@@ -42,45 +42,34 @@ type vmmFixture struct {
 func makeVMMFixture(t *testing.T) vmmFixture {
 	t.Helper()
 	fixture := vmmFixture{directory: t.TempDir(), roots: map[string][]byte{}, keys: map[string]crypto.Signer{}}
-	config := map[string]vmmIssuer{}
-	for _, purpose := range []string{"server", "client"} {
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var root []byte
-		if purpose == "client" {
-			root, err = createVMMClientRoot(key, "staging", fixtureNow)
-		} else {
-			template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "server root"}, NotBefore: fixtureNow.Add(-time.Hour), NotAfter: fixtureNow.Add(10 * 365 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
-			var der []byte
-			der, err = x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
-			root = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture.roots[purpose] = root
-		fixture.keys[purpose] = key
-		if err = os.WriteFile(filepath.Join(fixture.directory, purpose+".crt"), root, 0600); err != nil {
-			t.Fatal(err)
-		}
-		issuer := vmmIssuer{Key: "projects/cueboard-gamma-staging/locations/us-west1/keyRings/vmm-certificates/cryptoKeys/" + purpose + "-ca/cryptoKeyVersions/1", Subject: "Comma"}
-		if purpose == "server" {
-			issuer.Subject = "gateway.test"
-			issuer.SANs = []string{"gateway.test"}
-		}
-		config[purpose] = issuer
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "server root"}, NotBefore: fixtureNow.Add(-time.Hour), NotAfter: fixtureNow.Add(10 * 365 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	fixture.roots["server"] = root
+	fixture.keys["server"] = key
+	if err = os.WriteFile(filepath.Join(fixture.directory, "server.crt"), root, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := map[string]vmmIssuer{
+		"server": {
+			Key:     "projects/cueboard-gamma-staging/locations/us-west1/keyRings/vmm-certificates/cryptoKeys/server-ca/cryptoKeyVersions/1",
+			Subject: "gateway.test",
+			SANs:    []string{"gateway.test"},
+		},
 	}
 	body, _ := json.Marshal(config)
 	if err := os.WriteFile(filepath.Join(fixture.directory, "issuers.json"), body, 0600); err != nil {
 		t.Fatal(err)
 	}
 	factory := func(name string) (crypto.Signer, error) {
-		if name == config["server"].Key {
-			return fixture.keys["server"], nil
-		}
-		return fixture.keys["client"], nil
+		return fixture.keys["server"], nil
 	}
 	bundle, err := issueVMMBundle("staging", fixture.directory, factory, fixtureNow)
 	if err != nil {
@@ -101,50 +90,39 @@ func vmmTLSKeyPair(t *testing.T, payload vmmSecretPayload) tls.Certificate {
 }
 func TestVMMIssuedBundleEnforcesTLSBoundaries(t *testing.T) {
 	fixture := makeVMMFixture(t)
+	if len(fixture.bundle.Secrets) != 1 {
+		t.Fatalf("bundle secrets = %d, want 1", len(fixture.bundle.Secrets))
+	}
 	serverPair := vmmTLSKeyPair(t, fixture.bundle.Secrets[vmmTLSBundleName])
-	clientPair := vmmTLSKeyPair(t, fixture.bundle.Secrets[vmmTLSNames[1]])
-	clientRoots := x509.NewCertPool()
-	clientRoot, _ := base64.StdEncoding.DecodeString(fixture.bundle.Secrets[vmmTLSNames[2]].Data["ca.crt"])
-	clientRoots.AppendCertsFromPEM(clientRoot)
 	serverRoots := x509.NewCertPool()
-	serverRoot, _ := base64.StdEncoding.DecodeString(fixture.bundle.Secrets[vmmTLSNames[1]].Data["ca.crt"])
+	serverRoot, _ := base64.StdEncoding.DecodeString(fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])
 	serverRoots.AppendCertsFromPEM(serverRoot)
+	foreign := makeVMMFixture(t)
+	foreignRoots := x509.NewCertPool()
+	foreignRoot, _ := base64.StdEncoding.DecodeString(foreign.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])
+	foreignRoots.AppendCertsFromPEM(foreignRoot)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "authorized") }))
 	server.Config.ErrorLog = log.New(io.Discard, "", 0)
-	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{serverPair}, ClientCAs: clientRoots, ClientAuth: tls.RequireAndVerifyClientCert, Time: fixtureTime}
+	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{serverPair}, Time: fixtureTime}
 	server.StartTLS()
 	defer server.Close()
-	foreign := makeVMMFixture(t)
-	foreignPair := vmmTLSKeyPair(t, foreign.bundle.Secrets[vmmTLSNames[1]])
-	// Same authorized issuer, wrong leaf usage: issuer mismatch cannot hide this check.
-	block, _ := pem.Decode(fixture.roots["client"])
-	root, _ := x509.ParseCertificate(block.Bytes)
-	template := &x509.Certificate{SerialNumber: big.NewInt(44), Subject: pkix.Name{CommonName: "wrong usage"}, NotBefore: fixtureNow.Add(-time.Hour), NotAfter: fixtureNow.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	der, err := x509.CreateCertificate(rand.Reader, template, root, leafKey.Public(), fixture.keys["client"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrongUsage := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: leafKey}
 	for _, test := range []struct {
 		name, hostname string
-		certificates   []tls.Certificate
+		roots          *x509.CertPool
 		allowed        bool
 	}{
-		{"authorized", "gateway.test", []tls.Certificate{clientPair}, true},
-		{"wrong hostname", "wrong.test", []tls.Certificate{clientPair}, false},
-		{"foreign client issuer", "gateway.test", []tls.Certificate{foreignPair}, false},
-		{"missing client", "gateway.test", nil, false},
-		{"wrong client usage", "gateway.test", []tls.Certificate{wrongUsage}, false},
+		{"authorized", "gateway.test", serverRoots, true},
+		{"wrong hostname", "wrong.test", serverRoots, false},
+		{"foreign server issuer", "gateway.test", foreignRoots, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: serverRoots, ServerName: test.hostname, Certificates: test.certificates, Time: fixtureTime}}
+			transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: test.roots, ServerName: test.hostname, Time: fixtureTime}}
 			defer transport.CloseIdleConnections()
 			response, err := (&http.Client{Transport: transport}).Get(server.URL)
 			if !test.allowed {
 				if err == nil {
 					response.Body.Close()
-					t.Fatal("unauthorized TLS client admitted")
+					t.Fatal("unauthorized TLS server accepted")
 				}
 				return
 			}
@@ -170,17 +148,20 @@ func TestVMMRenewalPreservesRootsAndRejectsWrongIssuerTarget(t *testing.T) {
 		if err != nil || !due {
 			t.Fatalf("expiring bundle due=%v err=%v", due, err)
 		}
-		for _, name := range vmmTLSNames[:2] {
-			if fixture.bundle.Secrets[name].Data["ca.crt"] != base64.StdEncoding.EncodeToString(fixture.roots["server"]) {
-				t.Fatal("server trust missing from next release input")
-			}
+		if fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"] != base64.StdEncoding.EncodeToString(fixture.roots["server"]) {
+			t.Fatal("server trust missing from next release input")
 		}
 		factory := func(string) (crypto.Signer, error) { return fixture.keys["server"], nil }
 		if _, err = issueVMMBundle("prod", fixture.directory, factory, time.Now()); err == nil {
 			t.Fatal("staging issuer accepted in production")
 		}
-		if _, err = issueVMMBundle("staging", fixture.directory, factory, time.Now()); err == nil {
-			t.Fatal("wrong client signing key accepted")
+		wrongKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrongFactory := func(string) (crypto.Signer, error) { return wrongKey, nil }
+		if _, err = issueVMMBundle("staging", fixture.directory, wrongFactory, time.Now()); err == nil {
+			t.Fatal("wrong server signing key accepted")
 		}
 	})
 }

@@ -242,6 +242,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
     def get_record("ag-gone"), do: {:error, :not_found}
     def get_record(_id), do: {:ok, %{"runtime_config" => %{"kind" => "internal"}}}
   end
+
   defmodule TelemetryNotConfigured do
     def unconverged_sessions(_tenant, _opts), do: {:error, :not_configured}
   end

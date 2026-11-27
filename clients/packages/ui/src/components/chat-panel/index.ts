@@ -18,6 +18,8 @@ export {
   ChatPanelImage,
   ChatPanelVideo,
 } from "./ChatPanelMedia";
+export { ChatPanelPreviewCard } from "./ChatPanelPreviewCard";
+export type { ChatPanelPreviewCardProps } from "./ChatPanelPreviewCard";
 export {
   mediaControlShortcuts,
   resolveMediaFullWindowShortcut,
@@ -35,6 +37,7 @@ export type { ChatPanelVideoSurface } from "./ChatPanelVideoPictureInPicture";
 export {
   ChatPanelFileApplicationItems,
   ChatPanelFileOpenInMenu,
+  fileApplicationsMaxHeight,
   useChatPanelFileOpenIn,
 } from "./ChatPanelFileOpenInMenu";
 export { useChatPanelMediaDownloadController } from "./ChatPanelMediaDownloadControl";

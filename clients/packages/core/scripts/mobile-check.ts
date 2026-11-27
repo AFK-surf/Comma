@@ -11,8 +11,16 @@ import { fileURLToPath } from "node:url";
 import { bundle, hermesTools } from "./mobile-bundle.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-/** The bundle's size now (1.72 MB on 2026-11-08), with a little room: a change that needs more raises it, saying why. */
-const MAX_BUNDLE_BYTES = 1_750_000;
+/**
+ * The bundle's size now (1.75 MB on 2026-11-14), with a little room: a change that needs more raises it, saying why.
+ * Raised from 1_750_000 when `main` had 251 bytes of it left and a Markdown rule of 300 bytes no longer fitted.
+ * It also takes a foldable device's postures (screen-postures.ts), which the phones send through the core.
+ * Raised from 1_780_000 for collaborative Tasks and People (`collaborations.*`, `taskRequests.people`), which the
+ * phones' People tab reads through the core.
+ * Raised from 1_800_000 to 1_830_000 for the shared `taskFeed` topic, calls, and milestone activity projection
+ * (`task-feed.ts`).
+ */
+const MAX_BUNDLE_BYTES = 1_830_000;
 const dir = mkdtempSync(join(tmpdir(), "comma-mobile-check-"));
 try {
   const script = join(dir, "core.js");

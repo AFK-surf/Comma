@@ -6,7 +6,7 @@
 //
 // Bounds: at most two recordings in flight per device (a third fails at once), and apart from them three dictations,
 // which are small and short: a Quick Chat asks about at most two pauses at once (a third fails at once), and a send
-// waits for its turn, so the sends waiting number at most the Returns under way. Audio up to 30 MiB; one request each,
+// waits for its turn, so the sends waiting number at most the Returns under way. Audio up to 256 MiB; one request each,
 // given up after a little over ten minutes (dictation: 10 s, the wait included).
 import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
@@ -17,7 +17,7 @@ import type { Ctx } from "./ctx.ts";
 import { readEvents } from "./sse.ts";
 
 const PATH = "/v1/comma/me/recordings/transcribe";
-export const MAX_TRANSCRIBED_BYTES = 30 * 1024 * 1024;
+export const MAX_TRANSCRIBED_BYTES = 256 * 1024 * 1024;
 const MAX_IN_FLIGHT = 2;
 const MAX_DICTATIONS_IN_FLIGHT = 3;
 const TRANSCRIBE_TIMEOUT_MS = 620_000;
@@ -76,7 +76,7 @@ export class Recordings {
           if (audio.length > MAX_TRANSCRIBED_BYTES)
             return Effect.fail(
               unavailable(
-                "ASR accepts recordings up to 30 MiB. The audio remains in Drive.",
+                "ASR accepts recordings up to 256 MiB. The audio remains in Drive.",
                 "too_large"
               )
             );

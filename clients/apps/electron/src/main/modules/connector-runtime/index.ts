@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { sessionExpectation } from "@comma/session-contract";
 import { z } from "zod";
 import { realMainClock, type MainClock } from "../../clock";
+import { proxyQueryUrl, stationProxy } from "./system-proxy";
 import type { LocalFileRegistrationTarget } from "../local-files/registration";
 import type { CoreClient } from "@comma/core-kernel/client";
 import type { CommaConnectorToken, CommaDeviceInstall } from "@comma/core/api-schemas";
@@ -20,6 +21,8 @@ const RENEW_AT_LIFE_FRACTION = 0.75;
 const CONNECTOR_REVOKE_TIMEOUT_MS = 5_000;
 const MINT_RETRY_MS = [500, 2_000, 8_000, 30_000] as const;
 const CREDENTIAL_WATCH_MS = 2_000;
+/** Chromium's proxy answer is waited for this long: a proxy script that does not load must not hold the connection. */
+export const SYSTEM_PROXY_TIMEOUT_MS = 3_000;
 
 /** The capability scope minted for attachment connectors; see docs/tools-integrations.md. */
 const LOCAL_FILE_READ_SCOPE = "local_file_read";
@@ -112,6 +115,11 @@ export interface WorkspaceConnectorRuntimeOptions {
   connectorFileRoot: string;
   /** Private per-workspace state root, e.g. `<userData>/connectors`. */
   connectorsRootDir: string;
+  /**
+   * Chromium's proxy answer for a URL (`session.resolveProxy`): the station's connection to Salix goes through the
+   * system's proxy when there is one. Not given: it connects directly.
+   */
+  systemProxy?: ((url: string) => Promise<string>) | undefined;
   /** Stable release namespace given to the station's connection. */
   runtimeNamespace?: string | undefined;
   /** Electron-owned runtime root given to the station's connection. */
@@ -181,6 +189,8 @@ interface WorkspaceConnectorEntry {
   workspaceId: string;
   /** The credential in the connection file this entry last wrote. */
   writtenToken: string | undefined;
+  /** The system's proxy in the connection file this entry last wrote; undefined for none. */
+  writtenProxy: string | undefined;
   /** Where and as what the last minted credential connects. */
   minted: MintedConnector | undefined;
 }
@@ -543,6 +553,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
       workspaceId: normalized,
       minted: undefined,
       writtenToken: undefined,
+      writtenProxy: undefined,
     };
     this.#entries.set(normalized, entry);
     this.#publishScopeState(connectorScopeUnavailable(normalized));
@@ -654,12 +665,33 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
         if (entry.renewal !== watch || entry.stopped || this.#closed) return;
         await this.#revokeRetiring(entry, this.#clock.now());
         if (this.#clock.now() >= entry.renewAtMs) await this.#renew(entry);
+        if (status?.state !== "connected") await this.#followSystemProxy(entry);
       });
       if (entry.renewal === watch && !entry.stopped && !this.#closed) {
         this.#watchCredential(entry);
       }
     });
     entry.renewal = watch;
+  }
+
+  /**
+   * While the station has no connection to Salix, the system's proxy is asked again, and a changed answer is written
+   * into the same connection file with the credential in use: the station's next dial takes it. A proxy the user
+   * turned on after the app started, or turned off, is then followed without a renewal. This is the credential
+   * watch's own read of the status, for each of the entries the runtime keeps: no timer of its own, no question to
+   * Chromium while the station is connected, and no write unless the answer changed.
+   */
+  async #followSystemProxy(entry: WorkspaceConnectorEntry) {
+    if (!this.#options.systemProxy || !entry.minted || !entry.mintedToken) return;
+    const proxy = await this.#stationProxy(entry.minted.server);
+    if (proxy === entry.writtenProxy || entry.stopped || this.#closed) return;
+    try {
+      await this.#writeInstance(entry, entry.mintedToken, undefined, { proxy });
+    } catch (error) {
+      this.#log.warn(
+        `workspace connection's proxy not written: workspace=${entry.workspaceId} ${errorText(error)}`
+      );
+    }
   }
 
   /**
@@ -952,7 +984,9 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
   async #writeInstance(
     entry: WorkspaceConnectorEntry,
     token: string,
-    minted?: MintedConnector
+    minted?: MintedConnector,
+    /** The system's proxy when the caller has just asked for it; asked here otherwise. */
+    asked?: { proxy: string | undefined }
   ) {
     if (minted) entry.minted = minted;
     if (!entry.minted) return;
@@ -961,6 +995,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
       throw new Error("The client control endpoint is not ready yet.");
     }
     const binDir = await this.#writeClientCLIs(entry);
+    const proxy = asked ? asked.proxy : await this.#stationProxy(entry.minted.server);
     const config = {
       comma: { workspace_id: entry.workspaceId },
       connector: {
@@ -974,6 +1009,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
         device_state_root: entry.workspaceDir,
         workspace_id: entry.workspaceId,
         server: entry.minted.server,
+        ...(proxy ? { proxy } : {}),
         ...(this.#options.computerMesh ? { mesh: true } : {}),
       },
       electron: {
@@ -1005,6 +1041,27 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
       if (entry.stopped) return;
       await writePrivate(entry.instancePath, `${JSON.stringify(config, null, 2)}\n`);
       entry.writtenToken = token;
+      entry.writtenProxy = proxy;
+    });
+  }
+
+  /**
+   * The system's proxy for `server` now, asked each time the connection's file is written (a mint, a renewal, a scope
+   * change). No answer in time, or a failed one, is no proxy: the station then connects directly.
+   */
+  #stationProxy(server: string): Promise<string | undefined> {
+    const resolve = this.#options.systemProxy;
+    if (!resolve) return Promise.resolve(undefined);
+    return new Promise((done) => {
+      const cancel = this.#setTimer(SYSTEM_PROXY_TIMEOUT_MS, () => done(undefined));
+      const settle = (proxy: string | undefined) => {
+        cancel();
+        done(proxy);
+      };
+      resolve(proxyQueryUrl(server)).then(
+        (answer) => settle(stationProxy(answer)),
+        () => settle(undefined)
+      );
     });
   }
 

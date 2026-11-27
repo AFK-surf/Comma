@@ -66,7 +66,7 @@ it("shows its brand, that it is a still.fail station, its connection and models,
   await open([computer, station()]);
   const card = screen.getByRole("article", { name: "Acme · studio" });
   expect(card.querySelector('[data-plugin-brand="stillfail"]')).not.toBeNull();
-  expect(within(card).getByText("still.fail station")).toBeInTheDocument();
+  expect(within(card).getByText("Monoid station")).toBeInTheDocument();
   expect(within(card).getByText("Connected")).toBeInTheDocument();
   expect(within(card).getByText("Codex")).toBeInTheDocument();
   expect(within(card).getByText("gpt-5.5, gpt-5.4-mini")).toBeInTheDocument();

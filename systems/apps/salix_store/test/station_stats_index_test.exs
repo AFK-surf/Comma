@@ -176,6 +176,35 @@ defmodule SalixStore.StationStatsIndexTest do
              StationStats.usage(@group, "2026-10-28", "2026-10-28", :person, "stillfail")
   end
 
+  test "usage of one device alone" do
+    assert {:ok, _} =
+             apply_page(1, [usage("stillfail", "2026-10-28", "ann@x", "m", 2, 1.0, 1)],
+               reset: true
+             )
+
+    assert {:ok, _} =
+             apply_page(2, [usage("stillfail", "2026-10-28", "ann@x", "m", 5, 4.0, 1)],
+               reset: true
+             )
+
+    assert {:ok, [%{"key" => "ann@x", "calls" => 7}]} =
+             StationStats.usage(@group, "2026-10-28", "2026-10-28", :person, "stillfail")
+
+    assert {:ok, [%{"key" => "ann@x", "calls" => 5}]} =
+             StationStats.usage(
+               @group,
+               "2026-10-28",
+               "2026-10-28",
+               :person,
+               "stillfail",
+               nil,
+               "dev_2"
+             )
+
+    assert {:ok, []} =
+             StationStats.usage(@group, "2026-10-28", "2026-10-28", :person, nil, nil, "dev_9")
+  end
+
   test "a removed station's rows go" do
     assert {:ok, _} =
              apply_page(1, [usage("self", "2026-10-28", "ann@x", "m", 2, 1.0, 1)], reset: true)

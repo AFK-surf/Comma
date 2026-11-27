@@ -6,6 +6,9 @@ defmodule CommaWeb.RecommendationSourceCollector do
   alias CommaWeb.{RecommendationMemberRead, RecommendationSourceCatalog}
 
   @max_data_bytes 12_000
+  @max_member_data_bytes 20_000
+  @message_preview_bytes 80
+  @max_message_chars 1_200
 
   def collect(workspace, sources, opts \\ []) when is_map(workspace) and is_list(sources) do
     started = SystemsClock.monotonic_time(:millisecond)
@@ -151,9 +154,10 @@ defmodule CommaWeb.RecommendationSourceCollector do
     {warnings, data} = Map.pop(data, :source_warnings, [])
     {data, contexts} = CommaWeb.RecommendationSourceContext.separate(data)
     {data, quotes} = CommaWeb.RecommendationSourceQuote.separate(data)
+    {data, bodies} = separate_message_bodies(data)
     {data, identities} = separate_identities(data)
-    {bounded, bound} = bound_data_with_counts(data)
-    bounded = restore_identities(bounded, identities)
+    {bounded, bound} = bound_data_with_counts(data, @max_member_data_bytes, drop_partial: true)
+    bounded = bounded |> restore_identities(identities) |> restore_message_bodies(bodies)
 
     # A record the bound cuts is not read; the run reports the source as partial.
     warnings =
@@ -396,30 +400,60 @@ defmodule CommaWeb.RecommendationSourceCollector do
   # The byte bound keeps list order and cuts from the tail. The counts tell how
   # many provider records the model reads whole: a record cut down to its link
   # or to an empty object counts as dropped.
-  defp bound_data_with_counts(data) do
+  defp bound_data_with_counts(data, max_bytes \\ @max_data_bytes, opts \\ []) do
     encoded = Jason.encode!(data)
     normalized = Jason.decode!(encoded)
     original_bytes = byte_size(encoded)
 
-    if original_bytes <= @max_data_bytes do
+    if original_bytes <= max_bytes do
       kept = record_count(normalized)
       {normalized, bound_counts(original_bytes, false, kept, kept)}
     else
       metadata = %{"originalBytes" => original_bytes, "truncated" => true}
       wrapper_with_nil = %{"_comma" => metadata, "value" => nil}
       wrapper_overhead = byte_size(Jason.encode!(wrapper_with_nil)) - byte_size("null")
-      value_budget = @max_data_bytes - wrapper_overhead
+      value_budget = max_bytes - wrapper_overhead
       {bounded, _encoded_bytes, _truncated?} = bound_json(normalized, value_budget)
+      kept = intact_record_count(normalized, bounded)
+
+      bounded =
+        if Keyword.get(opts, :drop_partial, false),
+          do: drop_partial_records(normalized, bounded),
+          else: bounded
 
       {%{"_comma" => metadata, "value" => bounded},
        bound_counts(
          original_bytes,
          true,
          record_count(normalized),
-         intact_record_count(normalized, bounded)
+         kept
        )}
     end
   end
+
+  # A record cut mid-object at the byte boundary can keep its URL while losing
+  # timestamps or relation fields, drifting its pooled fingerprint. Drop partial
+  # tail records from record lists (as `intact_record_count/2` counts them) so
+  # list items in member facts stay intact.
+  defp drop_partial_records(original, bounded) when is_map(original) and is_map(bounded) do
+    Map.new(bounded, fn {key, value} ->
+      {key, drop_partial_records(Map.get(original, key), value)}
+    end)
+  end
+
+  defp drop_partial_records(original, bounded) when is_list(original) and is_list(bounded) do
+    original
+    |> Enum.zip(bounded)
+    |> Enum.flat_map(fn
+      {record, bounded_record} when is_map(record) ->
+        if record == bounded_record, do: [bounded_record], else: []
+
+      {_item, bounded_item} ->
+        [bounded_item]
+    end)
+  end
+
+  defp drop_partial_records(_original, bounded), do: bounded
 
   defp bound_counts(original_bytes, truncated?, records, kept) do
     %{
@@ -586,6 +620,69 @@ defmodule CommaWeb.RecommendationSourceCollector do
     do: Enum.map(list, &restore_identities(&1, identities))
 
   defp restore_identities(value, _identities), do: value
+
+  # Message sources (Slack, Feishu, Lark) carry no separate subject field:
+  # `text` holds both the candidate headline and the bounded excerpt, whereas
+  # mail and issues separate their body into `context`. Keep only a short
+  # headline inside the structural byte bound so verbose bot posts cannot starve
+  # later direct messages or thread replies, then restore each surviving
+  # record's independently bounded excerpt without cross-item truncation so
+  # unrelated messages cannot drift a pooled item's fingerprint.
+  defp separate_message_bodies(%{"messages" => %{"matches" => matches} = messages} = data)
+       when is_list(matches) do
+    {slimmed, bodies} =
+      Enum.map_reduce(matches, %{}, fn
+        %{"permalink" => permalink, "text" => text} = match, acc
+        when is_binary(permalink) and permalink != "" and is_binary(text) ->
+          bounded_text = String.slice(text, 0, @max_message_chars)
+
+          preview =
+            Comma.JsonText.fit(
+              bounded_text,
+              @message_preview_bytes
+            )
+
+          if preview == text do
+            {match, acc}
+          else
+            {Map.put(match, "text", preview),
+             Map.put(acc, permalink, %{preview: preview, text: bounded_text})}
+          end
+
+        match, acc ->
+          {match, acc}
+      end)
+
+    {Map.put(data, "messages", Map.put(messages, "matches", slimmed)), bodies}
+  end
+
+  defp separate_message_bodies(data), do: {data, %{}}
+
+  defp restore_message_bodies(bounded, bodies) when bodies == %{}, do: bounded
+
+  defp restore_message_bodies(%{"_comma" => meta, "value" => inner} = bounded, bodies)
+       when is_map(inner) do
+    %{bounded | "_comma" => meta, "value" => restore_message_bodies(inner, bodies)}
+  end
+
+  defp restore_message_bodies(%{"messages" => %{"matches" => matches} = messages} = data, bodies)
+       when is_list(matches) do
+    restored =
+      Enum.map(matches, fn
+        %{"permalink" => permalink, "text" => text} = match when is_binary(permalink) ->
+          case bodies[permalink] do
+            %{preview: ^text, text: full} -> Map.put(match, "text", full)
+            _ -> match
+          end
+
+        match ->
+          match
+      end)
+
+    Map.put(data, "messages", Map.put(messages, "matches", restored))
+  end
+
+  defp restore_message_bodies(bounded, _bodies), do: bounded
 
   # Slack's, then Feishu's and Lark's: the sign-in lacks a scope, the app
   # lacks one, or the token is invalid or expired.

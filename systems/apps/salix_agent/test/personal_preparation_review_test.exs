@@ -291,6 +291,79 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     refute Jason.encode!(messages) =~ "PRIVATE SIBLING"
   end
 
+  test "deduplicates identical resolved transcripts across paginated refs and allows multi-meeting evidence up to 512 KB",
+       %{ctx: ctx, actor_pid: pid} do
+    transcript_a =
+      Jason.encode!(%{
+        "file_id" => "F0AAA111111",
+        "channel" => "CPUBLIC",
+        "source_file" => %{
+          "connect_id" => "connect",
+          "channel" => "CPUBLIC",
+          "file_id" => "F0AAA111111"
+        },
+        "text" => String.duplicate("All-hands transcript line.\n", 6_000)
+      })
+
+    transcript_b =
+      Jason.encode!(%{
+        "file_id" => "F0BBB222222",
+        "channel" => "CPUBLIC",
+        "source_file" => %{
+          "connect_id" => "connect",
+          "channel" => "CPUBLIC",
+          "file_id" => "F0BBB222222"
+        },
+        "text" => String.duplicate("Stand-up transcript line.\n", 6_000)
+      })
+
+    assert byte_size(transcript_a) + byte_size(transcript_b) > 256_000
+    assert byte_size(transcript_a) + byte_size(transcript_b) < 512_000
+
+    seed_more(
+      pid,
+      ctx,
+      source_events(4, "file-a", "meeting.preparation.read_shared_source", transcript_a, %{
+        "label" => ["scope|connect|CPUBLIC"]
+      }) ++
+        source_events(
+          5,
+          "file-a-page2",
+          "tool_call.get_result",
+          "TRUNCATED PAGE 2",
+          %{"label" => ["scope|connect|CPUBLIC"]},
+          Jason.encode!(%{"tool_call_id" => "file-a", "offset" => 16_000})
+        ) ++
+        source_events(6, "file-b", "meeting.preparation.read_shared_source", transcript_b, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        })
+    )
+
+    request = Map.put(args(), "source_refs", ["src:a-1", "src:a-4", "src:a-5", "src:a-6"])
+    publish(request, ctx)
+
+    assert_received {:review, messages, [], _}
+    [_, %{content: user_payload}] = messages
+    decoded = Jason.decode!(user_payload)
+    # src:a-5 resolved to the exact same transcript as src:a-4 and must be deduplicated
+    assert Enum.map(decoded["original_evidence"], & &1["ref"]) == [
+             "src:a-1",
+             "src:a-4",
+             "src:a-6"
+           ]
+
+    assert_received {:saved, "connect", "UPENG", "Reviewed reminder", evidence}
+
+    assert evidence["decision"]["sources"] == [
+             %{"ref" => "src:a-1"},
+             %{"ref" => "src:a-4"},
+             %{"ref" => "src:a-5"},
+             %{"ref" => "src:a-6"}
+           ]
+
+    assert length(evidence["source_files"]) == 2
+  end
+
   test "IFC-enforced canonical tool execution saves exactly one reviewed report", %{ctx: ctx} do
     group = SalixStore.Ids.group_id_from_agent!(ctx.agent_id)
     SalixAgent.TestSupport.create_control_group!(group, %{"ifc" => %{"mode" => "enforce"}})
@@ -477,6 +550,238 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     {ctx, recipient, ["src:a-4", "src:a-5"]}
   end
 
+  test "verifies contiguous cursor chains and rejects search hits masquerading as expanded replies",
+       %{ctx: ctx, actor_pid: pid} do
+    history_p1 =
+      Jason.encode!(%{
+        "operation" => "history",
+        "channel" => "CPUBLIC",
+        "request_cursor" => nil,
+        "messages" => [
+          %{
+            "user" => "UPENG",
+            "ts" => "1795143744.190339",
+            "text" => "check why cft missed meeting",
+            "reply_count" => 5
+          }
+        ],
+        "has_more" => true,
+        "next_cursor" => "h2"
+      })
+
+    history_p2 =
+      Jason.encode!(%{
+        "operation" => "history",
+        "channel" => "CPUBLIC",
+        "request_cursor" => "h2",
+        "messages" => [
+          %{"user" => "UOTHER", "ts" => "1795100000.000001", "text" => "older message"}
+        ],
+        "has_more" => false
+      })
+
+    # Two search hits sharing the same thread_ts must NOT masquerade as an expanded replies read
+    search_hits =
+      Jason.encode!(%{
+        "operation" => "search",
+        "channel" => "CPUBLIC",
+        "request_cursor" => nil,
+        "messages" => [
+          %{
+            "user" => "UPENG",
+            "ts" => "1795143744.190339",
+            "thread_ts" => "1795143744.190339",
+            "text" => "check why cft missed meeting",
+            "reply_count" => 5
+          },
+          %{
+            "user" => "UOTHER",
+            "ts" => "1795143946.052619",
+            "thread_ts" => "1795143744.190339",
+            "text" => "still checking"
+          }
+        ],
+        "has_more" => false
+      })
+
+    replies_p1 =
+      Jason.encode!(%{
+        "operation" => "replies",
+        "channel" => "CPUBLIC",
+        "thread_ts" => "1795143744.190339",
+        "request_cursor" => nil,
+        "messages" => [
+          %{
+            "user" => "UPENG",
+            "ts" => "1795143744.190339",
+            "text" => "check why cft missed meeting"
+          }
+        ],
+        "has_more" => true,
+        "next_cursor" => "p2"
+      })
+
+    replies_p2 =
+      Jason.encode!(%{
+        "operation" => "replies",
+        "channel" => "CPUBLIC",
+        "thread_ts" => "1795143744.190339",
+        "request_cursor" => "p2",
+        "messages" => [
+          %{"user" => "UOTHER", "ts" => "1795144200.000001", "text" => "resolved: staging deploy"}
+        ],
+        "has_more" => true,
+        "next_cursor" => "p3"
+      })
+
+    replies_p3 =
+      Jason.encode!(%{
+        "operation" => "replies",
+        "channel" => "CPUBLIC",
+        "thread_ts" => "1795143744.190339",
+        "request_cursor" => "p3",
+        "messages" => [
+          %{"user" => "UPENG", "ts" => "1795144855.923699", "text" => "thanks, confirmed"}
+        ],
+        "has_more" => false
+      })
+
+    recent_ptrs =
+      Jason.encode!(%{
+        "operation" => "recent_meetings",
+        "channel" => "CPUBLIC",
+        "status" => "complete",
+        "truncated" => false,
+        "meetings" => [%{"title" => "Stand-up", "thread_ts" => "1795402700.530529"}]
+      })
+
+    seed_more(
+      pid,
+      ctx,
+      source_events(4, "hist-p1", "meeting.preparation.read_shared_source", history_p1, %{
+        "label" => ["scope|connect|CPUBLIC"]
+      }) ++
+        source_events(5, "hist-p2", "meeting.preparation.read_shared_source", history_p2, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        }) ++
+        source_events(6, "search-hits", "meeting.preparation.read_shared_source", search_hits, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        }) ++
+        source_events(7, "rep-p1", "meeting.preparation.read_shared_source", replies_p1, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        }) ++
+        source_events(8, "rep-p2", "meeting.preparation.read_shared_source", replies_p2, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        }) ++
+        source_events(9, "rep-p3", "meeting.preparation.read_shared_source", replies_p3, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        }) ++
+        source_events(10, "recent-ptrs", "meeting.preparation.read_shared_source", recent_ptrs, %{
+          "label" => ["scope|connect|CPUBLIC"]
+        }) ++
+        source_events(
+          11,
+          "rep-bounded",
+          "meeting.preparation.read_shared_source",
+          Jason.encode!(%{
+            "operation" => "replies",
+            "channel" => "CPUBLIC",
+            "thread_ts" => "1795143744.190339",
+            "request_cursor" => nil,
+            "query_scope" => %{"latest" => "1795143900"},
+            "messages" => [
+              %{"ts" => "1795143744.190339", "user" => "UPENG", "text" => "Morning snapshot only"}
+            ],
+            "has_more" => false
+          }),
+          %{
+            "label" => ["scope|connect|CPUBLIC"]
+          }
+        )
+    )
+
+    # Search hits sharing thread_ts do NOT satisfy thread expansion
+    _ = publish(Map.put(args(), "source_refs", ["src:a-1", "src:a-4", "src:a-5", "src:a-6"]), ctx)
+    assert_received {:review, [%{role: "summary"}, %{role: "user", content: p_search}], [], _}
+    payload_search = Jason.decode!(p_search)
+
+    assert Enum.any?(payload_search["incomplete_sources"], fn item ->
+             item["kind"] == "unexpanded_thread" and item["thread"] == "1795143744.190339"
+           end)
+
+    # Time-bounded replies (oldest/latest) do NOT clear unexpanded_thread
+    _ =
+      publish(Map.put(args(), "source_refs", ["src:a-1", "src:a-4", "src:a-5", "src:a-11"]), ctx)
+
+    assert_received {:review, [%{role: "summary"}, %{role: "user", content: p_bounded}], [], _}
+    payload_bounded = Jason.decode!(p_bounded)
+
+    assert Enum.any?(payload_bounded["incomplete_sources"], fn item ->
+             item["kind"] == "unexpanded_thread" and item["thread"] == "1795143744.190339"
+           end)
+
+    # Time-bounded terminal replies MUST NOT mask a truncated unbounded replies chain
+    _ =
+      publish(
+        Map.put(args(), "source_refs", ["src:a-1", "src:a-4", "src:a-5", "src:a-11", "src:a-7"]),
+        ctx
+      )
+
+    assert_received {:review, [%{role: "summary"}, %{role: "user", content: p_mixed}], [], _}
+    payload_mixed = Jason.decode!(p_mixed)
+
+    assert [
+             %{
+               "kind" => "truncated_page",
+               "channel" => "CPUBLIC",
+               "thread" => "1795143744.190339",
+               "missing_cursor" => "p2"
+             }
+           ] = payload_mixed["incomplete_sources"]
+
+    # Replies page 1 + page 3 (missing page 2) MUST still report truncated_page with missing_cursor "p2"
+    _ =
+      publish(
+        Map.put(args(), "source_refs", ["src:a-1", "src:a-4", "src:a-5", "src:a-7", "src:a-9"]),
+        ctx
+      )
+
+    assert_received {:review, [%{role: "summary"}, %{role: "user", content: p_gap}], [], _}
+    payload_gap = Jason.decode!(p_gap)
+
+    assert [
+             %{
+               "kind" => "truncated_page",
+               "channel" => "CPUBLIC",
+               "thread" => "1795143744.190339",
+               "missing_cursor" => "p2"
+             }
+           ] = payload_gap["incomplete_sources"]
+
+    # Contiguous history (p1+p2) + contiguous replies (p1+p2+p3) clears incomplete_sources completely
+    _ =
+      publish(
+        Map.put(args(), "source_refs", [
+          "src:a-1",
+          "src:a-4",
+          "src:a-5",
+          "src:a-7",
+          "src:a-8",
+          "src:a-9"
+        ]),
+        ctx
+      )
+
+    assert_received {:review, [%{role: "summary"}, %{role: "user", content: p_done}], [], _}
+    payload_done = Jason.decode!(p_done)
+    refute Map.has_key?(payload_done, "incomplete_sources")
+
+    # Pointer-only recent_meetings result alone cannot pass require_original_content
+    assert_raise RuntimeError, ~r/personal_review_no_supported_action/, fn ->
+      publish(Map.put(args(), "source_refs", ["src:a-1", "src:a-10"]), ctx)
+    end
+  end
+
   defp seed_more(pid, ctx, events) do
     :sys.replace_state(
       pid,
@@ -507,7 +812,7 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
       "source_refs" => ["src:a-1", "src:a-2"]
     }
 
-  defp source_events(message_id, id, name, content, ifc \\ nil) do
+  defp source_events(message_id, id, name, content, ifc \\ nil, input \\ nil) do
     [
       %{
         "type" => "async_tool_call_started",
@@ -521,6 +826,9 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
         "result" =>
           %{"name" => name, "content" => content, "error" => false}
           |> then(fn result -> if is_nil(ifc), do: result, else: Map.put(result, "ifc", ifc) end)
+          |> then(fn result ->
+            if is_nil(input), do: result, else: Map.put(result, "input", input)
+          end)
       },
       %{
         "type" => "delivery",

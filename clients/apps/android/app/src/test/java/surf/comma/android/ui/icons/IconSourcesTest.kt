@@ -84,6 +84,16 @@ class IconSourcesTest {
         }
     }
 
+    /** Every provider mark the app ships is the one a plugin or app of that brand shows, as on iOS. */
+    @Test
+    fun everyShippedProviderMarkIsShownForItsBrand() {
+        val shipped = File(repoRoot(), "app/src/main/res/drawable-xxxhdpi").listFiles()!!
+            .map { it.nameWithoutExtension }.filter { it.startsWith("provider_") }
+        assertTrue(shipped.isNotEmpty())
+        shipped.forEach { assertTrue(it, surf.comma.android.routines.ProviderMarks.hasArtwork(it.removePrefix("provider_"))) }
+        assertEquals(shipped.toSet(), IconSources.brandMarks.map { it.resource }.filter { it.startsWith("provider_") }.toSet())
+    }
+
     /** Placeholders exist, are not labelled as licensed glyphs, and are not also registered as licensed. */
     @Test
     fun placeholdersAwaitingReplacementAreListedSeparately() {

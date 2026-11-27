@@ -34,51 +34,84 @@ export function animateSuggestionAcceptance(
 
 const SETTLE_FRAME_LIMIT = 30;
 
-/* The wave, in em. A heavy, enlarged, lifted, blue crest travels once from
-   left to right. Before and behind the crest, the text is at rest. The line reflows:
-   each glyph sits right after the glyphs to its left, at their current
-   widths.
+/* Spring wave modeled after iOS Messages mention acceptance: each glyph scales
+   from near its baseline (no vertical lift, no discrete font-weight snapping), pops quickly to ~1.22x, overshoots gently to ~0.95x,
+   and settles cleanly back to 1.0x. A luminous brand-blue highlight trails the
+   scale peak by ~100ms, cresting as the glyph lands back through rest size.
+   Neighbors reflow continuously with the scale so inter-glyph spacing stays
+   exact throughout the bounce.
 
-   The crest moves at a constant speed, so every glyph goes through the same
-   weight, size, and color profile, delayed by its distance from the start of
-   the text. The profile is sampled once into keyframes that all glyphs share.
-   The reflow is computed once into one shift animation per glyph. Each frame,
-   the browser only interpolates keyframes: no style rules, custom
-   properties, or script run per frame. */
-const CREST_REACH = 4; // crest half-width: about eight glyphs move together
-const PROFILE = 2 * CREST_REACH; // crest travel while one glyph moves
-const GROW = 0.18; // size gain on the crest
-const LIFT = 0.3; // em the crest raises a glyph above its baseline
-const HEAVY = 300; // weight gain on the crest
-// A new weight is a new font instance, and for a fallback font (CJK) also a
-// new font lookup. Steps of 50 keep the font cache warm. They are too small
-// to see.
-const WEIGHT_STEP = 50;
-const SAMPLES = 26; // profile keyframes, about one per 0.5em
+   Every glyph shares one sampled profile (delayed by its visual distance in
+   em), and each glyph gets one simplified horizontal reflow animation. Each
+   frame, the browser only interpolates keyframes: no script runs per frame. */
+const GROW = 0.22; // peak scale gain on the spring crest (1.22x)
+const SPRING_CYCLES = 2.5; // half-cycles over the glyph envelope: pop -> squash -> settle
+const SPRING_DAMPING = 2.3; // exponential decay tuned for ~0.95x undershoot
+const GLYPH_DURATION = 540; // ms for one glyph's spring + color envelope
+const STAGGER_PER_EM = 42; // ms per em of left-to-right travel on short text
+const MAX_STAGGER = 260; // cap total stagger so longer lines stay crisp
+const SAMPLES = 36; // ~15ms per sample (60fps density) for smooth spring keyframes
+const REFLOW_STEP_MS = 10; // dense reflow sampling before RDP simplification
 const SHIFT_TOLERANCE = 0.05; // px a reflow keyframe may skip
-// The crest's front edge reaches the first glyph 25ms after acceptance, so
-// the glyph visibly moves by 50ms. The last glyph comes to rest 750ms after
-// acceptance. Longer lines travel faster.
-const START_DELAY = 25;
-const DURATION = 725;
+const START_DELAY = 25; // exceeds one 60Hz frame so the wave starts at t=0 on its first painted frame
 
-// The crest's blue: the agent chat's thinking shimmer.
-const PEAK = "--color-utility-brand-400";
+// --color-bg-brand-solid is the semantic brand accent that stays legible on
+// both light (#205bff) and dark (#3b7cff) surfaces; --color-brand-200 adds a
+// subtle highlight glint at the crest.
+const BRAND_TOKEN = "--color-bg-brand-solid";
+const HIGHLIGHT_TOKEN = "--color-brand-200";
 
-const bell = (z: number) =>
-  0.5 + 0.5 * Math.cos(Math.PI * Math.max(-1, Math.min(1, z)));
+function rawSpring(u: number): number {
+  if (u <= 0 || u >= 1) return 0;
+  return (
+    Math.sin(SPRING_CYCLES * Math.PI * u) * Math.exp(-SPRING_DAMPING * u) * (1 - u)
+  );
+}
 
-/** The wave at a glyph `ahead` em to the right of the crest. */
-function waveAt(ahead: number) {
-  const k = bell(ahead / CREST_REACH);
-  const gain = k * HEAVY;
+const SPRING_PEAK = (() => {
+  let max = 0;
+  for (let i = 1; i < 400; i++) {
+    const value = rawSpring(i / 400);
+    if (value > max) max = value;
+  }
+  return max || 1;
+})();
+
+const COLOR_START = 0.04;
+const COLOR_END = 0.92;
+const COLOR_ALPHA = 1.55;
+const COLOR_BETA = 2.95;
+const COLOR_PEAK = (() => {
+  const mode = COLOR_ALPHA / (COLOR_ALPHA + COLOR_BETA);
+  return Math.pow(mode, COLOR_ALPHA) * Math.pow(1 - mode, COLOR_BETA);
+})();
+
+/** Phase-lagged luminous blue envelope: peaks at u≈0.34 (~105ms after scale). */
+function colorEnvelope(u: number): number {
+  if (u <= COLOR_START || u >= COLOR_END) return 0;
+  const x = (u - COLOR_START) / (COLOR_END - COLOR_START);
+  return (Math.pow(x, COLOR_ALPHA) * Math.pow(1 - x, COLOR_BETA)) / COLOR_PEAK;
+}
+
+/** One glyph's scale and blue intensity at normalized local progress `u` in [0, 1]. */
+function profileAt(u: number): { scale: number; blue: number } {
+  const clamped = Math.max(0, Math.min(1, u));
   return {
-    blue: k,
-    gain,
-    lift: k * LIFT,
-    step: Math.round(gain / WEIGHT_STEP) * WEIGHT_STEP,
-    scale: 1 + k * GROW,
+    scale: 1 + (GROW * rawSpring(clamped)) / SPRING_PEAK,
+    blue: colorEnvelope(clamped),
   };
+}
+
+function colorAt(blue: number, ink: string, brand: string, highlight: string): string {
+  if (blue <= 0.002 || !brand) return ink;
+  const brandMix = Math.min(1, blue * 1.15);
+  const glintRaw = Math.max(0, (blue - 0.45) / 0.55);
+  const glint = glintRaw * glintRaw * 0.45;
+  const crest =
+    glint > 0.005 && highlight
+      ? `color-mix(in oklab, ${highlight} ${(glint * 100).toFixed(1)}%, ${brand})`
+      : brand;
+  return `color-mix(in oklab, ${crest} ${(brandMix * 100).toFixed(1)}%, ${ink})`;
 }
 
 /** The samples to keep so that straight lines between them stay within
@@ -111,11 +144,6 @@ function keyframesWithin(
   }
   return [...keep].toSorted((a, b) => a - b);
 }
-
-// Glyphs whose advance does not change with weight: CJK ideographs, kana,
-// Hangul, CJK punctuation, full-width forms, and emoji.
-const FIXED_ADVANCE =
-  /^(?:[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bopomofo}\u3000-\u303f\uff00-\uffef]|\p{Extended_Pictographic}|\p{Emoji_Presentation})/u;
 
 // Letters of these scripts join or form conjuncts across graphemes. A copy of
 // each grapheme would draw them apart, so their text uses the editor shimmer.
@@ -210,18 +238,13 @@ function playSuggestionAcceptance(
         height: rect.height,
       };
     });
-    // Positions are em from the left edge of the text, so the crest travels by
-    // visual distance: wide emoji and narrow letters share one wave size and
-    // speed, and bidi text sweeps left to right.
-    // Read the editor's computed style before the copy changes the page, so
-    // the reads do not force another style pass.
+    // Positions are em from the left edge of the text, so the wave travels by
+    // visual distance: wide emoji and narrow letters share one pace, and bidi
+    // text sweeps left to right.
     const em = parseFloat(style.fontSize) || 16;
     const ink = style.color;
-    const peak = style.getPropertyValue(PEAK).trim();
-    const rest = parseFloat(style.fontWeight) || 400;
-    const { fontStyle, fontSize, fontFamily } = style;
-    const canvasFont = (weight: number) =>
-      `${fontStyle} ${weight} ${fontSize} ${fontFamily}`;
+    const brand = style.getPropertyValue(BRAND_TOKEN).trim();
+    const highlight = style.getPropertyValue(HIGHLIGHT_TOKEN).trim();
     const start = Math.min(...glyphs.map((glyph) => glyph.left + bounds.left));
     overlay = doc.createElement("div");
     overlay.className = "comma-suggestion-acceptance";
@@ -250,105 +273,60 @@ function playSuggestionAcceptance(
     host.append(overlay);
     editor.dataset.suggestionAccepting = "true";
 
-    // Font fallback can switch faces at a weight boundary. Measure every
-    // weight used by the wave; a linear estimate only works for some fonts.
     const widths = pieces.map(({ glyph }) => glyph.getBoundingClientRect().width);
-    const changes = glyphs.map(() => Array<number>(HEAVY / WEIGHT_STEP + 1).fill(0));
-    const context = doc.createElement("canvas").getContext("2d");
-    if (context) {
-      for (let step = 0; step <= HEAVY / WEIGHT_STEP; step++) {
-        context.font = canvasFont(rest + step * WEIGHT_STEP);
-        glyphs.forEach((piece, index) => {
-          if (!FIXED_ADVANCE.test(piece.text)) {
-            changes[index]![step] = context.measureText(piece.text).width;
-          }
-        });
-      }
-      changes.forEach((values) => {
-        const base = values[0]!;
-        values.forEach((value, index) => {
-          values[index] = value - base;
-        });
-      });
-    }
 
-    // Glyphs at rest keep the editor's weight, size, color, and position, so
-    // the first and last frames match the editable text.
+    // Glyphs at rest keep the editor's exact size, weight, color, and position,
+    // so the first and last frames match the editable text.
     const profile = Array.from({ length: SAMPLES }, (_, index) =>
-      waveAt(CREST_REACH - (index / (SAMPLES - 1)) * PROFILE)
+      profileAt(index / (SAMPLES - 1))
     );
     const offset = (index: number) => index / (SAMPLES - 1);
-    const weight = profile.map(({ step }, index) => ({
+    const shape = profile.map(({ blue, scale }, index) => ({
       offset: offset(index),
-      fontWeight: String(rest + step),
-      easing: "step-end",
+      color: colorAt(blue, ink, brand, highlight),
+      scale: scale.toFixed(4),
     }));
-    // The crest also raises each glyph and sets it down again, so the words
-    // rise and fall as it passes. The lift is a transform: it moves no
-    // neighbor.
-    const shape = profile.map(({ blue, lift, scale }, index) => ({
-      offset: offset(index),
-      color:
-        blue > 0 && peak
-          ? `color-mix(in oklab, ${peak} ${(blue * 100).toFixed(2)}%, ${ink})`
-          : ink,
-      scale: String(scale),
-      transform: `translateY(${(-lift).toFixed(3)}em)`,
-    }));
-    // The crest starts with its front edge on the first glyph, so the first
-    // frame is at rest and the next one already moves.
+
     const first = Math.min(...pieces.map(({ at }) => at));
     const spread = Math.max(...pieces.map(({ at }) => at)) - first;
-    const pace = DURATION / (spread + PROFILE); // ms per em of crest travel
-    const duration = PROFILE * pace;
+    const stagger = Math.min(spread * STAGGER_PER_EM, MAX_STAGGER);
+    const pace = spread > 0 ? stagger / spread : 0;
+    const duration = GLYPH_DURATION;
     const delays = pieces.map(({ at }) => (at - first) * pace);
-    const total = DURATION;
-    // Size interpolates between profile knots; weight holds until the next
-    // knot. Reflow must use those same boundaries, including both sides of
-    // each weight jump, or a fallback font can overlap its neighbor.
-    const playedAt = (time: number, before: boolean) => {
-      const position = Math.max(0, Math.min(1, time / duration)) * (SAMPLES - 1);
-      const rounded = Math.round(position);
-      const onKnot = Math.abs(position - rounded) < 1e-7;
-      const index = Math.min(
-        SAMPLES - 2,
-        Math.max(
-          0,
-          onKnot ? rounded - (before && rounded > 0 ? 1 : 0) : Math.floor(position)
-        )
-      );
+    const total = stagger + duration;
+
+    // Linear interpolation between profile knots matches the Web Animations
+    // engine's scale interpolation so reflow keeps inter-glyph gaps constant.
+    const scaleAt = (localTime: number) => {
+      if (localTime <= 0 || localTime >= duration) return 1;
+      const position = (localTime / duration) * (SAMPLES - 1);
+      const index = Math.min(SAMPLES - 2, Math.floor(position));
       const fraction = position - index;
-      const [from, to] = [profile[index]!, profile[index + 1]!];
-      return {
-        scale: from.scale + (to.scale - from.scale) * fraction,
-        step: (position >= SAMPLES - 1 ? to.step : from.step) / WEIGHT_STEP,
-      };
+      const from = profile[index]!.scale;
+      const to = profile[index + 1]!.scale;
+      return from + (to - from) * fraction;
     };
+
     const order = pieces
       .map((_, index) => index)
       .toSorted((a, b) => glyphs[a]!.left - glyphs[b]!.left);
-    const knots = new Set([0, total]);
-    delays.forEach((delay) => {
-      profile.forEach((_, index) => knots.add(delay + offset(index) * duration));
-    });
-    // Duplicate offsets preserve discontinuities without per-frame JS or
-    // layout. Between knots all advances are linear in the animated scale.
-    const times = [...knots].toSorted((a, b) => a - b).flatMap((time) => [time, time]);
+    const steps = Math.max(2, Math.ceil(total / REFLOW_STEP_MS));
+    const times = Array.from(
+      { length: steps + 1 },
+      (_, index) => (index / steps) * total
+    );
     const shifts = pieces.map(() => [] as number[]);
-    times.forEach((time, sample) => {
+    times.forEach((time) => {
       let push = 0;
       order.forEach((index) => {
-        const { scale, step } = playedAt(time - delays[index]!, sample % 2 === 0);
-        const width = widths[index]! + changes[index]![step]!;
-        const own = (width * (scale - 1)) / 2;
-        shifts[index]!.push(push + own);
-        push += width * scale - widths[index]!;
+        const scale = scaleAt(time - delays[index]!);
+        const width = widths[index]!;
+        const gain = width * (scale - 1);
+        shifts[index]!.push(push + gain / 2);
+        push += gain;
       });
     });
 
-    // All glyphs share the parsed weight and shape keyframes; each copy only
-    // changes its target and delay.
-    const weightEffect = new KeyframeEffect(null, weight, { duration, fill: "both" });
     const shapeEffect = new KeyframeEffect(null, shape, { duration, fill: "both" });
     const play = (effect: KeyframeEffect) => {
       const animation = new Animation(effect, doc.timeline);
@@ -357,12 +335,11 @@ function playSuggestionAcceptance(
       return animation;
     };
     pieces.forEach(({ glyph }, index) => {
-      for (const shared of [weightEffect, shapeEffect]) {
-        const effect = new KeyframeEffect(shared);
-        effect.target = glyph;
-        effect.updateTiming({ delay: delays[index]! });
-        play(effect);
-      }
+      const effect = new KeyframeEffect(shapeEffect);
+      effect.target = glyph;
+      effect.updateTiming({ delay: delays[index]! });
+      play(effect);
+
       const values = shifts[index]!;
       const shift = play(
         new KeyframeEffect(

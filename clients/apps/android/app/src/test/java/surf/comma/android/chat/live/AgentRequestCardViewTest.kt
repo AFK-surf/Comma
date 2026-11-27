@@ -16,6 +16,7 @@ import surf.comma.android.conversation.AgentRequest
 import surf.comma.android.conversation.AgentRequestInput
 import surf.comma.android.conversation.AgentRequestOutcome
 import surf.comma.android.conversation.AgentRequestStatus
+import surf.comma.android.routines.ProviderMarks
 import java.time.Duration
 
 // Invented test data only.
@@ -44,14 +45,23 @@ class AgentRequestCardViewTest {
             done(takes)
         }
 
-        val shared = mutableListOf<String>()
+        val installed = mutableListOf<String>()
+        /** The install's answer, held until the test gives it. */
+        var installDone: ((Boolean) -> Unit)? = null
+
+        override fun installPlugin(request: AgentRequest, done: (Boolean) -> Unit) {
+            installed += request.plugin!!.id
+            installDone = done
+        }
+
+        val shared = mutableListOf<Pair<String, Boolean>>()
         var locationAnswer = AgentLocationAnswer.TAKEN
         var answering = false
 
         override fun answeringLocation(requestId: String) = answering
 
-        override fun shareLocation(requestId: String, done: (AgentLocationAnswer) -> Unit) {
-            shared += requestId
+        override fun shareLocation(requestId: String, always: Boolean, done: (AgentLocationAnswer) -> Unit) {
+            shared += requestId to always
             done(locationAnswer)
         }
     }
@@ -73,6 +83,25 @@ class AgentRequestCardViewTest {
         } finally {
             activity.pause().stop().destroy()
         }
+    }
+
+    @Test fun `a secret's fields read from the core, each shown or masked, required or optional`() {
+        val input = AgentRequestInput.parse(org.json.JSONObject("""{"kind":"secret","fields":[
+            {"name":"app_key","label":"App Key","secret":false,"optional":false},
+            {"name":"token","label":"Token","secret":true,"optional":true},{"label":"no name"}]}"""))!!
+        assertEquals(listOf(
+            AgentRequestInput.Field("app_key", "App Key", secret = false, optional = false),
+            AgentRequestInput.Field("token", "Token", secret = true, optional = true),
+        ), input.fields)
+        assertEquals(input, AgentRequestInput.parse(input.json()))
+    }
+
+    @Test fun `a secret named for a service with a logo shows that logo, not the plain mark`() {
+        fun secret(alias: String) = request().copy(provider = "secret", alias = alias)
+        assertEquals("didi", markKey(secret("didi")))
+        assertTrue(ProviderMarks.hasArtwork(markKey(secret("didi"))))
+        assertFalse(ProviderMarks.hasArtwork(markKey(secret("lumen-erp"))))
+        assertEquals("github", markKey(request()))
     }
 
     @Test fun `authorizing opens the provider's page, and only then does the card say it waits for the browser`() = withCard { card, host ->
@@ -110,11 +139,13 @@ class AgentRequestCardViewTest {
         val asked = AgentRequest("cap-2", AgentRequestStatus.PENDING, null, now + 90_000, createdAt = now, sourceMessageId = "msg-1",
             provider = AgentRequest.LOCATION_PROVIDER, reason = "Find cafes near you.", authorizationUrl = null, account = null)
         card.show(asked)
-        assertEquals("Share location", card.authorize.text)
+        assertEquals("Always share", card.authorize.text)
         assertTrue(card.authorize.isEnabled)
+        assertEquals(android.view.View.VISIBLE, card.shareOnce.visibility)
+        card.shareOnce.performClick()
         host!!.locationAnswer = AgentLocationAnswer.DENIED
         card.authorize.performClick()
-        assertEquals(listOf("cap-2"), host.shared)
+        assertEquals(listOf("cap-2" to false, "cap-2" to true), host.shared)
         assertEquals("Location is off for Comma. Turn it on in your settings, then try again.", card.noteShown)
         card.show(asked.copy(status = AgentRequestStatus.COMPLETED, outcome = AgentRequestOutcome.SHARED))
         assertEquals("Location shared", card.receiptLine)
@@ -133,6 +164,47 @@ class AgentRequestCardViewTest {
         card.show(asked)
         assertEquals(null, card.noteShown)
         assertTrue(card.authorize.isEnabled)
+    }
+
+    @Test fun `a Router's plugin install reads from the core and comes back the same from the row`() {
+        val read = AgentRequest.parse(org.json.JSONObject("""{"id":"cap-9","type":"plugin_install","status":"pending",
+            "expiresAt":2000000,"sourceMessageId":"msg-1","plugin":{"id":"google-colab","name":"Google Colab",
+            "reason":"Rendering needs a GPU.","brand":"google-colab","workspace":"wsp_test"}}"""))!!
+        assertEquals(surf.comma.android.conversation.AgentPluginInstall("google-colab", "Google Colab", "google-colab", "wsp_test"), read.plugin)
+        assertEquals("Rendering needs a GPU.", read.reason)
+        assertNull(read.authorizationUrl)
+        assertEquals("google-colab", markKey(read))
+        assertTrue(ProviderMarks.hasArtwork(markKey(read)))
+        assertEquals(read, decodeAgentRequest(read.json().toString()))
+        assertNull("a request naming no Workspace has nowhere to install", AgentRequest.parse(org.json.JSONObject(
+            """{"id":"cap-10","type":"plugin_install","status":"pending","plugin":{"id":"google-colab","name":"Google Colab","reason":""}}""")))
+        val installed = AgentRequest.parse(org.json.JSONObject("""{"id":"cap-9","type":"plugin_install","status":"completed",
+            "outcome":"installed","plugin":{"id":"google-colab","name":"Google Colab","reason":"","workspace":"wsp_test"}}"""))!!
+        assertEquals(AgentRequestOutcome.INSTALLED, installed.outcome)
+        assertEquals(AgentRequestShown.CONNECTED, agentRequestShown(installed, now))
+    }
+
+    @Test fun `adding a plugin installs it through the host, says when it could not, and ends in a receipt`() = withCard { card, host ->
+        val asked = AgentRequest("cap-9", AgentRequestStatus.PENDING, null, now + 90_000, createdAt = now, sourceMessageId = "msg-1",
+            provider = "google-colab", reason = "Rendering needs a GPU.", authorizationUrl = null, account = null,
+            plugin = surf.comma.android.conversation.AgentPluginInstall("google-colab", "Google Colab", "google-colab", "wsp_test"))
+        card.show(asked)
+        assertEquals("Add to Comma", card.authorize.text)
+        assertTrue(card.authorize.isEnabled)
+        card.authorize.performClick()
+        assertEquals(listOf("google-colab"), host!!.installed)
+        assertEquals("Adding…", card.noteShown)
+        assertFalse("one install at a time", card.authorize.isEnabled)
+        card.authorize.performClick()
+        assertEquals(1, host.installed.size)
+        host.installDone!!(false)
+        assertEquals("Could not add it. Try again.", card.noteShown)
+        assertTrue(card.authorize.isEnabled)
+        assertEquals(emptyList<String>(), host.authorized)
+        card.show(asked.copy(status = AgentRequestStatus.COMPLETED, outcome = AgentRequestOutcome.INSTALLED))
+        assertEquals("Added Google Colab", card.receiptLine)
+        card.show(asked.copy(status = AgentRequestStatus.COMPLETED, outcome = AgentRequestOutcome.DECLINED))
+        assertEquals("You did not add Google Colab", card.receiptLine)
     }
 
     @Test fun `the card closes into a receipt when its deadline passes`() = withCard { card, _ ->

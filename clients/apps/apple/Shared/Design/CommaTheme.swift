@@ -32,6 +32,8 @@ enum CommaTheme {
     static let bgQuaternary = dynamic(light: 0xF1F1F1, dark: 0x343538)
     static let bgDisabled = dynamic(light: 0xF5F5F5, dark: 0x27282B)
     static let bgWindow = dynamic(light: 0xF5F5F5, dark: 0x0F0F10)
+    /// A flat device's body round its screen (styles.css `--color-bg-overlay`; dark: `--color-bg-quaternary`).
+    static let deviceBody = dynamic(light: 0x111213, dark: 0x343538)
     static let cardPrimary = dynamic(light: 0xFFFFFF, dark: 0x18191B)
     /// The colour the system's glass shows over the page, as the tab bar draws its circles: gray-50 in light,
     /// gray-700 in dark, within a step of the circle on screen in each.
@@ -86,7 +88,25 @@ enum CommaTheme {
     /// The design system's filled play glyph, inside the existing media control hit area.
     static let mediaPlayIcon: CGFloat = 20
 
-    private static func dynamic(light: UInt32, dark: UInt32) -> Color {
+    /// Fan-Stack Card Deck image group tokens, 1:1 with `ChatPanelImageGroup` (`chat-panel-image-group.css`).
+    static let imageGroupStackThreshold = 3
+    static let imageGroupVisibleSideDepth = 2
+    static let imageGroupCardWidth: CGFloat = 165
+    static let imageGroupCardRadius: CGFloat = 12
+    static let imageGroupCardGap: CGFloat = 8
+    static let imageGroupSingleMaxWidth: CGFloat = 320
+    static let imageGroupSingleMaxHeight: CGFloat = 320
+    static let imageGroupStackRotationStep: Double = 3.5
+    static let imageGroupStackShiftStep: CGFloat = 3
+    static let imageGroupStackScaleStep: CGFloat = 0.03
+    static let imageGroupFanAllowanceHorizontal: CGFloat = 26
+    static let imageGroupFanAllowanceVertical: CGFloat = 8
+    static let imageGroupFlightDuration: Double = 0.320
+    static let imageGroupFlipDuration: Double = 0.240
+    static let imageGroupExpandStagger: Double = 0.012
+    static let imageGroupCollapseStagger: Double = 0.008
+
+    static func dynamic(light: UInt32, dark: UInt32) -> Color {
         #if os(iOS)
         Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
         #else
@@ -97,7 +117,7 @@ enum CommaTheme {
 
 extension AnyTransition {
     /// Grows from `scale` (and shrinks back to it) over the whole range, not visible at half its size or less: the
-    /// opacity follows the scale frame by frame rather than a curve of its own (AGENTS.md, Client UI).
+    /// opacity follows the scale frame by frame rather than a curve of its own (clients/AGENTS.md, Client UI).
     static func scaleUnseenBelowHalf(_ scale: CGFloat) -> AnyTransition {
         .modifier(active: UnseenBelowHalf(scale: scale), identity: UnseenBelowHalf(scale: 1))
     }
@@ -190,6 +210,40 @@ struct CommaMark: View {
     }
 }
 
+/// Brand mark sized for Dynamic Island compact and minimal slots (including narrow macOS
+/// menu-bar mirroring capsules): caps at `maxSize` and scales down to fit tighter widths
+/// instead of overflowing and clipping along the inner edge.
+struct DynamicIslandCompactMark: View {
+    var maxSize: CGFloat = 13
+
+    var body: some View {
+        Image("CommaMark")
+            .renderingMode(.template)
+            .resizable()
+            .interpolation(.high)
+            .frame(idealWidth: maxSize, maxWidth: maxSize, idealHeight: maxSize, maxHeight: maxSize)
+            .aspectRatio(1, contentMode: .fit)
+            .accessibilityHidden(true)
+    }
+}
+
+/// SF Symbol sized for Dynamic Island compact and minimal slots so narrow containers scale
+/// the glyph proportionally instead of clipping its leading or trailing edge.
+struct DynamicIslandCompactSymbol: View {
+    let systemName: String
+    var maxSize: CGFloat = 12
+    var weight: Font.Weight = .medium
+
+    var body: some View {
+        Image(systemName: systemName)
+            .resizable()
+            .scaledToFit()
+            .font(.system(size: maxSize, weight: weight))
+            .frame(idealWidth: maxSize, maxWidth: maxSize, idealHeight: maxSize, maxHeight: maxSize)
+            .aspectRatio(1, contentMode: .fit)
+    }
+}
+
 /// Button press feedback shared by the shell: shrink to `scale` the moment the finger lands, and settle back
 /// on release without overshoot (a tap carries no momentum to bounce with). Glass buttons use
 /// `GlassButtonStyle`, which leaves the response to the glass on iOS 26.
@@ -203,11 +257,11 @@ struct TactileButtonStyle: ButtonStyle {
     }
 }
 
-/// Primary and secondary-gray buttons from the desktop design system (size lg), in the capsule of the app's
+/// Primary, secondary-gray and tertiary-gray (no border) buttons from the desktop design system (size lg), in the capsule of the app's
 /// fields. A press answers the moment the finger lands and settles back without a bounce. `compact` hugs its
 /// label, for an action under content rather than across a form.
 struct CommaButtonStyle: ButtonStyle {
-    enum Hierarchy { case primary, secondary }
+    enum Hierarchy { case primary, secondary, tertiary }
     var hierarchy: Hierarchy = .primary
     var compact = false
     @Environment(\.isEnabled) private var isEnabled
@@ -231,13 +285,14 @@ struct CommaButtonStyle: ButtonStyle {
     private var foreground: Color {
         switch hierarchy {
         case .primary: isEnabled ? .white : CommaTheme.textPlaceholder
-        case .secondary: isEnabled ? CommaTheme.textSecondary : CommaTheme.textPlaceholder
+        case .secondary, .tertiary: isEnabled ? CommaTheme.textSecondary : CommaTheme.textPlaceholder
         }
     }
     private var background: Color {
         switch hierarchy {
         case .primary: isEnabled ? CommaTheme.brandSolid : CommaTheme.bgDisabled
         case .secondary: CommaTheme.bgPrimary
+        case .tertiary: .clear
         }
     }
 }

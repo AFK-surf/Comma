@@ -6,6 +6,8 @@
 // again. Taken to send, the files that went up go with the message (chat.ts's outbox).
 //
 // A file is given whole (its bytes), or by a ref the app holds it under (`host.readLocalFile`, read a part at a time).
+// One on the computer the station runs on is named by its path (`addLocalPaths`): it does not go up, and the message
+// lists its path.
 // Files a dialog, a drop or AirDrop is still getting for what is written come through an intake (`claim`), as they
 // come to any Task's draft; what it could not get stays as a failed file. A send waits until nothing is still being
 // got or going up (`settled`).
@@ -34,7 +36,10 @@ export const MAX_FILE = 1024 * 1024 * 1024;
 /** The most files one message carries. */
 export const MAX_FILES = 8;
 
-/** A file being written with a message: going up, up (`done`, as the station keeps it), or failed (`error`). */
+/**
+ * A file being written with a message: going up, up (`done`, as the station keeps it), or failed (`error`). One named
+ * by its path on this computer (`local`) is done at once: `done.path` is that path.
+ */
 export type ComposerFile = {
   id: string;
   name: string;
@@ -42,7 +47,11 @@ export type ComposerFile = {
   image: boolean;
   done: StationAttachment | null;
   error: string | null;
+  local?: true | undefined;
 };
+
+/** A file a message names by its path on this computer. */
+export type ComposerLocalPath = { name: string; path: string; size: number };
 
 /** What is written in a chat (its composer's), or the files given for a card's answer in its own words (`question`, the card's seq). */
 export type DraftAt = ChatAt & { question?: number };
@@ -87,6 +96,7 @@ const keptSchema = lazySchema(() =>
           size: z.number(),
           image: z.boolean(),
           done: z.object({ name: z.string(), path: z.string(), size: z.number() }),
+          local: z.literal(true).optional(),
         })
       )
       .max(MAX_FILES),
@@ -234,6 +244,35 @@ export class StationComposer {
     );
   }
 
+  /**
+   * Adds files named by their path on this computer: each is done at once and nothing goes up; the message lists their
+   * paths. A path already written with the message is not added again. Returns the ids added.
+   */
+  addLocalPaths(at: DraftAt, files: readonly ComposerLocalPath[]): string[] {
+    const draft = this.#draft(at);
+    const named = new Set(draft.files.flatMap((f) => (f.local ? [f.done!.path] : [])));
+    const additions: ComposerFile[] = [];
+    for (const f of files) {
+      if (named.has(f.path)) continue;
+      named.add(f.path);
+      additions.push({
+        id: this.#stations.onceKey(),
+        name: f.name,
+        size: f.size,
+        image: false,
+        done: { name: f.name, path: f.path, size: f.size },
+        error: null,
+        local: true,
+      });
+    }
+    if (draft.files.length + additions.length > MAX_FILES)
+      throw CoreError.invalid(`A message carries at most ${MAX_FILES} files.`);
+    if (additions.length === 0) return [];
+    draft.files = [...draft.files, ...additions];
+    this.#changed(at, draft);
+    return additions.map((f) => f.id);
+  }
+
   /** Adds files read first from where they are kept (`read`, once); each goes up once read. */
   addFetched(
     at: DraftAt,
@@ -295,11 +334,19 @@ export class StationComposer {
    * What is written, taken to send: its words and the files that went up; the chat's draft is empty after. Fails while
    * a file is still going up (a send waits for it, `settled`) or failed (it is retried or removed).
    */
-  take(at: DraftAt): { text: string; attachments: StationAttachment[] } {
+  take(at: DraftAt): {
+    text: string;
+    attachments: StationAttachment[];
+    localFiles: ComposerLocalPath[];
+  } {
     const draft = this.#draft(at);
     if (draft.files.some((f) => !f.done))
       throw new CoreError("upload", "A file has not gone up to the machine yet.");
-    const taken = { text: draft.text, attachments: draft.files.map((f) => f.done!) };
+    const taken = {
+      text: draft.text,
+      attachments: draft.files.flatMap((f) => (f.local ? [] : [f.done!])),
+      localFiles: draft.files.flatMap((f) => (f.local ? [{ ...f.done! }] : [])),
+    };
     draft.text = "";
     draft.files = [];
     draft.sources.clear();
@@ -309,18 +356,38 @@ export class StationComposer {
   }
 
   /** A message that could not be sent comes back to what is written, unless something was written since. */
-  restore(at: DraftAt, text: string, attachments: StationAttachment[]): void {
+  restore(
+    at: DraftAt,
+    text: string,
+    attachments: StationAttachment[],
+    localFiles: readonly ComposerLocalPath[] = []
+  ): void {
     const draft = this.#draft(at);
     if (draft.text !== "" || draft.files.length > 0) return;
     draft.text = text;
-    draft.files = attachments.map((done, i) => ({
-      id: `${draft.epoch}-${i}`,
-      name: done.name,
-      size: done.size,
-      image: IMAGE.test(done.name),
-      done,
-      error: null,
-    }));
+    draft.files = [
+      ...localFiles.map(
+        (done, i): ComposerFile => ({
+          id: `${draft.epoch}-local-${i}`,
+          name: done.name,
+          size: done.size,
+          image: false,
+          done: { ...done },
+          error: null,
+          local: true,
+        })
+      ),
+      ...attachments.map(
+        (done, i): ComposerFile => ({
+          id: `${draft.epoch}-${i}`,
+          name: done.name,
+          size: done.size,
+          image: IMAGE.test(done.name),
+          done,
+          error: null,
+        })
+      ),
+    ];
     this.#changed(at, draft);
   }
 
@@ -528,12 +595,13 @@ export class StationComposer {
         doc,
         {
           text: draft.text,
-          files: files.map(({ id, name, size, image, done }) => ({
+          files: files.map(({ id, name, size, image, done, local }) => ({
             id,
             name,
             size,
             image,
             done,
+            ...(local ? { local } : {}),
           })),
         },
         this.#ctx.now()

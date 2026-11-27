@@ -7,7 +7,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
 
   alias Salix.Bindings.GoogleCalendarError
   alias Salix.Control.ComposioSettings
-  alias SalixCalendar.{OccurrenceQualification, Recurrence}
+  alias SalixCalendar.{OccurrenceQualification, Recurrence, RRule}
   alias SalixStore.{Composio, Crypto, JSON}
 
   @max_page_size 200
@@ -27,7 +27,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   @google_calendar_api "https://www.googleapis.com/calendar/v3"
 
   @impl true
-  def adapter_contract_id, do: "google_calendar.events.v4"
+  def adapter_contract_id, do: "google_calendar.events.v5"
 
   @impl true
   def capabilities do
@@ -947,7 +947,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   defp normalize_master(event, event_id, default_time_zone, access_profile) do
     with {:ok, timing} <- timing(event, default_time_zone) do
       {rules, exclusions, state} =
-        case recurrence(event["recurrence"], timing.time_zone) do
+        case recurrence(event["recurrence"], timing) do
           {:ok, rules, exclusions} -> {rules, exclusions, "complete"}
           {:error, :unsupported_google_recurrence} -> {[], %{}, "unsupported_timing"}
         end
@@ -1177,87 +1177,27 @@ defmodule Salix.Bindings.GoogleCalendarSource do
       if(seconds > 0, do: "#{seconds}S", else: "")
   end
 
-  defp recurrence(nil, _time_zone), do: {:ok, [], %{}}
-  defp recurrence([], _time_zone), do: {:ok, [], %{}}
+  defp recurrence(nil, _timing), do: {:ok, [], %{}}
+  defp recurrence([], _timing), do: {:ok, [], %{}}
 
-  defp recurrence(lines, time_zone) when is_list(lines) do
+  # One RRULE with optional EXDATEs. `RRule` names the rules the calendar
+  # domain generates; anything else is stored without rules.
+  defp recurrence(lines, timing) when is_list(lines) do
     rrules = Enum.filter(lines, &String.starts_with?(&1, "RRULE:"))
     rdates = Enum.filter(lines, &String.starts_with?(&1, "RDATE"))
     exdates = Enum.filter(lines, &String.starts_with?(&1, "EXDATE"))
 
     with [rrule] <- rrules,
          [] <- rdates,
-         {:ok, rule} <- parse_rrule(rrule),
-         {:ok, exclusions} <- parse_exdates(exdates, time_zone) do
+         {:ok, rule} <- RRule.parse(rrule, timing.start_ms, timing.time_zone || "UTC"),
+         {:ok, exclusions} <- parse_exdates(exdates, timing.time_zone) do
       {:ok, [rule], exclusions}
     else
       _ -> {:error, :unsupported_google_recurrence}
     end
   end
 
-  defp recurrence(_value, _time_zone), do: {:error, :unsupported_google_recurrence}
-
-  defp parse_rrule("RRULE:" <> body) do
-    parts =
-      body
-      |> String.split(";", trim: true)
-      |> Map.new(fn part ->
-        case String.split(part, "=", parts: 2) do
-          [key, value] -> {key, value}
-          [key] -> {key, ""}
-        end
-      end)
-
-    allowed = ~w(FREQ INTERVAL BYDAY WKST)
-
-    with true <- Map.keys(parts) -- allowed == [],
-         frequency when frequency in ["DAILY", "WEEKLY"] <- parts["FREQ"],
-         {:ok, interval} <- positive_integer(parts["INTERVAL"] || "1"),
-         {:ok, first_day_of_week} <- parse_week_start(parts["WKST"], frequency),
-         {:ok, by_day} <- parse_by_day(parts["BYDAY"]) do
-      rule =
-        %{
-          "@type" => "RecurrenceRule",
-          "frequency" => String.downcase(frequency),
-          "interval" => interval
-        }
-        |> put_nonempty("byDay", by_day)
-        |> put_optional("firstDayOfWeek", first_day_of_week)
-
-      {:ok, rule}
-    else
-      _ -> {:error, :unsupported_google_recurrence}
-    end
-  end
-
-  defp parse_week_start(nil, _frequency), do: {:ok, nil}
-
-  defp parse_week_start(day, "WEEKLY")
-       when day in ~w(MO TU WE TH FR SA SU),
-       do: {:ok, String.downcase(day)}
-
-  defp parse_week_start(_day, _frequency),
-    do: {:error, :unsupported_google_recurrence}
-
-  defp parse_by_day(nil), do: {:ok, []}
-
-  defp parse_by_day(value) do
-    days = %{
-      "MO" => "mo",
-      "TU" => "tu",
-      "WE" => "we",
-      "TH" => "th",
-      "FR" => "fr",
-      "SA" => "sa",
-      "SU" => "su"
-    }
-
-    tokens = String.split(value, ",", trim: true)
-
-    if tokens != [] and Enum.all?(tokens, &Map.has_key?(days, &1)),
-      do: {:ok, Enum.map(tokens, &%{"@type" => "NDay", "day" => days[&1]})},
-      else: {:error, :unsupported_google_recurrence}
-  end
+  defp recurrence(_value, _timing), do: {:error, :unsupported_google_recurrence}
 
   defp parse_exdates(lines, time_zone) do
     Enum.reduce_while(lines, {:ok, %{}}, fn line, {:ok, acc} ->
@@ -1568,13 +1508,6 @@ defmodule Salix.Bindings.GoogleCalendarSource do
     end
   end
 
-  defp positive_integer(value) do
-    case Integer.parse(value) do
-      {number, ""} when number > 0 -> {:ok, number}
-      _ -> {:error, :unsupported_google_recurrence}
-    end
-  end
-
   defp shift_if_present(datetime, value) do
     if nonblank?(value), do: DateTime.shift_zone(datetime, value), else: {:ok, datetime}
   end
@@ -1582,10 +1515,6 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   defp default_time_zone(source),
     do: get_in(source, ["sync_policy", "default_time_zone"]) |> present_or_nil() || "UTC"
 
-  defp put_nonempty(map, _key, []), do: map
-  defp put_nonempty(map, key, value), do: Map.put(map, key, value)
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
   defp present_or_nil(value), do: if(nonblank?(value), do: trim(value), else: nil)
   defp nonblank?(value), do: is_binary(value) and String.trim(value) != ""
   defp trim(value), do: String.trim(to_string(value || ""))

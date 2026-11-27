@@ -36,58 +36,180 @@ export function createQuestionStates() {
     if (lastServer?.server === server && lastServer.transcript === transcript)
       return lastServer.output;
     const states = new Map<string, ChatQuestionState>();
+    const independentQuestionIds = new Set<string>();
     for (const message of transcript) {
       const question = questionOf(message);
-      if (question) states.set(question.messageId, question.state);
+      if (question) {
+        states.set(question.messageId, question.state);
+        if (question.independent) independentQuestionIds.add(question.messageId);
+      }
     }
-    let output: ChatMessage[] | undefined;
-    if (states.size > 0) {
-      server.forEach((message, index) => {
+    for (const message of server) {
+      const question = questionOf(message);
+      if (question?.independent) independentQuestionIds.add(question.messageId);
+    }
+    const output = finalizeVisibleMessages(
+      server,
+      independentQuestionIds,
+      (message) => {
         const question = questionOf(message);
         const state = question && states.get(question.messageId);
-        if (!question || !state) return;
-        const next = withState(message, question, state, derived);
-        if (next !== message) (output ??= server.slice())[index] = next;
-      });
-    }
-    lastServer = { server, transcript, output: output ?? server };
+        if (!question || !state) return message;
+        return withState(message, question, state, derived);
+      }
+    );
+    lastServer = { server, transcript, output };
     return lastServer.output;
   }
 
   function inTranscript(messages: ChatMessage[]): ChatMessage[] {
     if (messages === lastInput) return lastOutput;
     lastInput = messages;
-    if (!messages.some(hasQuestion)) {
+    if (
+      !messages.some(hasQuestion) &&
+      !messages.some((message) => isSilentQuestionAnswerMessage(message))
+    ) {
       lastOutput = messages;
       return messages;
     }
 
-    let output: ChatMessage[] | undefined;
+    const explicitAnswers = new Map<string, ChatMessage>();
+    const directReplies = new Map<string, ChatMessage>();
+    const independentQuestionIds = new Set<string>();
+    for (const message of messages) {
+      const question = questionOf(message);
+      if (question?.independent) independentQuestionIds.add(question.messageId);
+      if (message.role !== "user") continue;
+      const answer = anyAnswerOf(message);
+      if (answer) {
+        explicitAnswers.set(answer.questionMessageId, message);
+      } else if (message.replyToMessageId) {
+        directReplies.set(message.replyToMessageId, message);
+      }
+    }
+
+    let updated: ChatMessage[] | undefined;
     let nearestPerson: ChatMessage | undefined;
     let laterQuestion = false;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index]!;
       const question = questionOf(message);
       if (question) {
-        const state = stateFor(question, nearestPerson, laterQuestion);
-        const next = withState(message, question, state, derived);
-        if (next !== message) {
-          output ??= messages.slice();
-          output[index] = next;
+        if (question.independent) {
+          // An externally bound independent card (such as a still.fail station
+          // card) is decided only by an explicit question-answer targeting its
+          // messageId, and stays transparent to the ordinary conversation scan
+          // so it neither marks earlier Router questions replaced nor clears
+          // nearestPerson for them.
+          const decider = explicitAnswers.get(question.messageId);
+          const state = stateFor(question, decider, false);
+          const next = withState(message, question, state, derived);
+          if (next !== message) {
+            updated ??= messages.slice();
+            updated[index] = next;
+          }
+        } else {
+          const decider =
+            explicitAnswers.get(question.messageId) ??
+            directReplies.get(question.messageId) ??
+            nearestPerson;
+          const state = stateFor(question, decider, laterQuestion);
+          const next = withState(message, question, state, derived);
+          if (next !== message) {
+            updated ??= messages.slice();
+            updated[index] = next;
+          }
+          laterQuestion = true;
+          nearestPerson = undefined;
         }
-        laterQuestion = true;
-        nearestPerson = undefined;
       } else if (message.role === "user") {
-        nearestPerson = message;
-        laterQuestion = false;
+        // An explicit question-answer or targeted reply addresses one specific
+        // message and must not close an unrelated card standing between them.
+        if (!anyAnswerOf(message) && !message.replyToMessageId) {
+          nearestPerson = message;
+          laterQuestion = false;
+        }
+      } else if (message.role === "assistant" && !isBackgroundStationMessage(message)) {
+        // An intervening non-station assistant message (such as a newer
+        // proactive alert) claims any later un-targeted free-text reply so it
+        // cannot jump backward and mark an earlier unrelated card as replied.
+        nearestPerson = undefined;
       }
     }
 
-    lastOutput = output ?? messages;
+    const withStates = updated ?? messages;
+    lastOutput = omitSilentQuestionAnswers(withStates, independentQuestionIds);
     return lastOutput;
   }
 
   return { inTranscript, inServerMessages };
+}
+
+/**
+ * Whether a user message only folds an independent or externally resolved
+ * question card (so its state is already shown in-place on the target card and
+ * rendering a standalone bubble or cross-thread reply line at the bottom of the
+ * chat would mislead the reader).
+ */
+export function isSilentQuestionAnswerMessage(
+  message: ChatMessage,
+  independentQuestionIds?: ReadonlySet<string>
+): boolean {
+  if (message.role !== "user" || message.delivery === "failed") return false;
+  const answer = anyAnswerOf(message);
+  if (!answer) return false;
+  if (message.clientRequestId?.startsWith("sf-card-sync:")) return true;
+  if ((message.attachments?.length ?? 0) > 0 || (message.refs?.length ?? 0) > 0) {
+    return false;
+  }
+  if (independentQuestionIds?.has(answer.questionMessageId)) return true;
+  return (
+    message.text.trim() === "" &&
+    (message.parts ?? []).every((part) => part.kind === "question-answer")
+  );
+}
+
+function isBackgroundStationMessage(message: ChatMessage): boolean {
+  return message.clientRequestId?.startsWith("station-task:") === true;
+}
+
+function omitSilentQuestionAnswers(
+  messages: ChatMessage[],
+  independentQuestionIds: ReadonlySet<string>
+): ChatMessage[] {
+  let filtered: ChatMessage[] | undefined;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (isSilentQuestionAnswerMessage(message, independentQuestionIds)) {
+      filtered ??= messages.slice(0, index);
+    } else if (filtered) {
+      filtered.push(message);
+    }
+  }
+  return filtered ?? messages;
+}
+
+function finalizeVisibleMessages(
+  messages: ChatMessage[],
+  independentQuestionIds: ReadonlySet<string>,
+  transform: (message: ChatMessage) => ChatMessage
+): ChatMessage[] {
+  let output: ChatMessage[] | undefined;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (isSilentQuestionAnswerMessage(message, independentQuestionIds)) {
+      output ??= messages.slice(0, index);
+      continue;
+    }
+    const next = transform(message);
+    if (output) {
+      output.push(next);
+    } else if (next !== message) {
+      output = messages.slice(0, index);
+      output.push(next);
+    }
+  }
+  return output ?? messages;
 }
 
 type Derived = WeakMap<ChatMessage, { state: ChatQuestionState; message: ChatMessage }>;
@@ -99,6 +221,12 @@ function hasQuestion(message: ChatMessage) {
 function questionOf(message: ChatMessage): ChatQuestionPart | undefined {
   return message.parts?.find(
     (part): part is ChatQuestionPart => part.kind === "question"
+  );
+}
+
+function anyAnswerOf(message: ChatMessage): ChatQuestionAnswerPart | undefined {
+  return message.parts?.find(
+    (part): part is ChatQuestionAnswerPart => part.kind === "question-answer"
   );
 }
 

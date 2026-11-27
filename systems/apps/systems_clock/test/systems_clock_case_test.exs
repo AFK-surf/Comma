@@ -149,6 +149,40 @@ defmodule SystemsClockCaseTest do
     DynamicSupervisor.stop(dynamic)
   end
 
+  # A named helper the test linked, as `Agent.start_link(..., name: ...)` in a
+  # test body. The test process is held alive here: it stands for one whose
+  # exit has not reached the helper yet.
+  test "a registered process linked to the test is stopped" do
+    parent = self()
+
+    test_process =
+      spawn(fn ->
+        receive do
+          :start ->
+            {:ok, helper} = Agent.start_link(fn -> :helper end, name: :systems_clock_case_helper)
+            send(parent, {:helper, helper})
+            receive do: (:never -> :ok)
+        end
+      end)
+
+    before = SystemsClock.Case.processes()
+    send(test_process, :start)
+    helper = receive(do: ({:helper, helper} -> helper))
+
+    assert length(SystemsClock.Case.stop_left(before, test_process)) == 1
+    refute Process.alive?(helper)
+    assert Process.whereis(:systems_clock_case_helper) == nil
+  end
+
+  test "a registered process the test did not link is left running" do
+    before = SystemsClock.Case.processes()
+    {:ok, service} = Agent.start(fn -> :service end, name: :systems_clock_case_service_agent)
+
+    assert SystemsClock.Case.stop_left(before, self()) == []
+    assert Process.alive?(service)
+    Agent.stop(service)
+  end
+
   # Like a connection's ownership server, which checks the connection back in
   # when the test that owns it exits; the check-in runs on for 100,000
   # yields.

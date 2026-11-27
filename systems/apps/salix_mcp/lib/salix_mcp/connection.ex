@@ -450,48 +450,12 @@ defmodule SalixMCP.Connection do
   end
 
   defp do_request(%{mode: :remote} = state, method, params, timeout, opts) do
-    with {:ok, config} <- request_config(state),
-         :ok <- Config.allow_request(config, method, params) do
-      if method == "initialize" do
-        case RemoteClient.initialize(config) do
-          {:ok, result, headers} ->
-            {:ok, result, %{state | remote_headers: headers, initialized?: true}}
+    case Keyword.get(opts, :auth_headers) do
+      %{} = auth when method != "initialize" ->
+        request_as(state, auth, method, params, timeout, opts)
 
-          {:error, reason} ->
-            {:error, reason, state}
-        end
-      else
-        case ensure_remote_initialized(state, config) do
-          {:ok, state} ->
-            id =
-              request_id(
-                method,
-                opts,
-                "mcp-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
-              )
-
-            params = request_params(method, params, opts)
-
-            case remote_request_with_cancel(state, config, id, method, params, timeout, opts) do
-              {:ok, result, headers} ->
-                state = %{
-                  state
-                  | remote_headers:
-                      Map.merge(state.remote_headers, RemoteClient.session_headers(headers))
-                }
-
-                {:ok, result, state}
-
-              {:error, reason} ->
-                {:error, reason, state}
-            end
-
-          {:error, reason, state} ->
-            {:error, reason, state}
-        end
-      end
-    else
-      {:error, reason} -> {:error, reason, state}
+      _shared ->
+        do_shared_request(state, method, params, timeout, opts)
     end
   end
 
@@ -595,6 +559,93 @@ defmodule SalixMCP.Connection do
 
       {:error, reason, state} ->
         {:error, reason, state}
+    end
+  end
+
+  defp do_shared_request(state, method, params, timeout, opts) do
+    with {:ok, config} <- request_config(state),
+         :ok <- Config.allow_request(config, method, params) do
+      if method == "initialize" do
+        case RemoteClient.initialize(config) do
+          {:ok, result, headers} ->
+            {:ok, result, %{state | remote_headers: headers, initialized?: true}}
+
+          {:error, reason} ->
+            {:error, reason, state}
+        end
+      else
+        case ensure_remote_initialized(state, config) do
+          {:ok, state} ->
+            id =
+              request_id(
+                method,
+                opts,
+                "mcp-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
+              )
+
+            params = request_params(method, params, opts)
+
+            case remote_request_with_cancel(state, config, id, method, params, timeout, opts) do
+              {:ok, result, headers} ->
+                state = %{
+                  state
+                  | remote_headers:
+                      Map.merge(state.remote_headers, RemoteClient.session_headers(headers))
+                }
+
+                {:ok, result, state}
+
+              {:error, reason} ->
+                {:error, reason, state}
+            end
+
+          {:error, reason, state} ->
+            {:error, reason, state}
+        end
+      end
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  # A call made as one person (`:auth_headers`, SalixMCP.Provider) opens a
+  # session of its own with that person's headers and keeps nothing of it:
+  # no other person's call can carry it, and this call carries no one else's.
+  defp request_as(state, auth, method, params, timeout, opts) do
+    with {:ok, config} <- request_config(state),
+         :ok <- Config.allow_request(config, method, params) do
+      config = Map.update(config, "headers", auth, &Map.merge(&1, auth))
+
+      case RemoteClient.initialize(config) do
+        {:ok, _init, session} ->
+          _ = RemoteClient.notify(config, "notifications/initialized", %{}, session)
+          own = %{state | remote_headers: session}
+
+          id =
+            request_id(
+              method,
+              opts,
+              "mcp-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
+            )
+
+          case remote_request_with_cancel(
+                 own,
+                 config,
+                 id,
+                 method,
+                 request_params(method, params, opts),
+                 timeout,
+                 opts
+               ) do
+            {:ok, result, _headers} -> {:ok, result, state}
+            {:error, reason} -> {:error, reason, state}
+          end
+
+        {:error, reason} ->
+          {:error, reason, state}
+      end
+    else
+      {:error, reason} -> {:error, reason, state}
     end
   end
 

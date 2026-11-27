@@ -21,6 +21,7 @@ import { createPortal } from "react-dom";
 import { Button as AriaButton } from "react-aria-components";
 import { CommaProductMark } from "../CommaProductMark";
 import { useOptionalCommaClientSettings } from "../commaClientSettings";
+import { openUsageBillingSettings } from "../billing/outOfCredits";
 import { useRouterDisplayName } from "../router-identity/RouterIdentityProvider";
 import { CallAudio } from "./callAudio";
 import "./desktopCall.css";
@@ -247,13 +248,43 @@ export function formatElapsed(seconds: number): string {
  * once per main window, so the call keeps its audio whatever page is shown; turning voice labs off ends the call.
  */
 export function DesktopCallAudio() {
+  const m = useCommaMessages();
   const enabled = useDesktopCallEnabled();
-  const call = useDesktopCall();
+  const { value: voiceCall } = useTopic(enabled ? { topic: "voiceCall" } : null);
+  const call = voiceCall && voiceCall.phase !== "idle" ? voiceCall : null;
   const callApi = useCall();
   const endCall = useRef(() => callApi("voiceCall.end", {}));
   endCall.current = () => callApi("voiceCall.end", {});
+  const seenEndId = useRef<number | null>(null);
   const muted = call?.muted ?? false;
   const [audio, setAudio] = useState<CallAudio | null>(null);
+
+  useEffect(() => {
+    const lastEnd = voiceCall?.lastEnd;
+    if (!enabled || !lastEnd || seenEndId.current === lastEnd.id) return;
+    seenEndId.current = lastEnd.id;
+    void callApi("voiceCall.dismissEnd", { id: lastEnd.id }).catch(() => undefined);
+    if (lastEnd.reason === "billing_unavailable") {
+      const title =
+        lastEnd.phase === "connected"
+          ? m.voice_call_ended_insufficient_credits()
+          : m.voice_call_insufficient_credits();
+      toast.error(title, {
+        actions: [
+          {
+            label: m.chat_add_credits(),
+            onPress: () => {
+              toast.dismiss("voice-call-billing");
+              openUsageBillingSettings("out_of_credits");
+            },
+          },
+        ],
+        id: "voice-call-billing",
+      });
+      return;
+    }
+    if (lastEnd.phase === "calling") toast.error(m.voice_call_failed());
+  }, [callApi, enabled, m, voiceCall?.lastEnd]);
 
   useEffect(() => {
     if (!enabled) return undefined;

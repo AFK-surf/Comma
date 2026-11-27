@@ -11,11 +11,18 @@ import { fileURLToPath } from "node:url";
 const run = promisify(execFile);
 const checkout = fileURLToPath(new URL("./checkout-pvg.sh", import.meta.url));
 const lockLibrary = fileURLToPath(new URL("./synch-lock.sh", import.meta.url));
+const rustCache = fileURLToPath(
+  new URL("../.github/actions/setup-macos-cache/station-rust-cache.sh", import.meta.url),
+);
+const repository = fileURLToPath(new URL("..", import.meta.url));
+const snapshot = fileURLToPath(
+  new URL("../.github/actions/setup-macos-cache/synch-snapshot.sh", import.meta.url),
+);
 
 // A gateway with the lock-key semantics of synch-s3 (synchronicity
 // docs/LOCKS.md §11): a conditional PUT acquires, 412 while held, DELETE with
 // the token releases. Objects are slow to upload, so publishers overlap.
-function gateway({ lockBucket }) {
+function gateway({ lockBucket, stallUploads = false, failReads = false, onUpload = () => {} }) {
   const objects = new Map();
   const locks = new Map();
   const puts = [];
@@ -44,6 +51,8 @@ function gateway({ lockBucket }) {
       }
     }
     if (bucket === "missing-locks") return res.writeHead(404).end();
+    if (req.method === "PUT" && stallUploads) return onUpload(); // never answers
+    if (req.method !== "PUT" && failReads) return res.writeHead(500).end();
     if (req.method === "PUT") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -192,5 +201,136 @@ test("a lock still held when the wait runs out does not hold the job", async () 
   } finally {
     gw.server.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a save with a budget waits briefly for a held lock and stops its own stalled upload", async () => {
+  const root = mkdtempSync(join(tmpdir(), "synch-lock-"));
+  const gw = gateway({ lockBucket: "locks", stallUploads: true });
+  await new Promise((resolve) => gw.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { env } = await fixture(root, gw.server.address().port, "locks");
+    delete env.SYNCH_LOCK_WAIT; // the 600 s default, which the budget overrides
+    const archive = join(root, "cache.tar");
+    writeFileSync(archive, "x".repeat(4096));
+    const machine = (await run("bash", ["-c", 'echo "$(uname -s)-$(uname -m)"'])).stdout.trim();
+    gw.locks.set(`locks/comma-cache/${machine}/fixture/k.tar`, "elsewhere");
+    const { stdout, stderr } = await run(
+      "bash",
+      [snapshot, "save", "fixture", "k", archive, "mutable"],
+      { env: { ...env, RUNNER_OS: "macOS", SYNCH_SAVE_BUDGET: "6" } },
+    );
+    assert.match(stdout, /still held after 3s; proceeding without it/);
+    // Stopped by the budget (--max-time), not by the 30 s speed limit.
+    assert.match(stderr, /Operation timed out/);
+    assert.match(stdout, /could not publish k/);
+  } finally {
+    gw.server.closeAllConnections();
+    gw.server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a save cancelled mid-upload releases its lock", async () => {
+  const root = mkdtempSync(join(tmpdir(), "synch-lock-"));
+  let uploading;
+  const upload = new Promise((resolve) => (uploading = resolve));
+  const gw = gateway({ lockBucket: "locks", stallUploads: true, onUpload: () => uploading() });
+  await new Promise((resolve) => gw.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { env } = await fixture(root, gw.server.address().port, "locks");
+    const archive = join(root, "cache.tar");
+    writeFileSync(archive, "x".repeat(4096));
+    const save = run("bash", [snapshot, "save", "fixture", "k", archive, "mutable"], {
+      env: { ...env, RUNNER_OS: "macOS" },
+    });
+    await upload;
+    assert.equal(gw.locks.size, 1, "the save holds the lock while it uploads");
+    save.child.kill("SIGTERM");
+    // It stops its upload and exits through its own handler at once, rather
+    // than dying with the signal once the upload gives up on its own.
+    await assert.rejects(save, (error) => {
+      assert.equal(error.code, 143);
+      assert.doesNotMatch(error.stderr, /Operation too slow/);
+      return true;
+    });
+    assert.equal(gw.locks.size, 0, "a cancelled save releases its lock");
+  } finally {
+    gw.server.closeAllConnections();
+    gw.server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// station-rust-cache.sh's environment in a job: its own temp and GITHUB_ENV.
+function rustJob(root, env, extra = {}) {
+  const temp = join(root, "job");
+  mkdirSync(temp, { recursive: true });
+  writeFileSync(join(temp, "env"), "");
+  return {
+    ...env,
+    RUNNER_OS: "macOS",
+    RUNNER_TEMP: temp,
+    GITHUB_ENV: join(temp, "env"),
+    GITHUB_WORKSPACE: repository,
+    RUST_CACHE_KEY: "k",
+    HOME: temp,
+    ...extra,
+  };
+}
+
+test("a cancelled Rust cache step stops its publishing and releases the lock", async () => {
+  const root = mkdtempSync(join(tmpdir(), "synch-lock-"));
+  let uploading;
+  const upload = new Promise((resolve) => (uploading = resolve));
+  const gw = gateway({ lockBucket: "locks", stallUploads: true, onUpload: () => uploading() });
+  await new Promise((resolve) => gw.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { env } = await fixture(root, gw.server.address().port, "locks");
+    const save = run("bash", [rustCache, "save"], { env: rustJob(root, env) });
+    await upload;
+    assert.equal(gw.locks.size, 1, "publishing holds the lock while it uploads");
+    save.child.kill("SIGTERM");
+    await assert.rejects(save, (error) => {
+      assert.equal(error.code, 143);
+      return true;
+    });
+    assert.equal(gw.locks.size, 0, "a cancelled step releases its lock");
+  } finally {
+    gw.server.closeAllConnections();
+    gw.server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a host's toolchain is published only when the peers answer they have none", async () => {
+  const toolchain = (await run("bash", ["-c", `sed -n 's/^const TOOLCHAIN = "\\(.*\\)";$/\\1/p' systems/station/scripts/native.ts`], { cwd: repository })).stdout.trim();
+  const machine = (await run("bash", ["-c", 'echo "$(uname -s)-$(uname -m)"'])).stdout.trim();
+  for (const failReads of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), "synch-lock-"));
+    const gw = gateway({ lockBucket: "locks", failReads });
+    await new Promise((resolve) => gw.server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { env } = await fixture(root, gw.server.address().port, "locks");
+      // This host's copy: a toolchain that runs and has every target.
+      const built = join(root, "built");
+      const dir = join(built, "toolchains", `${toolchain}-fixture`);
+      mkdirSync(join(dir, "bin"), { recursive: true });
+      writeFileSync(join(dir, "bin/rustc"), "#!/bin/sh\necho rustc fixture\n", { mode: 0o755 });
+      for (const target of ["aarch64-linux-android", "aarch64-apple-ios", "aarch64-apple-ios-sim", "wasm32-unknown-unknown"]) {
+        mkdirSync(join(dir, "lib/rustlib", target, "lib"), { recursive: true });
+      }
+      const store = join(root, "shared/comma-snapshots", machine, "rust-toolchain");
+      mkdirSync(store, { recursive: true });
+      const key = `rust-${toolchain}-clients-${machine}`;
+      await run("tar", ["-cf", join(store, `${key}.tar`), "-C", built, "."]);
+      const { stdout } = await run("bash", [rustCache, "restore"], { env: rustJob(root, env) });
+      assert.match(stdout, /restored rust-[^ ]* from this host/);
+      const published = gw.puts.filter((put) => put.includes("/rust-toolchain/"));
+      assert.deepEqual(published, failReads ? [] : [`comma-cache/${machine}/rust-toolchain/${key}.tar`]);
+    } finally {
+      gw.server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });

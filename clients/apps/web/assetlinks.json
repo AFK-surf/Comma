@@ -1,0 +1,17 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "surf.comma.android",
+      "sha256_cert_fingerprints": [
+        "97:C8:77:2D:E7:10:09:82:FC:F7:EA:FC:2C:B5:B6:A3:D3:43:31:7F:C5:45:85:FF:CA:81:76:07:36:01:BF:24",
+        "7E:41:8B:18:FF:2F:B7:31:C3:0F:4C:DD:19:58:08:46:1F:55:98:95:6B:11:44:15:10:A1:44:F6:AA:86:19:09",
+        "14:93:94:83:23:FE:97:84:94:AE:E4:14:DC:D9:3F:B7:FF:8D:A8:35:70:E7:31:B0:DB:F1:1F:46:80:E0:93:9A"
+      ]
+    }
+  }
+]

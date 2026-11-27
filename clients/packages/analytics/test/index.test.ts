@@ -10,6 +10,16 @@ describe("website page analytics", () => {
   it("records each public page and its language, not a page family", () => {
     expect(websiteRoute("/agent")).toBe("/agent");
     expect(websiteRoute("/zh/pricing")).toBe("/pricing");
+    expect(websiteRoute("/mobile")).toBe("/mobile");
+    expect(websiteRoute("/ja/mobile")).toBe("/mobile");
+    expect(websiteRoute("/mentions")).toBe("/mentions");
+    expect(websiteRoute("/messages")).toBe("/messages");
+    expect(websiteRoute("/proactive")).toBe("/proactive");
+    expect(websiteRoute("/automations")).toBe("/automations");
+    expect(websiteRoute("/support")).toBe("/support");
+    expect(websiteRoute("/integrations")).toBe("/integrations");
+    expect(websiteRoute("/zh/integrations/slack")).toBe("/integrations/slack");
+    expect(websiteRoute("/teams")).toBe("/teams");
     expect(websiteRoute("/docs/agent/chat-apps")).toBe("/docs/agent/chat-apps");
     expect(websiteRoute("/fr/blog/agent-programmable-event-loops")).toBe(
       "/blog/agent-programmable-event-loops"

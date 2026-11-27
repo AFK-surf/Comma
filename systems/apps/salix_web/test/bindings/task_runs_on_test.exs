@@ -17,6 +17,10 @@ defmodule Salix.Bindings.TaskRunsOnTest do
     def mode(_tenant_id, _group_id), do: %{"mode" => "enforce"}
   end
 
+  defmodule EasyFacts do
+    def mode(_tenant_id, _group_id), do: "easy"
+  end
+
   setup do
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Task runs_on"})
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Task runs_on"}, tenant["tenant_id"])
@@ -71,6 +75,17 @@ defmodule Salix.Bindings.TaskRunsOnTest do
     # Public sources (`sources: []`), or a Task a person makes in a product.
     assert {:ok, %{runs_on: ^station}} = place.(%{ifc_sources: []})
     assert {:ok, %{runs_on: ^station}} = place.(%{})
+  end
+
+  test "easy does not apply the private-source machine placement gate", %{scope: scope} do
+    device_id = connect!(scope, "easy-station", %{"tasks" => 2})
+    station = %{"kind" => "station", "device_id" => device_id}
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, __MODULE__.EasyFacts)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod) end)
+    scope = Map.put(scope, :ifc_sources, ["scope|lark|oc_dm"])
+
+    assert {:ok, %{runs_on: ^station}} =
+             SalixIM.TaskPlacement.resolve(scope, scope.agent_id, %{"runs_on" => station}, false)
   end
 
   test "a station that is not connected now is refused", %{scope: scope} do
@@ -168,6 +183,51 @@ defmodule Salix.Bindings.TaskRunsOnTest do
 
     station = %{"kind" => "station", "device_id" => chosen}
     assert {:ok, %{runs_on: ^station, session_model: ^claude}} = place.(chosen)
+  end
+
+  # A still.fail station lists a runtime whose profiles name no model with no
+  # ids, and runs that runtime's default: a Task may name the runtime alone.
+  # Before, it was refused as a Comma station under an account source of none.
+  test "a still.fail station takes a runtime Task with no model id, and only its listed ids",
+       %{scope: scope} do
+    {stillfail, _run} =
+      connect_run_device!(
+        scope,
+        "device-stillfail-#{SystemsRuntime.Proc.unique_integer([:positive])}",
+        %{
+          "tasks" => 2,
+          "execution_boundary" => "stillfail-connect",
+          "task_models" => %{"claude" => []}
+        },
+        %{"device_kind" => "stillfail"}
+      )
+
+    place = fn model ->
+      scope
+      |> Map.take([:tenant_id, :group_id])
+      |> SalixIM.TaskPlacement.resolve(
+        scope.agent_id,
+        %{"runs_on" => %{"kind" => "station", "device_id" => stillfail}, "model" => model},
+        false
+      )
+    end
+
+    claude = %{"kind" => "runtime", "provider" => "claude"}
+    station = %{"kind" => "station", "device_id" => stillfail}
+    # No model: the workspace's own default runs it, whatever runtime that is.
+    assert {:ok, %{runs_on: ^station} = placed} = place.(nil)
+    assert placed[:session_model] == nil
+    assert {:ok, %{runs_on: ^station, session_model: ^claude}} = place.(claude)
+
+    assert {:error, {:model, {:not_on_stillfail, %{"claude" => []}}} = refusal} =
+             place.(Map.put(claude, "model", "opus"))
+
+    message = SalixIM.TaskPlacement.message(refusal)
+    assert message =~ "runs its default"
+    refute message =~ "runs_on {kind: salix}"
+
+    assert {:error, {:model, {:not_on_stillfail, _}}} =
+             place.(%{"kind" => "runtime", "provider" => "codex"})
   end
 
   defmodule Signer do
@@ -310,7 +370,7 @@ defmodule Salix.Bindings.TaskRunsOnTest do
   defp connect_device!(scope, device_id, capabilities),
     do: scope |> connect_run_device!(device_id, capabilities) |> elem(0)
 
-  defp connect_run_device!(scope, device_id, capabilities) do
+  defp connect_run_device!(scope, device_id, capabilities, meta \\ %{}) do
     transport_id = "station-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, ^transport_id, record} =
@@ -327,7 +387,10 @@ defmodule Salix.Bindings.TaskRunsOnTest do
       )
 
     {:ok, _} =
-      Registry.update_meta(record["connector_run_id"], &Map.put(&1, "capabilities", capabilities))
+      Registry.update_meta(
+        record["connector_run_id"],
+        &(&1 |> Map.merge(meta) |> Map.put("capabilities", capabilities))
+      )
 
     {device_id, record["connector_run_id"]}
   end

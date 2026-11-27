@@ -1,6 +1,7 @@
 ---
 name: comma-settings
 description: Know which settings Comma has, where each one is, and who can change it. Use when the user asks whether Comma can be set to do something, where a setting is, or asks you to change a Comma app setting.
+prompt_summary: "Check or change Comma workspace/app settings (distinguishing desktop-editable, dedicated tool, and user-only settings)."
 ---
 
 # Comma Settings
@@ -31,10 +32,9 @@ Only a live query can give you the current value.
 
 | Setting | What it does | Who changes it |
 | --- | --- | --- |
-| Permissions › Label changes (标签修改) | Ask the user, or approve automatically, when you propose Task label changes. | User |
 | Tone › Reply style (回复风格) | Default or concise Router replies. | User |
 | System prompt › Custom instructions (系统提示词 › 自定义指令) | The owner's custom instructions for the Router. | User |
-| Default home view (默认首页) | The page Comma opens on at launch: `home`, `inbox`, `tasks`, `drive`, `apps` or `plugins`. It applies at the next launch. | You (desktop): `client-settings` `defaultHomeView` |
+| Default home view (默认首页) | The page Comma opens on at launch: `home`, `inbox`, `tasks`, `drive`, `apps` or `plugins`. It applies at the next launch. If the user wants it now, restart Comma with `comma call app restart`. | You (desktop): `client-settings` `defaultHomeView` |
 | Language (语言) | System, English or Simplified Chinese. | You (desktop): `client-settings` `localePreference` |
 | Launch Comma at login (登录时启动 Comma) | Desktop. | You (desktop): `global-settings` `launchAtLogin` |
 | Show in menu bar (在菜单栏中显示) | Desktop. On Windows it is the system tray. | You (desktop): `global-settings` `showInMenuBar` |
@@ -42,11 +42,18 @@ Only a live query can give you the current value.
 | Quick Chat (语音输入) | Desktop. Turns Quick Chat and its shortcut on or off. | You (desktop): `global-settings` `quickChatEnabled` |
 | Keep awake with lid closed (合盖保持唤醒) | macOS. Read the `global-settings` description before you change it. | You (desktop): `global-settings` `keepAwakeWhenLidClosed` |
 | AirDrop › Show Comma in AirDrop (在 AirDrop 中显示 Comma) | macOS. Also the name that nearby devices see. | You (desktop): `global-settings` `showInAirDrop`, `airDropName` |
-| Notch › Show in notch (在刘海中显示) | macOS. Also how far it extends past each side of the notch. | You (desktop): `global-settings` `showInNotch`, `notchSideWidth` |
+| Notch › Show in notch (在刘海中显示) | macOS. Also notch width and whether Computer Use runs on a virtual desktop with the notch island. | You (desktop): `global-settings` `showInNotch`, `notchSideWidth`, `showComputerUseInNotch` |
 | Onboarding › Replay onboarding (新手引导 › 重播新手引导) | Shows the first-launch introduction again. | User |
 
 The order of the icon rail has no row in Settings. The user drags items in the rail to change it.
 You (desktop): `client-settings` `sidebarNavOrder`.
+
+### Privacy (隐私)
+
+| Setting | What it does | Who changes it |
+| --- | --- | --- |
+| Share location (分享位置) | Send this device's location with each message as `client_location`. Off by default, per device. The iOS and Android apps have the same switch under Preferences. | User |
+| Send usage analytics and error reports (发送使用统计和错误报告) | Send this device's product analytics and error reports (PostHog). On by default, per device. Turning it off stops sending at once. | User |
 
 ### Profile (个人资料)
 
@@ -93,7 +100,7 @@ Plan, credits balance, buying credits and redeeming codes. User only. Never buy 
 | Routines (例程) | Personalization, proactive messages (主动提醒), daily schedule (每日定时例程), delivery time (推送时间), data sources. | User |
 | Channels (消息渠道) | Connect Telegram, WeChat, Signal, iMessage and Linear. | User |
 | Browser (浏览器) | Import sign-ins from another browser, and shared browser logins. | User |
-| Labels (标签) | The Task label catalog. | Tool: `im_api.internal.label.propose` asks for a catalog change. The user edits the catalog. |
+| Labels (标签) | The Task label catalog, and Label changes (标签修改): ask the user, or approve automatically, when you propose Task label changes. | Tool: `im_api.internal.label.propose` asks for a catalog change. The user edits the catalog and Label changes. |
 | Model & API (模型与 API) | Profiles (API keys and subscriptions), Agent models, default Task model (默认 Task 模型), default place to run Tasks (默认任务运行位置). | User. You choose a model for one Task with `agent.models`, not the defaults. |
 | Condensed Workspace (精简工作区) | Shared facts for all Agents. Shows only when the Debug switch is on. | User |
 
@@ -102,7 +109,7 @@ Plan, credits balance, buying credits and redeeming codes. User only. Never buy 
 | Category | Settings | Who changes it |
 | --- | --- | --- |
 | Voice (语音) | Phone numbers, calls, voice agent API keys. | User |
-| Computer use (电脑操作) | macOS Accessibility and Screen Recording permissions. | User |
+| Permissions (权限) | macOS only. Every macOS permission Comma uses, each with why Comma needs it: Notifications, Location, Microphone, and Computer use (Accessibility and Screen Recording, one row: both belong to the Comma Computer Use helper and one helper window grants them). A row macOS allows shows Allowed; any other has one button instead: Allow (macOS asks) or Open System Settings (after a refusal). | User |
 | About (关于) | Version and updates. | User |
 
 ## Archived, Shared, Advanced
@@ -116,4 +123,4 @@ Plan, credits balance, buying credits and redeeming codes. User only. Never buy 
 | Devices (设备) | Rename or delete a device, local compute. | User |
 | Devices › Allow operations (设备 › 允许操作) | Lets Comma act through the device. Off keeps it read-only. | User turns it on. You (desktop) can only turn it off: `devices set-access`. |
 | Tailscale | The Group's connection to the user's tailnet. | Tool: `tailnet.*`, with the `tailscale` skill |
-| Debug (调试) | Session history, computer use screen, Condensed Workspace settings, voice labs. | You (desktop): `client-settings` `sessionHistoryEnabled`, `computerUseScreenEnabled`, `condensedWorkspaceSettingsVisible`, `voiceLabsEnabled` |
+| Debug (调试) | Session history, computer use screen, Condensed Workspace settings, voice labs, People. | You (desktop): `client-settings` `sessionHistoryEnabled`, `computerUseScreenEnabled`, `condensedWorkspaceSettingsVisible`, `voiceLabsEnabled`, `peopleEnabled` |

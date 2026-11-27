@@ -146,6 +146,28 @@ defmodule BillingCoreTest do
     end
   end
 
+  # An `unlimited_metered` grant beside a metered grant with credits left.
+  defmodule UnlimitedWithCreditsSQL do
+    def query!(_repo, query, params, _opts \\ []) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:sql_query, query, params}
+      )
+
+      SQLAccountFixture.query(query, params) ||
+        cond do
+          query =~ "jsonb_agg(policy_snapshot)" ->
+            %{
+              rows: [[1_000, [%{"usage_credits" => %{"mode" => "unlimited_metered"}}]]],
+              num_rows: 1
+            }
+
+          true ->
+            FakeSQL.query!(nil, query, params)
+        end
+    end
+  end
+
   defmodule RepoRaisingSink do
     def insert(_rows), do: {:error, :sink_down}
   end
@@ -251,6 +273,19 @@ defmodule BillingCoreTest do
           true ->
             %{rows: [], num_rows: 0}
         end
+    end
+  end
+
+  # A pending charge of a platform Router call that records (settlement in its snapshot).
+  defmodule RecordSnapshotPendingSQL do
+    def query!(repo, query, params, opts \\ []) do
+      if query =~ "FROM pending_meter_charges" and query =~ "SELECT" do
+        %{rows: [row]} = MapSnapshotPendingSQL.query!(repo, query, params, opts)
+        snapshot = row |> Enum.at(6) |> Map.put("settlement", "record") |> Jason.encode!()
+        %{rows: [List.replace_at(row, 6, snapshot)], num_rows: 1}
+      else
+        MapSnapshotPendingSQL.query!(repo, query, params, opts)
+      end
     end
   end
 
@@ -794,6 +829,67 @@ defmodule BillingCoreTest do
     assert ledger_insert =~ "'unlimited_metered'"
   end
 
+  test "a platform Router's settlement overrides the account's entitlement for one call" do
+    start_fee_control_server()
+
+    fact = %{
+      repo: FakeRepo,
+      sql_runner: UnlimitedSQL,
+      typed_sink: TypedSinkFake,
+      fee_control_typed_sink: TypedSinkFake,
+      provider: "openai",
+      model: "gpt-x",
+      billing_account_id: "ba_platform_router",
+      surface: "bridge",
+      product_owner_type: "organization",
+      product_owner_id: "org_platform_router",
+      credential_scope: "platform",
+      source_key: "llm:platform_router",
+      metered_at: @now,
+      usage: %{"prompt_tokens" => 20}
+    }
+
+    # Under an unlimited grant with no credits, a call is admitted; a
+    # deducting one checks the real balance and is refused.
+    assert {:ok, %{reason: "allowed_unlimited"}} = LLMMetering.before_llm_call(fact)
+
+    assert {:error, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+             LLMMetering.before_llm_call(Map.put(fact, :settlement, "deduct"))
+
+    # With credits left, a deducting call spends a metered grant despite the
+    # unlimited one; without a settlement the same account charges 0.
+    with_credits = %{fact | sql_runner: UnlimitedWithCreditsSQL}
+
+    assert {:ok, %{entitlement_mode: :unlimited_metered, charged_credits: 0}} =
+             deliver_llm(with_credits)
+
+    flush_sql_queries()
+
+    assert {:ok, deducted} =
+             deliver_llm(
+               %{with_credits | source_key: "llm:platform_router_deduct"}
+               |> Map.put(:settlement, "deduct")
+             )
+
+    assert deducted.entitlement_mode == :metered
+    assert deducted.charged_credits == 40
+    assert deducted.grant_debits == [%{grant_id: "grant_1", credits: 40}]
+    assert find_query(flush_sql_queries(), "UPDATE credit_grants")
+
+    # A recording call on a metered account writes a ledger row that charges 0.
+    assert {:ok, recorded} =
+             deliver_llm(
+               %{fact | sql_runner: FakeSQL, source_key: "llm:platform_router_record"}
+               |> Map.put(:settlement, "record")
+             )
+
+    assert recorded.status == "unlimited_metered"
+    assert recorded.charged_credits == 0
+    queries = flush_sql_queries()
+    assert find_query(queries, "INSERT INTO credit_ledger")
+    refute find_query(queries, "UPDATE credit_grants")
+  end
+
   test "repo charge engine emits billing charge events" do
     assert {:ok, charge} =
              BillingCore.RepoCharges.charge_meter_event(%{
@@ -1109,6 +1205,21 @@ defmodule BillingCoreTest do
     settle_refute_receive(:repo_transaction, 0)
     queries = flush_sql_queries()
     assert find_query(queries, "DELETE FROM pending_meter_charges")
+  end
+
+  test "a pending charge replays with the settlement it was metered with" do
+    assert %{charged_count: 1, pending_count: 0} =
+             PricingBackfill.run(%{
+               repo: FakeRepo,
+               sql_runner: RecordSnapshotPendingSQL,
+               now: @now,
+               limit: 25
+             })
+
+    queries = flush_sql_queries()
+    assert {ledger_insert, _params} = find_query(queries, "INSERT INTO credit_ledger")
+    assert ledger_insert =~ "'unlimited_metered'"
+    refute find_query(queries, "UPDATE credit_grants")
   end
 
   test "consumes grants before balance and records grace without negative balance" do

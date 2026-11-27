@@ -713,7 +713,8 @@ defmodule CommaWeb.ProactiveNotebook do
         &(%{
             "notification_budget" => "今天的提醒额度暂满",
             "handoff_budget" => "今天的自动检查额度暂满",
-            "budgets" => "今天的提醒额度暂满"
+            "budgets" => "今天的提醒额度暂满",
+            "in_meeting" => "正在开会"
           }[&1] || "暂缓"),
       separator: "；",
       colon: "："
@@ -787,7 +788,8 @@ defmodule CommaWeb.ProactiveNotebook do
         &(%{
             "notification_budget" => "no automatic messages left for now",
             "handoff_budget" => "no automatic checks left for now",
-            "budgets" => "no automatic messages left for now"
+            "budgets" => "no automatic messages left for now",
+            "in_meeting" => "in a meeting"
           }[&1] || "waiting"),
       separator: "; ",
       colon: ": "

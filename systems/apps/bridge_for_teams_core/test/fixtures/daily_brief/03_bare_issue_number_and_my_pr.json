@@ -1,0 +1,44 @@
+{
+  "name": "bare_issue_number_and_my_pr",
+  "window_after": "2026-11-18T01:00:00Z",
+  "now": "2026-11-19T01:00:00Z",
+  "member": {
+    "slack_user_id": "UPENG1",
+    "name": "Peng Xiao",
+    "timezone": "Asia/Shanghai",
+    "aliases": [{"kind": "name", "term": "Peng Xiao"}],
+    "focus_channels": ["C_CUE"]
+  },
+  "channels": {
+    "C_CUE": "cue-dev"
+  },
+  "messages": [
+    {
+      "channel_id": "C_CUE",
+      "ts": "1795020100.000100",
+      "actor_kind": "user",
+      "actor_id": "UALICE",
+      "text": "刚看了 https://github.com/AFK-surf/Cue/pull/5434，顺便 <@UPENG1> #5438 合了吗？"
+    }
+  ],
+  "direct_messages": [],
+  "followups": [
+    {
+      "kind": "decide",
+      "what": "合入 #5438 分页改动",
+      "owner": "me",
+      "status": "open",
+      "evidence": ""
+    }
+  ],
+  "closed": [],
+  "issues": {},
+  "issue_states": {
+    "AFK-surf/Cue#5434": "merged",
+    "AFK-surf/Cue#5438": "merged"
+  },
+  "expect": {
+    "mine_open_excludes": ["#5438"],
+    "text_contains": ["#5438"]
+  }
+}

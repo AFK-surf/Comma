@@ -51,6 +51,7 @@ defmodule SalixAgent.RoundConfig do
              end
            ]),
          {:ok, llm_opts} <- llm_result,
+         llm_opts = SalixAgent.LlmResolver.apply_triage_reasoning_floor(llm_opts, session_context),
          {:ok, session_config} <- session_config_result do
       {:ok, %{llm_opts: llm_opts, session_config: session_config}}
     else
@@ -67,7 +68,7 @@ defmodule SalixAgent.RoundConfig do
         with {:ok, record} <- SalixAgent.Control.get_record(agent_id),
              false <- SalixAgent.Control.archived?(record),
              runtime = SalixAgent.AgentRuntimeConfig.from_control(record),
-             [llm, plugin, skills] <-
+             [llm, plugin, skills, group_search] <-
                run_parallel([
                  fn -> SalixAgent.LlmResolver.resolve_runtime(agent_id, record) end,
                  fn -> runtime_plugin_projection(runtime) end,
@@ -77,7 +78,8 @@ defmodule SalixAgent.RoundConfig do
                      tenant_id: runtime[:tenant_id],
                      group_id: runtime[:group_id]
                    })
-                 end
+                 end,
+                 fn -> group_search_fingerprint(runtime) end
                ]),
              {:ok, llm_opts} <- llm,
              {:ok, plugin_projection} <- plugin,
@@ -88,7 +90,8 @@ defmodule SalixAgent.RoundConfig do
             runtime_config: runtime,
             llm_opts: llm_opts,
             plugin_projection: plugin_projection,
-            skill_materialization: skill_materialization
+            skill_materialization: skill_materialization,
+            group_search_fingerprint: group_search
           }
 
           # A reusable catalog never carries a previous activation's grants.
@@ -159,7 +162,9 @@ defmodule SalixAgent.RoundConfig do
       provider_record: snapshot[:provider_record],
       runtime_config: snapshot.runtime_config,
       plugin_projection: snapshot.plugin_projection,
-      skill_projection_revision: snapshot.session_config.skill_projection_revision
+      skill_projection_revision: snapshot.session_config.skill_projection_revision,
+      group_search_fingerprint: snapshot[:group_search_fingerprint],
+      sandbox: cached_sandbox_runtimes(snapshot)
     }
 
     # `build_round_snapshot/2` keeps only the platform of its context.
@@ -196,9 +201,11 @@ defmodule SalixAgent.RoundConfig do
              do: llm,
              else: SalixAgent.LlmResolver.resolve_runtime(agent_id, record)
            ),
-         {:ok, plugins, skills} <- catalog do
+         {:ok, plugins, skills, group_search, sandbox} <- catalog do
       if runtime == inputs.runtime_config and plugins == inputs.plugin_projection and
-           skills == inputs.skill_projection_revision do
+           skills == inputs.skill_projection_revision and
+           group_search == inputs.group_search_fingerprint and
+           sandbox == inputs.sandbox do
         {:ok, {:current, llm_opts, record}}
       else
         with {:ok, snapshot} <- build_round_snapshot(agent_id, catalog_context),
@@ -223,9 +230,41 @@ defmodule SalixAgent.RoundConfig do
              plugin_projection: plugins,
              plugin_projection_revision: plugins && plugins["revision"]
            }) do
-      {:ok, plugins, skills}
+      {:ok, plugins, skills, group_search_fingerprint(runtime),
+       current_sandbox_runtimes(runtime, inputs.sandbox)}
     end
   end
+
+  # The sandbox runtimes the cached prompts offer, with what decides whether a
+  # round reads them. Lending or removing an account in Settings changes none
+  # of the other refresh inputs, so a warm actor compares these too.
+  defp cached_sandbox_runtimes(snapshot) do
+    flags = get_in(snapshot, [:config_inputs, :group_flags]) || %{}
+
+    %{
+      role: snapshot[:role],
+      cloud_vm_retired: flags[:cloud_vm_retired] == true,
+      runtimes: flags[:sandbox_runtimes]
+    }
+  end
+
+  # Unread now: keep the cached runtimes rather than rebuild for a failed read.
+  defp current_sandbox_runtimes(runtime, %{role: role, cloud_vm_retired: retired} = cached) do
+    case sandbox_runtimes(role, retired, runtime[:tenant_id]) do
+      nil -> cached
+      runtimes -> %{cached | runtimes: runtimes}
+    end
+  end
+
+  # The `group.*` tools and their target list follow the Group's
+  # `search_group_ids` and its targets' names and IFC modes, which no agent
+  # record or catalog revision covers.
+  defp group_search_fingerprint(runtime),
+    do:
+      SalixAgent.Tools.GroupSearch.disclosure_fingerprint(
+        runtime[:tenant_id],
+        runtime[:group_id]
+      )
 
   @doc false
   def materialize_round_snapshot(agent_id, snapshot, session_context) do
@@ -238,6 +277,7 @@ defmodule SalixAgent.RoundConfig do
 
   defp do_materialize_round_snapshot(agent_id, snapshot, session_context) do
     with {:ok, llm_opts} <- session_llm_opts(snapshot, session_context) do
+      llm_opts = SalixAgent.LlmResolver.apply_triage_reasoning_floor(llm_opts, session_context)
       # Task-scoped IM grants must be derived from this activation, not the
       # catalog's refresh activation. Dispatch still validates current authority.
       if snapshot.role == "worker" and
@@ -311,6 +351,9 @@ defmodule SalixAgent.RoundConfig do
 
     guest_policy = SalixAgent.GuestPolicy.policy_for_purpose(runtime_config[:purpose])
 
+    collaboration_policy =
+      resolve_collaboration_policy(runtime_config)
+
     base_disclosure_context =
       session_context
       |> Map.put(:agent_id, agent_id)
@@ -324,6 +367,7 @@ defmodule SalixAgent.RoundConfig do
       |> Map.put(:inspector_policy, runtime_config[:inspector_policy])
       |> Map.put(:recommendation_policy, recommendation_policy)
       |> Map.put(:guest_policy, guest_policy)
+      |> Map.put(:collaboration_policy, collaboration_policy)
 
     im_disclosure_context =
       base_disclosure_context
@@ -375,6 +419,7 @@ defmodule SalixAgent.RoundConfig do
          {:ok, plugin_projection} <- plugin_result,
          {:ok, skill_materialization} <- skill_materialization_result,
          {:ok, group_flags} <- group_flags_result,
+         group_flags = isolate_group_flags(group_flags, collaboration_policy),
          {:ok, im_entries} <- im_entries_result,
          {:ok, mcp_entries} <- mcp_entries_result,
          {:ok, mcp_provider_state} <- mcp_state_result do
@@ -406,8 +451,10 @@ defmodule SalixAgent.RoundConfig do
           )
           |> Map.put("recommendation_policy", Atom.to_string(recommendation_policy))
           |> Map.put("guest_policy", Atom.to_string(guest_policy))
+          |> Map.put("collaboration_policy", Atom.to_string(collaboration_policy))
           |> Map.put("automatic_task_model", group_flags.task_model_selection)
           |> Map.put("cloud_vm_retired", group_flags.cloud_vm_retired)
+          |> Map.put("sandbox_runtimes", group_flags[:sandbox_runtimes])
           |> Map.put("inspector_policy", runtime_config[:inspector_policy])
 
         config = %{
@@ -417,6 +464,16 @@ defmodule SalixAgent.RoundConfig do
           group_id: runtime_config[:group_id],
           condensed_workspace_enabled:
             group_flags.condensed_workspace_enabled and runtime_kind == :internal,
+          ifc_static_prompt:
+            SalixAgent.ToolPolicy.compose_session_prompt(
+              role,
+              role_prompts(role, runtime_config.prompts, group_flags),
+              agent_id,
+              runtime_kind,
+              disclosure,
+              skill_projection,
+              true
+            ),
           system_prompt:
             SalixAgent.ToolPolicy.session_prompt(
               role,
@@ -459,14 +516,65 @@ defmodule SalixAgent.RoundConfig do
         _ -> %{}
       end
 
+    cloud_vm_retired = SalixAgent.Sandboxes.cloud_vm_retired?(group)
+
     %{
       task_model_selection: SalixAgent.TaskRouting.automatic?(group["task_model_selection"]),
       memory_ask_worker_enabled: group["memory_ask_worker_enabled"] == true,
       condensed_workspace_enabled: group["condensed_workspace_enabled"] == true,
-      cloud_vm_retired: SalixAgent.Sandboxes.cloud_vm_retired?(group),
+      cloud_vm_retired: cloud_vm_retired,
+      sandbox_runtimes: sandbox_runtimes(role, cloud_vm_retired, ctx[:tenant_id]),
       router_reply_style: router_reply_style(role, group, ctx[:group_id])
     }
   end
+
+  # A Collaborative Task's Worker shares nothing of the host's Group: neither its
+  # Condensed Workspace nor the memory of the Group's other Workers.
+  defp isolate_group_flags(flags, policy) when policy in [:restricted, :sandbox_restricted],
+    do: %{
+      flags
+      | condensed_workspace_enabled: false,
+        memory_ask_worker_enabled: false,
+        router_reply_style: nil
+    }
+
+  defp isolate_group_flags(flags, _policy), do: flags
+
+  # Defense in depth: any non-collaboration_worker agent inside a Collaborative
+  # Task Group (`purpose: "collaboration"`, e.g. a sandbox sub-task's TaskAgent,
+  # including pre-existing records created before `sandbox_purpose`) is still
+  # forced into `:sandbox_restricted`.
+  defp resolve_collaboration_policy(runtime_config) do
+    case SalixAgent.CollaborationPolicy.policy_for_purpose(runtime_config[:purpose]) do
+      :ordinary ->
+        with tenant_id when is_binary(tenant_id) and tenant_id != "" <- runtime_config[:tenant_id],
+             group_id when is_binary(group_id) and group_id != "" <- runtime_config[:group_id],
+             {:ok, %{"purpose" => "collaboration"}} <-
+               SalixAgent.GroupContext.get(group_id, tenant_id) do
+          :sandbox_restricted
+        else
+          _ -> :ordinary
+        end
+
+      policy ->
+        policy
+    end
+  end
+
+  # The runtimes a new sandbox of the workspace runs, for the prompts that
+  # offer sandbox Tasks: a Router's and, where the Cloud VM is retired, a
+  # Worker's (`SalixAgent.ToolPolicy`). One indexed read per round, only for
+  # those. Unread, the prompts offer both runtimes and placement still refuses
+  # one the sandbox cannot run.
+  defp sandbox_runtimes(role, true, tenant_id)
+       when role in ["router", "worker"] and is_binary(tenant_id) and tenant_id != "" do
+    case SalixAgent.Sandboxes.runtimes(tenant_id) do
+      {:ok, runtimes} -> runtimes
+      {:error, _unread} -> nil
+    end
+  end
+
+  defp sandbox_runtimes(_role, _retired, _tenant_id), do: nil
 
   # The reply style is the workspace owner's choice, stored on the Group's
   # Router (Settings › General). A Worker writes in the same style.

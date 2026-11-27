@@ -4,11 +4,12 @@ import { Dropdown } from "@comma/ui/components/dropdown";
 import { InputField } from "@comma/ui/components/input";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useState } from "react";
-import type { BftMember, BftMembers, BftOrgRole } from "./api";
+import { BftApiError, type BftMember, type BftMembers, type BftOrgRole } from "./api";
 import { ConfirmDialog, DialogError, writeErrorMessage } from "./dialogs";
 import { formatRelative } from "./format";
 import { messages } from "./messages";
 import type { Resource } from "./resource";
+import { spaLinkClick } from "./router";
 import { ErrorState, Skeleton } from "./states";
 
 const t = messages.members;
@@ -57,11 +58,13 @@ export function canRemove(members: BftMembers, member: BftMember) {
 }
 
 export function MembersPage({
+  org,
   orgName,
   members,
   onRetry,
   writes,
 }: {
+  org: string;
   orgName: string | undefined;
   members: Resource<BftMembers>;
   onRetry: () => void;
@@ -72,20 +75,24 @@ export function MembersPage({
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorCode, setErrorCode] = useState<string>();
   const data = latest ?? (members.state === "ready" ? members.data : undefined);
 
   const open = (next: Pending) => {
     setError(undefined);
+    setErrorCode(undefined);
     setPending(next);
   };
   const close = () => {
     if (busy) return;
     setPending(null);
     setError(undefined);
+    setErrorCode(undefined);
   };
   const run = (write: () => Promise<BftMembers>) => {
     setBusy(true);
     setError(undefined);
+    setErrorCode(undefined);
     write().then(
       (next) => {
         setLatest(next);
@@ -95,9 +102,18 @@ export function MembersPage({
       (caught: unknown) => {
         setBusy(false);
         setError(writeErrorMessage(caught));
+        setErrorCode(caught instanceof BftApiError ? caught.code : undefined);
       }
     );
   };
+
+  const billingHref = `/orgs/${encodeURIComponent(org)}/settings#teams-billing`;
+  const inviteBillingAction =
+    data?.viewer.can_manage && errorCode === "teams_seat_limit"
+      ? { href: billingHref, label: t.seatLimitAction }
+      : data?.viewer.can_manage && errorCode === "teams_subscription_required"
+        ? { href: billingHref, label: t.subscriptionRequiredAction }
+        : undefined;
 
   return (
     <div className="bft-page">
@@ -131,11 +147,15 @@ export function MembersPage({
       )}
       {data && pending?.kind === "invite" ? (
         <InviteDialog
+          billingAction={inviteBillingAction}
           busy={busy}
           error={error}
           onClose={close}
           onInvite={(invite) => run(() => writes.invite(invite))}
-          onInvalid={setError}
+          onInvalid={(message) => {
+            setError(message);
+            setErrorCode(undefined);
+          }}
           orgName={orgName ?? ""}
           roles={grantableRoles(data.viewer)}
         />
@@ -330,6 +350,7 @@ function InviteDialog({
   roles,
   busy,
   error,
+  billingAction,
   onInvite,
   onInvalid,
   onClose,
@@ -338,6 +359,7 @@ function InviteDialog({
   roles: BftOrgRole[];
   busy: boolean;
   error: string | undefined;
+  billingAction: { href: string; label: string } | undefined;
   onInvite: (invite: { email: string; role: BftOrgRole }) => void;
   onInvalid: (message: string) => void;
   onClose: () => void;
@@ -405,6 +427,20 @@ function InviteDialog({
           value={role}
         />
         <DialogError message={error} />
+        {billingAction ? (
+          <p className="bft-dialog-note">
+            <a
+              className="bft-link"
+              href={billingAction.href}
+              onClick={(event) => {
+                spaLinkClick(event);
+                if (event.defaultPrevented) onClose();
+              }}
+            >
+              {billingAction.label}
+            </a>
+          </p>
+        ) : null}
       </div>
     </Dialog>
   );

@@ -36,10 +36,12 @@ function setup(host = new FakeHost()) {
 }
 
 /** The sections of a Group none of whose Tasks the list in focus has. */
-const none = ["in_progress", "needs_review", "done", "cancelled"].map((bucket) => ({
-  bucket,
-  ids: [],
-}));
+const none = ["in_progress", "needs_review", "done", "cancelled", "loops"].map(
+  (bucket) => ({
+    bucket,
+    ids: [],
+  })
+);
 
 /** A Task of the Group as the list reads it. */
 function task(id: string, status: string) {
@@ -80,6 +82,7 @@ describe("a Group's Task-board arrangement", () => {
       { bucket: "needs_review", ids: [] },
       { bucket: "done", ids: ["d"] },
       { bucket: "cancelled", ids: [] },
+      { bucket: "loops", ids: [] },
     ]);
 
     // A drop is the board's order at once.

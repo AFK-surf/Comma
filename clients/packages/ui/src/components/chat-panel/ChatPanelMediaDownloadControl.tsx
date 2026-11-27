@@ -3,8 +3,8 @@ import { Focusable } from "react-aria-components";
 import { useCommaMessages } from "@comma/i18n/react";
 import { uiClock, type CancelUiTimer } from "../../clock";
 import { motionDuration } from "../../tokens";
+import { LoadingCircleIcon } from "../icons";
 import { Tooltip } from "../tooltip";
-import { cx } from "../utils";
 import {
   type ChatPanelMediaDownloadAction,
   type ChatPanelMediaDownloadKind,
@@ -31,7 +31,6 @@ export interface ChatPanelMediaDownloadController {
 interface ChatPanelMediaDownloadControlProps {
   buttonClassName: string;
   controller: ChatPanelMediaDownloadController;
-  feedbackPlacement: "above" | "below";
   icon: ReactNode;
   kind: ChatPanelMediaDownloadKind;
 }
@@ -217,7 +216,6 @@ export const useChatPanelMediaDownloadController = ({
 export const ChatPanelMediaDownloadControl = ({
   buttonClassName,
   controller,
-  feedbackPlacement,
   icon,
   kind,
 }: ChatPanelMediaDownloadControlProps) => {
@@ -236,7 +234,6 @@ export const ChatPanelMediaDownloadControl = ({
       data-error-code={
         controller.state.status === "error" ? controller.state.code : undefined
       }
-      data-feedback-placement={feedbackPlacement}
       data-state={controller.state.status}
     >
       <Tooltip
@@ -263,21 +260,18 @@ export const ChatPanelMediaDownloadControl = ({
             onClick={() => void controller.execute()}
             type="button"
           >
-            {icon}
+            {isPending ? (
+              <LoadingCircleIcon
+                aria-hidden="true"
+                className="size-2xl motion-safe:animate-spin"
+              />
+            ) : (
+              icon
+            )}
           </button>
         </Focusable>
       </Tooltip>
-      <output
-        aria-atomic="true"
-        aria-live="polite"
-        className={cx(
-          "chat-panel-media-download-feedback",
-          controller.state.status === "error" && "is-error",
-          controller.state.status === "success" && "is-success"
-        )}
-        data-visible={hasFeedback ? "true" : "false"}
-        id={feedbackId}
-      >
+      <output aria-atomic="true" aria-live="polite" className="sr-only" id={feedbackId}>
         {copy.feedback}
       </output>
     </span>

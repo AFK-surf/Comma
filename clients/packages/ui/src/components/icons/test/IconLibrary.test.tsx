@@ -64,14 +64,11 @@ describe("Central icon wrappers", () => {
       "1.5",
       "2",
     ]);
-    for (const exportName of ["PanelLeftIcon", "PanelRightIcon"]) {
-      expect(
-        container
-          .querySelector(`svg.icon-${exportName}`)
-          ?.querySelector("[stroke-width]"),
-        exportName
-      ).toBeNull();
-    }
+    expect(
+      container
+        .querySelector("svg.icon-ShapesPlusXSquareCircleIcon")
+        ?.querySelector("[stroke-width]")
+    ).toBeNull();
   });
 
   it("does not attach per-instance stroke state", () => {

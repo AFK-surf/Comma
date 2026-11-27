@@ -810,11 +810,24 @@ defmodule SalixIM.ControlCommand do
   # A reply to the source message keeps the answer beside the request; in a
   # group it goes into that message's thread, as the Router's own answers do.
   # Sent as literal text: `cat` echoes file bytes, and Markdown would turn
-  # them into links and mentions.
+  # them into links and mentions. A tap on the bot's menu in a private chat
+  # (`lark.bot_menu`) names no chat or message: the answer goes to the person.
   defp lark_reply(metadata, text) do
     case trim(metadata["chat_id"]) do
       "" ->
-        :unsupported
+        case direct_sender(metadata) do
+          "" ->
+            :unsupported
+
+          sender ->
+            {:ok, "lark", "lark.send_message",
+             %{
+               "user_id" => sender,
+               "user_id_type" => "open_id",
+               "text" => text,
+               "format" => "text"
+             }}
+        end
 
       chat_id ->
         params = %{"chat_id" => chat_id, "text" => text, "format" => "text"}
@@ -878,9 +891,23 @@ defmodule SalixIM.ControlCommand do
         {:ok, "feishu", "feishu.send_text",
          %{"receive_id" => chat_id, "receive_id_type" => "chat_id", "text" => text}}
 
+      # A tap on the bot's menu in a private chat (`feishu.bot_menu`) names no
+      # chat or message: the answer goes to the person.
+      direct_sender(metadata) != "" ->
+        {:ok, "feishu", "feishu.send_text",
+         %{
+           "receive_id" => direct_sender(metadata),
+           "receive_id_type" => "open_id",
+           "text" => text
+         }}
+
       true ->
         :unsupported
     end
+  end
+
+  defp direct_sender(metadata) do
+    if trim(metadata["chat_type"]) == "p2p", do: trim(metadata["sender_open_id"]), else: ""
   end
 
   # ---- routing ----

@@ -28,9 +28,11 @@ const mentionTask = madeOnce(
     status: string;
     title: string;
     updated_at?: number | undefined;
+    loop?: { state: string } | undefined;
   }) => ({
     id: task.id,
     status: task.status,
+    ...(task.loop ? { loopState: task.loop.state } : {}),
     title: task.title,
     updatedAt: task.updated_at ?? 0,
   })
@@ -141,6 +143,8 @@ export class MentionTasks {
                   (task) =>
                     task.kind === "agent_task" &&
                     task.status !== "archived" &&
+                    // A shared task is its people's: the Router a message names it to reads none of it.
+                    !(task.together && task.together.length > 0) &&
                     task.title.trim().length > 0
                 )
                 .map(mentionTask)

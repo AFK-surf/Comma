@@ -634,6 +634,8 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
   setup %{conn: conn} do
     SalixStore.S3.Fake.reset()
     %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
+    # The swarm model pickers offer only models an account serves.
+    serve_models!(org)
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Acme", "slug" => "acme"})
     drain_all()
     %{conn: conn, user: user, org: org, project: project}
@@ -783,6 +785,48 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
 
       data = conn |> get(connections_path(org, project)) |> json_response(200) |> data()
       assert data["messaging"]["feishu"]["route"]["status"] == "unknown"
+    end
+
+    test "each Agent Swarm connects its own department's bot app", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      seed_feishu_bot_binding(org, %{"app_id" => "cli_rd", "display_name" => "研发部飞书助手"})
+
+      seed_feishu_bot_binding(org, %{
+        "app_id" => "cli_fin",
+        "display_name" => "财务部飞书助手",
+        "app_secret" => "fake-fin-app-value",
+        "verification_token" => "fake-fin-verification-value",
+        "encrypt_key" => "fake-fin-encryption-value"
+      })
+
+      {:ok, finance} = Projects.create_project(org.id, %{"name" => "财务部", "slug" => "fin"})
+      drain_all()
+
+      for {swarm, app_id} <- [{project, "cli_rd"}, {finance, "cli_fin"}] do
+        assert %{"notice" => "Feishu webhook connect ready."} =
+                 conn
+                 |> post(connections_path(org, swarm, "/feishu"), %{"app_id" => app_id})
+                 |> json_response(201)
+                 |> data()
+      end
+
+      for {swarm, app_id} <- [{project, "cli_rd"}, {finance, "cli_fin"}] do
+        body = conn |> get(connections_path(org, swarm)) |> response(200)
+        refute body =~ "fake-fin-app-value"
+        feishu = body |> Jason.decode!() |> data() |> get_in(["messaging", "feishu"])
+
+        # Both apps stay offered, oldest first; the swarm's connect names its own.
+        assert feishu["apps"] == [
+                 %{"app_id" => "cli_rd", "name" => "研发部飞书助手"},
+                 %{"app_id" => "cli_fin", "name" => "财务部飞书助手"}
+               ]
+
+        assert [%{"app_id" => ^app_id, "encrypt_key_configured" => true}] = feishu["connects"]
+        assert feishu["route"]["status"] == "ready"
+      end
     end
 
     test "a provider rejection is redacted", %{conn: conn, org: org, project: project} do
@@ -1180,10 +1224,14 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
         |> hd()
       end
 
-      # A new bot has the default shortcut, and QQ took its menu.
+      # A new bot has the default shortcuts, and QQ took its menu.
       assert %{
                "connect_id" => connect_id,
-               "command_menu" => [%{"name" => "总结群聊", "scope" => "group"}],
+               "command_menu" => [
+                 %{"name" => "newgpttask", "scope" => "all"},
+                 %{"name" => "newclaudetask", "scope" => "all"},
+                 %{"name" => "总结群聊", "scope" => "group"}
+               ],
                "command_menu_sync" => %{"private" => "synced", "group" => "synced"}
              } = connect.()
 
@@ -1244,6 +1292,77 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
 
       data = conn |> get(connections_path(org, project)) |> json_response(200) |> data()
       assert data["messaging"]["qq"]["connects"] == []
+    end
+  end
+
+  describe "WeCom" do
+    setup do
+      fake = SalixIM.TestSupport.FakeWeCom.serve!(SystemsRuntime.Proc.self())
+      previous = SystemsRuntime.get_env(:salix_im, :wecom_socket_url)
+      SystemsRuntime.put_env(:salix_im, :wecom_socket_url, fake.url)
+      on_exit(fn -> restore_env(:salix_im, :wecom_socket_url, previous) end)
+      :ok
+    end
+
+    test "connecting a bot checks its credentials and never shows the secret", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      secret = SalixIM.TestSupport.FakeWeCom.secret()
+      bot = %{"bot_id" => "aibTestBot", "secret" => secret}
+
+      assert %{
+               "notice" =>
+                 "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it."
+             } =
+               conn
+               |> post(connections_path(org, project, "/wecom"), bot)
+               |> json_response(201)
+               |> data()
+
+      body = conn |> get(connections_path(org, project)) |> response(200)
+      refute body =~ secret
+      wecom = body |> Jason.decode!() |> data() |> get_in(["messaging", "wecom"])
+
+      assert [
+               %{
+                 "connect_id" => "imc1_" <> _ = connect_id,
+                 "disabled" => false,
+                 "bot_id" => "aibTestBot",
+                 "secret_configured" => true,
+                 # Accepted credentials are not a live connection: no socket
+                 # runs in this test.
+                 "online" => false
+               }
+             ] = wecom["connects"]
+
+      assert %{"status" => "ready", "connect_id" => ^connect_id} = wecom["route"]
+
+      # The same bot again refreshes its connect instead of adding one.
+      assert %{"notice" => "Updated the WeCom bot's credentials."} =
+               conn
+               |> post(connections_path(org, project, "/wecom"), bot)
+               |> json_response(201)
+               |> data()
+
+      # A Secret WeCom refuses is not stored, and the answer does not echo it.
+      body =
+        conn
+        |> post(connections_path(org, project, "/wecom"), %{
+          "bot_id" => "aibOtherBot",
+          "secret" => "wrong-secret"
+        })
+        |> response(422)
+
+      assert %{"error" => %{"code" => "connect_rejected", "message" => message}} =
+               Jason.decode!(body)
+
+      assert message =~ "WeCom rejected these credentials"
+      refute body =~ "wrong-secret"
+
+      data = conn |> get(connections_path(org, project)) |> json_response(200) |> data()
+      assert [%{"bot_id" => "aibTestBot"}] = data["messaging"]["wecom"]["connects"]
     end
   end
 
@@ -1348,6 +1467,67 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
 
       assert %{"error" => %{"code" => "invalid_auto_join"}} =
                conn |> put(auto_join, %{"enabled" => "no"}) |> json_response(422)
+    end
+
+    test "an admin says whose people a workspace's people are and grants people by name", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      assert %{"notice" => _} =
+               conn
+               |> post(
+                 connections_path(org, project, "/slack"),
+                 slack_attrs(%{"member_scope" => "external"})
+               )
+               |> json_response(201)
+               |> data()
+
+      assert [%{"connect_id" => connect_id, "member_scope" => "external", "member_grants" => []}] =
+               slack_connects(conn, org, project)
+
+      scope = connections_path(org, project, "/slack/#{connect_id}/member-scope")
+
+      assert %{"member_scope" => "organization", "member_grants" => [], "notice" => _} =
+               conn |> put(scope, %{"scope" => "organization"}) |> json_response(200) |> data()
+
+      assert [%{"member_scope" => "organization"}] = slack_connects(conn, org, project)
+
+      assert %{"error" => %{"code" => "invalid_member_scope"}} =
+               conn |> put(scope, %{"scope" => "everyone"}) |> json_response(422)
+
+      # The path names the connect's provider.
+      assert %{"error" => %{"code" => "connect_not_found"}} =
+               conn
+               |> put(connections_path(org, project, "/lark/#{connect_id}/member-scope"), %{
+                 "scope" => "external"
+               })
+               |> json_response(404)
+
+      # The app is not installed yet, so Slack names nobody: the search says
+      # it did not read the whole directory, and nobody can be granted.
+      assert %{"people" => [], "complete" => false} =
+               conn
+               |> get(connections_path(org, project, "/slack/#{connect_id}/people"), %{
+                 "query" => "cat"
+               })
+               |> json_response(200)
+               |> data()
+
+      grants = connections_path(org, project, "/slack/#{connect_id}/member-grants")
+
+      assert %{"error" => %{"code" => "invalid_member_grant"}} =
+               conn
+               |> post(grants, %{"subject" => "U02CAT", "expires_in_days" => 2})
+               |> json_response(422)
+
+      assert %{"error" => %{"code" => "person_not_found"}} =
+               conn
+               |> post(grants, %{"subject" => "U02CAT", "expires_in_days" => 7})
+               |> json_response(422)
+
+      assert %{"member_grants" => []} =
+               conn |> delete(grants <> "/U02CAT") |> json_response(200) |> data()
     end
 
     test "a connect is disabled, enabled and deleted", %{conn: conn, org: org, project: project} do

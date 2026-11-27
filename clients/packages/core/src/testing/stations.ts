@@ -435,6 +435,8 @@ export class FakeStations {
   readonly bound: { id: string; relays: readonly string[] }[] = [];
   /** Whether the endpoint is bound now. */
   open = false;
+  /** How many times the endpoint was told its network may have changed (`stations.wake`). */
+  networkChanges = 0;
   /** The endpoint is reached through Salix too, as one on a station's addon is: the core opens relay sockets. */
   salix = false;
   /** Each relay socket the core opened, by the ticket it gave; registered at once. `drop` closes it as Salix does. */
@@ -478,8 +480,11 @@ export class FakeStations {
           const id = `device-${Buffer.from(secretKey.subarray(0, 4)).toString("hex")}`;
           this.bound.push({ id, relays: [...relays] });
           this.open = true;
+          const endpoint = Object.assign(this.mesh.endpoint(id), {
+            networkChange: async () => void this.networkChanges++,
+          });
           const links = meshStationLinks(
-            this.mesh.endpoint(id),
+            endpoint,
             {},
             this.salix ? { carry: (url, ticket) => this.#carry(url, ticket) } : null
           );

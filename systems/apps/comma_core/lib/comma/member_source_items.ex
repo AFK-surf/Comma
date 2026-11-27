@@ -26,6 +26,12 @@ defmodule Comma.MemberSourceItems do
   @retention_days 5
   # An unusable judgment keeps an item waiting for at most this many attempts.
   @judge_attempts 3
+  # A retryable item from a rolling-window or truncated source keeps a bounded
+  # recovery window even when a later collection's top-N page or 24-hour slice
+  # no longer includes its key. Non-truncated mailbox reads reflect the live
+  # inbox, so mail the member archived or answered still withdraws at once.
+  @off_window_retry_failures 3
+  @off_window_retry_s 48 * 60 * 60
   # A matter that waits for a closed budget is judged again at its `next_at`,
   # at most this many times. Its own due time (`due_at`) wakes it apart from
   # that bound: each judgment sets the next one, at most twice per due time.
@@ -37,6 +43,10 @@ defmodule Comma.MemberSourceItems do
   # A source's open threads (`Comma.OpenThreads`) leave with its items.
   @source_schemas [MemberSourceItem, MemberSourceState, OpenThread, OpenThreadCursor]
   @content ~w(toolkit url app title excerpt context prompt_context relationship recipient facts provider_ids fingerprint)a
+  # Version prefix for the per-item independent fingerprint format. Existing
+  # pre-v2 rows rebase silently once on first collection without triggering
+  # `changed` or clearing `baseline`/`attention`.
+  @fingerprint_version "v2:"
 
   def retention_days, do: @retention_days
   def judge_attempts, do: @judge_attempts
@@ -84,7 +94,9 @@ defmodule Comma.MemberSourceItems do
         Enum.reduce(collected, %{new: 0, changed: 0}, fn {source_id, source}, counts ->
           state = states[source_id]
           baseline = baseline?(state, now)
-          recorded = record_source(profile_id, source_id, source["items"] || [], baseline, now)
+          truncated? = get_in(source, ["bound", "truncated"]) == true
+          items = source["items"] || []
+          recorded = record_source(profile_id, source_id, items, baseline, truncated?, now)
           keys = source["items"] |> List.wrap() |> Enum.map(& &1["item_key"]) |> Enum.uniq()
 
           put_state(state, profile_id, source_id, now, %{
@@ -182,6 +194,26 @@ defmodule Comma.MemberSourceItems do
 
       %{state: state, items: items, collected: collected}
     end)
+  end
+
+  @doc """
+  At most `limit` newest items belonging to currently collected, non-failed
+  sources of `profile_id`, bounded directly in SQL.
+  """
+  def current_recent(profile_id, limit)
+      when is_binary(profile_id) and is_integer(limit) and limit > 0 do
+    from(i in MemberSourceItem,
+      join: s in MemberSourceState,
+      on: s.profile_id == i.profile_id and s.source_id == i.source_id,
+      where:
+        i.profile_id == ^profile_id and
+          not is_nil(s.collected_at) and
+          (is_nil(s.failure) or s.attempted_at <= s.collected_at) and
+          fragment("? = ANY(?)", i.item_key, s.current_keys),
+      order_by: [desc: i.changed_at, asc: i.id],
+      limit: ^limit
+    )
+    |> Repo.all()
   end
 
   # A partial read keeps its warning with a successful collection time. Only an
@@ -285,22 +317,27 @@ defmodule Comma.MemberSourceItems do
     |> Repo.all()
   end
 
-  defp record_source(profile_id, source_id, items, baseline, now) do
+  defp record_source(profile_id, source_id, items, baseline, truncated?, now) do
     items = items |> Enum.map(&bounded/1) |> Enum.uniq_by(& &1.item_key)
     keys = Enum.map(items, & &1.item_key)
 
     existing =
       from(i in MemberSourceItem,
         where: i.profile_id == ^profile_id and i.source_id == ^source_id and i.item_key in ^keys,
-        select: {i.item_key, {i.id, i.fingerprint, i.quote}}
+        select: {i.item_key, {i.id, i.fingerprint, i.quote, i.facts}}
       )
       |> Repo.all()
       |> Map.new()
 
     {fresh, known} = Enum.split_with(items, &(not Map.has_key?(existing, &1.item_key)))
 
+    {rebased, current_version} =
+      Enum.split_with(known, fn item ->
+        not String.starts_with?(elem(existing[item.item_key], 1), @fingerprint_version)
+      end)
+
     {changed, unchanged} =
-      Enum.split_with(known, &(elem(existing[&1.item_key], 1) != &1.fingerprint))
+      Enum.split_with(current_version, &(elem(existing[&1.item_key], 1) != &1.fingerprint))
 
     Repo.insert_all(
       MemberSourceItem,
@@ -317,10 +354,22 @@ defmodule Comma.MemberSourceItems do
       end)
     )
 
+    # One-time version rebase: refresh stored content and fingerprint without
+    # disturbing `baseline`, `attention` or `changed_at`, so deploy does not
+    # re-queue previously baselined or settled items in bulk.
+    for item <- rebased do
+      {id, _fingerprint, _quoted, _facts} = existing[item.item_key]
+
+      from(i in MemberSourceItem, where: i.id == ^id)
+      |> Repo.update_all(
+        set: Enum.to_list(Map.take(item, [:quote | @content])) ++ [last_seen_at: now]
+      )
+    end
+
     # Changed source text is new evidence: the item returns to every consumer,
     # unless this recording is a baseline.
     for item <- changed do
-      {id, _fingerprint, _quoted} = existing[item.item_key]
+      {id, _fingerprint, _quoted, _facts} = existing[item.item_key]
 
       from(i in MemberSourceItem, where: i.id == ^id)
       |> Repo.update_all(
@@ -330,13 +379,18 @@ defmodule Comma.MemberSourceItems do
       )
     end
 
-    # The quote is display text, not evidence. A new wording keeps the item's
-    # version, its outcomes and its place in the queue.
+    # The quote is display text, not evidence, and calendar prep facts
+    # (`attendeeCount` / `attendeesSummary`) are excluded from the fingerprint
+    # so rollout or attendee refreshes do not re-screen settled rows. Refresh
+    # changed quote/facts in place while keeping version, outcomes, and queue order.
     for item <- unchanged,
-        {id, _fingerprint, quote} = existing[item.item_key],
-        quote != item.quote do
+        {id, _fingerprint, quote, facts} = existing[item.item_key],
+        updates =
+          if(quote != item.quote, do: [quote: item.quote], else: []) ++
+            if(facts != item.facts, do: [facts: item.facts], else: []),
+        updates != [] do
       from(i in MemberSourceItem, where: i.id == ^id)
-      |> Repo.update_all(set: [quote: item.quote])
+      |> Repo.update_all(set: updates)
     end
 
     stale = DateTime.add(now, -@touch_after_s, :second)
@@ -345,10 +399,59 @@ defmodule Comma.MemberSourceItems do
     from(i in MemberSourceItem, where: i.id in ^unchanged_ids and i.last_seen_at < ^stale)
     |> Repo.update_all(set: [last_seen_at: now])
 
+    retry_cutoff = DateTime.add(now, -@off_window_retry_s, :second)
+
+    # The cap keeps first what can still wait for a consumer (`pending_items/1`):
+    # a retry still in this page or in its recovery window, a deferred or
+    # waiting matter that a recheck or its due time can wake, and a quiet
+    # matter with a due time. Unjudged arrivals come next, then settled history.
     keep =
       from(i in MemberSourceItem,
         where: i.profile_id == ^profile_id and i.source_id == ^source_id,
-        order_by: [desc: i.last_seen_at, desc: i.id],
+        order_by: [
+          desc:
+            fragment(
+              """
+              CASE
+                WHEN NOT ? AND (
+                  (coalesce(?->>'outcome', '') = 'retry'
+                    AND coalesce((?->>'attempts')::int, 0) < ?
+                    AND (? = ANY(?)
+                      OR (coalesce((?->>'failures')::int, 0) < ?
+                        AND ? >= ?
+                        AND (? NOT IN ('gmail', 'outlook') OR ?))))
+                  OR (coalesce(?->>'outcome', '') IN ('deferred', 'waiting')
+                    AND (coalesce((?->>'rechecks')::int, 0) < ? OR ?->>'due_at' IS NOT NULL))
+                  OR (coalesce(?->>'outcome', '') = 'quiet' AND ?->>'due_at' IS NOT NULL)
+                ) THEN 2
+                WHEN NOT ? AND ? IS NULL THEN 1
+                ELSE 0
+              END
+              """,
+              i.baseline,
+              i.attention,
+              i.attention,
+              ^@judge_attempts,
+              i.item_key,
+              type(^keys, {:array, :string}),
+              i.attention,
+              ^@off_window_retry_failures,
+              i.changed_at,
+              ^retry_cutoff,
+              i.toolkit,
+              ^truncated?,
+              i.attention,
+              i.attention,
+              ^@rechecks,
+              i.attention,
+              i.attention,
+              i.attention,
+              i.baseline,
+              i.attention
+            ),
+          desc: i.last_seen_at,
+          desc: i.id
+        ],
         limit: @per_source_limit,
         select: i.id
       )
@@ -373,7 +476,7 @@ defmodule Comma.MemberSourceItems do
       app: String.slice(item["app"] || "", 0, 80),
       title: String.slice(item["title"] || "", 0, 200),
       excerpt: String.slice(item["excerpt"] || "", 0, 1_200),
-      context: bounded_map(item["context"], 1_200),
+      context: bounded_map(item["context"], 1_600),
       prompt_context: String.slice(item["prompt_context"] || "", 0, 600),
       quote: bounded_quote(item["quote"]),
       relationship: item["relationship"],
@@ -384,11 +487,31 @@ defmodule Comma.MemberSourceItems do
 
     # Version the complete stored evidence, not the shortened prompt alone.
     # Dates, roles and surrounding context can change the required action.
-    # The quote is display text outside the version.
-    version = Enum.map(@content -- [:fingerprint], &[&1, content[&1]])
-    fingerprint = :crypto.hash(:sha256, Jason.encode!(version)) |> Base.encode16(case: :lower)
+    # The quote is display text outside the version; prep-only attendee facts
+    # are excluded from the version so adding them does not force one-time
+    # re-screening of already-settled calendar rows on rollout.
+    fp_content = fingerprint_content(content)
+    version = Enum.map(@content -- [:fingerprint], &[&1, fp_content[&1]])
+    digest = :crypto.hash(:sha256, Jason.encode!(version)) |> Base.encode16(case: :lower)
+    # Keep within RecommendationContract's 64-character `sourceVersion` cap.
+    fingerprint = @fingerprint_version <> binary_part(digest, 0, 61)
     Map.put(content, :fingerprint, fingerprint)
   end
+
+  defp fingerprint_content(%{toolkit: toolkit} = content)
+       when toolkit in ~w(googlecalendar outlook) do
+    content
+    |> Map.update(:facts, %{}, fn
+      %{} = facts -> Map.drop(facts, ~w(attendeeCount attendeesSummary))
+      other -> other
+    end)
+    |> Map.update(:context, nil, fn
+      %{} = ctx -> Map.drop(ctx, ~w(attendeeCount))
+      other -> other
+    end)
+  end
+
+  defp fingerprint_content(content), do: content
 
   defp bounded_map(value, limit) when is_map(value) do
     if byte_size(Jason.encode!(value)) <= limit,
@@ -406,9 +529,11 @@ defmodule Comma.MemberSourceItems do
 
   # An arrived or changed item without an outcome waits for consumers while
   # its source's latest successful collection still returns it and no later
-  # attempt failed as a whole. Mail the member answered, or a thread that no
-  # longer needs them, leaves the result and stops waiting. A judged item
-  # waits again from its budget `next_at` or its `due_at`.
+  # attempt failed as a whole. A retryable item from a rolling-window source or
+  # a truncated read keeps a bounded recovery window after its key leaves the
+  # latest page; mail the member answered in a non-truncated mailbox read
+  # stops waiting at once. A judged item waits again from its budget `next_at`
+  # or its `due_at`.
   defp pending_items(profile_id) do
     now = SystemsClock.system_time(:millisecond)
 
@@ -417,17 +542,31 @@ defmodule Comma.MemberSourceItems do
       on: s.profile_id == i.profile_id and s.source_id == i.source_id,
       where:
         i.profile_id == ^profile_id and
-          (is_nil(i.attention) or
-             (fragment("?->>'outcome'", i.attention) == "retry" and
-                fragment("(?->>'attempts')::int", i.attention) < ^@judge_attempts) or
-             (fragment("?->>'outcome'", i.attention) in ["deferred", "waiting"] and
-                fragment("(?->>'next_at')::bigint", i.attention) <= ^now and
-                fragment("coalesce((?->>'rechecks')::int, 0)", i.attention) < ^@rechecks) or
-             (fragment("?->>'outcome'", i.attention) in ["deferred", "waiting", "quiet"] and
-                fragment("(?->>'due_at')::bigint", i.attention) <= ^now)) and
           not i.baseline and
-          fragment("? = ANY(?)", i.item_key, s.current_keys) and
-          (is_nil(s.failure) or s.attempted_at <= s.collected_at)
+          not is_nil(s.collected_at) and
+          (is_nil(s.failure) or s.attempted_at <= s.collected_at) and
+          (((is_nil(i.attention) or
+               fragment("?->>'outcome' IS NULL", i.attention) or
+               (fragment("?->>'outcome'", i.attention) == "retry" and
+                  fragment("coalesce((?->>'attempts')::int, 0)", i.attention) < ^@judge_attempts) or
+               (fragment("?->>'outcome'", i.attention) in ["deferred", "waiting"] and
+                  fragment("(?->>'next_at')::bigint", i.attention) <= ^now and
+                  fragment("coalesce((?->>'rechecks')::int, 0)", i.attention) < ^@rechecks) or
+               (fragment("?->>'outcome'", i.attention) in ["deferred", "waiting", "quiet"] and
+                  fragment("(?->>'due_at')::bigint", i.attention) <= ^now)) and
+              fragment("? = ANY(?)", i.item_key, s.current_keys)) or
+             (fragment("?->>'outcome'", i.attention) == "retry" and
+                fragment("coalesce((?->>'attempts')::int, 0)", i.attention) < ^@judge_attempts and
+                fragment("coalesce((?->>'failures')::int, 0)", i.attention) <
+                  ^@off_window_retry_failures and
+                fragment(
+                  "? >= ? - make_interval(secs => ?)",
+                  i.changed_at,
+                  s.collected_at,
+                  ^@off_window_retry_s
+                ) and
+                (i.toolkit not in ["gmail", "outlook"] or
+                   fragment("coalesce(?->>'truncated', '') = 'true'", s.bound))))
     )
   end
 
@@ -438,7 +577,11 @@ defmodule Comma.MemberSourceItems do
   def pending(profile_id, limit) do
     # Items retried after an unusable judgment come after new arrivals.
     from(i in pending_items(profile_id),
-      order_by: [asc: not is_nil(i.attention), asc: i.changed_at, asc: i.id],
+      order_by: [
+        asc: not is_nil(fragment("?->>'outcome'", i.attention)),
+        asc: i.changed_at,
+        asc: i.id
+      ],
       limit: ^(limit * 3)
     )
     |> Repo.all()
@@ -481,14 +624,85 @@ defmodule Comma.MemberSourceItems do
   end
 
   @doc """
-  Records one consumer outcome for items it judged. An item that collection
+  Runs `fun` only while `item` still exists unchanged in a collected,
+  non-failed source (`FOR SHARE` lock on item and source state). Used by
+  time-driven triggers (such as pre-meeting prep) that fire on already
+  settled or baseline calendar rows.
+  """
+  def while_current(%MemberSourceItem{} = item, fun) when is_function(fun, 0) do
+    Repo.transaction(fn ->
+      current =
+        from(i in MemberSourceItem,
+          join: s in MemberSourceState,
+          on: s.profile_id == i.profile_id and s.source_id == i.source_id,
+          where:
+            i.id == ^item.id and
+              i.profile_id == ^item.profile_id and
+              i.fingerprint == ^item.fingerprint and
+              not is_nil(s.collected_at) and
+              (is_nil(s.failure) or s.attempted_at <= s.collected_at) and
+              fragment("? = ANY(?)", i.item_key, s.current_keys),
+          select: i.id,
+          lock: "FOR SHARE"
+        )
+        |> Repo.one()
+
+      with id when is_binary(id) <- current,
+           {:ok, result} <- fun.() do
+        result
+      else
+        nil -> Repo.rollback(:withdrawn)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc """
+  Records one consumer outcome for items it judged, atomically preserving any
+  existing `prep_*` meeting-prep fields in SQL so primary settlement and
+  meeting-prep updates cannot overwrite each other. An item that collection
   changed in the meantime keeps no outcome and is judged again.
   """
   def settle(items, attention) when is_list(items) and is_map(attention) do
     Enum.each(items, fn %MemberSourceItem{id: id, fingerprint: fingerprint} ->
-      from(i in MemberSourceItem, where: i.id == ^id and i.fingerprint == ^fingerprint)
-      |> Repo.update_all(set: [attention: attention])
+      from(i in MemberSourceItem,
+        where: i.id == ^id and i.fingerprint == ^fingerprint,
+        update: [
+          set: [
+            attention:
+              fragment(
+                "jsonb_strip_nulls(jsonb_build_object('prep_start_ms', ?->'prep_start_ms', 'prep_checked_at', ?->'prep_checked_at', 'prep_deferred_start_ms', ?->'prep_deferred_start_ms', 'prep_deferred_until', ?->'prep_deferred_until')) || ?::jsonb",
+                i.attention,
+                i.attention,
+                i.attention,
+                i.attention,
+                ^attention
+              )
+          ]
+        ]
+      )
+      |> Repo.update_all([])
     end)
+  end
+
+  @doc """
+  Atomically merges `patch` into the item's JSONB `attention` map without
+  overwriting unrelated keys (such as `outcome`, `assessment`, or `due_at`),
+  only while `fingerprint` matches.
+  """
+  def merge_attention(%MemberSourceItem{id: id, fingerprint: fingerprint}, patch)
+      when is_map(patch) do
+    from(i in MemberSourceItem,
+      where: i.id == ^id and i.fingerprint == ^fingerprint,
+      update: [
+        set: [
+          attention: fragment("coalesce(?, '{}'::jsonb) || ?::jsonb", i.attention, ^patch)
+        ]
+      ]
+    )
+    |> Repo.update_all([])
+
+    :ok
   end
 
   @doc """

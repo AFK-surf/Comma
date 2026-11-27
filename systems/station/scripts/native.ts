@@ -45,7 +45,7 @@ const ZIG = "0.16.0";
 const STORE = (process.env.COMMA_STATION_NATIVE_URL ?? "https://cue-release.afk.surf/station-native").replace(/\/$/, "");
 /// …and written (CI, with CLOUDFLARE_R2_*): that prefix of the bucket.
 const PREFIX = "station-native/";
-const VENDORED = ["vendor/iroh", "vendor/iroh-mdns-address-lookup", "vendor/noq-udp", "vendor/swarm-discovery"];
+const VENDORED = ["vendor/iroh-mdns-address-lookup", "vendor/n0-mainline", "vendor/noq-udp", "vendor/swarm-discovery"];
 
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "android-arm64" | "ios-arm64" | "ios-sim-arm64" | "wasm32";
 type Part = {

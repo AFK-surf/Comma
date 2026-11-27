@@ -219,6 +219,14 @@ data class PreparedChatMessage(
      * bubble; 0 without one. Only the last bubble of a run of one speaker has a tail.
      */
     val tailPx: Int = 0,
+    /** Another person's name over their bubble in a Task together ([ChatMessage.writerLabel]), and where it sits. */
+    val writerLabel: StaticLayout? = null,
+    val writerLabelTopPx: Int = 0,
+    /**
+     * The avatar gutter left of a speaker's row in a Task ([ChatMessage.speaker]); 0 for any other row. The list sets
+     * the row this far in ([SpeakerAvatars]), and the row is laid out in what is left, so every left edge lines up.
+     */
+    val speakerGutterPx: Int = 0,
 ) {
     /** A speaker's message bubble, which takes a tail when it ends a run of that speaker's bubbles. */
     val tailable: Boolean get() = drawBubble && brief == null && message.cardKind == null &&
@@ -339,12 +347,13 @@ class MessageLayoutPrecomputer(
             // A row whose tail came or went is still unchanged underneath; the tail is put back below.
             val unchanged = previousById[message.id]?.takeIf { it.cacheKey.removeSuffix(TAIL_KEY) == key }
             val cached = unchanged ?: cache.get(key)
-            val prepared = cached ?: create(
+            val gutter = if (message.speaker != null) (SPEAKER_GUTTER_DP * density).toInt() else 0
+            val prepared = (cached ?: create(
                 message = message,
                 previousRole = previousRole,
                 precedingTail = precedingTail,
                 cacheKey = key,
-                viewportWidthPx = viewportWidthPx,
+                viewportWidthPx = viewportWidthPx - gutter,
                 density = density,
                 fontScale = fontScale,
                 darkTheme = darkTheme,
@@ -359,7 +368,7 @@ class MessageLayoutPrecomputer(
                     cache.put(key, built)
                     streamingScratch.remove(message.id)
                 }
-            }
+            }).let { if (it.speakerGutterPx == gutter) it else it.copy(speakerGutterPx = gutter) }
             if (message.status.isActive) {
                 liveIds.add(message.id)
                 streamingScratch[message.id] = prepared
@@ -380,7 +389,7 @@ class MessageLayoutPrecomputer(
         val depth = (BubbleTail.DEPTH_DP * density).toInt()
         return rows.mapIndexed { index, row ->
             val next = rows.getOrNull(index + 1)
-            val continues = next != null && next.message.role == row.message.role &&
+            val continues = next != null && next.message.role == row.message.role && next.message.speaker == row.message.speaker &&
                 next.message.cardKind != TimelineBlockKinds.REPLY_ERROR &&
                 next.message.cardPayload != TimelineBlockKinds.LIVE_STATUS_SKELETON
             withTail(row, if (row.tailable && !continues) depth else 0)
@@ -419,6 +428,9 @@ class MessageLayoutPrecomputer(
     ): PreparedChatMessage {
         fun dp(value: Float) = (value * density).toInt()
         fun sp(value: Float) = value * density * fontScale
+        // A light platform bubble (WeChat, Telegram) takes that platform's dark text.
+        val palette = PlatformBubble.colors(message.platformSource, darkTheme)?.text
+            ?.takeIf { message.role == ChatRole.USER }?.let { palette.copy(userText = it) } ?: palette
 
         val role = message.role
         val topMargin = (when {
@@ -515,8 +527,11 @@ class MessageLayoutPrecomputer(
         val isCard = !message.cardKind.isNullOrBlank() && !isPhotoContent && !isTransientStatus
         val isBrief = message.cardKind == TimelineBlockKinds.TASK_BRIEF
         val contents = MessageContentParser.parse(message, statusLabels, jsonParser)
-        // An agent message in the chat is a grey bubble, mirroring the user's; images alone are not.
-        val agentBubble = bubbles && role == ChatRole.AGENT && message.cardKind == null &&
+        // An agent message in the chat is a grey bubble, mirroring the user's; images alone are not. Another person's
+        // message in a Task together (`otherWriterId != null`) is a speaker's, so it keeps its bubble on the task page
+        // too. Multi-session worker rows carry `otherWriterName` for their session label with `otherWriterId == null`
+        // and must stay flat text when `bubbles == false`.
+        val agentBubble = (bubbles || message.otherWriterId != null) && role == ChatRole.AGENT && message.cardKind == null &&
             contents.any { it !is MessageContent.Image }
         val speakerBubble = role == ChatRole.USER || agentBubble
         val horizontalPadding = when {
@@ -535,6 +550,8 @@ class MessageLayoutPrecomputer(
             // A bubble stops 42dp short of the opposite margin, on either side.
             speakerBubble -> dp(sideMarginDp + USER_BUBBLE_OPPOSITE_DP)
             role == ChatRole.AGENT -> dp(sideMarginDp)
+            // A Task's notice sits on the speakers' left edge and stops where their bubbles stop.
+            message.speaker != null -> dp(sideMarginDp + USER_BUBBLE_OPPOSITE_DP)
             else -> dp(56f)
         }
         val sideMargin = dp(sideMarginDp)
@@ -588,7 +605,16 @@ class MessageLayoutPrecomputer(
         val bubblePad = if (drawBubble) verticalPadding else 0
         val reusable = reusablePrefix(previousStreaming, contents, cacheKey)
         val blocks = ArrayList<PreparedContentBlock>(contents.size + 2)
-        var y = topMargin + bubblePad
+        // Another person's name over the first bubble of their run, as an Agent's name sits over its own.
+        val writerLabel = message.otherWriterName?.takeIf { message.writerLabel }?.let { name ->
+            val labelPaint = textPaint(ChatRole.SYSTEM, palette, sp(WRITER_LABEL_SP), UiSansTypeface).apply {
+                color = palette.secondaryText
+            }
+            buildLayout(name, 0, name.length, labelPaint, maxTextWidth, lineSpacingExtra(labelPaint, sp(WRITER_LABEL_LINE_SP)))
+        }
+        val writerLabelTop = topMargin
+        val contentTop = topMargin + (writerLabel?.let { it.height + dp(WRITER_LABEL_GAP_DP) } ?: 0)
+        var y = contentTop + bubblePad
         var widest = 0
         var briefTitle: StaticLayout? = null
         if (isBrief) {
@@ -597,7 +623,7 @@ class MessageLayoutPrecomputer(
             briefTitle = buildLayout(title, 0, title.length, titlePaint, maxTextWidth, lineSpacingExtra(titlePaint, sp(18f)))
             y += briefTitle.height + dp(BRIEF_TITLE_GAP_DP)
         }
-        val briefTitleTop = topMargin + bubblePad
+        val briefTitleTop = contentTop + bubblePad
         val briefContentTop = y
 
         // h1–h6 以前是同一个 17.5sp，一级和六级长得一模一样。比例按常见编辑器的标题梯度
@@ -978,7 +1004,7 @@ class MessageLayoutPrecomputer(
                 blocks[index] = block.copy(leftInsetPx = block.leftInsetPx + minWidthSlack)
             }
         }
-        val bubbleTop = topMargin
+        val bubbleTop = contentTop
         var cellHeight = y + bubblePad
         val bubbleHeight = if (drawBubble) cellHeight - bubbleTop else 0
 
@@ -1047,6 +1073,8 @@ class MessageLayoutPrecomputer(
             sendFailedNote = failedNote,
             sendFailedNoteTopPx = failedNoteTop,
             brief = brief,
+            writerLabel = writerLabel,
+            writerLabelTopPx = writerLabelTop,
         )
     }
 
@@ -1504,11 +1532,27 @@ class MessageLayoutPrecomputer(
         append(':')
         append(message.attachment.hashCode())
         append(':')
+        append(message.attachments.hashCode())
+        append(':')
         append(message.imageSource.hashCode())
         append(':')
         append(message.imageDimensions)
         append(':')
         append(message.role)
+        append(':')
+        append(message.platformSource)
+        append(':')
+        append(message.otherWriterName.hashCode())
+        append(':')
+        append(message.otherWriterId)
+        append(':')
+        append(message.otherWriterAvatar.hashCode())
+        append(':')
+        append(message.writerLabel)
+        append(':')
+        append(message.speaker)
+        append(':')
+        append(message.speakerAvatar)
         append(':')
         append(previousRole)
         append(':')
@@ -1542,6 +1586,13 @@ class MessageLayoutPrecomputer(
         private const val SEND_FAILED_NOTE_SP = 12f
         private const val SEND_FAILED_NOTE_LINE_SP = 16f
         private const val SEND_FAILED_NOTE_GAP_DP = 6f
+        /** Another person's name over their bubble: footnote size, as the desktop's source label and iOS. */
+        private const val WRITER_LABEL_SP = 13f
+        private const val WRITER_LABEL_LINE_SP = 18f
+        private const val WRITER_LABEL_GAP_DP = 4f
+        /** A speaker's avatar in a Task, and the gutter it takes: the avatar and the gap to the row's content. */
+        const val SPEAKER_AVATAR_DP = 24f
+        const val SPEAKER_GUTTER_DP = 32f
         private const val REPLY_ERROR_RADIUS_DP = 12f
         private const val REPLY_ERROR_RETRY_ROW_DP = 28f
         /** Lines a closed task brief shows. */

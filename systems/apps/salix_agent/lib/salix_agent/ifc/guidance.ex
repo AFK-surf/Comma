@@ -261,7 +261,7 @@ defmodule SalixAgent.IFC.Guidance do
   defp next_action(%Reason{clause: clause})
        when clause in [:flow_denied, :membership_unknown, :sealed, :public_egress_denied],
        do:
-         "Retry with an answer that excludes all restricted information from the listed source_failures. Remove that information from the content, then declare only the sources the revised answer actually uses. Removing refs alone does not authorize restricted content. Keep the valid request.\n\nWhere policy permits, request confirmation through ifc.request_declassification. If no safe answer remains, send a generic explanation with sources: [] and no restricted details. A person waiting for an answer gets it unless they told you not to reply, and a refused explanation ends the attempt. Do not retry the unchanged refusal. help(tool=\"ifc\") explains the rules."
+         "Retry with an answer that excludes all restricted information from the listed source_failures. Remove that information from the content, then declare only the sources the revised answer actually uses. Removing refs alone does not authorize restricted content. Keep the valid request.\n\nWhere policy permits, request confirmation through ifc.request_declassification. If no safe answer remains, send a generic explanation with sources: [], such as \"I cannot share that information here\". Do not name a topic, entity, or kind of information learned only from the restricted source, even to say you cannot share it. A person waiting for an answer gets it unless they told you not to reply, and a refused explanation ends the attempt. Do not retry the unchanged refusal. help(tool=\"ifc\") explains the rules."
 
   defp next_action(_reason),
     do:

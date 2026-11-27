@@ -10,7 +10,7 @@ import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { type MachineSession, type Roots, rolloutOf, rolloutsIn } from "../read/machine.ts";
 import { readTimeline, transcriptPath } from "../read/transcript.ts";
-import { AUTO, type Attachment, MANUAL, type Quote, COMMA_STATION_SURFACE, type ThreadRow } from "../store/store.ts";
+import { AUTO, type Attachment, MANUAL, type NewSession, type Quote, COMMA_STATION_SURFACE, type ThreadRow } from "../store/store.ts";
 import type { SessionChange } from "./accounts.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
 import { roomOf } from "./footprint.ts";
@@ -150,6 +150,100 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
   });
   log.info("hub", "session created", { session: key, connect: INTERNAL_CONNECT, runtime, profile: profile.id, model });
   return [key, open ? open(key) : openChat(hub, key, options.createdBy, title)];
+}
+
+/// Like `newSession`, but lets the caller persist the session row, thread row, membership,
+/// slot, and claims in a SINGLE Store SQLite transaction (`persist(prepared)`). If `persist`
+/// throws, cleans up the newly created exclusive workspace directory and clientKey entry so
+/// failed atomic creates leave zero DB rows, zero events, and zero orphan directories.
+export function newSessionAtomic(
+  hub: Hub,
+  options: NewChat,
+  persist: (prepared: NewSession) => ThreadRow,
+  lang: Lang = stationLang(),
+  keyGen: () => string = newChatKey,
+): [string, ThreadRow] {
+  const config = hub.config();
+  const runtime = options.runtime;
+  const profiles = hub.accounts.candidates(runtime, options.host ?? null, lang);
+  if (profiles.length === 0) throw new Error(`no ${runtime} profile configured`);
+  const model = trimmed(options.model);
+  const pinned = options.profile ?? null;
+  let profile;
+  if (pinned !== null) {
+    profile = profiles.find((p) => p.id === pinned);
+    if (!profile) throw new Error(`no ${runtime} profile ${pinned}`);
+    if (model !== null && !runs(profile, model)) throw new Error(tr(lang, "station.profile.modelOff", { profile: profile.name, model }));
+  } else profile = hub.accounts.pick(profiles, model, true);
+  const effort = options.effort ? options.effort : null;
+  if (effort !== null) {
+    const allowed = hub.accounts.modelEfforts(runtime, model, pinned);
+    if (!allowed.includes(effort)) throw new Error(`effort must be one of ${allowed.join(", ")}`);
+  }
+  const sessionsRoot = join(config.dataDir, "sessions", INTERNAL_CONNECT);
+  mkdirSync(sessionsRoot, { recursive: true });
+  mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+
+  // Acquire exclusive directory ownership via non-recursive mkdirSync; retry on EEXIST so a
+  // key collision can NEVER reuse, overwrite, or recursively delete a pre-existing directory.
+  let key = "";
+  let ownedSessionDir: string | null = null;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const candidateKey = keyGen();
+    const candidateDir = join(sessionsRoot, candidateKey.slice(INTERNAL_CONNECT.length + 1));
+    try {
+      mkdirSync(candidateDir);
+      key = candidateKey;
+      ownedSessionDir = candidateDir;
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === "EEXIST") continue;
+      throw e;
+    }
+  }
+  if (ownedSessionDir === null) throw new Error("could not allocate exclusive session directory");
+  const workspace = join(ownedSessionDir, "workspace");
+  const now = hub.now();
+  const client = trimmed(options.clientKey);
+  if (client !== null) {
+    for (const [k, [, at]] of hub.clientKeysMade) if (now - at >= CLIENT_KEY_KEPT_MS) hub.clientKeysMade.delete(k);
+    hub.clientKeysMade.set(key, [Array.from(client).slice(0, 120).join(""), now]);
+  }
+  const title = trimmed(options.title);
+  const prepared: NewSession = {
+    key,
+    connect: INTERNAL_CONNECT,
+    scope: "all",
+    title,
+    createdBy: options.createdBy,
+    runtime,
+    profile: profile.id,
+    profilePinned: pinned !== null,
+    model: model ?? profile.model ?? null,
+    effort,
+    fast: runtime === "codex" ? (options.fast ?? null) : null,
+    workspace,
+    cwd: null,
+    runtimeSessionId: null,
+    token: newToken(),
+    createdAt: now,
+    lastActiveAt: now,
+  };
+  let thread: ThreadRow;
+  try {
+    mkdirSync(workspace);
+    thread = persist(prepared);
+  } catch (err) {
+    hub.clientKeysMade.delete(key);
+    if (ownedSessionDir !== null) {
+      try {
+        rmSync(ownedSessionDir, { recursive: true, force: true });
+      } catch {}
+    }
+    throw err;
+  }
+  log.info("hub", "session created", { session: key, connect: INTERNAL_CONNECT, runtime, profile: profile.id, model });
+  return [key, thread];
 }
 
 /// Changes how a session runs from its next turn on: another profile of its runtime (another account, say), another

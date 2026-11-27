@@ -78,6 +78,7 @@ object IconSources {
         outlined("ic_task_cancelled", "Task status: cancelled", "IconCircleX"),
         outlined("ic_task_done", "Task status: done", "IconCircleCheck"),
         outlined("ic_task_in_progress", "Task status: in progress (spins)", "IconLoader"),
+        outlined("ic_task_loops", "Task status: automated (scheduled & watching)", "IconInfinity"),
         outlined("ic_task_needs_review", "Task status: needs review; connection error illustration", "IconBubbleAlert"),
         outlined(
             "ic_task_neutral", "Task without a known status", "IconCircleDashed",
@@ -159,6 +160,8 @@ object IconSources {
         outlined("ic_nav_chevron_down", "Router chat: close", "IconChevronDownMedium"),
         outlined("ic_people", "Settings: account", "IconPeople", note = "source sets no line cap"),
         outlined("ic_plus_small", "Task details: add a label", "IconPlusSmall", note = "source sets no line join"),
+        outlined("ic_routine_cleared", "Routines: every card cleared", "IconCelebrate"),
+        outlined("ic_chat_request_key", "Chat: a request to fill in a key or secret for a service without a logo", "IconKey2"),
         outlined("ic_routine_puzzle", "Home: an app without a logo", "IconPuzzle", note = "square or miter caps and joins drawn round"),
         outlined("ic_settings_arrow_box_left", "Settings: sign out", "IconArrowBoxLeft"),
         outlined("ic_settings_bell", "Settings: notifications", "IconBell"),
@@ -176,6 +179,8 @@ object IconSources {
         filled("ic_tab_home_fill", "Tab bar: Home, selected", "IconHomeRoof"),
         outlined("ic_tab_inbox", "Tab bar: Inbox", "IconBox2", note = "square or miter caps and joins drawn round"),
         filled("ic_tab_inbox_fill", "Tab bar: Inbox, selected", "IconBox2"),
+        outlined("ic_tab_people_group", "Tab bar: People", "IconPeopleGroup2"),
+        filled("ic_tab_people_group_fill", "Tab bar: People, selected", "IconPeopleGroup2"),
         outlined("ic_tab_people", "Tab bar: Settings without an avatar", "IconPeopleCircle", note = "source sets no line cap"),
         outlined("ic_tab_search", "Tab bar: task search", "IconMagnifyingGlass", note = "source sets no line join"),
         outlined("ic_tab_apps", "Tab bar: Apps; an app without an icon", "IconSquareGridCircle", note = "source strokes are 1.995 wide; drawn 2"),
@@ -199,7 +204,7 @@ object IconSources {
     private val CENTRAL_MODEL_LOGOS = setOf("meta", "mistral", "openai", "xai")
 
     /** Provider marks drawn in one colour, which follow the text colour instead of keeping their own. */
-    val MONOCHROME_PROVIDERS = setOf("github", "notion")
+    val MONOCHROME_PROVIDERS = setOf("blender", "github", "notion", "x")
 
     val brandMarks: List<BrandMark> = listOf(
         BrandMark(
@@ -209,7 +214,7 @@ object IconSources {
                 "other uses need Google's consent (https://about.google/brand-resource-center/)",
             note = "the standard colour G from the Android light button SVG, rendered at 20dp for each density with a transparent background",
         ),
-    ) + listOf("canva", "dropbox", "feishu", "github", "gmail", "google", "googlecalendar", "googledrive", "hubspot", "lark",
+    ) + listOf("canva", "dropbox", "feishu", "github", "gmail", "googlecalendar", "googledrive", "hubspot", "lark",
         "linear", "notion", "outlook", "posthog", "signal", "slack", "stripe", "telegram", "wechat",
         "imessage").map { key ->
         BrandMark(
@@ -218,6 +223,24 @@ object IconSources {
             terms = "the provider's own mark, used unmodified only to name the provider's connected app",
             note = "rendered from the iOS vector artwork at 32dp for each density with a transparent background" +
                 if (key in MONOCHROME_PROVIDERS) "; monochrome, so it is tinted with the text colour" else "",
+        )
+    } + listOf("amap", "baidumaps", "blender", "didi", "fastmail", "flomo", "gitee", "google", "googlecolab", "luckin", "pixso", "qcc",
+        "stillfail", "tencentdocs", "tencentmaps", "x", "zhipusearch").map { key ->
+        BrandMark(
+            "provider_$key", "Home and routines: the mark of a connected app",
+            source = "the desktop's provider logo resolver (`@comma/ui` provider brand logos), exported with " +
+                "`export:provider-marks`, the same as the iOS app's `provider-$key` asset" +
+                if (key == "x") "; the X mark is the Central Icons glyph IconX ($OUTLINED) the desktop draws" else "",
+            terms = "the provider's own mark, used unmodified only to name the provider's connected app",
+            note = "rendered at 32dp for each density with a transparent background" +
+                if (key in MONOCHROME_PROVIDERS) "; monochrome, so it is tinted with the text colour" else "",
+        )
+    } + listOf("feishuproject", "meegle").map { key ->
+        BrandMark(
+            "provider_$key", "Home and routines: the mark of a connected app",
+            source = "the site icon project.feishu.cn and meegle.com publish (one mark for both), the same as the iOS app's `provider-$key` asset",
+            terms = "the provider's own mark, used unmodified only to name the provider's connected app",
+            note = "rendered from the 360px PNG at 32dp for each density with a transparent background",
         )
     } + listOf("anthropic", "deepseek", "glm", "google", "kimi", "meta", "minimax", "mistral", "openai", "qwen", "xai").map { key ->
         BrandMark(

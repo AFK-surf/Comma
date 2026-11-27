@@ -6,6 +6,7 @@ defmodule SalixIFC.CodecTest do
   @atoms [
     :public,
     :agent_private,
+    :unclassified_non_im,
     {:space, "T0ABC"},
     {:scope, "T0ABC", "C123"},
     {:tag, "finance"},

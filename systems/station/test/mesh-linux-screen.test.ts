@@ -38,15 +38,17 @@ const GRANT = new GrantKey();
 const WS = "ws_1";
 const ISSUED = 1_700_000_000;
 
-/// A station serving Comma's mesh with this desktop as its only screen, and its owner's client on it.
-async function setup(t: TestContext, desktop: ScreenSource, sub = "user_1") {
-  const world = { access: "full" as Access, drive: true };
-  const admissions = new DeviceMeshAdmissions();
+/// A station serving Comma's mesh with this desktop as its only screen, and its owner's client on it. `looks`: a Task's
+/// sandbox, whose "owner" is the Task's and looks only; its access is off, as that of a station that set none.
+async function setup(t: TestContext, desktop: ScreenSource, sub = "user_1", looks = false) {
+  const world = { access: (looks ? "off" : "full") as Access, drive: true };
+  const admissions = new DeviceMeshAdmissions({ looks });
   admissions.set({}, deviceMeshFacts({ workspace: WS, grant_keys: { keys: [GRANT.jwk] }, revocations: [], owner: "user_1", relay_urls: [] }));
   const changes = new Set<() => void>();
   const screens = makeScreenViews({
     sources: () => [desktop],
     access: () => world.access,
+    looks: () => admissions.looks,
     up: () => true,
     mayView: (member) => admissions.mayView(member),
     mayControl: (member) => world.drive && admissions.mayControl(member),
@@ -188,6 +190,35 @@ test("a Linux desktop is refused to a member who is not the computer's owner, an
   assert.equal(lowered.response.status, 403);
   // Neither started a capture.
   assert.equal(fake.lines().filter((l) => l.ffmpeg).length, 0);
+});
+
+test("a Task's sandbox shows its display to the Task's owner, who does not drive it and is served nothing else", async (t) => {
+  const fake = fakeX11Tools();
+  const watching = watch(fake.log, changed);
+  t.after(() => watching.close());
+  const desktop = new X11Desktop({ env: fake.env, changed: () => {} });
+  t.after(async () => (await desktop.close(), fake.done()));
+  // Another member is refused, as on a computer.
+  const stranger = await setup(t, desktop, "user_9", true);
+  await assert.rejects(openView(stranger.client, stranger.peer, { codecs: ["h264"], control: false }), { code: "unauthorized" });
+
+  // The Task's owner sees it, though the sandbox has no access setting (off, as a station's is unset).
+  const s = await setup(t, desktop, "user_1", true);
+  const view = await openView(s.client, s.peer, { codecs: ["h264"], control: true, maxWidth: 640, maxHeight: 400 });
+  assert.equal(view.response.status, 200);
+  await until(() => view.videos().length === 1);
+  // Control is refused as it opens and when asked again, and nothing is posted to the display.
+  view.send(encodeScreenControl(true));
+  view.send(input({ type: "move", x: 0.5, y: 0.5, mods: [] }));
+  await until(() => view.states().filter((state) => "refused" in state).length >= 1);
+  view.send(encodeScreenAck(view.videos()[0]!.ts));
+  await until(() => view.videos().length >= 2);
+  assert.deepEqual(fake.posted(), []);
+  view.finish();
+  await view.read;
+
+  // The station's own pages, which a computer's owner reads over the mesh, are not the Task owner's.
+  assert.equal((await s.client.request(s.peer, { method: "GET", path: "/overview" })).status, 403);
 });
 
 /// Runs `args` until what it says passes `ok` (each run waits on the X server, nothing else).

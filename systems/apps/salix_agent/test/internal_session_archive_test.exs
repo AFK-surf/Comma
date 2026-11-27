@@ -772,6 +772,52 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     assert Enum.any?(records, &(&1.kind == "async_result"))
   end
 
+  # A compaction replaces the messages that carried the adopted provider
+  # states, not the context the model adopted from them. Neither the archive
+  # nor a reload may send the migration notice or the baseline again.
+  test "compaction, archive and reload keep the adopted context provider states" do
+    agent_id = SalixAgent.TestSupport.new_agent_id()
+    SalixAgent.TestSupport.create_control_agent!(agent_id)
+    adopted = SalixAgent.ContextProviders.current_state(%{})
+
+    seed_session(agent_id, [
+      deliver(1),
+      %{
+        "type" => "assistant",
+        "session_id" => @session,
+        "message_id" => 2,
+        "content" => "done",
+        "created_at" => 1_002,
+        "do_not_send_to_llm" => %{"context_provider_states" => adopted}
+      },
+      deliver(3)
+    ])
+
+    assert {:ok, compacted} = InternalSessionStore.commit(agent_id, @session, [compaction(2)])
+    assert SalixAgent.ContextProviders.provider_states(compacted) == adopted
+
+    assert {:ok, :archived} = archive_all(agent_id)
+    assert {:ok, reloaded} = InternalSessionStore.read(agent_id, @session)
+
+    refute Enum.any?(
+             InternalSession.get(reloaded, :messages),
+             &((&1[:role] || &1["role"]) == "assistant")
+           )
+
+    assert SalixAgent.ContextProviders.provider_states(reloaded) == adopted
+
+    messages =
+      case SalixAgent.ContextProviders.prepare_activation_delta(reloaded, %{}) do
+        {:delta, %{messages: messages}} -> messages
+        :none -> []
+      end
+
+    refute Enum.any?(
+             messages,
+             &(&1["runtime_message_type"] in ["migration_notice", "runtime_guidance"])
+           )
+  end
+
   test "a page over a sparse archive transfers only the spans holding messages" do
     agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 

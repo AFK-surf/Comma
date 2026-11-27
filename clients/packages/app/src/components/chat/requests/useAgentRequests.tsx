@@ -16,6 +16,8 @@ export const AgentRequestCardsContext = createContext<AgentRequestCards | undefi
   undefined
 );
 
+const NO_REQUESTS: readonly AgentRequest[] = [];
+
 /**
  * The conversation's request cards. A card whose reply has come sits in that reply's row, after its text
  * (`AgentRequestCardsContext`), so the Agent's later messages in the same turn do not move it; one whose reply has not
@@ -32,7 +34,11 @@ export function useAgentRequests({
   groupId: string;
   conversationId: string | undefined;
   messages: readonly { messageId: string; role: string }[];
-}): { cards: AgentRequestCards | undefined; tails: AnchoredTail[] } {
+}): {
+  cards: AgentRequestCards | undefined;
+  requests: readonly AgentRequest[];
+  tails: AnchoredTail[];
+} {
   // A live stream of the server's: let go as soon as no view shows the conversation, so none is kept open for one the
   // window left (or for another account's conversation once the account changes).
   const { value } = useTopic(
@@ -43,7 +49,8 @@ export function useAgentRequests({
   );
   const requests = value?.requests;
   return useMemo(() => {
-    if (!requests?.length || !conversationId) return { cards: undefined, tails: [] };
+    if (!requests?.length || !conversationId)
+      return { cards: undefined, requests: NO_REQUESTS, tails: [] };
     const byReply = new Map<string, readonly AgentRequest[]>();
     const tails: AnchoredTail[] = [];
     for (const group of groupAgentRequestsByAnchor(requests, messages)) {
@@ -63,7 +70,7 @@ export function useAgentRequests({
         ),
       });
     }
-    return { cards: { groupId, conversationId, byReply }, tails };
+    return { cards: { groupId, conversationId, byReply }, requests, tails };
   }, [requests, messages, conversationId, groupId]);
 }
 

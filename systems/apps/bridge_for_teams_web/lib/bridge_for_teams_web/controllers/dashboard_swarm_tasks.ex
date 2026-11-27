@@ -153,7 +153,12 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
   # again.
   defp create_error({:runs_on, reason, _source}), do: place_error(reason)
 
-  defp create_error({:model, {:not_on_station, _models}}),
+  defp create_error(:teams_subscription_required),
+    do:
+      {:error, 402, "teams_subscription_required",
+       gettext("Renew the Teams subscription before creating a task."), %{}}
+
+  defp create_error({:model, {kind, _models}}) when kind in [:not_on_station, :not_on_stillfail],
     do:
       {:error, 422, "invalid_model",
        gettext("That station has no profile with this model enabled. Choose another model."), %{}}

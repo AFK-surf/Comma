@@ -1,6 +1,8 @@
 package surf.comma.android.workspace
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -84,7 +86,9 @@ class WorkspaceStore internal constructor(
      * already open, so its sheet rises; letting the Task go keeps it. One value holds both, so a reader of a request
      * reads the Task it asks for, whenever it runs.
      */
-    data class OpenTask(val id: String?, val reveal: Int)
+    /** [group]: the Group of a Collaborative Task another person hosts, read through that Task's own routes (the core
+     *  picks them by its Group); null for a Task of the member's own Group. */
+    data class OpenTask(val id: String?, val reveal: Int, val group: String? = null)
 
     fun start() {
         io.launch { auth.conversationScope.collect(::bind) }
@@ -143,9 +147,20 @@ class WorkspaceStore internal constructor(
 
     // MARK: Open Task
 
-    fun openTask(id: String) {
-        mutableOpenTask.update { OpenTask(id, it.reveal + 1) }
-        task(id)?.let(::markSeen)
+    fun openTask(id: String, group: String? = null) {
+        val task = task(id)
+        // A still.fail chat opens at its page in still.fail: no app reaches its station.
+        val url = task?.url
+        if (task != null && url != null) {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    .addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            markSeen(task)
+            return
+        }
+        mutableOpenTask.update { OpenTask(id, it.reveal + 1, group) }
+        task?.let(::markSeen)
     }
 
     fun closeTask() {
@@ -424,9 +439,9 @@ class WorkspaceStore internal constructor(
 
         /**
          * The member does not want to hear about this row's source item again. The core shows the briefing the server
-         * answers, without it; a refusal is a toast.
+         * answers, without it; a refusal is a toast, and then [refused] runs, for a surface that took the row away.
          */
-        fun dismiss(item: RecommendationItem) {
+        fun dismiss(item: RecommendationItem, refused: () -> Unit = {}) {
             val (sourceId, sourceUrl) = item.sourceItem ?: return
             val workspace = workspaceId ?: return
             val jobs = scopeJobs ?: return
@@ -438,6 +453,7 @@ class WorkspaceStore internal constructor(
                     throw error
                 } catch (_: CoreError) {
                     showToast(context.getString(R.string.routines_dismiss_failed), error = true)
+                    refused()
                 }
             }
         }

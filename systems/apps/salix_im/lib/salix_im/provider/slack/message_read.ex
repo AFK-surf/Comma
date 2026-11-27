@@ -12,7 +12,7 @@ defmodule SalixIM.Provider.Slack.MessageRead do
 
   import SalixIM.Provider.Util
 
-  alias SalixIM.Provider.Slack.{API, SearchQuery, ThreadHistory}
+  alias SalixIM.Provider.Slack.{API, Permalink, SearchQuery, ThreadHistory}
   alias SalixIM.SlackMessageMirror
   alias SalixIM.SlackMessageMirror.Row
   alias SalixIM.Triage.ClickHouseReader
@@ -80,11 +80,15 @@ defmodule SalixIM.Provider.Slack.MessageRead do
              (params["root_already_preloaded"] == true or presence(str(params["cursor"]))),
            do: str(params["ts"])
 
+      base_url = Permalink.cached_workspace_url(connect) || "https://slack.com"
+
       projected =
         ThreadHistory.result(envelope,
           before_ts: presence(str(params["before_ts"])),
           limit: limit,
-          exclude_ts: exclude_ts
+          exclude_ts: exclude_ts,
+          channel_id: channel,
+          base_url: base_url
         )
 
       projected = annotate(kind, connect, channel, root_ts, projected, envelope, opts[:oldest])
@@ -515,6 +519,7 @@ defmodule SalixIM.Provider.Slack.MessageRead do
   end
 
   defp annotate_search(connect, parsed, query, page, after_us, sort_dir) do
+    base_url = Permalink.cached_workspace_url(connect) || "https://slack.com"
     messages = List.wrap(page.messages)
     stale_set = search_stale_set(connect, parsed.channel_id, messages)
 
@@ -523,9 +528,16 @@ defmodule SalixIM.Provider.Slack.MessageRead do
         channel = message["channel"] || parsed.channel_id
         ts = message["ts"]
 
+        summary =
+          ThreadHistory.summary(message,
+            keep_channel: true,
+            channel_id: channel,
+            base_url: base_url
+          )
+
         if MapSet.member?(stale_set, {channel, ts}),
-          do: Map.put(message, "stale", true),
-          else: message
+          do: Map.put(summary, "stale", true),
+          else: summary
       end)
 
     %{

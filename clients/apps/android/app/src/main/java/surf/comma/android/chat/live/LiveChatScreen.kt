@@ -200,29 +200,62 @@ class LiveChatScreen(
             owner.lifecycleScope.launch { done(repository.declineRequest(requestId)) }
         }
 
+        /** The requests whose plugin install is under way from their card: one at a time for each. */
+        private val installing = HashSet<String>()
+
+        override fun installPlugin(request: AgentRequest, done: (Boolean) -> Unit) {
+            val plugin = request.plugin ?: return done(false)
+            if (request.id in installing) return done(true)
+            val scope = repository.workspaceScope(owner.lifecycleScope) ?: return done(false)
+            // It goes into the Workspace the request names, which is this conversation's.
+            if (scope.workspaceId != plugin.workspace) {
+                scope.close()
+                return done(false)
+            }
+            installing += request.id
+            surf.comma.android.settings.desktop.PluginInstallFlow(activity, scope, plugin.id, plugin.name,
+                openLink = { authorize(it) }, onEnd = { installing -= request.id }).start(done)
+        }
+
         override fun fill(request: AgentRequest, done: (Boolean) -> Unit) {
             AgentRequestFillDialog(activity, request) { values ->
                 owner.lifecycleScope.launch { done(repository.fillRequest(request.id, values)) }
             }.show()
         }
 
-        override fun shareLocation(requestId: String, done: (AgentLocationAnswer) -> Unit) {
+        override fun shareLocation(requestId: String, always: Boolean, done: (AgentLocationAnswer) -> Unit) {
             deviceLocation.read { position ->
                 when (position) {
                     DeviceLocation.Reading.Denied -> done(AgentLocationAnswer.DENIED)
                     DeviceLocation.Reading.Unavailable -> done(AgentLocationAnswer.UNAVAILABLE)
                     is DeviceLocation.Reading.At -> owner.lifecycleScope.launch {
                         val taken = repository.shareLocation(requestId, position.latitude, position.longitude, position.accuracy)
+                        if (taken && always) LocationSharing.of(activity).set(activity, true) {}
                         done(if (taken) AgentLocationAnswer.TAKEN else AgentLocationAnswer.FAILED)
                     }
                 }
             }
         }
     }
+    private val imageGroupExpanded = HashMap<Long, Boolean>()
+    private val imageGroupBrowse = HashMap<Long, MediaImageGroupBrowseState>()
+    private val imageGroups = object : ImageGroupHost {
+        override fun isExpanded(rowId: Long): Boolean = imageGroupExpanded[rowId] == true
+        override fun setExpanded(rowId: Long, expanded: Boolean) {
+            imageGroupExpanded[rowId] = expanded
+        }
+        override fun browseState(rowId: Long): MediaImageGroupBrowseState =
+            imageGroupBrowse[rowId] ?: MediaImageGroupBrowseState()
+        override fun setBrowseState(rowId: Long, state: MediaImageGroupBrowseState) {
+            imageGroupBrowse[rowId] = state
+        }
+    }
     private val precomputer = MessageLayoutPrecomputer(
-        cardHeights = TaskRefCardLayout(TaskTheme(activity), activity.getString(R.string.chat_task_ref), UiSansTypeface)
+        cardHeights = MediaImageGroupLayout(density, imageGroups::isExpanded)
+            .then(TaskRefCardLayout(TaskTheme(activity), activity.getString(R.string.chat_task_ref), UiSansTypeface))
             .then(QuestionCardLayout(activity, interactive = true))
-            .then(AgentRequestCardLayout(activity)),
+            .then(AgentRequestCardLayout(activity))
+            .then(surf.comma.android.dynamicui.DynamicUiCardLayout(activity)),
         bubbles = true,
     )
     private val palette = ChatPalette.from(activity)
@@ -232,6 +265,7 @@ class LiveChatScreen(
         taskUnavailable = activity.getString(R.string.chat_task_unavailable),
         interactiveUnavailable = activity.getString(R.string.chat_interactive_unavailable),
         file = activity.getString(R.string.chat_file),
+        someone = activity.getString(R.string.chat_someone),
         replyErrorTitle = activity.getString(R.string.chat_reply_error_title),
         replyErrorDetail = activity.getString(R.string.chat_reply_error_detail),
         historyGap = activity.getString(R.string.chat_history_gap),
@@ -268,6 +302,9 @@ class LiveChatScreen(
     private val callLog = CallLogStore(activity)
     /** Bumped when a call is logged, so the timeline lays out again with its row. */
     private val callLogVersion = MutableStateFlow(0)
+    /** Advances when People names another person writing in this conversation (a Task together). */
+    private val namesRead = MutableStateFlow(0)
+    private val writers = surf.comma.android.people.ConversationWriters(activity) { namesRead.value++ }
     private var followNewCall = false
     private var voiceAvailable = false
     private var prepared: List<PreparedChatMessage> = emptyList()
@@ -367,7 +404,7 @@ class LiveChatScreen(
                 awaitLaidOut()
                 // A StateFlow collector that is still rendering skips to the newest state.
                 combine(repository.state, callLogVersion, questionImages.shown, repository.requests,
-                    combine(tasks.known, suggestions) { _, _ -> }) { state, _, _, _, _ -> state }.collect(::render)
+                    combine(tasks.known, suggestions, namesRead) { _, _, _ -> }) { state, _, _, _, _ -> state }.collect(::render)
             }
         }
         owner.lifecycleScope.launch {
@@ -436,6 +473,7 @@ class LiveChatScreen(
 
     fun release() {
         if (ChatMediaLink.reveal == timeline::revealMediaRow) ChatMediaLink.reveal = null
+        if (ChatMediaLink.onAlignGroup == ::alignImageGroup) ChatMediaLink.onAlignGroup = null
         notice.removeCallbacks(noticeTick)
         sendFlow.release()
         composer.cancelDictation()
@@ -444,6 +482,7 @@ class LiveChatScreen(
         draft.close()
         localPreviews = emptyMap()
         tasks.release()
+        writers.close()
         timeline.release()
     }
 
@@ -466,8 +505,10 @@ class LiveChatScreen(
         val shownRequests = repository.requests.value.takeIf { it.scope === state.scope && it.conversationId == state.conversationId }
             ?.requests.orEmpty()
         val knownTasks = tasks.known.value
+        val writers = writers.writers(state.timeline, task = embedded)
         val mapped = withContext(Background.compute) {
-            mapConversation(state, labels, questionImages = questionShown, requests = shownRequests, tasks = knownTasks) { attachment ->
+            mapConversation(state, labels, questionImages = questionShown, requests = shownRequests, tasks = knownTasks,
+                writers = writers) { attachment ->
                 val source = attachment.file.source
                 if (source == null || attachment.display == AttachmentDisplay.FILE) attachment.copy(session = captured?.id) else {
                     val dimensions = frozenSizes.getOrPut(source) {
@@ -489,7 +530,10 @@ class LiveChatScreen(
             text = "", createdAt = 0L, cardKind = SUGGESTIONS_KIND, cardPayload = ChatSuggestion.encode(shownSuggestions),
         )
         // Freeze geometry for the current window; draft thumbnails also survive intermediate states.
-        val shownSources = rows.mapNotNull { it.attachment?.file?.source }.toSet()
+        val shownSources = rows.flatMapTo(HashSet()) { row ->
+            val groupSources = row.attachments.mapNotNull { it.file.source }
+            if (groupSources.isNotEmpty()) groupSources else listOfNotNull(row.attachment?.file?.source)
+        }
         frozenSizes.keys.retainAll(shownSources)
         retryTargets = mapped.retryTargets
         entryRows = mapped.entryRows
@@ -559,25 +603,53 @@ class LiveChatScreen(
         setSuggestions(emptyList())
     }
 
+    private fun alignImageGroup(rowId: Long, imageIndex: Int) {
+        val count = prepared.firstOrNull { it.message.id == rowId }?.message?.imageGroup?.size ?: return
+        val current = imageGroupBrowse[rowId] ?: MediaImageGroupBrowseState()
+        imageGroupBrowse[rowId] = current.alignPreview(count, imageIndex)
+    }
+
     /**
-     * Opens the viewer at [item] over the images and videos of the loaded rows, in timeline order: at most
-     * [MEDIA_WINDOW] on either side of it. Paging there reveals each page's tile here.
+     * Opens the viewer at [item] (and [imageIndex] inside a multi-image group) over the images and videos
+     * of the loaded rows, in timeline order: at most [MEDIA_WINDOW] on either side of it. Paging there
+     * aligns the source group's front card and reveals each page's tile here.
      */
-    private fun openMedia(item: PreparedChatMessage) {
+    private fun openMedia(item: PreparedChatMessage, imageIndex: Int) {
         val session = media.http.session.value ?: return
-        val shown = prepared.filter { row ->
-            val attachment = row.message.attachment
-            attachment != null && attachment.file.source != null && attachment.display != AttachmentDisplay.FILE &&
-                (attachment.session == null || attachment.session == session.id)
+        data class Entry(val rowId: Long, val groupIndex: Int, val viewer: ViewerImage)
+        val flattened = ArrayList<Entry>()
+        for (row in prepared) {
+            val group = row.message.imageGroup
+            if (group.isNotEmpty()) {
+                group.forEachIndexed { idx, att ->
+                    if (att.file.source != null && (att.session == null || att.session == session.id)) {
+                        att.viewerItem()?.let { flattened += Entry(row.message.id, idx, it) }
+                    }
+                }
+            } else {
+                val attachment = row.message.attachment
+                if (attachment != null && attachment.file.source != null && attachment.display != AttachmentDisplay.FILE &&
+                    (attachment.session == null || attachment.session == session.id)
+                ) {
+                    attachment.viewerItem()?.let { flattened += Entry(row.message.id, -1, it) }
+                }
+            }
         }
-        val at = shown.indexOfFirst { it.message.id == item.message.id }
+        val targetGroupIndex = if (item.message.imageGroup.isNotEmpty()) imageIndex else -1
+        val at = flattened.indexOfFirst { it.rowId == item.message.id && it.groupIndex == targetGroupIndex }
         if (at < 0) return
-        val window = shown.subList((at - MEDIA_WINDOW).coerceAtLeast(0), (at + MEDIA_WINDOW + 1).coerceAtMost(shown.size))
-        val items = window.mapNotNull { row -> row.message.attachment!!.viewerItem()?.let { row.message.id to it } }
-        val index = items.indexOfFirst { it.first == item.message.id }
+        val window = flattened.subList((at - MEDIA_WINDOW).coerceAtLeast(0), (at + MEDIA_WINDOW + 1).coerceAtMost(flattened.size))
+        val index = window.indexOfFirst { it.rowId == item.message.id && it.groupIndex == targetGroupIndex }
         if (index < 0) return
         ChatMediaLink.reveal = timeline::revealMediaRow
-        ImageViewerActivity.startFromChat(activity, items.map { it.second }, items.map { it.first }, index)
+        ChatMediaLink.onAlignGroup = ::alignImageGroup
+        ImageViewerActivity.startFromChat(
+            context = activity,
+            items = window.map { it.viewer },
+            rows = window.map { it.rowId },
+            index = index,
+            groupIndices = window.map { it.groupIndex },
+        )
     }
 
     /** A chip sends only its prompt; the composer's text and files stay in the draft. */
@@ -681,12 +753,18 @@ class LiveChatScreen(
     }
 
     /** Adds [text] to the composer after a blank line and focuses it; the member sends it. */
-    fun fillDraft(text: String) = composer.fillDraft(text)
+    fun fillDraft(text: String, focus: Boolean = true) = composer.fillDraft(text, focus)
+
+    /** The composer's draft as it stands. */
+    fun draftText(): String = composer.field.text.toString()
 
     fun focusComposer() = composer.focusInput()
 
     /** Puts the keyboard and the attachment panel away, e.g. as the sidebar comes out. */
     fun dismissInput() = composer.dismiss()
+
+    /** Whether [y], in [root]'s coordinates, is on the top bar: a pull down that starts there closes the router chat. */
+    fun isOnTopBar(y: Float): Boolean = topBar.visibility == android.view.View.VISIBLE && y < topBar.bottom
 
     /**
      * Drags that start on the composer (or the keyboard gap under it) belong to it, never to the
@@ -723,6 +801,7 @@ class LiveChatScreen(
             surf.comma.android.dynamicui.DynamicUiSheet.open(activity, target, ::fillDraft)
         }
         timeline.onOpenMedia = ::openMedia
+        timeline.imageGroupHost = imageGroups
         // Touching the conversation puts the keyboard and the attachment panel away; a question card's field keeps it.
         timeline.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
             override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {

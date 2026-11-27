@@ -20,6 +20,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   alias BridgeForTeams.{
     Accounts,
     Agents,
+    Departments,
+    InformationFlow,
     Memberships,
     Models,
     ProjectIMConnects,
@@ -28,16 +30,19 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   }
 
   alias BridgeForTeamsWeb.Dashboard.CoreComponents
+  alias BridgeForTeamsWeb.DashboardProjects
 
   @access_roles ~w(admin user)
+  @admin_org_roles ~w(owner admin)
   @access_limit 100
   @platform_task_model %{"kind" => "platform", "tier" => "worker"}
 
   @doc """
-  The Settings payload: identity, runtime ids, the default Task model, the
-  default place to run Tasks and the Access list.
+  The Settings payload: identity, runtime ids, department and cross-Swarm search
+  grants, the default Task model, the default place to run Tasks and the Access
+  list.
   """
-  def page(org, project, role) do
+  def page(org, project, role, org_role \\ "member") do
     {:ok,
      %{
        "project" => %{
@@ -49,25 +54,119 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
          "runtime_id" => project.salix_group_id
        },
        "org_runtime_id" => org.salix_tenant_id,
+       "cross_search" => cross_search(org, project, org_role),
        "task_model" => task_model(org, project),
        "task_place" => task_place(project),
        "access" => access_page(project, 0)
      }}
   end
 
+  # Members who are not organization owners or admins see only their own
+  # Swarm's department: no rules, departments or other Swarms of the org.
+  defp cross_search(org, project, org_role) do
+    if org_role in @admin_org_roles,
+      do: admin_cross_search(org, project),
+      else: member_cross_search(project)
+  end
+
+  defp member_cross_search(project) do
+    dept_name =
+      with id when is_binary(id) <- project.department_id,
+           {:ok, dept} <- Departments.get_department(project.org_id, id) do
+        dept.name
+      else
+        _ -> nil
+      end
+
+    %{
+      "status" => "ok",
+      "can_manage" => false,
+      "department_id" => project.department_id,
+      "department_name" => dept_name,
+      "inherited_targets" => [],
+      "explicit_targets" => [],
+      "departments" => [],
+      "catalog_swarms" => []
+    }
+  end
+
+  defp admin_cross_search(org, project) do
+    departments = Departments.list_departments(org.id)
+    dept_by_id = Map.new(departments, &{&1.id, &1})
+    catalog = Departments.list_org_project_catalog(org.id)
+    proj_by_id = Map.new(catalog, &{&1.id, &1})
+    ifc_on = InformationFlow.ifc_on_project_ids(org, catalog)
+    grants = Departments.list_search_grants(org.id)
+    grants_by_subj = Enum.group_by(grants, &{&1.subject_kind, &1.subject_id})
+
+    dept_name =
+      case project.department_id && Map.get(dept_by_id, project.department_id) do
+        %{name: name} -> name
+        _ -> nil
+      end
+
+    inherited =
+      if project.department_id do
+        grants_by_subj
+        |> Map.get({"department", project.department_id}, [])
+        |> DashboardProjects.serialize_targets(
+          "department",
+          project.department_id,
+          dept_by_id,
+          proj_by_id
+        )
+        |> Enum.reject(&(&1["kind"] == "project" and &1["id"] == project.id))
+      else
+        []
+      end
+
+    explicit =
+      grants_by_subj
+      |> Map.get({"project", project.id}, [])
+      |> DashboardProjects.serialize_targets("project", project.id, dept_by_id, proj_by_id)
+
+    %{
+      "status" => "ok",
+      "can_manage" => true,
+      "department_id" => project.department_id,
+      "department_name" => dept_name,
+      "inherited_targets" => inherited,
+      "explicit_targets" => explicit,
+      "departments" => Enum.map(departments, &%{"id" => &1.id, "name" => &1.name}),
+      "ifc_on" => MapSet.member?(ifc_on, project.id),
+      "catalog_swarms" =>
+        catalog
+        |> Enum.reject(&(&1.id == project.id))
+        |> Enum.map(
+          &%{
+            "id" => &1.id,
+            "name" => &1.name,
+            "department_id" => &1.department_id,
+            "ifc_on" => MapSet.member?(ifc_on, &1.id)
+          }
+        )
+    }
+  end
+
   # The default Task model and its picker, listed as the Agent Configure form
   # lists models: "none set" (key "", choosing it clears the default: each Task
   # runs the org default Task model), a current choice the org no longer offers
-  # (disabled), the platform model, then the org's offered choices grouped by
-  # vendor.
+  # or no enabled account serves (disabled), the platform model, then the
+  # org's offered choices that an account serves, grouped by vendor. A Task
+  # that names no model and runs a model no enabled account serves stops
+  # (`model_unavailable`): `unserved` says so of the swarm's default, or of
+  # the org default the swarm follows, and the label names it too.
   defp task_model(org, project) do
     case Projects.default_task_model(project) do
       {:ok, current} ->
         current = current && Models.normalize(current)
-        offered = org_models(org)
+        catalog = Models.catalog()
+        allowed = org_models(org, catalog)
+        served = Models.servable(org)
+        offered = Models.offered(org, catalog, served, &paid_label/1)
         platform = platform_row()
 
-        unset = org_default_label(org, offered)
+        unset = org_default_label(org, allowed, served)
 
         {label, current_rows} =
           cond do
@@ -81,12 +180,23 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
               {Models.option(current, offered)["label"], []}
 
             true ->
-              option = Models.option(current, [])
+              option = Models.option(current, allowed)
 
-              unavailable =
-                gettext("%{model} (current; unavailable for selection)", model: option["label"])
+              {label, unavailable} =
+                if Models.served?(current, served) or
+                     not Models.allowed?(org, current, catalog),
+                   do:
+                     {option["label"],
+                      gettext("%{model} (current; unavailable for selection)",
+                        model: option["label"]
+                      )},
+                   else:
+                     {unserved_label(option["label"]),
+                      gettext("%{model} (current; no enabled account serves it)",
+                        model: option["label"]
+                      )}
 
-              {option["label"],
+              {label,
                [row(option["key"], current, unavailable, true, vendor_group(option["vendor"]))]}
           end
 
@@ -94,23 +204,31 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
           "status" => "ok",
           "key" => if(current, do: Models.key(current), else: ""),
           "label" => label,
+          "unserved" => not Models.served?(current || org.default_task_model, served),
           "models" =>
             [row("", nil, unset, false, gettext("Platform")) | current_rows] ++
               [platform | Enum.map(offered, &offered_row/1)]
         }
 
       {:error, _reason} ->
-        %{"status" => "unavailable", "key" => "", "label" => nil, "models" => []}
+        %{
+          "status" => "unavailable",
+          "key" => "",
+          "label" => nil,
+          "unserved" => false,
+          "models" => []
+        }
     end
   end
 
   # A swarm without its own default Task model runs the org's
   # (`BridgeForTeams.Models.default_task_model/1`), else the platform model.
-  defp org_default_label(org, offered) do
+  defp org_default_label(org, allowed, served) do
     model =
       case org.default_task_model do
         %{} = choice ->
-          Models.option(choice, offered)["label"]
+          label = Models.option(choice, allowed)["label"]
+          if Models.served?(choice, served), do: label, else: unserved_label(label)
 
         nil ->
           case Models.platform_default("worker") do
@@ -121,6 +239,12 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
 
     gettext("Organization default (%{model})", model: model)
   end
+
+  defp unserved_label(model),
+    do: gettext("%{model}; no enabled account serves it", model: model)
+
+  defp paid_label(option),
+    do: gettext("%{model} (pay-per-use)", model: option["label"])
 
   # Where a Task runs when the Router names no place, and its name: Salix
   # (also when none is set), the Cloud VM, or a station by its device's name.
@@ -156,8 +280,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
 
   defp place_label(_project, _salix), do: gettext("Salix")
 
-  defp org_models(org) do
-    case Models.allowed(org, Models.catalog()) do
+  defp org_models(org, catalog) do
+    case Models.allowed(org, catalog) do
       {:ok, options} -> options
       {:error, _reason} -> []
     end
@@ -219,7 +343,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   end
 
   @doc "Rename the swarm; the slug stays so existing addresses keep working."
-  def rename(org, user, project, role, params) do
+  def rename(org, user, project, role, params, org_role \\ "member") do
     with :ok <-
            authorize(
              role,
@@ -230,7 +354,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
 
       case Projects.rename_project(project, name, audit_opts(user)) do
         {:ok, renamed} ->
-          page(org, renamed, role)
+          page(org, renamed, role, org_role)
 
         {:error, %Ecto.Changeset{} = changeset} ->
           {:error, 422, "invalid_project", gettext("Could not rename the Agent Swarm."),
@@ -245,11 +369,80 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
     end
   end
 
+  @doc "Assign or clear the Swarm's department (organization owners and admins only)."
+  def set_department(org, user, project, role, org_role, params) do
+    with :ok <-
+           authorize_org_admin(
+             org_role,
+             fn -> record_project_denied(project, user, "project.department_changed") end,
+             gettext("Only organization owners and admins can change the department.")
+           ),
+         :ok <- active(project) do
+      case Departments.set_project_department(project, params["department_id"], audit_opts(user)) do
+        {:ok, updated} ->
+          page(org, updated, role, org_role)
+
+        {:error, :invalid_department} ->
+          {:error, 422, "invalid_department",
+           gettext("Choose an existing department in this organization."), %{}}
+
+        {:error, :project_archived} ->
+          archived_not_found()
+
+        {:error, :effective_target_limit_exceeded} ->
+          DashboardProjects.effective_target_limit_error()
+
+        {:error, _reason} ->
+          write_failed(gettext("Could not update the department."))
+      end
+    end
+  end
+
+  @doc """
+  Update explicit cross-Swarm search grants (and optional `department_id` in the
+  same transaction). Restricted to organization owners and admins.
+  """
+  def set_search_grants(org, user, project, role, org_role, params) do
+    with :ok <-
+           authorize_org_admin(
+             org_role,
+             fn -> record_project_denied(project, user, "project.search_grants_updated") end,
+             gettext(
+               "Only organization owners and admins can change cross-Swarm search permissions."
+             )
+           ),
+         :ok <- active(project) do
+      attrs = Map.take(params, ~w(department_id targets))
+
+      case Departments.update_project_cross_search(project, attrs, audit_opts(user)) do
+        {:ok, updated} ->
+          page(org, updated, role, org_role)
+
+        {:error, :invalid_department} ->
+          {:error, 422, "invalid_department",
+           gettext("Choose an existing department in this organization."), %{}}
+
+        {:error, :invalid_targets} ->
+          {:error, 422, "invalid_targets",
+           gettext("Choose existing departments or Agent Swarms in this organization."), %{}}
+
+        {:error, :project_archived} ->
+          archived_not_found()
+
+        {:error, :effective_target_limit_exceeded} ->
+          DashboardProjects.effective_target_limit_error()
+
+        {:error, _reason} ->
+          write_failed(gettext("Could not save cross-Swarm search permissions."))
+      end
+    end
+  end
+
   @doc """
   Set the default Task model: `model` is the platform model or a model choice
   the org offers now. Answers the page.
   """
-  def set_task_model(org, user, project, role, params) do
+  def set_task_model(org, user, project, role, params, org_role \\ "member") do
     with :ok <-
            authorize(
              role,
@@ -258,7 +451,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
            ) do
       case Projects.set_default_task_model(project, params["model"], audit_opts(user)) do
         {:ok, _stored} ->
-          page(org, project, role)
+          page(org, project, role, org_role)
 
         {:error, reason} when reason in [:unavailable, :timeout, :unsupported] ->
           write_failed(gettext("Could not save the default Task model."))
@@ -277,7 +470,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   `{kind: station, device_id}` for
   one of its stations that takes Tasks. Answers the page.
   """
-  def set_task_place(org, user, project, role, params) do
+  def set_task_place(org, user, project, role, params, org_role \\ "member") do
     with :ok <-
            authorize(
              role,
@@ -286,7 +479,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
            ) do
       case Projects.set_default_task_place(project, params["place"], audit_opts(user)) do
         {:ok, _stored} ->
-          page(org, project, role)
+          page(org, project, role, org_role)
 
         {:error, reason} when reason in [:unavailable, :timeout, :unsupported] ->
           write_failed(gettext("Could not save the default place to run Tasks."))
@@ -313,7 +506,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   Clear the default Task model: each Task that names no model runs its
   Worker's model again. Answers the page.
   """
-  def clear_task_model(org, user, project, role) do
+  def clear_task_model(org, user, project, role, org_role \\ "member") do
     with :ok <-
            authorize(
              role,
@@ -321,7 +514,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
              gettext("Only Agent Swarm admins can change the default Task model.")
            ) do
       case Projects.clear_default_task_model(project, audit_opts(user)) do
-        {:ok, nil} -> page(org, project, role)
+        {:ok, nil} -> page(org, project, role, org_role)
         {:error, _reason} -> write_failed(gettext("Could not save the default Task model."))
       end
     end
@@ -403,7 +596,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
        %{}}
 
   @doc "Grant `email` (found or created) a role on the swarm."
-  def grant(org, user, project, role, params) do
+  def grant(org, user, project, role, params, org_role \\ "member") do
     email = params |> Map.get("email") |> to_text() |> String.downcase()
     new_role = if params["role"] in @access_roles, do: params["role"], else: "user"
 
@@ -426,7 +619,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
         with {:ok, grantee} <- find_or_create_user(email),
              {:ok, _membership} <-
                Memberships.put_project_member(project.id, grantee.id, new_role, audit_opts(user)) do
-          after_access_write(org, user, project)
+          after_access_write(org, user, project, org_role)
         else
           {:error, _reason} -> write_failed(gettext("Could not update access."))
         end
@@ -435,7 +628,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   end
 
   @doc "Change one grant's role."
-  def change_role(org, user, project, role, target_user_id, params) do
+  def change_role(org, user, project, role, target_user_id, params, org_role \\ "member") do
     new_role = params["role"]
 
     with :ok <-
@@ -455,14 +648,14 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
          :ok <- validate_role(new_role),
          {:ok, target} <- granted_member(project, target_user_id) do
       case Memberships.put_project_member(project.id, target, new_role, audit_opts(user)) do
-        {:ok, _membership} -> after_access_write(org, user, project)
+        {:ok, _membership} -> after_access_write(org, user, project, org_role)
         {:error, _reason} -> write_failed(gettext("Could not update access role."))
       end
     end
   end
 
   @doc "Remove one grant."
-  def remove(org, user, project, role, target_user_id) do
+  def remove(org, user, project, role, target_user_id, org_role \\ "member") do
     with :ok <-
            authorize(
              role,
@@ -475,7 +668,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
            ),
          {:ok, target} <- granted_member(project, target_user_id) do
       case Memberships.remove_project_member(project.id, target, audit_opts(user)) do
-        :ok -> after_access_write(org, user, project)
+        :ok -> after_access_write(org, user, project, org_role)
         {:error, :not_found} -> member_not_found()
         {:error, _reason} -> write_failed(gettext("Could not remove access."))
       end
@@ -485,6 +678,22 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   defp authorize("admin", _record_denied, _message), do: :ok
 
   defp authorize(_role, record_denied, message) do
+    record_denied.()
+    {:error, 403, "forbidden", message, %{}}
+  end
+
+  # An archived Swarm takes no department or search change: it answers as an
+  # unknown Swarm.
+  defp active(%{archived_at: nil}), do: :ok
+  defp active(_archived), do: archived_not_found()
+
+  defp archived_not_found,
+    do: {:error, 404, "project_not_found", gettext("Agent Swarm not found."), %{}}
+
+  defp authorize_org_admin(org_role, _record_denied, _message) when org_role in @admin_org_roles,
+    do: :ok
+
+  defp authorize_org_admin(_org_role, record_denied, message) do
     record_denied.()
     {:error, 403, "forbidden", message, %{}}
   end
@@ -511,10 +720,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
     do: {:error, 404, "member_not_found", gettext("Member not found."), %{}}
 
   # The caller's own grant may just have changed or gone.
-  defp after_access_write(org, user, project) do
+  defp after_access_write(org, user, project, org_role) do
     case Memberships.project_role(project.id, user.id) do
       {:ok, role} ->
-        page(org, project, role)
+        page(org, project, role, org_role)
 
       {:error, :not_found} ->
         {:ok,

@@ -170,6 +170,28 @@ export function useTopic<N extends TopicName>(
 }
 
 /**
+ * Returns a callback that pre-subscribes a topic into the client cache for `lingerMs` without rendering the caller,
+ * so a view about to mount reads its snapshot synchronously on its first frame.
+ */
+export function useWarmTopic(): <N extends TopicName>(
+  topic: TopicOf<N>,
+  lingerMs?: number
+) => void {
+  const client = useContext(CoreContext);
+  return useCallback(
+    (topic, lingerMs = 10_000) => {
+      if (!client) return;
+      const key = topicKey(topic);
+      const existing = entries(client).get(key);
+      if (existing?.unsubscribe) return;
+      const off = listen(client, key, topic, () => undefined, lingerMs);
+      off();
+    },
+    [client]
+  );
+}
+
+/**
  * Calls `onValue` with a topic's value now and on each change, without rendering the caller (it reacts in an effect,
  * not in what it shows).
  */

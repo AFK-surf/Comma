@@ -18,7 +18,7 @@ files:
   - "systems/**/*_test.py"
   - ".github/**/test_*.py"
   - "k8s/vast-inference/test_*.py"
-  - "k8s/salix-vmm-gateway/test_*.py"
+  - "k8s/comma/test_*.py"
 ---
 id: py-test-clock
 language: python
@@ -40,7 +40,7 @@ files:
   - "systems/**/*_test.py"
   - ".github/**/test_*.py"
   - "k8s/vast-inference/test_*.py"
-  - "k8s/salix-vmm-gateway/test_*.py"
+  - "k8s/comma/test_*.py"
 ---
 id: py-test-deadline
 language: python
@@ -69,7 +69,7 @@ files:
   - "systems/**/*_test.py"
   - ".github/**/test_*.py"
   - "k8s/vast-inference/test_*.py"
-  - "k8s/salix-vmm-gateway/test_*.py"
+  - "k8s/comma/test_*.py"
 ---
 id: py-test-random
 language: python
@@ -91,4 +91,4 @@ files:
   - "systems/**/*_test.py"
   - ".github/**/test_*.py"
   - "k8s/vast-inference/test_*.py"
-  - "k8s/salix-vmm-gateway/test_*.py"
+  - "k8s/comma/test_*.py"

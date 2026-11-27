@@ -625,6 +625,7 @@ defmodule SalixIM.StationTaskWatchTest do
 
     # The station's Session posts its result and its turn still runs.
     Stations.session({:ok, %{state: :running, pending: 0, for_ms: 0, last_failure: nil}})
+
     assert {:ok, %{"seq" => result_seq}} =
              station_post(ctx, conversation_id, worker_pid, "the PDF is sent", nil)
 
@@ -833,6 +834,59 @@ defmodule SalixIM.StationTaskWatchTest do
              watch_messages(ctx, conversation_id)
 
     assert_received {:telemetry, @stalled, _, %{phase: :cannot_start}}
+  end
+
+  test "ignores context_only messages and threads task_worker_nudge to the delegation", ctx do
+    state = %{worker_participant_id: "prt_worker", worker_agent_id: "agt_worker"}
+
+    delegation = %{
+      "seq" => 1,
+      "message_id" => "msg_del_1",
+      "actor_type" => "user",
+      "created_at" => 1_700_000_001_000,
+      "metadata" => %{}
+    }
+
+    worker_reply = %{
+      "seq" => 2,
+      "message_id" => "msg_rep_1",
+      "actor_type" => "agent",
+      "agent_id" => "agt_worker",
+      "participant_id" => "prt_worker",
+      "content" => [%{"type" => "text", "text" => "Done"}],
+      "created_at" => 1_700_000_002_000,
+      "metadata" => %{}
+    }
+
+    context_only = %{
+      "seq" => 3,
+      "message_id" => "msg_ctx_1",
+      "actor_type" => "user",
+      "created_at" => 1_700_000_003_000,
+      "metadata" => %{"context_only" => true}
+    }
+
+    assert {:answered, 1, 1_700_000_001_000, ^worker_reply} =
+             SalixIM.StationTaskWatch.decide([delegation, worker_reply, context_only], state)
+
+    assert {:unanswered, 1, 1_700_000_001_000, "msg_del_1"} =
+             SalixIM.StationTaskWatch.decide([delegation, context_only], state)
+
+    {conversation_id, _watch, _worker_pid} = start_task(ctx, "nudge-reply-thread")
+    Stations.answer(@given)
+    Stations.session({:ok, %{state: :idle, pending: 0, for_ms: 5_000, last_failure: nil}})
+
+    assert {:ok, [opening | _]} =
+             Conversations.list_group_conversation_messages(ctx.group_id, conversation_id,
+               limit: 10
+             )
+
+    settle_after(2_500)
+    assert {:ok, [nudge]} = messages_of_type(ctx, conversation_id, @nudge)
+    assert nudge["reply_to_message_id"] == opening["message_id"]
+
+    assert nudge["thread_root_message_id"] ==
+             (opening["thread_root_message_id"] || opening["message_id"])
   end
 
   test "a watch Message that fails to append is retried, and the stage waits for it", ctx do

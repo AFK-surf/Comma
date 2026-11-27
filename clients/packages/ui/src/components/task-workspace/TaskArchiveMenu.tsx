@@ -1,13 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Button, MenuTrigger } from "react-aria-components";
 import { useCommaMessages } from "@comma/i18n/react";
-import { ArchiveIcon, MoreHorizontalIcon } from "../icons";
+import { ArchiveIcon, ArrowUpRightIcon, MoreHorizontalIcon } from "../icons";
 import { Menu, MenuItem, MenuPopover } from "../menu";
 import { cx } from "../utils";
 
 export interface TaskArchiveAction {
   disabledReason?: string | undefined;
   run: () => Promise<void>;
+}
+
+export interface TaskOpenExternalAction {
+  label?: string | undefined;
+  run: () => void;
 }
 
 type TaskArchiveMenuChildren = ReactNode | ((trigger: ReactNode) => ReactNode);
@@ -41,14 +46,17 @@ export function TaskArchiveMenu({
   action: taskAction,
   children,
   inline = false,
+  openExternalAction,
   overlay = "corner",
 }: {
   action?: TaskArchiveAction | undefined;
   children: TaskArchiveMenuChildren;
   inline?: boolean;
+  openExternalAction?: TaskOpenExternalAction | undefined;
   overlay?: "corner" | "task-card";
 }) {
   const action = taskAction?.disabledReason ? undefined : taskAction;
+  const hasMenu = Boolean(action || openExternalAction);
   const Wrapper = inline ? "span" : "div";
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -57,11 +65,12 @@ export function TaskArchiveMenu({
     typeof children === "function" ? children(trigger) : children;
 
   useEffect(() => {
-    if (!action) setOpen(false);
-  }, [action]);
+    if (!hasMenu) setOpen(false);
+  }, [hasMenu]);
 
-  const trigger = action ? (
+  const trigger = hasMenu ? (
     <ArchiveMenuTrigger
+      canArchive={Boolean(action)}
       className={
         placeTrigger
           ? taskMoreButtonClusterClassName
@@ -70,13 +79,15 @@ export function TaskArchiveMenu({
       iconClassName={
         placeTrigger ? taskMoreIconClusterClassName : taskMoreIconOverlayClassName
       }
-      onRun={() => {
+      onArchive={() => {
+        if (!action) return;
         setPending(true);
         void action
           .run()
           .catch(() => undefined)
           .finally(() => setPending(false));
       }}
+      openExternalAction={openExternalAction}
       open={open}
       pending={pending}
       setOpen={setOpen}
@@ -88,18 +99,18 @@ export function TaskArchiveMenu({
     <Wrapper
       data-slot={inline ? "task-archive-menu" : undefined}
       data-task-card-action={
-        overlay === "task-card" && action && !placeTrigger ? "" : undefined
+        overlay === "task-card" && hasMenu && !placeTrigger ? "" : undefined
       }
       className={`group/task-actions relative min-w-0${inline ? " inline-block" : ""}`}
       onContextMenu={(event) => {
-        if (action) {
+        if (hasMenu) {
           event.preventDefault();
           setOpen(true);
         }
       }}
     >
       {content}
-      {placeTrigger || !action ? null : (
+      {placeTrigger || !hasMenu ? null : (
         <span
           className={
             overlay === "task-card"
@@ -115,17 +126,21 @@ export function TaskArchiveMenu({
 }
 
 function ArchiveMenuTrigger({
+  canArchive,
   className,
   iconClassName,
-  onRun,
+  onArchive,
   open,
+  openExternalAction,
   pending,
   setOpen,
 }: {
+  canArchive: boolean;
   className?: string | undefined;
   iconClassName: string;
-  onRun: () => void;
+  onArchive: () => void;
   open: boolean;
+  openExternalAction?: TaskOpenExternalAction | undefined;
   pending: boolean;
   setOpen: (open: boolean) => void;
 }) {
@@ -135,10 +150,14 @@ function ArchiveMenuTrigger({
   const [opened, setOpened] = useState(open);
   if (open && !opened) setOpened(true);
 
+  const openExternalLabel =
+    openExternalAction?.label ?? messages.tasks_open_in_browser();
+  const triggerLabel = canArchive ? messages.tasks_archive() : openExternalLabel;
+
   return (
     <MenuTrigger isOpen={open} onOpenChange={setOpen}>
       <Button
-        aria-label={messages.tasks_archive()}
+        aria-label={triggerLabel}
         className={cx(taskMoreButtonClassName, className)}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
@@ -147,15 +166,35 @@ function ArchiveMenuTrigger({
       </Button>
       {opened ? (
         <MenuPopover placement="bottom end">
-          <Menu aria-label={messages.tasks_archive()} onAction={onRun}>
-            <MenuItem
-              id="archive"
-              icon={<ArchiveIcon />}
-              isDisabled={pending}
-              textValue={messages.tasks_archive()}
-            >
-              {messages.tasks_archive()}
-            </MenuItem>
+          <Menu
+            aria-label={triggerLabel}
+            onAction={(key) => {
+              if (key === "open-external") {
+                openExternalAction?.run();
+              } else if (key === "archive") {
+                onArchive();
+              }
+            }}
+          >
+            {openExternalAction ? (
+              <MenuItem
+                id="open-external"
+                icon={<ArrowUpRightIcon />}
+                textValue={openExternalLabel}
+              >
+                {openExternalLabel}
+              </MenuItem>
+            ) : null}
+            {canArchive ? (
+              <MenuItem
+                id="archive"
+                icon={<ArchiveIcon />}
+                isDisabled={pending}
+                textValue={messages.tasks_archive()}
+              >
+                {messages.tasks_archive()}
+              </MenuItem>
+            ) : null}
           </Menu>
         </MenuPopover>
       ) : null}

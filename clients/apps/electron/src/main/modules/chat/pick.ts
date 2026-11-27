@@ -2,7 +2,11 @@
 // the core opened the intake and attaches what this gives; Main opens the dialog on the window, keeps the files and
 // registers the local ones under that intake. Each registration first asks the core whether the intake is still its
 // draft's, and stops once the core gave the pick up (it restarted, or the session changed).
-import type { ChatPickAnswer, ChatPickRequest } from "@comma/core/utility-protocol";
+import type {
+  ChatPickAnswer,
+  ChatPickedItem,
+  ChatPickRequest,
+} from "@comma/core/utility-protocol";
 import type { LocalFilePickerProvider } from "../local-files/picker";
 import type { MainNativeSessionAdmissionGuard } from "../session/native-session-admission";
 import type { MainChat } from ".";
@@ -32,6 +36,7 @@ export function createCoreChatPick(deps: {
         maxFiles: request.maxFiles,
         maxTotalSize: request.maxTotalSize,
         maxUploadFiles: request.maxUploadFiles,
+        localPathMode: request.localPathMode,
         onDialogClosed: intake.markDialogClosed,
         refreshLocalFileRegistration: intake.refresh,
         workspaceId: request.workspaceId,
@@ -39,15 +44,19 @@ export function createCoreChatPick(deps: {
       return {
         cancelled: picked.cancelled,
         errors: picked.errors,
-        items: picked.items.map((item) =>
-          item.kind === "upload"
-            ? {
+        items: picked.items.map((item): ChatPickedItem => {
+          switch (item.kind) {
+            case "upload":
+              return {
                 kind: "upload",
                 name: item.name,
                 size: item.size,
                 bytes: new Uint8Array(item.bytes),
-              }
-            : {
+              };
+            case "local_path":
+              return { kind: "local_path", file: { ...item.file } };
+            case "local_file":
+              return {
                 kind: "local_file",
                 file: {
                   localFileRef: item.file.localFileRef,
@@ -55,8 +64,9 @@ export function createCoreChatPick(deps: {
                   name: item.file.name,
                   size: item.file.size,
                 },
-              }
-        ),
+              };
+          }
+        }),
       };
     });
 }

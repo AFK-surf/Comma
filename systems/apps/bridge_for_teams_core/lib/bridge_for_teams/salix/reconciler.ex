@@ -21,6 +21,13 @@ defmodule BridgeForTeams.Salix.Reconciler do
     * `"update_group"`         — `%{"group_id" =>, "tenant_id" =>, "attrs" =>}` → `update_group/3`
     * `"update_agent"`         — `%{"agent_id" =>, "tenant_id" =>, "attrs" =>}` → `update_agent/3`
 
+  A Group's `search_group_ids` is sent as Postgres holds it when the row is
+  applied (`BridgeForTeams.Departments.effective_search_group_ids_for_group/1`),
+  not as the row's payload recorded it, so rows that run late, retry or run out
+  of order still leave Salix with the current list. A search-list-only
+  `update_group` that finds no Group while that Group's `create_group` row is
+  still pending waits for it (transient), since the create carries the list.
+
   ## Outcome handling
 
     * `{:ok, _}`                       → row `done`, `processed_at` stamped.
@@ -34,7 +41,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
 
   import Ecto.Query
 
-  alias BridgeForTeams.{Observability, Repo, Telemetry}
+  alias BridgeForTeams.{Departments, Observability, Repo, Telemetry}
   alias BridgeForTeams.Salix.{Client, TenantConfig}
   alias BridgeForTeams.Schema.{Agent, Organization, Project, ReconcileOutbox}
 
@@ -230,7 +237,16 @@ defmodule BridgeForTeams.Salix.Reconciler do
   end
 
   defp apply_op("create_group", payload) do
-    Client.impl().create_group(fetch(payload, "attrs", %{}))
+    attrs = fetch(payload, "attrs", %{})
+
+    attrs =
+      case Departments.effective_search_group_ids_for_group(attrs["group_id"]) do
+        {:ok, []} -> Map.delete(attrs, "search_group_ids")
+        {:ok, ids} -> Map.put(attrs, "search_group_ids", ids)
+        :unknown -> attrs
+      end
+
+    Client.impl().create_group(attrs)
   end
 
   defp apply_op("delete_group_im_connects", payload) do
@@ -244,6 +260,25 @@ defmodule BridgeForTeams.Salix.Reconciler do
       {:error, reason}
       when reason in [:not_found, :invalid_connect_record, :connect_scan_limit_exceeded] ->
         {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:transient, reason}}
+    end
+  end
+
+  defp apply_op("retire_group_colab", payload) do
+    case Client.call_optional(:retire_group_colab, [
+           fetch(payload, "tenant_id"),
+           fetch(payload, "group_id")
+         ]) do
+      :ok ->
+        {:ok, :retired}
+
+      {:ok, _} ->
+        {:ok, :retired}
+
+      {:error, :unsupported} ->
+        {:error, {:transient, :unsupported}}
 
       {:error, reason} ->
         {:error, {:transient, reason}}
@@ -294,9 +329,39 @@ defmodule BridgeForTeams.Salix.Reconciler do
         {:ok, :cloud_vm_switch_retired}
 
       stripped ->
-        Client.impl().update_group(group_id, tenant_id, stripped)
+        stripped = current_search_group_ids(group_id, stripped)
+
+        case Client.impl().update_group(group_id, tenant_id, stripped) do
+          {:error, :not_found} = not_found ->
+            if Map.keys(stripped) == ["search_group_ids"] and group_create_pending?(group_id),
+              do: {:error, {:transient, :group_create_pending}},
+              else: not_found
+
+          result ->
+            result
+        end
     end
   end
+
+  defp current_search_group_ids(group_id, %{"search_group_ids" => _} = attrs) do
+    case Departments.effective_search_group_ids_for_group(group_id) do
+      {:ok, ids} -> Map.put(attrs, "search_group_ids", ids)
+      :unknown -> attrs
+    end
+  end
+
+  defp current_search_group_ids(_group_id, attrs), do: attrs
+
+  defp group_create_pending?(group_id) when is_binary(group_id) do
+    from(r in ReconcileOutbox,
+      where:
+        r.status == "pending" and r.op == "create_group" and
+          fragment("?->'attrs'->>'group_id' = ?", r.payload, ^group_id)
+    )
+    |> Repo.exists?()
+  end
+
+  defp group_create_pending?(_group_id), do: false
 
   # ---- Row updates --------------------------------------------------------
 

@@ -45,12 +45,15 @@ def minWindow : Int := 4096
 def reasonMaxBytes : Nat := 2048
 def truncationSuffix : String := "...[truncated]"
 
-/-- Willow's compaction instruction, plus the questions still open: a short
-answer such as `1` or `yes` that comes after compaction names only an option
-of a question the summary keeps. -/
+/-- Willow's compaction instruction, plus concise working-state guidance and
+the questions still open: a short answer such as `1` or `yes` that comes after
+compaction names only an option of a question the summary keeps. -/
 def instruction : String :=
-  "Summarize the conversation so far. Preserve key facts, decisions, " ++
-  "file paths, tool results, and any state needed to continue working. " ++
+  "Summarize the conversation so far as concise working state. Preserve active goals, " ++
+  "decisions, file paths, key tool results, and any state needed to continue working. " ++
+  "Fold finished Routines, Tasks, and older resolved topics into brief one-line pointers " ++
+  "(full history remains searchable via history.search and history.get). " ++
+  "Keep original user-language project, app, and entity names unchanged. " ++
   "Quote verbatim every question still waiting for an answer, with its " ++
   "conversation and each of its numbered or named options. " ++
   "Output only the summary, wrapped in a single " ++
@@ -247,6 +250,149 @@ private def plan (state : Term) (mode : Term) (live : List Term) (last : Term) (
     (b "fingerprint", fingerprint), (b "strategy", strategy), (b "source_message_id", source),
     (b "summary", ← field state "summary"), (b "live", list live)]
 
+def defaultHandoffMaxBytes : Nat := 262144
+def overflowHandoffTailCapBytes : Int := 16384
+
+private def tailBytesAfter (live : List Term) (through : Term) : KernelM Int := do
+  let mut total : Int := 0
+  for msg in live do
+    if ← greater (CompactionQuery.compactionMessageId msg) through then
+      let sz ← messageBytes msg
+      let n := integerValue sz
+      if n > 0 then total := total + n
+  return total
+
+/-- Select eligible tool-closed groups for the background living handoff updater,
+protecting the hot tail and certifying the covered prefix with `prefix_digest`. -/
+def handoffWindow (state args : Term) : KernelM Term := do
+  let live ← compactableLive state
+  let baseSeq := (← field state "summary_sequence").default (i 0)
+  let baseThrough := (← field state "compacted_through").default (i 0)
+  let baseSummary ← field state "summary"
+  let hasProvider := (← CompactionQuery.providerCompactionItems state).truthy
+  let coveredArg := if args.isMap then CompactionQuery.both args "covered" else nil
+  let maxBytesArg := if args.isMap then CompactionQuery.both args "max_bytes" else nil
+  let windowArg := if args.isMap then CompactionQuery.both args "window_tokens" else nil
+  let ratioArg := if args.isMap then CompactionQuery.both args "ratio" else nil
+  let baseThroughInt := integerValue baseThrough
+  let covered : Int :=
+    if coveredArg.isInteger && integerValue coveredArg > baseThroughInt then integerValue coveredArg
+    else baseThroughInt
+  let maxBytes : Nat :=
+    if maxBytesArg.isInteger && integerValue maxBytesArg > 0 then (integerValue maxBytesArg).toNat
+    else defaultHandoffMaxBytes
+  let windowTok : Nat :=
+    if windowArg.isInteger && integerValue windowArg > 0 then (integerValue windowArg).toNat
+    else defaultWindow.toNat
+  let nearThreshold : Bool ← match ratioArg with
+    | .integer _ | .floatBits _ =>
+      atMost (.floatBits (Float.Model.ofScientific 8 (-1)).toBits) ratioArg
+    | _ => pure false
+  let maxTailSpans : Nat := if nearThreshold then 1 else 2
+  let windowBytes : Nat := windowTok * 4
+  let maxTailBytes : Nat := if nearThreshold then windowBytes / 20 else windowBytes / 10
+  let groups ← CompactionQuery.toolClosedGroups live
+  let spans ← CompactionQuery.hotTailSpans groups
+  let mut sizedSpans : Array (List (List Term) × Nat) := #[]
+  for span in spans do
+    let mut spanBytes : Nat := 0
+    for grp in span do
+      spanBytes := spanBytes + (← CompactionQuery.messagesByteSize grp)
+    sizedSpans := sizedSpans.push (span, spanBytes)
+  -- Protect hot tail from the end without splitting a span or tool-closed group.
+  let mut tailSpans : Nat := 0
+  let mut tailBytes : Nat := 0
+  for k in [:sizedSpans.size] do
+    if tailSpans >= maxTailSpans then
+      break
+    let revIdx := sizedSpans.size - 1 - k
+    let sBytes := sizedSpans[revIdx]!.2
+    if tailBytes + sBytes <= maxTailBytes then
+      tailSpans := tailSpans + 1
+      tailBytes := tailBytes + sBytes
+    else
+      break
+  let eligibleSpanCount := sizedSpans.size - tailSpans
+  let mut selected : Array Term := #[]
+  let mut deltaBytes : Nat := 0
+  let mut through : Int := covered
+  let mut started : Bool := false
+  let mut batchFull : Bool := false
+  for idx in [:eligibleSpanCount] do
+    if batchFull then break
+    let span := sizedSpans[idx]!.1
+    for grp in span do
+      if let some lastMsg := grp.getLast? then
+        let gLast := integerValue (CompactionQuery.compactionMessageId lastMsg)
+        if gLast > covered then
+          let gBytes ← CompactionQuery.messagesByteSize grp
+          if !started && gBytes > maxBytes then
+            return a "group_too_large"
+          else if deltaBytes + gBytes <= maxBytes then
+            started := true
+            deltaBytes := deltaBytes + gBytes
+            through := gLast
+            for msg in grp do
+              selected := selected.push msg
+          else
+            batchFull := true
+            break
+  let coveredDigest ← CompactionQuery.prefixDigest state live (i covered)
+  let digest ←
+    if through == covered then pure coveredDigest
+    else CompactionQuery.prefixDigest state live (i through)
+  return .map [
+    (a "covered_from", i covered),
+    (a "covered_prefix_digest", coveredDigest),
+    (a "through", i through),
+    (a "messages", list selected.toList),
+    (a "delta_bytes", i deltaBytes),
+    (a "prefix_digest", digest),
+    (a "base_summary_sequence", baseSeq),
+    (a "base_compacted_through", baseThrough),
+    (a "base_summary", baseSummary),
+    (a "has_provider_compaction", Term.bool hasProvider)
+  ]
+
+/-- Check whether an automatic compaction may cut over inline using a prebuilt
+living handoff. Returns `some (covered_message_id, wrapped_summary, tail_cap_bytes)`
+when all soundness, digest, boundary, and tail-cap invariants hold. -/
+private def handoffEligible (state : Term) (live : List Term) (last : Term)
+    (config facts strategy windowTokens : Term) (recovery : Bool) :
+    KernelM (Option (Term × Term × Int)) := do
+  let effStrategy := strategy.default ((configStrategy config).default (b "summary"))
+  if effStrategy != b "summary" then return none
+  if (← CompactionQuery.providerCompactionItems state).truthy then return none
+  let handoff := (config.get (b "handoff")).default (facts.get (b "handoff"))
+  if !handoff.isMap then return none
+  let summaryTerm := CompactionQuery.both handoff "summary"
+  let .binary summaryRaw := summaryTerm | return none
+  if (trim summaryRaw).isEmpty then return none
+  let h := CompactionQuery.both handoff "covered_message_id"
+  let hBaseSeq := CompactionQuery.both handoff "base_summary_sequence"
+  let hBaseThrough := CompactionQuery.both handoff "base_compacted_through"
+  let hDigest := CompactionQuery.both handoff "prefix_digest"
+  if !h.isInteger || !hBaseSeq.isInteger || !hBaseThrough.isInteger then return none
+  let .binary digestRaw := hDigest | return none
+  if digestRaw.isEmpty then return none
+  let stateSeq := (← field state "summary_sequence").default (i 0)
+  let stateThrough := (← field state "compacted_through").default (i 0)
+  if !Term.numericEq hBaseSeq stateSeq || !Term.numericEq hBaseThrough stateThrough then
+    return none
+  if !(← greater h stateThrough) || !(← atMost h last) then return none
+  let fullLive ← fencedLive state
+  if !(← CompactionQuery.isToolClosedBoundary fullLive h) then return none
+  let actualDigest ← CompactionQuery.prefixDigest state live h
+  if actualDigest != hDigest then return none
+  let tailBytes ← tailBytesAfter fullLive h
+  let winInt := integerValue windowTokens
+  let tailCap : Int :=
+    if recovery then overflowHandoffTailCapBytes
+    else (winInt * 12) / 20
+  if tailBytes > tailCap then return none
+  let wrapped := .binary ("<compacted-context>\n".toUTF8 ++ summaryRaw ++ "\n</compacted-context>".toUTF8)
+  return some (h, wrapped, tailCap)
+
 /-- One compaction's admission. `mode` is `:compact` (explicit) or
 `:maybe_compact` (automatic). `facts` holds `config` (or `config_error`),
 `threshold`, `context_tokens`, `model`, `strategy`, `overflow_recovery`, and
@@ -284,6 +430,14 @@ def prepare (state args : Term) : KernelM Term := do
   let fingerprint ← fingerprint config windowTokens
   if !recovery && !(← shouldCompact state threshold windowTokens model) then
     return ← done (a "below_context_window")
+  if let some (handoffThrough, wrapped, tailCap) ←
+      handoffEligible state live last config facts strategy windowTokens recovery then
+    let mut livePrefix : Array Term := #[]
+    for msg in live do
+      if ← atMost (CompactionQuery.compactionMessageId msg) handoffThrough then
+        livePrefix := livePrefix.push msg
+    let p ← plan state mode livePrefix.toList handoffThrough true fingerprint strategy source
+    return .tuple [a "summarize", (p.put (b "handoff") wrapped).put (b "handoff_tail_cap") (i tailCap)]
   let block ← CompactionQuery.autoCompactionBlockResult state
     (.tuple [fingerprint, last, ← seconds])
   if block.get (b "reason") == b "compaction_recovery_active" then
@@ -468,9 +622,18 @@ def commit (state args : Term) : KernelM Term := do
   let sid ← field state "session_id"
   let last := plan.get (b "last_id")
   let source := plan.get (b "source_message_id")
+  let fullLive ← fencedLive state
   let check ← CompactionQuery.checkSnapshot state
-    (.tuple [plan.get (b "basis"), list (← fencedLive state), last])
+    (.tuple [plan.get (b "basis"), list fullLive, last])
   if check != a "ok" then return check
+  let tailCap := plan.get (b "handoff_tail_cap")
+  if tailCap.isInteger then
+    let boundaryOk ← CompactionQuery.isToolClosedBoundary fullLive last
+    let tailBytes ← tailBytesAfter fullLive last
+    if !boundaryOk || tailBytes > integerValue tailCap then
+      let reason := if !boundaryOk then "handoff_boundary_invalidated" else "handoff_tail_exceeded"
+      return .tuple [a "error", .tuple [a "stale_compaction_snapshot",
+        .map [(a "reason", b reason), (a "tail_bytes", i tailBytes), (a "tail_cap_bytes", tailCap)]]]
   let finish (events : List Term) (value : Term) (archive : Bool) : KernelM Term := do
     return .tuple [a "ok", list (events ++ (← resultEvents sid value source)), value, Term.bool archive]
   let covered := plan.get (b "covered_seq")
@@ -534,6 +697,7 @@ def table : OpTable :=
    ("activation_plan", activationPlan),
    ("context_overflow_pending?", fun state _ => return Term.bool (← overflowPending state)),
    ("compaction_window", fun _ config => return window config),
+   ("handoff_window", handoffWindow),
    ("compaction_prepare", prepare),
    ("compaction_request", request),
    ("compaction_outcome", outcome),

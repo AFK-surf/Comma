@@ -32,8 +32,8 @@ import (
 
 const vmmTLSBundleName = "salix-vmm-gateway-tls"
 
-var vmmTLSNames = []string{vmmTLSBundleName, "salix-vmm-gateway-client-tls", "salix-vmm-gateway-client-ca"}
-var vmmRuntimeNames = []string{"salix-vmm-gateway-runtime", "salix-compute-runtime"}
+var vmmTLSNames = []string{vmmTLSBundleName}
+var vmmRuntimeNames = []string{"salix-compute-runtime"}
 
 type vmmSecretPayload struct {
 	Type string            `json:"type"`
@@ -51,14 +51,13 @@ type vmmSignerFactory func(string) (crypto.Signer, error)
 
 func runVMMCertificates(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: comma-release vmm-certificates <check|snapshot|capture|publish|bootstrap-root|issue> --environment staging|prod")
+		return errors.New("usage: comma-release vmm-certificates <check|snapshot|capture|publish|issue> --environment staging|prod")
 	}
 	operation := args[0]
 	flags := flag.NewFlagSet("vmm-certificates", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	environment := flags.String("environment", "", "Selected environment")
 	contextName := flags.String("context", "", "Kubernetes context for capture")
-	output := flags.String("output", "", "Public root output file")
 	force := flags.Bool("force", false, "Renew before expiry lead time")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -90,27 +89,13 @@ func runVMMCertificates(ctx context.Context, args []string, stdin io.Reader, std
 		}
 		return writeJSON(stdout, bundle)
 	}
-	if operation == "issue" || operation == "bootstrap-root" {
+	if operation == "issue" {
 		client, err := kms.NewKeyManagementClient(ctx)
 		if err != nil {
 			return fmt.Errorf("KMS client: %w", err)
 		}
 		defer client.Close()
 		factory := func(key string) (crypto.Signer, error) { return cloudkms.NewSigner(client, key) }
-		if operation == "bootstrap-root" {
-			if *output == "" {
-				return errors.New("bootstrap-root requires --output for its public certificate")
-			}
-			signer, err := factory(fmt.Sprintf("projects/%s/locations/us-west1/keyRings/vmm-certificates/cryptoKeys/client-ca/cryptoKeyVersions/1", project))
-			if err != nil {
-				return fmt.Errorf("client issuer: %w", err)
-			}
-			root, err := createVMMClientRoot(signer, *environment, time.Now())
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(*output, root, 0644)
-		}
 		root := os.Getenv("COMMA_REPO_ROOT")
 		if root == "" {
 			root, err = os.Getwd()
@@ -118,7 +103,7 @@ func runVMMCertificates(ctx context.Context, args []string, stdin io.Reader, std
 				return err
 			}
 		}
-		bundle, err := issueVMMBundle(*environment, filepath.Join(root, "k8s/salix-vmm-gateway/issuers", *environment), factory, time.Now())
+		bundle, err := issueVMMBundle(*environment, filepath.Join(root, "k8s/comma/vmm-issuers", *environment), factory, time.Now())
 		if err != nil {
 			return err
 		}
@@ -181,7 +166,7 @@ func runVMMCertificates(ctx context.Context, args []string, stdin io.Reader, std
 			return errors.New("invalid TLS bundle")
 		}
 		if len(bundle.Secrets) != len(vmmTLSNames) {
-			return errors.New("TLS bundle must contain the three native TLS Secrets")
+			return errors.New("TLS bundle must contain the native server TLS Secret")
 		}
 		for _, name := range vmmTLSNames {
 			if _, ok := bundle.Secrets[name]; !ok {
@@ -222,7 +207,7 @@ func vmmNumericVersion(name string) (string, error) {
 	return version, nil
 }
 func vmmRenewalDue(bundle vmmTLSBundle, now time.Time) (bool, error) {
-	for _, name := range vmmTLSNames[:2] {
+	for _, name := range vmmTLSNames {
 		body, err := base64.StdEncoding.DecodeString(bundle.Secrets[name].Data["tls.crt"])
 		if err != nil {
 			return false, fmt.Errorf("invalid %s certificate encoding", name)
@@ -255,28 +240,7 @@ func vmmAlgorithm(signer crypto.Signer) x509.SignatureAlgorithm {
 	}
 	return x509.UnknownSignatureAlgorithm
 }
-func createVMMClientRoot(signer crypto.Signer, environment string, now time.Time) ([]byte, error) {
-	serial, err := vmmSerial()
-	if err != nil {
-		return nil, err
-	}
-	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Comma " + environment + " VMM client CA"},
-		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(3650 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, MaxPathLen: 0, MaxPathLenZero: true,
-		KeyUsage: x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, SignatureAlgorithm: vmmAlgorithm(signer)}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, signer.Public(), signer)
-	if err != nil {
-		return nil, fmt.Errorf("create client root: %w", err)
-	}
-	certificate, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, err
-	}
-	if err = certificate.CheckSignatureFrom(certificate); err != nil {
-		return nil, err
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
-}
-func issueVMMLeaf(issuer vmmIssuer, rootPEM []byte, signer crypto.Signer, purpose string, now time.Time) (map[string][]byte, error) {
+func issueVMMLeaf(issuer vmmIssuer, rootPEM []byte, signer crypto.Signer, now time.Time) (map[string][]byte, error) {
 	root, err := parseVMMCertificate(rootPEM)
 	if err != nil {
 		return nil, err
@@ -290,9 +254,6 @@ func issueVMMLeaf(issuer vmmIssuer, rootPEM []byte, signer crypto.Signer, purpos
 		return nil, err
 	}
 	usage := x509.ExtKeyUsageServerAuth
-	if purpose == "client" {
-		usage = x509.ExtKeyUsageClientAuth
-	}
 	notAfter := now.Add(365 * 24 * time.Hour)
 	if root.NotAfter.Before(notAfter) {
 		notAfter = root.NotAfter
@@ -302,7 +263,7 @@ func issueVMMLeaf(issuer vmmIssuer, rootPEM []byte, signer crypto.Signer, purpos
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage}, SignatureAlgorithm: vmmAlgorithm(signer)}
 	der, err := x509.CreateCertificate(rand.Reader, template, root, key.Public(), signer)
 	if err != nil {
-		return nil, fmt.Errorf("issue %s leaf: %w", purpose, err)
+		return nil, fmt.Errorf("issue server leaf: %w", err)
 	}
 	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
@@ -311,7 +272,7 @@ func issueVMMLeaf(issuer vmmIssuer, rootPEM []byte, signer crypto.Signer, purpos
 	roots := x509.NewCertPool()
 	roots.AddCert(root)
 	if _, err = leaf.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{usage}, CurrentTime: now}); err != nil {
-		return nil, fmt.Errorf("verify %s leaf: %w", purpose, err)
+		return nil, fmt.Errorf("verify server leaf: %w", err)
 	}
 	for _, name := range issuer.SANs {
 		if err = leaf.VerifyHostname(name); err != nil {
@@ -334,42 +295,31 @@ func issueVMMBundle(environment, directory string, factory vmmSignerFactory, now
 	if err = json.Unmarshal(body, &config); err != nil {
 		return bundle, errors.New("invalid issuer configuration")
 	}
-	roots := map[string][]byte{}
-	leaves := map[string]map[string][]byte{}
-	for _, purpose := range []string{"server", "client"} {
-		issuer := config[purpose]
-		prefix := fmt.Sprintf("projects/cueboard-gamma-%s/locations/us-west1/keyRings/vmm-certificates/cryptoKeys/%s-ca/cryptoKeyVersions/", environment, purpose)
-		if !strings.HasPrefix(issuer.Key, prefix) {
-			return bundle, errors.New("issuer key must belong to selected environment and purpose")
-		}
-		if _, err = vmmNumericVersion(issuer.Key); err != nil {
-			return bundle, err
-		}
-		root, err := os.ReadFile(filepath.Join(directory, purpose+".crt"))
-		if err != nil {
-			return bundle, err
-		}
-		signer, err := factory(issuer.Key)
-		if err != nil {
-			return bundle, fmt.Errorf("%s issuer: %w", purpose, err)
-		}
-		leaf, err := issueVMMLeaf(issuer, root, signer, purpose, now)
-		if err != nil {
-			return bundle, err
-		}
-		roots[purpose] = root
-		leaves[purpose] = leaf
+	issuer, ok := config["server"]
+	if !ok {
+		return bundle, errors.New("issuer configuration is missing server")
 	}
-	for _, purpose := range []string{"server", "client"} {
-		name := vmmTLSBundleName
-		if purpose == "client" {
-			name = vmmTLSNames[1]
-		}
-		values := leaves[purpose]
-		values["ca.crt"] = roots["server"]
-		bundle.Secrets[name] = encodeVMMSecret(values)
+	prefix := fmt.Sprintf("projects/cueboard-gamma-%s/locations/us-west1/keyRings/vmm-certificates/cryptoKeys/server-ca/cryptoKeyVersions/", environment)
+	if !strings.HasPrefix(issuer.Key, prefix) {
+		return bundle, errors.New("issuer key must belong to selected environment and purpose")
 	}
-	bundle.Secrets[vmmTLSNames[2]] = encodeVMMSecret(map[string][]byte{"ca.crt": roots["client"]})
+	if _, err = vmmNumericVersion(issuer.Key); err != nil {
+		return bundle, err
+	}
+	root, err := os.ReadFile(filepath.Join(directory, "server.crt"))
+	if err != nil {
+		return bundle, err
+	}
+	signer, err := factory(issuer.Key)
+	if err != nil {
+		return bundle, fmt.Errorf("server issuer: %w", err)
+	}
+	leaf, err := issueVMMLeaf(issuer, root, signer, now)
+	if err != nil {
+		return bundle, err
+	}
+	leaf["ca.crt"] = root
+	bundle.Secrets[vmmTLSBundleName] = encodeVMMSecret(leaf)
 	return bundle, nil
 }
 func encodeVMMSecret(values map[string][]byte) vmmSecretPayload {

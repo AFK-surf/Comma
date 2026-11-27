@@ -7,9 +7,12 @@ import {
   MenuItem,
   MenuPopover,
   MenuSeparator,
+  menuSelectionRowHeight,
   menuSurfaceClasses,
 } from "../menu";
 import { secondaryActionTreatment } from "../toast/styles";
+import { Tooltip } from "../tooltip";
+import { spacing } from "../../tokens";
 import { cx } from "../utils";
 
 export interface ChatPanelFileApplication {
@@ -168,10 +171,35 @@ export function ChatPanelFileApplicationItems({
   ));
 }
 
+/**
+ * How tall a list of applications is before it scrolls: nine rows and half of the next, which shows that the list
+ * goes on. A desktop can have dozens of applications that open one kind of file; the list is not as tall as the
+ * window for them.
+ */
+export const fileApplicationsMaxHeight = spacing.sm + menuSelectionRowHeight * 9.5;
+
+// One control in two zones. It has the frame of the Open in button (`secondaryActionFrame`); each zone answers the
+// pointer by itself, and the frame shows the keyboard's focus for the zone that has it. The focus class is the one
+// the app already has for a frame of buttons: a second `:has()` utility of the same shadow is joined with it into
+// one rule that every element of the page is checked against (`transcript-style-budget.spec.ts`).
+const splitFrame =
+  "inline-flex shrink-0 items-stretch overflow-hidden rounded-md border border-button-secondary-border " +
+  "bg-button-secondary-bg text-sm font-medium text-button-secondary-fg shadow-xs " +
+  "has-[>button:focus-visible]:shadow-focus-gray-shadow-xs";
+const splitZone =
+  "inline-flex items-center justify-center py-xs transition-colors hover:bg-secondary " +
+  "focus:outline-none focus-visible:bg-secondary";
+
 export const ChatPanelFileOpenInMenu = ({
   action,
+  primary,
 }: {
   action: ChatPanelFileOpenInAction;
+  /**
+   * What the control does by itself, where Open in is the other ways to do it. With it the control is one button
+   * in two zones: its words do this, and its chevron opens the menu.
+   */
+  primary?: { label: string; name: string; onPress: () => void } | undefined;
 }) => {
   const messages = useCommaMessages();
   const feedbackId = useId();
@@ -182,44 +210,78 @@ export const ChatPanelFileOpenInMenu = ({
   const pending = operation === "pending";
   return (
     <div className="chat-panel-file-open-in">
-      <MenuTrigger isOpen={open} onOpenChange={setOpen}>
-        <Button
-          aria-busy={pending}
-          {...(operation === "error" ? { "aria-describedby": feedbackId } : {})}
-          className={cx(secondaryActionTreatment, "px-lg")}
-          isDisabled={pending}
-        >
-          {pending ? messages.ui_file_open_in_opening() : messages.ui_file_open_in()}
-          <ChevronDownSmallIcon aria-hidden className="size-xl" />
-        </Button>
-        <MenuPopover
-          placement="bottom end"
-          className={cx(
-            "chat-panel-file-applications w-60 overflow-hidden",
-            menuSurfaceClasses
-          )}
-        >
-          <Menu
-            aria-label={messages.ui_file_open_in()}
-            className="py-sm"
-            variant="embedded"
+      <div className={primary ? splitFrame : "contents"}>
+        {primary ? (
+          <Button
+            aria-label={primary.name}
+            className={cx(splitZone, "px-lg")}
+            // A zone is part of the frame: the press scale would shrink it inside the frame.
+            data-no-press-feedback
+            onPress={primary.onPress}
           >
-            <ChatPanelFileApplicationItems action={action} openIn={openIn} />
-            {action.reveal ? (
-              <>
-                <MenuSeparator />
-                <MenuItem
-                  id="reveal"
-                  key="reveal"
-                  onAction={() => openIn.run(action.reveal!.run)}
-                >
-                  {action.reveal.label}
-                </MenuItem>
-              </>
-            ) : null}
-          </Menu>
-        </MenuPopover>
-      </MenuTrigger>
+            {primary.label}
+          </Button>
+        ) : null}
+        <MenuTrigger isOpen={open} onOpenChange={setOpen}>
+          {primary ? (
+            <Tooltip content={messages.ui_file_open_in()} placement="top">
+              <Button
+                aria-busy={pending}
+                aria-label={messages.ui_file_open_in()}
+                {...(operation === "error" ? { "aria-describedby": feedbackId } : {})}
+                className={cx(
+                  splitZone,
+                  "border-l border-button-secondary-border px-sm disabled:text-disabled"
+                )}
+                data-no-press-feedback
+                isDisabled={pending}
+              >
+                <ChevronDownSmallIcon aria-hidden className="size-xl" />
+              </Button>
+            </Tooltip>
+          ) : (
+            <Button
+              aria-busy={pending}
+              {...(operation === "error" ? { "aria-describedby": feedbackId } : {})}
+              className={cx(secondaryActionTreatment, "px-lg")}
+              isDisabled={pending}
+            >
+              {pending
+                ? messages.ui_file_open_in_opening()
+                : messages.ui_file_open_in()}
+              <ChevronDownSmallIcon aria-hidden className="size-xl" />
+            </Button>
+          )}
+          <MenuPopover
+            placement="bottom end"
+            className={cx(
+              "chat-panel-file-applications w-60 overflow-hidden",
+              menuSurfaceClasses
+            )}
+            maxHeight={fileApplicationsMaxHeight}
+          >
+            <Menu
+              aria-label={messages.ui_file_open_in()}
+              className="py-sm"
+              variant="embedded"
+            >
+              <ChatPanelFileApplicationItems action={action} openIn={openIn} />
+              {action.reveal ? (
+                <>
+                  <MenuSeparator />
+                  <MenuItem
+                    id="reveal"
+                    key="reveal"
+                    onAction={() => openIn.run(action.reveal!.run)}
+                  >
+                    {action.reveal.label}
+                  </MenuItem>
+                </>
+              ) : null}
+            </Menu>
+          </MenuPopover>
+        </MenuTrigger>
+      </div>
       <output
         aria-live="polite"
         className={operation === "error" ? "chat-panel-file-action-error" : "sr-only"}

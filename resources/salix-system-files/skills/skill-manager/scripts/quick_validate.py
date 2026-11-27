@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Quick validation script for Bridge skills (minimal).
+Quick validation script for Comma skills (minimal).
 
 This validates a target skill directory by checking:
 - SKILL.md exists
 - YAML frontmatter exists and is parseable
 - Required keys: name, description
 - Common naming/length rules (hyphen-case name, reasonable description)
-- Directory name matches frontmatter name (recommended for Bridge)
+- Directory name matches frontmatter name (recommended for Comma)
 
 This script is intentionally lightweight and may not cover all YAML features.
 If PyYAML is available, it will be used for parsing; otherwise a simple parser is used.
@@ -175,7 +175,7 @@ def validate_skill(skill_path: str) -> tuple[bool, str]:
     if not name:
         return False, "Name cannot be empty"
 
-    # Recommended Bridge convention (also matches many skill ecosystems)
+    # Recommended Comma convention (also matches many skill ecosystems)
     if not re.match(r"^[a-z0-9-]+$", name):
         return False, f"Name '{name}' should be hyphen-case (lowercase letters, digits, and hyphens only)"
     if name.startswith("-") or name.endswith("-") or "--" in name:
@@ -183,7 +183,7 @@ def validate_skill(skill_path: str) -> tuple[bool, str]:
     if len(name) > 64:
         return False, f"Name is too long ({len(name)} characters). Maximum is 64 characters."
 
-    # Bridge expects folder name alignment (warn-as-error for consistency)
+    # Comma expects folder name alignment (warn-as-error for consistency)
     if skill_dir.name != name:
         return False, f"Directory name '{skill_dir.name}' must match frontmatter name '{name}'"
 

@@ -2369,6 +2369,45 @@ func TestSlackConnectCommandsUseProjectAPIContracts(t *testing.T) {
 	}
 }
 
+func TestSlackConnectsUpdateSetsMemberScopeAlone(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v1/orgs/acme/projects/support/im/slack/connects/conn_slack_1" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeOK(w, map[string]any{"mode": "project_im_connect_update", "connect": map[string]any{
+			"connect_id":   "conn_slack_1",
+			"provider":     "slack",
+			"member_scope": "external",
+		}})
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+
+	exitCode, stdout, stderr := runCLI(t, []string{"slack", "connects", "update", "--org", "acme", "--project", "support", "--connect", "conn_slack_1", "--member-scope", "external", "--confirm-mutating", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if body["member_scope"] != "external" || len(body) != 1 {
+		t.Fatalf("update body should only carry member_scope=external: %#v", body)
+	}
+	if !strings.Contains(stdout, "Member scope: external") {
+		t.Fatalf("update output did not show the member scope:\n%s", stdout)
+	}
+
+	exitCode, _, stderr = runCLI(t, []string{"slack", "connects", "update", "--org", "acme", "--project", "support", "--connect", "conn_slack_1", "--member-scope", "everyone", "--confirm-mutating", "--config", configPath, "--json"}, nil)
+	if exitCode == output.ExitOK || !strings.Contains(stderr, "invalid_member_scope") {
+		t.Fatalf("an unknown member scope should be refused locally, exit=%d stderr=%s", exitCode, stderr)
+	}
+}
+
 func TestSlackConnectsUpdateTurnsAutoJoinOffAlone(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

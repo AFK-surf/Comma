@@ -18,6 +18,7 @@ import {
   BrowserWindow,
   Menu,
   MessageChannelMain,
+  net,
   Notification,
   powerMonitor,
   Tray,
@@ -34,11 +35,13 @@ import {
   session,
   shell,
   systemPreferences,
+  type MessageBoxOptions,
   type Rectangle,
 } from "electron";
 import log from "electron-log/main";
 import type { ConnectorConfig, SystemNotificationsStatus } from "@comma/native-bridge";
 import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
+import { sessionPrincipalKind } from "@comma/session-contract";
 import {
   notchHostEvent,
   onboardingHandoffEvent,
@@ -113,7 +116,11 @@ import {
   loadFontFamiliesAddon,
   type FontFamiliesAddon,
 } from "../../native/macos/FontFamilies";
-import { loadNotificationAuthorizationAddon } from "../../native/macos/NotificationAuthorization";
+import {
+  loadNotificationAuthorizationAddon,
+  type LocationAuthorizationStatus,
+} from "../../native/macos/NotificationAuthorization";
+import type { SystemPermissionAuthorizer } from "./system-permission-authorization";
 import { loadKeychainPasswordAddon } from "../../native/macos/KeychainPassword";
 import { electronBrowserImportPlatform } from "./modules/browser-sidebar/browser-import";
 import { loadCableScannerAddon } from "../../native/macos/CableScanner";
@@ -185,12 +192,16 @@ import { configureElectronAboutPanel, getElectronDisplayVersion } from "../app-v
 import {
   billingSettingsRoute,
   billingSettingsRouteForReturn,
+  billingSettingsRouteFromMenuBar,
   type BillingReturn,
   findBillingReturnUrl,
   parseBillingReturnUrl,
 } from "./billing-return";
 import { channelSettingsRoute, isChannelReturnUrl } from "./channel-return";
+import { parseLauncherLink, type LauncherLink } from "./launcher-link";
+import { RaycastConnector } from "./raycast-connect";
 import { dispatchMiniAppRunLink, miniAppLinkRoute } from "./mini-app-link";
+import { taskLinkRoute } from "./task-link";
 
 const {
   e2eHooks,
@@ -280,6 +291,8 @@ let mainWindowInteractionsEnabled = false;
 let pendingBillingReturn: BillingReturn | undefined;
 let pendingChannelReturn: string | undefined;
 let pendingMiniAppLink: string | undefined;
+let pendingTaskLink: string | undefined;
+let pendingLauncherLink: LauncherLink | undefined;
 let quitAuthorizedAfterClose = false;
 // Under test, Main reports on stdout that its own quit sequence ran to its end.
 // The E2E harness takes that as a finished close and does not wait for
@@ -343,6 +356,10 @@ const onboardingWindowIdentity = {
   id: "win_onboarding",
   role: "onboarding-window",
 } as const;
+
+/** Chromium's network stack for Main's own requests: unlike Node's `fetch`, it follows the system proxy. */
+const netFetch: typeof fetch = (input, init) =>
+  net.fetch(input instanceof URL ? input.href : input, init);
 
 function resolveWindowIconPath() {
   const resourceIconPath = join(process.resourcesPath, "icon.png");
@@ -435,6 +452,8 @@ function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTra
             iconPath: resolveStatusTrayIconPath(),
             nativeImage,
             platform: process.platform,
+            // Windows' small-icon size: 16 pixels at 100% scale.
+            trayIconSize: Math.round(16 * screen.getPrimaryDisplay().scaleFactor),
           })
         ),
       toolTip,
@@ -484,7 +503,7 @@ function installStatusTray() {
     onOpenSettings: openStatusTraySettings,
     onOpenTask: (task) => requestOpenMainAppRoute(statusTrayTaskRoute(task)),
     onOpenTasks: () => requestOpenMainAppRoute("/tasks"),
-    onOpenUsageSettings: () => requestOpenMainAppRoute(billingSettingsRoute),
+    onOpenUsageSettings: () => requestOpenMainAppRoute(billingSettingsRouteFromMenuBar),
     onMenuOpened: () => appContext?.statusTrayUsageOpened(),
     onQuickChat: () => appContext?.startQuickChat(),
     onRefreshUsage: () => appContext?.refreshStatusTrayUsage(),
@@ -573,6 +592,101 @@ function requestOpenMiniAppLink(value: string) {
   else pendingMiniAppLink = route;
   return true;
 }
+
+function requestOpenTaskLink(value: string) {
+  const route = taskLinkRoute(value, releaseConfig.urlScheme);
+  if (!route) return false;
+  if (mainWindowInteractionsEnabled) requestOpenMainAppRoute(route);
+  else pendingTaskLink = route;
+  return true;
+}
+
+// A link the Raycast extension opens (launcher-link.ts). It shows a window, hands Home words to put in its draft,
+// or asks the person to confirm a connection; it sends nothing and grants nothing on its own.
+function requestOpenLauncherLink(value: string) {
+  const link = parseLauncherLink(value, releaseConfig.urlScheme);
+  if (!link) return false;
+  if (mainWindowInteractionsEnabled) void openLauncherLink(link);
+  else pendingLauncherLink = link;
+  return true;
+}
+
+async function openLauncherLink(link: LauncherLink) {
+  if (link.kind === "route") {
+    requestOpenMainAppRoute(link.route);
+    return;
+  }
+  // The window opens first, so the confirmation is attached to it even when it was closed before the link came.
+  // While the first-launch onboarding holds the main window, the onboarding comes forward instead.
+  if (!mainWindowOnboardingHold.openRequested()) {
+    await openMainApp().catch((error: unknown) => {
+      log.error(`main window open failed: ${errorMessage(error)}`);
+    });
+  }
+  const outcome = await raycastConnector.connect(link.challenge);
+  log.info(`Raycast connection: ${outcome}`);
+}
+
+/** Main's own message box, attached to the main window while it is open. */
+function showMainMessageBox(options: MessageBoxOptions) {
+  const window = primaryWindow;
+  return window && !window.isDestroyed()
+    ? dialog.showMessageBox(window, options)
+    : dialog.showMessageBox(options);
+}
+
+const raycastConnector = new RaycastConnector({
+  account: () => {
+    const principal = appContext?.session.state().principal;
+    return principal && sessionPrincipalKind(principal) === "registered"
+      ? principal.email
+      : undefined;
+  },
+  confirm: async (account) => {
+    const locale = { locale: electronMainLocale };
+    const options = {
+      type: "question" as const,
+      title: messages.raycast_connect_title({}, locale),
+      message: messages.raycast_connect_message({}, locale),
+      detail: messages.raycast_connect_detail({ account }, locale),
+      buttons: [
+        messages.settings_profile_cancel({}, locale),
+        messages.raycast_connect_action({}, locale),
+      ],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    };
+    const result = await showMainMessageBox(options);
+    return result.response === 1;
+  },
+  signedOut: () => {
+    const locale = { locale: electronMainLocale };
+    void showMainMessageBox({
+      type: "info",
+      title: messages.raycast_connect_title({}, locale),
+      message: messages.raycast_connect_signed_out({}, locale),
+    });
+  },
+  pair: async (challenge) => {
+    const core = appContext?.coreHost;
+    if (!core) throw new Error("The Comma core is not running.");
+    return (await core.client().call("accountSessions.pairRaycast", { challenge })) as {
+      pairingId: string;
+      pairingSecret: string;
+      expiresAt: number;
+    };
+  },
+  open: (url) => shell.openExternal(url),
+  failed: (error) => {
+    // The cause is for the log only: the dialog says what to do next.
+    log.warn(`Raycast connection failed: ${errorMessage(error)}`);
+    void dialog.showMessageBox({
+      type: "warning",
+      message: messages.raycast_connect_failed({}, { locale: electronMainLocale }),
+    });
+  },
+});
 
 function requestOpenChannelSettings(value: string) {
   if (!isChannelReturnUrl(value, releaseConfig.urlScheme)) return false;
@@ -749,6 +863,31 @@ function createHybridPasskeys() {
     ? new HybridPasskeys({ clock: mainClock, logger: log, scanner })
     : undefined;
 }
+
+// The Quick Chat and meeting capture helpers are bare executables inside the
+// bundle, so macOS asks for and keeps their microphone grant under Comma's.
+function macMicrophoneStatus(): LocationAuthorizationStatus {
+  switch (systemPreferences.getMediaAccessStatus("microphone")) {
+    case "granted":
+      return "authorized";
+    case "not-determined":
+      return "notDetermined";
+    case "denied":
+      return "denied";
+    case "restricted":
+      return "restricted";
+    default:
+      return "unavailable";
+  }
+}
+
+const macMicrophoneAuthorizer: SystemPermissionAuthorizer = {
+  status: async () => macMicrophoneStatus(),
+  request: async () => {
+    await systemPreferences.askForMediaAccess("microphone").catch(() => false);
+    return macMicrophoneStatus();
+  },
+};
 
 async function readSystemNotificationsStatus(): Promise<SystemNotificationsStatus> {
   if (e2eHooks.systemNotificationsStatus) return e2eHooks.systemNotificationsStatus;
@@ -1255,6 +1394,15 @@ async function createElectronMainContext() {
       setOpenCommaShortcut: (shortcut) => openCommaShortcut.set(shortcut),
       setQuickChatShortcut: (shortcut) => quickChatShortcut.set(shortcut),
       authorizeSystemNotifications,
+      ...(operatingSystem() === "macos"
+        ? {
+            locationAuthorization: {
+              status: () => notificationAuthorization.locationAuthorizationStatus(),
+              request: () => notificationAuthorization.requestLocationAuthorization(),
+            },
+            microphoneAuthorization: macMicrophoneAuthorizer,
+          }
+        : {}),
       getLaunchAtLogin: readLaunchAtLogin,
       getSystemNotificationsStatus: readSystemNotificationsStatus,
       setLaunchAtLogin,
@@ -1286,30 +1434,8 @@ async function createElectronMainContext() {
       powerMonitor.on("resume", listener);
       return () => powerMonitor.removeListener("resume", listener);
     },
-    confirmHostMaintenance: async (input) => {
-      const locale = { locale: electronMainLocale };
-      const action =
-        input.action === "update"
-          ? messages.compute_maintenance_action_update({}, locale)
-          : input.action === "reinstall"
-            ? input.dataPolicy === "reset"
-              ? messages.compute_maintenance_action_reinstall_reset({}, locale)
-              : messages.compute_maintenance_action_reinstall({}, locale)
-            : input.dataPolicy === "reset"
-              ? messages.compute_maintenance_action_uninstall_reset({}, locale)
-              : messages.compute_maintenance_action_uninstall({}, locale);
-      const result = await dialog.showMessageBox({
-        type: "warning",
-        title: messages.compute_maintenance_confirmation_title({}, locale),
-        message: action,
-        detail: `${messages.compute_maintenance_shared_warning({}, locale)}\n\n${input.dataPolicy === "reset" ? messages.compute_maintenance_erase_confirmation({}, locale) : messages.compute_maintenance_keep_confirmation({}, locale)}`,
-        buttons: [messages.settings_profile_cancel({}, locale), action],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      });
-      return result.response === 1;
-    },
+    // Updates preserve data silently; destructive maintenance actions are confirmed in-app via React Dialog.
+    confirmHostMaintenance: async () => true,
     confirmLocalDisposal: async (preview) => {
       const result = await dialog.showMessageBox({
         type: "warning",
@@ -1375,8 +1501,15 @@ async function createElectronMainContext() {
       process.env.NODE_ENV === "test"
         ? undefined
         : createLanNearbyPlatform({
+            clock: mainClock,
             log: { warn: (message) => log.warn(message) },
           }),
+    presentNearbyOffer: () => {
+      // The card is the main window's: open it, or bring it forward. A window
+      // made for it reads the held offer when it subscribes (replay-last).
+      requestOpenMainApp();
+      return mainWindowIdentity.id;
+    },
     getAirDropSurfaceId: () => {
       const window = BrowserWindow.getFocusedWindow() ?? primaryWindow;
       return window && !window.isDestroyed()
@@ -1414,6 +1547,7 @@ async function createElectronMainContext() {
     connectorsRootDir: join(app.getPath("userData"), "connectors"),
     connectorRuntimeNamespace: runtimePaths.runtimeNamespace,
     connectorRuntimeRoot: app.getPath("userData"),
+    connectorSystemProxy: (url) => session.defaultSession.resolveProxy(url),
     // The bundled synchronicity node keeps its own data directory under
     // userData, so it never shares a node with a `synch` the user runs.
     ...(e2eHooks.synchronicityMode === "fake"
@@ -1443,6 +1577,8 @@ async function createElectronMainContext() {
           ),
         }
       : {}),
+    // Sign-in requests take Chromium's network stack, as the API proxy does: it follows the system proxy.
+    fetch: netFetch,
     googleAuth: e2eHooks.googleIdToken
       ? {
           // Unpackaged NODE_ENV=test only. This keeps the Electron E2E on the
@@ -1457,7 +1593,10 @@ async function createElectronMainContext() {
         }
       : new SystemBrowserGoogleAuth({
           clock: mainClock,
+          fetch: netFetch,
           locale: () => electronMainLocale,
+          onFailure: (reason) =>
+            log.warn("Google sign-in could not be completed.", reason),
           openExternal: openExternalOrMiniApp,
         }),
     ipcMain,
@@ -1607,7 +1746,15 @@ async function createElectronMainContext() {
       return null;
     },
     readClipboardText: () => electronClipboard.readText(),
-    writeClipboardText: (text) => electronClipboard.writeText(text),
+    writeClipboardText: (text, html) =>
+      html === undefined
+        ? electronClipboard.writeText(text)
+        : electronClipboard.write([
+            new ClipboardItem({
+              "text/plain": new Blob([text], { type: "text/plain" }),
+              "text/html": new Blob([html], { type: "text/html" }),
+            }),
+          ]),
     // nativeImage decodes PNG and JPEG only, and answers an empty image for
     // anything it cannot read: the renderer hands over PNG, and a decode that
     // fails is reported instead of leaving the clipboard silently unchanged.
@@ -1652,9 +1799,13 @@ async function createElectronMainContext() {
     ...(process.env.NODE_ENV === "test"
       ? { loadMeetingPresenceNative: async () => undefined }
       : {}),
-    microphoneHostPath: app.isPackaged
-      ? join(process.resourcesPath, "native", "macos", "MicCaptureHost")
-      : join(app.getAppPath(), "dist", "native", "macos", "MicCaptureHost"),
+    // The helper is a macOS binary; other platforms have no encoder or helper microphone.
+    microphoneHostPath:
+      process.platform !== "darwin"
+        ? undefined
+        : app.isPackaged
+          ? join(process.resourcesPath, "native", "macos", "MicCaptureHost")
+          : join(app.getAppPath(), "dist", "native", "macos", "MicCaptureHost"),
     // Quick Chat watches ⌘ and takes the microphone on the machine running the
     // suite, so launched test apps run without it.
     ...(process.env.NODE_ENV === "test"
@@ -1766,6 +1917,11 @@ if (!gotSingleInstanceLock) {
       miniAppLinkRoute(value, releaseConfig.urlScheme)
     );
     if (miniAppLink && requestOpenMiniAppLink(miniAppLink)) return;
+    const taskLink = argv.find((value) =>
+      taskLinkRoute(value, releaseConfig.urlScheme)
+    );
+    if (taskLink && requestOpenTaskLink(taskLink)) return;
+    if (argv.some((value) => requestOpenLauncherLink(value))) return;
     const billingReturn = findBillingReturnUrl(argv, releaseConfig.urlScheme);
     if (!billingReturn || !requestOpenBillingSettings(billingReturn.url)) {
       requestOpenMainApp();
@@ -1920,6 +2076,14 @@ async function startMainServices(kept?: NonNullable<typeof primaryWindowLaunch>)
   } else if (pendingMiniAppLink) {
     await openMainAppRoute(pendingMiniAppLink);
     pendingMiniAppLink = undefined;
+  } else if (pendingTaskLink) {
+    await openMainAppRoute(pendingTaskLink);
+    pendingTaskLink = undefined;
+  } else if (pendingLauncherLink) {
+    const link = pendingLauncherLink;
+    pendingLauncherLink = undefined;
+    if (link.kind === "route") await openMainAppRoute(link.route);
+    else void openLauncherLink(link);
   } else {
     if (await onboardingPendingAtLaunch(appContext)) {
       log.info("first launch: the main window waits for the onboarding");
@@ -1960,6 +2124,8 @@ function registerBillingReturnProtocol() {
     pendingChannelReturn = channelSettingsRoute;
   for (const value of process.argv) {
     pendingMiniAppLink ??= miniAppLinkRoute(value, releaseConfig.urlScheme);
+    pendingTaskLink ??= taskLinkRoute(value, releaseConfig.urlScheme);
+    pendingLauncherLink ??= parseLauncherLink(value, releaseConfig.urlScheme);
   }
 
   app.on("open-url", (event, value) => {
@@ -1976,6 +2142,15 @@ function registerBillingReturnProtocol() {
     if (miniAppLinkRoute(value, releaseConfig.urlScheme)) {
       event.preventDefault();
       requestOpenMiniAppLink(value);
+      return;
+    }
+    if (taskLinkRoute(value, releaseConfig.urlScheme)) {
+      event.preventDefault();
+      requestOpenTaskLink(value);
+      return;
+    }
+    if (requestOpenLauncherLink(value)) {
+      event.preventDefault();
       return;
     }
     if (!parseBillingReturnUrl(value, releaseConfig.urlScheme)) return;

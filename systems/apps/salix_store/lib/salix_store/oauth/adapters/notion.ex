@@ -133,6 +133,13 @@ defmodule SalixStore.OAuth.Adapters.Notion do
     {:error, :revocation_not_supported}
   end
 
+  # Notion answers a revoked token with 401 and code "unauthorized".
+  @impl true
+  def token_refused?(host, 401, %{"object" => "error", "code" => "unauthorized"}),
+    do: Adapter.api_host?("notion", host, "api.notion.com")
+
+  def token_refused?(_host, _status, _body), do: false
+
   @impl true
   def validate_credential_value(value, scopes),
     do: Adapter.validate_access_token(value, scopes, @label)
@@ -152,10 +159,7 @@ defmodule SalixStore.OAuth.Adapters.Notion do
 
         cond do
           err != "" ->
-            msg =
-              if Adapter.blank?(parsed["error_description"]),
-                do: err,
-                else: parsed["error_description"]
+            msg = Adapter.format_token_error(err, parsed["error_description"])
 
             {:error, "notion token error: #{msg}"}
 

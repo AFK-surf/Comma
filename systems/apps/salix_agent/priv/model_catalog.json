@@ -5163,6 +5163,48 @@
    }
   },
   {
+   "id": "gemini-4-neon",
+   "name": "Gemini 4 Neon",
+   "family": "Gemini Neon",
+   "vendor": "google",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 65536,
+   "routes": {
+    "google": {
+     "model": "gemini-4-neon",
+     "protocol": "chat_completions"
+    },
+    "openrouter": {
+     "model": "google/gemini-4-neon",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "google/gemini-4-neon",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "gemini-4-neon",
+     "protocol": "chat_completions"
+    },
+    "github-copilot": {
+     "model": "gemini-4-neon",
+     "protocol": "chat_completions"
+    }
+   },
+   "price": {
+    "input": 3,
+    "output": 15,
+    "cache_read": 0.15
+   }
+  },
+  {
    "id": "gemini-flash-latest",
    "name": "Gemini Flash Latest",
    "family": "Gemini Flash",

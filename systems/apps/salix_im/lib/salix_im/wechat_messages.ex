@@ -98,6 +98,15 @@ defmodule SalixIM.WeChatMessages do
       Enum.find_value(items(message), &id(&1["msg_id"])) || ""
   end
 
+  def reply_to_message_id(message) do
+    id(message["reply_to_message_id"]) ||
+      Enum.find_value(items(message), fn item ->
+        ref = item["ref_msg"]
+        embedded = if is_map(ref), do: ref["message_item"]
+        if is_map(ref), do: id(ref["svr_id"]) || if(is_map(embedded), do: id(embedded["msg_id"]))
+      end)
+  end
+
   defp resolve_item(connect, item, cache) do
     case item["ref_msg"] do
       ref when is_map(ref) ->

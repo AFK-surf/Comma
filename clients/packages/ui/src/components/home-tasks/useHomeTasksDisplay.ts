@@ -9,6 +9,7 @@ export const HOME_TASKS_BUCKET_ORDER: readonly TaskStatusBucket[] = [
   "needs_review",
   "done",
   "cancelled",
+  "loops",
 ];
 
 /** Cascade cap for cards arriving together; later ones share the last beat. */

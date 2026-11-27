@@ -297,7 +297,17 @@ defmodule SalixStore.StationTaskIndexTest do
       StationTaskIndex.apply_page(
         sf,
         "dev_sf",
-        page("s1", [row("7", 1, %{"last_activity_at" => 4_000})], reset: true)
+        page(
+          "s1",
+          [
+            row("7", 1, %{
+              "last_activity_at" => 4_000,
+              "title" => "社区 APP 的 MVP",
+              "note" => "Waiting for the 100% design review"
+            })
+          ],
+          reset: true
+        )
       )
 
     page_of = fn opts ->
@@ -319,6 +329,179 @@ defmodule SalixStore.StationTaskIndexTest do
     assert page_of.(attention: "need") == {[], false}
     assert page_of.(since: 4_500) == {["EMBER/2", "EMBER/3"], false}
     assert page_of.(source: "stillfail") == {["7"], false}
+    # One still.fail workspace's chats, by its device.
+    assert page_of.(device_id: "dev_sf") == {["7"], false}
+    assert page_of.(device_id: "dev_other") == {[], false}
+    # Words of a title or a note, any case; LIKE's wildcards are only words.
+    assert page_of.(query: "app 的 mvp") == {["7"], false}
+    assert page_of.(query: "100% DESIGN") == {["7"], false}
+    assert page_of.(query: "Task EMBER/") == {["EMBER/2", "EMBER/3", "EMBER/1"], false}
+    assert page_of.(query: "%") == {["7"], false}
+    assert page_of.(query: "_") == {[], false}
+  end
+
+  test "members list a still.fail station's chats only where the Router wrote, and every Comma station's Task" do
+    Repo.query!("TRUNCATE salix_stillfail_stations")
+
+    {:ok, _} =
+      apply_page(
+        page(
+          "e1",
+          [
+            row("EMBER/1", 1, %{"last_activity_at" => 1_000}),
+            # A Comma station's row keeps no link: only still.fail's open in still.fail.
+            row("EMBER/2", 2, %{"last_activity_at" => 2_000, "url" => "https://x.test/2"})
+          ],
+          reset: true
+        )
+      )
+
+    {:ok, sf} = SalixStore.StillfailStations.ensure(@tenant, @group, "dev_sf")
+
+    # More unlisted chats than a list holds (500), all newer than the listed ones: they must not push them out.
+    unlisted =
+      for n <- 1..520,
+          do:
+            row("#{n}", n, %{
+              "last_activity_at" => 10_000 + n,
+              "url" => "https://still.fail/c/#{n}"
+            })
+
+    listed = [
+      row("900", 900, %{
+        "last_activity_at" => 3_000,
+        "router" => true,
+        "url" => "https://still.fail/c/900"
+      }),
+      # Another station of the workspace's chat.
+      row("12@st_b", 901, %{
+        "last_activity_at" => 4_000,
+        "router" => true,
+        "url" => "https://still.fail/c/12"
+      }),
+      # Not `true`: not the Router's.
+      row("902", 902, %{
+        "last_activity_at" => 5_000,
+        "router" => "yes",
+        "url" => "https://still.fail/c/902"
+      }),
+      # The Router's, with no page to open it on.
+      row("903", 903, %{"last_activity_at" => 6_000, "router" => true})
+    ]
+
+    [first | later] = Enum.chunk_every(unlisted ++ listed, StationTaskIndex.max_page_rows())
+    {:ok, held} = StationTaskIndex.apply_page(sf, "dev_sf", page("s1", first, reset: true))
+
+    for rows <- later, reduce: held do
+      %{"through" => through} ->
+        {:ok, held} =
+          StationTaskIndex.apply_page(sf, "dev_sf", page("s1", rows, since: through))
+
+        held
+    end
+
+    # The Router's list keeps every row, the latest 500, and says which ones it wrote in.
+    all = StationTaskIndex.list_group(@group)
+    assert length(all) == 500
+    assert [%{thread: "520", router: false, url: "https://still.fail/c/520"} | _] = all
+    assert StationTaskIndex.get(@group, sf.id, "903").router
+
+    assert [
+             %{thread: "12@st_b", url: "https://still.fail/c/12", device_id: "dev_sf"},
+             %{thread: "900", url: "https://still.fail/c/900"},
+             %{thread: "EMBER/2", url: nil},
+             %{thread: "EMBER/1", url: nil}
+           ] = StationTaskIndex.list_for_members(@group)
+  end
+
+  test "participants normalization and list_for_members/2 member scoping + device email isolation" do
+    {:ok, sf_a} = SalixStore.StillfailStations.ensure(@tenant, @group, "dev_sf_a")
+    {:ok, sf_b} = SalixStore.StillfailStations.ensure(@tenant, @group, "dev_sf_b")
+
+    # Invalid participant email is rejected.
+    assert {:error, :invalid_page} =
+             StationTaskIndex.apply_page(
+               sf_a,
+               "dev_sf_a",
+               page("p_bad", [row("bad", 1, %{"participants" => ["not-an-email"]})], reset: true)
+             )
+
+    rows_a = [
+      row("r-router", 1, %{
+        "last_activity_at" => 10_000,
+        "router" => true,
+        "created_by" => "teammate@co.test",
+        "url" => "https://app.monoid.zone/chats/r-router"
+      }),
+      row("r-created", 2, %{
+        "last_activity_at" => 9_000,
+        "created_by" => "  Owner@Comma.Test ",
+        "url" => "https://app.monoid.zone/chats/r-created"
+      }),
+      row("r-waits", 3, %{
+        "last_activity_at" => 8_000,
+        "created_by" => "teammate@co.test",
+        "waits_for" => ["  Owner-Alt@Monoid.Test "],
+        "url" => "https://app.monoid.zone/chats/r-waits"
+      }),
+      row("r-participant", 4, %{
+        "last_activity_at" => 7_000,
+        "created_by" => "teammate@co.test",
+        "participants" => ["  Owner@Comma.Test ", "owner@comma.test", "peer@co.test"],
+        "url" => "https://app.monoid.zone/chats/r-participant"
+      }),
+      row("r-third-party", 5, %{
+        "last_activity_at" => 6_000,
+        "created_by" => "teammate@co.test",
+        "participants" => ["peer@co.test"],
+        "url" => "https://app.monoid.zone/chats/r-third-party"
+      })
+    ]
+
+    # Station B has a chat referencing owner-alt@monoid.test, which is ONLY bound to dev_sf_a.
+    rows_b = [
+      row("b-other-device-email", 1, %{
+        "last_activity_at" => 11_000,
+        "created_by" => "owner-alt@monoid.test",
+        "url" => "https://app.monoid.zone/chats/b-other"
+      })
+    ]
+
+    assert {:ok, _} =
+             StationTaskIndex.apply_page(sf_a, "dev_sf_a", page("p1", rows_a, reset: true))
+
+    assert {:ok, _} =
+             StationTaskIndex.apply_page(sf_b, "dev_sf_b", page("p1", rows_b, reset: true))
+
+    # Participants are stored lowercased, trimmed, and deduplicated.
+    assert StationTaskIndex.get(@group, sf_a.id, "r-participant").participants == [
+             "owner@comma.test",
+             "peer@co.test"
+           ]
+
+    # Owner with dev_sf_a bound to owner-alt@monoid.test sees router, created_by, waits_for,
+    # and participants on dev_sf_a, but NOT third-party chats and NOT dev_sf_b's owner-alt row.
+    owner_threads =
+      @group
+      |> StationTaskIndex.list_for_members(%{
+        email: "owner@comma.test",
+        device_emails: %{"dev_sf_a" => "owner-alt@monoid.test"}
+      })
+      |> Enum.map(& &1.thread)
+
+    assert owner_threads == ["r-router", "r-created", "r-waits", "r-participant"]
+
+    # Non-owner member (peer@co.test, no device_emails) sees router + rows where peer participates,
+    # never owner's personal chats.
+    peer_threads =
+      @group
+      |> StationTaskIndex.list_for_members(%{
+        email: "peer@co.test",
+        device_emails: %{}
+      })
+      |> Enum.map(& &1.thread)
+
+    assert peer_threads == ["r-router", "r-participant", "r-third-party"]
   end
 
   test "removing a station, moving it or replacing the Cloud VM station deletes its rows" do

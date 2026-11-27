@@ -13,6 +13,12 @@ export interface NearbyPeer {
 /** `invited`: the other person picked this one and waits; `connected`: this one accepted. */
 export type NearbyPhase = "invited" | "connected";
 
+/**
+ * Where reading an invite stands: `reading` until the core has read whose it is (Connect waits), `unreadable` when it
+ * could not (the card only closes). Absent: read.
+ */
+export type NearbyInviteRead = "reading" | "unreadable";
+
 const initials = (name: string) =>
   name
     .split(" ")
@@ -35,6 +41,7 @@ export function NearbyConnectCard({
   open,
   peer,
   phase,
+  read,
 }: {
   /** Connect is accepting: neither it nor closing can be pressed. */
   busy?: boolean;
@@ -43,15 +50,20 @@ export function NearbyConnectCard({
   open: boolean;
   phase: NearbyPhase;
   peer: NearbyPeer;
+  read?: NearbyInviteRead | undefined;
   onAccept: () => void;
   onSendFirst: () => void;
   onClose: () => void;
 }) {
   const m = useCommaMessages();
   const connected = phase === "connected";
+  const unreadable = !connected && read === "unreadable";
   const title = connected
     ? m.nearby_connected_title()
-    : m.nearby_invited_title({ name: peer.name });
+    : peer.name
+      ? m.nearby_invited_title({ name: peer.name })
+      : // The sender's computer gave no name and the invite is not read yet.
+        m.nearby_invited_title_unnamed();
   return (
     <div className="comma-nearby" data-open={open || undefined} data-phase={phase}>
       <div aria-hidden="true" className="comma-nearby__veil" onClick={onClose} />
@@ -74,21 +86,28 @@ export function NearbyConnectCard({
           </span>
         </div>
         <h2 className="comma-nearby__title">{title}</h2>
-        <p className="comma-nearby__detail">
+        <p className="comma-nearby__detail" data-error={unreadable || undefined}>
           {connected
             ? oneWay
               ? m.nearby_connected_subtitle_one_way({ name: peer.name })
               : m.nearby_connected_subtitle()
-            : peer.email}
+            : unreadable
+              ? m.nearby_invite_unreadable()
+              : // The line keeps its height while the invite is read.
+                peer.email || "\u00a0"}
         </p>
         <Button
           className="comma-nearby__action"
-          hierarchy="primary"
-          isDisabled={busy}
-          onPress={connected ? onSendFirst : onAccept}
+          hierarchy={unreadable ? "secondary-gray" : "primary"}
+          isDisabled={busy || (!connected && read === "reading")}
+          onPress={connected ? onSendFirst : unreadable ? onClose : onAccept}
           size="lg"
         >
-          {connected ? m.nearby_send_first() : m.nearby_connect()}
+          {connected
+            ? m.nearby_send_first()
+            : unreadable
+              ? m.nearby_close()
+              : m.nearby_connect()}
         </Button>
       </dialog>
     </div>

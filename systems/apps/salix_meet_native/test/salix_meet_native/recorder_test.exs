@@ -5,8 +5,20 @@ defmodule SalixMeetNative.RecorderTest do
 
   alias Membrane.{Buffer, Opus, RawAudio, Testing}
   alias SalixMeetNative.Recorder
+  alias SalixMeetNative.Recorder.OggMuxer
 
   @frame_samples 960
+
+  # Ends its stream as soon as it plays, before any stream format: what an
+  # element upstream of the muxer does when it stops that early.
+  defmodule EndsAtOnce do
+    use Membrane.Source
+
+    def_output_pad(:output, accepted_format: _any, flow_control: :push)
+
+    @impl true
+    def handle_playing(_ctx, state), do: {[end_of_stream: :output], state}
+  end
 
   # The recorder reads arrival times from SystemsClock: a stopped clock that the
   # test moves gives every track the same offsets in every run. The mixer and
@@ -109,6 +121,14 @@ defmodule SalixMeetNative.RecorderTest do
     {:ok, recorder} = Recorder.start_link(dir)
     assert {:ok, nil} = Recorder.finish(recorder)
     assert File.ls!(dir) == []
+  end
+
+  test "an Ogg stream that ends before its format ends without output" do
+    assert [] =
+             child(:source, EndsAtOnce)
+             |> child(:muxer, OggMuxer)
+             |> child(:sink, Testing.Sink)
+             |> run()
   end
 
   defp stream(recorder, tracks) do

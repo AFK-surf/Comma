@@ -102,6 +102,7 @@ defmodule SalixStore.OAuthAdaptersTest do
       },
       "lark" => %{"token_url" => "#{base}/lark/token", "api_url" => "#{base}/lark/user_info"},
       "linear" => %{"token_url" => "#{base}/linear/token", "api_url" => "#{base}/linear/api"},
+      "notion" => %{"token_url" => "#{base}/notion/token"},
       "slack" => %{"token_url" => "#{base}/slack/token", "revoke_url" => "#{base}/slack/revoke"},
       "x" => %{
         "token_url" => "#{base}/x/token",
@@ -550,6 +551,35 @@ defmodule SalixStore.OAuthAdaptersTest do
 
       assert {:error, :reauthorization_required} = GitHub.refresh(@app, conn)
     end
+
+    test "refresh: preserves GitHub bad_refresh_token error code and passes through transient errors" do
+      conn = %{
+        "access_token" => "ghu_old",
+        "refresh_token" => "ghr_old",
+        "token_type" => "bearer",
+        "scopes" => []
+      }
+
+      MockProvider.stub("/github/token", %{
+        "error" => "bad_refresh_token",
+        "error_description" => "The refresh token passed is incorrect or expired."
+      })
+
+      assert {:error, :reauthorization_required} = GitHub.refresh(@app, conn)
+
+      MockProvider.stub(
+        "/github/token",
+        %{
+          "error" => "temporarily_unavailable",
+          "error_description" => "Service busy, try again later."
+        },
+        503
+      )
+
+      assert {:error,
+              "github token error: temporarily_unavailable: Service busy, try again later."} =
+               GitHub.refresh(@app, conn)
+    end
   end
 
   # ---- google lifecycle over HTTP ----
@@ -644,6 +674,77 @@ defmodule SalixStore.OAuthAdaptersTest do
       MockProvider.stub("/linear/token", %{"access_token" => "next", "scope" => "read,write"})
       assert {:ok, refreshed} = Linear.refresh(@app, tokens)
       assert refreshed["scopes"] == ["read", "write"]
+    end
+
+    test "refresh: preserves invalid_grant and revoked refresh token errors without misclassifying 5xx" do
+      conn = %{"access_token" => "old", "refresh_token" => "linear-refresh", "scopes" => ["read"]}
+
+      MockProvider.stub(
+        "/linear/token",
+        %{
+          "error" => "invalid_grant",
+          "error_description" => "Refresh token is no longer valid."
+        },
+        400
+      )
+
+      assert {:error, :reauthorization_required} = Linear.refresh(@app, conn)
+
+      MockProvider.stub(
+        "/linear/token",
+        %{
+          "error" => "invalid_request",
+          "error_description" => "Refresh token revoked"
+        },
+        400
+      )
+
+      assert {:error, :reauthorization_required} = Linear.refresh(@app, conn)
+
+      MockProvider.stub(
+        "/linear/token",
+        %{
+          "error" => "server_error",
+          "error_description" => "Temporary outage"
+        },
+        500
+      )
+
+      assert {:error, "linear token error: server_error: Temporary outage"} =
+               Linear.refresh(@app, conn)
+    end
+  end
+
+  describe "notion http" do
+    setup do
+      {:ok, base: start_mock!()}
+    end
+
+    test "refresh: preserves invalid_grant error code and keeps 429 retryable" do
+      conn = %{"access_token" => "ntn_old", "refresh_token" => "ntn_refresh", "scopes" => []}
+
+      MockProvider.stub(
+        "/notion/token",
+        %{
+          "error" => "invalid_grant",
+          "error_description" => "The provided refresh token is not valid."
+        },
+        400
+      )
+
+      assert {:error, :reauthorization_required} = Notion.refresh(@app, conn)
+
+      MockProvider.stub(
+        "/notion/token",
+        %{
+          "error" => "rate_limited",
+          "error_description" => "Too many requests"
+        },
+        429
+      )
+
+      assert {:error, "notion token error: rate_limited: Too many requests"} =
+               Notion.refresh(@app, conn)
     end
   end
 

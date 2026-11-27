@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
+  @feishu_app_limit 50
+
   @moduledoc """
   Builds the Agent Swarm Connections page payload and applies its writes for
   `DashboardAPIController`: the messaging channels (Feishu and Slack connects
@@ -7,10 +9,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
 
   The page is one read with a fixed number of database queries and Salix
   calls, whatever the number of connects, agents or accounts: the caller's
-  organization role, the organization's bot-enabled Feishu app, the router
-  agent and the org's model choices (a Slack connection delivers to the
-  Router, or makes each new thread a Task that runs a chosen model or the
-  swarm's default Task model), and one Salix call each for the IM
+  organization role, the organization's bot-enabled Feishu apps (up to
+  #{@feishu_app_limit}), the router agent and the org's model choices (a
+  Slack connection delivers to the Router, or makes each new thread a Task
+  that runs a chosen model or the swarm's default Task model), and one
+  Salix call each for the IM
   connects, the Slack manifest, the group, Signal, the OAuth platforms, the
   OAuth accounts, the Composio accounts and the Tailscale network.
   Each section has its own `status` (`ok`, `preparing` or `unavailable`), so
@@ -54,6 +57,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
   @app_name_limit 100
   @slack_create_app_base "https://api.slack.com/apps"
   @slack_fields ~w(app_name app_id client_id client_secret signing_secret inbound_agent_id inbound_tasks)
+  @member_scopes ~w(organization external)
+  @grant_days [1, 7, 30]
 
   # ---- Reads ----
 
@@ -93,6 +98,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
         qq = Enum.filter(connects, &(&1["provider"] == "qq"))
         lark = Enum.filter(connects, &(&1["provider"] == "lark"))
         telegram = Enum.filter(connects, &(&1["provider"] == "telegram"))
+        wecom = Enum.filter(connects, &(&1["provider"] == "wecom"))
 
         %{
           "status" => "ok",
@@ -100,7 +106,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
           "slack" => slack(org, project, slack, router, router_id),
           "qq" => qq(qq, router),
           "lark" => lark(lark, router),
-          "telegram" => telegram(org, project, telegram, router)
+          "telegram" => telegram(org, project, telegram, router),
+          "wecom" => wecom(wecom, router)
         }
 
       {:error, reason} ->
@@ -110,20 +117,17 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
           "slack" => nil,
           "qq" => nil,
           "lark" => nil,
-          "telegram" => nil
+          "telegram" => nil,
+          "wecom" => nil
         }
     end
   end
 
-  # The org's bot-enabled, secret-configured Feishu app (an org has at most
-  # one). Salix sources the bot secret from its tenant store, so a connect
-  # names only the app.
+  # The org's bot-enabled, secret-configured Feishu apps, oldest first (one
+  # per department bot). Salix sources the bot secret from its tenant store
+  # by app id, so a connect names only the app.
   defp feishu(org, connects, router) do
-    apps =
-      case FeishuAppBindings.latest_bot_binding(org.id) do
-        %{app_secret_configured: true} = app -> [app]
-        _none -> []
-      end
+    apps = FeishuAppBindings.list_configured_bot_bindings(org.id, limit: @feishu_app_limit)
 
     %{
       "apps" => Enum.map(apps, &%{"app_id" => &1.app_id, "name" => &1.display_name || &1.app_id}),
@@ -146,6 +150,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
       "missing_scopes" => List.wrap(connect["missing_scopes"]),
       "updated_at" => iso_timestamp(connect["updated_at"])
     }
+    |> Map.merge(member_fields(connect))
   end
 
   # Whether a Feishu group message reaches this swarm: an active connect and
@@ -198,6 +203,28 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
                 do: connect["command_menu_sync"],
                 else: %{}
               ),
+            "updated_at" => iso_timestamp(connect["updated_at"])
+          }
+        end),
+      "route" => feishu_route(connects, router)
+    }
+  end
+
+  # The swarm's WeCom AI bots. Each connect holds its bot's Bot ID and
+  # Secret; Salix holds the bot's long connection, so there is nothing to
+  # paste back into WeCom.
+  defp wecom(connects, router) do
+    %{
+      "connects" =>
+        Enum.map(connects, fn connect ->
+          %{
+            "connect_id" => connect["connect_id"],
+            "status" => connect["status"] || "configured",
+            "disabled" => not is_nil(connect["disabled_at"]),
+            "bot_id" => connect["app_id"],
+            # The long connection is subscribed now, somewhere in the cluster.
+            "online" => connect["socket_online"] == true,
+            "secret_configured" => connect["app_secret_configured"] == true,
             "updated_at" => iso_timestamp(connect["updated_at"])
           }
         end),
@@ -273,6 +300,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
             "missing_scopes" => List.wrap(connect["missing_scopes"]),
             "updated_at" => iso_timestamp(connect["updated_at"])
           }
+          |> Map.merge(member_fields(connect))
         end),
       "route" => feishu_route(connects, router),
       # The JSON for the batch import of the Lark Developer Console.
@@ -287,7 +315,9 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
   defp slack(org, project, connects, router, router_id) do
     app_name = default_slack_app_name(project)
     agents = if match?({:ok, %Agent{}}, router), do: [elem(router, 1)], else: []
-    offered = org_models(org)
+    catalog = Models.catalog()
+    offered = org_models(org, catalog)
+    served = Models.servable(org)
 
     %{
       "app_name" => app_name,
@@ -299,42 +329,71 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
           {:ok, id} -> id
           _error -> nil
         end,
-      "task_models" => task_model_options(offered),
-      "connects" => Enum.map(connects, &slack_connect(&1, agents, offered))
+      "task_models" =>
+        org |> Models.offered(catalog, served, &paid_label/1) |> task_model_options(),
+      "connects" => Enum.map(connects, &slack_connect(&1, agents, {offered, served}))
     }
   end
 
-  defp slack_connect(connect, agents, offered) do
+  defp slack_connect(connect, agents, models) do
     %{
       "connect_id" => connect["connect_id"],
       "installed" => (connect["oauth_completed_at"] || 0) > 0,
       "disabled" => not is_nil(connect["disabled_at"]),
       "workspace" => text(connect["workspace_name"]) || text(connect["workspace_id"]),
       "inbound" => if(is_map(connect["inbound_tasks"]), do: "tasks", else: "agent"),
-      "inbound_agent" => inbound_label(connect, agents, offered),
+      "inbound_agent" => inbound_label(connect, agents, models),
       "install_url" => web_url(connect["oauth_url"]),
       "client_secret_configured" => connect["client_secret_configured"] == true,
       "signing_secret_configured" => connect["signing_secret_configured"] == true,
       "auto_join_public_channels" => connect["auto_join_public_channels"] != false,
       "updated_at" => iso_timestamp(connect["updated_at"])
     }
+    |> Map.merge(member_fields(connect))
   end
 
-  defp inbound_label(%{"inbound_tasks" => %{} = tasks}, _agents, offered) do
+  # Whose people the connect's people are: `"organization"` (its workspace's
+  # or tenant's own members) or `"external"` (only the people granted by name).
+  defp member_fields(connect) do
+    %{
+      "member_scope" =>
+        if(connect["member_scope"] == "external", do: "external", else: "organization"),
+      "member_grants" =>
+        connect["member_grants"]
+        |> List.wrap()
+        |> Enum.filter(&is_map/1)
+        |> Enum.map(
+          &%{
+            "subject" => &1["subject"],
+            "name" => &1["name"],
+            "email" => &1["email"],
+            "expires_at" => &1["expires_at"],
+            "granted_at" => &1["granted_at"]
+          }
+        )
+    }
+  end
+
+  # A model no enabled account serves is named so: each of its Tasks stops.
+  defp inbound_label(%{"inbound_tasks" => %{} = tasks}, _agents, {offered, served}) do
     case tasks["model"] do
       %{} = model ->
-        gettext("Tasks · %{model}", model: Models.option(model, offered)["label"])
+        label = Models.option(model, offered)["label"]
+
+        if Models.served?(Models.normalize(model), served),
+          do: gettext("Tasks · %{model}", model: label),
+          else: gettext("Tasks · %{model}; no enabled account serves it", model: label)
 
       _default ->
         gettext("Tasks · default Task model")
     end
   end
 
-  defp inbound_label(connect, agents, _offered),
+  defp inbound_label(connect, agents, _models),
     do: agent_label(connect["inbound_agent_id"], agents)
 
   # The models a connection bound to Tasks may run: the swarm's default Task
-  # model (key ""), then the org's offered choices.
+  # model (key ""), then the org's offered choices that an account serves.
   defp task_model_options(offered) do
     [
       %{"key" => "", "choice" => nil, "label" => gettext("Default Task model")}
@@ -342,8 +401,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
     ]
   end
 
-  defp org_models(org) do
-    case Models.allowed(org, Models.catalog()) do
+  defp paid_label(option),
+    do: gettext("%{model} (pay-per-use)", model: option["label"])
+
+  defp org_models(org, catalog) do
+    case Models.allowed(org, catalog) do
       {:ok, options} -> options
       {:error, _reason} -> []
     end
@@ -562,11 +624,17 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
 
   @doc "Connect an org Feishu app to this swarm; the secrets stay in Salix."
   def create_feishu(org, user, project, role, params) do
-    with :ok <- authorize_im(org, user, project, role, "integration.feishu.created") do
+    with :ok <- authorize_im(org, user, project, role, "integration.feishu.created"),
+         {:ok, scope} <- create_member_scope(params) do
       app_id = text(params["app_id"])
       binding = app_id && FeishuAppBindings.get_binding_for_app(org.id, app_id)
-      fallback = (binding && (binding.display_name || binding.app_id)) || "Bridge"
-      attrs = %{"app_id" => app_id, "app_name" => text(params["app_name"]) || fallback}
+      fallback = (binding && (binding.display_name || binding.app_id)) || "Comma"
+
+      attrs = %{
+        "app_id" => app_id,
+        "app_name" => text(params["app_name"]) || fallback,
+        "member_scope" => scope
+      }
 
       case ProjectIMConnects.create_project_connect(
              org.id,
@@ -599,9 +667,12 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
   the Verification Token or Encrypt Key of its event subscription.
   """
   def create_lark(org, user, project, role, params) do
-    with :ok <- authorize_im(org, user, project, role, "integration.lark.created") do
+    with :ok <- authorize_im(org, user, project, role, "integration.lark.created"),
+         {:ok, scope} <- create_member_scope(params) do
       attrs =
-        Map.new(~w(app_id app_secret verification_token encrypt_key), &{&1, text(params[&1])})
+        ~w(app_id app_secret verification_token encrypt_key)
+        |> Map.new(&{&1, text(params[&1])})
+        |> Map.put("member_scope", scope)
 
       cond do
         is_nil(attrs["verification_token"]) and is_nil(attrs["encrypt_key"]) ->
@@ -695,10 +766,13 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
   end
 
   defp poll_registration(provider, org, user, project, role, params) do
-    with :ok <- authorize_im(org, user, project, role, "integration.#{provider}.created") do
+    with :ok <- authorize_im(org, user, project, role, "integration.#{provider}.created"),
+         {:ok, scope} <- create_member_scope(params) do
+      opts = [member_scope: scope] ++ audit_opts(user)
+
       case unseal_registration(provider, params["registration"]) do
         {:ok, domain, code} ->
-          case finish_scan(provider, org.id, project.id, domain, code, audit_opts(user)) do
+          case finish_scan(provider, org.id, project.id, domain, code, opts) do
             {:ok, connect} ->
               {:ok,
                %{
@@ -818,6 +892,47 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
         {:error, :connect_rejected} ->
           {:error, 422, "connect_rejected",
            gettext("QQ rejected these credentials. Check the AppID and AppSecret and retry."),
+           %{}}
+
+        {:error, reason} ->
+          im_error(reason)
+      end
+    end
+  end
+
+  @doc "Connect a WeCom AI bot to this swarm with its Bot ID and Secret."
+  def create_wecom(org, user, project, role, params) do
+    with :ok <- authorize_im(org, user, project, role, "integration.wecom.created") do
+      attrs = %{"app_id" => text(params["bot_id"]), "app_secret" => text(params["secret"])}
+
+      case ProjectIMConnects.create_project_connect(
+             org.id,
+             project.id,
+             "wecom",
+             attrs,
+             audit_opts(user)
+           ) do
+        {:ok, %{"action" => "resynced"}} ->
+          {:ok, %{"notice" => gettext("Updated the WeCom bot's credentials.")}}
+
+        {:ok, _connect} ->
+          {:ok,
+           %{
+             "notice" =>
+               gettext(
+                 "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it."
+               )
+           }}
+
+        {:error, :provider_app_in_use} ->
+          {:error, 409, "provider_app_in_use",
+           gettext(
+             "This WeCom bot is already connected to another Agent Swarm. One WeCom bot serves one Agent Swarm; delete the existing connect or use a different bot."
+           ), %{}}
+
+        {:error, :connect_rejected} ->
+          {:error, 422, "connect_rejected",
+           gettext("WeCom rejected these credentials. Check the Bot ID and Secret and retry."),
            %{}}
 
         {:error, reason} ->
@@ -974,10 +1089,204 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
   defp auto_join_enabled(_enabled),
     do: {:error, 422, "invalid_auto_join", gettext("Send enabled as true or false."), %{}}
 
+  # A new connect's member scope: the form's choice, else the organization's.
+  defp create_member_scope(params) do
+    case params["member_scope"] do
+      nil -> {:ok, "organization"}
+      scope when scope in @member_scopes -> {:ok, scope}
+      _invalid -> invalid_member_scope()
+    end
+  end
+
+  defp invalid_member_scope,
+    do:
+      {:error, 422, "invalid_member_scope",
+       gettext("Choose whether this workspace's people are your organization's or external."),
+       %{"fields" => %{"member_scope" => ["organization", "external"]}}}
+
+  @doc """
+  Set whose people a Slack, Feishu or Lark connect's people are:
+  `"organization"` or `"external"`.
+  """
+  def update_member_scope(org, user, project, role, provider, connect_id, params) do
+    with :ok <- member_provider(provider),
+         :ok <-
+           authorize_im(org, user, project, role, "integration.#{provider}.updated", %{
+             "connect_id_configured" => present?(connect_id)
+           }),
+         {:ok, scope} <- member_scope(params["scope"]),
+         {:ok, connect} <- own_connect(org, project, provider, connect_id) do
+      ProjectIMConnects.update_project_connect_member_scope(
+        org.id,
+        project.id,
+        connect["connect_id"],
+        scope,
+        audit_opts(user)
+      )
+      |> members_written(scope_notice(scope))
+    end
+  end
+
+  @doc """
+  Grant one person of a connect access by name, for 1, 7 or 30 days
+  (`expires_in_days`) or without expiry (null).
+  """
+  def grant_member(org, user, project, role, provider, connect_id, params) do
+    with :ok <- member_provider(provider),
+         :ok <-
+           authorize_im(org, user, project, role, "integration.#{provider}.updated", %{
+             "connect_id_configured" => present?(connect_id)
+           }),
+         {:ok, subject} <- grant_subject(params["subject"]),
+         {:ok, days} <- grant_days(params["expires_in_days"]),
+         {:ok, connect} <- own_connect(org, project, provider, connect_id) do
+      ProjectIMConnects.grant_project_connect_member(
+        org.id,
+        project.id,
+        connect["connect_id"],
+        subject,
+        days,
+        audit_opts(user)
+      )
+      |> members_written(gettext("Access granted."))
+    end
+  end
+
+  @doc "Remove one person's grant from a connect."
+  def revoke_member(org, user, project, role, provider, connect_id, subject) do
+    with :ok <- member_provider(provider),
+         :ok <-
+           authorize_im(org, user, project, role, "integration.#{provider}.updated", %{
+             "connect_id_configured" => present?(connect_id)
+           }),
+         {:ok, subject} <- grant_subject(subject),
+         {:ok, connect} <- own_connect(org, project, provider, connect_id) do
+      ProjectIMConnects.revoke_project_connect_member(
+        org.id,
+        project.id,
+        connect["connect_id"],
+        subject,
+        audit_opts(user)
+      )
+      |> members_written(gettext("Access removed."))
+    end
+  end
+
+  @doc """
+  People of a connect by name or email, or the one person a provider user id
+  names, for the grant picker. Only swarm admins search.
+  """
+  def people(org, _user, project, role, provider, connect_id, params) do
+    with :ok <- member_provider(provider),
+         :ok <-
+           authorize(
+             role,
+             fn -> :ok end,
+             gettext("Only Agent Swarm admins can manage integrations.")
+           ),
+         {:ok, connect} <- own_connect(org, project, provider, connect_id) do
+      case ProjectIMConnects.search_project_connect_people(
+             org.id,
+             project.id,
+             connect["connect_id"],
+             to_string(params["query"] || "")
+           ) do
+        {:ok, %{"people" => people} = found} ->
+          {:ok,
+           %{
+             "people" =>
+               Enum.map(
+                 people,
+                 &%{"subject" => &1["subject"], "name" => &1["name"], "email" => &1["email"]}
+               ),
+             "complete" => found["complete"] == true
+           }}
+
+        {:error, :invalid_query} ->
+          {:error, 422, "invalid_query", gettext("Type a name, email or user id to search."), %{}}
+
+        {:error, reason} ->
+          im_error(reason)
+      end
+    end
+  end
+
+  defp member_provider(provider) when provider in ~w(slack feishu lark), do: :ok
+
+  defp member_provider(_provider),
+    do: {:error, 404, "connect_not_found", gettext("That connect no longer exists."), %{}}
+
+  # The connect must be this swarm's and of the provider the path names.
+  defp own_connect(org, project, provider, connect_id) do
+    case ProjectIMConnects.list_project_connects(org.id, project.id, provider) do
+      {:ok, connects} ->
+        case Enum.find(connects, &(&1["connect_id"] == connect_id)) do
+          nil -> im_error(:connect_not_found)
+          connect -> {:ok, connect}
+        end
+
+      {:error, reason} ->
+        im_error(reason)
+    end
+  end
+
+  defp member_scope(scope) when scope in @member_scopes, do: {:ok, scope}
+  defp member_scope(_scope), do: invalid_member_scope()
+
+  defp grant_subject(subject) when is_binary(subject) do
+    case String.trim(subject) do
+      "" -> invalid_grant()
+      subject when byte_size(subject) > 128 -> invalid_grant()
+      subject -> {:ok, subject}
+    end
+  end
+
+  defp grant_subject(_subject), do: invalid_grant()
+
+  defp grant_days(nil), do: {:ok, nil}
+  defp grant_days(days) when days in @grant_days, do: {:ok, days}
+
+  defp grant_days(_days),
+    do:
+      {:error, 422, "invalid_member_grant", gettext("Choose 1, 7 or 30 days, or no expiry."),
+       %{"fields" => %{"expires_in_days" => [1, 7, 30, nil]}}}
+
+  defp invalid_grant,
+    do:
+      {:error, 422, "invalid_member_grant", gettext("Choose a person from the list."),
+       %{"fields" => %{"subject" => []}}}
+
+  defp scope_notice("organization"),
+    do: gettext("People of this workspace are your organization's people now.")
+
+  defp scope_notice("external"),
+    do:
+      gettext(
+        "People of this workspace are external now. Only people you grant can use stations."
+      )
+
+  defp members_written({:ok, connect}, notice),
+    do: {:ok, Map.put(member_fields(connect), "notice", notice)}
+
+  defp members_written({:error, :person_not_found}, _notice),
+    do:
+      {:error, 422, "person_not_found",
+       gettext("That person could not be found in this workspace. Search again."), %{}}
+
+  defp members_written({:error, :too_many_member_grants}, _notice),
+    do:
+      {:error, 422, "too_many_member_grants",
+       gettext("A connect can have at most 100 people granted. Remove one first."), %{}}
+
+  defp members_written({:error, :invalid_member_grant}, _notice), do: invalid_grant()
+  defp members_written({:error, :invalid_member_scope}, _notice), do: invalid_member_scope()
+  defp members_written({:error, reason}, _notice), do: im_error(reason)
+
   @doc "Create a Slack connect from the app the admin created from the manifest."
   def create_slack(org, user, project, role, params) do
-    with :ok <- authorize_im(org, user, project, role, "integration.slack.created") do
-      attrs = Map.take(params, @slack_fields)
+    with :ok <- authorize_im(org, user, project, role, "integration.slack.created"),
+         {:ok, scope} <- create_member_scope(params) do
+      attrs = params |> Map.take(@slack_fields) |> Map.put("member_scope", scope)
 
       case ProjectIMConnects.create_project_connect(
              org.id,

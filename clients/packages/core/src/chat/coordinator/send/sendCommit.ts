@@ -121,6 +121,8 @@ export function commitSend(
         ...(input.clientRequestId ? { clientRequestId: input.clientRequestId } : {}),
         ...(input.skills ? { skills: input.skills } : {}),
         ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+        // The words came from the draft, so the message says where the draft was written.
+        ...(consumeDraft && entry.draftEntry ? { clientEntry: entry.draftEntry } : {}),
       });
       const enqueued = entry.channel.getSnapshot().pending.length > pendingCount;
       if (consumable && !enqueued) {
@@ -138,6 +140,7 @@ export function commitSend(
       }
       if (consumeDraft && enqueued) {
         entry.draftEpoch += 1;
+        entry.draftEntry = undefined;
         entry.boundary.assertCurrent();
         entry.draftOwnerSurfaceId = undefined;
         entry.runtimeProjection = undefined;

@@ -16,6 +16,7 @@ Do this task in the Comma in-app browser. It runs in the user's Comma desktop ap
 5. Send known steps as one `actions` call, for example `{"tabId":"...","steps":[{"op":"fill","ref":"e3","text":"milk"},{"op":"press","key":"Enter"}]}`.
 6. A receipt with `dialog` means a JavaScript dialog is open. Answer it with `dialog`.
 7. When the site needs the user (a sign-in, a captcha, a payment confirmation), ask the user to do that step in the Comma browser tab, then continue.
+8. When the task is done, close each tab you opened with `comma call in-app-browser close-tab --json '{"tabId":"..."}'`. Do not close tabs that the user opened.
 
 Use the in-app browser for this task, not the cloud `browser.*` tools or `web.search`.
 If Comma reports that permission is required, ask the user to turn on Allow operations in Settings > Devices.

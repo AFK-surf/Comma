@@ -1,6 +1,7 @@
 ---
 name: composio
 description: Connect third-party services (Gmail, Google Calendar, Notion, Linear, Slack, GitHub, and ~300 other toolkits) through Composio-hosted auth and call them directly with the composio.* tools, when those tools are available in the tool catalog.
+prompt_summary: "Connect and call third-party SaaS apps via Composio (Gmail, Notion, Linear, GitHub, Calendar, etc.) when those tools are disclosed in the catalog."
 ---
 
 # Composio

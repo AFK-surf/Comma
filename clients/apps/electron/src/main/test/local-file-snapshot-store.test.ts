@@ -38,6 +38,7 @@ import {
   sanitizeLocalFileDisplayName,
   throughMacosPrivateAlias,
 } from "../modules/local-files/snapshot-store";
+import type { ChatAttachmentPickResult } from "../modules/local-files/picker";
 import {
   MainNativeSessionAdmissionGuard,
   MainCredentialGate,
@@ -90,6 +91,76 @@ describe("LocalFilePickerService", () => {
     // The core uploads it from Main: the server is given no route to read it from this device.
     expect(registrar.register).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain(sourcePath);
+  });
+
+  it("names archives, big files and code by their path where the conversation routes them, and nothing else", async () => {
+    const root = tempDirectory();
+    const sized = async (name: string, size: number) => {
+      const path = join(root, name);
+      const file = await open(path, "w");
+      await file.truncate(size);
+      await file.close();
+      return path;
+    };
+    const zip = await sized("Project Assets (1).TAR.GZ", 5_000);
+    const mp3 = await sized("podcast.mp3", 90_000_000);
+    const mov = await sized("rushes.mov", 600 * 1024 * 1024);
+    const code = await sized("main.py", 4_000);
+    const pdf = await sized("notes.pdf", 2_000_000);
+    const png = join(root, "shot.png");
+    await writeFile(png, tinyPng());
+    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
+    const snapshot = vi.spyOn(store, "snapshot");
+    const picker = createAdmittedPicker(
+      new LocalFilePickerService({
+        registrar: { register: vi.fn(async () => undefined) },
+        store,
+      })
+    );
+    const pick = (
+      localPathMode: "none" | "routed" | "all_non_images",
+      paths: string[]
+    ) =>
+      picker.pickForChat({
+        assertLocalFileRegistrationAllowed: () => {},
+        maxFiles: 50,
+        maxTotalSize: 1024 * 1024 * 1024,
+        maxUploadFiles: 8,
+        workspaceId: "workspace-1",
+        localPathMode,
+        sources: paths.map((sourcePath) => ({ kind: "path" as const, sourcePath })),
+      });
+    const routed = await pick("routed", [zip, mp3, mov, code, pdf, png]);
+    expect(routed.errors).toEqual([]);
+    expect(kinds(routed)).toEqual([
+      "local_path Project Assets (1).TAR.GZ",
+      "local_path podcast.mp3",
+      "local_path rushes.mov",
+      "local_path main.py",
+      "local_file notes.pdf",
+      "upload shot.png",
+    ]);
+    expect(routed.items[2]).toEqual({
+      kind: "local_path",
+      file: { name: "rushes.mov", path: mov, size: 600 * 1024 * 1024 },
+    });
+    // Only the PDF was kept as a snapshot: the files named by their path cost no snapshot bytes or 512 MiB bound.
+    expect(snapshot.mock.calls.map(([path]) => path)).toEqual([pdf]);
+
+    // This computer is not connected: the archive and the big audio are kept to upload, as before.
+    snapshot.mockClear();
+    expect(kinds(await pick("none", [zip, mp3]))).toEqual([
+      "local_file Project Assets (1).TAR.GZ",
+      "local_file podcast.mp3",
+    ]);
+
+    // A Task this computer's station runs reads every file that is not an image where it is.
+    snapshot.mockClear();
+    expect(kinds(await pick("all_non_images", [pdf, png]))).toEqual([
+      "local_path notes.pdf",
+      "upload shot.png",
+    ]);
+    expect(snapshot).not.toHaveBeenCalled();
   });
 
   it("hands a dropped or pasted folder back by its path, whatever its name, and attaches nothing for it", async () => {
@@ -149,44 +220,35 @@ describe("LocalFilePickerService", () => {
     ]);
   });
 
-  it("returns a bounded Main-generated PNG preview without exposing a host path", async () => {
-    type FakePreviewImage = {
-      getSize(): { height: number; width: number };
-      isEmpty(): boolean;
-      resize(options: {
-        height: number;
-        quality: "best";
-        width: number;
-      }): FakePreviewImage;
-      toPNG(): Buffer;
-    };
+  it("ships a PNG or JPEG that fits a preview as-is, without a Main decode or a host path", async () => {
+    // A 1600x1200 render: the renderer decodes it, so Main's one-at-a-time
+    // decode and re-encode does not hold a chat full of images back.
     const root = tempDirectory();
     const source = join(root, "private-photo.jpg");
-    await writeFile(source, jpegWithDimensions(1_600, 1_200));
+    const bytes = jpegWithDimensions(1_600, 1_200);
+    await writeFile(source, bytes);
     const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
     const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
-    const original: FakePreviewImage = {
-      getSize: () => ({ height: 1_200, width: 1_600 }),
-      isEmpty: () => false,
-      resize: vi.fn(),
-      toPNG: () => Buffer.from([137, 80, 78, 71]),
-    };
+    const createPreviewImage = vi.fn(() => {
+      throw new Error("A source that fits a preview must not be decoded in Main.");
+    });
     const picker = new LocalFilePickerService({
-      createPreviewImage: () => original,
+      createPreviewImage,
       registrar: { register: vi.fn(async () => undefined) },
       store,
     });
+    const admitted = createAdmittedPicker(picker);
 
-    const result = await createAdmittedPicker(picker).preview(snapshot.localFileRef);
+    const result = await admitted.preview(snapshot.localFileRef);
 
-    // The preview ships at source resolution — no thumbnail downscale.
-    expect(original.resize).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      pngImage: Buffer.from([137, 80, 78, 71]),
-      status: "ready",
-    });
+    expect(result).toEqual({ pngImage: bytes, status: "ready" });
     expect(JSON.stringify(result)).not.toContain(source);
     expect(JSON.stringify(result)).not.toContain(root);
+    const png = pngWithDimensions(1_600, 1_200);
+    await expect(
+      admitted.renderImagePreview({ bytes: png, mediaType: "image/png" })
+    ).resolves.toEqual(png);
+    expect(createPreviewImage).not.toHaveBeenCalled();
   });
 
   it("keeps an owned preview available across a same-user Session replacement", async () => {
@@ -417,19 +479,28 @@ describe("LocalFilePickerService", () => {
     expect(rendered.toPNG).toHaveBeenCalledTimes(1);
   });
 
-  it("steps the scale down when a full-resolution encode overflows the bound", async () => {
+  it("steps the scale down when an encode overflows the bound", async () => {
     const smallPng = Buffer.from([137, 80, 78, 71]);
-    const reduced = {
-      getSize: () => ({ height: 600, width: 750 }),
+    const half = {
+      getSize: () => ({ height: 1_500, width: 2_100 }),
       isEmpty: () => false,
       resize: vi.fn(),
       toPNG: vi.fn(() => smallPng),
     };
-    const original = {
-      getSize: () => ({ height: 800, width: 1_000 }),
+    const threeQuarters = {
+      getSize: () => ({ height: 2_250, width: 3_150 }),
       isEmpty: () => false,
-      resize: vi.fn(() => reduced),
+      resize: vi.fn(),
       toPNG: vi.fn(() => Buffer.alloc(chatImagePreviewMaxBytes + 1)),
+    };
+    // Wider than a preview may be, so Main renders it down.
+    const original = {
+      getSize: () => ({ height: 3_000, width: 4_200 }),
+      isEmpty: () => false,
+      resize: vi.fn(({ width }: { width: number }) =>
+        width === 2_100 ? half : threeQuarters
+      ),
+      toPNG: vi.fn(),
     };
     const picker = new LocalFilePickerService({
       createPreviewImage: () => original,
@@ -439,14 +510,16 @@ describe("LocalFilePickerService", () => {
 
     await expect(
       createAdmittedPicker(picker).renderImagePreview({
-        bytes: tinyPng(),
+        bytes: pngWithDimensions(4_200, 3_000),
         mediaType: "image/png",
       })
     ).resolves.toEqual(smallPng);
-    expect(original.resize).toHaveBeenCalledWith({
-      height: 600,
+    expect(original.toPNG).not.toHaveBeenCalled();
+    expect(threeQuarters.toPNG).toHaveBeenCalledTimes(1);
+    expect(original.resize).toHaveBeenLastCalledWith({
+      height: 1_500,
       quality: "best",
-      width: 750,
+      width: 2_100,
     });
   });
 
@@ -475,7 +548,7 @@ describe("LocalFilePickerService", () => {
 
     await expect(
       createAdmittedPicker(picker).renderImagePreview({
-        bytes: tinyPng(),
+        bytes: pngWithDimensions(4_200, 3_000),
         mediaType: "image/png",
       })
     ).rejects.toMatchObject({ errorClass: "local_file_unavailable" });
@@ -520,6 +593,46 @@ describe("LocalFilePickerService", () => {
     const results = await Promise.all(previews);
     expect(results.filter((result) => result.status === "unavailable")).toHaveLength(1);
     expect(store.readPreviewSource).toHaveBeenCalledTimes(17);
+  });
+
+  it("answers a phone photo that fits at once while the preview lane is full", async () => {
+    const allowReads = deferred<void>();
+    const readStarted = deferred<void>();
+    const store = {
+      readPreviewSource: vi.fn(async () => {
+        readStarted.resolve();
+        await allowReads.promise;
+        return { bytes: pngWithDimensions(1, 1), mediaType: "image/png" };
+      }),
+    } as unknown as LocalFileSnapshotStore;
+    const createPreviewImage = vi.fn(() => ({
+      getSize: () => ({ height: 1, width: 1 }),
+      isEmpty: () => false,
+      resize: vi.fn(),
+      toPNG: () => tinyPng(),
+    }));
+    const picker = new LocalFilePickerService({
+      createPreviewImage,
+      registrar: { register: vi.fn(async () => undefined) },
+      store,
+    });
+    const admitted = createAdmittedPicker(picker);
+    // One preview holds the lane and sixteen wait behind it: the queue is full.
+    const held = Array.from({ length: 17 }, (_, index) =>
+      admitted.preview(`lfi1_${String(index).padStart(43, "b")}`)
+    );
+    await readStarted.promise;
+
+    // A 4096x3072 JPEG as the Android app sends it ships as-is, not queued.
+    const photo = jpegWithDimensions(4_096, 3_072);
+    const core = new AbortController();
+    await expect(
+      picker.renderImagePreview({ bytes: photo, mediaType: "image/jpeg" }, core.signal)
+    ).resolves.toEqual(photo);
+    expect(createPreviewImage).not.toHaveBeenCalled();
+
+    allowReads.resolve();
+    await Promise.all(held);
   });
 
   it("removes queued work and never decodes after the admitted Session is revoked", async () => {
@@ -2490,6 +2603,13 @@ function webpWithDimensions(width: number, height: number) {
   return bytes;
 }
 
+/** What a chat pick gave, one line a file: how it was taken and its name. */
+function kinds(result: ChatAttachmentPickResult) {
+  return result.items.map((item) =>
+    item.kind === "upload" ? `upload ${item.name}` : `${item.kind} ${item.file.name}`
+  );
+}
+
 function createAdmittedPicker(picker: LocalFilePickerService) {
   const authority = new MainCredentialGate({
     authorityInstanceId: "authority-preview",
@@ -2530,6 +2650,7 @@ function createAdmittedPicker(picker: LocalFilePickerService) {
       maxTotalSize: number;
       maxUploadFiles: number;
       workspaceId: string;
+      localPathMode?: import("@comma/chat-contract").ChatLocalPathMode | undefined;
     }) => {
       let result:
         | Awaited<ReturnType<LocalFilePickerService["pickForChat"]>>

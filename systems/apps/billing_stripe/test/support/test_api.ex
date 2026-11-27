@@ -26,7 +26,13 @@ defmodule BillingStripe.TestAPI do
   def create_checkout_session(params, opts) do
     record({:checkout, params, opts})
     suffix = digest(opts[:idempotency_key] || inspect(params))
-    {:ok, %{id: "cs_test_" <> suffix, url: "https://checkout.stripe.test/session/" <> suffix}}
+
+    {:ok,
+     %{
+       id: "cs_test_" <> suffix,
+       url: "https://checkout.stripe.test/session/" <> suffix,
+       expires_at: params[:expires_at]
+     }}
   end
 
   @impl true
@@ -35,7 +41,12 @@ defmodule BillingStripe.TestAPI do
 
     {:ok,
      SystemsRuntime.get_env(:billing_stripe, :test_checkout_sessions, %{})[id] ||
-       %{id: id, status: "open", url: "https://checkout.stripe.test/session/" <> id}}
+       %{
+         id: id,
+         status: "open",
+         url: "https://checkout.stripe.test/session/" <> id,
+         expires_at: recorded_expiry(id)
+       }}
   end
 
   @impl true
@@ -217,6 +228,22 @@ defmodule BillingStripe.TestAPI do
     case SystemsRuntime.Proc.whereis(@recorder) do
       nil -> :ok
       _pid -> Agent.update(@recorder, &[call | &1])
+    end
+  end
+
+  # Stripe returns a session's expiry on every read: the one its creation set.
+  defp recorded_expiry(id) do
+    if SystemsRuntime.Proc.whereis(@recorder) do
+      @recorder
+      |> Agent.get(& &1)
+      |> Enum.find_value(fn
+        {:checkout, params, opts} ->
+          if "cs_test_" <> digest(opts[:idempotency_key] || inspect(params)) == id,
+            do: params[:expires_at]
+
+        _ ->
+          nil
+      end)
     end
   end
 

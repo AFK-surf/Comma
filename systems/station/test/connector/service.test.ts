@@ -56,8 +56,8 @@ test("the desktop app's connections run as instances: started, changed or renewe
   const root = tempDir();
   const index = tempDir();
   const events: string[] = [];
-  const instanceFile = (scope: string, token = "tok", name = "laptop") =>
-    JSON.stringify({ connector: { server: "https://salix.test", connector_token: token, name, root, scope }, electron: { local_file_index_root: index } });
+  const instanceFile = (scope: string, token = "tok", name = "laptop", proxy?: string) =>
+    JSON.stringify({ connector: { server: "https://salix.test", connector_token: token, name, root, scope, proxy }, electron: { local_file_index_root: index } });
   const scope = await Effect.runPromise(Scope.make());
   let started = 0;
   try {
@@ -73,6 +73,7 @@ test("the desktop app's connections run as instances: started, changed or renewe
               currentScope: () => current,
               setCurrentScope: (next: string) => Effect.sync(() => void ((current = next), events.push(`scope ${n} ${next || "full"}`))),
               renewCredential: (token: string) => Effect.sync(() => void events.push(`renew ${n} ${token}`)),
+              setProxy: (proxy: string) => Effect.sync(() => void events.push(`proxy ${n} ${proxy || "none"}`)),
               publishCachedMetadata: () => Effect.void,
               writeStatusMetadataSent: () => {},
             } as never;
@@ -92,11 +93,14 @@ test("the desktop app's connections run as instances: started, changed or renewe
     // The app's renewed credential: the running connection presents it and keeps its requests and processes.
     writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "renewed"));
     await settled(3);
-    writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "renewed", "desk"));
-    await settled(5);
-    rmSync(join(dir, "wsp_1.json"));
+    // The system's proxy as the app resolved it again: for the next dial, and the running connection keeps running.
+    writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "renewed", "laptop", "http://proxy.test:8080"));
+    await settled(4);
+    writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "renewed", "desk", "http://proxy.test:8080"));
     await settled(6);
-    assert.deepEqual(events, ["start 1 tok full", "scope 1 local_file_read", "renew 1 renewed", "stop 1", "start 2 renewed local_file_read", "stop 2"]);
+    rmSync(join(dir, "wsp_1.json"));
+    await settled(7);
+    assert.deepEqual(events, ["start 1 tok full", "scope 1 local_file_read", "renew 1 renewed", "proxy 1 http://proxy.test:8080", "stop 1", "start 2 renewed local_file_read", "stop 2"]);
   } finally {
     await Effect.runPromise(Scope.close(scope, Exit.void));
   }

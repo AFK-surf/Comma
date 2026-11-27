@@ -20,6 +20,27 @@ defmodule SalixStore.Loops do
 
   alias SalixStore.Repo
 
+  defmodule JsonValue do
+    @moduledoc """
+    Any JSON value in a `jsonb` column: an object, an array, a string, a
+    number, a boolean or null. A Loop checkpoint is whatever the program
+    put, so a scalar is as valid as an object.
+    """
+    use Ecto.Type
+
+    @impl true
+    def type, do: :map
+
+    @impl true
+    def cast(value), do: {:ok, value}
+
+    @impl true
+    def load(value), do: {:ok, value}
+
+    @impl true
+    def dump(value), do: {:ok, value}
+  end
+
   defmodule Row do
     @moduledoc false
     use Ecto.Schema
@@ -55,7 +76,7 @@ defmodule SalixStore.Loops do
       field(:paused_by, :string)
       field(:failure, :string)
       field(:exit_code, :integer)
-      field(:checkpoint, :map)
+      field(:checkpoint, JsonValue)
       field(:pending_events, :map)
       field(:incarnation, :integer)
       field(:incarnation_node, :string)
@@ -667,6 +688,7 @@ defmodule SalixStore.Loops do
             {1, _} =
               Repo.update_all(from(r in Row, where: r.id == ^id), [set: updates], log: false)
 
+            maybe_sync_task_feed_loop!(record)
             record
 
           {:unchanged, record} ->
@@ -747,8 +769,28 @@ defmodule SalixStore.Loops do
 
   defp insert_new!(%{"id" => id} = record) do
     {1, _} = Repo.insert_all(Row, [row_map(record)], log: false)
+    maybe_sync_task_feed_loop!(record)
     to_record(Repo.one!(from(r in Row, where: r.id == ^id)))
   end
+
+  defp maybe_sync_task_feed_loop!(%{
+         "group_id" => group_id,
+         "task_conversation_id" => task_id,
+         "trigger" => trigger
+       })
+       when is_binary(group_id) and is_binary(task_id) and task_id != "" do
+    loop_kind =
+      case trigger do
+        %{"every_minutes" => _} -> "every_minutes"
+        %{"cron" => _} -> "cron"
+        %{"events" => _} -> "events"
+        _other -> nil
+      end
+
+    SalixStore.TaskFeed.sync_loop!(group_id, task_id, loop_kind)
+  end
+
+  defp maybe_sync_task_feed_loop!(_record), do: :ok
 
   @doc """
   Bulk status transition for one Agent: every row in `from_status` becomes

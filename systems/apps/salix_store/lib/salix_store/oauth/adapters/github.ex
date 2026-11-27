@@ -122,6 +122,14 @@ defmodule SalixStore.OAuth.Adapters.GitHub do
     {:error, :revocation_not_supported}
   end
 
+  # GitHub answers a revoked or deleted token with 401 "Bad credentials".
+  # A token that expires is refreshed before it is sent, so it is not this.
+  @impl true
+  def token_refused?(host, 401, %{"message" => "Bad credentials"}),
+    do: Adapter.api_host?("github", host, "api.github.com")
+
+  def token_refused?(_host, _status, _body), do: false
+
   @impl true
   def validate_credential_value(value, scopes),
     do: Adapter.validate_access_token(value, scopes, @label)
@@ -139,10 +147,7 @@ defmodule SalixStore.OAuth.Adapters.GitHub do
 
         cond do
           err != "" ->
-            msg =
-              if Adapter.blank?(parsed["error_description"]),
-                do: err,
-                else: parsed["error_description"]
+            msg = Adapter.format_token_error(err, parsed["error_description"])
 
             {:error, "github token error: #{msg}"}
 

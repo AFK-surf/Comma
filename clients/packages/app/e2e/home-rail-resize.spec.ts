@@ -9,7 +9,43 @@ function animationState(element: Element) {
   return element.getAnimations({ subtree: true })[0]?.playState;
 }
 
-async function installBriefing(page: Page, paragraphs = 1) {
+const briefingSource = {
+  appId: "linear",
+  appName: "Linear",
+  connectionId: "local-linear",
+  enabled: true,
+  kind: "composio",
+  label: "Linear",
+};
+
+/**
+ * A published briefing with `rows` Routine cards, four to a source card as the
+ * contract bounds one; twelve overflow the rail.
+ */
+async function installBriefing(page: Page, rows = 1) {
+  const items = Array.from({ length: rows }, (_, index) => ({
+    action: {
+      label: `Review update ${index + 1}`,
+      prompt: `Review update ${index + 1}`,
+      requiresConfirmation: false,
+      type: "open_task_form",
+    },
+    id: `update-${index + 1}`,
+    parts: [
+      {
+        kind: "markdown",
+        text: `Update ${index + 1}: Your workspace is ready. Review today's tasks and make room for focused work.`,
+      },
+    ],
+  }));
+  const cards = Array.from({ length: Math.ceil(rows / 4) }, (_, index) => ({
+    fallbackText: "Review today's updates.",
+    id: `linear-${index + 1}`,
+    items: items.slice(index * 4, index * 4 + 4),
+    sourceIds: [briefingSource.connectionId],
+    template: "text-list@1",
+    title: "Linear",
+  }));
   await page.route(
     /\/v1\/comma\/workspaces\/[^/]+\/recommendations(?:\?.*)?$/,
     async (route) => {
@@ -21,25 +57,16 @@ async function installBriefing(page: Page, paragraphs = 1) {
             schedule: { enabled: true, hour: 8, minute: 0, timezone: "Asia/Singapore" },
             sourceRevision: 1,
             sourcesCheckedAt: "2026-09-14T00:00:00Z",
-            sources: [],
+            sources: [briefingSource],
           },
           snapshot: {
-            cards: [],
+            cards,
             generatedAt: Date.now(),
             generation: 1,
             protocolVersion: 1,
             sourceRevision: 1,
             summary: [
-              {
-                kind: "markdown",
-                text:
-                  "Good morning.\n\n" +
-                  Array.from(
-                    { length: paragraphs },
-                    (_, index) =>
-                      `Update ${index + 1}: Your workspace is ready. Review today's tasks and make room for focused work.`
-                  ).join("\n\n"),
-              },
+              { kind: "markdown", text: "Good morning.\n\nYour workspace is ready." },
             ],
             templateCatalogVersion: 1,
             warnings: [],

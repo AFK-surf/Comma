@@ -49,13 +49,12 @@ struct PhoneConversationView: View {
                     rows: rows, pane: pane, store: store, isTask: pane.conversation?.isTask == true,
                     hasOlderMessages: pane.hasOlderMessages, loadingMore: pane.loadingMore,
                     flight: reduceMotion ? nil : flight, composerFocused: focus.wrappedValue,
-                    onUserScroll: { focus.wrappedValue = false },
                     openAttachment: { message, attachment in
                         guard let index = attachment.index else { return }
                         Task { await download(messageID: message.id, index: index, name: attachment.name) }
                     },
                     replyThread: pane.replyThread,
-                    onReplyOpened: { focus.wrappedValue = true })
+                    onReplyOpened: { if pane.isTask || navigation?.routerOpen == true { focus.wrappedValue = true } })
                 .equatable()
                 .id(pane.target)
                 .id(store.boundaryToken)
@@ -142,7 +141,7 @@ struct PhoneConversationView: View {
             Task { await pane.retryRead() }
         } : nil
         store.toasts.show(Toast(id: toastID, intent: .error, message: message, action: retry,
-                                answersMember: fresh && (failure.origin == .local || failure.origin == .request),
+                                answersMember: fresh && (failure.origin == .local || failure.origin == .request || failure.origin == .attachment),
                                 // The page's own failed state stays after its toast while the read problem lasts.
                                 dismissed: { pane.dismissError() }))
     }

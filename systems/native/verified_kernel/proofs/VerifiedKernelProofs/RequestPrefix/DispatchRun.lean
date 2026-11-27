@@ -17,13 +17,13 @@ theorem HostAnswers.stable {host : Term → Term} {J : List Term} (h : HostAnswe
 /-- The attachment watermark of a state. -/
 def watermark (s : Term) : Term := (Session.RoundQuery.valueOf s "last_ack_message_id").default (i 0)
 
-/-- A provider dispatch encodes the prompt, the context `C`, and request input `X`, each message
+/-- An unprojected provider dispatch encodes the prompt, the context `C`, and request input `X`, each message
 inlined by the host. -/
 theorem dispatch_run {s delta cfg tools mode body : Term} {name : ByteArray}
     {pre : List (Term × Term)} {J J' : List Term} {host : Term → Term}
     (hJ : HostAnswers host J) (hpre : PrefetchSound host pre)
     (h : Session.Request.dispatch s (.tuple [delta, .binary name, cfg, tools, mode])
-      pre J = .ok (body, J')) :
+      pre nil J = .ok (body, J')) :
     ∃ prompt C X tools', (∃ hd j k, Session.ReplyQuery.promptSnapshot s nil j = .ok (.tuple [hd, prompt], k)) ∧
       (∃ j k, Session.Request.context s j = .ok (list C, k)) ∧ tools = list tools' ∧
       ∃ j k, Provider.Request.encodedBody (String.fromUTF8! name) cfg
@@ -36,6 +36,7 @@ theorem dispatch_run {s delta cfg tools mode body : Term} {name : ByteArray}
   dsimp only at h
   split at h
   · rename_i hd prompt
+    simp only [Term.isMap, Bool.false_eq_true, ↓reduceIte] at h
     have step := Session.bind_ok_iff.mp h; clear h; obtain ⟨ctx, J₂, hctx, h⟩ := step
     have e₂ := (Session.Request.context.stateless s).keep hctx
     subst e₂
@@ -45,6 +46,7 @@ theorem dispatch_run {s delta cfg tools mode body : Term} {name : ByteArray}
     obtain ⟨C, X, rfl, hm⟩ := build_messages hb
     have step := Session.bind_ok_iff.mp h; clear h; obtain ⟨M, J₄, hM, h⟩ := step
     obtain ⟨eM, rfl⟩ := inline_map hJ hpre hM
+    change M = msgs.map (inlineOne host ((Session.RoundQuery.valueOf s "last_ack_message_id").default (i 0))) at eM
     have neutral : (Term.binary name == a "neutral") = false := rfl
     rw [neutral] at h
     simp only [Bool.false_eq_true, ↓reduceIte] at h

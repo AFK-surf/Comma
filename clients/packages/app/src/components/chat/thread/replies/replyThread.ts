@@ -8,6 +8,12 @@ import type { ChatAssistantDraft, ChatMessage } from "@comma/core/chat";
 export type ReplyThreadSelection = {
   rootId: string;
   targetId: string | undefined;
+  /** Opened in place of the previous thread: the two slide past each other. */
+  advance?: boolean | undefined;
+  /** Position in a run of pending cards answered one after another. */
+  progress?: { index: number; total: number } | undefined;
+  /** The reader has acted in this thread (pressed, typed or sent) since it opened. */
+  touched?: boolean | undefined;
 };
 
 export function threadRootOf(message: ChatMessage) {

@@ -134,6 +134,25 @@ defmodule SalixIM.RouterConversationLogTest do
     def entry(binding, message), do: SalixIM.ConversationSource.entry(binding, message)
   end
 
+  # An input its source cannot give yet: a meeting recording whose Mac is away.
+  defmodule UnreadySource do
+    defdelegate prefetch(agent_id), to: SalixIM.ConversationSource
+    defdelegate binding(agent_id, source), to: SalixIM.ConversationSource
+    defdelegate batch(binding, progress), to: SalixIM.ConversationSource
+    defdelegate reject(binding, message, reason), to: SalixIM.ConversationSource
+    defdelegate retire(binding), to: SalixIM.ConversationSource
+
+    def entry(binding, %{"content" => [%{"text" => "recording"}]} = message) do
+      SystemsRuntime.Proc.send(SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}), :asked)
+
+      if SystemsRuntime.PersistentTerm.get({__MODULE__, :ready}, false),
+        do: SalixIM.ConversationSource.entry(binding, message),
+        else: {:error, {:source_unready, :local_file_device_disconnected}}
+    end
+
+    def entry(binding, message), do: SalixIM.ConversationSource.entry(binding, message)
+  end
+
   defmodule TelegramPhotoAPI do
     import Plug.Conn
     def init(opts), do: opts
@@ -588,6 +607,33 @@ defmodule SalixIM.RouterConversationLogTest do
     refute admitted?(session, source_id(ctx, slow))
   end
 
+  test "an input its source cannot give yet keeps the frontier until it can", ctx do
+    on_exit(fn ->
+      SystemsRuntime.PersistentTerm.erase({UnreadySource, :ready})
+      SystemsRuntime.PersistentTerm.erase({UnreadySource, :owner})
+    end)
+
+    SystemsRuntime.PersistentTerm.put({UnreadySource, :owner}, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, UnreadySource)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+
+    {:ok, recording} =
+      RouterConversationInput.append_user_message(ctx.group, %{
+        "content" => [%{"type" => "text", "text" => "recording"}]
+      })
+
+    assert :ok = AgentActor.notify_conversation(ctx.agent["agent_id"], source_ref(ctx))
+
+    # More often than a drain's three attempts: a rejected input would not be asked again.
+    for _ <- 1..4, do: settle_receive(:asked)
+
+    SystemsRuntime.PersistentTerm.put({UnreadySource, :ready}, true)
+    session = await_source(ctx, recording["seq"])
+
+    assert admitted?(session, source_id(ctx, recording))
+    refute source_progress(session)["last_rejection"]
+  end
+
   test "reset carries the admitted frontier and admits only the new suffix", ctx do
     {:ok, first} =
       RouterConversationInput.append_user_message(
@@ -1010,6 +1056,76 @@ defmodule SalixIM.RouterConversationLogTest do
            ]) == [message]
   end
 
+  test "an image a person sends shows in Home from the Router's blob", ctx do
+    agent_id = ctx.agent["agent_id"]
+    {:ok, png} = SalixStore.Blob.put(agent_id, "png bytes")
+    {:ok, heic} = SalixStore.Blob.put(agent_id, "not a heic")
+    png_path = "/imessage/attachments/a-photo.png"
+    heic_path = "/imessage/attachments/b-IMG_0001.HEIC"
+
+    staged = [
+      %{"path" => png_path, "file_name" => "photo.png", "mime" => "image/png", "blob_ref" => png},
+      %{
+        "path" => heic_path,
+        "file_name" => "IMG_0001.HEIC",
+        "mime" => "image/heic",
+        "blob_ref" => heic
+      },
+      %{
+        "path" => "/imessage/attachments/c-notes.pdf",
+        "mime" => "application/pdf",
+        "blob_ref" => png
+      }
+    ]
+
+    payload = %{
+      content: "PRIVATE PROMPT",
+      role: "user",
+      no_wake: true,
+      platform_media: SalixIM.PlatformMessage.inbound_media(agent_id, staged),
+      trusted_origin: %{
+        "provider" => "imessage",
+        "source_actor_type" => "provider_user",
+        "source_text" => "Look"
+      },
+      trusted_attachment_refs: [
+        %{
+          "type" => "image",
+          "file_name" => "photo.png",
+          "file_ref" => %{"environment_id" => "vfs", "path" => png_path}
+        },
+        %{
+          "type" => "image",
+          "file_name" => "IMG_0001.HEIC",
+          "file_ref" => %{"environment_id" => "vfs", "path" => heic_path}
+        }
+      ]
+    }
+
+    assert {:ok, _} =
+             RouterConversationInput.append_provider_input(ctx.group, "platform-image", payload)
+
+    assert {:ok, [message]} =
+             SalixIM.Conversations.list_group_conversation_messages(
+               ctx.group,
+               ctx.conversation["conversation_id"]
+             )
+
+    # The PNG shows from the Agent's blob. A HEIC that cannot convert keeps its card.
+    assert %{"agent_id" => ^agent_id, "content" => [_text, shown, card]} =
+             message["platform_message"]
+
+    assert %{"type" => "image", "mime_type" => "image/png", "file_name" => "photo.png"} = shown
+    assert shown["blob_ref"]["uuid"] == png.uuid
+    assert {:ok, "png bytes"} = SalixStore.Blob.get(agent_id, shown["blob_ref"])
+
+    assert card == %{
+             "type" => "image",
+             "file_name" => "IMG_0001.HEIC",
+             "mime_type" => "image/heic"
+           }
+  end
+
   test "Home omits Worker sends, unidentified receipts, and labelled Groups", ctx do
     connect = %{"provider" => "telegram", "connect_id" => "telegram-one"}
     sent = {:ok, %{"message_id" => 42}}
@@ -1330,21 +1446,149 @@ defmodule SalixIM.RouterConversationLogTest do
 
     [_reply | others] = await_platform_messages(ctx, 4)
     assert Enum.map(others, & &1["reply_to_message_id"]) == [nil, nil, nil]
+
+    by_text =
+      Map.new(others, fn msg ->
+        {get_in(msg, ["platform_message", "content", Access.at(0), "text"]), msg}
+      end)
+
+    assert by_text["plain"]["thread_root_message_id"] == input["message_id"]
+    assert by_text["older"]["thread_root_message_id"] == by_text["older"]["message_id"]
+    assert by_text["refused"]["thread_root_message_id"] == input["message_id"]
+
+    # Inbound follow-ups that reply to a committed provider message (or to the
+    # source message) and batched outbound replies converge onto the same thread root.
+    followup_source = "im_provider:imessage:imessage-one:followup"
+
+    followup_origin = %{
+      "provider" => "imessage",
+      "source_actor_type" => "provider_user",
+      "source_message_id" => followup_source,
+      "agent_group_id" => ctx.group,
+      "source_text" => "can I run?",
+      "provider_context" => %{
+        "connect_id" => "imessage-one",
+        "message_id" => "pho_msg_followup",
+        "reply_to_message_id" => "pho_msg_reply"
+      }
+    }
+
+    assert {:ok, appended_followup} =
+             RouterConversationInput.append_provider_input(ctx.group, followup_source, %{
+               content: "can I run?",
+               role: "user",
+               no_wake: true,
+               session_id: ctx.agent["router_session_id"],
+               trusted_origin: followup_origin
+             })
+
+    assert {:ok, followup} =
+             SalixIM.Conversations.get_group_conversation_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               appended_followup["message_id"]
+             )
+
+    assert followup["reply_to_message_id"] == reply["message_id"]
+    assert followup["thread_root_message_id"] == input["message_id"]
+
+    batched_context = %{
+      "source_message_id" => followup_source,
+      "source_message_ids" => [source, followup_source],
+      "session_id" => ctx.agent["router_session_id"],
+      "trusted_origin" => followup_origin,
+      "trusted_origins" => [origin, followup_origin]
+    }
+
+    previous = Process.get(:salix_im_provider_tool_context)
+    Process.put(:salix_im_provider_tool_context, batched_context)
+
+    try do
+      SalixIM.PlatformMessage.record_success(
+        {:ok, %{"message_id" => "pho_msg_batched_reply"}},
+        %{group_id: ctx.group, agent_id: ctx.agent["agent_id"], tool_call_id: "batched"},
+        connect,
+        "imessage.send_message",
+        %{"text" => "yes", "reply_to_message_id" => "pho_msg_followup"}
+      )
+    after
+      if previous,
+        do: Process.put(:salix_im_provider_tool_context, previous),
+        else: Process.delete(:salix_im_provider_tool_context)
+    end
+
+    all_replies = await_platform_messages(ctx, 5)
+    batched_reply = List.last(all_replies)
+    assert batched_reply["reply_to_message_id"] == followup["message_id"]
+    assert batched_reply["thread_root_message_id"] == input["message_id"]
   end
 
   test "a WeChat reply presents as a reply to its source", ctx do
-    {input, context} = append_wechat_input(ctx, "wechat-one", "first")
+    {input, _context} = append_wechat_input(ctx, "wechat-one", "first")
+    {second, second_context} = append_wechat_input(ctx, "wechat-one", "second")
+
+    # Consecutive unanswered WeChat messages share one thread_root_message_id even
+    # when the platform supplies no parent_id.
+    assert second["reply_to_message_id"] == nil
+    assert second["thread_root_message_id"] == input["message_id"]
+
+    batched_context =
+      Map.merge(second_context, %{
+        "source_message_ids" => [
+          "im_provider:wechat:wechat-one:first",
+          "im_provider:wechat:wechat-one:second"
+        ]
+      })
 
     record_wechat_reply(
       ctx,
       %{"provider" => "wechat", "connect_id" => "wechat-one"},
-      context,
+      batched_context,
       "reply-source",
       %{"text" => "answer"}
     )
 
     [reply] = await_platform_messages(ctx)
-    assert reply["reply_to_message_id"] == input["message_id"]
+    assert reply["reply_to_message_id"] == second["message_id"]
+    assert reply["thread_root_message_id"] == input["message_id"]
+
+    # Once a reply is recorded, the next unquoted WeChat message starts a fresh thread.
+    {third, _third_context} = append_wechat_input(ctx, "wechat-one", "third")
+    assert third["thread_root_message_id"] == third["message_id"]
+
+    # Quoting the Agent's outbound WeChat reply converges back onto the original thread root.
+    quoted_source = "im_provider:wechat:wechat-one:quoted"
+
+    quoted_origin = %{
+      "provider" => "wechat",
+      "source_actor_type" => "provider_user",
+      "source_message_id" => quoted_source,
+      "agent_group_id" => ctx.group,
+      "source_text" => "what about tomorrow?",
+      "provider_context" => %{
+        "connect_id" => "wechat-one",
+        "reply_to_message_id" => "reply-source"
+      }
+    }
+
+    assert {:ok, appended_quoted} =
+             RouterConversationInput.append_provider_input(ctx.group, quoted_source, %{
+               content: "what about tomorrow?",
+               role: "user",
+               no_wake: true,
+               session_id: ctx.agent["router_session_id"],
+               trusted_origin: quoted_origin
+             })
+
+    assert {:ok, quoted} =
+             SalixIM.Conversations.get_group_conversation_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               appended_quoted["message_id"]
+             )
+
+    assert quoted["reply_to_message_id"] == reply["message_id"]
+    assert quoted["thread_root_message_id"] == input["message_id"]
   end
 
   test "a reply withholds the excerpt of a message not addressed to the recipient", ctx do

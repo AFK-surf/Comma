@@ -1,25 +1,25 @@
 import type { ButtonHierarchy, ButtonSize } from "./types";
 
 export const baseClasses =
-  "inline-flex items-center justify-center gap-1 font-medium transition-colors " +
+  "inline-flex items-center justify-center gap-1 font-medium " +
   "focus:outline-none disabled:cursor-not-allowed whitespace-nowrap";
 
 export const hierarchyClasses: Record<ButtonHierarchy, string> = {
   primary:
-    "bg-button-primary-bg text-button-primary-fg border border-button-primary-border shadow-xs " +
+    "comma-btn-surface-primary bg-button-primary-bg text-button-primary-fg border border-button-primary-border " +
     "hover:bg-button-primary-bg-hover hover:border-button-primary-border-hover " +
     "focus-visible:shadow-focus-brand-shadow-xs " +
     "disabled:bg-disabled disabled:border-secondary disabled:text-disabled disabled:shadow-none",
   "secondary-color":
-    "bg-button-secondary-color-bg text-button-secondary-color-fg border border-button-secondary-color-border shadow-xs " +
+    "comma-btn-surface-secondary bg-button-secondary-color-bg text-button-secondary-color-fg border border-button-secondary-color-border " +
     "hover:bg-button-secondary-color-bg-hover hover:text-button-secondary-color-fg-hover hover:border-button-secondary-color-border-hover " +
     "focus-visible:shadow-focus-brand-shadow-xs " +
-    "disabled:bg-disabled disabled:border-secondary disabled:text-disabled",
+    "disabled:bg-disabled disabled:border-secondary disabled:text-disabled disabled:shadow-none",
   "secondary-gray":
-    "bg-button-secondary-bg text-button-secondary-fg border border-button-secondary-border shadow-xs " +
+    "comma-btn-surface-secondary bg-button-secondary-bg text-button-secondary-fg border border-button-secondary-border " +
     "hover:bg-secondary hover:text-primary " +
     "focus-visible:shadow-focus-gray-shadow-xs " +
-    "disabled:bg-disabled disabled:border-secondary disabled:text-disabled",
+    "disabled:bg-disabled disabled:border-secondary disabled:text-disabled disabled:shadow-none",
   "tertiary-color":
     "bg-transparent text-button-tertiary-color-fg border border-transparent " +
     "hover:bg-button-tertiary-color-bg-hover hover:text-button-tertiary-color-fg-hover " +
@@ -42,24 +42,24 @@ export const hierarchyClasses: Record<ButtonHierarchy, string> = {
     "focus-visible:shadow-focus-gray " +
     "disabled:text-disabled",
   destructive:
-    "bg-button-primary-error-bg text-button-primary-error-fg border border-button-primary-error-border shadow-xs " +
+    "comma-btn-surface-primary bg-button-primary-error-bg text-button-primary-error-fg border border-button-primary-error-border " +
     "hover:bg-button-primary-error-bg-hover hover:border-button-primary-error-border-hover " +
     "focus-visible:shadow-focus-error-shadow-xs " +
-    "disabled:bg-error-200 disabled:border-error-200 disabled:text-white/70",
+    "disabled:bg-error-200 disabled:border-error-200 disabled:text-white/70 disabled:shadow-none",
 };
 
 export const sizeClasses: Record<ButtonSize, string> = {
-  xs: "h-4xl px-md text-sm rounded-md",
-  sm: "h-9 px-3 text-sm rounded-md",
-  md: "h-10 px-[14px] py-2.5 text-sm rounded-md",
-  lg: "h-11 px-4 text-md rounded-md",
+  xs: "h-4xl px-md text-sm rounded-md [--button-press-scale:0.97]",
+  sm: "h-9 px-3 text-sm rounded-md [--button-press-scale:0.97]",
+  md: "h-10 px-[14px] py-2.5 text-sm rounded-md [--button-press-scale:0.98]",
+  lg: "h-11 px-4 text-md rounded-md [--button-press-scale:0.98]",
 };
 
 export const iconOnlySizeClasses: Record<ButtonSize, string> = {
-  xs: "h-4xl w-4xl p-sm rounded-sm",
-  sm: "h-9 w-9 p-2 rounded-sm",
-  md: "h-10 w-10 p-2.5 rounded-sm",
-  lg: "h-11 w-11 p-3 rounded-sm",
+  xs: "h-4xl w-4xl p-sm rounded-sm [--button-press-scale:0.94]",
+  sm: "h-9 w-9 p-2 rounded-sm [--button-press-scale:0.94]",
+  md: "h-10 w-10 p-2.5 rounded-sm [--button-press-scale:0.95]",
+  lg: "h-11 w-11 p-3 rounded-sm [--button-press-scale:0.95]",
 };
 
 export const linkSizeClasses: Record<ButtonSize, string> = {

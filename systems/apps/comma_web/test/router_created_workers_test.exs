@@ -232,6 +232,104 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert length(workers(c.workspace)) == 1
   end
 
+  test "meeting-tasks maps task model selection billing and transient failures instead of 400",
+       c do
+    alias SalixAgent.DecideFixture
+
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, BillingCore.LLMMetering)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+
+    entry_model = %{"kind" => "platform", "tier" => "worker"}
+
+    policy = %{
+      "mode" => "routes",
+      "schema_version" => 2,
+      "revision" => "meeting-routing-test",
+      "entries" => [
+        %{"key" => "meeting", "description" => "Meeting recording", "model" => entry_model},
+        %{"key" => "other", "description" => "Other task", "model" => entry_model}
+      ]
+    }
+
+    # Unfunded workspace with routing enabled: decision metering rejects -> HTTP 402.
+    unfunded_user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{
+          "email" => "unfunded-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
+        }
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    unfunded = create_ready_workspace!(unfunded_user["id"], %{"name" => "Unfunded Meeting"})
+
+    unfunded_session =
+      admin_req(:post, "/v1/comma/admin/users/#{unfunded_user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    unfunded_token = unfunded_session["token"]
+
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        repo: BillingCore.Repo,
+        billing_account_id: unfunded["billing_account_id"],
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: unfunded["id"]
+      })
+
+    unfunded_group = unfunded["default_group_id"]
+
+    assert {:ok, _} =
+             Salix.Control.Groups.update(unfunded_group, %{"task_model_selection" => policy})
+
+    meeting_entry = %{
+      "occurrence_id" => "occurrence-billing-0001",
+      "name" => "Standup billing",
+      "started_at" => 1_790_000_000_100,
+      "archive_date" => "2026-10-02"
+    }
+
+    billing_resp =
+      user_req(unfunded_token, :post, "/v1/comma/groups/#{unfunded_group}/meeting-tasks",
+        json: meeting_entry
+      )
+      |> expect_status(402)
+
+    assert billing_resp.body == %{
+             "error" => "billing_unavailable",
+             "reason" => "insufficient_credits"
+           }
+
+    # Once funded, retrying the exact same meeting entry succeeds with HTTP 200.
+    fund!(unfunded)
+
+    recovered =
+      user_req(unfunded_token, :post, "/v1/comma/groups/#{unfunded_group}/meeting-tasks",
+        json: meeting_entry
+      )
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert recovered["group_id"] == unfunded_group
+    assert is_binary(recovered["task_id"])
+
+    # Decision provider unconfigured/unavailable on a funded workspace -> HTTP 503, not 400.
+    group = c.workspace["default_group_id"]
+    assert {:ok, _} = Salix.Control.Groups.update(group, %{"task_model_selection" => policy})
+    DecideFixture.put_env(:decide, [])
+
+    unavailable_resp =
+      user_req(c.token, :post, "/v1/comma/groups/#{group}/meeting-tasks",
+        json: Map.put(meeting_entry, "occurrence_id", "occurrence-unavail-0001")
+      )
+      |> expect_status(503)
+
+    assert unavailable_resp.body == %{"error" => "task_model_selection_failed"}
+  end
+
   test "Quick Chat sends ordinary Home words and the Router can answer without a Task", c do
     group = c.workspace["default_group_id"]
     home = home(c.token, group)
@@ -521,6 +619,29 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
 
     assert gone =~ "gone.txt"
     assert [_one] = tasks(c.token, group)
+  end
+
+  test "a New task window Task without a model runs in Comma's cloud with the Workspace's Task model",
+       c do
+    group = c.workspace["default_group_id"]
+    SalixAgent.LLM.Mock.script([])
+
+    made =
+      window_task(c.token, c.workspace["id"], %{
+        "client_request_id" => "window-builtin-01",
+        "text" => "Plan the offsite."
+      })
+      |> expect_status(201)
+
+    assert %{"task_id" => task_id, "group_id" => ^group} = made.body
+    assert [%{"id" => ^task_id, "title" => "Plan the offsite."}] = tasks(c.token, group)
+
+    {:ok, %{"participants" => participants}} =
+      SalixIM.Conversations.list_group_conversation_participants(group, task_id)
+
+    worker = Enum.find(participants, &(&1["agent_id"] == SalixAgent.TaskAgent.id(group)))
+    refute Map.has_key?(worker["payload"] || %{}, "session_model")
+    refute Map.has_key?(worker["payload"] || %{}, "runs_on")
   end
 
   test "a failure the window's request may get past is not a refusal" do

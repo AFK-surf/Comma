@@ -28,12 +28,18 @@ import { Effect } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
-import { isGroupImagePreviewPath, isGroupUploadPath } from "./chat/model/protocol.ts";
+import {
+  isGroupImagePreviewPath,
+  isGroupUploadPath,
+  isTaskFilePath,
+  taskFileTask,
+} from "./chat/model/protocol.ts";
 import type { FileBytes, FileRange } from "./contract.ts";
 
 type FileRequest =
   | { method: "GET"; path: string }
   | { method: "POST"; path: string; body: unknown };
+import { conversationBasePath } from "./collaborations.ts";
 import type { Ctx } from "./ctx.ts";
 import { header } from "./host.ts";
 
@@ -63,7 +69,12 @@ export const fileSourceSchema = lazySchema(() =>
       .object({
         source: z.literal("group-file"),
         group: id,
-        path: z.string().max(1024).refine(isGroupUploadPath),
+        /** A Task together's file: the Task whose folder holds it. */
+        task: id.optional(),
+        path: z
+          .string()
+          .max(1024)
+          .refine((path) => isGroupUploadPath(path) || isTaskFilePath(path)),
       })
       .strict(),
     z.object({ source: z.literal("avatar"), revision: id }).strict(),
@@ -86,6 +97,23 @@ export const fileSourceSchema = lazySchema(() =>
       .object({
         source: z.literal("target-avatar"),
         grant: id,
+        revision: id,
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("grant-avatar"),
+        workspace: id,
+        grant: id,
+        revision: id,
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("collaboration-avatar"),
+        group: id,
+        task: id,
+        user: id,
         revision: id,
       })
       .strict(),
@@ -258,7 +286,7 @@ function readRange(
       offset,
       length
     );
-  const request = fileRequest(source);
+  const request = fileRequest(source, ctx);
   return Effect.gen(function* () {
     const account = yield* ctx.session.account();
     const response = yield* ctx.api
@@ -324,7 +352,7 @@ function save(
 ): Effect.Effect<{ downloadRef: string; fileName: string } | null, CoreError> {
   const desktop = ctx.host.desktop;
   const onStation = hostedAttachment(hosted, source);
-  const request = fileRequest(source);
+  const request = fileRequest(source, ctx);
   return Effect.gen(function* () {
     if (!desktop)
       return yield* Effect.fail(new CoreError("unsupported", "No Downloads folder."));
@@ -379,7 +407,10 @@ const mediaSchema = lazySchema(() =>
 export function hasMediaUrl(source: Source): boolean {
   return (
     source.source === "attachment" ||
-    (source.source === "group-file" && !isGroupImagePreviewPath(source.path))
+    (source.source === "group-file" &&
+      !isGroupImagePreviewPath(source.path) &&
+      // A Task together's file is read only through that Task's own route.
+      !isTaskFilePath(source.path))
   );
 }
 
@@ -422,13 +453,16 @@ function link(
         new CoreError("unsupported", "Not a message's attachment or an upload.")
       );
     const account = yield* ctx.session.account();
-    const media = yield* mintMediaUrl(ctx, account, fileRequest(source).path);
+    const media = yield* mintMediaUrl(ctx, account, fileRequest(source, ctx).path);
     return { url: media.url };
   });
 }
 
 /** The request that reads `source`: for the core's own read, and for a download to the device (downloads.ts). */
-export function fileRequest(source: z.output<typeof fileSourceSchema>): FileRequest {
+export function fileRequest(
+  source: z.output<typeof fileSourceSchema>,
+  ctx?: Ctx
+): FileRequest {
   if (source.source === "sender-avatar")
     return {
       method: "GET" as const,
@@ -444,6 +478,16 @@ export function fileRequest(source: z.output<typeof fileSourceSchema>): FileRequ
       method: "GET" as const,
       path: route`/v1/comma/task-request-targets/${source.grant}/avatar/${source.revision}`,
     };
+  if (source.source === "grant-avatar")
+    return {
+      method: "GET" as const,
+      path: route`/v1/comma/workspaces/${source.workspace}/task-request-grants/${source.grant}/avatar/${source.revision}`,
+    };
+  if (source.source === "collaboration-avatar")
+    return {
+      method: "GET" as const,
+      path: route`/v1/comma/collaborations/${source.group}/${source.task}/members/${source.user}/avatar/${source.revision}`,
+    };
   if (source.source === "recipient-avatar")
     return {
       method: "GET" as const,
@@ -456,7 +500,12 @@ export function fileRequest(source: z.output<typeof fileSourceSchema>): FileRequ
     : source.source === "attachment"
       ? {
           method: "GET" as const,
-          path: `${groupPath}${route`/conversations/${source.conversation}/messages/${source.message}/attachments/${String(source.index)}`}`,
+          // A Task together the account joined reads its attachments by the member's own route.
+          path: `${
+            ctx
+              ? conversationBasePath(ctx, source.group, source.conversation)
+              : `${groupPath}${route`/conversations/${source.conversation}`}`
+          }${route`/messages/${source.message}/attachments/${String(source.index)}`}`,
         }
       : source.source === "agent-blob"
         ? {
@@ -464,15 +513,21 @@ export function fileRequest(source: z.output<typeof fileSourceSchema>): FileRequ
             path: `${groupPath}${route`/agents/${source.agent}/resources`}`,
             body: { ref: source.blobRef },
           }
-        : isGroupImagePreviewPath(source.path)
+        : isTaskFilePath(source.path) && (source.task ?? taskFileTask(source.path))
           ? {
+              // A Task together's file, read from its own folder by its host or a member.
               method: "GET" as const,
-              path: `${groupPath}/files?${new URLSearchParams({ path: source.path })}`,
+              path: `${route`/v1/comma/collaborations/${source.group}/${(source.task ?? taskFileTask(source.path))!}/files`}?${new URLSearchParams({ path: source.path })}`,
             }
-          : {
-              method: "GET" as const,
-              path: `${groupPath}${route`/uploads/${source.path.slice("/uploads/".length)}`}`,
-            };
+          : isGroupImagePreviewPath(source.path)
+            ? {
+                method: "GET" as const,
+                path: `${groupPath}/files?${new URLSearchParams({ path: source.path })}`,
+              }
+            : {
+                method: "GET" as const,
+                path: `${groupPath}${route`/uploads/${source.path.slice("/uploads/".length)}`}`,
+              };
 }
 
 /**

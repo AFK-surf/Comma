@@ -72,7 +72,10 @@ defmodule SalixAgent.GuardFailureReplyTest do
          "im_api.wechat.reply_text", %{"connect_id" => "wechat"}},
         {"signal", "provider_user",
          %{"provider_context" => %{"connect_id" => "signal", "chat_id" => "peer"}},
-         "im_api.signal.send_message", %{"connect_id" => "signal", "chat_id" => "peer"}}
+         "im_api.signal.send_message", %{"connect_id" => "signal", "chat_id" => "peer"}},
+        {"wecom", "provider_user",
+         %{"provider_context" => %{"connect_id" => "wecom", "chat_id" => "user:peer"}},
+         "im_api.wecom.send_message", %{"connect_id" => "wecom", "chat_id" => "user:peer"}}
       ] do
     test "#{provider} cold guard recovery preserves and releases the next human request" do
       origin =

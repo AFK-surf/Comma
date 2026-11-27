@@ -515,6 +515,20 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
              CommaWeb.RecommendationSourceCollector.collect(ctx.workspace, [source])
   end
 
+  test "a grant Slack revoked is marked for reauthorization, so Plugins asks to reconnect",
+       ctx do
+    source = Map.merge(slack_source(ctx), %{"enabled" => true, "appName" => "Slack"})
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{"ok" => false, "error" => "token_revoked"})
+    end)
+
+    assert {:ok, %{failures: [%{"class" => "reconnect"}]}} =
+             CommaWeb.RecommendationSourceCollector.collect(ctx.workspace, [source])
+
+    assert {:ok, %{"status" => "reauthorization_required"}} = SalixStore.OAuth.get("conn-1")
+  end
+
   test "queries the authenticated member and excludes unrelated or completed work", ctx do
     Req.Test.expect(__MODULE__, fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
@@ -1932,6 +1946,278 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
 
     # Each of the three reads was asked again after the first throttle.
     assert Agent.get(asked, & &1) > 3
+  end
+
+  test "GitHub reads comments for mentions beyond the fifth and skips transient comment or subject failures",
+       ctx do
+    source = github_source(ctx)
+    now = SystemsClock.utc_now() |> DateTime.to_iso8601()
+
+    mentions =
+      for n <- 1..7 do
+        github_issue(n, 99)
+        |> Map.merge(%{
+          "body" => "Original body #{n}",
+          "updated_at" => now,
+          "comments_url" => "https://api.github.com/repos/example/project/issues/#{n}/comments"
+        })
+      end
+
+    notification = fn id, type, url, title ->
+      %{
+        "id" => id,
+        "reason" => "comment",
+        "updated_at" => now,
+        "subject" => %{"type" => type, "url" => url, "title" => title},
+        "repository" => %{
+          "full_name" => "example/project",
+          "html_url" => "https://github.com/example/project"
+        }
+      }
+    end
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      params = Plug.Conn.fetch_query_params(conn).query_params
+
+      case conn.request_path do
+        "/user" ->
+          Req.Test.json(conn, %{"id" => 42, "login" => "member"})
+
+        "/issues" ->
+          Req.Test.json(conn, [])
+
+        "/search/issues" ->
+          items = if params["q"] =~ "mentions:member", do: mentions, else: []
+          Req.Test.json(conn, %{"items" => items, "incomplete_results" => false})
+
+        "/graphql" ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+          if Jason.decode!(body)["query"] =~ "issueOrPullRequest" do
+            Plug.Conn.send_resp(conn, 503, "")
+          else
+            Req.Test.json(conn, %{"data" => %{"search" => %{"nodes" => []}}})
+          end
+
+        "/notifications" ->
+          Req.Test.json(conn, [
+            notification.(
+              "n-issue",
+              "Issue",
+              "https://api.github.com/repos/example/project/issues/88",
+              "Issue waiting on subject"
+            ),
+            notification.("n-ci", "CheckSuite", nil, "CI run failed")
+          ])
+
+        "/repos/example/project/issues/7/comments" ->
+          Plug.Conn.send_resp(conn, 502, "")
+
+        "/repos/example/project/issues/" <> rest ->
+          [num, "comments"] = String.split(rest, "/")
+
+          Req.Test.json(conn, [
+            %{
+              "id" => 700 + String.to_integer(num),
+              "body" => "@member please review ##{num}",
+              "html_url" =>
+                "https://github.com/example/project/issues/#{num}#issuecomment-#{700 + String.to_integer(num)}"
+            }
+          ])
+      end
+    end)
+
+    assert {:ok, %{"issues" => items} = data, _} =
+             RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
+
+    # Mentions 1..6 (including the 6th) keep their comment URLs; mention 7 had a
+    # transient 502 so it is skipped with a warning rather than switching to its
+    # issue URL.
+    urls = Enum.map(items, & &1["html_url"])
+    assert "https://github.com/example/project/issues/6#issuecomment-706" in urls
+    refute "https://github.com/example/project/issues/7" in urls
+
+    # Transient subject GraphQL failure skips the issue notification (avoiding a
+    # subject-less fingerprint flip) while keeping the non-GraphQL CI notification.
+    refute "https://github.com/example/project/issues/88" in urls
+    assert "https://github.com/example/project/actions" in urls
+    assert data.source_warnings == [{:oauth_provider_http, 502}]
+  end
+
+  test "Lark transient chat-name failure skips degraded messages with a warning while missing scope keeps them readable",
+       ctx do
+    source = lark_source(ctx, "lark")
+    now_ms = SystemsClock.system_time(:millisecond)
+
+    message = %{
+      "message_id" => "om_1",
+      "chat_id" => "oc_1",
+      "create_time" => Integer.to_string(now_ms - 1_000),
+      "msg_type" => "text",
+      "sender" => %{"id" => "ou_bo", "sender_name" => "Bo"},
+      "body" => %{"content" => Jason.encode!(%{"text" => "Please approve"})}
+    }
+
+    run_with_batch_query = fn reply ->
+      Req.Test.stub(__MODULE__, fn conn ->
+        case conn.request_path do
+          "/open-apis/authen/v1/user_info" ->
+            Req.Test.json(conn, %{"code" => 0, "data" => %{"open_id" => "ou_me"}})
+
+          "/open-apis/im/v1/messages/search" ->
+            Req.Test.json(conn, %{
+              "code" => 0,
+              "data" => %{"items" => [%{"meta_data" => %{"message_id" => "om_1"}}]}
+            })
+
+          "/open-apis/im/v1/messages/mget" ->
+            Req.Test.json(conn, %{"code" => 0, "data" => %{"items" => [message]}})
+
+          "/open-apis/im/v1/chats/batch_query" ->
+            reply.(conn)
+
+          "/open-apis/calendar/v4/calendars/primary/events/instance_view" ->
+            Req.Test.json(conn, %{
+              "code" => 0,
+              "data" => %{
+                "items" => [
+                  %{
+                    "summary" => "Sync",
+                    "self_rsvp_status" => "needs_action",
+                    "app_link" => "https://applink.example/event/1",
+                    "start_time" => %{"timestamp" => "1800000000"}
+                  }
+                ]
+              }
+            })
+        end
+      end)
+
+      RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
+    end
+
+    # Transient 502 omits degraded nameless messages and records a warning, keeping events.
+    assert {:ok, %{"messages" => %{"matches" => [event]}} = read_502, _} =
+             run_with_batch_query.(&Plug.Conn.send_resp(&1, 502, ""))
+
+    assert event["text"] == "Sync"
+    assert read_502[:source_warnings] == [{:oauth_provider_http, 502}]
+
+    # Lark HTTP 400 + code 99991400 rate limit is transient: skips degraded messages and warns.
+    assert {:ok, %{"messages" => %{"matches" => [event_rl]}} = read_rl, _} =
+             run_with_batch_query.(fn conn ->
+               conn
+               |> Plug.Conn.put_status(400)
+               |> Req.Test.json(%{"code" => 99_991_400, "msg" => "frequency limit"})
+             end)
+
+    assert event_rl["text"] == "Sync"
+    assert read_rl[:source_warnings] == [{:member_provider_error, "99991400"}]
+
+    # Permanent missing-scope error stays constant across polls, so messages stay readable.
+    assert {:ok, %{"messages" => %{"matches" => [msg, _event]}}, _} =
+             run_with_batch_query.(fn conn ->
+               conn
+               |> Plug.Conn.put_status(400)
+               |> Req.Test.json(%{"code" => 99_991_679, "msg" => "missing scope"})
+             end)
+
+    assert msg["text"] == "Please approve"
+  end
+
+  test "GitHub treats 403 rate limits and GraphQL RATE_LIMITED as transient while keeping permanent 403 mentions",
+       ctx do
+    source = github_source(ctx)
+    now = SystemsClock.utc_now() |> DateTime.to_iso8601()
+
+    mentions =
+      for n <- 1..3 do
+        github_issue(n, 99)
+        |> Map.merge(%{
+          "body" => "Body #{n}",
+          "updated_at" => now,
+          "comments_url" => "https://api.github.com/repos/example/project/issues/#{n}/comments"
+        })
+      end
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      params = Plug.Conn.fetch_query_params(conn).query_params
+
+      case conn.request_path do
+        "/user" ->
+          Req.Test.json(conn, %{"id" => 42, "login" => "member"})
+
+        "/issues" ->
+          Req.Test.json(conn, [])
+
+        "/search/issues" ->
+          items = if params["q"] =~ "mentions:member", do: mentions, else: []
+          Req.Test.json(conn, %{"items" => items, "incomplete_results" => false})
+
+        "/graphql" ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+          if Jason.decode!(body)["query"] =~ "issueOrPullRequest" do
+            # GitHub GraphQL rate limit returns HTTP 200 with data: nil and RATE_LIMITED error.
+            Req.Test.json(conn, %{
+              "data" => nil,
+              "errors" => [%{"type" => "RATE_LIMITED", "message" => "API rate limit exceeded"}]
+            })
+          else
+            Req.Test.json(conn, %{"data" => %{"search" => %{"nodes" => []}}})
+          end
+
+        "/notifications" ->
+          Req.Test.json(conn, [
+            %{
+              "id" => "n-issue",
+              "reason" => "comment",
+              "updated_at" => now,
+              "subject" => %{
+                "type" => "Issue",
+                "url" => "https://api.github.com/repos/example/project/issues/88",
+                "title" => "Issue waiting on subject"
+              },
+              "repository" => %{
+                "full_name" => "example/project",
+                "html_url" => "https://github.com/example/project"
+              }
+            }
+          ])
+
+        "/repos/example/project/issues/1/comments" ->
+          # Primary rate limit 403 with x-ratelimit-remaining: 0
+          conn
+          |> Plug.Conn.put_resp_header("x-ratelimit-remaining", "0")
+          |> Plug.Conn.send_resp(403, "")
+
+        "/repos/example/project/issues/2/comments" ->
+          # Secondary rate limit 403 identified by response body without rate-limit headers
+          conn
+          |> Plug.Conn.put_status(403)
+          |> Req.Test.json(%{
+            "message" => "You have exceeded a secondary rate limit. Please wait a few minutes."
+          })
+
+        "/repos/example/project/issues/3/comments" ->
+          # Permanent 403 (e.g. SAML SSO enforcement) keeps the issue body instead of dropping forever
+          conn
+          |> Plug.Conn.put_status(403)
+          |> Req.Test.json(%{
+            "message" => "Resource protected by organization SAML enforcement."
+          })
+      end
+    end)
+
+    assert {:ok, %{"issues" => items} = data, _} =
+             RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
+
+    # Primary and secondary 403 rate-limited mentions plus the GraphQL-rate-limited
+    # notification are skipped with a 429 warning, while the permanent SAML 403
+    # mention remains readable via its issue URL.
+    assert [kept] = items
+    assert kept["html_url"] == "https://github.com/example/project/issues/3"
+    assert data.source_warnings == [{:oauth_provider_http, 429}]
   end
 
   test "a Lark sign-in of another user is not read", ctx do

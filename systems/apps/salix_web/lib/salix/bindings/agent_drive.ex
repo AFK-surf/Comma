@@ -49,9 +49,9 @@ defmodule Salix.Bindings.AgentDrive do
   end
 
   @impl true
-  def write(group_id, path, body, size) do
+  def write(group_id, path, body, size, opts \\ []) do
     with {:ok, handle} <- DriveBindings.handle(group_id),
-         {:ok, result} <- Files.write(handle, path, body, size) do
+         {:ok, result} <- Files.write(handle, path, body, size, opts) do
       {:ok, %{size: result.size, root: result.root}}
     end
   end

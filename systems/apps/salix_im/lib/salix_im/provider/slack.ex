@@ -564,6 +564,14 @@ defmodule SalixIM.Provider.Slack do
           %{"id" => ch["id"], "name" => ch["name"]}
           |> then(fn e -> if ch["is_private"], do: Map.put(e, "is_private", true), else: e end)
           |> then(fn e -> if ch["is_archived"], do: Map.put(e, "is_archived", true), else: e end)
+          |> then(fn e -> if ch["is_im"] == true, do: Map.put(e, "is_im", true), else: e end)
+          |> then(fn e -> if ch["is_mpim"] == true, do: Map.put(e, "is_mpim", true), else: e end)
+          |> then(fn e ->
+            case ch["user"] do
+              user when is_binary(user) and user != "" -> Map.put(e, "user", user)
+              _ -> e
+            end
+          end)
         end)
 
       {:ok,

@@ -1014,6 +1014,53 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert decision["delegations"] == []
   end
 
+  test "product evaluation routes scheduled_recheck and explicit-recipient patrol to lean lanes" do
+    recheck_decision = %{
+      "schema" => "comma.triage-product-decision.v2",
+      "communication" => %{
+        "kind" => "silence",
+        "reason" => "no_actionable_request",
+        "explanation" => "No update yet.",
+        "source_refs" => ["source://run/s003"]
+      },
+      "companion_reaction" => nil,
+      "context_candidates" => [],
+      "delegations" => [],
+      "identity_interpretation" => %{"topic" => "none", "referenced_principal_refs" => []}
+    }
+
+    recheck_input = with_source_mode(periodic_patrol_model_input_v3(), "scheduled_recheck")
+    assert {:ok, _d, recheck_proof} = evaluate_input(recheck_input, recheck_decision, %{})
+    assert recheck_proof["policy_bytes"] =~ "scheduled-recheck"
+    assert recheck_proof["prompt_bytes"] =~ "Lane: scheduled recheck settlement."
+    assert recheck_proof["prompt_bytes"] =~ "reminder_delivery"
+    assert recheck_proof["prompt_bytes"] =~ "unfinished agent_owned task"
+    assert recheck_proof["prompt_bytes"] =~ "Worker delegation cannot settle"
+    assert recheck_proof["prompt_bytes"] =~ "## Public voice for Triage replies"
+    refute recheck_proof["prompt_bytes"] =~ "## Participating in Slack"
+
+    other_input = product_target(periodic_patrol_model_input_v3(), "human", "other")
+    assert {:ok, _d, other_proof} = evaluate_input(other_input, recheck_decision, %{})
+    assert other_proof["policy_bytes"] =~ "context-extraction"
+    assert other_proof["prompt_bytes"] =~ "Lane: explicit-recipient context extraction"
+    assert other_proof["prompt_bytes"] =~ "explicit or inferred"
+    assert other_proof["prompt_bytes"] =~ "nor carry such"
+    refute other_proof["prompt_bytes"] =~ "## Participating in Slack"
+    refute other_proof["prompt_bytes"] =~ "## Public voice for Triage replies"
+
+    self_input = product_target(periodic_patrol_model_input_v3(), "human", "self")
+    assert {:ok, _d, self_proof} = evaluate_input(self_input, recheck_decision, %{})
+    assert self_proof["policy_bytes"] =~ "context-extraction"
+    assert self_proof["prompt_bytes"] =~ "Lane: explicit-recipient context extraction"
+    refute self_proof["prompt_bytes"] =~ "## Participating in Slack"
+
+    # Both live non-intake lanes drop the 8.5 KiB ambient participation rubric and
+    # stay well below the old 30 KiB monolithic prompt (including embedded schema).
+    assert byte_size(other_proof["prompt_bytes"]) < 14_000
+    assert byte_size(recheck_proof["prompt_bytes"]) < 20_000
+    assert byte_size(other_proof["prompt_bytes"]) < byte_size(recheck_proof["prompt_bytes"])
+  end
+
   test "v3 tool-required triage uses one disclosed read-only tool before its final decision" do
     {:ok, script} = Agent.start_link(fn -> 0 end)
 

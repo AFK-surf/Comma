@@ -246,6 +246,7 @@ const clientKinds = [
   "android",
   "ios",
   "watch",
+  "raycast",
   "api",
   "ssh",
   "unknown",
@@ -278,6 +279,8 @@ function clientKindLabel(clientKind: AdminSession["client_kind"]) {
       return "iPhone";
     case "watch":
       return "Apple Watch";
+    case "raycast":
+      return "Raycast";
     case "api":
       return "API";
     case "ssh":
@@ -299,6 +302,8 @@ function authMethodLabel(session: AdminSession) {
       return "Apple";
     case "watch_pairing":
       return messages.admin_auth_paired_watch();
+    case "raycast_pairing":
+      return messages.admin_auth_paired_raycast();
     case "ssh_public_key":
       return messages.admin_auth_ssh();
     default:

@@ -23,6 +23,7 @@ import type {
   VoiceCallSocketEvent,
   ResetPorts,
   StationLinks,
+  StorePorts,
   StreamResponse,
 } from "../host.ts";
 import {
@@ -357,6 +358,20 @@ class ReplayHost extends FakeHost {
     };
   }
 
+  /** The store's ports, answered from the log, when the recorded host had them. */
+  serveStore(provider: StorePorts["provider"]): void {
+    const port = <A>(path: string) => this.#port<A>("HOST", path);
+    this.store = {
+      provider,
+      products: () => port("store.products"),
+      purchase: () => port("store.purchase"),
+      unfinished: Effect.suspend(() => port("store.unfinished")),
+      finish: () => port("store.finish"),
+      sync: Effect.suspend(() => port("store.sync")),
+      manage: Effect.suspend(() => port("store.manage")),
+    };
+  }
+
   /** The app reset's ports, answered from the log, when the recorded host had them (none otherwise). */
   override reset: ResetPorts | undefined = undefined;
 
@@ -658,6 +673,8 @@ export async function replay(
   if (bearer?.kind === "bearer") host.serveBearer(bearer);
   if (inputs.some((input) => input.kind === "localDrive")) host.serveLocalDrive();
   if (inputs.some((input) => input.kind === "downloads")) host.serveDownloads();
+  const store = inputs.find((input) => input.kind === "store");
+  if (store?.kind === "store") host.serveStore(store.provider);
   const mesh = inputs.find((input) => input.kind === "stationMesh");
   if (mesh?.kind === "stationMesh")
     host.serveStationMesh(
@@ -746,6 +763,7 @@ export async function replay(
         next.kind === "bearer" ||
         next.kind === "localDrive" ||
         next.kind === "downloads" ||
+        next.kind === "store" ||
         next.kind === "stationMesh" ||
         next.kind === "web" ||
         next.kind === "desktop"
@@ -910,6 +928,7 @@ export async function replay(
         break;
       case "localDrive":
       case "downloads":
+      case "store":
       case "stationMesh":
       case "reset":
       case "bearer":

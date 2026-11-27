@@ -266,4 +266,176 @@ defmodule SalixAnalytics.LarkMirror.Reader do
 
   defp canonical_nonblank?(value),
     do: is_binary(value) and value != "" and value == String.trim(value)
+
+  ## Daily brief reads
+
+  @max_brief_ids 500
+  @max_brief_chats 2_000
+
+  @doc """
+  The current state of named messages in one chat (at most 500), for the
+  daily brief. Recalled and unknown messages are absent.
+  """
+  @spec messages(map(), String.t(), [String.t()]) :: {:ok, [map()]} | {:error, term()}
+  def messages(scope, chat_id, message_ids)
+      when is_map(scope) and is_binary(chat_id) and is_list(message_ids) and
+             length(message_ids) <= @max_brief_ids do
+    with :ok <- validate_scope(scope),
+         true <- id?(chat_id) and message_ids != [] and Enum.all?(message_ids, &id?/1),
+         {:ok, rows} <-
+           ClickHouseRead.run(
+             &messages_sql/1,
+             [
+               tenant_id: scope["tenant_id"],
+               app_id: scope["app_id"],
+               chat_id: chat_id,
+               ids: array(Enum.uniq(message_ids))
+             ],
+             query: "lark_mirror_brief"
+           ),
+         :ok <- validate_rows(rows, scope, %{chat_id: chat_id}) do
+      {:ok, rows}
+    else
+      false -> {:error, :invalid_lark_mirror_read}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def messages(_scope, _chat_id, _message_ids), do: {:error, :invalid_lark_mirror_read}
+
+  defp messages_sql(database) do
+    """
+    SELECT #{Enum.join(@row_keys, ", ")}
+    FROM #{database}.lark_messages FINAL
+    WHERE tenant_id = {tenant_id:String}
+      AND app_id = {app_id:String}
+      AND chat_id = {chat_id:String}
+      AND message_id IN {ids:Array(String)}
+      AND deleted = false
+      AND create_time_us > 0
+    ORDER BY create_time_us ASC, message_id ASC
+    FORMAT JSONEachRow
+    """
+  end
+
+  @doc """
+  Of `threads` (`{chat_id, root_message_id}`, at most 500), the ones
+  `actor_id` wrote in: the root or a reply. No text returns.
+  """
+  @spec thread_participation(map(), String.t(), [{String.t(), String.t()}]) ::
+          {:ok, [{String.t(), String.t()}]} | {:error, term()}
+  def thread_participation(scope, actor_id, threads)
+      when is_map(scope) and is_binary(actor_id) and is_list(threads) and
+             length(threads) <= @max_brief_ids do
+    with :ok <- validate_scope(scope),
+         true <- id?(actor_id) and threads != [],
+         true <-
+           Enum.all?(threads, &match?({chat, root} when is_binary(chat) and is_binary(root), &1)),
+         true <- Enum.all?(threads, fn {chat, root} -> id?(chat) and id?(root) end),
+         wanted = MapSet.new(threads),
+         {:ok, rows} <-
+           ClickHouseRead.run(
+             &thread_participation_sql/1,
+             [
+               tenant_id: scope["tenant_id"],
+               app_id: scope["app_id"],
+               actor_id: actor_id,
+               chats: array(threads |> Enum.map(&elem(&1, 0)) |> Enum.uniq()),
+               roots: array(threads |> Enum.map(&elem(&1, 1)) |> Enum.uniq())
+             ],
+             query: "lark_mirror_brief"
+           ),
+         true <- Enum.all?(rows, &(is_binary(&1["chat_id"]) and is_binary(&1["root"]))) do
+      {:ok,
+       rows
+       |> Enum.map(&{&1["chat_id"], &1["root"]})
+       |> Enum.filter(&MapSet.member?(wanted, &1))
+       |> Enum.uniq()}
+    else
+      false -> {:error, :invalid_lark_mirror_read}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def thread_participation(_scope, _actor_id, _threads),
+    do: {:error, :invalid_lark_mirror_read}
+
+  defp thread_participation_sql(database) do
+    """
+    SELECT DISTINCT chat_id, if(root_id = '', message_id, root_id) AS root
+    FROM #{database}.lark_messages FINAL
+    WHERE tenant_id = {tenant_id:String}
+      AND app_id = {app_id:String}
+      AND chat_id IN {chats:Array(String)}
+      AND actor_id = {actor_id:String}
+      AND deleted = false
+      AND (root_id IN {roots:Array(String)} OR message_id IN {roots:Array(String)})
+    FORMAT JSONEachRow
+    """
+  end
+
+  @doc """
+  How many messages each of `actor_ids` (at most 500) wrote in each of
+  `chat_ids` (at most 2000) since `after_us`, as `{chat_id, actor_id, count}`.
+  Counts only.
+  """
+  @spec actor_chat_counts(map(), [String.t()], [String.t()], non_neg_integer()) ::
+          {:ok, [{String.t(), String.t(), non_neg_integer()}]} | {:error, term()}
+  def actor_chat_counts(scope, actor_ids, chat_ids, after_us)
+      when is_map(scope) and is_list(actor_ids) and is_list(chat_ids) and
+             is_integer(after_us) and after_us >= 0 and length(actor_ids) <= @max_brief_ids and
+             length(chat_ids) <= @max_brief_chats do
+    with :ok <- validate_scope(scope),
+         true <- actor_ids != [] and chat_ids != [],
+         true <- Enum.all?(actor_ids, &id?/1) and Enum.all?(chat_ids, &id?/1),
+         {:ok, rows} <-
+           ClickHouseRead.run(
+             &actor_chat_counts_sql/1,
+             [
+               tenant_id: scope["tenant_id"],
+               app_id: scope["app_id"],
+               actors: array(Enum.uniq(actor_ids)),
+               chats: array(Enum.uniq(chat_ids)),
+               after_us: after_us
+             ],
+             query: "lark_mirror_brief"
+           ) do
+      {:ok,
+       for(
+         %{"chat_id" => c, "actor_id" => a, "n" => n} <- rows,
+         is_binary(c) and is_binary(a),
+         do: {c, a, to_count(n)}
+       )}
+    else
+      false -> {:error, :invalid_lark_mirror_read}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def actor_chat_counts(_scope, _actor_ids, _chat_ids, _after_us),
+    do: {:error, :invalid_lark_mirror_read}
+
+  defp actor_chat_counts_sql(database) do
+    """
+    SELECT chat_id, actor_id, count() AS n
+    FROM #{database}.lark_messages FINAL
+    WHERE tenant_id = {tenant_id:String}
+      AND app_id = {app_id:String}
+      AND chat_id IN {chats:Array(String)}
+      AND actor_id IN {actors:Array(String)}
+      AND create_time_us >= {after_us:UInt64}
+      AND deleted = false
+    GROUP BY chat_id, actor_id
+    FORMAT JSONEachRow
+    """
+  end
+
+  # Lark ids (oc_, om_, ou_, omt_) are word characters and dashes; only
+  # such values go into an array parameter.
+  defp id?(value), do: is_binary(value) and Regex.match?(~r/\A[A-Za-z0-9_-]{1,128}\z/, value)
+
+  defp array(values), do: "[" <> Enum.map_join(values, ",", &"'#{&1}'") <> "]"
+
+  defp to_count(n) when is_integer(n), do: n
+  defp to_count(n) when is_binary(n), do: String.to_integer(n)
 end

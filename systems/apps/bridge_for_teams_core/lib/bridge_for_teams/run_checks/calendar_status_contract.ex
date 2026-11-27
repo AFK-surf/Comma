@@ -352,20 +352,16 @@ defmodule BridgeForTeams.RunChecks.CalendarStatusContract do
        when status in ~w(missing unavailable),
        do: required_fields?(plan, ["status"])
 
+  # A planned plan with no trigger has no Task conversation
+  # (`SalixMeet.MeetingPlan`), so every status may carry none.
   defp plan_contract_valid?(%{"status" => status} = plan) when status in @full_plan_statuses do
     required_fields?(plan, @raw_plan_fields) and
-      plan_conversation_contract_valid?(status, plan["conversation_id"]) and
+      nullable_bounded_string?(plan["conversation_id"], 256) and
       positive_integer?(plan["revision"]) and non_negative_integer?(plan["updated_at"]) and
       preparation_contract_valid?(plan["preparation"])
   end
 
   defp plan_contract_valid?(_plan), do: false
-
-  defp plan_conversation_contract_valid?("planned", conversation_id),
-    do: bounded_non_empty_string?(conversation_id, 256)
-
-  defp plan_conversation_contract_valid?(_status, conversation_id),
-    do: nullable_bounded_string?(conversation_id, 256)
 
   defp preparation_contract_valid?(preparation) when is_map(preparation) do
     required_fields?(preparation, @raw_preparation_fields) and

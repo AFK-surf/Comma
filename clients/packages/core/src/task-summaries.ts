@@ -32,6 +32,8 @@ type Entry = {
   value?: TaskSummary;
   pending?: boolean;
   failed?: boolean;
+  /** The request for it failed: the server has not said whether there is such a Task. */
+  unanswered?: boolean;
   stale?: boolean;
 };
 
@@ -71,6 +73,7 @@ function fromItem(item: ProductInboxItem): TaskSummary {
             ? {}
             : { requested_by_avatar: item.requestedBy.avatar }),
         }),
+    ...(item.together === undefined ? {} : { together: item.together }),
     ...(item.loop === undefined ? {} : { loop: item.loop }),
     ...(item.runStartedAt === undefined ? {} : { run_started_at: item.runStartedAt }),
   };
@@ -88,7 +91,9 @@ const listedSummary = madeOnce(fromItem);
 /** A Task's summary with its status's bucket, made once per summary. */
 const shownSummary = madeOnce((summary: TaskSummary) => ({
   ...summary,
-  status_bucket: taskStatusBucket(summary.status),
+  status_bucket: taskStatusBucket(summary.status, {
+    loopState: summary.loop?.state,
+  }),
   status_failed: taskStatusFailed(summary.status),
 }));
 
@@ -307,11 +312,16 @@ export class TaskSummaries {
             ...this.#entries.get(key),
             pending: false,
             failed: true,
+            unanswered: Option.isNone(answer),
           });
         if (Option.isSome(answer))
           for (const value of answer.value.data) {
             const key = keyFor(group, value.id);
-            if (!keys.includes(key) || value.group_id !== group) continue;
+            if (
+              !keys.includes(key) ||
+              (value.group_id !== group && !value.together?.length)
+            )
+              continue;
             const previous = this.#entries.get(key)?.value;
             if (!previous || (value.updated_at ?? 0) >= (previous.updated_at ?? 0))
               this.#entries.set(key, { value });
@@ -353,11 +363,20 @@ export class TaskSummaries {
 
   #value(topic: Topic): TaskSummariesValue {
     const group = String(topic.group);
-    return {
-      summaries: idsOf(topic).flatMap((id) => {
-        const summary = this.#hosted(group, id) ?? this.#summary(group, id);
-        return summary ? [shownSummary(summary)] : [];
-      }),
-    };
+    let pending = false;
+    const summaries = idsOf(topic).flatMap((id) => {
+      const summary = this.#hosted(group, id) ?? this.#summary(group, id);
+      if (summary) return [shownSummary(summary)];
+      // Not known: still to be answered unless the server already left it out. A request that failed is no answer.
+      const entry = this.#entries.get(keyFor(group, id));
+      if (
+        topic.peek !== "1" &&
+        !this.hosted?.owns(id) &&
+        (!entry || entry.pending || entry.unanswered)
+      )
+        pending = true;
+      return [];
+    });
+    return pending ? { summaries, pending: true } : { summaries };
   }
 }

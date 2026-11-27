@@ -98,6 +98,54 @@ class VoiceCredentialsTest {
 
     private fun mint(vararg answers: JSONObject) = synchronized(minted) { minted.addAll(answers) }
 
+    @Test fun keyLimitIsDistinctFromBusy() = runBlocking<Unit> {
+        val repository = signIn()
+        core.answer = { _, _ -> throw CoreError("conflict", "full", 409) }
+        val failure = runCatching { repository.voiceCredentials.endpoint() }.exceptionOrNull() as VoiceFailure
+        assertEquals(CallResult.KeyLimit, failure.result)
+        assertEquals(CallResult.Busy, VoiceProtocol.result(4409))
+        assertEquals(CallResult.Busy, VoiceProtocol.endedResult("busy"))
+    }
+
+    @Test fun nearExpiryKeySurvivesLimitWithoutDeletion() = runBlocking<Unit> {
+        val repository = signIn()
+        mint(issued())
+        repository.voiceCredentials.endpoint()
+        now += 28 * 86_400_000L
+        core.answer = { _, _ -> throw CoreError("conflict", "full", 409) }
+        assertEquals("private-voice-key", repository.voiceCredentials.endpoint().bearer)
+        assertTrue(deleted.isEmpty())
+        assertEquals("key-one", keys.read()!!.keyId)
+    }
+
+    @Test fun staleOrExpiredKeyIsDeletedBeforeOneRetry() = runBlocking<Unit> {
+        // An old session's key, and this session's expired key: both still count toward the limit.
+        val cases = listOf("old-session" to now / 1000 + 3600, "new-session" to now / 1000 - 1)
+            .flatMap { (session, expiresAt) -> listOf(true, false).map { Triple(session, expiresAt, it) } }
+        for ((session, expiresAt, retrySucceeds) in cases) {
+            val owner = VoiceAccess("alice", "new-session", "w-alice")
+            keys.write(VoiceKeyRecord("alice", session, "w-alice", "old-key", expiresAt,
+                VoiceEndpoint("wss://voice.test/socket", "https://voice.test/ready", "old-private")))
+            val events = mutableListOf<String>()
+            var attempts = 0
+            core.answer = { name, _ ->
+                events += name
+                if (name == "voice.createKey") {
+                    attempts++
+                    if (attempts == 1 || !retrySucceeds) throw CoreError("conflict", "full", 409)
+                    issued()
+                } else JSONObject()
+            }
+            val credentials = VoiceKeyCredentials(core, keys, { owner }, { now })
+            val outcome = runCatching { credentials.endpoint() }
+            assertEquals(listOf("voice.createKey", "voice.deleteKey", "voice.createKey"), events)
+            if (retrySucceeds) {
+                assertEquals("private-voice-key", outcome.getOrThrow().bearer)
+                assertEquals("key-one", keys.read()!!.keyId)
+            } else assertEquals(CallResult.KeyLimit, (outcome.exceptionOrNull() as VoiceFailure).result)
+        }
+    }
+
     @Test fun makesAThirtyDayKeyForTheWorkspaceAndReusesItEncryptedAcrossInstances() = runBlocking<Unit> {
         val repository = signIn()
         mint(issued())

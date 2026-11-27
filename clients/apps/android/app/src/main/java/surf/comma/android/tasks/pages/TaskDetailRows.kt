@@ -34,6 +34,8 @@ internal fun taskDetailRows(
             // would not show.
             row.copy(
                 role = ChatRole.AGENT,
+                // The brief is the page's own text across the page, not a speaker's row beside the avatar gutter.
+                speaker = null, speakerAvatar = false, writerLabel = false,
                 cardKind = TimelineBlockKinds.TASK_BRIEF,
                 cardPayload = TimelineBlockKinds.TASK_BRIEF_EXPANDED.takeIf { row.id in expanded },
             )
@@ -41,7 +43,9 @@ internal fun taskDetailRows(
             row
         }
     }
-    return if (task == null) messages else listOf(TaskInfoRow.message(task, labels, strings)) + messages
+    // A brief taken out of a run ends it: the run's avatar moves to the row before.
+    val runs = messages.toMutableList().also { surf.comma.android.chat.live.markSpeakerRuns(it) }
+    return if (task == null) runs else listOf(TaskInfoRow.message(task, labels, strings)) + runs
 }
 
 /** Whether a failed read is worth trying again; a missing or forbidden task is not. */

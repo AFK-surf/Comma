@@ -22,6 +22,12 @@ defmodule BridgeForTeams.Application do
       enabled, advances one persisted bounded Slack-history import transition
       at a time; PostgreSQL run/receipt/lease state remains the correctness
       owner.
+    * `BridgeForTeams.OwnerNotifications.Worker` — emails swarm owners the
+      problems Salix reports through `SalixAgent.Ports.OwnerAlerts`.
+
+    * `BridgeForTeams.CftAnalytics.Queue` — when a product analytics project is
+      configured, the bounded queue that exports Comma for Teams signup funnel
+      events to PostHog.
 
   Reconcile/event consumers run in this core app alongside the domain contexts.
   """
@@ -31,6 +37,7 @@ defmodule BridgeForTeams.Application do
   def start(_type, _args) do
     configure_salix_im_diagnostic_sink()
     SystemsRuntime.put_env(:salix_im, :organizations, BridgeForTeams.Orgs)
+    SystemsRuntime.put_env(:salix_agent, :owner_alerts, BridgeForTeams.OwnerNotifications)
     configure_salix_schedule_diagnostic_sink()
     SalixStore.StationMembers.register(BridgeForTeams.StationMembers)
 
@@ -42,6 +49,7 @@ defmodule BridgeForTeams.Application do
         BridgeForTeams.RateLimit,
         BridgeForTeams.Salix.ReadCache
       ]
+      |> Kernel.++(BridgeForTeams.CftAnalytics.children())
       |> maybe_add(
         tenant_config_checker_enabled?(),
         BridgeForTeams.Salix.TenantConfigChecker
@@ -79,6 +87,24 @@ defmodule BridgeForTeams.Application do
         )
         |> Keyword.get(:enabled, true),
         BridgeForTeams.DailyBrief.DeliveryWorker
+      )
+      |> maybe_add(
+        SystemsRuntime.get_env(
+          :bridge_for_teams_core,
+          BridgeForTeams.DailyBrief.StationTaskNotifier,
+          []
+        )
+        |> Keyword.get(:enabled, true),
+        BridgeForTeams.DailyBrief.StationTaskNotifier
+      )
+      |> maybe_add(
+        SystemsRuntime.get_env(
+          :bridge_for_teams_core,
+          BridgeForTeams.OwnerNotifications.Worker,
+          []
+        )
+        |> Keyword.get(:enabled, true),
+        BridgeForTeams.OwnerNotifications.Worker
       )
 
     opts = [strategy: :one_for_one, name: BridgeForTeams.Supervisor]

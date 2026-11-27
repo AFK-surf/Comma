@@ -7,9 +7,7 @@ import XCTest
     /// A name typed and submitted while the last one is still saving is saved after it, and stays in the field.
     func testNameSubmittedWhileAnotherSavesIsSavedAfterIt() throws {
         let app = XCUIApplication.fixture(arguments: ["--hold-first-profile-save"])
-        let settings = app.buttons["tab-settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
-        settings.tap()
+        app.openTab("tab-settings")
         let profile = app.element("openProfile")
         XCTAssertTrue(profile.waitForExistence(timeout: 5))
         profile.tap()

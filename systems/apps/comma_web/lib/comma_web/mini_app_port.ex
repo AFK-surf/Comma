@@ -25,7 +25,9 @@ defmodule CommaWeb.MiniAppPort do
   @behaviour SalixIM.MiniApps
   @behaviour SalixWeb.MiniAppDeploys
 
-  alias Comma.Data.Workspace
+  import Ecto.Query
+
+  alias Comma.Data.{TaskCollaborator, Workspace}
   alias Comma.MiniApps
   alias Comma.MiniApps.{App, Blobs, Config, Deploys, RateLimit}
   alias Comma.Repo
@@ -39,24 +41,77 @@ defmodule CommaWeb.MiniAppPort do
 
   @impl true
   def create(%{group_id: group_id} = scope, params) when is_map(params) do
-    with %Workspace{status: "active"} = workspace <-
-           Repo.get_by(Workspace, salix_group_id: group_id) || {:error, :not_found},
-         {:ok, app} <-
-           create_app(workspace, requester(scope[:trusted_origin]), params, "workspace") do
-      {:ok,
-       %{
-         "app_id" => app.id,
-         "repo" => %{"owner" => app.repo_owner, "name" => app.repo_name},
-         "url" => run_url(workspace.id, app.id)
-       }}
-    else
-      %Workspace{} -> {:error, :mini_apps_unavailable}
-      {:error, {:bad_request, message}} -> {:error, {:invalid, message}}
-      {:error, _} = error -> error
+    case workspace_for_group(group_id, scope[:conversation_id]) do
+      {:ok, %Workspace{status: "active"} = workspace, :workspace} ->
+        with {:ok, app} <-
+               create_app(workspace, requester(scope[:trusted_origin]), params, "workspace") do
+          {:ok,
+           %{
+             "app_id" => app.id,
+             "repo" => %{"owner" => app.repo_owner, "name" => app.repo_name},
+             "url" => run_url(workspace.id, app.id)
+           }}
+        else
+          {:error, {:bad_request, message}} -> {:error, {:invalid, message}}
+          {:error, _} = error -> error
+        end
+
+      {:ok, %Workspace{status: "active"} = workspace, :collaboration, conversation_id} ->
+        with {:ok, app} <-
+               create_app(
+                 workspace,
+                 requester(scope[:trusted_origin]),
+                 params,
+                 "collaboration",
+                 group_id: group_id,
+                 collaboration_conversation_id: conversation_id
+               ) do
+          {:ok,
+           %{
+             "app_id" => app.id,
+             "repo" => %{"owner" => app.repo_owner, "name" => app.repo_name},
+             "url" => collaboration_run_url(group_id, conversation_id, app.id)
+           }}
+        else
+          {:error, {:bad_request, message}} -> {:error, {:invalid, message}}
+          {:error, _} = error -> error
+        end
+
+      {:ok, %Workspace{}, _kind} ->
+        {:error, :mini_apps_unavailable}
+
+      {:ok, %Workspace{}, :collaboration, _conversation_id} ->
+        {:error, :mini_apps_unavailable}
+
+      {:error, _} = error ->
+        error
     end
   end
 
   def create(_scope, _params), do: {:error, {:invalid, "params must be an object"}}
+
+  defp workspace_for_group(group_id, conversation_id) do
+    case Repo.get_by(Workspace, salix_group_id: group_id) do
+      %Workspace{} = workspace ->
+        {:ok, workspace, :workspace}
+
+      nil ->
+        with true <- is_binary(conversation_id) and conversation_id != "",
+             workspace_id when is_binary(workspace_id) <-
+               Repo.one(
+                 from(c in TaskCollaborator,
+                   where: c.group_id == ^group_id and c.conversation_id == ^conversation_id,
+                   select: c.workspace_id,
+                   limit: 1
+                 )
+               ),
+             %Workspace{} = workspace <- Repo.get(Workspace, workspace_id) do
+          {:ok, workspace, :collaboration, conversation_id}
+        else
+          _ -> {:error, :not_found}
+        end
+    end
+  end
 
   # Who made the app the Router made: the Comma User who sent the message the
   # turn answers, from its server-sealed principal, or the Comma account a chat
@@ -193,6 +248,13 @@ defmodule CommaWeb.MiniAppPort do
   def run_url(workspace_id, app_id),
     do: "#{web_origin()}/#/apps/#{workspace_id}/#{app_id}/run"
 
+  @doc """
+  The Comma web page that runs a Collaborative Task's Mini App for its host and
+  active members (`#/collaborations/<group>/<task>/apps/<app>`).
+  """
+  def collaboration_run_url(group_id, conversation_id, app_id),
+    do: "#{web_origin()}/#/collaborations/#{group_id}/#{conversation_id}/apps/#{app_id}"
+
   defp web_origin,
     do: SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
 
@@ -200,9 +262,11 @@ defmodule CommaWeb.MiniAppPort do
 
   @impl true
   def deploy(ctx, files) when is_map(ctx) and is_map(files) do
-    workspace = Repo.get_by(Workspace, salix_group_id: ctx[:group_id])
-
     commit_check = fn app ->
+      workspace =
+        Repo.get(Workspace, app.workspace_id) ||
+          Repo.get_by(Workspace, salix_group_id: ctx[:group_id])
+
       with %Workspace{} <- workspace || {:error, :not_found},
            {:ok, %{token: token}} <-
              github().token(workspace.salix_tenant_id, workspace.salix_group_id) do
@@ -228,9 +292,13 @@ defmodule CommaWeb.MiniAppPort do
   `comma-app.json`, else from the template as private repository
   `comma-app-<slug>` of the connected GitHub account.
   """
-  def create_app(%Workspace{} = workspace, user_id, params, visibility \\ "private") do
+  def create_app(%Workspace{} = workspace, user_id, params, visibility \\ "private", opts \\ []) do
     with {:ok, attrs} <- MiniApps.app_attrs(params),
-         attrs = Map.put(attrs, :visibility, visibility),
+         attrs =
+           attrs
+           |> Map.put(:visibility, visibility)
+           |> maybe_put_opt(:group_id, opts[:group_id])
+           |> maybe_put_opt(:collaboration_conversation_id, opts[:collaboration_conversation_id]),
          {:ok, %{token: token}} <-
            github().token(workspace.salix_tenant_id, workspace.salix_group_id) do
       case params["repo"] do
@@ -245,6 +313,9 @@ defmodule CommaWeb.MiniAppPort do
       end
     end
   end
+
+  defp maybe_put_opt(map, _key, nil), do: map
+  defp maybe_put_opt(map, key, value), do: Map.put(map, key, value)
 
   defp from_repo(workspace, user_id, attrs, token, owner, name) do
     case github().file_exists(token, owner, name, @manifest) do

@@ -25,11 +25,17 @@ import type { StatusTrayUsageSnapshot } from "./status-tray-usage";
 import { shortcutAccelerator } from "./open-comma-shortcut";
 
 export interface StatusTrayIconLike {
-  resize(options: { height: number; width: number }): StatusTrayIconLike;
+  crop(rect: { height: number; width: number; x: number; y: number }): this;
+  getSize(): { height: number; width: number };
+  resize(options: { height: number; quality?: "best"; width: number }): this;
   setTemplateImage(template: boolean): void;
+  /** Four bytes a pixel, alpha last (BGRA or RGBA). */
+  toBitmap(): Uint8Array;
+  toPNG(): Buffer;
 }
 
 export interface StatusTrayIconFactory<Icon extends StatusTrayIconLike> {
+  createFromBuffer(buffer: Buffer): Icon;
   createFromPath(path: string): Icon;
 }
 
@@ -134,14 +140,61 @@ export function createCommaStatusTrayIcon<Icon extends StatusTrayIconLike>({
   iconPath,
   nativeImage,
   platform,
+  trayIconSize,
 }: {
   iconPath: string;
   nativeImage: StatusTrayIconFactory<Icon>;
   platform: NodeJS.Platform;
+  /** The tray's icon size in device pixels, outside macOS. */
+  trayIconSize: number;
 }) {
   const icon = nativeImage.createFromPath(iconPath);
-  if (platform === "darwin") icon.setTemplateImage(true);
-  return icon;
+  if (platform === "darwin") {
+    icon.setTemplateImage(true);
+    return icon;
+  }
+  // Elsewhere the tray shows the app icon, a macOS icon with a wide transparent
+  // margin around its tile. Windows scales the whole image to the small-icon
+  // size, so the margin makes Comma smaller than the tray icons beside it.
+  const bounds = opaqueSquareBounds(icon.getSize(), icon.toBitmap());
+  // A crop keeps the whole icon's row stride, which the Windows tray's icon
+  // conversion does not follow: it draws the tile as diagonal stripes. Decoding
+  // the cropped PNG gives an image of its own.
+  const tile = bounds ? nativeImage.createFromBuffer(icon.crop(bounds).toPNG()) : icon;
+  // Windows shrinks a large icon to the tray's size by itself, with jagged
+  // edges. Resampled here, the tile is smooth.
+  return tile.resize({ height: trayIconSize, quality: "best", width: trayIconSize });
+}
+
+/** The smallest square, centred on the opaque pixels, that holds them all. */
+function opaqueSquareBounds(
+  { height, width }: { height: number; width: number },
+  bitmap: Uint8Array
+) {
+  let left = width;
+  let top = height;
+  let right = -1;
+  let bottom = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      // Half opaque or more: a shadow's faint edge does not count.
+      if ((bitmap[(y * width + x) * 4 + 3] ?? 0) < 128) continue;
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < 0) return undefined;
+  const side = Math.min(Math.max(right - left, bottom - top) + 1, width, height);
+  const clamp = (start: number, size: number) =>
+    Math.max(0, Math.min(Math.round(start), size - side));
+  return {
+    height: side,
+    width: side,
+    x: clamp((left + right + 1 - side) / 2, width),
+    y: clamp((top + bottom + 1 - side) / 2, height),
+  };
 }
 
 /** The Tasks in the In progress column of the Tasks page, newest first. */
@@ -151,7 +204,10 @@ export function inProgressStatusTrayTasks(
   return items
     .filter(
       (item) =>
-        item.kind === "agent_task" && taskStatusBucket(item.status) === "in_progress"
+        item.kind === "agent_task" &&
+        taskStatusBucket(item.status, {
+          loopState: item.loop?.state,
+        }) === "in_progress"
     )
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, statusTrayTaskLimit)

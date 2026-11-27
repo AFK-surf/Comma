@@ -27,6 +27,7 @@ defmodule SalixAgent.ImageRefs do
   """
 
   alias SalixAgent.{FileBackend, MediaResolver}
+  alias SalixAgent.ImageRefs.ScreenshotCache
 
   # Anthropic's hard per-image cap is 5MB; use one cap across providers.
   @max_inline_bytes 5 * 1024 * 1024
@@ -76,15 +77,49 @@ defmodule SalixAgent.ImageRefs do
   def reader(ctx) do
     fn
       {:request_image, block} ->
-        resolve_block(block, ctx)
+        projected_block(block, ctx)
 
       {:request_result, seq} ->
         case ctx[:async_result_resolver] || ctx["async_result_resolver"] do
-          resolver when is_function(resolver, 1) -> resolver.(seq)
+          resolver when is_function(resolver, 1) -> project_result(resolver.(seq), ctx)
           _ -> :error
         end
     end
   end
+
+  defp project_result({:ok, record} = result, %{ifc_projection: %{} = projection}) do
+    block = record["result"] || record[:result] || %{}
+    label = SalixAgent.IFC.ContextProjection.label(block) |> SalixIFC.Codec.encode_label()
+
+    if SalixAgent.IFC.ContextProjection.visible_label?(label, projection),
+      do: result,
+      else: :error
+  end
+
+  defp project_result(result, _ctx), do: result
+
+  # Read label and immutable blob ref from one manifest snapshot. A later path
+  # replacement cannot substitute bytes after the visibility decision.
+  defp projected_block(%{"type" => "image"} = block, %{ifc_projection: %{} = projection} = ctx) do
+    case block do
+      %{"file_ref" => %{"environment_id" => "vfs", "path" => path}} ->
+        with {:ok, entry} <- SalixAgent.AgentWorkspace.entry(ctx_agent_id(ctx), path),
+             true <-
+               SalixAgent.IFC.ContextProjection.visible_label?(entry["ifc_label"], projection),
+             size when is_integer(size) and size <= @max_inline_bytes <- entry["size"],
+             {:ok, body} <- SalixStore.Blob.get(ctx_agent_id(ctx), entry["ref"]) do
+          resolve_block(block, Map.put(ctx, :ifc_image_body, {path, body}))
+        else
+          _ -> []
+        end
+
+      _ ->
+        # A mutable remote path has no owner-held snapshot audience.
+        []
+    end
+  end
+
+  defp projected_block(block, ctx), do: resolve_block(block, ctx)
 
   # Only a tool read reaches here as an image — the kernel hands every inbound
   # attachment over as a file — so this is the last gate before bytes become
@@ -114,7 +149,11 @@ defmodule SalixAgent.ImageRefs do
        when is_binary(device) and device != "" and is_binary(environment) and
               environment not in ["", "vfs"] and is_binary(path) do
     if MediaResolver.supports_images?(ctx_agent_id(ctx), ctx) do
-      resolve_image(block, path, ctx)
+      # Each request of the reply inlines this screenshot again; the cache keeps
+      # it the same in all of them, also after the device deletes it.
+      ScreenshotCache.key(ctx, device, environment, path)
+      |> ScreenshotCache.fetch(fn -> prepare_image(block, path, ctx) end)
+      |> image_blocks(block, path)
     else
       [image_fallback_block(block, path, :unsupported_model)]
     end
@@ -130,40 +169,47 @@ defmodule SalixAgent.ImageRefs do
 
   defp resolve_block(block, _ctx), do: [block]
 
-  defp resolve_image(block, path, ctx) do
+  defp resolve_image(block, path, ctx),
+    do: block |> prepare_image(path, ctx) |> image_blocks(block, path)
+
+  defp image_blocks({:ok, blocks}, _block, _path), do: blocks
+
+  defp image_blocks({:error, reason}, block, path),
+    do: [image_fallback_block(block, path, reason)]
+
+  defp prepare_image(block, path, ctx) do
     with {:ok, mime} <- native_image_mime(block, path) do
       case read_body(ctx, path, block) do
         {:ok, body} when byte_size(body) <= @max_inline_bytes ->
           if animated_gif?(mime, body) do
-            [image_fallback_block(block, path, :animated_gif)]
+            {:error, :animated_gif}
           else
             case SalixMedia.ImageInput.prepare(body, mime) do
               {:ok, preview, preview_mime} ->
-                [
-                  %{
-                    "type" => "image_url",
-                    "image_url" => %{
-                      "url" => "data:#{preview_mime};base64," <> Base.encode64(preview)
-                    }
-                  }
-                ]
+                {:ok,
+                 [
+                   %{
+                     "type" => "image_url",
+                     "image_url" => %{
+                       "url" => "data:#{preview_mime};base64," <> Base.encode64(preview)
+                     }
+                   }
+                 ]}
 
               {:error, reason} ->
-                [image_fallback_block(block, path, reason)]
+                {:error, reason}
             end
           end
 
         {:ok, _body} ->
-          [image_fallback_block(block, path, :oversized)]
+          {:error, :oversized}
 
         {:error, :too_large} ->
-          [image_fallback_block(block, path, :oversized)]
+          {:error, :oversized}
 
         {:error, reason} ->
-          [image_fallback_block(block, path, reason)]
+          {:error, reason}
       end
-    else
-      {:error, reason} -> [image_fallback_block(block, path, reason)]
     end
   end
 
@@ -234,6 +280,8 @@ defmodule SalixAgent.ImageRefs do
     end
   end
 
+  defp read_body(%{ifc_image_body: {path, body}}, path, _block), do: {:ok, body}
+
   defp read_body(ctx, path, %{
          "file_ref" => %{
            "device_id" => device,
@@ -252,7 +300,7 @@ defmodule SalixAgent.ImageRefs do
       {:ok, body}
     else
       false -> {:error, :too_large}
-      _ -> {:error, :device_image_unavailable}
+      other -> {:error, device_read_failure(other)}
     end
   end
 
@@ -263,6 +311,27 @@ defmodule SalixAgent.ImageRefs do
       {:error, _} = err -> err
     end
   end
+
+  # Why a device screenshot read failed, as the model and a diagnosis need it.
+  # The connector answers a missing capture file with this exact text
+  # (systems/station/src/connector/computer-use.ts `readImage`); the file is
+  # usually gone because the device deletes it 15 minutes after capture.
+  defp device_read_failure(
+         {:ok, %{"ok" => false, "error" => "screenshot expired or unavailable"}}
+       ),
+       do: :screenshot_expired
+
+  defp device_read_failure({:ok, %{"ok" => false, "error" => "screenshot exceeds 5 MiB"}}),
+    do: :oversized
+
+  # `:no_environment` also covers a device the agent cannot resolve or may not
+  # use (`SalixWeb.EnvDispatch.with_vm_operation`); `:disconnected` is a device
+  # that dropped during the read (`SalixWeb.ConnectorRecovery`).
+  defp device_read_failure({:error, reason}) when reason in [:no_environment, :disconnected],
+    do: :device_unreachable
+
+  defp device_read_failure({:error, :timeout}), do: :device_timeout
+  defp device_read_failure(_other), do: :device_read_failed
 
   defp file_path(%{"path" => path}) when is_binary(path), do: path
 
@@ -284,6 +353,19 @@ defmodule SalixAgent.ImageRefs do
     end
   end
 
+  # A screenshot that expired was usually shown in earlier requests. Say so, or
+  # the model reads its own earlier description of it as a mistake.
+  defp image_fallback_block(block, path, :screenshot_expired) do
+    %{
+      "type" => "text",
+      "text" =>
+        "[Device screenshot #{file_name(block, path)} is no longer on the device " <>
+          "(reason=screenshot_expired): the device deletes screenshots 15 minutes after capture. " <>
+          "An earlier request may have shown it to you, and what you saw then was true at that time. " <>
+          "Do not infer its contents now. Capture again if you need the current screen.]"
+    }
+  end
+
   defp image_fallback_block(block, path, reason) do
     reason =
       case reason do
@@ -291,7 +373,9 @@ defmodule SalixAgent.ImageRefs do
         :unsupported_format -> "unsupported_format"
         :animated_gif -> "animated_gif"
         :not_found -> "not_found"
-        :device_image_unavailable -> "device_offline_or_screenshot_expired"
+        :device_unreachable -> "device_unreachable"
+        :device_timeout -> "device_timeout"
+        :device_read_failed -> "device_read_failed"
         :unsupported_model -> "model_does_not_support_images"
         _ -> "unavailable"
       end
@@ -308,8 +392,7 @@ defmodule SalixAgent.ImageRefs do
         "[Attached image could not be included as native image input: " <>
           "#{file_name(block, path)} (#{location}: #{path}); reason=#{reason}. " <>
           if(location == "device screenshot",
-            do:
-              "Do not infer image contents. Capture again if the device screenshot has expired.]",
+            do: "Do not infer image contents. Capture again if you need the screen.]",
             else: inspect_guidance()
           )
     }

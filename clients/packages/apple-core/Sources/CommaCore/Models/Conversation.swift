@@ -44,7 +44,7 @@ public struct Conversation: Codable, Equatable, Identifiable, Sendable {
         tail.messages = Array(messages.suffix(limit))
         return tail
     }
-    public var bucket: TaskBucket { TaskBucket(status: status) }
+    public var bucket: TaskBucket { TaskBucket(status: status, loopState: loop?.object?["state"]?.string) }
     public var isTask: Bool { kind == "agent_task" }
     public var isArchived: Bool { status == "archived" || archivedAt != nil }
     /// When the Task last changed: `updatedAt`, else `createdAt`; nil while the server has sent neither.
@@ -119,6 +119,72 @@ public struct BoundWorker: Codable, Equatable, Sendable {
     }
 }
 
+/// Structured provider/account detail accompanying a participant `issue`.
+public struct ParticipantIssueDetail: Codable, Equatable, Sendable {
+    public let source: String?
+    public let profileID: String?
+    public let profileName: String?
+    public let resetAt: Double?
+    public let credits: Bool?
+    public let trigger: String?
+    enum CodingKeys: String, CodingKey {
+        case source, profileID = "profile_id", profileName = "profile_name", resetAt = "reset_at", credits, trigger
+    }
+    public init(source: String? = nil, profileID: String? = nil, profileName: String? = nil,
+                resetAt: Double? = nil, credits: Bool? = nil, trigger: String? = nil) {
+        self.source = source; self.profileID = profileID; self.profileName = profileName
+        self.resetAt = resetAt; self.credits = credits; self.trigger = trigger
+    }
+}
+
+/// One active worker session in a multi-session Task roster (`worker_sessions`, up to 6 entries).
+public struct WorkerSession: Codable, Equatable, Identifiable, Sendable {
+    public let participantID: String
+    public let actorID: String?
+    public let slot: String
+    public let label: String
+    public let model: String?
+    public let runtime: String?
+    public let isPrimary: Bool
+    public let subscribed: Bool?
+    public let state: String
+    public let status: String
+    public let updatedAt: Double?
+    public let issue: String?
+    public let issueDetail: ParticipantIssueDetail?
+    public var id: String { participantID }
+    enum CodingKeys: String, CodingKey {
+        case participantID = "participant_id", actorID = "actor_id", slot, label, model, runtime
+        case isPrimary = "is_primary", subscribed, state, status, updatedAt = "updated_at", issue
+        case issueDetail = "issue_detail"
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        participantID = try c.decode(String.self, forKey: .participantID)
+        actorID = try c.decodeIfPresent(String.self, forKey: .actorID)
+        slot = try c.decode(String.self, forKey: .slot)
+        label = try c.decode(String.self, forKey: .label)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        runtime = try c.decodeIfPresent(String.self, forKey: .runtime)
+        isPrimary = try c.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? false
+        subscribed = try c.decodeIfPresent(Bool.self, forKey: .subscribed)
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "stopped"
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt)
+        issue = try c.decodeIfPresent(String.self, forKey: .issue)
+        issueDetail = try? c.decodeIfPresent(ParticipantIssueDetail.self, forKey: .issueDetail)
+    }
+    public init(participantID: String, actorID: String? = nil, slot: String, label: String,
+                model: String? = nil, runtime: String? = nil, isPrimary: Bool, subscribed: Bool? = nil,
+                state: String = "stopped", status: String = "", updatedAt: Double? = nil,
+                issue: String? = nil, issueDetail: ParticipantIssueDetail? = nil) {
+        self.participantID = participantID; self.actorID = actorID; self.slot = slot; self.label = label
+        self.model = model; self.runtime = runtime; self.isPrimary = isPrimary; self.subscribed = subscribed
+        self.state = state; self.status = status; self.updatedAt = updatedAt
+        self.issue = issue; self.issueDetail = issueDetail
+    }
+}
+
 /// Runtime owner activity is independent of Task business status.
 public struct ParticipantStatus: Codable, Equatable, Identifiable, Sendable {
     public let conversationID: String
@@ -127,14 +193,26 @@ public struct ParticipantStatus: Codable, Equatable, Identifiable, Sendable {
     public let status: String
     public let updatedAt: Double
     public let issue: String?
+    public let issueDetail: ParticipantIssueDetail?
     public var id: String { participantID }
     enum CodingKeys: String, CodingKey {
         case conversationID = "conversation_id", participantID = "participant_id", state, status
-        case updatedAt = "updated_at", issue
+        case updatedAt = "updated_at", issue, issueDetail = "issue_detail"
     }
-    public init(conversationID: String, participantID: String, state: String, status: String, updatedAt: Double, issue: String? = nil) {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        conversationID = try c.decode(String.self, forKey: .conversationID)
+        participantID = try c.decode(String.self, forKey: .participantID)
+        state = try c.decode(String.self, forKey: .state)
+        status = try c.decode(String.self, forKey: .status)
+        updatedAt = try c.decode(Double.self, forKey: .updatedAt)
+        issue = try c.decodeIfPresent(String.self, forKey: .issue)
+        issueDetail = try? c.decodeIfPresent(ParticipantIssueDetail.self, forKey: .issueDetail)
+    }
+    public init(conversationID: String, participantID: String, state: String, status: String,
+                updatedAt: Double, issue: String? = nil, issueDetail: ParticipantIssueDetail? = nil) {
         self.conversationID = conversationID; self.participantID = participantID; self.state = state
-        self.status = status; self.updatedAt = updatedAt; self.issue = issue
+        self.status = status; self.updatedAt = updatedAt; self.issue = issue; self.issueDetail = issueDetail
     }
 }
 
@@ -148,6 +226,7 @@ public struct ConversationEvent: Decodable, Equatable, Sendable {
     public let participantDraft: AssistantDraft?
     public let participantStatus: ParticipantStatus?
     public let participants: [ParticipantStatus]?
+    public let workerSessions: [WorkerSession]?
     public let boundWorker: BoundWorker?
     public let draftID: String?
     public let responseKey: String?
@@ -162,6 +241,7 @@ public struct ConversationEvent: Decodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case type, conversationID = "conversation_id", groupID = "group_id", title, status, messages
         case participantDraft = "participant_draft", participantStatus = "participant_status", participants
+        case workerSessions = "worker_sessions"
         case boundWorker = "bound_worker"
         case draftID = "draft_id", responseKey = "response_key", sourceMessageIDs = "source_message_ids"
         case revision, text, delta, participantID = "participant_id", state, updatedAt = "updated_at", reason
@@ -177,6 +257,7 @@ public struct ConversationEvent: Decodable, Equatable, Sendable {
         participantDraft = try? c.decodeIfPresent(AssistantDraft.self, forKey: .participantDraft)
         participantStatus = try? c.decodeIfPresent(ParticipantStatus.self, forKey: .participantStatus)
         participants = try? c.decodeIfPresent([ParticipantStatus].self, forKey: .participants)
+        workerSessions = try? c.decodeIfPresent([WorkerSession].self, forKey: .workerSessions)
         boundWorker = try? c.decodeIfPresent(BoundWorker.self, forKey: .boundWorker)
         draftID = try c.decodeIfPresent(String.self, forKey: .draftID); responseKey = try c.decodeIfPresent(String.self, forKey: .responseKey)
         sourceMessageIDs = try c.decodeIfPresent([String].self, forKey: .sourceMessageIDs)

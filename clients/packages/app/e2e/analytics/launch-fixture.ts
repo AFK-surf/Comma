@@ -14,6 +14,7 @@ export function startLaunch(desktopLaunch: NativeInfo["desktopLaunch"]) {
     session: null,
   };
   return startCommaAnalytics({
+    enabled: true,
     runtime: "electron",
     desktopLaunch: Promise.resolve(desktopLaunch),
     lifecycle: { getSnapshotSync: () => snapshot, subscribe: () => () => {} },

@@ -1,46 +1,19 @@
 defmodule Salix.Bindings.IMLarkUserAccounts do
   @moduledoc """
   The Lark people who signed in for a Group, from its OAuth Bindings of
-  provider `lark`. A token is resolved, and refreshed when it expires, by the
-  managed OAuth owner (`SalixAgent.OAuthCredentials`).
+  provider `lark` (`Salix.Bindings.IMUserAccounts`). A member's own sign-in
+  (alias `lark-member`) is there only for a read that acts for them.
   """
 
   @behaviour SalixIM.Ports.LarkUserAccounts
 
-  alias Salix.Control.OAuthBindings
+  alias Salix.Bindings.IMUserAccounts
 
   @impl true
-  def list(group_id) do
-    {
-      :ok,
-      # A member's sign-in for their Routine (alias `lark-member`) belongs to
-      # them alone: no read of the connect's own uses it.
-      for %{"provider" => "lark"} = binding <- OAuthBindings.list(group_id),
-          binding["alias"] != "lark-member" do
-        %{
-          "alias" => binding["alias"],
-          "open_id" => binding["provider_account_id"],
-          "name" => binding["provider_account_name"],
-          "status" => binding["status"]
-        }
-      end
-    }
-  end
+  def list(group_id, acting), do: IMUserAccounts.list("lark", group_id, acting)
 
   @impl true
-  def access_token(_agent_id, "lark-member"), do: {:error, :not_found}
-
-  def access_token(agent_id, alias_name) do
-    entry = %{
-      "env_var" => "LARK_USER_ACCESS_TOKEN",
-      "provider" => "lark",
-      "alias" => alias_name,
-      "value" => "access_token"
-    }
-
-    case SalixAgent.OAuthCredentials.resolve(agent_id, [entry]) do
-      {:ok, %{"LARK_USER_ACCESS_TOKEN" => token}} -> {:ok, token}
-      {:error, _reason} = error -> error
-    end
-  end
+  def access_token(agent_id, alias_name, acting),
+    do:
+      IMUserAccounts.access_token("lark", "LARK_USER_ACCESS_TOKEN", agent_id, alias_name, acting)
 end

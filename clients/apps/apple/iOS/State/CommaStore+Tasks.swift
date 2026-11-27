@@ -38,7 +38,10 @@ extension CommaStore {
         let failed = list.failed && next.isEmpty
         if failed, !taskListFailed { error = String(localized: "Couldn’t load tasks") }
         taskListFailed = failed
-        if list.read { Task { await refreshTaskActivity() } }
+        if list.read {
+            Task { await refreshTaskActivity() }
+            Task { await refreshLiveStatuses() }
+        }
     }
 
     /// Follows the pins of the Workspace shown (the core's `taskPins`).

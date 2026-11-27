@@ -6,9 +6,15 @@ import { cx } from "../../utils";
 import {
   aiInputAttachment,
   aiInputFileAttachment,
+  aiInputFileBody,
+  aiInputFileDetail,
+  aiInputFileDetailMeta,
+  aiInputFileDetailText,
+  aiInputFileHoverCard,
   aiInputFileFooter,
   aiInputFileIconSurface,
   aiInputFileMeta,
+  aiInputFileMetaPath,
   aiInputFileName,
   aiInputQuoteAttachment,
   aiInputQuoteExcerpt,
@@ -29,24 +35,72 @@ import {
   type AttachmentTileProps,
 } from "./AttachmentRemoveButton";
 import { ImageAttachment, type ImageAttachmentProps } from "./ImageAttachment";
+import { MiddleEllipsis } from "./MiddleEllipsis";
 
-const FileAttachment = ({ attachment, onRemove }: AttachmentTileProps) => (
-  <div
-    className={cx(aiInputAttachment, aiInputFileAttachment)}
-    data-slot="file-attachment"
-  >
+/**
+ * A file staged for the next message: its name, and under it what it is (its size, or the folder it is in). One
+ * with a `detail` (a file's full path) shows it on hover with its `detailMeta` (its size), the remove button aside.
+ */
+const FileAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
+  const name = (
     <span className={aiInputFileName} data-slot="file-name">
       {attachment.name}
     </span>
+  );
+  const footer = (
     <div className={aiInputFileFooter}>
       <div className={aiInputFileIconSurface} data-slot="file-icon-surface">
         <FileIcon />
       </div>
-      {attachment.meta && <span className={aiInputFileMeta}>{attachment.meta}</span>}
+      {attachment.meta &&
+        (attachment.metaMiddleTruncate ? (
+          <MiddleEllipsis className={aiInputFileMetaPath} text={attachment.meta} />
+        ) : (
+          <span className={aiInputFileMeta}>{attachment.meta}</span>
+        ))}
     </div>
-    <AttachmentRemoveButton attachment={attachment} onRemove={onRemove} />
-  </div>
-);
+  );
+  return (
+    <div
+      className={cx(aiInputAttachment, aiInputFileAttachment)}
+      data-slot="file-attachment"
+    >
+      {attachment.detail ? (
+        <HoverCard
+          className={cx(aiInputQuoteHoverCard, aiInputFileHoverCard)}
+          content={
+            <div className={aiInputFileDetail}>
+              <p className={aiInputFileDetailText}>{attachment.detail}</p>
+              {attachment.detailMeta ? (
+                <span className={aiInputFileDetailMeta}>{attachment.detailMeta}</span>
+              ) : null}
+            </div>
+          }
+          placement="top start"
+          pointerOnly
+        >
+          <div
+            className={aiInputFileBody}
+            title={
+              attachment.detailMeta
+                ? `${attachment.detail} (${attachment.detailMeta})`
+                : attachment.detail
+            }
+          >
+            {name}
+            {footer}
+          </div>
+        </HoverCard>
+      ) : (
+        <>
+          {name}
+          {footer}
+        </>
+      )}
+      <AttachmentRemoveButton attachment={attachment} onRemove={onRemove} />
+    </div>
+  );
+};
 
 /**
  * A quoted passage staged for the next message. The tile shows the passage's

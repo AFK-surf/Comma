@@ -77,4 +77,10 @@ export interface MeshEndpoint {
   /** The next incoming connection for one of the endpoint's ALPNs, or null once the endpoint is closed. */
   accept(): Promise<MeshConnection | null>;
   close(): Promise<void>;
+  /**
+   * Tells the endpoint its network may have changed (iroh's `network_change`): it binds its sockets anew and looks for
+   * its paths again. A phone back in the foreground says so: the system may have taken its sockets meanwhile, and one
+   * that only fails would keep a core busy. Absent: the endpoint follows the network by itself.
+   */
+  networkChange?(): Promise<void>;
 }

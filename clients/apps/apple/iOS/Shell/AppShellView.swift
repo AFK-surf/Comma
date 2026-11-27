@@ -107,8 +107,26 @@ struct AppShellView: View {
         .onAppear {
             store.router.setSurfaceVisible(navigation.routerOpen)
             store.router.setObscured("task", docked)
+            PerformanceRecord.shared.pageSummaryProvider = { [weak store, weak navigation] in
+                guard let store, let navigation else { return nil }
+                var parts = ["tab=\(navigation.tab.rawValue)"]
+                if navigation.routerOpen { parts.append("router=open") }
+                if navigation.taskRaised {
+                    parts.append("task=raised")
+                } else if store.task != nil {
+                    parts.append("task=docked")
+                }
+                if navigation.searchOpen { parts.append("search=open") }
+                if let route = navigation.settingsPath.last { parts.append("settings=\(route)") }
+                if store.miniAppPresentation != nil { parts.append("miniapp=open") }
+                if let ws = store.workspace?.id, !ws.isEmpty { parts.append("ws=\(ws.prefix(6))") }
+                return parts.joined(separator: " ")
+            }
         }
-        .onDisappear { store.router.setSurfaceVisible(false) }
+        .onDisappear {
+            store.router.setSurfaceVisible(false)
+            PerformanceRecord.shared.pageSummaryProvider = nil
+        }
         .onChange(of: navigation.routerOpen) { _, open in store.router.setSurfaceVisible(open) }
         .onChange(of: store.router.revealRequest) { _, _ in navigation.openRouter() }
         .onChange(of: store.workspace?.id) { _, _ in query.reset() }

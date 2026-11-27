@@ -802,6 +802,7 @@
   --motion-duration-picture-in-picture-exit: 150ms;
   --motion-duration-routine-dismiss-fade: 120ms;
   --motion-duration-routine-dismiss-close: 220ms;
+  --motion-duration-routine-cleared-enter: 320ms;
   --motion-duration-tab-close-fade: 120ms;
   --motion-duration-onboarding-dim: 3000ms;
   --motion-duration-onboarding-logo-enter: 900ms;
@@ -859,10 +860,12 @@
   --motion-scale-onboarding-logo: 0.96;
   --motion-scale-routine-dismiss: 0.96;
   --motion-scale-tab-close: 0.96;
+  --motion-scale-routine-cleared-mark: 0.5;
   --motion-distance-menu-enter: 2px;
   --motion-distance-login-stage-shift: 8px;
   --motion-distance-reveal-item: 8px;
   --motion-distance-nav-press-shift: 2px;
+  --motion-distance-reply-thread-advance: 48px;
   --motion-blur-menu-enter: 2px;
   --motion-blur-login-stage: 8px;
   --motion-blur-reveal-item: 4px;

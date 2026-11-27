@@ -1,6 +1,10 @@
 // The Comma API as chat uses it: the requests a conversation, its sends, its files and the workspace's chat make.
 // The core answers them through the host (chat/http.ts), for the account's session; nothing here holds a credential.
-import type { ChatTaskRunChoice, ManualTaskStatus } from "@comma/chat-contract";
+import type {
+  ChatDraftEntry,
+  ChatTaskRunChoice,
+  ManualTaskStatus,
+} from "@comma/chat-contract";
 import { Data, type Effect } from "effect";
 import type {
   CommaConversation,
@@ -125,7 +129,8 @@ export interface ChatApi {
   listWorkspaceSkills(workspaceId: string): Effect.Effect<CommaSkill[], Error>;
   uploadGroupFile(
     groupId: string,
-    attrs: { data: Blob; name: string }
+    /** `conversation`: the Task it is attached in; a Task together keeps it in its own folder. */
+    attrs: { data: Blob; name: string; conversation?: string | undefined }
   ): Effect.Effect<CommaGroupFile, Error>;
   /**
    * Uploads a file a pick left with the host (`localFileRef`) in parts, one request each, every part read from there as
@@ -134,14 +139,24 @@ export interface ChatApi {
    */
   uploadLocalFile?(
     groupId: string,
-    attrs: { localFileRef: string; name: string; size: number }
+    attrs: {
+      localFileRef: string;
+      name: string;
+      size: number;
+      /** The Task it is attached in; a Task together keeps it in its own folder. */
+      conversation?: string | undefined;
+    }
   ): Effect.Effect<CommaGroupFile, Error>;
   /** Stores attachment `index` of a message in the Group as a composer file, by reference to its blob. */
   storeConversationFile(
     groupId: string,
     file: { conversationId: string; messageId: string; index: number }
   ): Effect.Effect<CommaGroupFile, Error>;
-  fetchGroupFile(groupId: string, path: string): Effect.Effect<Blob, Error>;
+  fetchGroupFile(
+    groupId: string,
+    path: string,
+    options?: { taskId?: string }
+  ): Effect.Effect<Blob, Error>;
   fetchAgentBlob(
     groupId: string,
     agentId: string,
@@ -156,6 +171,8 @@ export interface ChatApi {
       clientDeviceId?: string;
       /** Marks how the words came (`quick_chat`); it grants no authority. */
       messageType?: "quick_chat";
+      /** Marks where the words were written when not in this app; display only. */
+      clientEntry?: ChatDraftEntry;
       replyToMessageId?: string;
       localFiles?: CommaLocalFileRef[];
       /** The question card the message answers: sent as its `question_answer` block. */

@@ -1,5 +1,6 @@
 import { useCall, type VoiceChoice } from "@comma/core-client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { billingFailureReason } from "../billing/billingError";
 
 // Settings › Voice's sample of a call voice: the core asks the server for a few seconds of the voice speaking, and this
 // plays it. The server keeps none: a sample is kept on this device, each voice's apart (by voice and language, in the
@@ -39,11 +40,12 @@ async function keepOnDevice(cacheKey: string, blob: Blob): Promise<void> {
 }
 
 export type VoicePreviewPhase = "loading" | "playing";
+export type VoicePreviewErrorKind = "credits" | "failed";
 
 export function useVoicePreview(workspace: string | undefined, language: string) {
   const call = useCall();
   const [phase, setPhase] = useState<VoicePreviewPhase>();
-  const [failed, setFailed] = useState(false);
+  const [errorKind, setErrorKind] = useState<VoicePreviewErrorKind>();
   const samples = useRef(new Map<string, string>());
   const audio = useRef<HTMLAudioElement | null>(null);
   /** Each press's number: a sample that arrives after a newer press or a stop is not played. */
@@ -72,7 +74,7 @@ export function useVoicePreview(workspace: string | undefined, language: string)
       if (!workspace) return;
       stop();
       const mine = generation.current;
-      setFailed(false);
+      setErrorKind(undefined);
       const cacheKey = `${key}\n${language}`;
       let url = samples.current.get(cacheKey);
       if (!url) {
@@ -87,10 +89,10 @@ export function useVoicePreview(workspace: string | undefined, language: string)
           }
           url = URL.createObjectURL(blob);
           samples.current.set(cacheKey, url);
-        } catch {
+        } catch (failure) {
           if (generation.current === mine) {
             setPhase(undefined);
-            setFailed(true);
+            setErrorKind(billingFailureReason(failure) ? "credits" : "failed");
           }
           return;
         }
@@ -113,5 +115,5 @@ export function useVoicePreview(workspace: string | undefined, language: string)
     [call, language, stop, workspace]
   );
 
-  return { phase, failed, play, stop };
+  return { phase, failed: errorKind !== undefined, errorKind, play, stop };
 }

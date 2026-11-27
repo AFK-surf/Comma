@@ -158,6 +158,7 @@ defmodule SalixAgent.Tools.HttpRequest do
     case result do
       {:ok, response} ->
         emit(outcome(response.status), elapsed)
+        note_refused_credentials(args, ctx, uri, secrets, response)
         format(response, elapsed)
 
       {:error, %Mint.TransportError{reason: :timeout}} ->
@@ -469,6 +470,47 @@ defmodule SalixAgent.Tools.HttpRequest do
           {:error, message} -> raise "#{@tool}: #{message}"
         end
     end
+  end
+
+  # A provider whose own API refuses a token this request carried (Slack
+  # `token_revoked`) marks that credential for reauthorization. Only the
+  # entries whose placeholders the headers or query used count.
+  defp note_refused_credentials(_args, _ctx, _uri, secrets, _response)
+       when map_size(secrets) == 0,
+       do: :ok
+
+  defp note_refused_credentials(args, ctx, uri, secrets, %{truncated: false} = response) do
+    used = Map.take(secrets, placeholders(args))
+
+    with true <- map_size(used) > 0,
+         {:ok, body} <- Jason.decode(response.body) do
+      agent_id = Map.get(ctx, :agent_id) || Map.get(ctx, "agent_id")
+
+      OAuthCredentials.note_response(
+        agent_id,
+        raw(args, "credential_env"),
+        used,
+        uri.host,
+        response.status,
+        body
+      )
+    else
+      _ -> :ok
+    end
+  end
+
+  defp note_refused_credentials(_args, _ctx, _uri, _secrets, _response), do: :ok
+
+  defp placeholders(args) do
+    [raw(args, "headers"), raw(args, "query")]
+    |> Enum.flat_map(fn
+      values when is_map(values) -> Map.values(values)
+      _ -> []
+    end)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.flat_map(&Regex.scan(@placeholder, &1, capture: :all_but_first))
+    |> List.flatten()
+    |> Enum.uniq()
   end
 
   defp query!(args, secrets) do

@@ -24,6 +24,7 @@
   },
   "scripts": {
     "generate:css": "tsx ./scripts/generate-css.ts",
+    "export:provider-marks": "tsx ./scripts/export-provider-marks.tsx",
     "storybook": "pnpm generate:css && storybook dev -p 6006",
     "storybook:e2e": "pnpm generate:css && storybook dev --ci --no-open --exact-port -p 6011",
     "build-storybook": "pnpm generate:css && storybook build",
@@ -32,9 +33,9 @@
     "test-storybook": "pnpm generate:css && vitest run --project=storybook"
   },
   "dependencies": {
-    "@central-icons-react/round-filled-radius-2-stroke-2": "^1.2.31",
-    "@central-icons-react/round-outlined-radius-2-stroke-1.5": "^1.2.31",
-    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.2.31",
+    "@central-icons-react/round-filled-radius-2-stroke-2": "^1.2.68",
+    "@central-icons-react/round-outlined-radius-2-stroke-1.5": "^1.2.68",
+    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.2.68",
     "@comma/core": "workspace:*",
     "@comma/i18n": "workspace:*",
     "@radix-ui/react-collapsible": "^1.1.14",

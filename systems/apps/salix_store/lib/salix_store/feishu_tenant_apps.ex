@@ -2,12 +2,13 @@ defmodule SalixStore.FeishuTenantApps do
   @moduledoc """
   Postgres data access for Feishu bot app records (docs/storage-search.md).
 
-  One row per tenant, a field-parity image of the retired S3 blob
-  (`ctl/feishu/tenant_apps/{tenant_id}.json`): string-keyed maps in and out,
-  `updated_at` in epoch seconds exactly as `Salix.Control.Store.now/0` produced.
-  The app id and the three bot secrets (`app_secret`, `verification_token`,
-  `encrypt_key`) are stored as-is, so `Salix.Control.Tenants` keeps all its
-  merge/redaction logic and never sees Ecto.
+  One row per `(tenant_id, app_id)`: a tenant may hold several Feishu custom
+  apps, one per department bot. Each row is a field-parity image of the retired
+  S3 blob (`ctl/feishu/tenant_apps/{tenant_id}.json`): string-keyed maps in and
+  out, `updated_at` in epoch seconds exactly as `Salix.Control.Store.now/0`
+  produced. The app id and the three bot secrets (`app_secret`,
+  `verification_token`, `encrypt_key`) are stored as-is, so
+  `Salix.Control.Tenants` keeps all its merge/redaction logic and never sees Ecto.
   """
 
   import Ecto.Query
@@ -18,9 +19,10 @@ defmodule SalixStore.FeishuTenantApps do
     @moduledoc false
     use Ecto.Schema
 
-    @primary_key {:tenant_id, :string, autogenerate: false}
+    @primary_key false
     schema "feishu_tenant_apps" do
-      field(:app_id, :string)
+      field(:tenant_id, :string, primary_key: true)
+      field(:app_id, :string, primary_key: true)
       field(:app_secret, :string)
       field(:verification_token, :string)
       field(:encrypt_key, :string)
@@ -28,24 +30,53 @@ defmodule SalixStore.FeishuTenantApps do
     end
   end
 
-  @spec get(String.t()) :: {:ok, map()} | {:error, :not_found}
+  @doc """
+  The tenant's only Feishu app. A tenant with several apps has no single
+  answer: callers that know the app use `get/2`.
+  """
+  @spec get(String.t()) :: {:ok, map()} | {:error, :not_found | :ambiguous_tenant_app}
   def get(tenant_id) when is_binary(tenant_id) do
-    case Repo.get(Row, tenant_id) do
+    Row
+    |> where([r], r.tenant_id == ^tenant_id)
+    |> limit(2)
+    |> Repo.all()
+    |> case do
+      [] -> {:error, :not_found}
+      [%Row{} = row] -> {:ok, to_record(row)}
+      [_, _] -> {:error, :ambiguous_tenant_app}
+    end
+  end
+
+  @doc "The tenant's Feishu app `app_id`."
+  @spec get(String.t(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get(tenant_id, app_id) when is_binary(tenant_id) and is_binary(app_id) do
+    case Repo.get_by(Row, tenant_id: tenant_id, app_id: app_id) do
       nil -> {:error, :not_found}
       %Row{} = row -> {:ok, to_record(row)}
     end
   end
 
-  @doc "Create or replace the record for `tenant_id`."
+  @doc "The tenant's Feishu apps, by app id."
+  @spec list(String.t()) :: [map()]
+  def list(tenant_id) when is_binary(tenant_id) do
+    Row
+    |> where([r], r.tenant_id == ^tenant_id)
+    |> order_by([r], asc: r.app_id)
+    |> Repo.all()
+    |> Enum.map(&to_record/1)
+  end
+
+  @doc "Create or replace the record for `(tenant_id, app_id)`. A blank app id is refused."
   @spec put(map()) :: {:ok, map()}
-  def put(%{"tenant_id" => tenant_id} = record) when is_binary(tenant_id) do
+  def put(%{"tenant_id" => tenant_id, "app_id" => app_id} = record)
+      when is_binary(tenant_id) and is_binary(app_id) do
+    if String.trim(app_id) == "", do: raise(ArgumentError, "a Feishu app record needs an app_id")
     row = from_record(record)
 
     {:ok, _} =
       Repo.insert(row,
-        on_conflict:
-          {:replace, [:app_id, :app_secret, :verification_token, :encrypt_key, :updated_at]},
-        conflict_target: :tenant_id,
+        on_conflict: {:replace, [:app_secret, :verification_token, :encrypt_key, :updated_at]},
+        conflict_target: [:tenant_id, :app_id],
         # The row carries the Feishu bot secrets; keep them out of the Ecto query
         # log (which prints bind parameters at debug level).
         log: false
@@ -54,9 +85,20 @@ defmodule SalixStore.FeishuTenantApps do
     {:ok, to_record(row)}
   end
 
+  @doc "Remove every Feishu app of `tenant_id`."
   @spec delete(String.t()) :: :ok
   def delete(tenant_id) when is_binary(tenant_id) do
     Row |> where([r], r.tenant_id == ^tenant_id) |> Repo.delete_all()
+    :ok
+  end
+
+  @doc "Remove the tenant's Feishu app `app_id` only."
+  @spec delete(String.t(), String.t()) :: :ok
+  def delete(tenant_id, app_id) when is_binary(tenant_id) and is_binary(app_id) do
+    Row
+    |> where([r], r.tenant_id == ^tenant_id and r.app_id == ^app_id)
+    |> Repo.delete_all()
+
     :ok
   end
 
@@ -67,9 +109,14 @@ defmodule SalixStore.FeishuTenantApps do
   @spec import_record(map()) :: :ok | {:error, {:divergent_row, String.t()}}
   def import_record(%{"tenant_id" => tenant_id} = record) when is_binary(tenant_id) do
     row = from_record(record)
-    Repo.insert(row, on_conflict: :nothing, conflict_target: :tenant_id, log: false)
 
-    case Repo.get(Row, tenant_id) do
+    Repo.insert(row,
+      on_conflict: :nothing,
+      conflict_target: [:tenant_id, :app_id],
+      log: false
+    )
+
+    case Repo.get_by(Row, tenant_id: tenant_id, app_id: row.app_id) do
       %Row{} = landed ->
         if to_record(landed) == canonical(record),
           do: :ok,

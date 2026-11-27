@@ -28,6 +28,14 @@ defmodule BridgeForTeams.CLI.LoginTest do
       })
       |> Repo.insert!()
 
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        billing_account_id: org.billing_account_id,
+        surface: "bridge",
+        product_owner_type: "organization",
+        product_owner_id: org.id
+      })
+
     {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")
     org
   end

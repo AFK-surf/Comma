@@ -50,7 +50,8 @@ defmodule SalixIM.ConversationQuestionTest do
              })
   end
 
-  test "a question out of bounds is refused with what to fix" do
+  test "a question out of bounds is refused with what to fix, while a single choice is allowed" do
+    empty_choices = Map.put(@question, "choices", [])
     one_choice = Map.put(@question, "choices", [%{"label" => "only"}])
 
     two_recommended =
@@ -59,8 +60,18 @@ defmodule SalixIM.ConversationQuestionTest do
         %{"label" => "b", "recommended" => true}
       ])
 
-    assert {:error, {:bad_request, "A question offers 2 to 6 choices"}} =
-             ConversationQuestion.normalize_agent_content([one_choice])
+    assert {:error, {:bad_request, "A question offers 1 to 6 choices"}} =
+             ConversationQuestion.normalize_agent_content([empty_choices])
+
+    assert {:ok, [single_normalized, _fallback]} =
+             ConversationQuestion.normalize_agent_content([
+               Map.put(one_choice, "independent", true)
+             ])
+
+    assert Enum.map(single_normalized["choices"], & &1["label"]) == ["only"]
+    # Agent-submitted `independent` is stripped; only server mark_independent/1 sets it.
+    refute Map.has_key?(single_normalized, "independent")
+    assert [%{"independent" => true}] = ConversationQuestion.mark_independent([single_normalized])
 
     assert {:error, {:bad_request, "At most one choice is recommended"}} =
              ConversationQuestion.normalize_agent_content([two_recommended])
@@ -135,5 +146,45 @@ defmodule SalixIM.ConversationQuestionTest do
     assert {:error,
             {:bad_request, "question_answer: the replied Message does not ask a question"}} =
              ConversationQuestion.admit_answer(answer, question_message(question, "user"))
+  end
+
+  test "skip_behavior and choice action normalize defaults away and reject unknown values" do
+    dismiss_q = %{
+      "type" => "question",
+      "prompt" => "Deploy?",
+      "skip_behavior" => "dismiss",
+      "choices" => [
+        %{"label" => "Deploy", "action" => "reply"},
+        %{"label" => "No need", "action" => "close"}
+      ]
+    }
+
+    assert {:ok, [normalized, _fallback]} =
+             ConversationQuestion.normalize_agent_content([dismiss_q])
+
+    assert normalized["skip_behavior"] == "dismiss"
+    refute Map.has_key?(Enum.at(normalized["choices"], 0), "action")
+    assert Enum.at(normalized["choices"], 1)["action"] == "close"
+
+    assert {:ok, [default_q, _]} =
+             ConversationQuestion.normalize_agent_content([
+               Map.put(@question, "skip_behavior", "decide")
+             ])
+
+    refute Map.has_key?(default_q, "skip_behavior")
+
+    assert {:error, {:bad_request, "skip_behavior must be decide or dismiss"}} =
+             ConversationQuestion.normalize_agent_content([
+               Map.put(@question, "skip_behavior", "invalid")
+             ])
+
+    bad_action_q =
+      Map.put(@question, "choices", [
+        %{"label" => "A", "action" => "bogus"},
+        %{"label" => "B"}
+      ])
+
+    assert {:error, {:bad_request, _}} =
+             ConversationQuestion.normalize_agent_content([bad_action_q])
   end
 end

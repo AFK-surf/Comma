@@ -22,6 +22,9 @@ defmodule SalixIM.LarkInbound do
     * `im.chat.member.bot.added_v1`: the bot was added to a group chat. The
       Router decides whether to introduce itself there
       (`SalixIM.LarkChatJoin`).
+    * `application.bot.menu_v6`: a person tapped the bot's custom menu in
+      their private chat with it (`SalixIM.LarkBotMenu`). The tap is that
+      person's message to the Router, or a control command.
     * `vc.bot.meeting_invited_v1`, `vc.bot.meeting_ended_v1`: the bot in a Lark
       video meeting. They go to the meeting product
       (`SalixIM.Ports.LarkMeetingBot`) and never reach the Router.
@@ -86,6 +89,7 @@ defmodule SalixIM.LarkInbound do
     LarkFiles,
     LarkMessageAck,
     LarkMessageRecord,
+    LarkThreadTaskBinding,
     LarkThreads,
     ProviderConnects,
     ProviderObservations,
@@ -97,6 +101,7 @@ defmodule SalixIM.LarkInbound do
   alias SalixIM.IFC.LarkConfirmation
   alias SalixIM.Ports.LarkMeetingBot, as: LarkMeetingBotPort
   alias SalixIM.Provider.Lark.{Message, MeetingBot}
+  alias SalixIM.Provider.LarkSuite.Addressee, as: LarkSuiteAddressee
 
   @ack %{"ok" => true}
 
@@ -286,7 +291,21 @@ defmodule SalixIM.LarkInbound do
       not from_owner?(connect, text(map(sender["sender_id"])["open_id"])) ->
         {:ignored, :not_owner}
 
-      not for_bot?(connect, message) ->
+      left_thread_app_message?(connect, message, sender) ->
+        {:ignored, :thread_left}
+
+      LarkSuiteAddressee.directed_elsewhere?(connect, message) ->
+        unless owned_thread?(connect, message, sender) do
+          SalixIM.LarkSuiteTriage.observe_ambient("lark", connect, message, sender)
+        end
+
+        {:ignored, :not_for_bot}
+
+      # A group message that is not for the Router may still be one the
+      # Group's triage watches (`SalixIM.LarkSuiteTriage`); the answer to Lark
+      # stays the same.
+      not for_bot?(connect, message, sender) ->
+        SalixIM.LarkSuiteTriage.observe_ambient("lark", connect, message, sender)
         {:ignored, :not_for_bot}
 
       true ->
@@ -363,10 +382,82 @@ defmodule SalixIM.LarkInbound do
          connect,
          %{"header" => %{"event_type" => "im.chat.member.bot.added_v1"}} = envelope,
          _request_id
-       ),
-       do: SalixIM.LarkChatJoin.enqueue("lark", connect, envelope)
+       ) do
+    SalixIM.IFC.Projection.observe_bot_event(connect, envelope)
+    SalixIM.LarkChatJoin.enqueue("lark", connect, envelope)
+  end
+
+  defp dispatch(
+         connect,
+         %{"header" => %{"event_type" => "im.chat.member.bot.deleted_v1"}} = envelope,
+         _request_id
+       ) do
+    SalixIM.IFC.Projection.observe_bot_event(connect, envelope)
+    {:ignored, :bot_left_chat}
+  end
+
+  # A tap on the bot's custom menu in a private chat (`SalixIM.LarkBotMenu`).
+  # It names no message, so its receipt is its event ID. A control command
+  # runs at most once; any other tap gets its receipt once the Router took it.
+  defp dispatch(
+         connect,
+         %{"header" => %{"event_type" => "application.bot.menu_v6"}} = envelope,
+         request_id
+       ) do
+    with {:ok, menu} <- SalixIM.LarkBotMenu.parse("lark", connect, envelope) do
+      deliver = fn -> route_menu(connect, envelope, menu, request_id) end
+
+      cond do
+        not from_owner?(connect, menu.open_id) -> {:ignored, :not_owner}
+        is_binary(menu.command_text) -> at_most_once(connect, menu.receipt, deliver)
+        true -> until_received(connect, menu.receipt, deliver)
+      end
+    end
+  end
 
   defp dispatch(_connect, _envelope, _request_id), do: {:ignored, :event_not_routed}
+
+  defp route_menu(connect, envelope, menu, request_id) do
+    lifecycle =
+      &emit_diagnostic(connect, envelope, request_id, {:lifecycle, &1, menu.source_message_id})
+
+    with :ok <-
+           ProviderObservations.upsert_lark_user(connect, %{
+             "open_id" => menu.open_id,
+             "union_id" => menu.union_id,
+             "user_id" => menu.user_id
+           }) do
+      lifecycle.(:received)
+
+      connect["group_id"]
+      |> ProviderConnects.enqueue_group_router_im_provider_message(
+        menu.content,
+        menu.metadata,
+        menu.source_message_id,
+        trusted_source_text: menu.trusted_source_text,
+        command_text: menu.command_text
+      )
+      |> case do
+        {:error, reason} = error ->
+          lifecycle.({:delivery_failed, reason})
+
+          if permanent?(reason) do
+            Logger.warning("lark_inbound_refused", reason: inspect(reason))
+            {:error, :ignored}
+          else
+            error
+          end
+
+        {:ok, :command} ->
+          lifecycle.(:command)
+          {:ok, :command}
+
+        _admitted ->
+          lifecycle.(:delivered)
+          {:ok, :queued}
+      end
+    end
+  end
 
   # A shared bot takes everyone the app hears. One person's bot takes its
   # owner only, and nobody when the owner is missing.
@@ -454,10 +545,127 @@ defmodule SalixIM.LarkInbound do
   end
 
   # Only a message for the bot reaches the Router: one addressed to it, and a
-  # group message of a thread the bot answered in.
-  defp for_bot?(connect, message) do
-    addressed?(connect, message) or
-      LarkThreads.joined?(connect, message["chat_id"], message["thread_id"])
+  # group message that goes on a conversation of the bot
+  # (`participating_message?/3`). A message of a thread the Router handed to a
+  # Task is for that Task. Explicit foreign-only mentions cannot be overridden
+  # by thread ownership.
+  defp for_bot?(connect, message, sender) do
+    not LarkSuiteAddressee.directed_elsewhere?(connect, message) and
+      (addressed?(connect, message) or participating_message?(connect, message, sender))
+  end
+
+  # A bot's message of a thread the Router left, or a quote reply to a
+  # message whose follow-up it left, does not reach the Router again.
+  defp left_thread_app_message?(connect, message, sender) do
+    %{chat_id: chat_id, thread_id: thread_id, root_id: root_id} = address(message)
+
+    text(message["chat_type"]) != "p2p" and
+      text(sender["sender_type"]) == "app" and
+      ((thread_id != "" and LarkThreads.status(connect, chat_id, thread_id) == :left) or
+         (thread_id == "" and root_id != "" and
+            LarkThreads.status(connect, chat_id, root_id) == :left))
+  end
+
+  # A group message without a mention that goes on a conversation of the
+  # bot: a thread it is bound to or answered in, a thread opened under or a
+  # quote reply to a message it sent, or a person's message in a group it
+  # created. A thread the Router left stays left whatever its root is. A
+  # thread opened under the bot's message is joined here, so it is followed
+  # and left on its own. A hit extends the mark.
+  defp participating_message?(connect, message, sender) do
+    %{chat_id: chat_id, thread_id: thread_id} = address = address(message)
+
+    if thread_id != "" do
+      bound_task(connect, message) != :none or
+        case LarkThreads.status(connect, chat_id, thread_id) do
+          :joined ->
+            LarkThreads.joined?(connect, chat_id, thread_id)
+
+          :left ->
+            false
+
+          :none ->
+            derived_participation?(connect, address, sender, &LarkThreads.joined?/3) and
+              join_derived_thread(connect, chat_id, thread_id) == :ok
+        end
+    else
+      derived_participation?(connect, address, sender, &LarkThreads.joined?/3)
+    end
+  end
+
+  # What `observe_ambient` must not see: the same answer as
+  # `participating_message?/3`, read without extending a mark.
+  defp owned_thread?(connect, message, sender) do
+    %{chat_id: chat_id, thread_id: thread_id} = address = address(message)
+
+    if thread_id != "" do
+      bound_task(connect, message) != :none or
+        case LarkThreads.status(connect, chat_id, thread_id) do
+          :joined -> true
+          :left -> false
+          :none -> derived_participation?(connect, address, sender, &joined_now?/3)
+        end
+    else
+      derived_participation?(connect, address, sender, &joined_now?/3)
+    end
+  end
+
+  # The message's root or parent is a message of the bot's conversation, or
+  # a person writes in a group the bot created. A root the Router left
+  # admits nothing. Only a person's message counts in the created group, so
+  # two bots there do not answer each other forever.
+  defp derived_participation?(connect, address, sender, joined?) do
+    %{chat_id: chat_id, root_id: root_id, parent_id: parent_id} = address
+
+    cond do
+      root_id != "" and LarkThreads.status(connect, chat_id, root_id) == :left ->
+        false
+
+      root_id != "" and joined?.(connect, chat_id, root_id) ->
+        true
+
+      parent_id != "" and parent_id != root_id and joined?.(connect, chat_id, parent_id) ->
+        true
+
+      text(sender["sender_type"]) == "user" and joined?.(connect, chat_id, chat_id) ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  defp joined_now?(connect, chat_id, id), do: LarkThreads.status(connect, chat_id, id) == :joined
+
+  defp address(message) do
+    %{
+      chat_id: text(message["chat_id"]),
+      thread_id: text(message["thread_id"]),
+      root_id: text(message["root_id"]),
+      parent_id: text(message["parent_id"])
+    }
+  end
+
+  # Best effort: without the mark, the next message of the thread is matched
+  # by its root again.
+  defp join_derived_thread(connect, chat_id, thread_id) do
+    case LarkThreads.join(connect, chat_id, thread_id) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("lark_thread_join_failed", reason: inspect(reason))
+    end
+
+    :ok
+  end
+
+  defp bound_task(connect, message) do
+    if text(message["chat_type"]) == "group" and text(message["thread_id"]) != "",
+      do:
+        LarkThreadTaskBinding.active_binding(
+          connect,
+          text(message["chat_id"]),
+          text(message["thread_id"])
+        ),
+      else: :none
   end
 
   # A control command runs at most once, and nothing but its receipt says
@@ -546,16 +754,14 @@ defmodule SalixIM.LarkInbound do
       id in [text(connect["bot_open_id"]), text(connect["app_id"])]
   end
 
-  defp mentions_bot?(connect, message) do
-    bot = text(connect["bot_open_id"])
-    bot != "" and Enum.any?(mentions(message), &(text(map(&1["id"])["open_id"]) == bot))
-  end
+  defp mentions_bot?(connect, message), do: LarkSuiteAddressee.mentions_self?(connect, message)
 
   defp mentions(message), do: message["mentions"] |> List.wrap() |> Enum.filter(&is_map/1)
 
   defp route(connect, envelope, message, sender, message_id, request_id) do
     body = message_text(connect, message)
     sender_id = map(sender["sender_id"])
+    sender_type = text(sender["sender_type"])
     source_id = source_id(connect, message_id)
     lifecycle = &emit_diagnostic(connect, envelope, request_id, {:lifecycle, &1, source_id})
 
@@ -580,22 +786,70 @@ defmodule SalixIM.LarkInbound do
         "sender_open_id" => text(sender_id["open_id"]),
         "sender_union_id" => text(sender_id["union_id"]),
         "sender_user_id" => text(sender_id["user_id"]),
-        "sender_type" => text(sender["sender_type"]),
+        "sender_type" => sender_type,
+        "app_authored" => if(sender_type == "app", do: true),
         "bot_mentioned" => mentions_bot?(connect, message),
         "structured_mentions" => structured_mentions(connect, message),
-        "event_type" => "lark.message",
-        "source_actor_type" => "provider_user"
+        "event_type" => "lark.message"
       }
       |> Enum.reject(fn {_key, value} -> value in [nil, "", []] end)
       |> Map.new()
       |> ProviderRecipientIdentity.put(connect)
+
+    command = command_text(connect, message, sender)
+
+    # A person's message of a thread the Router handed to a Task enters that
+    # Task. A control command still goes to the Router funnel, which runs it.
+    case SalixIM.ControlCommand.parse(command) == :none and bound_task(connect, message) do
+      {:ok, binding} ->
+        route_to_task(connect, message, sender, message_id, binding, body, metadata, lifecycle)
+
+      _router ->
+        route_to_router(connect, message, sender, message_id, body, metadata, lifecycle)
+    end
+  end
+
+  defp route_to_task(connect, message, sender, message_id, binding, body, metadata, lifecycle) do
+    sender_id = map(sender["sender_id"])
+
+    connect
+    |> LarkThreadTaskBinding.append_message(binding, %{
+      "source_message_id" => source_id(connect, message_id),
+      "content" => body,
+      "metadata" => metadata,
+      "user_id" =>
+        [sender_id["open_id"], sender_id["user_id"]]
+        |> Enum.map(&text/1)
+        |> Enum.find("", &(&1 != "")),
+      "attachments" => attachments(connect, message, message_id)
+    })
+    |> case do
+      {:ok, _result} ->
+        lifecycle.(:delivered)
+        {:ok, :queued}
+
+      {:error, reason} = error ->
+        lifecycle.({:delivery_failed, reason})
+
+        if permanent?(reason) do
+          Logger.warning("lark_inbound_refused", reason: inspect(reason))
+          {:error, :ignored}
+        else
+          error
+        end
+    end
+  end
+
+  defp route_to_router(connect, message, sender, message_id, body, metadata, lifecycle) do
+    sender_id = map(sender["sender_id"])
+    source_id = source_id(connect, message_id)
+    command = command_text(connect, message, sender)
 
     name =
       [sender_id["open_id"], sender_id["user_id"], sender["sender_type"]]
       |> Enum.map(&text/1)
       |> Enum.find("", &(&1 != ""))
 
-    command = command_text(connect, message, sender)
     SalixIM.MentionReplyLatency.provider_mention(source_id, metadata, command)
 
     connect["group_id"]
@@ -770,7 +1024,13 @@ defmodule SalixIM.LarkInbound do
     ["event", "message", "thread_id"],
     ["event", "message", "root_id"],
     ["event", "message", "parent_id"],
-    ["event", "message", "message_type"]
+    ["event", "message", "message_type"],
+    # A tap on the bot's menu (`application.bot.menu_v6`).
+    ["event", "event_key"],
+    ["event", "operator", "operator_name"],
+    ["event", "operator", "operator_id", "open_id"],
+    ["event", "operator", "operator_id", "union_id"],
+    ["event", "operator", "operator_id", "user_id"]
   ]
 
   @mention_strings [
@@ -785,10 +1045,20 @@ defmodule SalixIM.LarkInbound do
   defp validate_shape(envelope) do
     with true <- Enum.all?(@shape_objects, &shape?(envelope, &1, :object)),
          true <- Enum.all?(@shape_strings, &shape?(envelope, &1, :string)),
+         true <- timestamp_shape?(envelope),
          true <- mentions_shape?(envelope) do
       :ok
     else
       false -> {:error, :invalid_envelope}
+    end
+  end
+
+  # Lark sends the time of a menu tap as a number or as a string.
+  defp timestamp_shape?(envelope) do
+    case fetch(envelope, ["event", "timestamp"]) do
+      {:ok, value} -> is_integer(value) or is_binary(value)
+      :missing -> true
+      :invalid -> false
     end
   end
 

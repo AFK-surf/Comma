@@ -23,8 +23,13 @@ defmodule SalixStore.Application do
           # the roster (SalixStore.Stations.Events).
           {Phoenix.PubSub, name: SalixStore.Stations.Events.pubsub()},
           SalixStore.Ids,
-          SalixStore.Inflight.Poller
-        ] ++ transport_children() ++ fake_children()
+          SalixStore.Inflight.Poller,
+          # Where each node's Agent VMM worker is found (SalixStore.AgentVMM.Worker).
+          %{
+            id: SalixStore.AgentVMM.Worker.pg_scope(),
+            start: {:pg, :start_link, [SalixStore.AgentVMM.Worker.pg_scope()]}
+          }
+        ] ++ transport_children() ++ fake_children() ++ agent_vmm_worker_children()
 
     opts = [strategy: :one_for_one, name: SalixStore.Supervisor]
     SystemsRuntime.Supervisor.start_link(children, opts)
@@ -69,6 +74,12 @@ defmodule SalixStore.Application do
     else
       [{Finch, name: SalixStore.Finch, pools: %{default: [size: 50, count: 1]}}]
     end
+  end
+
+  # The node holds Agent VMM Host connections only where it is configured to
+  # (config/runtime.exs, SALIX_AGENT_VMM_GATEWAY_ENABLED).
+  defp agent_vmm_worker_children do
+    if SalixStore.AgentVMM.Worker.enabled?(), do: [SalixStore.AgentVMM.Worker], else: []
   end
 
   defp fake_children do

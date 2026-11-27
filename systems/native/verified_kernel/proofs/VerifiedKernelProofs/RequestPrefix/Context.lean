@@ -19,7 +19,7 @@ set_option maxHeartbeats 4000000
 /-- The state fields that select the window and its prefix agree. -/
 def SameWindow (s s' : Term) : Prop :=
   s'.isMap = s.isMap ∧
-    ∀ k ∈ ["provider_compaction", "summary", "compacted_through"], SameKey s s' k
+    ∀ k ∈ ["provider_compaction", "summary", "summary_ifc_view_label", "compacted_through"], SameKey s s' k
 
 /-- **Context extension.** The context of `s` is a prefix of the context of `s'`. -/
 theorem context_append {s s' : Term} {xs ys C C' : List Term} {j j' k k' : List Term}
@@ -28,7 +28,7 @@ theorem context_append {s s' : Term} {xs ys C C' : List Term} {j j' k k' : List 
     (h : Session.Request.context s j = .ok (list C, k)) (h' : Session.Request.context s' j' = .ok (list C', k')) :
     C <+: C' := by
   obtain ⟨hm, keys⟩ := window
-  have key : ∀ k ∈ ["provider_compaction", "summary", "compacted_through"],
+  have key : ∀ k ∈ ["provider_compaction", "summary", "summary_ifc_view_label", "compacted_through"],
       SameKey s s' k := keys
   obtain ⟨pre, live, S, D, ⟨_, _, hpre⟩, ⟨_, _, hlive⟩, ⟨_, _, hS⟩, ⟨_, _, hD⟩, hv⟩ :=
     context_parts h
@@ -38,7 +38,7 @@ theorem context_append {s s' : Term} {xs ys C C' : List Term} {j j' k k' : List 
   injection hv' with hv'; subst hv'
   -- The prefixes agree.
   have epre := (Session.CompactionQuery.contextPrefix.stateless s).same hpre
-    (contextPrefix_congr hm (key _ (by simp)) (key _ (by simp)) hpre')
+    (contextPrefix_congr hm (key _ (by simp)) (key _ (by simp)) (key _ (by simp)) hpre')
   injection epre with epre; subst epre
   -- The live window grows.
   obtain ⟨ls, zs, el, el'⟩ := live_append (s := s) (s' := s')

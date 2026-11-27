@@ -78,8 +78,10 @@ defmodule SalixAgent.ToolsStationsTest do
       %{
         "id" => "dev_sf1",
         "name" => "Acme · mac-mini",
+        "workspace_id" => "ws_acme",
         "connected" => true,
-        "connected_at" => "2026-11-12T03:00:00Z"
+        "connected_at" => "2026-11-12T03:00:00Z",
+        "task_models" => %{"claude" => []}
       }
     ])
 
@@ -89,8 +91,10 @@ defmodule SalixAgent.ToolsStationsTest do
                %{
                  "device_id" => "dev_sf1",
                  "name" => "Acme · mac-mini",
+                 "workspace_id" => "ws_acme",
                  "connected" => true,
-                 "connected_at" => "2026-11-12T03:00:00Z"
+                 "connected_at" => "2026-11-12T03:00:00Z",
+                 "task_models" => %{"claude" => []}
                }
              ],
              "stillfail_note" => note
@@ -100,6 +104,28 @@ defmodule SalixAgent.ToolsStationsTest do
     for tool <-
           ~w(im_api.internal.station_task.list im_api.internal.usage.query im_api.internal.task.create),
         do: assert(note =~ tool)
+  end
+
+  test "a station tool pointed at a still.fail station says how to reach it instead" do
+    SystemsRuntime.put_env(:salix_agent, :fake_stillfail_stations, [
+      %{"id" => "dev_sf1", "name" => "Acme · mac-mini", "connected" => true}
+    ])
+
+    reply(fn "fs.list", _args -> {:error, {:gateway, "station_not_found", "no such station"}} end)
+
+    assert_raise RuntimeError,
+                 ~r/dev_sf1 is a connected still.fail workspace.*task.create/s,
+                 fn ->
+                   Stations.fs(
+                     %{"station_id" => "dev_sf1", "action" => "list", "path" => "~"},
+                     @ctx
+                   )
+                 end
+
+    # A Station of the roster keeps the roster's refusal.
+    assert_raise RuntimeError, ~r/station_not_found/, fn ->
+      Stations.fs(%{"station_id" => @station, "action" => "list", "path" => "~"}, @ctx)
+    end
   end
 
   test "env.exec on a station target runs exec through the port with the tool ctx" do

@@ -204,6 +204,10 @@ function ParticipantHistoryLink({
   const messages = useCommaMessages();
   const routerName = useRouterDisplayName();
   const router = participant.actorRole !== "worker";
+  const working =
+    participant.state === "active" &&
+    participant.waiting !== true &&
+    participant.loopWake !== true;
   const name = sessionParticipantName(
     participant,
     routerName,
@@ -224,7 +228,7 @@ function ParticipantHistoryLink({
       >
         {router ? (
           <span aria-hidden className="comma-session-avatar">
-            <CommaLogoAnimation />
+            <CommaLogoAnimation paused={!working} />
           </span>
         ) : (
           <WorkerModelMark className="comma-session-avatar" vendor={vendor} />

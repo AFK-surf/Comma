@@ -251,19 +251,33 @@ def humanSourceOrigin (origin : Term) : KernelM Bool := do
   if ← presentExternalProvider provider then return true
   return provider == b "internal" && actorType == b "user"
 
-/-- The provider thread a sealed origin came from, or `nil` outside a thread. -/
+/-- The conversation or provider thread a sealed origin came from, or `nil` when
+messages in that place do not share one conversation stream. -/
 def originThread (origin : Term) : KernelM Term := do
   if !origin.isMap then return nil
+  let provider ← pickText origin "provider"
+  if provider == b "internal" then
+    if (← pickText origin "conversation_kind") != b "user_chat" then return nil
+    let conversation ← pickText origin "conversation_id"
+    let root ← pickText origin "thread_root_message_id"
+    if !conversation.isBinary || conversation == b "" || !root.isBinary || root == b "" then
+      return nil
+    return list [b "internal", b "user_chat", conversation, root]
   let context ← pickText origin "provider_context"
   if !context.isMap then return nil
   let first (keys : List String) : KernelM Term := do
     let values ← keys.mapM (pickText context ·)
     return (values.find? (fun value => value.isBinary && value != b "")).getD nil
   let connect ← first ["connect_id"]
-  let place ← first ["channel_id", "chat_id"]
+  let place ← first ["channel_id", "chat_id", "wechat_id"]
   let thread ← first ["thread_ts", "message_thread_id", "root_message_id"]
-  if connect == nil || place == nil || thread == nil then return nil
-  return list [← pickText origin "provider", connect, place, thread]
+  if connect == nil || place == nil then return nil
+  if thread != nil then return list [provider, connect, place, thread]
+  let chatType ← pickText context "chat_type"
+  if ((provider == b "imessage" || provider == b "wechat") && chatType != b "group") ||
+      [b "private", b "p2p", b "c2c"].contains chatType then
+    return list [provider, connect, place, b "dm"]
+  return nil
 
 /-- `human_source_queue_item?/1`. -/
 def humanSourceQueueItem (item : Term) : KernelM Bool := do
@@ -342,5 +356,120 @@ def activationKeyWith (state ids : Term) : KernelM (List Term) := do
   let current ← normalizeScope (list ((← normalizeScope ids) ++ (← liveScope state)))
   if !current.isEmpty then return current
   if ← unacked state then storedScope state else pure []
+
+/-- Decode map or JSON-encoded tool arguments; other shapes become `{}`. -/
+private def decodeCallArgs (args : Term) : Term :=
+  if args.isMap then args
+  else match args with
+    | .binary raw =>
+      match Json.decode raw with
+      | some decoded => if decoded.isMap then decoded else empty
+      | none => empty
+    | _ => empty
+
+/-- Tools that send a visible reply, update a message, or hand work to a Task. -/
+private def reachingToolName (tool : Term) : Bool :=
+  match tool with
+  | .binary bytes =>
+    match String.fromUTF8? bytes with
+    | some name =>
+      let trimmed := (String.Slice.trimAscii name.toSlice).copy
+      trimmed == "im_api.internal.task.create" ||
+        trimmed == "im_api.internal.send_message" ||
+        (trimmed.startsWith "im_api." &&
+          ["send_message", "send_text", "send_dm", "reply_message", "reply_text",
+            "reply_image", "reply_file", "reply_video", "post_message",
+            "post_channel_message", "say", "update_message", "send_photo",
+            "send_document", "send_image", "send_file", "post_task_card",
+            "open_task_topic"].any (fun suffix => trimmed.endsWith ("." ++ suffix)))
+    | none => false
+  | _ => false
+
+private def reachingCall (call : Term) (guidanceIds : List Term) : KernelM Bool := do
+  if !call.isMap then return false
+  let id := dual call "id"
+  if id != nil && guidanceIds.contains id then return false
+  let name ← stringChars ((dual call "name").default (b ""))
+  let args := decodeCallArgs (dual call "args")
+  if name == b "end_turn" then return dual args "reply" != nil
+  let target ← if name == b "call" && args.isMap then
+      stringChars ((dual args "tool").default (b ""))
+    else pure name
+  return reachingToolName target
+
+private def originSender (origin : Term) : KernelM Term := do
+  if !origin.isMap then return nil
+  if (← pickText origin "provider") == b "internal" then
+    let user ← pickText origin "actor_user_id"
+    if user.isBinary && user != b "" then return user
+    let participant ← pickText origin "participant_id"
+    if participant.isBinary && participant != b "" then return participant
+    return nil
+  let context ← pickText origin "provider_context"
+  if !context.isMap then return nil
+  let values ← ["user_id", "sender_open_id", "sender_user_id", "from_user_id",
+    "sender_id", "wechat_id"].mapM (pickText context ·)
+  return (values.find? (fun value => value.isBinary && value != b "")).getD nil
+
+private def originDirectOrIdentified (origin : Term) : KernelM Bool := do
+  if !origin.isMap then return false
+  let provider ← pickText origin "provider"
+  if provider == b "internal" then
+    return (← pickText origin "conversation_kind") == b "user_chat"
+  let context ← pickText origin "provider_context"
+  if !context.isMap then return false
+  let chatType ← pickText context "chat_type"
+  if ((provider == b "imessage" || provider == b "wechat") && chatType != b "group") ||
+      [b "private", b "p2p", b "c2c"].contains chatType then
+    return true
+  return (← originSender origin) != nil
+
+/-- The single `originThread` of an open, healthy activation that has not yet
+sent a reply or handed work to a Task, or `nil` otherwise. -/
+def activeUnansweredThread (state : Term) : KernelM Term := do
+  if ← waiting state then return nil
+  if ← pendingVisibleReply state then return nil
+  if !(← phaseClean state) then return nil
+  if ← repairExhausted state then return nil
+  if (← retryAt state) != nil then return nil
+  if (← failuresExhausted state) || (← terminalFailure state) || (← modelNotificationParked state) then
+    return nil
+  if ← modelGuardExhausted state then return nil
+  let lastAck := (← field state "last_ack_message_id").default (i 0)
+  let compacted := (← field state "compacted_through").default (i 0)
+  if ← greater compacted lastAck then return nil
+  let current ← (wrap (← field state "messages")).filterM (fun message => do
+    greater (← messageId message) lastAck)
+  let guidanceIds := current.filterMap (fun message =>
+    if dual message "role" == b "tool" && dual message "status" == b "guidance" then
+      let id := dual message "tool_call_id"
+      if id != nil then some id else none
+    else none)
+  let attempted ← current.anyM (fun message => do
+    if dual message "role" != b "assistant" then return false
+    (wrap (dual message "tool_calls")).anyM (fun call => reachingCall call guidanceIds))
+  if attempted then return nil
+  let users ← current.filterM (fun message => do
+    if (← pick message "role") != b "user" then return false
+    if (← access message (a "no_wake")) == a "true" then return false
+    if (← access message (b "no_wake")) == a "true" then return false
+    humanSourceOrigin (← pick message "trusted_origin"))
+  if users.isEmpty then return nil
+  if !(← users.allM (fun message => do originDirectOrIdentified (← pick message "trusted_origin"))) then
+    return nil
+  let threads ← users.mapM (fun message => do originThread (← pick message "trusted_origin"))
+  if threads.any (· == nil) || (uniq threads).length != 1 then return nil
+  let thread := threads.headD nil
+  let senders ← users.mapM (fun message => do originSender (← pick message "trusted_origin"))
+  if (uniq senders).length != 1 then return nil
+  let sender := senders.headD nil
+  let differentSender ← (← unackedItems state).anyM (fun item => do
+    if !(← humanSourceWakeable item) then return false
+    let payload ← stringify ((← pickText item "payload").default empty)
+    let origin ← access payload (b "trusted_origin")
+    if (← originThread origin) != thread then return false
+    return (← originSender origin) != sender)
+  if differentSender then return nil
+  return thread
 
 end VerifiedKernel.Session.StateQuery

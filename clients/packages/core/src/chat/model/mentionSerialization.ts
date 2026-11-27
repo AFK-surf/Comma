@@ -129,6 +129,51 @@ export function requestMentionsAsWords(text: string): string {
   return text.replaceAll(REQUEST_MENTION_PATTERN, (_full, name: string) => `@${name}`);
 }
 
+const SHARE_MENTION_HREF_PREFIX = "comma:share/";
+const SHARE_MENTION_PATTERN =
+  /\[([^\]\n]{1,200})\]\(comma:share\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\)/gu;
+
+/**
+ * A person of the account's People mentioned in the Router chat for a shared task, `[CatsJuice](comma:share/usr_1)`
+ * (their user id): the server starts one shared task with everyone named, the rest of the message its first message,
+ * instead of the Router's turn (`SalixIM.ShareMention`).
+ */
+export function shareMentionPlainText(name: string, userId: string) {
+  return `[${mentionLabel(name, userId)}](${SHARE_MENTION_HREF_PREFIX}${userId})`;
+}
+
+export interface ShareMentionMatch {
+  userId: string;
+  /** Offset just past the mention. */
+  end: number;
+  start: number;
+  /** The mention exactly as written. */
+  text: string;
+  name: string;
+}
+
+/** Every shared task mention in `text`, in order, with where it sits. */
+export function* shareMentionMatches(text: string): Generator<ShareMentionMatch> {
+  if (!text.includes(SHARE_MENTION_HREF_PREFIX)) return;
+  for (const match of text.matchAll(SHARE_MENTION_PATTERN)) {
+    const [full, name, userId] = match;
+    if (!name || !userId) continue;
+    yield {
+      userId,
+      end: match.index + full.length,
+      start: match.index,
+      text: full,
+      name,
+    };
+  }
+}
+
+/** A person's words as shown: each shared task mention as `@name`. */
+export function shareMentionsAsWords(text: string): string {
+  if (!text.includes(SHARE_MENTION_HREF_PREFIX)) return text;
+  return text.replaceAll(SHARE_MENTION_PATTERN, (_full, name: string) => `@${name}`);
+}
+
 const SLACK_MENTION_HOST = "https://app.slack.com/";
 const SLACK_PERSON_LINK = String.raw`\(https://app\.slack\.com/team/([A-Za-z0-9]{1,64})\)`;
 const SLACK_MENTION_PATTERN = new RegExp(

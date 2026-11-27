@@ -48,6 +48,19 @@ export const notificationSoundPath = resolve(
   appRoot,
   "../../packages/app/src/components/notifications/assets/notification.wav"
 );
+/**
+ * Why Comma asks for the location. macOS shows the location prompt only to a
+ * bundle that carries it, the packaged app and this bundle alike; without it
+ * the request does nothing.
+ */
+export const locationUsageDescription =
+  "Comma shares your location with an Agent when you allow its request.";
+/**
+ * Why Comma asks for the microphone. macOS ends an app that asks without it,
+ * so this bundle carries it as the packaged app does.
+ */
+export const microphoneUsageDescription =
+  "Comma uses your microphone for recording and for websites you allow, including meeting calls.";
 const launchServices =
   "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
@@ -116,6 +129,8 @@ export async function prepareDevElectronBundle(): Promise<DevElectronBundle> {
     bundleId,
     displayName,
     electronVersion,
+    locationUsageDescription,
+    microphoneUsageDescription,
     notificationSound,
     sourceApp,
     icon,
@@ -149,6 +164,9 @@ export async function prepareDevElectronBundle(): Promise<DevElectronBundle> {
     ["CFBundleIdentifier", bundleId],
     ["CFBundleName", displayName],
     ["CFBundleDisplayName", displayName],
+    ["NSLocationUsageDescription", locationUsageDescription],
+    ["NSLocationWhenInUseUsageDescription", locationUsageDescription],
+    ["NSMicrophoneUsageDescription", microphoneUsageDescription],
   ] as const) {
     run("plutil", ["-replace", key, "-string", value, infoPlist]);
   }

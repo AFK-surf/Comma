@@ -22,6 +22,10 @@ import "../../src/styles.css";
 
 // Browser-only fixture. Production entry points do not import it or set this bridge.
 const params = new URLSearchParams(location.search);
+if (params.get("theme") === "dark") {
+  document.documentElement.classList.add("dark");
+  document.documentElement.dataset.theme = "Dark mode";
+}
 const scene = params.get("scene") ?? "ready";
 const workspace = "workspace-visual";
 const listeners = new Set<(state: ComputeNodeState) => void>();
@@ -59,6 +63,22 @@ if (scene === "new")
     bindingRegistrationId: undefined,
     facets: { ...state.facets, connection: "disconnected" },
   };
+if (scene === "paused-error")
+  state = {
+    ...state,
+    status: "action_required",
+    desiredEnabled: true,
+    problem: "continuation_paused",
+    primaryAction: "continue",
+    currentRequest: { requestId: "setup-visual", kind: "configure" },
+    observationFresh: true,
+    facets: {
+      ...state.facets,
+      admission: "closed",
+      connection: "disconnected",
+      runtimeReadiness: "unavailable",
+    },
+  };
 if (scene === "offline")
   state = {
     ...state,
@@ -90,6 +110,23 @@ if (scene === "setup")
       outcome: "pending",
     },
     facets: { ...state.facets, connection: "connecting" },
+  };
+// The person uninstalled Agent VMM and kept its data. Main keeps the node's saved setup.
+if (scene === "host-uninstalled")
+  state = {
+    ...state,
+    status: "action_required",
+    problem: "host_uninstalled",
+    primaryAction: "update_host",
+    currentRequest: { requestId: "setup-visual", kind: "configure" },
+    observed: { ...state.observed, connector: "absent", host: "absent" },
+    facets: {
+      ...state.facets,
+      admission: "closed",
+      connection: "disconnected",
+      installationHealth: "absent",
+      runtimeReadiness: "unavailable",
+    },
   };
 let host: HostMaintenanceState = {
   installation: "installed",
@@ -131,6 +168,19 @@ if (scene === "maintenance-data-cleared")
       requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
       action: "uninstall",
       dataPolicy: "reset",
+      phase: "completed",
+      outcome: "succeeded",
+    },
+  };
+if (scene === "host-uninstalled")
+  host = {
+    installation: "not_installed",
+    selectedReleaseId: "agent-vmm-selected",
+    updateAvailable: false,
+    operation: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      action: "uninstall",
+      dataPolicy: "preserve",
       phase: "completed",
       outcome: "succeeded",
     },
@@ -337,60 +387,71 @@ Object.defineProperty(globalThis, "commaNative", {
         return host;
       },
       resumeHostMaintenance: async () => host,
-      localOverview: async () => ({
-        availability: "available",
-        ...(scene === "local-delete-unknown"
+      localOverview: async () =>
+        scene === "host-uninstalled"
           ? {
+              // Main reads nothing without a Host but still knows its own unfinished deletion.
+              availability: "unavailable" as const,
+              environments: [],
               disposal: {
-                outcome: "unknown",
+                outcome: "unknown" as const,
                 requestId: "00000000-0000-4000-8000-000000000099",
               },
             }
-          : {}),
-        collectedAt: "2026-10-05T13:00:00Z",
-        disk: {
-          usedBytes: "9019431321",
-          capacityBytes: "68719476736",
-          importReservationBytes: "0",
-          ...(scene === "disk-unknown"
-            ? {}
-            : {
-                imageRuntimeBytes: "6442450944",
-                buildCacheBytes: "2575931801",
-                privateBytes: "1048576",
-                otherBytes: "0",
-                breakdownSampledAt:
-                  scene === "disk-stale"
-                    ? "2026-10-05T12:59:00Z"
-                    : "2026-10-05T13:00:00Z",
-              }),
-        },
-        environments: [
-          {
-            key: "local-visual",
-            label: "local001",
-            origin: "local",
-            state: "observed_active",
-            privateDiskBytes: "65536",
-            sampledAt: "2026-10-05T13:00:00Z",
-            canReadWorkloads: false,
-            canOperate: false,
-            canDisposeLocal: true,
-          },
-          {
-            key: "local-other",
-            label: "remote02",
-            disposalScope: { key: "local-other", label: "other123" },
-            origin: "remote",
-            state: "unknown",
-            privateDiskBytes: "983040",
-            sampledAt: "2026-10-05T13:00:00Z",
-            canReadWorkloads: false,
-            canOperate: false,
-            canDisposeLocal: true,
-          },
-        ],
-      }),
+          : {
+              availability: "available",
+              ...(scene === "local-delete-unknown"
+                ? {
+                    disposal: {
+                      outcome: "unknown",
+                      requestId: "00000000-0000-4000-8000-000000000099",
+                    },
+                  }
+                : {}),
+              collectedAt: "2026-10-05T13:00:00Z",
+              disk: {
+                usedBytes: "9019431321",
+                capacityBytes: "68719476736",
+                importReservationBytes: "0",
+                ...(scene === "disk-unknown"
+                  ? {}
+                  : {
+                      imageRuntimeBytes: "6442450944",
+                      buildCacheBytes: "2575931801",
+                      privateBytes: "1048576",
+                      otherBytes: "0",
+                      breakdownSampledAt:
+                        scene === "disk-stale"
+                          ? "2026-10-05T12:59:00Z"
+                          : "2026-10-05T13:00:00Z",
+                    }),
+              },
+              environments: [
+                {
+                  key: "local-visual",
+                  label: "local001",
+                  origin: "local",
+                  state: "observed_active",
+                  privateDiskBytes: "65536",
+                  sampledAt: "2026-10-05T13:00:00Z",
+                  canReadWorkloads: false,
+                  canOperate: false,
+                  canDisposeLocal: true,
+                },
+                {
+                  key: "local-other",
+                  label: "remote02",
+                  disposalScope: { key: "local-other", label: "other123" },
+                  origin: "remote",
+                  state: "unknown",
+                  privateDiskBytes: "983040",
+                  sampledAt: "2026-10-05T13:00:00Z",
+                  canReadWorkloads: false,
+                  canOperate: false,
+                  canDisposeLocal: true,
+                },
+              ],
+            },
       localWorkloads: async () => ({
         workloads: [{ label: "Default Shell", state: "ready" }],
       }),
@@ -474,6 +535,9 @@ if (scene === "deletion-offline")
     },
     actions: { rename: true, delete: false, retry: false },
   };
+// Without a Host its connector is gone: the server reports this device's Workloads as waiting for the connection.
+if (scene === "host-uninstalled")
+  rows = rows.map((row) => ({ ...row, phase: "waiting_connection" }));
 if (["new", "setup"].includes(scene)) rows = [];
 const projection = () => ({
   workspace_name: "Default workspace",
@@ -483,7 +547,7 @@ const projection = () => ({
       id: "environment-visual",
       desired_state: state.desiredEnabled ? "ready" : "stopped",
       observed_state: "ready",
-      can_create: !["new", "offline", "readonly"].includes(scene),
+      can_create: !["new", "offline", "readonly", "host-uninstalled"].includes(scene),
       create_unavailable_reason:
         scene === "new" ? "node_not_enabled" : "node_unavailable",
     },
@@ -581,8 +645,8 @@ const sendCompute = () => {
       id,
       value: {
         workspace,
-        projection: projection(),
-        error: false,
+        projection: scene === "paused-error" ? null : projection(),
+        error: scene === "paused-error",
         observationPaused,
         creation: null,
         accepted: null,
@@ -640,34 +704,37 @@ const core = new CoreClient(
             value: {
               workspace,
               loading: false,
-              failed: false,
+              failed: scene === "paused-error",
               hasMore: false,
               checks: {},
               cloud: null,
-              devices: [
-                {
-                  device_id: "device-visual",
-                  name: "Studio Mac",
-                  status: "connected",
-                  allows_operations: true,
-                  os: "darwin",
-                  system_info: {
-                    cpu_model: "Apple M5 Max",
-                    memory_total: 137438953472,
-                    client_source: "comma_staging",
-                  },
-                  device_runtimes: [
-                    {
-                      device_runtime_id: "codex-visual",
-                      provider: "codex",
-                      status: "ready",
-                      fresh: true,
-                      version: "1.0",
-                      auth: { mode: "chatgpt" },
-                    },
-                  ],
-                },
-              ],
+              devices:
+                scene === "paused-error"
+                  ? []
+                  : [
+                      {
+                        device_id: "device-visual",
+                        name: "Studio Mac",
+                        status: "connected",
+                        allows_operations: true,
+                        os: "darwin",
+                        system_info: {
+                          cpu_model: "Apple M5 Max",
+                          memory_total: 137438953472,
+                          client_source: "comma_staging",
+                        },
+                        device_runtimes: [
+                          {
+                            device_runtime_id: "codex-visual",
+                            provider: "codex",
+                            status: "ready",
+                            fresh: true,
+                            version: "1.0",
+                            auth: { mode: "chatgpt" },
+                          },
+                        ],
+                      },
+                    ],
             },
           });
         } else if (message.unsubscribe) computeSubscribers.delete(message.id);

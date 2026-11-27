@@ -1240,6 +1240,173 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
     end
   end
 
+  describe "still.fail chats" do
+    defmodule FakeStillfailPort do
+      @behaviour SalixIM.Ports.StationHostedTasks
+
+      @impl true
+      def read(_scope, _station_id, thread, opts) do
+        case SystemsRuntime.get_env(:comma_web, {:stillfail_preview_read, thread}) do
+          fun when is_function(fun, 1) -> fun.(opts)
+          response -> response || {:error, :device_offline}
+        end
+      end
+
+      @impl true
+      def say(_scope, _station_id, _thread, _text, _key, _requester, _opts \\ %{}),
+        do: {:error, :not_supported}
+
+      @impl true
+      def workspace_names(_group_id),
+        do: {:ok, %{"dev-sf-1" => "pengx17"}}
+    end
+
+    test "reads recent messages for owner, degrades gracefully when offline, and rejects non-owners" do
+      owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
+      prev_port = SystemsRuntime.get_env(:salix_im, :station_hosted_tasks_mod)
+      SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, FakeStillfailPort)
+
+      suffix = Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
+      tenant_id = "ten-sf-#{suffix}"
+      group_id = "grp-sf-#{suffix}"
+
+      workspace = %{
+        "id" => "wsp-sf-#{suffix}",
+        "default_group_id" => group_id,
+        "salix_tenant_id" => tenant_id,
+        "owner_user_id" => "usr-owner"
+      }
+
+      {:ok, station} = SalixStore.StillfailStations.ensure(tenant_id, group_id, "dev-sf-1")
+
+      on_exit(fn ->
+        if is_nil(prev_port),
+          do: SystemsRuntime.delete_env(:salix_im, :station_hosted_tasks_mod),
+          else: SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, prev_port)
+
+        SystemsRuntime.delete_env(:comma_web, {:stillfail_preview_read, "chat:c-online"})
+        SystemsRuntime.delete_env(:comma_web, {:stillfail_preview_read, "chat:c-offline"})
+        SalixStore.StationTaskIndex.delete_station(station.id)
+        Ecto.Adapters.SQL.Sandbox.stop_owner(owner)
+      end)
+
+      online_url = "https://app.youdid.wtf/o/ws/#{station.id}/chat%3Ac-online"
+      offline_url = "https://app.youdid.wtf/o/ws/#{station.id}/chat%3Ac-offline"
+
+      assert {:ok, _} =
+               SalixStore.StationTaskIndex.apply_page(station, "dev-sf-1", %{
+                 "epoch" => "e1",
+                 "since" => 0,
+                 "reset" => true,
+                 "rows" => [
+                   %{
+                     "thread" => "chat:c-online",
+                     "rev" => 1,
+                     "title" => "Duo monoid 发热排查",
+                     "status" => "needs_review",
+                     "created_by" => "owner@comma.test",
+                     "created_at" => 1_000,
+                     "last_activity_at" => 1_795_580_000_000,
+                     "attention" => "need",
+                     "waits_for" => ["owner@comma.test"],
+                     "labels" => ["card:options"],
+                     "note" => "决定是否重签重装",
+                     "url" => online_url
+                   },
+                   %{
+                     "thread" => "chat:c-offline",
+                     "rev" => 2,
+                     "title" => "Offline station chat",
+                     "status" => "in_progress",
+                     "created_by" => "owner@comma.test",
+                     "created_at" => 1_000,
+                     "last_activity_at" => 1_795_580_005_000,
+                     "note" => "Waiting on build",
+                     "url" => offline_url
+                   }
+                 ]
+               })
+
+      SystemsRuntime.put_env(
+        :comma_web,
+        {:stillfail_preview_read, "chat:c-online"},
+        {:ok,
+         %{
+           "through" => 2,
+           "messages" => [
+             %{
+               "seq" => 1,
+               "author_kind" => "person",
+               "author" => "owner@comma.test",
+               "text" => "帮我排查一下手机发烫的原因",
+               "at" => 1_795_579_900_000
+             },
+             %{
+               "seq" => 2,
+               "author_kind" => "agent",
+               "author" => "agent",
+               "text" => "定位到轮询间隔太短，已修完并通过单测。",
+               "at" => 1_795_580_000_000,
+               "card" => %{
+                 "type" => "options",
+                 "options" => [
+                   %{"label" => "重签并安装"},
+                   %{"label" => "先不装"}
+                 ]
+               }
+             }
+           ]
+         }}
+      )
+
+      SystemsRuntime.put_env(
+        :comma_web,
+        {:stillfail_preview_read, "chat:c-offline"},
+        {:error, :device_offline}
+      )
+
+      assert {:ok, preview} =
+               RecommendationLinkPreview.preview_connected(
+                 workspace,
+                 online_url,
+                 nil,
+                 "usr-owner"
+               )
+
+      assert preview["kind"] == "stillfail_chat"
+      assert preview["title"] == "Duo monoid 发热排查"
+      assert preview["stationName"] == "pengx17"
+      assert preview["status"] == "need"
+      assert preview["note"] == "决定是否重签重装"
+      assert preview["offline"] == false
+      assert length(preview["messages"]) == 2
+      assert List.last(preview["messages"])["card"]["options"] == ["重签并安装", "先不装"]
+
+      assert {:ok, offline_preview} =
+               RecommendationLinkPreview.preview_connected(
+                 workspace,
+                 offline_url,
+                 nil,
+                 "usr-owner"
+               )
+
+      assert offline_preview["kind"] == "stillfail_chat"
+      assert offline_preview["status"] == "running"
+      assert offline_preview["offline"] == true
+      assert offline_preview["messages"] == []
+
+      assert {:error, :not_found} =
+               RecommendationLinkPreview.preview_connected(
+                 workspace,
+                 online_url,
+                 nil,
+                 "other-user"
+               )
+
+      refute CommaWeb.WebLinkPreview.public_page?(online_url)
+    end
+  end
+
   defp workspace,
     do: %{"id" => "wsp-1", "default_group_id" => "grp-1", "salix_tenant_id" => "ten-1"}
 

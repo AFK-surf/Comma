@@ -31,6 +31,8 @@ export type ScreenStreamInput =
   | { t: "device"; name: "volume_up" | "volume_down" | "rotate" }
   // A foldable's hinge.
   | { t: "pose"; name: "closed" | "book" | "open" }
+  /** The picture as the panel draws it (`panel`), or turned upright: a foldable's view, drawn in 3D or flat. */
+  | { t: "frames"; panel: boolean }
   // A button of a simulator's case by its HID usage, as it goes down and comes up (screenCase.ts).
   | { t: "button"; page: number; usage: number; down: boolean };
 

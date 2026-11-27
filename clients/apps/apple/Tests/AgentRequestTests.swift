@@ -29,8 +29,23 @@ final class AgentRequestTests: XCTestCase {
         let read = try XCTUnwrap(AgentRequest(secret))
         XCTAssertEqual(read.input?.kind, .secret)
         XCTAssertEqual(read.secretName, "OpenAI API Key")
+        // A secret is named for its service: its alias picks the logo.
+        XCTAssertEqual(read.markKey, "openai")
         // Only an https page opens.
         XCTAssertNil(read.input?.helpURL)
+
+        let fields: NSDictionary = [
+            "id": "cap-2", "type": "oauth_authorization", "status": "pending",
+            "oauth": ["provider": "secret", "alias": "lumen-erp", "reason": "It is needed.",
+                      "input": ["kind": "secret", "fields": [
+                          ["name": "app_key", "label": "App Key", "secret": false, "optional": false],
+                          ["name": "token", "label": "Token", "secret": true, "optional": true],
+                      ]]],
+        ]
+        XCTAssertEqual(try XCTUnwrap(AgentRequest(fields)).input?.fields, [
+            .init(name: "app_key", label: "App Key", secret: false, optional: false),
+            .init(name: "token", label: "Token", secret: true, optional: true),
+        ])
     }
 
     func testACardSitsUnderTheReplyToItsMessageAndAWaitingOneOnTheNewestTurn() {

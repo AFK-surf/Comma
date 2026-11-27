@@ -28,10 +28,10 @@ import surf.comma.android.ui.widget.GlassShape
 import surf.comma.android.ui.widget.LiquidGlass
 
 /** The app's tabs, in tab-bar order. */
-enum class AppTab { HOME, INBOX, APPS, SETTINGS }
+enum class AppTab { HOME, INBOX, PEOPLE, SETTINGS }
 
 /**
- * The floating tab bar, as the iOS app draws it: one glass capsule holding Home, Inbox, Apps and the member's
+ * The floating tab bar, as the iOS app draws it: one glass capsule holding Home, Inbox, People and the member's
  * avatar for Settings, glyphs only, with the selected tab on a grey pill that glides between them, and
  * beside it its own glass circle with Comma's mark, which opens the router chat. Inbox carries a dot while a row
  * it shows is unread and Settings while something there needs the member; the circle counts router replies not
@@ -50,7 +50,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
     private val pillX = DesignSpring(pill, DynamicAnimation.TRANSLATION_X, DesignMotion.springSpatial)
     private val home = item(R.drawable.ic_tab_home, R.string.shell_tab_home, R.id.tab_home)
     private val inbox = item(R.drawable.ic_tab_inbox, R.string.shell_tab_inbox, R.id.tab_inbox)
-    private val apps = item(R.drawable.ic_tab_apps, R.string.shell_tab_apps, R.id.tab_apps)
+    private val people = item(R.drawable.ic_tab_people_group, R.string.shell_tab_people, R.id.tab_people)
     private val settings = FrameLayout(context).apply {
         id = R.id.tab_settings
         contentDescription = context.getString(R.string.shell_tab_settings)
@@ -68,6 +68,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
         glass(fill = R.color.token_glass_frosted, lens = true)
     }
     private val mark = context.glyph(R.drawable.ic_cue_mark, R.color.token_text_primary)
+    private var routerHidden = false
     private val badge = TextView(context).apply {
         DesignTypography.applyTo(this, DesignTypography.Level.MICRO, DesignFonts.semibold)
         setTextColor(android.graphics.Color.WHITE)
@@ -104,7 +105,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
     var backdrop: ((android.graphics.Canvas) -> Unit)? = null
     private var breathing: ObjectAnimator? = null
     private var selected = AppTab.HOME
-    private val items get() = listOf(home, inbox, apps, settings)
+    private val items get() = listOf(home, inbox, people, settings)
 
     init {
         clipChildren = false
@@ -120,7 +121,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
             dot.translationY = -context.dp(13).toFloat()
         }
         addView(capsule, LayoutParams(0, context.dp(HEIGHT_DP)))
-        router.addView(mark, LayoutParams(context.dp(26), context.dp(26), Gravity.CENTER))
+        router.addView(mark, LayoutParams(context.dp(MARK_DP), context.dp(MARK_DP), Gravity.CENTER))
         router.addView(badge, LayoutParams(LayoutParams.WRAP_CONTENT, context.dp(18), Gravity.TOP or Gravity.END).apply {
             topMargin = context.dp(4); marginEnd = context.dp(4)
         })
@@ -146,7 +147,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
         }
         home.setOnClickListener { choose(AppTab.HOME) }
         inbox.setOnClickListener { choose(AppTab.INBOX) }
-        apps.setOnClickListener { choose(AppTab.APPS) }
+        people.setOnClickListener { choose(AppTab.PEOPLE) }
         settings.setOnClickListener { choose(AppTab.SETTINGS) }
         router.setOnClickListener { it.selectionTick(); onRouter?.invoke() }
         settings.tactile(0.9f)
@@ -282,6 +283,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
     private fun applySelection(animate: Boolean) {
         home.icon.setImageResource(if (selected == AppTab.HOME) R.drawable.ic_tab_home_fill else R.drawable.ic_tab_home)
         inbox.icon.setImageResource(if (selected == AppTab.INBOX) R.drawable.ic_tab_inbox_fill else R.drawable.ic_tab_inbox)
+        people.icon.setImageResource(if (selected == AppTab.PEOPLE) R.drawable.ic_tab_people_group_fill else R.drawable.ic_tab_people_group)
         items.forEach { it.isSelected = false }
         items[index(selected)].isSelected = true
         val itemWidth = barItemWidth()
@@ -303,7 +305,7 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
     private fun index(tab: AppTab) = when (tab) {
         AppTab.HOME -> 0
         AppTab.INBOX -> 1
-        AppTab.APPS -> 2
+        AppTab.PEOPLE -> 2
         AppTab.SETTINGS -> 3
     }
 
@@ -354,15 +356,31 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
     }
 
     /** The capsule and the circle in this bar's coordinates, with their corner radii: what the page frosts under them. */
-    fun frostShapes(): List<GlassShape> = listOf(
+    fun frostShapes(): List<GlassShape> = listOfNotNull(
         GlassShape(android.graphics.Rect(capsule.left, capsule.top, capsule.right, capsule.bottom), capsule.height / 2f),
-        GlassShape(android.graphics.Rect(router.left, router.top, router.right, router.bottom), router.height / 2f),
+        if (routerHidden) null else GlassShape(android.graphics.Rect(router.left, router.top, router.right, router.bottom), router.height / 2f),
     )
 
-    /** The router circle on screen, where the router chat zooms out of and back into. */
+    /**
+     * The router circle in the window, where the router chat comes out of and goes back into: where it is laid out,
+     * whatever its press does to it.
+     */
     fun routerBounds(into: IntArray): Pair<Int, Int> {
-        router.getLocationInWindow(into)
+        getLocationInWindow(into)
+        into[0] += router.left
+        into[1] += router.top
         return router.width to router.height
+    }
+
+    /**
+     * Takes the circle and its frost away while the router chat is out of it or on its way, as the chat's shape stands
+     * in for it. Hidden, it still takes a tap, so the chat comes back out while it is still closing. The caller
+     * frosts the page again ([frostShapes]).
+     */
+    fun setRouterHidden(hidden: Boolean) {
+        if (hidden == routerHidden) return
+        routerHidden = hidden
+        router.alpha = if (hidden) 0f else 1f
     }
 
     private fun item(icon: Int, label: Int, id: Int) = TabItem(context, icon).apply {
@@ -383,6 +401,8 @@ class ShellTabBar(context: Context) : FrameLayout(context) {
 
     companion object {
         const val HEIGHT_DP = 60
+        /** Comma's mark in the router circle. */
+        const val MARK_DP = 26
         const val GAP_DP = 10
         const val PILL_DP = 52
         const val PILL_INSET_DP = 4

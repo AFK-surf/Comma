@@ -73,6 +73,7 @@ export function deviceCapabilities(
     buttons: BUTTONS.filter((button) => buttons.includes(button)),
     ...(first ? { shapes: [first, ...rest] } : {}),
     ...(poses?.length ? { poses } : {}),
+    ...(screen.postures?.length ? { postures: screen.postures } : {}),
     ...(chrome && screen.capabilities.chrome?.length
       ? { chrome: { ...chrome, panels: screen.capabilities.chrome } }
       : {}),
@@ -81,13 +82,15 @@ export function deviceCapabilities(
 
 /**
  * Screen streams of one computer over the mesh, through the core. `apps` names the apps an app stream shows; `screen`:
- * one of its devices instead of its own screen.
+ * one of its devices instead of its own screen; `task`: the Task whose sandbox the computer is, which each view asks to
+ * show its screen (`devices.openScreenView`).
  */
 export function useDeviceScreenSource(
   workspace: string,
   device: string,
   apps: readonly string[],
-  screen?: ListedScreen | undefined
+  screen?: ListedScreen | undefined,
+  task?: string | undefined
 ): ScreenStreamSource {
   const call = useCall();
   const core = useCore();
@@ -133,6 +136,10 @@ export function useDeviceScreenSource(
               device,
               apps: appsKey ? appsKey.split("\n") : [],
               ...(screen ? { instance: screen.instance } : {}),
+              // (a device with postures is drawn in 3D, turned: its panel's own picture; drawn flat, the stage asks it
+              // turned upright again, `frames`)
+              ...(screen?.postures?.length ? { panel: true } : {}),
+              ...(task ? { task } : {}),
               ...request,
             },
             onEvent as (value: unknown) => void,
@@ -146,6 +153,6 @@ export function useDeviceScreenSource(
         },
       },
     }),
-    [appsKey, call, core, device, screen, workspace]
+    [appsKey, call, core, device, screen, task, workspace]
   );
 }

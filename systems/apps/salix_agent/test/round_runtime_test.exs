@@ -1745,7 +1745,7 @@ defmodule SalixAgent.RoundRuntimeTest do
         &(&1[:content_kind] == "model_context")
       )
 
-    assert length(context_messages) == 2
+    assert length(context_messages) == 1
     assert Enum.all?(context_messages, &(&1[:role] == "runtime"))
     roles = Enum.map(conversation_messages, & &1[:role])
     assert roles == ["user", "assistant", "tool", "runtime", "assistant"]

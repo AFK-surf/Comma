@@ -3,7 +3,7 @@ import { Checkbox } from "@comma/ui/components/checkbox";
 import { Dialog } from "@comma/ui/components/dialog";
 import { Dropdown } from "@comma/ui/components/dropdown";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
-import { useRef, useState, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 import type {
   BftMeetingCalendarSource,
   BftMeetingConnect,
@@ -134,7 +134,15 @@ export function MeetingsPage({
           ? api.meetingHistory(org, project, cursor, signal)
           : api.meetings(org, project, signal)
   );
-  const [title, description] = meta[view];
+  const [title, baseDescription] = meta[view];
+  const historyProvider =
+    view === "past" && resource.state === "ready" && resource.data
+      ? (resource.data as { provider?: string | null }).provider
+      : null;
+  const description =
+    historyProvider === "feishu" || historyProvider === "lark"
+      ? t.larkPastDescription
+      : baseDescription;
 
   return (
     <SettingsPage
@@ -209,8 +217,12 @@ function Upcoming({
 }) {
   const [open, setOpen] = useState<BftMeetingsOverview["events"][number] | null>(null);
   const { settings, events } = overview;
+  // Members' calendars send each reminder by DM, not to the channel.
+  const members = settings.calendar_scope === "members";
   const status = (event: { status: BftMeetingStatus }) =>
-    t.statuses[event.status] ?? ["", ""];
+    (members && event.status === "ready"
+      ? t.membersReady
+      : t.statuses[event.status]) ?? ["", ""];
 
   return (
     <div className="bft-settings-grid">
@@ -219,14 +231,10 @@ function Upcoming({
         description={t.localTime}
         title={t.next24}
       >
-        {settings.calendar_scope === "members" ? (
-          <p className="bft-quiet bft-quiet-inline">
-            {t.membersUpcoming(overview.member_calendars ?? 0)}
-          </p>
-        ) : events.length === 0 ? (
+        {events.length === 0 ? (
           <div className="bft-quiet bft-quiet-inline">
             <p>{t.emptyTitle}</p>
-            <p>{t.emptyBody}</p>
+            <p>{members ? t.membersEmptyBody : t.emptyBody}</p>
           </div>
         ) : (
           <ul className="bft-list">
@@ -240,7 +248,13 @@ function Upcoming({
                   <time>{formatDateTime(event.start_ms)}</time>
                   <span className="bft-setting-row-main">
                     <span className="bft-plugin-name">{event.title ?? t.untitled}</span>
-                    <span className="bft-plugin-description">{status(event)[1]}</span>
+                    <span className="bft-plugin-description">
+                      {members && event.recipients.length ? (
+                        <Recipients limit={2} recipients={event.recipients} />
+                      ) : (
+                        status(event)[1]
+                      )}
+                    </span>
                   </span>
                   <span className="bft-status" data-tone={tones[event.status]}>
                     {status(event)[0]}
@@ -255,7 +269,9 @@ function Upcoming({
         ) ? (
           <p className="bft-notice">{t.healthIncomplete}</p>
         ) : null}
-        {overview.truncated ? <p className="bft-notice">{t.truncated}</p> : null}
+        {overview.truncated ? (
+          <p className="bft-notice">{members ? t.membersTruncated : t.truncated}</p>
+        ) : null}
       </FormSection>
       <FormSection title={t.statusTitle}>
         <p className="bft-status" data-tone={settings.enabled ? "ok" : undefined}>
@@ -263,30 +279,44 @@ function Upcoming({
         </p>
         {settings.enabled ? (
           <dl className="bft-kv">
-            {settings.channel || settings.channel_id ? (
+            {/* Members' calendars use the channel only for join notices and minutes. */}
+            {(settings.channel || settings.channel_id) &&
+            (!members || settings.mode === "join") ? (
               <div>
-                <dt>{t.channel}</dt>
+                <dt>
+                  {settings.provider === "feishu" || settings.provider === "lark"
+                    ? t.chatLabel
+                    : t.channel}
+                </dt>
                 <dd>
-                  #{(settings.channel || settings.channel_id || "").replace(/^#/, "")}
+                  {settings.provider === "feishu" || settings.provider === "lark"
+                    ? settings.channel || settings.channel_id || ""
+                    : `#${(settings.channel || settings.channel_id || "").replace(/^#/, "")}`}
                 </dd>
               </div>
             ) : null}
             <div>
               <dt>{t.calendars}</dt>
               <dd>
-                {settings.calendar_selections
-                  .map((calendar) => calendar.name ?? calendar.calendar_id)
-                  .join(", ")}
+                {members
+                  ? (settings.calendar_source === "feishu_lark"
+                      ? t.larkMemberAccounts
+                      : t.memberAccounts)(overview.member_calendars ?? 0)
+                  : settings.calendar_selections
+                      .map((calendar) => calendar.name ?? calendar.calendar_id)
+                      .join(", ")}
               </dd>
             </div>
             <div>
               <dt>{t.lead}</dt>
               <dd>{t.minutesBefore(settings.preparation_lead_minutes ?? 10)}</dd>
             </div>
-            <div>
-              <dt>{t.scope}</dt>
-              <dd>{settings.series.length ? t.scopeSeries : t.scopeAll}</dd>
-            </div>
+            {members ? null : (
+              <div>
+                <dt>{t.scope}</dt>
+                <dd>{settings.series.length ? t.scopeSeries : t.scopeAll}</dd>
+              </div>
+            )}
           </dl>
         ) : (
           <p className="bft-quiet bft-quiet-inline">{t.notConfigured}</p>
@@ -302,10 +332,52 @@ function Upcoming({
           org={org}
           plan={open.meeting_plan_id}
           project={project}
+          recipients={members ? open.recipients : []}
           title={open.title ?? t.untitled}
         />
       ) : null}
     </div>
+  );
+}
+
+type MeetingRecipient = BftMeetingsOverview["events"][number]["recipients"][number];
+
+/**
+ * Members' reminder recipients. One that Slack cannot find gets no DM and is
+ * marked. With a limit, marked ones are listed first so the mark stays visible.
+ */
+function Recipients({
+  recipients,
+  limit,
+}: {
+  recipients: readonly MeetingRecipient[];
+  limit?: number;
+}) {
+  const shown =
+    limit === undefined
+      ? recipients
+      : recipients
+          .toSorted((a, b) => Number(b.slack_unmatched) - Number(a.slack_unmatched))
+          .slice(0, limit);
+  return (
+    <>
+      {limit === undefined ? null : t.recipientsTo}
+      {shown.map((recipient, index) => (
+        <Fragment key={recipient.email}>
+          {index ? t.recipientsSeparator : null}
+          {recipient.email}
+          {recipient.slack_unmatched ? (
+            <>
+              {" "}
+              <span className="bft-recipient-unmatched">{t.notInSlack}</span>
+            </>
+          ) : null}
+        </Fragment>
+      ))}
+      {limit !== undefined && recipients.length > limit
+        ? ` +${recipients.length - limit}`
+        : null}
+    </>
   );
 }
 
@@ -315,6 +387,7 @@ function ReportDialog({
   plan,
   title,
   description,
+  recipients,
   onClose,
 }: {
   org: string;
@@ -322,6 +395,7 @@ function ReportDialog({
   plan: string;
   title: string;
   description: string;
+  recipients: readonly MeetingRecipient[];
   onClose: () => void;
 }) {
   const api = useApi();
@@ -330,6 +404,14 @@ function ReportDialog({
   );
   return (
     <DetailDialog description={description} onClose={onClose} title={title}>
+      {recipients.length ? (
+        <>
+          <h3 className="bft-field-label">{t.recipientsTitle}</h3>
+          <p className="bft-report">
+            <Recipients recipients={recipients} />
+          </p>
+        </>
+      ) : null}
       <h3 className="bft-field-label">{t.sharedPreparation}</h3>
       {report.state === "loading" ? (
         <Skeleton height={14} />
@@ -388,6 +470,7 @@ function History({
 }: {
   history: {
     channel: string | null;
+    provider?: string | null;
     meetings: BftMeetingRecord[];
     next_cursor: string | null;
   };
@@ -395,21 +478,34 @@ function History({
   onPage: (cursors: string[]) => void;
 }) {
   const [open, setOpen] = useState<BftMeetingRecord | null>(null);
+  const lark = history.provider === "feishu" || history.provider === "lark";
+  const channelLabel = history.channel
+    ? lark
+      ? history.channel
+      : `#${history.channel}`
+    : null;
+  const canvasLabel = lark ? t.larkCanvas : t.canvas;
   const recording = (record: BftMeetingRecord) =>
     t.recordings[record.recording_status ?? "none"] ?? t.recordings.none ?? ["", ""];
   const facts = (record: BftMeetingRecord) =>
     [
       t.recordStatuses[record.status ?? ""],
       recording(record)[0],
-      record.canvas_url && t.canvas,
+      record.canvas_url && canvasLabel,
     ]
       .filter(Boolean)
       .join(" · ");
 
   return (
     <FormSection
-      description={history.channel ? t.historyChannel(history.channel) : undefined}
-      title={history.channel ? `#${history.channel}` : t.pastTitle}
+      description={
+        history.channel
+          ? lark
+            ? t.larkHistoryChannel(history.channel)
+            : t.historyChannel(history.channel)
+          : undefined
+      }
+      title={channelLabel ?? t.pastTitle}
     >
       {history.meetings.length === 0 ? (
         <p className="bft-quiet bft-quiet-inline">{t.historyEmpty}</p>
@@ -453,7 +549,7 @@ function History({
       {open ? (
         <DetailDialog
           description={[
-            history.channel && `#${history.channel}`,
+            channelLabel,
             t.recordStatuses[open.status ?? ""],
             formatDateTime(open.start_ms),
           ]
@@ -472,13 +568,13 @@ function History({
                   rel="noopener noreferrer"
                   target="_blank"
                 >
-                  {t.openRecording}
+                  {lark ? t.larkOpenRecording : t.openRecording}
                 </a>
               ) : (
                 recording(open)[1]
               )}
             </dd>
-            <dt>{t.canvas}</dt>
+            <dt>{canvasLabel}</dt>
             <dd>
               {open.canvas_url ? (
                 <a
@@ -487,14 +583,18 @@ function History({
                   rel="noopener noreferrer"
                   target="_blank"
                 >
-                  {t.openCanvas}
+                  {lark ? t.larkOpenCanvas : t.openCanvas}
                 </a>
+              ) : lark ? (
+                t.larkNoCanvas
               ) : (
                 t.noCanvas
               )}
             </dd>
           </dl>
-          <p className="bft-form-section-note">{t.linkAccess}</p>
+          <p className="bft-form-section-note">
+            {lark ? t.larkLinkAccess : t.linkAccess}
+          </p>
           {open.thread_url ? (
             <a
               className="bft-link"
@@ -502,7 +602,7 @@ function History({
               rel="noopener noreferrer"
               target="_blank"
             >
-              {t.openThread}
+              {lark ? t.larkOpenThread : t.openThread}
             </a>
           ) : null}
         </DetailDialog>
@@ -900,10 +1000,18 @@ function SettingsForm({
 
   const submit = () => {
     const delivery = draft.organizer ? ("organizer" as const) : ("channel" as const);
-    if (lark && !members && draft.channelNotice && !draft.channel)
-      return setInvalid(t.needChat);
-    if (lark && !members && !draft.channelNotice && !draft.personal)
+    if (lark && !members && !draft.channelNotice && !draft.personal && !draft.autojoin)
       return setInvalid(t.needDelivery);
+    if (lark && !draft.channel) {
+      if (members && draft.autojoin && !draft.organizer)
+        return setInvalid(t.needChatMembers);
+      if (!members && draft.autojoin && draft.channelNotice)
+        return setInvalid(t.needChatJoin);
+      if (!members && draft.autojoin && !draft.organizer)
+        return setInvalid(t.needChatMembers);
+      if (!members && !draft.autojoin && draft.channelNotice)
+        return setInvalid(t.needChat);
+    }
     // A Slack preparation without a team channel needs the same choices as
     // the server's CalendarConfiguration.team_channel_optional?/1.
     if (!lark && !draft.channel) {

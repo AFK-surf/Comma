@@ -12,11 +12,13 @@ defmodule SalixAgent.Tools.MeetingPreparation do
 
   Preparation serves this meeting's purpose and cadence. Its scope is the period since the latest completed occurrence ended,
   unless the meeting defines another period. The prior date and commitments need original timestamps and the full human transcript or exchange.
-  Without a prior occurrence, the agenda and available recent evidence define the scope.
+  Intervening completed notice-channel meetings across titles belong to this timeline: scan leads first, read originals when topics or decisions
+  overlap, and supersede or drop already cleared items. Without a prior occurrence, the agenda, recent_meetings, and recent evidence define scope.
   Current preparation tools determine source access. A named integration or link grants no additional access.
 
   Relevant prior follow-ups and new progress can both matter. Records about the same work form one item.
   An active thread alone is not new work. Later requests are not prior commitments.
+  Expand relevant `unexpanded_threads` and continuation pages (`has_more`) before treating an outcome as unrecorded.
   Proposals, work in progress, and completed results are distinct. A PR does not prove merge or deployment.
   Missing evidence establishes neither failure nor completion. A supported commitment without a later result has an unrecorded outcome.
   Ownership, deadlines, status, and homework must not be invented. Speaking does not establish ownership.
@@ -99,7 +101,7 @@ defmodule SalixAgent.Tools.MeetingPreparation do
        "Submit private preparation for one fixed recipient, subject to evidence review before saving. Explicit original-source refs in ifc.sources are required even with IFC off. An empty draft can record no supported advice. Review does not widen source audiences or extend the deadline. Saving is not delivery. Never copy this body into shared reports, Calendar, or Task checkpoints. Help defines the review and report contract.",
        &__MODULE__.publish_personal_report/2, @auto_wait_seconds, @research_roles},
       {"meeting.preparation.read_shared_source",
-       "Read one bounded page of original messages from a public, non-shared Slack channel in this meeting's workspace, or on Feishu/Lark from the notice chat or a public internal group (channel is its chat_id; operations history and replies with thread_id).\n\nOn Slack specify channel and operation: history, replies (also ts), search (also query), or file (also file_id) for a text attachment shared in that channel. Files are bounded to 256 KB. The server fixes the connection, limits pages to 30 messages, and checks public visibility before and after reading. Private channels, DMs and workspace memory are unavailable. Follow cursor for complete originals. Declare this result's src: reference in ifc.sources when saving personal advice.",
+       "Read one bounded page of original messages, recent completed meeting pointers, or a text file from a public, non-shared Slack channel in this meeting's workspace, or on Feishu/Lark from the notice chat or a public internal group (channel is its chat_id; operations recent_meetings, history, and replies with thread_id).\n\nOn Slack specify channel and operation: recent_meetings, history, replies (also ts), search (also query), or file (also file_id) for a text attachment shared in that channel. Files are bounded to 256 KB. The server fixes the connection, limits pages to 30 messages, and checks public visibility before and after reading. Private channels, DMs and workspace memory are unavailable. Follow cursor for complete originals. Declare this result's src: reference in ifc.sources when saving personal advice.",
        &__MODULE__.read_shared_source/2, @auto_wait_seconds, @research_roles},
       {"meeting.preparation.set_personal_reminders",
        "Enable or disable personal preparation reminders for the current Slack, Feishu or Lark requester only. Use for their explicit preference request. This does not enroll new meetings or affect shared reminders. The requester identity comes from the signed current input, never a name in text.",

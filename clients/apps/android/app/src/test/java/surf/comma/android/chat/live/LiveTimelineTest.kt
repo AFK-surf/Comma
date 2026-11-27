@@ -352,6 +352,26 @@ class LiveTimelineTest {
         assertNull(rows.last().attachment!!.file.source)
     }
 
+    @Test fun `multiple images in one message group into one row with non-image attachments below`() {
+        val ref = JSONObject().put("kind", "blob").put("uuid", "a".repeat(32)).put("hash", "b".repeat(64)).put("size", 200)
+        val entry = canonical(5, "agent", text("Here"),
+            block("image") { put("file_name", "img1.png"); put("mime_type", "image/png"); put("blob_ref", ref); put("width", 800); put("height", 600) },
+            block("file") { put("file_name", "spec.pdf"); put("mime_type", "application/pdf"); put("blob_ref", ref) },
+            block("image") { put("file_name", "img2.png"); put("mime_type", "image/png"); put("blob_ref", ref); put("width", 600); put("height", 800) },
+            block("image") { put("file_name", "img3.png"); put("mime_type", "image/png"); put("blob_ref", ref); put("width", 900); put("height", 900) },
+        )
+        val rows = mapConversation(state(entry)).rows
+        assertEquals(3, rows.size) // text + 1 image group row + 1 file row below
+        assertEquals("Here", rows[0].text)
+        assertEquals(LiveRowKinds.ATTACHMENT, rows[1].cardKind)
+        assertEquals(3, rows[1].attachments.size)
+        assertEquals(listOf("img1.png", "img2.png", "img3.png"), rows[1].attachments.map { it.file.displayName })
+        assertEquals(listOf(0, 1, 2), rows[1].attachments.map { it.galleryIndex })
+        assertEquals(LiveRowKinds.ATTACHMENT, rows[2].cardKind)
+        assertEquals("spec.pdf", rows[2].attachment!!.file.displayName)
+        assertTrue(rows[2].attachments.isEmpty())
+    }
+
     @Test fun `interactive content without a summary says it is unavailable`() {
         val rows = mapConversation(state(canonical(2, "agent", block("dynamic_ui") { put("ui_ref", "u1") }))).rows
         assertEquals("交互内容暂不可用", rows.single().text)

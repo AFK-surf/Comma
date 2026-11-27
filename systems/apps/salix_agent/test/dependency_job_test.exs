@@ -360,6 +360,37 @@ defmodule SalixAgent.DependencyJobTest do
     end
   end
 
+  test "handoff admission uses independent per-tenant and global caps without starving foreground :llm" do
+    prev_handoff_global = SystemsRuntime.get_env(:salix_agent, :living_handoff_max_children)
+
+    prev_handoff_tenant =
+      SystemsRuntime.get_env(:salix_agent, :living_handoff_max_children_per_tenant)
+
+    SystemsRuntime.put_env(:salix_agent, :living_handoff_max_children, 2)
+    SystemsRuntime.put_env(:salix_agent, :living_handoff_max_children_per_tenant, 1)
+
+    on_exit(fn ->
+      restore_env(:living_handoff_max_children, prev_handoff_global)
+      restore_env(:living_handoff_max_children_per_tenant, prev_handoff_tenant)
+    end)
+
+    blocker = fn -> SystemsClock.sleep(:infinity) end
+
+    assert {:ok, h1} = DependencyJob.start(:handoff, "tenant-a", blocker)
+    # Per-tenant handoff cap (1) blocks second handoff for tenant-a
+    assert {:error, :dependency_saturated} = DependencyJob.start(:handoff, "tenant-a", blocker)
+    # Second handoff for tenant-b fits global handoff cap (2)
+    assert {:ok, h2} = DependencyJob.start(:handoff, "tenant-b", blocker)
+    # Global handoff cap (2) blocks third handoff
+    assert {:error, :dependency_saturated} = DependencyJob.start(:handoff, "tenant-c", blocker)
+
+    # Foreground :llm slot is STILL completely unstarved (limit is 1 in setup)
+    assert {:ok, fg} = DependencyJob.start(:llm, "tenant-a", blocker)
+    assert {:error, :dependency_saturated} = DependencyJob.start(:llm, "tenant-a", blocker)
+
+    Enum.each([h1, h2, fg], &DependencyJob.cancel/1)
+  end
+
   defp attach_telemetry(events) do
     handler_id = {__MODULE__, SystemsRuntime.Proc.self(), SystemsRuntime.Proc.make_ref()}
     test_pid = SystemsRuntime.Proc.self()

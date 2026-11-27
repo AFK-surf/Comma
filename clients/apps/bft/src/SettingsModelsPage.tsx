@@ -220,6 +220,10 @@ export function SettingsModelsPage({
     if (section) document.getElementById(section)?.scrollIntoView({ block: "start" });
   }, []);
 
+  // A default no enabled account serves: what runs it stops.
+  const unserved = (key: string | null) =>
+    data.servable_status === "ok" && key !== null && byKey.get(key)?.served_by === null;
+
   const choiceOf = (key: string | null) =>
     key === null ? null : (byKey.get(key)?.choice ?? null);
 
@@ -235,7 +239,10 @@ export function SettingsModelsPage({
                   return choice ? [choice] : [];
                 }),
           default_task_model: choiceOf(defaults.task),
-          default_router_model: choiceOf(defaults.router),
+          // New Routers take the platform Router; the server keeps this one.
+          ...(data.platform_router
+            ? {}
+            : { default_router_model: choiceOf(defaults.router) }),
         }),
       (next) => {
         setData(next);
@@ -291,27 +298,40 @@ export function SettingsModelsPage({
         )}
       </FormSection>
       <FormSection description={t.defaultsHint} title={t.defaultsTitle}>
-        {(["task", "router"] as const).map((role) => (
-          <div className="bft-form-field" key={role}>
-            <Dropdown
-              className="bft-form-field"
-              destructive={Boolean(write.fields[fieldOf[role]])}
-              disabled={unavailable}
-              hint={t.defaultHints[role]}
-              items={defaultItems(shown, role, defaults[role])}
-              label={t.defaultLabels[role]}
-              onChange={(value) =>
-                setDefaults((current) => ({
-                  ...current,
-                  [role]: value === platform ? null : value,
-                }))
-              }
-              size="sm"
-              value={defaults[role] ?? platform}
-            />
-            <FieldError message={write.fields[fieldOf[role]]} />
-          </div>
-        ))}
+        {(["task", "router"] as const).map((role) =>
+          role === "router" && data.platform_router ? (
+            <div className="bft-form-field" key={role}>
+              <p className="bft-field-label">{t.defaultLabels.router}</p>
+              <p className="bft-quiet bft-quiet-inline">
+                {t.platformRouter(data.platform_router.label)}
+              </p>
+            </div>
+          ) : (
+            <div className="bft-form-field" key={role}>
+              <Dropdown
+                className="bft-form-field"
+                destructive={Boolean(write.fields[fieldOf[role]])}
+                disabled={unavailable}
+                hint={
+                  unserved(defaults[role])
+                    ? t.defaultUnserved[role]
+                    : t.defaultHints[role]
+                }
+                items={defaultItems(shown, role, defaults[role])}
+                label={t.defaultLabels[role]}
+                onChange={(value) =>
+                  setDefaults((current) => ({
+                    ...current,
+                    [role]: value === platform ? null : value,
+                  }))
+                }
+                size="sm"
+                value={defaults[role] ?? platform}
+              />
+              <FieldError message={write.fields[fieldOf[role]]} />
+            </div>
+          )
+        )}
         <FormActions write={write}>
           {empty ? <p className="bft-form-section-note">{t.pickOne}</p> : null}
           <SaveButton

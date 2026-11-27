@@ -126,6 +126,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTaskDetail do
       {:error, :not_found} ->
         task_not_found()
 
+      {:error, :teams_subscription_required} ->
+        {:error, 402, "teams_subscription_required",
+         gettext("Renew the Teams subscription before sending new work."), %{}}
+
       {:error, _reason} ->
         {:error, 503, "send_failed", gettext("Could not send the message."), %{}}
     end

@@ -1,9 +1,9 @@
 package bundlemanifest
 
 import (
-	"archive/tar"
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AFK-surf/comma/systems/runtime-images/internal/erofsbundle"
 	"github.com/AFK-surf/comma/systems/runtime-images/internal/runtimeinputs"
 	"github.com/AFK-surf/comma/systems/runtime-images/internal/runtimereuse"
 )
@@ -21,9 +22,9 @@ func TestGenerateValidBundle(t *testing.T) {
 	archives := map[string]string{}
 	inputDigests := map[string]string{}
 	for index, class := range requiredClasses {
-		path := filepath.Join(dir, class+".oci.tar")
+		path := filepath.Join(dir, class+".erofs.zst")
 		inputDigests[class] = "sha256:" + strings.Repeat(string(rune('a'+index)), 64)
-		writeOCIArchive(t, path, class, inputDigests[class], "linux", "arm64", true)
+		writeErofsArchive(t, path, "sha256:"+strings.Repeat(string(rune('c'+index)), 64), "linux/arm64", true)
 		archives[class] = path
 	}
 
@@ -31,7 +32,7 @@ func TestGenerateValidBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if manifest.SchemaVersion != 3 || manifest.SourceRevision != "release-7" {
+	if manifest.SchemaVersion != 4 || manifest.SourceRevision != "release-7" {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 	if len(manifest.Images) != len(requiredClasses) {
@@ -60,9 +61,9 @@ func TestApprovedReusePreservesAllArtifactIdentitiesAcrossSourceRevisions(t *tes
 	inputDigests := map[string]string{}
 	inputs := runtimeinputs.Manifest{SchemaVersion: 1}
 	for index, class := range requiredClasses {
-		path := filepath.Join(approvedDir, class+".oci.tar")
+		path := filepath.Join(approvedDir, class+".erofs.zst")
 		inputDigest := "sha256:" + strings.Repeat(string(rune('a'+index)), 64)
-		writeOCIArchive(t, path, class, inputDigest, "linux", "arm64", true)
+		writeErofsArchive(t, path, "sha256:"+strings.Repeat(string(rune('c'+index)), 64), "linux/arm64", true)
 		archives[class] = path
 		inputDigests[class] = inputDigest
 		inputs.Images = append(inputs.Images, runtimeinputs.Image{Class: class, InputDigest: inputDigest})
@@ -86,7 +87,7 @@ func TestApprovedReusePreservesAllArtifactIdentitiesAcrossSourceRevisions(t *tes
 
 	reusedArchives := map[string]string{}
 	for _, class := range requiredClasses {
-		reusedArchives[class] = filepath.Join(outputDir, class+".oci.tar")
+		reusedArchives[class] = filepath.Join(outputDir, class+".erofs.zst")
 	}
 	regenerated, err := Generate("main-source-b", inputDigests, reusedArchives)
 	if err != nil {
@@ -108,14 +109,14 @@ func TestGenerateRejectsInvalidInput(t *testing.T) {
 	}{
 		{"wrong platform", func(t *testing.T) error {
 			return generateWithArchives(t, "release-7", func(path string) {
-				writeOCIArchive(t, path, "shell", testInputDigest(), "linux", "amd64", true)
+				writeErofsArchive(t, path, "sha256:"+strings.Repeat("c", 64), "linux/amd64", true)
 			})
 		}, "platform must be linux/arm64"},
-		{"missing layout", func(t *testing.T) error {
+		{"invalid magic", func(t *testing.T) error {
 			return generateWithArchives(t, "release-7", func(path string) {
-				writeOCIArchive(t, path, "shell", testInputDigest(), "linux", "arm64", false)
+				writeErofsArchive(t, path, "sha256:"+strings.Repeat("c", 64), "linux/arm64", false)
 			})
-		}, "missing oci-layout"},
+		}, "invalid COMMA_EROFS_V1 magic"},
 		{"missing classes", func(*testing.T) error {
 			_, err := Generate("release-7", map[string]string{"shell": testInputDigest()}, map[string]string{"shell": "unused"})
 			return err
@@ -139,7 +140,7 @@ func generateWithArchives(t *testing.T, revision string, write func(string)) err
 	archives := map[string]string{}
 	inputDigests := map[string]string{}
 	for _, class := range requiredClasses {
-		path := filepath.Join(dir, class+".oci.tar")
+		path := filepath.Join(dir, class+".erofs.zst")
 		write(path)
 		archives[class] = path
 		inputDigests[class] = testInputDigest()
@@ -152,10 +153,11 @@ func TestInputDigestIsOnlyAReuseSelectorAndDoesNotChangeArtifactIdentity(t *test
 	dir := t.TempDir()
 	firstDigest := "sha256:" + strings.Repeat("1", 64)
 	secondDigest := "sha256:" + strings.Repeat("2", 64)
-	firstPath := filepath.Join(dir, "first.oci.tar")
-	secondPath := filepath.Join(dir, "second.oci.tar")
-	writeOCIArchive(t, firstPath, "shell", firstDigest, "linux", "arm64", true)
-	writeOCIArchive(t, secondPath, "shell", secondDigest, "linux", "arm64", true)
+	manifestDigest := "sha256:" + strings.Repeat("c", 64)
+	firstPath := filepath.Join(dir, "first.erofs.zst")
+	secondPath := filepath.Join(dir, "second.erofs.zst")
+	writeErofsArchive(t, firstPath, manifestDigest, "linux/arm64", true)
+	writeErofsArchive(t, secondPath, manifestDigest, "linux/arm64", true)
 
 	first, err := inspectArchive("shell", firstDigest, firstPath)
 	if err != nil {
@@ -166,79 +168,47 @@ func TestInputDigestIsOnlyAReuseSelectorAndDoesNotChangeArtifactIdentity(t *test
 		t.Fatalf("inspect second archive: %v", err)
 	}
 	if first.ManifestDigest != second.ManifestDigest || first.Reference != second.Reference {
-		t.Fatalf("selector changed OCI identity: first=%#v second=%#v", first, second)
+		t.Fatalf("selector changed archive identity: first=%#v second=%#v", first, second)
 	}
 }
 
-func writeOCIArchive(t *testing.T, path, class, inputDigest, osName, architecture string, includeLayout bool) {
+func writeErofsArchive(t *testing.T, path, manifestDigest, platform string, validMagic bool) {
 	t.Helper()
-	config := imageConfig{Architecture: architecture, OS: osName}
-	configBytes := mustJSON(t, config)
-	configDigest := digest(configBytes)
+	raw := make([]byte, 4096)
+	copy(raw[erofsbundle.ErofsMagicOff:erofsbundle.ErofsMagicOff+4], erofsbundle.ErofsSuperMagic[:])
+	sum := sha256.Sum256(raw)
 
-	manifestBytes := mustJSON(t, imageManifest{
-		SchemaVersion: 2,
-		MediaType:     mediaTypeImageManifest,
-		Config: descriptor{
-			MediaType: "application/vnd.oci.image.config.v1+json",
-			Digest:    configDigest,
-		},
-	})
-	manifestDigest := digest(manifestBytes)
-	indexBytes := mustJSON(t, index{
-		SchemaVersion: 2,
-		MediaType:     mediaTypeImageIndex,
-		Manifests: []descriptor{{
-			MediaType: mediaTypeImageManifest,
-			Digest:    manifestDigest,
-			Platform:  &platform{OS: osName, Architecture: architecture},
-		}},
-	})
+	header := erofsbundle.Header{
+		SchemaVersion:  1,
+		ManifestDigest: manifestDigest,
+		Platform:       platform,
+		LogicalBytes:   1024,
+		ErofsBytes:     int64(len(raw)),
+		ErofsSHA256:    hex.EncodeToString(sum[:]),
+		Compression:    erofsbundle.CompressionNone,
+	}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	var buffer bytes.Buffer
-	w := tar.NewWriter(&buffer)
-	if includeLayout {
-		writeTarFile(t, w, "oci-layout", []byte(`{"imageLayoutVersion":"1.0.0"}`))
+	var buf bytes.Buffer
+	if validMagic {
+		buf.Write(erofsbundle.Magic)
+	} else {
+		buf.WriteString("NOT_COMMA_EROFS!")
 	}
-	writeTarFile(t, w, "index.json", indexBytes)
-	writeTarFile(t, w, blobPath(configDigest), configBytes)
-	writeTarFile(t, w, blobPath(manifestDigest), manifestBytes)
-	if err := w.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
-	if err := os.WriteFile(path, buffer.Bytes(), 0o644); err != nil {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(headerJSON)))
+	buf.Write(lenBuf[:])
+	buf.Write(headerJSON)
+	buf.Write(raw)
+
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		t.Fatalf("write archive: %v", err)
 	}
 }
 
 func testInputDigest() string {
 	return "sha256:" + strings.Repeat("a", 64)
-}
-
-func writeTarFile(t *testing.T, w *tar.Writer, name string, data []byte) {
-	t.Helper()
-	if err := w.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data))}); err != nil {
-		t.Fatalf("write header: %v", err)
-	}
-	if _, err := w.Write(data); err != nil {
-		t.Fatalf("write body: %v", err)
-	}
-}
-
-func mustJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
-
-func digest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func blobPath(value string) string {
-	return "blobs/sha256/" + strings.TrimPrefix(value, "sha256:")
 }

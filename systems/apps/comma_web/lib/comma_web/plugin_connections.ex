@@ -4,20 +4,23 @@ defmodule CommaWeb.PluginConnections do
   import Ecto.Query
   require Logger
 
-  alias Comma.{PluginInstallAttempts, Plugins, Repo, Workspaces}
+  alias Comma.{PluginInstallAttempts, PluginInstallations, Plugins, Repo, Workspaces}
   alias Comma.Data.{Workspace, WorkspaceMembership}
   alias Salix.Control.OAuthApps
   alias Salix.Control.OAuthBindings
   alias Salix.Control.PluginSetup
   alias Salix.Control.Plugins, as: SalixPlugins
+  alias SalixAgent.PluginStore
 
   @legacy_connection_kinds ~w(managed_oauth native_mcp_oauth)
   @member_toolkits ~w(slack gmail googlecalendar googledrive outlook)
+  @colab_plugin_id "google-colab"
 
   # Installation and personal use are separate facts. This owner-only status
   # projects current connection metadata and the exact Comma member receipt.
   def personal_sources(user, session, workspace_id, plugin_id) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- maybe_reconcile_plugin(user, session, workspace, plugin_id),
          :ok <- require_installed(user, session, workspace_id, plugin_id),
          {:ok, definition} <- plugin_definition(workspace, plugin_id),
          {:ok, accounts} <- personal_accounts(workspace, definition) do
@@ -35,13 +38,23 @@ defmodule CommaWeb.PluginConnections do
         |> Map.new(&{&1["id"], &1["state"]})
 
       mcps = get_in(definition, ["setup", "mcps"]) || []
+      required_connections = get_in(definition, ["setup", "required_connections"])
 
       sources =
         definition
         |> get_in(["setup", "connections"])
         |> List.wrap()
         |> Enum.flat_map(
-          &personal_source(&1, workspace, user["id"], accounts, bindings, resolved, mcps)
+          &personal_source(
+            &1,
+            workspace,
+            user["id"],
+            accounts,
+            bindings,
+            resolved,
+            mcps,
+            required_connections
+          )
         )
 
       {:ok, %{"pluginId" => plugin_id, "sources" => sources}}
@@ -92,7 +105,8 @@ defmodule CommaWeb.PluginConnections do
          accounts,
          bindings,
          _resolved,
-         _mcps
+         _mcps,
+         _required_connections
        )
        when toolkit in @member_toolkits do
     candidates =
@@ -138,7 +152,8 @@ defmodule CommaWeb.PluginConnections do
          _accounts,
          _bindings,
          resolved,
-         _mcps
+         _mcps,
+         _required_connections
        )
        when provider in ~w(github linear notion slack) do
     binding =
@@ -185,29 +200,33 @@ defmodule CommaWeb.PluginConnections do
   end
 
   defp personal_source(
-         %{"kind" => "native_mcp_oauth"} = connection,
+         %{"kind" => "native_mcp_oauth", "id" => id},
          _workspace,
          _user_id,
          _accounts,
          _bindings,
          resolved,
-         mcps
+         mcps,
+         required_connections
        ) do
-    state = if resolved[connection["id"]] == "connected", do: "ready", else: "needs_authorization"
+    if optional_unused_native_mcp?(id, resolved, mcps, required_connections) do
+      []
+    else
+      state = if resolved[id] == "connected", do: "ready", else: "needs_authorization"
 
-    [
-      %{
-        "connectionId" => connection["id"],
-        "toolkit" => connection["id"],
-        "kind" => "native_mcp_oauth",
-        "state" => state,
-        "candidates" => [],
-        # An MCP grant is not a personal source. Plugins offers it beside the
-        # MCPs it authorizes.
-        "mcpIds" =>
-          for(mcp <- mcps, connection["id"] in List.wrap(mcp["auth_refs"]), do: mcp["mcp_id"])
-      }
-    ]
+      [
+        %{
+          "connectionId" => id,
+          "toolkit" => id,
+          "kind" => "native_mcp_oauth",
+          "state" => state,
+          "candidates" => [],
+          # An MCP grant is not a personal source. Plugins offers it beside the
+          # MCPs it authorizes.
+          "mcpIds" => for(mcp <- mcps, id in List.wrap(mcp["auth_refs"]), do: mcp["mcp_id"])
+        }
+      ]
+    end
   end
 
   # A member's own Lark or Feishu bot is a source only while its app lacks a
@@ -221,7 +240,8 @@ defmodule CommaWeb.PluginConnections do
          _accounts,
          _bindings,
          _resolved,
-         _mcps
+         _mcps,
+         _required_connections
        )
        when provider in ~w(lark feishu) do
     case owner_connect(workspace, provider) do
@@ -245,7 +265,66 @@ defmodule CommaWeb.PluginConnections do
     end
   end
 
-  defp personal_source(_, _, _, _, _, _, _), do: []
+  defp personal_source(
+         %{"kind" => "oauth_code_paste", "provider" => "google_colab"} = connection,
+         workspace,
+         _user_id,
+         _accounts,
+         _bindings,
+         _resolved,
+         _mcps,
+         _required_connections
+       ) do
+    case SalixAgent.Colab.Account.list_group_accounts_with_stats(
+           workspace["salix_tenant_id"],
+           workspace["default_group_id"]
+         ) do
+      {:ok, colab_accounts} when is_list(colab_accounts) ->
+        Enum.map(colab_accounts, fn account ->
+          state =
+            if account["status"] == "reauthorization_required",
+              do: "needs_reauthorization",
+              else: "ready"
+
+          %{
+            "bindingId" => account["binding_id"],
+            "connectionId" => connection["id"],
+            "toolkit" => @colab_plugin_id,
+            "kind" => "oauth_code_paste",
+            "state" => state,
+            "selectedAccountId" => account["email"],
+            "candidates" => [],
+            "metadata" => %{
+              "ccuBalance" => account["ccu_balance"],
+              "consumptionRateHourly" => account["ccu_rate_hourly"],
+              "activeVmCount" => account["active_vm_count"] || 0
+            }
+          }
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp personal_source(_, _, _, _, _, _, _, _), do: []
+
+  # A fallback MCP OAuth connection (such as `linear-native`, when `linear-managed`
+  # is required and already authorizes the same MCP) stays hidden unless this
+  # workspace has actually authorized it.
+  defp optional_unused_native_mcp?(id, resolved, mcps, required_connections)
+       when is_list(required_connections) do
+    matching_mcps = Enum.filter(mcps, &(id in List.wrap(&1["auth_refs"])))
+
+    resolved[id] in [nil, "not_connected"] and
+      id not in required_connections and
+      matching_mcps != [] and
+      Enum.all?(matching_mcps, fn mcp ->
+        Enum.any?(List.wrap(mcp["auth_refs"]), &(&1 != id and &1 in required_connections))
+      end)
+  end
+
+  defp optional_unused_native_mcp?(_id, _resolved, _mcps, _required_connections), do: false
 
   defp member_sign_in_source(workspace, user_id, provider) do
     if workspace["owner_user_id"] == user_id do
@@ -265,9 +344,10 @@ defmodule CommaWeb.PluginConnections do
 
   @doc """
   Whether the Workspace owner's own Feishu or Lark sign-in can serve their
-  Routine: `"ready"`, `"needs_authorization"` (none yet) or
-  `"needs_reauthorization"` (expired, revoked, another member's, or without
-  a scope the Routine reads now).
+  Routine and the bot's reads for them: `"ready"`, `"needs_authorization"`
+  (none yet) or `"needs_reauthorization"` (expired, revoked, another
+  member's, or without a scope the sign-in asks for now). A grant without a
+  newer scope still reads what its scopes allow until the owner reconnects.
   """
   def member_sign_in_state(workspace, user_id, provider) when provider in ~w(lark feishu) do
     binding =
@@ -289,8 +369,8 @@ defmodule CommaWeb.PluginConnections do
            CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source),
          {:ok, connection} <- SalixStore.OAuth.get(binding["connection_id"]),
          true <-
-           SalixIM.Provider.Lark.Registration.member_scopes() -- List.wrap(connection["scopes"]) ==
-             [] do
+           SalixIM.Provider.Lark.Registration.member_scopes(provider) --
+             List.wrap(connection["scopes"]) == [] do
       "ready"
     else
       nil -> "needs_authorization"
@@ -482,6 +562,14 @@ defmodule CommaWeb.PluginConnections do
        end),
        do: :ok,
        else: {:error, :not_found}
+  end
+
+  def reauthorize(user, session, workspace_id, @colab_plugin_id, opts) when is_map(opts) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- maybe_reconcile_colab_state(user, session, workspace),
+         :ok <- require_installed(user, session, workspace_id, @colab_plugin_id) do
+      reauthorize_colab(user, session, workspace, opts)
+    end
   end
 
   def reauthorize(user, session, workspace_id, plugin_id, opts) when is_map(opts) do
@@ -821,7 +909,15 @@ defmodule CommaWeb.PluginConnections do
   # Product installation is a two-phase command. Salix enablement remains a separate
   # domain fact: Comma only enables after observing that the selected data source
   # is connected (or that the plugin has no data source to authorize).
-  def install(user, session, workspace_id, plugin_id, opts \\ %{}) do
+  def install(user, session, workspace_id, plugin_id, opts \\ %{})
+
+  def install(user, session, workspace_id, @colab_plugin_id, opts) when is_map(opts) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      install_colab(user, session, workspace, opts)
+    end
+  end
+
+  def install(user, session, workspace_id, plugin_id, opts) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
       if plugin_id in ["lark", "feishu"] and is_binary(opts["registration"]) do
         case unseal_member_sign_in(opts["registration"]) do
@@ -1045,11 +1141,13 @@ defmodule CommaWeb.PluginConnections do
   # After the scan that made the member's bot, the same dialog asks for their
   # own sign-in with that app: a device code they confirm in Lark or Feishu
   # (`SalixWeb.OAuthFlow.begin_member_device/4`), sent as a registration of
-  # step `member`. Their Routine reads with it. The plugin is installed
-  # already; a sign-in left unconfirmed only leaves Lark or Feishu out of the
-  # Routine. Only the Workspace owner signs in: the Routine reads for them.
-  # With `rescan_on_refusal`, an app made before it asked for the user scopes
-  # is updated by a new scan first, which then asks for the sign-in.
+  # step `member`. Their Routine reads with it, and so do the bot's own reads
+  # of documents and meetings for them (`Salix.Bindings.IMUserAccounts`). The
+  # plugin is installed already; a sign-in left unconfirmed only leaves Lark
+  # or Feishu out of the Routine. Only the Workspace owner signs in: the
+  # Routine reads for them. With `rescan_on_refusal`, an app made before it
+  # asked for the user scopes is updated by a new scan first, which then asks
+  # for the sign-in.
   defp member_sign_in(user, workspace, plugin_id, plugin, opts \\ []) do
     with true <- workspace["owner_user_id"] == user["id"],
          true <-
@@ -1059,7 +1157,7 @@ defmodule CommaWeb.PluginConnections do
       case SalixWeb.OAuthFlow.begin_member_device(
              workspace["salix_tenant_id"],
              plugin_id,
-             SalixIM.Provider.Lark.Registration.member_scopes(),
+             SalixIM.Provider.Lark.Registration.member_scopes(plugin_id),
              member_app_source(workspace, connect_id)
            ) do
         {:ok, begun} ->
@@ -1617,6 +1715,23 @@ defmodule CommaWeb.PluginConnections do
     end)
   end
 
+  def uninstall(user, session, workspace_id, @colab_plugin_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- maybe_reconcile_colab_state(user, session, workspace),
+         :ok <- require_installed(user, session, workspace_id, @colab_plugin_id),
+         {:ok, _result} <-
+           SalixAgent.Colab.Account.disconnect_all_for_group(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"]
+           ),
+         {:ok, plugin} <- reconcile_group_plugin_state(user, session, workspace) do
+      case plugin do
+        %{} -> {:ok, plugin}
+        nil -> installed_plugin(user, session, workspace_id, @colab_plugin_id)
+      end
+    end
+  end
+
   def uninstall(user, session, workspace_id, plugin_id) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
       PluginInstallAttempts.with_lock(workspace_id, plugin_id, fn attempt ->
@@ -1639,13 +1754,33 @@ defmodule CommaWeb.PluginConnections do
 
   @doc """
   The still.fail stations the still.fail plugin connected (one each time it
-  was installed and its line pasted into a station's connects): id, name,
-  whether connected now, when last connected.
+  was installed and its line pasted into a station's connects), as
+  `SalixEnv.StillfailDevices.list/1` says them.
   """
   def stillfail_stations(user, session, workspace_id, plugin_id) do
     with {:ok, workspace} <- stillfail_workspace(user, session, workspace_id, plugin_id),
          {:ok, stations} <- SalixEnv.StillfailDevices.list(workspace["default_group_id"]) do
-      {:ok, %{"stations" => stations}}
+      level =
+        CommaWeb.Proactive.stillfail_notification_level(workspace["default_group_id"], user["id"])
+
+      {:ok, %{"stations" => stations, "notification_level" => level}}
+    end
+  end
+
+  @doc """
+  Sets the owner's proactive notification level for connected still.fail chats
+  and returns the refreshed still.fail plugin station payload.
+  """
+  def set_stillfail_notification_level(user, session, workspace_id, plugin_id, level) do
+    with {:ok, workspace} <- stillfail_workspace(user, session, workspace_id, plugin_id),
+         {:ok, _saved} <-
+           CommaWeb.Proactive.set_stillfail_notification_level(
+             user,
+             session,
+             workspace["default_group_id"],
+             level
+           ) do
+      stillfail_stations(user, session, workspace_id, plugin_id)
     end
   end
 
@@ -1710,6 +1845,7 @@ defmodule CommaWeb.PluginConnections do
 
   def get(user, session, workspace_id, plugin_id) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- maybe_reconcile_plugin(user, session, workspace, plugin_id),
          {:ok, definition} <-
            SalixPlugins.get_definition(
              workspace["salix_tenant_id"],
@@ -2013,18 +2149,19 @@ defmodule CommaWeb.PluginConnections do
     end)
   end
 
+  # Only the scanned connects' own apps go: the tenant's other Feishu apps
+  # (a Workspace's or a department's) stay.
   defp delete_scanned_tenant_app(tenant_id, connects) do
-    app_ids = Enum.map(connects, & &1["app_id"])
-
-    case SalixIM.Ports.ProviderAppStore.get_feishu_tenant_app(tenant_id) do
-      {:ok, %{"app_id" => app_id}} when is_binary(app_id) ->
-        if app_id in app_ids,
-          do: SalixIM.Ports.ProviderAppStore.delete_feishu_tenant_app(tenant_id),
-          else: :ok
-
-      _none ->
-        :ok
-    end
+    connects
+    |> Enum.map(& &1["app_id"])
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn app_id, :ok ->
+      case SalixIM.Ports.ProviderAppStore.delete_feishu_tenant_app(tenant_id, app_id) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp retire_connects(workspace, connects) do
@@ -2082,8 +2219,14 @@ defmodule CommaWeb.PluginConnections do
       else: :ok
   end
 
+  # A key's binding goes with the plugin; so does a binding each person signs
+  # in to themselves, with every person's sign-in (SalixMCP.Gateway.delete_binding/3).
   defp disconnect_api_key_connections(workspace, definition, connections) do
-    ids = for %{"kind" => "mcp_api_key", "id" => id} <- connections, do: id
+    ids =
+      for %{"kind" => kind, "id" => id} <- connections,
+          kind in ~w(mcp_api_key requester_mcp_oauth),
+          do: id
+
     mcps = get_in(definition, ["setup", "mcps"]) || []
 
     mcps
@@ -2379,7 +2522,8 @@ defmodule CommaWeb.PluginConnections do
   defp preferred_connection(%{"setup" => %{"default_connection" => id} = setup}, _group_id)
        when is_binary(id) and id != "" do
     case Enum.find(setup["connections"] || [], &(&1["id"] == id)) do
-      %{"kind" => kind} = connection when kind in ~w(mcp_api_key stillfail_connect) ->
+      %{"kind" => kind} = connection
+      when kind in ~w(mcp_api_key stillfail_connect oauth_code_paste) ->
         {:ok, connection}
 
       _other ->
@@ -2561,4 +2705,459 @@ defmodule CommaWeb.PluginConnections do
   end
 
   defp public_connection(_connection), do: nil
+
+  # ---- Google Colab (oauth_code_paste, lock-outside-HTTP, two-phase commit-ordered reconciler) ----
+
+  @doc false
+  def maybe_reconcile_workspace_colab(user, session, workspace_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      maybe_reconcile_colab_state(user, session, workspace)
+    end
+  end
+
+  @doc false
+  def install_legacy_colab(user, session, workspace_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      tenant_id = workspace["salix_tenant_id"]
+      group_id = workspace["default_group_id"]
+
+      phase_a =
+        PluginInstallAttempts.with_lock_rollback(workspace_id, @colab_plugin_id, fn attempt ->
+          with true <- SalixAgent.Colab.Account.has_active_account?(tenant_id, group_id),
+               {:ok,
+                %{
+                  generation: generation,
+                  desired_state: "installed",
+                  plugin_synced_generation: synced
+                }} <- SalixAgent.Colab.Account.get_group_install_state(tenant_id, group_id) do
+            if synced >= generation do
+              with {:ok, plugin} <-
+                     installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+                {:ok, {:already_synced, plugin}}
+              end
+            else
+              with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt),
+                   {:ok, plugin} <-
+                     Plugins.install_record_only(user, session, workspace_id, @colab_plugin_id) do
+                {:ok, {:needs_phase_b, generation, plugin}}
+              end
+            end
+          else
+            false ->
+              {:error, {:precondition_failed, "Connect a Google Colab account first."}}
+
+            {:ok, _other} ->
+              {:error, {:precondition_failed, "Connect a Google Colab account first."}}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        end)
+
+      case phase_a do
+        {:ok, {:already_synced, plugin}} ->
+          {:ok, plugin}
+
+        {:ok, {:needs_phase_b, generation, plugin}} ->
+          with :ok <-
+                 SalixAgent.Colab.Account.settle_install_cards_if_generation_current(
+                   tenant_id,
+                   group_id,
+                   generation
+                 ),
+               :ok <-
+                 SalixAgent.Colab.Account.mark_plugin_synced(
+                   tenant_id,
+                   group_id,
+                   generation,
+                   "installed"
+                 ) do
+            {:ok, plugin}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc false
+  def reconcile_workspace_colab_state_system(workspace) when is_map(workspace) do
+    tenant_id = workspace["salix_tenant_id"]
+    group_id = workspace["default_group_id"]
+    workspace_id = workspace["id"]
+
+    phase_a =
+      PluginInstallAttempts.with_lock_rollback(workspace_id, @colab_plugin_id, fn attempt ->
+        case SalixAgent.Colab.Account.get_group_install_state(tenant_id, group_id) do
+          {:ok, nil} ->
+            {:ok, :no_state}
+
+          {:ok,
+           %{
+             generation: generation,
+             desired_state: desired_state,
+             plugin_synced_generation: synced
+           }}
+          when synced >= generation ->
+            {:ok, {:already_synced, desired_state}}
+
+          {:ok, %{generation: generation, desired_state: "installed"}} ->
+            with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt),
+                 {:ok, _enablement} <-
+                   PluginStore.enable_group(tenant_id, group_id, @colab_plugin_id),
+                 :ok <- PluginInstallations.mark_installed(workspace_id, @colab_plugin_id) do
+              {:ok, {:needs_phase_b, generation, "installed"}}
+            end
+
+          {:ok, %{generation: generation, desired_state: "uninstalled"}} ->
+            with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt),
+                 {:ok, _enablement} <-
+                   PluginStore.disable_group(tenant_id, group_id, @colab_plugin_id),
+                 :ok <- PluginInstallations.mark_uninstalled(workspace_id, @colab_plugin_id) do
+              {:ok, {:needs_phase_b, generation, "uninstalled"}}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end)
+
+    case phase_a do
+      {:ok, :no_state} ->
+        {:ok, :no_state}
+
+      {:ok, {:already_synced, desired_state}} ->
+        {:ok, {:already_synced, desired_state}}
+
+      {:ok, {:needs_phase_b, generation, "installed"}} ->
+        with :ok <-
+               SalixAgent.Colab.Account.settle_install_cards_if_generation_current(
+                 tenant_id,
+                 group_id,
+                 generation
+               ),
+             :ok <-
+               SalixAgent.Colab.Account.mark_plugin_synced(
+                 tenant_id,
+                 group_id,
+                 generation,
+                 "installed"
+               ) do
+          {:ok, {:reconciled, generation, "installed"}}
+        end
+
+      {:ok, {:needs_phase_b, generation, "uninstalled"}} ->
+        with :ok <- maybe_enqueue_recommendation_discovery_for_owner(workspace),
+             :ok <-
+               SalixAgent.Colab.Account.mark_plugin_synced(
+                 tenant_id,
+                 group_id,
+                 generation,
+                 "uninstalled"
+               ) do
+          {:ok, {:reconciled, generation, "uninstalled"}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_enqueue_recommendation_discovery_for_owner(%{
+         "id" => workspace_id,
+         "owner_user_id" => owner_user_id
+       })
+       when is_binary(owner_user_id) and owner_user_id != "" do
+    enqueue_recommendation_discovery(%{"id" => owner_user_id}, workspace_id)
+  end
+
+  defp maybe_enqueue_recommendation_discovery_for_owner(_workspace), do: :ok
+
+  @doc false
+  def reconcile_group_plugin_state(user, session, workspace) do
+    tenant_id = workspace["salix_tenant_id"]
+    group_id = workspace["default_group_id"]
+    workspace_id = workspace["id"]
+
+    phase_a =
+      PluginInstallAttempts.with_lock_rollback(workspace_id, @colab_plugin_id, fn attempt ->
+        case SalixAgent.Colab.Account.get_group_install_state(tenant_id, group_id) do
+          {:ok, nil} ->
+            {:ok, :no_state}
+
+          {:ok,
+           %{
+             generation: generation,
+             desired_state: desired_state,
+             plugin_synced_generation: synced
+           }}
+          when synced >= generation ->
+            with {:ok, plugin} <- installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+              {:ok, {:already_synced, desired_state, plugin}}
+            end
+
+          {:ok, %{generation: generation, desired_state: "installed"}} ->
+            with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt),
+                 {:ok, plugin} <-
+                   Plugins.install_record_only(user, session, workspace_id, @colab_plugin_id) do
+              {:ok, {:needs_phase_b, generation, "installed", plugin}}
+            end
+
+          {:ok, %{generation: generation, desired_state: "uninstalled"}} ->
+            with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt),
+                 {:ok, plugin} <-
+                   Plugins.uninstall_record_only(user, session, workspace_id, @colab_plugin_id) do
+              {:ok, {:needs_phase_b, generation, "uninstalled", plugin}}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end)
+
+    case phase_a do
+      {:ok, :no_state} ->
+        {:ok, nil}
+
+      {:ok, {:already_synced, _desired_state, plugin}} ->
+        {:ok, plugin}
+
+      {:ok, {:needs_phase_b, generation, "installed", plugin}} ->
+        with :ok <-
+               SalixAgent.Colab.Account.settle_install_cards_if_generation_current(
+                 tenant_id,
+                 group_id,
+                 generation
+               ),
+             :ok <-
+               SalixAgent.Colab.Account.mark_plugin_synced(
+                 tenant_id,
+                 group_id,
+                 generation,
+                 "installed"
+               ) do
+          {:ok, plugin}
+        end
+
+      {:ok, {:needs_phase_b, generation, "uninstalled", plugin}} ->
+        with :ok <- enqueue_recommendation_discovery(user, workspace_id),
+             :ok <-
+               SalixAgent.Colab.Account.mark_plugin_synced(
+                 tenant_id,
+                 group_id,
+                 generation,
+                 "uninstalled"
+               ) do
+          {:ok, plugin}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_reconcile_plugin(user, session, workspace, @colab_plugin_id),
+    do: maybe_reconcile_colab_state(user, session, workspace)
+
+  defp maybe_reconcile_plugin(_user, _session, _workspace, _plugin_id), do: :ok
+
+  defp maybe_reconcile_colab_state(user, session, workspace) do
+    case SalixAgent.Colab.Account.get_group_install_state(
+           workspace["salix_tenant_id"],
+           workspace["default_group_id"]
+         ) do
+      {:ok, %{generation: generation, plugin_synced_generation: synced}}
+      when synced < generation ->
+        case reconcile_group_plugin_state(user, session, workspace) do
+          {:ok, _plugin} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp install_colab(user, session, workspace, opts) do
+    tenant_id = workspace["salix_tenant_id"]
+    group_id = workspace["default_group_id"]
+    workspace_id = workspace["id"]
+
+    with :ok <- maybe_reconcile_colab_state(user, session, workspace) do
+      if Map.has_key?(opts, "config_values") do
+        pasted_input = get_in(opts, ["config_values", "GOOGLE_COLAB_AUTH_CODE"])
+        attempt_id = opts["attempt_id"]
+
+        case SalixAgent.Colab.Account.complete_oauth_attempt(
+               tenant_id,
+               group_id,
+               user["id"],
+               attempt_id,
+               pasted_input,
+               operation: :install
+             ) do
+          {:ok, _receipt} ->
+            with {:ok, plugin} <- reconcile_group_plugin_state(user, session, workspace),
+                 {:ok, plugin} <-
+                   if(is_map(plugin),
+                     do: {:ok, plugin},
+                     else: installed_plugin(user, session, workspace_id, @colab_plugin_id)
+                   ) do
+              {:ok, install_result(plugin, nil)}
+            end
+
+          {:retry_with_fresh_attempt, fresh, reason} ->
+            with {:ok, plugin} <- installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+              {:ok, colab_configuration_result(plugin, fresh, colab_retry_error_message(reason))}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        with {:ok, plugin} <- installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+          if opts["mode"] != "add_account" and plugin["installed"] == true and
+               SalixAgent.Colab.Account.connection_state(tenant_id, group_id) == "connected" do
+            {:ok, install_result(plugin, nil)}
+          else
+            case SalixAgent.Colab.Account.start_oauth_attempt(
+                   tenant_id,
+                   group_id,
+                   user["id"],
+                   operation: :install,
+                   mode: opts["mode"]
+                 ) do
+              {:ok, attempt} ->
+                {:ok, colab_configuration_result(plugin, attempt, nil)}
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+          end
+        end
+      end
+    end
+  end
+
+  defp reauthorize_colab(user, session, workspace, opts) do
+    tenant_id = workspace["salix_tenant_id"]
+    group_id = workspace["default_group_id"]
+    workspace_id = workspace["id"]
+    binding_id = opts["binding_id"]
+
+    if Map.has_key?(opts, "config_values") do
+      pasted_input = get_in(opts, ["config_values", "GOOGLE_COLAB_AUTH_CODE"])
+      attempt_id = opts["attempt_id"]
+
+      case SalixAgent.Colab.Account.complete_oauth_attempt(
+             tenant_id,
+             group_id,
+             user["id"],
+             attempt_id,
+             pasted_input,
+             operation: :reconnect,
+             binding_id: binding_id
+           ) do
+        {:ok, _receipt} ->
+          with {:ok, plugin} <- installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+            {:ok, install_result(plugin, nil)}
+          end
+
+        {:retry_with_fresh_attempt, fresh, reason} ->
+          with {:ok, plugin} <- installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+            {:ok, colab_configuration_result(plugin, fresh, colab_retry_error_message(reason))}
+          end
+
+        {:error, {:wrong_google_account, expected_email}} ->
+          case SalixAgent.Colab.Account.start_oauth_attempt(
+                 tenant_id,
+                 group_id,
+                 user["id"],
+                 operation: :reconnect,
+                 binding_id: binding_id
+               ) do
+            {:ok, fresh} ->
+              with {:ok, plugin} <-
+                     installed_plugin(user, session, workspace_id, @colab_plugin_id) do
+                {:ok,
+                 colab_configuration_result(
+                   plugin,
+                   fresh,
+                   colab_retry_error_message({:wrong_google_account, expected_email})
+                 )}
+              end
+
+            {:error, _retry_error} ->
+              {:error, {:wrong_google_account, expected_email}}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      with {:ok, plugin} <- installed_plugin(user, session, workspace_id, @colab_plugin_id),
+           {:ok, attempt} <-
+             SalixAgent.Colab.Account.start_oauth_attempt(
+               tenant_id,
+               group_id,
+               user["id"],
+               operation: :reconnect,
+               binding_id: binding_id
+             ) do
+        {:ok, colab_configuration_result(plugin, attempt, nil)}
+      end
+    end
+  end
+
+  defp colab_configuration_result(plugin, attempt, error_message) do
+    config =
+      %{
+        "key" => attempt.key,
+        "label" => attempt.label,
+        "helpUrl" => attempt.authorize_url,
+        "format" => attempt.format,
+        "attemptId" => attempt.attempt_id
+      }
+      |> then(fn map ->
+        if is_binary(error_message) and error_message != "",
+          do: Map.put(map, "error", error_message),
+          else: map
+      end)
+
+    plugin
+    |> install_result(nil)
+    |> Map.put("configuration", config)
+  end
+
+  defp colab_retry_error_message(:attempt_expired),
+    do: "That authorization attempt expired. Sign in again with the new link."
+
+  defp colab_retry_error_message(:exchange_timed_out),
+    do: "The previous authorization timed out. Sign in again with the new link."
+
+  defp colab_retry_error_message(:colab_not_eligible),
+    do: "This Google account is not eligible for Google Colab. Sign in with an eligible account."
+
+  defp colab_retry_error_message(:missing_refresh_token),
+    do:
+      "Google did not return a refresh token. Sign in again and approve all requested permissions."
+
+  defp colab_retry_error_message(:missing_colaboratory_scope),
+    do:
+      "Google Colab permission was not granted. Sign in again and approve the requested permissions."
+
+  defp colab_retry_error_message({:wrong_google_account, email}) do
+    if is_binary(email) and String.trim(email) != "" do
+      "Sign in with #{String.trim(email)} to reconnect this Google Colab account, or remove the plugin first to switch accounts."
+    else
+      "Sign in with the connected Google account to reconnect Google Colab, or remove the plugin first to switch accounts."
+    end
+  end
+
+  defp colab_retry_error_message(_reason),
+    do: "Google rejected that authorization code. Sign in again with the new link."
 end

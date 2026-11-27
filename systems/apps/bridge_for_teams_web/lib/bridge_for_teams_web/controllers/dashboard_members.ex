@@ -59,8 +59,21 @@ defmodule BridgeForTeamsWeb.DashboardMembers do
                Memberships.put_org_member(org.id, invitee.id, new_role, audit_opts(user)) do
           :ok
         else
-          {:error, 409, _code, _message, _details} = error -> error
-          {:error, _reason} -> write_failed(gettext("Couldn't add %{email}.", email: email))
+          {:error, :teams_seat_limit} ->
+            {:error, 409, "teams_seat_limit",
+             gettext(
+               "All purchased Teams seats are in use. Add seats before inviting another member."
+             ), %{}}
+
+          {:error, :teams_subscription_required} ->
+            {:error, 402, "teams_subscription_required",
+             gettext("Renew the Teams subscription before inviting another member."), %{}}
+
+          {:error, 409, _code, _message, _details} = error ->
+            error
+
+          {:error, _reason} ->
+            write_failed(gettext("Couldn't add %{email}.", email: email))
         end
     end
   end

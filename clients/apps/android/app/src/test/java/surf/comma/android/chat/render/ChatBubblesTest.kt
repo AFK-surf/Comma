@@ -37,8 +37,8 @@ class ChatBubblesTest {
     private fun dp(value: Float) = (value * density).toInt()
 
     private fun message(id: Long, role: ChatRole, text: String = "Hi", cardKind: String? = null,
-                        status: MessageStatus = MessageStatus.COMPLETED) =
-        ChatMessage(id, "c", "t", role, text, 0, status = status, cardKind = cardKind,
+                        status: MessageStatus = MessageStatus.COMPLETED, platform: String? = null) =
+        ChatMessage(id, "c", "t", role, text, 0, status = status, cardKind = cardKind, platformSource = platform,
             // An agent's text as the core parsed it.
             markdown = if (role == ChatRole.AGENT && cardKind == null && text.isNotEmpty()) Md.of(text) else null)
 
@@ -343,6 +343,17 @@ class ChatBubblesTest {
             // From inside the bubble down into the tail, every pixel is the bubble's: no seam.
             for (y in bottom - dp(8f) until bottom + dp(3f)) assertEquals("y=$y", colour, bitmap.getPixel(tailX, y))
         }
+    }
+
+    @Test fun `a message from a chat platform takes that platform's bubble and text colour`() {
+        val wechat = prepare(message(1, ChatRole.USER, "Hello there", platform = "wechat")).single()
+        val bitmap = drawn(wechat)
+        assertEquals(0xFF9DF29F.toInt(), bitmap.getPixel(bubbleLeft(wechat) + dp(4f), wechat.bubbleTopPx + wechat.bubbleHeightPx / 2))
+        // The light green keeps the platform's dark text.
+        val text = wechat.blocks.filterIsInstance<PreparedContentBlock.Text>().first()
+        assertEquals(0xFF082D07.toInt(), text.layout.paint.color)
+        val signal = prepare(message(2, ChatRole.USER, "Hello there", platform = "signal")).single()
+        assertEquals(0xFF3B6DE3.toInt(), drawn(signal).getPixel(bubbleLeft(signal) + dp(4f), signal.bubbleTopPx + signal.bubbleHeightPx / 2))
     }
 
     @Test @Config(qualifiers = "w411dp-h891dp-night-xxhdpi")

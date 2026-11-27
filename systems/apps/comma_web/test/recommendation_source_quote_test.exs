@@ -129,4 +129,18 @@ defmodule CommaWeb.RecommendationSourceQuoteTest do
                 "<div>Done.</div><hr><div id=\"divRplyFwdMsg\"><b>From:</b> Alex</div><div>Old text</div>"}
            )["lines"] == ["Done."]
   end
+
+  test "html and mail_html ignore XML processing instructions and preserve adjacent text and quote boundaries" do
+    mail_html =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>" <>
+        "<html><body><div>Ship today.<?mso-application progid=\"Word.Document\"?></div>" <>
+        "<div>Next line.</div>" <>
+        "<div class=\"gmail_quote\"><blockquote>Earlier reply</blockquote></div></body></html>"
+
+    assert Quote.new(body: {:mail_html, mail_html})["lines"] == ["Ship today.", "Next line."]
+
+    assert Quote.new(body: {:html, "<?xml version=\"1.0\" encoding=\"utf-8\"?><p>Summary</p>"})[
+             "lines"
+           ] == ["Summary"]
+  end
 end

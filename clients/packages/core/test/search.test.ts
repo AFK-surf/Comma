@@ -74,15 +74,22 @@ describe("Task search", () => {
     );
   });
 
-  it("keeps a one-codepoint query local, and calls a refused query invalid", async () => {
+  it("searches a one-codepoint query, keeps an empty one local, and calls a refused query invalid", async () => {
     const t = setup();
+    t.api.on("GET", search, { data: [hit("安俞真机场照")] });
+    const one = t.client.call("search.tasks", { query: "安", group: "grp-1" });
+    const empty = t.client.call("search.tasks", { query: "  ", group: "grp-1" });
+    await t.time.pass(300);
+    expect(await one).toMatchObject({
+      status: "ready",
+      results: [{ title: "安俞真机场照" }],
+    });
+    expect(await empty).toMatchObject({ status: "invalid" });
     t.api.on("GET", search, json(400, { error: "invalid_query" }));
-    const short = t.client.call("search.tasks", { query: "智" });
     const refused = t.client.call("search.tasks", { query: "**", group: "grp-1" });
     await t.time.pass(300);
-    expect(await short).toMatchObject({ status: "invalid" });
     expect(await refused).toMatchObject({ status: "invalid" });
-    expect(t.api.seen("GET", search)).toHaveLength(1);
+    expect(t.api.seen("GET", search)).toHaveLength(2);
   });
 
   it("reads the account's workspaces once for a run of searches", async () => {
@@ -115,9 +122,6 @@ describe("Task search", () => {
     expect(t.api.requests.find((r) => r.path.startsWith(task))!.path).toContain(
       "q=archive"
     );
-    expect(
-      await t.client.call("search.taskMessages", { ...params, query: "a" })
-    ).toEqual({ status: "invalid", messageIds: [] });
     expect(t.api.seen("GET", task)).toHaveLength(1);
   });
 });

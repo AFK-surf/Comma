@@ -24,11 +24,24 @@ final class PhonePairingBridge: NSObject, WCSessionDelegate {
     func sessionChanged(_ session: CommaSession?) {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
         if let session { previousSessionID = session.id }
-        guard let identity = session?.id ?? previousSessionID else { return }
-        try? WCSession.default.updateApplicationContext([
-            "parent_session_id": identity,
-            "authenticated": session != nil
-        ])
+        var context: [String: Any] = [:]
+        if let baseURL = store?.configuration.baseURL.absoluteString { context["base_url"] = baseURL }
+        if let identity = session?.id ?? previousSessionID {
+            context["parent_session_id"] = identity
+            context["authenticated"] = session != nil
+        }
+        guard !context.isEmpty else { return }
+        try? WCSession.default.updateApplicationContext(context)
+    }
+
+    func backendChanged(to environment: BackendEnvironment) {
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+        var context: [String: Any] = ["base_url": environment.url.absoluteString]
+        if let identity = store?.session?.id ?? previousSessionID {
+            context["parent_session_id"] = identity
+            context["authenticated"] = store?.session != nil
+        }
+        try? WCSession.default.updateApplicationContext(context)
     }
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,

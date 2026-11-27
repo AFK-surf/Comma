@@ -276,12 +276,9 @@ func (p KubectlPlatform) RunPlan(ctx context.Context, state State) (Plan, error)
 	if err != nil {
 		return Plan{}, err
 	}
-	var plan Plan
-	lines := strings.Split(strings.TrimSpace(string(logs)), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if json.Unmarshal([]byte(lines[i]), &plan) == nil {
-			break
-		}
+	plan, err := parsePlanOutput(logs)
+	if err != nil {
+		return Plan{}, fmt.Errorf("candidate plan rejected: %w", err)
 	}
 	if state.RequiredMode == ModeBlockedLegacy {
 		err = plan.ValidateLegacyUpgrade()
@@ -294,7 +291,38 @@ func (p KubectlPlatform) RunPlan(ctx context.Context, state State) (Plan, error)
 	return plan, nil
 }
 
-const lifecycleEpochEvidenceMarkerPrefix = "COMMA_SESSION_LIFECYCLE_EPOCH "
+const (
+	planOutputMarkerPrefix             = "COMMA_RELEASE_PLAN "
+	lifecycleEpochEvidenceMarkerPrefix = "COMMA_SESSION_LIFECYCLE_EPOCH "
+)
+
+func parsePlanOutput(logs []byte) (Plan, error) {
+	lines := strings.Split(strings.TrimSpace(string(logs)), "\n")
+	var plan Plan
+	foundMarked := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, planOutputMarkerPrefix) {
+			continue
+		}
+		var candidate Plan
+		if foundMarked || json.Unmarshal([]byte(strings.TrimPrefix(trimmed, planOutputMarkerPrefix)), &candidate) != nil {
+			return Plan{}, errors.New("invalid or duplicate candidate plan output")
+		}
+		plan = candidate
+		foundMarked = true
+	}
+	if foundMarked {
+		return plan, nil
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		var candidate Plan
+		if json.Unmarshal([]byte(strings.TrimSpace(lines[i])), &candidate) == nil && candidate.SchemaVersion != 0 {
+			return candidate, nil
+		}
+	}
+	return Plan{}, nil
+}
 
 func (p KubectlPlatform) RunJob(ctx context.Context, spec JobSpec) error {
 	_, err := p.ensureJob(ctx, spec)
@@ -744,7 +772,7 @@ func (p KubectlPlatform) jobManifest(spec JobSpec, replacements map[string]strin
   String.to_integer(System.fetch_env!("COMMA_SESSION_LIFECYCLE_EPOCH_LEASE_SECONDS"))
 )`
 	} else if spec.Stage == "plan" {
-		command = "IO.puts(Comma.Release.plan_json())"
+		command = `IO.puts("COMMA_RELEASE_PLAN " <> Comma.Release.plan_json())`
 	}
 	bootExpression := `SalixStore.PGAuthorityImport.with_dependencies(fn ->
 `
@@ -2188,9 +2216,21 @@ func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte
 		"alertRouter":    map[string]any{"enabled": alertRouterEnabled, "replicas": 2},
 		"runtime":        map[string]any{"traceSampleRatio": replacements["COMMA_TRACE_SAMPLE_RATIO"], "claimWriterFenceEpoch": replacements["COMMA_LEGACY_MESSAGE_EVENT_CLAIM_WRITER_FENCE_EPOCH"], "cloudSqlInstanceConnectionName": replacements["INSTANCE_CONNECTION_NAME"], "agentVmmGatewayEnabled": p.Spec.AgentVmmGatewayEnabled, "computeRuntimeBaseURL": p.Spec.ComputeRuntimeBaseURL, "lmhubUserAgent": p.Spec.LmhubUserAgent},
 		"config":         map[string]any{"salixChecksum": replacements["SALIX_CONFIG_SHA256"], "alertRouterChecksum": alertRouterChecksum},
-		"references":     map[string]any{"commaSecrets": replacements["COMMA_SECRETS_NAME"], "salixConfigSecret": replacements["SALIX_CONFIG_SECRET_NAME"], "alertRouterConfigSecret": alertRouterConfigSecret, "agentVmmGatewayRuntimeSecret": "salix-vmm-gateway-runtime", "agentVmmGatewayClientTlsSecret": "salix-vmm-gateway-client-tls", "computeWorkloadCredentialSecret": "salix-compute-runtime", "salixTlsSecret": replacements["SALIX_TLS_SECRET_NAME"], "salixSitesTlsSecret": replacements["SALIX_SITES_TLS_SECRET_NAME"], "teamsTlsSecret": replacements["TEAMS_TLS_SECRET_NAME"]},
+		"references":     map[string]any{"commaSecrets": replacements["COMMA_SECRETS_NAME"], "salixConfigSecret": replacements["SALIX_CONFIG_SECRET_NAME"], "alertRouterConfigSecret": alertRouterConfigSecret, "agentVmmGatewayTlsSecret": "salix-vmm-gateway-tls", "computeWorkloadCredentialSecret": "salix-compute-runtime", "salixTlsSecret": replacements["SALIX_TLS_SECRET_NAME"], "salixSitesTlsSecret": replacements["SALIX_SITES_TLS_SECRET_NAME"], "teamsTlsSecret": replacements["TEAMS_TLS_SECRET_NAME"]},
 		"ssh":            map[string]any{"enabled": p.Spec.SSHEnabled},
 		"network":        map[string]any{"staticIpName": replacements["COMMA_STATIC_IP"], "salixHost": replacements["SALIX_HOST"], "salixSitesDomain": replacements["SALIX_SITES_DOMAIN"], "bridgeHost": replacements["BRIDGE_HOST"]},
+	}
+	if p.Spec.AgentVmmGatewayEnabled && replacements["COMMA_VMM_REMOTE_IP"] != "" {
+		values["vmmRemote"] = map[string]any{
+			"enabled":        true,
+			"port":           7443,
+			"containerPort":  7443,
+			"loadBalancerIP": replacements["COMMA_VMM_REMOTE_IP"],
+			"annotations": map[string]string{
+				"cloud.google.com/l4-rbs":       "enabled",
+				"cloud.google.com/network-tier": "Premium",
+			},
+		}
 	}
 	if manifest := replacements["COMMA_STATION_RELEASE_MANIFEST_URL"]; manifest != "" {
 		values["stations"] = map[string]any{"releaseManifestUrl": manifest}

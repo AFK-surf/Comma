@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.server
 import json
 import os
 import pathlib
@@ -15,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 import urllib.parse
 import zipfile
@@ -406,6 +408,86 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 self.assertIn("preflight.runner_size_mismatch", proc.stderr)
                 self.assertIn(detail, proc.stderr)
                 self.assertFalse((prefix / "bin" / "bft-runner").exists())
+
+    def test_http_download_resumes_after_dropped_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            prefix = root / "install"
+            runner_sha = write_worker(artifacts / "mac-mini-provisioner")
+            body = (artifacts / "mac-mini-provisioner").read_bytes()
+            half = len(body) // 2
+            requests: list[tuple[str | None, str | None]] = []
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self) -> None:
+                    requests.append((self.headers.get("Range"), self.headers.get("If-Range")))
+                    if len(requests) == 1:
+                        self.send_response(200)
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("ETag", '"runner-1"')
+                        self.end_headers()
+                        self.wfile.write(body[:half])
+                        self.wfile.flush()
+                        self.close_connection = True
+                        return
+                    start = int(self.headers["Range"].removeprefix("bytes=").removesuffix("-"))
+                    self.send_response(206)
+                    self.send_header("Content-Length", str(len(body) - start))
+                    self.send_header("Content-Range", f"bytes {start}-{len(body) - 1}/{len(body)}")
+                    self.end_headers()
+                    self.wfile.write(body[start:])
+
+                def log_message(self, *_: object) -> None:
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                proc = self.run_installer(
+                    {
+                        "HOME": str(root / "home"),
+                        "BFT_INSTALL_PREFIX": str(prefix),
+                        **agent_vmm_host_env(root, artifacts),
+                        "BFT_RUNNER_URL": f"http://127.0.0.1:{server.server_port}/mac-mini-provisioner",
+                        "BFT_RUNNER_SHA256": runner_sha,
+                        "BFT_RUNNER_SIZE": str(len(body)),
+                    }
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(requests, [(None, None), (f"bytes={half}-", '"runner-1"')])
+            runner = prefix / "bin" / "bft-runner"
+            self.assertEqual(hashlib.sha256(runner.read_bytes()).hexdigest(), runner_sha)
+
+    def test_downloads_runner_from_a_plain_local_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            prefix = root / "install"
+            source = artifacts / "mac-mini-provisioner"
+            runner_sha = write_worker(source)
+
+            proc = self.run_installer(
+                {
+                    "HOME": str(root / "home"),
+                    "BFT_INSTALL_PREFIX": str(prefix),
+                    **agent_vmm_host_env(root, artifacts),
+                    "BFT_RUNNER_URL": str(source),
+                    "BFT_RUNNER_SHA256": runner_sha,
+                    "BFT_RUNNER_SIZE": str(source.stat().st_size),
+                }
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            runner = prefix / "bin" / "bft-runner"
+            self.assertEqual(hashlib.sha256(runner.read_bytes()).hexdigest(), runner_sha)
 
     def test_completed_uninstall_during_download_prevents_late_publication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

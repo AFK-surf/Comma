@@ -96,12 +96,26 @@ defmodule SalixAgent.WorkerTaskFailureTest do
     def authorize(_agent_id, _scope), do: :ok
   end
 
+  defmodule AuditFacts do
+    def mode(_, _), do: "audit"
+
+    def resolve(request) do
+      send(
+        SystemsRuntime.PersistentTerm.get({SalixAgent.WorkerTaskFailureTest, :owner}),
+        {:ifc_resolved, request}
+      )
+
+      {:ok, %{"destination" => %{"label" => ["public"], "writers" => "any"}, "policy" => %{}}}
+    end
+  end
+
   setup do
     SalixAgent.TestSupport.stop_all_agents()
 
     previous = %{
       s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
       llm: SystemsRuntime.get_env(:salix_agent, :llm),
+      facts: SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod),
       im: SystemsRuntime.get_env(:salix_agent, :im_provider_mod),
       visible_reply: SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
     }
@@ -110,6 +124,7 @@ defmodule SalixAgent.WorkerTaskFailureTest do
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(Mock)
     SystemsRuntime.put_env(:salix_agent, :llm, RecordingLLM)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, AuditFacts)
     SystemsRuntime.put_env(:salix_agent, :im_provider_mod, RecordingIMProvider)
     SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
     SystemsRuntime.PersistentTerm.put(@owner_key, SystemsRuntime.Proc.self())
@@ -119,6 +134,7 @@ defmodule SalixAgent.WorkerTaskFailureTest do
       SystemsRuntime.PersistentTerm.erase(@owner_key)
       restore(:salix_store, :s3_backend, previous.s3)
       restore(:salix_agent, :llm, previous.llm)
+      restore(:salix_agent, :ifc_facts_mod, previous.facts)
       restore(:salix_agent, :im_provider_mod, previous.im)
       restore(:salix_agent, :visible_reply_mod, previous.visible_reply)
     end)
@@ -149,6 +165,140 @@ defmodule SalixAgent.WorkerTaskFailureTest do
     assert params["conversation_id"] == @task
     assert [%{"type" => "text", "text" => text}] = params["content"]
     assert text =~ "I stopped without a result"
+    assert_received {:ifc_resolved, request}
+    assert is_list(request["atoms"])
+  end
+
+  # Prod 2026-11-18 (HyperShell): the report said only "LLM provider returned
+  # HTTP 503", so the Router told people the provider was down and retried a
+  # model no Profile served for hours, also with no model, which ran the
+  # swarm's default Task model: the same unserved model.
+  test "a Worker whose model no Profile serves tells its Task to pick a model agent.models lists",
+       %{agent: agent} do
+    {:error, meta} =
+      SalixAgent.LLM.Error.http("catalog", 503, "no enabled profile serves claude-sonnet-5-5")
+
+    text = report_for(agent, Map.merge(meta, billing_stop("model_unavailable")))
+
+    assert text =~ "model_unavailable: no enabled profile serves claude-sonnet-5-5"
+    assert text =~ "im_api.internal.read_conversation"
+    assert text =~ "never infer its goal from unrelated messages or notices"
+    assert text =~ "agent.models"
+    assert text =~ ~s({"kind":"platform","tier":"worker"})
+    assert text =~ "default Task model"
+    refute text =~ "HTTP 503"
+  end
+
+  test "a Worker whose own subscription is at its limit names when it resets", %{agent: agent} do
+    {:error, meta} = SalixAgent.LLM.Error.http("catalog", 503, "usage limit reached")
+
+    text =
+      report_for(
+        agent,
+        meta
+        |> Map.merge(billing_stop("quota_exhausted"))
+        |> Map.put("funding", %{"reset_at" => 1_795_000_000})
+      )
+
+    assert text =~ "(quota_exhausted"
+    assert text =~ "resets at 2026-11-18T11:06:40Z"
+    assert text =~ "im_api.internal.read_conversation"
+  end
+
+  test "a Worker stopped by Comma credits says neither another model nor a wait helps",
+       %{agent: agent} do
+    text =
+      report_for(agent, %{
+        "error_class" => "billing_unavailable",
+        "reason" => "insufficient_credits",
+        "retryable" => false,
+        "message" => "Not enough credits. Add credits and try again."
+      })
+
+    assert text =~ "(insufficient_credits)"
+    assert text =~ "add credits"
+    assert text =~ "Mark this Task failed"
+    refute text =~ "resets"
+    refute text =~ "refill"
+  end
+
+  test "an active Loop Task Worker stopped by Comma credits tells the Router to keep the Loop scheduled",
+       %{agent: agent} do
+    {:ok, loop} =
+      SalixAgent.Loops.request_task_loop(%{
+        "tenant_id" => "ten1_0000000000000000977",
+        "group_id" => @group_id,
+        "agent_id" => agent,
+        "task_conversation_id" => @task,
+        "trigger" => %{"every_minutes" => 60}
+      })
+
+    {:ok, _active} =
+      SalixStore.Loops.update(loop["loop_id"], fn row ->
+        {:ok, Map.put(row, "status", "active")}
+      end)
+
+    on_exit(fn ->
+      SalixAgent.Loops.delete_task_loops(@group_id, @task)
+    end)
+
+    text =
+      report_for(agent, %{
+        "error_class" => "billing_unavailable",
+        "reason" => "insufficient_credits",
+        "retryable" => false,
+        "message" => "Not enough credits. Add credits and try again."
+      })
+
+    assert text =~ "(insufficient_credits)"
+    assert text =~ "add credits"
+    assert text =~ "stays scheduled"
+    refute text =~ "Mark this Task failed"
+    refute text =~ "Nothing more will happen"
+  end
+
+  test "a pending Loop Task Worker stopped by Comma credits warns that the Loop was never created",
+       %{agent: agent} do
+    {:ok, _loop} =
+      SalixAgent.Loops.request_task_loop(%{
+        "tenant_id" => "ten1_0000000000000000977",
+        "group_id" => @group_id,
+        "agent_id" => agent,
+        "task_conversation_id" => @task,
+        "trigger" => %{"every_minutes" => 60}
+      })
+
+    on_exit(fn ->
+      SalixAgent.Loops.delete_task_loops(@group_id, @task)
+    end)
+
+    text =
+      report_for(agent, %{
+        "error_class" => "billing_unavailable",
+        "reason" => "insufficient_credits",
+        "retryable" => false,
+        "message" => "Not enough credits. Add credits and try again."
+      })
+
+    assert text =~ "(insufficient_credits)"
+    assert text =~ "still pending (never created)"
+    assert text =~ "im_api.internal.send_message"
+    refute text =~ "stays scheduled"
+  end
+
+  defp billing_stop(reason),
+    do: %{"error_class" => "billing_unavailable", "reason" => reason, "retryable" => false}
+
+  # The one report a Worker sends its Task after the model fails with `error`.
+  defp report_for(agent, error) do
+    Mock.script(List.duplicate({:error, error}, 6))
+
+    deliver_task_message(agent)
+    run(agent)
+
+    assert [{"internal", "internal.send_message", %{"params" => params}}] = im_calls(agent)
+    assert [%{"type" => "text", "text" => text}] = params["content"]
+    text
   end
 
   defp deliver_task_message(agent) do

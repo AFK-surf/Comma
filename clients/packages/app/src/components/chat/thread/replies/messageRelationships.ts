@@ -64,6 +64,9 @@ export function hidesRouterIdentity(
 }
 
 export function sameMessageSender(a: ChatMessage, b: ChatMessage) {
+  if (a.participantId && b.participantId && a.participantId !== b.participantId) {
+    return false;
+  }
   return (
     a.role === b.role &&
     a.platformSource === b.platformSource &&
@@ -76,7 +79,8 @@ export function sameMessageSender(a: ChatMessage, b: ChatMessage) {
 /** One pass over the mounted transcript; no history reads or per-message work queues. */
 export function messageRelationships(
   messages: readonly ChatMessage[],
-  breaks: ReadonlySet<string> = new Set()
+  breaks: ReadonlySet<string> = new Set(),
+  defaultActorRole?: ChatMessage["actorRole"]
 ) {
   const positions = new Map<string, MessageGroupPosition>();
   const roots = messageThreadRoots(messages);
@@ -141,10 +145,34 @@ export function messageRelationships(
       occupied = member.occupied;
     }
     const targetIndex = anchor === undefined ? undefined : indexes.get(anchor);
+    const firstIndex = indexes.get(first.messageId)!;
+    // Beside a Router that hides its identity (Home chat), reply lines between
+    // assistant rows run vertically at the bubbles' left text inset rather than
+    // in an avatar gutter. Any intervening non-user message occupies that left
+    // column, so drawing a bubble-to-bubble line would cut behind an unrelated
+    // bubble; fall back to a quoted preview instead.
+    const placedBy =
+      first.role === "user"
+        ? targetIndex === undefined
+          ? undefined
+          : messages[targetIndex]
+        : first;
+    const targetMessage = targetIndex === undefined ? undefined : messages[targetIndex];
+    const obstructedByLeftBubble =
+      targetIndex !== undefined &&
+      targetMessage !== undefined &&
+      targetMessage.role !== "user" &&
+      placedBy !== undefined &&
+      placedBy.role !== "user" &&
+      hidesRouterIdentity(placedBy.actorRole, defaultActorRole) &&
+      messages.slice(targetIndex + 1, firstIndex).some((item) => item.role !== "user");
     // Extend this thread from its last avatar, not from each direct parent.
-    // Only another thread's intervening connector occupies this interval.
+    // Only another thread's intervening connector occupies this interval,
+    // or a left-side bubble in the path of a bubble-inset Router line.
     const presentation =
-      targetIndex === undefined || targetIndex < occupied ? "preview" : "line";
+      targetIndex === undefined || targetIndex < occupied || obstructedByLeftBubble
+        ? "preview"
+        : "line";
     // A member's reply has no preview slot: it connects only when the line is clear.
     if (first.role === "user" && presentation === "preview") continue;
     if (first.role === "user" && anchor)

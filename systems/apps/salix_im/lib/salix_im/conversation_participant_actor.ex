@@ -106,6 +106,57 @@ defmodule SalixIM.ConversationParticipantActor do
   def deactivate_if_payload(pid, expected_payload, updated_at) when is_map(expected_payload),
     do: call(pid, {:deactivate_if_payload, expected_payload, updated_at})
 
+  def mark_station_bound(pid, updated_at, bound_session \\ nil),
+    do: call(pid, {:mark_station_bound, updated_at, bound_session})
+
+  def mark_station_bound_pending(pid, updated_at, candidate_token),
+    do: call(pid, {:mark_station_bound_pending, updated_at, candidate_token})
+
+  def commit_station_bound_token(
+        pid,
+        updated_at,
+        expected_candidate_token,
+        committed_token
+      ),
+      do:
+        call(
+          pid,
+          {:commit_station_bound_token, updated_at, expected_candidate_token, committed_token}
+        )
+
+  def reconcile_station_bound_token(
+        pid,
+        updated_at,
+        expected_candidate_token,
+        committed_token
+      ),
+      do:
+        call(
+          pid,
+          {:reconcile_station_bound_token, updated_at, expected_candidate_token, committed_token}
+        )
+
+  def clear_uncommitted_station_bound(pid, updated_at, expected_candidate_token),
+    do: call(pid, {:clear_uncommitted_station_bound, updated_at, expected_candidate_token})
+
+  def bind_station_session(pid, updated_at, join_fun) when is_function(join_fun, 0),
+    do: call(pid, {:bind_station_session, updated_at, join_fun})
+
+  def reserve_station_session(pid, reserve_fun) when is_function(reserve_fun, 0),
+    do: call(pid, {:reserve_station_session, reserve_fun})
+
+  def deactivate_if_unbound(
+        pid,
+        updated_at,
+        expected_stale_session \\ nil,
+        verify_unbound_fun \\ nil
+      ),
+      do:
+        call(
+          pid,
+          {:deactivate_if_unbound, updated_at, expected_stale_session, verify_unbound_fun}
+        )
+
   def fence_incarnation(pid, expected_payload, fence_token, cutoff_seq, updated_at)
       when is_map(expected_payload) and is_binary(fence_token) and fence_token != "" and
              is_integer(cutoff_seq) and cutoff_seq >= 0,
@@ -330,6 +381,363 @@ defmodule SalixIM.ConversationParticipantActor do
     {reply, next_state} = participant_result(reply, state)
     request_deactivation_drain(reply)
     {:reply, reply, next_state}
+  end
+
+  def handle_call({:mark_station_bound, updated_at, bound_token}, _from, state) do
+    reply =
+      ConversationParticipantStore.update(state.store_pid, fn participant ->
+        if participant["state"] == "inactive" do
+          {:error, :participant_inactive}
+        else
+          existing_payload = participant["payload"] || %{}
+
+          payload =
+            existing_payload
+            |> Map.put("station_bound", true)
+            |> Map.put("committed_station_bound", true)
+            |> then(
+              &if(is_binary(bound_token) and bound_token != "",
+                do:
+                  &1
+                  |> Map.put("bound_token", bound_token)
+                  |> Map.put("bound_session", bound_token)
+                  |> Map.put("committed_bound_token", bound_token),
+                else: &1
+              )
+            )
+
+          participant
+          |> Map.put("payload", payload)
+          |> Map.put("updated_at", updated_at)
+        end
+      end)
+
+    {reply, next_state} = participant_result(reply, state)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call({:mark_station_bound_pending, updated_at, candidate_token}, _from, state) do
+    reply =
+      ConversationParticipantStore.update(state.store_pid, fn participant ->
+        if participant["state"] == "inactive" do
+          {:error, :participant_inactive}
+        else
+          existing_payload = participant["payload"] || %{}
+
+          # Record only in-flight candidate; NEVER alter `committed_station_bound` /
+          # `committed_bound_token` so consecutive failed writes never restore an uncommitted token.
+          payload =
+            existing_payload
+            |> Map.put("station_bound", true)
+            |> then(
+              &if(is_binary(candidate_token) and candidate_token != "",
+                do:
+                  &1
+                  |> Map.put("bound_token", candidate_token)
+                  |> Map.put("bound_session", candidate_token),
+                else: &1
+              )
+            )
+
+          participant
+          |> Map.put("payload", payload)
+          |> Map.put("updated_at", updated_at)
+        end
+      end)
+
+    {reply, next_state} = participant_result(reply, state)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call(
+        {:commit_station_bound_token, updated_at, expected_candidate_token, committed_token},
+        _from,
+        state
+      ) do
+    reply =
+      ConversationParticipantStore.update(state.store_pid, fn participant ->
+        existing_payload = participant["payload"] || %{}
+
+        current_token =
+          Map.get(existing_payload, "bound_token") ||
+            Map.get(existing_payload, "bound_session")
+
+        cond do
+          participant["state"] == "inactive" ->
+            {:error, :participant_inactive}
+
+          current_token in [expected_candidate_token, committed_token] ->
+            payload =
+              existing_payload
+              |> Map.put("station_bound", true)
+              |> Map.put("committed_station_bound", true)
+              |> Map.put("bound_token", committed_token)
+              |> Map.put("bound_session", committed_token)
+              |> Map.put("committed_bound_token", committed_token)
+
+            participant
+            |> Map.put("payload", payload)
+            |> Map.put("updated_at", updated_at)
+
+          true ->
+            {:error, :stale}
+        end
+      end)
+
+    {reply, next_state} = participant_result(reply, state)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call(
+        {:clear_uncommitted_station_bound, updated_at, expected_candidate_token},
+        _from,
+        state
+      ) do
+    reply =
+      ConversationParticipantStore.update(state.store_pid, fn participant ->
+        existing_payload = participant["payload"] || %{}
+
+        current_token =
+          Map.get(existing_payload, "bound_token") ||
+            Map.get(existing_payload, "bound_session")
+
+        cond do
+          participant["state"] == "inactive" ->
+            {:error, :participant_inactive}
+
+          is_binary(expected_candidate_token) and expected_candidate_token != "" and
+              current_token == expected_candidate_token ->
+            committed_bound = Map.get(existing_payload, "committed_station_bound") == true
+            committed_token = Map.get(existing_payload, "committed_bound_token")
+
+            restored_payload =
+              if committed_bound do
+                existing_payload
+                |> Map.put("station_bound", true)
+                |> then(fn p ->
+                  if is_binary(committed_token) and committed_token != "" do
+                    p
+                    |> Map.put("bound_token", committed_token)
+                    |> Map.put("bound_session", committed_token)
+                  else
+                    p
+                    |> Map.delete("bound_token")
+                    |> Map.delete("bound_session")
+                  end
+                end)
+              else
+                existing_payload
+                |> Map.put("station_bound", false)
+                |> Map.delete("bound_token")
+                |> Map.delete("bound_session")
+              end
+
+            participant
+            |> Map.put("payload", restored_payload)
+            |> Map.put("updated_at", updated_at)
+
+          true ->
+            {:error, :stale}
+        end
+      end)
+
+    {reply, next_state} = participant_result(reply, state)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call(
+        {:reconcile_station_bound_token, updated_at, expected_candidate_token, committed_token},
+        _from,
+        state
+      ) do
+    reply =
+      ConversationParticipantStore.update(state.store_pid, fn participant ->
+        current_token =
+          get_in(participant, ["payload", "bound_token"]) ||
+            get_in(participant, ["payload", "bound_session"])
+
+        cond do
+          participant["state"] == "inactive" ->
+            {:error, :participant_inactive}
+
+          current_token in [expected_candidate_token, committed_token] ->
+            payload =
+              (participant["payload"] || %{})
+              |> Map.put("station_bound", true)
+              |> Map.put("bound_token", committed_token)
+              |> Map.put("bound_session", committed_token)
+
+            participant
+            |> Map.put("payload", payload)
+            |> Map.put("updated_at", updated_at)
+
+          true ->
+            {:error, :stale}
+        end
+      end)
+
+    {reply, next_state} = participant_result(reply, state)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call({:reserve_station_session, reserve_fun}, _from, state) do
+    reply =
+      case ConversationParticipantStore.load(state.store_pid) do
+        {:ok, %{"state" => "inactive"}} ->
+          {:error, :participant_inactive}
+
+        {:ok, %{}} ->
+          reserve_fun.()
+
+        {:error, _} = error ->
+          error
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:bind_station_session, updated_at, join_fun}, _from, state) do
+    reply =
+      ConversationParticipantStore.update(state.store_pid, fn participant ->
+        if participant["state"] == "inactive" do
+          {:error, :participant_inactive}
+        else
+          case join_fun.() do
+            {:ok, committed_token} ->
+              payload =
+                (participant["payload"] || %{})
+                |> Map.delete("prev_station_bound")
+                |> Map.delete("prev_bound_token")
+                |> Map.delete("committed_station_bound")
+                |> Map.delete("committed_bound_token")
+                |> Map.put("station_bound", true)
+                |> then(
+                  &if(is_binary(committed_token) and committed_token != "",
+                    do:
+                      &1
+                      |> Map.put("bound_token", committed_token)
+                      |> Map.put("bound_session", committed_token),
+                    else: &1
+                  )
+                )
+
+              participant
+              |> Map.put("payload", payload)
+              |> Map.put("updated_at", updated_at)
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        end
+      end)
+
+    {reply, next_state} = participant_result(reply, state)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call(
+        {:deactivate_if_unbound, updated_at, expected_stale_token, verify_unbound_fun},
+        _from,
+        state
+      ) do
+    if is_function(verify_unbound_fun) do
+      verdict =
+        cond do
+          is_function(verify_unbound_fun, 2) ->
+            case ConversationParticipantStore.load(state.store_pid) do
+              {:ok, current_participant} ->
+                verify_unbound_fun.(expected_stale_token, current_participant)
+
+              {:error, :not_found} ->
+                {:abort, :not_found}
+
+              {:error, _} ->
+                :unknown
+            end
+
+          is_function(verify_unbound_fun, 1) ->
+            verify_unbound_fun.(expected_stale_token)
+
+          is_function(verify_unbound_fun, 0) ->
+            verify_unbound_fun.()
+
+          true ->
+            :unknown
+        end
+
+      case verdict do
+        {:abort, abort_reason} ->
+          {:reply, {:error, abort_reason}, state}
+
+        :unbound ->
+          reply =
+            ConversationParticipantStore.update(state.store_pid, fn participant ->
+              deactivate_participant(participant, updated_at)
+            end)
+
+          {reply, next_state} = participant_result(reply, state)
+          request_deactivation_drain(reply)
+          {:reply, reply, next_state}
+
+        {:bound, live_token} ->
+          sync_reply =
+            ConversationParticipantStore.update(state.store_pid, fn participant ->
+              if participant["state"] == "inactive" do
+                {:error, :participant_inactive}
+              else
+                payload =
+                  (participant["payload"] || %{})
+                  |> Map.delete("prev_station_bound")
+                  |> Map.delete("prev_bound_token")
+                  |> Map.delete("committed_station_bound")
+                  |> Map.delete("committed_bound_token")
+                  |> Map.put("station_bound", true)
+                  |> then(
+                    &if(is_binary(live_token) and live_token != "",
+                      do:
+                        &1
+                        |> Map.put("bound_token", live_token)
+                        |> Map.put("bound_session", live_token),
+                      else: &1
+                    )
+                  )
+
+                participant
+                |> Map.put("payload", payload)
+                |> Map.put("updated_at", updated_at)
+              end
+            end)
+
+          {_, next_state} = participant_result(sync_reply, state)
+          {:reply, {:error, :already_bound}, next_state}
+
+        _unknown ->
+          {:reply, {:error, :binding_state_unavailable}, state}
+      end
+    else
+      reply =
+        ConversationParticipantStore.update(state.store_pid, fn participant ->
+          bound? = get_in(participant, ["payload", "station_bound"]) == true
+
+          bound_token =
+            get_in(participant, ["payload", "bound_token"]) ||
+              get_in(participant, ["payload", "bound_session"])
+
+          stale_match? =
+            is_binary(expected_stale_token) and expected_stale_token != "" and
+              bound_token == expected_stale_token
+
+          if bound? and not stale_match? do
+            {:error, :already_bound}
+          else
+            deactivate_participant(participant, updated_at)
+          end
+        end)
+
+      {reply, next_state} = participant_result(reply, state)
+      request_deactivation_drain(reply)
+      {:reply, reply, next_state}
+    end
   end
 
   def handle_call(
@@ -1816,15 +2224,19 @@ defmodule SalixIM.ConversationParticipantActor do
             {{:error, :participant_identity_conflict}, state}
 
           existing["state"] == "inactive" ->
-            case ConversationParticipantStore.update(
-                   state.store_pid,
-                   fn participant ->
-                     if is_map(participant["task_thread_delivery_fence"]),
-                       do: {:error, :participant_binding_generation_mismatch},
-                       else: activate_participant(participant, desired)
-                   end
-                 ) do
-              {:ok, participant} -> participant_result({:ok, :activated, participant}, state)
+            with :ok <- check_worker_reactivation_limit(state, existing) do
+              case ConversationParticipantStore.update(
+                     state.store_pid,
+                     fn participant ->
+                       if is_map(participant["task_thread_delivery_fence"]),
+                         do: {:error, :participant_binding_generation_mismatch},
+                         else: activate_participant(participant, desired)
+                     end
+                   ) do
+                {:ok, participant} -> participant_result({:ok, :activated, participant}, state)
+                {:error, _reason} = error -> {error, state}
+              end
+            else
               {:error, _reason} = error -> {error, state}
             end
 
@@ -2225,13 +2637,27 @@ defmodule SalixIM.ConversationParticipantActor do
         participant
       end
 
-    participant
-    |> Map.merge(
-      Map.take(
-        attrs,
-        ~w(role_label notification_filter payload agent_name delivery_session_name delivery_billing_context)
+    prev_epoch =
+      case get_in(participant, ["payload", "activation_epoch"]) do
+        n when is_integer(n) and n >= 0 -> n
+        _ -> 0
+      end
+
+    merged =
+      participant
+      |> Map.merge(
+        Map.take(
+          attrs,
+          ~w(role_label notification_filter payload agent_name delivery_session_name delivery_billing_context)
+        )
       )
-    )
+
+    next_payload =
+      (merged["payload"] || %{})
+      |> Map.put("activation_epoch", prev_epoch + 1)
+
+    merged
+    |> Map.put("payload", next_payload)
     |> Map.put("state", "active")
     |> Map.put("notification_filter", activation_notification_filter(participant, attrs))
     |> Map.put("delivery_cursor_seq", cursor_seq)
@@ -2402,16 +2828,51 @@ defmodule SalixIM.ConversationParticipantActor do
     }
   end
 
-  defp same_participant_identity?(existing, desired) do
-    fields =
-      case existing["actor_type"] do
-        "user" -> ~w(participant_id conversation_id actor_type user_id)
-        "agent" -> ~w(participant_id conversation_id actor_type agent_id)
-        "provider" -> ~w(participant_id conversation_id actor_type provider target_key)
-        _ -> []
-      end
+  defp check_worker_reactivation_limit(state, %{"actor_type" => "agent", "role_label" => "worker"}) do
+    max = SalixIM.TaskSessionSlots.max_task_worker_sessions()
 
-    fields != [] and Map.take(existing, fields) == Map.take(desired, fields)
+    with {:ok, %{"kind" => "agent_task"}} <-
+           ConversationParticipantStore.load_conversation(state.store_pid),
+         {:ok, participants} <-
+           SalixIM.ConversationParticipantProjection.list_bounded(
+             state.group_id,
+             state.conversation_id
+           ) do
+      active_workers =
+        Enum.count(participants, fn p ->
+          p["actor_type"] == "agent" and p["role_label"] == "worker" and p["state"] != "inactive"
+        end)
+
+      if active_workers >= max,
+        do: {:error, {:bad_request, "task worker session limit (#{max}) exceeded"}},
+        else: :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  defp check_worker_reactivation_limit(_state, _existing), do: :ok
+
+  defp same_participant_identity?(existing, desired) do
+    case existing["actor_type"] do
+      "user" ->
+        fields = ~w(participant_id conversation_id actor_type user_id)
+        Map.take(existing, fields) == Map.take(desired, fields)
+
+      "agent" ->
+        fields = ~w(participant_id conversation_id actor_type agent_id)
+
+        Map.take(existing, fields) == Map.take(desired, fields) and
+          SalixIM.TaskSessionSlots.normalize_target_key(existing["target_key"]) ==
+            SalixIM.TaskSessionSlots.normalize_target_key(desired["target_key"])
+
+      "provider" ->
+        fields = ~w(participant_id conversation_id actor_type provider target_key)
+        Map.take(existing, fields) == Map.take(desired, fields)
+
+      _ ->
+        false
+    end
   end
 
   # Before direct Slack reply delivery, Triage attached a provider Participant to

@@ -576,6 +576,31 @@ defmodule SalixCluster.LoopTasksTest do
     assert %{"status" => "ended", "ended_reason" => "ends_at"} = loop_of(ctx, id)
   end
 
+  test "loop.next_run without after_ms keeps the recorded time across restarts", ctx do
+    assert {:ok, %{"conversation_id" => id}} =
+             task_create(ctx, %{"loop" => %{"cadence" => %{"every_minutes" => 360}}})
+
+    ref = bind!(ctx, id)
+    step = :timer.hours(6)
+    assert {:ok, %{"next_run_at" => first}} = Loops.Capabilities.call(ref, "loop.next_run", %{})
+    assert first == loop_of(ctx, id)["started_at"] + step
+
+    # A release an hour later loads the program again: the time stays.
+    SystemsClock.advance(:timer.hours(1))
+    assert {:ok, %{"incarnation" => second}} = Loops.begin_incarnation(ref.loop_id, "n@b", "b")
+    assert {:ok, ^first} = Loops.next_run(ref.loop_id, second, nil)
+
+    # Down over the window: the missed run is due, once.
+    SystemsClock.advance(step)
+    assert {:ok, %{"incarnation" => third}} = Loops.begin_incarnation(ref.loop_id, "n@c", "c")
+    assert {:ok, ^first} = Loops.next_run(ref.loop_id, third, nil)
+
+    # After that run the next window follows it.
+    assert :ok = Loops.record_run(ref.loop_id, third, "run-1")
+    assert {:ok, next} = Loops.next_run(ref.loop_id, third, nil)
+    assert next == first + step
+  end
+
   test "a Loop past its ends_at ends at the Reconciler's sweep without another wake", ctx do
     finish = SystemsClock.system_time(:millisecond) + :timer.minutes(1)
     ends_at = finish |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
@@ -697,6 +722,91 @@ defmodule SalixCluster.LoopTasksTest do
     assert new_ref.loop_id == new["id"]
     assert {:ok, %{"status" => "queued"}} = notify(new_ref, "new-1")
     assert loop_of(ctx, id)["run_count"] == 1
+  end
+
+  test "update_conversation and send_message surface ended Loop state and point to task.update",
+       ctx do
+    assert {:ok, %{"conversation_id" => id}} =
+             task_create(ctx, %{
+               "loop" => %{"cadence" => %{"cron" => "0 8 * * *", "timezone" => "Asia/Singapore"}}
+             })
+
+    ref = bind!(ctx, id)
+
+    # Title-only updates skip Loop lookup and emit no Loop notice.
+    assert {:ok, renamed} =
+             Provider.call_api(ctx.router, "internal", "internal.update_conversation", %{
+               "connect_id" => "internal",
+               "params" => %{"conversation_id" => id, "title" => "Daily 8am traffic"}
+             })
+
+    refute Map.has_key?(renamed, "loop")
+    refute Map.has_key?(renamed, "task_loop_notice")
+
+    # Ending the Loop Task reports both the ended Loop and that automation ended.
+    assert {:ok, failed} =
+             Provider.call_api(ctx.router, "internal", "internal.update_conversation", %{
+               "connect_id" => "internal",
+               "params" => %{"conversation_id" => id, "status" => "failed"}
+             })
+
+    assert failed["status"] == "failed"
+    assert %{"status" => "ended", "ended" => "failed"} = failed["loop"]
+    assert failed["task_loop_notice"] =~ "ended its Background Loop for good"
+
+    # Sending a message to the ended Loop Task points to task.update for automation.
+    assert {:ok, sent} =
+             Provider.call_api(ctx.router, "internal", "internal.send_message", %{
+               "connect_id" => "internal",
+               "params" => %{
+                 "conversation_id" => id,
+                 "content" => [%{"type" => "text", "text" => "Rerun today's report."}]
+               }
+             })
+
+    assert %{"status" => "failed", "message" => send_notice} = sent["task_status_notice"]
+    assert send_notice =~ "ended (failed)"
+    assert send_notice =~ "im_api.internal.task.update"
+
+    # Reopening via update_conversation alone keeps the Loop ended and warns explicitly.
+    assert {:ok, reopened} =
+             Provider.call_api(ctx.router, "internal", "internal.update_conversation", %{
+               "connect_id" => "internal",
+               "params" => %{"conversation_id" => id, "status" => "active"}
+             })
+
+    assert reopened["status"] == "active"
+    assert %{"status" => "ended", "ended" => "failed"} = reopened["loop"]
+    assert reopened["task_loop_notice"] =~ "ended (failed)"
+    assert reopened["task_loop_notice"] =~ "im_api.internal.task.update"
+
+    # Following the notice on the already-active Task restores automation with a fresh Loop.
+    SystemsClock.advance(1)
+    source = "reactivate-after-reopen"
+
+    assert {:ok, %{"updated" => true, "status" => "active"}} =
+             Provider.call_api(ctx.router, "internal", "internal.task.update", %{
+               "connect_id" => "internal",
+               "params" => %{
+                 "conversation_id" => id,
+                 "command" => "Resume the daily 8am traffic report.",
+                 "loop" => %{
+                   "cadence" => %{"cron" => "0 8 * * *", "timezone" => "Asia/Singapore"}
+                 }
+               },
+               "tool_context" => %{
+                 source_message_id: source,
+                 trusted_origin: %{
+                   "source_message_id" => source,
+                   "source_actor_type" => "user",
+                   "agent_group_id" => ctx.group_id,
+                   "source_sent_at_ms" => SystemsClock.system_time(:millisecond)
+                 }
+               }
+             })
+
+    assert %{"status" => "pending", "run_count" => 0} = new_loop = loop_of(ctx, id)
+    refute new_loop["id"] == ref.loop_id
   end
 
   test "a wake after the Worker leaves its Task pauses the Loop as undeliverable", ctx do

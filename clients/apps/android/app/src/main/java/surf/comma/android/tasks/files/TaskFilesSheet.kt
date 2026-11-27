@@ -8,7 +8,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import androidx.activity.ComponentActivity
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
@@ -27,6 +26,7 @@ import surf.comma.android.media.file.FileCardView
 import surf.comma.android.tasks.tools.ToolPage
 import surf.comma.android.ui.ActionMenu
 import surf.comma.android.ui.composer.ComposerModel
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.kit.CommaSheet
 import surf.comma.android.ui.kit.dp
 import surf.comma.android.ui.kit.dpf
@@ -130,7 +130,7 @@ internal class TaskFilesSheet(
                     text = Formatter.formatShortFileSize(activity, file.size)
                 }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = activity.dp(3) })
             }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = activity.dp(12) })
-            if (state.preparing == file.id) addView(ProgressBar(activity), LinearLayout.LayoutParams(activity.dp(20), activity.dp(20)))
+            if (state.preparing == file.id) addView(ActivityIndicator(activity), LinearLayout.LayoutParams(activity.dp(20), activity.dp(20)))
             isEnabled = !busy
             alpha = if (busy && state.preparing != file.id) 0.5f else 1f
             setOnClickListener { prepare(file, ::openFile) }

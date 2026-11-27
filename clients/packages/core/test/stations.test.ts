@@ -34,6 +34,24 @@ const listPath = (ws: string) => `/v1/comma/workspaces/${ws}/stations`;
 const eventsPath = (ws: string) => `/v1/comma/workspaces/${ws}/stations/events`;
 const credentialPath = (ws: string) => `/v1/comma/workspaces/${ws}/station-credential`;
 const relayPath = (ws: string) => `/v1/comma/workspaces/${ws}/station-relay`;
+const stationTasksPath = "/v1/comma/groups/grp_1/station-tasks";
+const taskEventsPath = "/v1/comma/groups/grp_1/conversations/events";
+/** A Task the workspace's Task index says `station` hosts. */
+const stationTask = (host: string, thread: string, status: string) => ({
+  station_id: host,
+  device_id: null,
+  thread,
+  task: null,
+  title: `Task ${thread}`,
+  status,
+  created_by: "user-1@example.test",
+  created_at: 1,
+  last_activity_at: 10,
+  runtime: "codex",
+  model: null,
+  labels: [],
+  rev: 1,
+});
 
 function setup(
   options: {
@@ -192,24 +210,59 @@ describe("Stations", () => {
     expect(t.stations.open).toBe(false);
   });
 
-  it("keeps each workspace's stations linked and their chats read, shown or not, where the host stays on", async () => {
-    const t = setup({ always: true });
+  it("tells a bound endpoint the app is awake again, so the sockets the system took are bound anew", async () => {
+    const t = setup();
     t.api.on("GET", listPath(WS), { stations: [station("st_a")] });
-    const a = t.stations.station("st_a", WS);
+    t.stations.station("st_a", WS);
+    // Nothing bound yet: nothing to tell.
+    await t.client.call("stations.wake", {});
+    expect(t.stations.networkChanges).toBe(0);
+    const value = t.watch<StationsValue>({ topic: "stations", workspace: WS });
     await t.time.pass(100);
-    // Nothing is shown: each station is reached, its chats read and its events followed.
+    expect(links(value())).toEqual({ st_a: "online" });
+    await t.client.call("stations.wake", {});
+    expect(t.stations.networkChanges).toBe(1);
+  });
+
+  it("keeps the stations hosting an unfinished Task linked and their chats read, shown or not, where the host stays on", async () => {
+    const t = setup({ always: true });
+    // The workspace lists no station yet while its Task index is read: st_a hosts a Task at work, st_b only a finished
+    // one. (Its list is shown and gone before any station is linked.)
+    t.api.on("GET", listPath(WS), { stations: [] });
+    t.api.on("GET", stationTasksPath, {
+      tasks: [
+        stationTask("st_a", "1", "in_progress"),
+        stationTask("st_b", "2", "done"),
+      ],
+    });
+    t.api.onStream(taskEventsPath);
+    const a = t.stations.station("st_a", WS);
+    const b = t.stations.station("st_b", WS);
+    const tasks = { topic: "stationTasks", workspace: WS };
+    t.watch(tasks);
+    await t.time.pass(100);
+    t.unwatch(tasks);
+    await t.time.pass(100);
+    // The two stations are enrolled.
+    t.api.on("GET", listPath(WS), { stations: [station("st_a"), station("st_b")] });
+    t.api.open(eventsPath(WS))!.named("stations", {});
+    await t.time.pass(100);
+    // Nothing is shown: only st_a is reached, its chats read and its events followed.
     expect(t.stations.open).toBe(true);
     expect(a.admitted).toHaveLength(1);
     expect(a.asked).toEqual(expect.arrayContaining(["GET /chats", "GET /events"]));
+    expect(b.admitted).toEqual([]);
+    expect(t.stations.mesh.openTo("st_b")).toBe(0);
 
-    // Shown, then hidden: the same connections, and they stay.
+    // Shown: every station is linked. Hidden: st_b goes, st_a stays on its first connection.
     const topic = { topic: "stations", workspace: WS };
     const value = t.watch<StationsValue>(topic);
     await t.time.pass(100);
-    expect(links(value())).toEqual({ st_a: "online" });
+    expect(links(value())).toEqual({ st_a: "online", st_b: "online" });
     t.unwatch(topic);
     await t.time.pass(120_000, 10_000);
-    expect(t.stations.open).toBe(true);
+    expect(t.stations.mesh.openTo("st_a")).toBe(1);
+    expect(t.stations.mesh.openTo("st_b")).toBe(0);
     expect(a.admitted).toHaveLength(1);
     expect(t.api.seen("POST", credentialPath(WS))).toHaveLength(1);
 
@@ -220,10 +273,41 @@ describe("Stations", () => {
 
     // A host that does not stay on reaches no station until one is shown.
     const shownOnly = setup();
-    const b = shownOnly.stations.station("st_a", WS);
+    const d = shownOnly.stations.station("st_a", WS);
     await shownOnly.time.pass(100);
     expect(shownOnly.stations.bound).toEqual([]);
-    expect(b.asked).toEqual([]);
+    expect(d.asked).toEqual([]);
+  });
+
+  it("dials no station the control plane says is offline, and links it once it says it is online", async () => {
+    const t = setup();
+    t.api.on("GET", listPath(WS), {
+      stations: [station("st_a"), station("st_b", { online: false })],
+    });
+    t.stations.station("st_a", WS);
+    const b = t.stations.station("st_b", WS);
+    const topic = { topic: "stations", workspace: WS };
+    const value = t.watch<StationsValue>(topic);
+    await t.time.pass(120_000, 10_000);
+    // Offline: shown so, and never dialled while it stays offline.
+    expect(links(value())).toEqual({ st_a: "online", st_b: "offline" });
+    expect(t.stations.mesh.dials.filter((d) => d.id === "st_b")).toEqual([]);
+
+    // Online: linked at once.
+    t.api.open(eventsPath(WS))!.named("station", { id: "st_b", online: true });
+    await t.time.pass(100);
+    expect(links(value())).toEqual({ st_a: "online", st_b: "online" });
+    expect(b.admitted).toHaveLength(1);
+    expect(t.stations.mesh.openTo("st_b")).toBe(1);
+
+    // Offline again: its connection goes, and nothing dials it meanwhile.
+    t.api.open(eventsPath(WS))!.named("station", { id: "st_b", online: false });
+    await t.time.pass(100);
+    expect(links(value())).toEqual({ st_a: "online", st_b: "offline" });
+    expect(t.stations.mesh.openTo("st_b")).toBe(0);
+    const dialled = t.stations.mesh.dials.filter((d) => d.id === "st_b").length;
+    await t.time.pass(120_000, 10_000);
+    expect(t.stations.mesh.dials.filter((d) => d.id === "st_b")).toHaveLength(dialled);
   });
 
   it("dials each station where the control plane says it is, and there again after it moved", async () => {

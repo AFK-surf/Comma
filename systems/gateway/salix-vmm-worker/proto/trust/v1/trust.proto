@@ -1,0 +1,436 @@
+syntax = "proto3";
+
+package agentvmm.trust.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/AFK-surf/agent-vmm/api/trust/v1;trustv1";
+
+// PersonalMeshRegistryService is provider-neutral. Registry implementations
+// linearize device-signed operations but never become route issuers.
+service PersonalMeshRegistryService {
+  // CreateMesh commits the initial signed personal mesh operation and returns its signed registry
+  // receipt.
+  rpc CreateMesh(CreateMeshRequest) returns (CreateMeshResponse);
+  // CommitJoin applies one signed membership join under the expected registry revision.
+  rpc CommitJoin(CommitJoinRequest) returns (CommitJoinResponse);
+  // CommitRevoke applies one signed membership revocation and retains its durable tombstone.
+  rpc CommitRevoke(CommitRevokeRequest) returns (CommitRevokeResponse);
+  // GetSnapshot reads the signed mesh snapshot required for current membership verification.
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  // PublishEndpoint publishes a member-signed bounded endpoint observation without granting route
+  // authority.
+  rpc PublishEndpoint(PublishEndpointRequest) returns (PublishEndpointResponse);
+  // ListEndpoints reads bounded endpoint observations for current mesh reachability checks.
+  rpc ListEndpoints(ListEndpointsRequest) returns (ListEndpointsResponse);
+}
+
+enum SignatureSuite {
+  SIGNATURE_SUITE_UNSPECIFIED = 0;
+  SIGNATURE_SUITE_P256_SHA256 = 1;
+}
+
+enum AuthorityClass {
+  AUTHORITY_CLASS_UNSPECIFIED = 0;
+  AUTHORITY_CLASS_MANAGED_CONTROLLER = 1;
+  AUTHORITY_CLASS_PERSONAL_MESH = 2;
+}
+
+enum CapabilityKind {
+  CAPABILITY_KIND_UNSPECIFIED = 0;
+  CAPABILITY_KIND_SERVICE_ROUTE = 1;
+  CAPABILITY_KIND_MESH_CONTROL = 2;
+}
+
+enum MeshPermission {
+  MESH_PERMISSION_UNSPECIFIED = 0;
+  MESH_PERMISSION_USE_SERVICES = 1;
+  MESH_PERMISSION_MANAGE_MEMBERS = 2;
+}
+
+enum MeshMembershipState {
+  MESH_MEMBERSHIP_STATE_UNSPECIFIED = 0;
+  MESH_MEMBERSHIP_STATE_PENDING_JOIN = 1;
+  MESH_MEMBERSHIP_STATE_ACTIVE = 2;
+  MESH_MEMBERSHIP_STATE_REVOKED = 3;
+}
+
+enum RegistryOperationKind {
+  REGISTRY_OPERATION_KIND_UNSPECIFIED = 0;
+  REGISTRY_OPERATION_KIND_GENESIS = 1;
+  REGISTRY_OPERATION_KIND_JOIN = 2;
+  REGISTRY_OPERATION_KIND_REVOKE = 3;
+}
+
+enum PairingRole {
+  PAIRING_ROLE_UNSPECIFIED = 0;
+  PAIRING_ROLE_MANAGER = 1;
+  PAIRING_ROLE_JOINER = 2;
+}
+
+// DeviceIdentity publishes the stable device identity and current root public key without private
+// key material.
+message DeviceIdentity {
+  string device_id = 1;
+  bytes root_public_key = 2;
+  uint64 root_key_revision = 3;
+  SignatureSuite signature_suite = 4;
+}
+
+// AuthorityDescriptor names the authority class and revision used to interpret a signed trust
+// object.
+message AuthorityDescriptor {
+  string authority_id = 1;
+  AuthorityClass authority_class = 2;
+  string key_id = 3;
+  bytes trust_domain_ref = 4;
+  uint64 revision = 5;
+}
+
+// VerificationKey publishes a verification key with its algorithm and key identity.
+message VerificationKey {
+  string key_id = 1;
+  bytes public_key = 2;
+  SignatureSuite signature_suite = 3;
+}
+
+// TrustAnchor contains the authority key set authenticated by the enrollment bootstrap.
+message TrustAnchor {
+  AuthorityDescriptor authority = 1;
+  repeated VerificationKey verification_keys = 2;
+  repeated CapabilityKind allowed_capability_kinds = 3;
+  google.protobuf.Timestamp not_before = 4;
+  google.protobuf.Timestamp not_after = 5;
+  uint64 revision = 6;
+  reserved 7;
+  reserved "signature";
+}
+
+// MembershipCredential signs one device's managed membership scope and expiry under its authority.
+message MembershipCredential {
+  AuthorityDescriptor authority = 1;
+  string subject_device_id = 2;
+  uint64 subject_root_key_revision = 3;
+  bytes opaque_claims_digest = 4;
+  uint64 policy_revision = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  bytes signature = 7;
+  bytes subject_root_public_key = 8;
+}
+
+// PersonalMeshDescriptor signs the personal mesh identity and its authorized membership policy.
+message PersonalMeshDescriptor {
+  string mesh_id = 1;
+  string genesis_device_id = 2;
+  bytes genesis_root_public_key = 3;
+  string registry_audience = 4;
+  uint64 policy_epoch = 5;
+  google.protobuf.Timestamp created_at = 6;
+  bytes genesis_signature = 7;
+}
+
+// MeshMembership records an active member's public identity and membership generation.
+message MeshMembership {
+  string mesh_id = 1;
+  string device_id = 2;
+  bytes root_public_key = 3;
+  uint64 root_key_revision = 4;
+  repeated MeshPermission permissions = 5;
+  MeshMembershipState state = 6;
+  uint64 joined_at_revision = 7;
+  optional uint64 revoked_at_revision = 8;
+  bytes operation_digest = 9;
+  repeated bytes signatures = 10;
+}
+
+// MeshTombstone retains a revoked member generation so an old membership cannot return through
+// stale state.
+message MeshTombstone {
+  string device_id = 1;
+  uint64 root_key_revision = 2;
+  uint64 revoked_at_revision = 3;
+  uint64 policy_epoch = 4;
+  bytes operation_digest = 5;
+}
+
+// RegistryReceipt signs the committed operation result and registry revision for idempotent
+// reconciliation.
+message RegistryReceipt {
+  string registry_audience = 1;
+  string mesh_id = 2;
+  uint64 revision = 3;
+  uint64 policy_epoch = 4;
+  bytes snapshot_digest = 5;
+  google.protobuf.Timestamp issued_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  string key_id = 8;
+  bytes signature = 9;
+}
+
+// MeshSnapshot carries bounded current membership and retained revocation facts at one registry
+// revision.
+message MeshSnapshot {
+  string mesh_id = 1;
+  uint64 revision = 2;
+  uint64 policy_epoch = 3;
+  bytes previous_digest = 4;
+  repeated MeshMembership active_members = 5;
+  repeated MeshTombstone tombstones = 6;
+  bytes snapshot_digest = 7;
+  google.protobuf.Timestamp issued_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  RegistryReceipt registry_receipt = 10;
+}
+
+// EndpointObservation signs bounded device reachability. It does not grant service route
+// authority.
+message EndpointObservation {
+  string device_id = 1;
+  uint64 root_key_revision = 2;
+  bytes endpoint_node_id = 3;
+  uint64 endpoint_generation = 4;
+  repeated string supported_alpns = 5;
+  repeated string feature_set = 6;
+  bytes observed_addresses_digest = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  bytes device_signature = 9;
+}
+
+// PairingProof is signed by the device root named in the PAKE-bound context.
+// It is exchanged only after PAKE key confirmation and is single-use through
+// session_id/invite_revision plus the registry operation CAS.
+message PairingProof {
+  bytes session_id = 1;
+  string mesh_id = 2;
+  uint64 invite_revision = 3;
+  PairingRole role = 4;
+  string device_id = 5;
+  uint64 root_key_revision = 6;
+  bytes root_public_key = 7;
+  repeated MeshPermission permissions = 8;
+  bytes context_digest = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  bytes signature = 11;
+}
+
+// RouteBudget bounds cumulative connections, bytes, and concurrent service streams.
+message RouteBudget {
+  uint32 connection_limit = 1;
+  uint64 byte_limit = 2;
+  uint32 concurrency_limit = 3;
+}
+
+// RouteCapability signs exact source, destination, export, audience, generations, expiry, and
+// transport budgets.
+message RouteCapability {
+  string capability_id = 1;
+  AuthorityDescriptor authority = 2;
+  string source_device_id = 3;
+  optional string source_allocation_id = 4;
+  string destination_device_id = 5;
+  string destination_export_id = 6;
+  string allowed_protocol = 7;
+  repeated string allowed_verbs = 8;
+  uint64 route_generation = 9;
+  uint64 policy_revision = 10;
+  RouteBudget budget = 11;
+  google.protobuf.Timestamp not_before = 12;
+  google.protobuf.Timestamp expires_at = 13;
+  bytes nonce = 14;
+  string audience = 15;
+  string issuer_key_id = 16;
+  bytes signature = 17;
+  string issuer_device_id = 18;
+  string route_class = 19;
+  MembershipCredential source_membership_credential = 20;
+}
+
+// RegistryOperation signs durable desired membership intent under one operation ID and expected
+// revision.
+message RegistryOperation {
+  string operation_id = 1;
+  RegistryOperationKind kind = 2;
+  string mesh_id = 3;
+  uint64 expected_revision = 4;
+  uint64 policy_epoch = 5;
+  string issuer_device_id = 6;
+  uint64 issuer_root_key_revision = 7;
+  MeshMembership membership = 8;
+  string invite_id = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  bytes nonce = 11;
+  bytes signature = 12;
+  bytes pairing_proof = 13;
+}
+
+// GetDeviceIdentityRequest carries inputs for an operation that reads public device identity and
+// custody state without exposing private key bytes.
+message GetDeviceIdentityRequest {}
+
+// SignEndpointObservationRequest asks the device root to sign bounded data-worker reachability
+// without granting route authority.
+message SignEndpointObservationRequest {
+  EndpointObservation unsigned_observation = 1;
+}
+
+// ApplyMeshEndpointObservationRequest supplies a peer endpoint observation for current
+// membership and signature verification.
+message ApplyMeshEndpointObservationRequest {
+  string mesh_id = 1;
+  EndpointObservation observation = 2;
+}
+
+// GetEndpointObservationRequest selects a verified member endpoint projection for the requested
+// mesh and device.
+message GetEndpointObservationRequest {
+  string device_id = 1;
+}
+
+// ListPersonalMeshesRequest carries inputs for an operation that reads the local projection of
+// verified personal mesh state.
+message ListPersonalMeshesRequest {}
+
+// PersonalMeshState reports local verified mesh state and its registry freshness.
+message PersonalMeshState {
+  PersonalMeshDescriptor mesh_descriptor = 1;
+  MeshSnapshot snapshot = 2;
+}
+
+// ListPersonalMeshesResponse carries results from an operation that reads the local projection
+// of verified personal mesh state.
+message ListPersonalMeshesResponse {
+  repeated PersonalMeshState meshes = 1;
+}
+
+// InstallManagedTrustRequest supplies the enrollment-authenticated anchor and device membership
+// credential for atomic verification and storage.
+message InstallManagedTrustRequest {
+  TrustAnchor trust_anchor = 1;
+  MembershipCredential membership_credential = 2;
+}
+
+// InstallManagedTrustResponse reports the committed authority and policy revisions after managed
+// trust installation.
+message InstallManagedTrustResponse {
+  string authority_id = 1;
+  uint64 anchor_revision = 2;
+  uint64 policy_revision = 3;
+}
+
+// ApplyMeshSnapshotRequest supplies signed registry state with the expected current revision for
+// local verification.
+message ApplyMeshSnapshotRequest {
+  MeshSnapshot snapshot = 1;
+  uint64 expected_revision = 2;
+}
+
+// ApplyMeshSnapshotResponse reports the verified mesh revision committed by the Host.
+message ApplyMeshSnapshotResponse {
+  uint64 applied_revision = 1;
+}
+
+// PendingRegistryOperation retains signed desired intent until the Host verifies and persists its
+// registry receipt.
+message PendingRegistryOperation {
+  uint64 sequence = 1;
+  RegistryOperation operation = 2;
+  PersonalMeshDescriptor mesh_descriptor = 3;
+}
+
+// PullRegistryOperationsRequest selects a bounded page after the Host-owned durable queue
+// sequence.
+message PullRegistryOperationsRequest {
+  uint64 after_sequence = 1;
+  uint32 limit = 2;
+}
+
+// PullRegistryOperationsResponse returns signed desired intent that remains pending until its
+// verified registry receipt is committed.
+message PullRegistryOperationsResponse {
+  repeated PendingRegistryOperation operations = 1;
+}
+
+// CommitRegistryOperationRequest supplies the original operation identity and signed snapshot
+// required to advance its queue receipt.
+message CommitRegistryOperationRequest {
+  string operation_id = 1;
+  MeshSnapshot snapshot = 2;
+}
+
+// CreateMeshRequest carries inputs for an operation that commits the initial signed personal
+// mesh operation and returns its signed registry receipt.
+message CreateMeshRequest {
+  PersonalMeshDescriptor mesh_descriptor = 1;
+  RegistryOperation genesis = 2;
+}
+
+// CommitJoinRequest carries inputs for an operation that applies one signed membership join
+// under the expected registry revision.
+message CommitJoinRequest {
+  RegistryOperation operation = 1;
+}
+
+// CommitRevokeRequest carries inputs for an operation that applies one signed membership
+// revocation and retains its durable tombstone.
+message CommitRevokeRequest {
+  RegistryOperation operation = 1;
+}
+
+// GetSnapshotRequest carries inputs for an operation that reads the signed mesh snapshot
+// required for current membership verification.
+message GetSnapshotRequest {
+  string mesh_id = 1;
+  uint64 minimum_revision = 2;
+}
+
+// PublishEndpointRequest carries inputs for an operation that publishes a member-signed bounded
+// endpoint observation without granting route authority.
+message PublishEndpointRequest {
+  string mesh_id = 1;
+  uint64 expected_revision = 2;
+  EndpointObservation observation = 3;
+}
+
+// PublishEndpointResponse carries results from an operation that publishes a member-signed
+// bounded endpoint observation without granting route authority.
+message PublishEndpointResponse {
+  RegistryReceipt receipt = 1;
+}
+
+// CreateMeshResponse carries results from an operation that commits the initial signed personal
+// mesh operation and returns its signed registry receipt.
+message CreateMeshResponse {
+  MeshSnapshot snapshot = 1;
+}
+
+// CommitJoinResponse carries results from an operation that applies one signed membership join
+// under the expected registry revision.
+message CommitJoinResponse {
+  MeshSnapshot snapshot = 1;
+}
+
+// CommitRevokeResponse carries results from an operation that applies one signed membership
+// revocation and retains its durable tombstone.
+message CommitRevokeResponse {
+  MeshSnapshot snapshot = 1;
+}
+
+// GetSnapshotResponse carries results from an operation that reads the signed mesh snapshot
+// required for current membership verification.
+message GetSnapshotResponse {
+  MeshSnapshot snapshot = 1;
+}
+
+// ListEndpointsRequest carries inputs for an operation that reads bounded endpoint observations
+// for current mesh reachability checks.
+message ListEndpointsRequest {
+  string mesh_id = 1;
+  uint64 expected_revision = 2;
+}
+
+// ListEndpointsResponse carries results from an operation that reads bounded endpoint
+// observations for current mesh reachability checks.
+message ListEndpointsResponse {
+  repeated EndpointObservation observations = 1;
+  uint64 mesh_revision = 2;
+}

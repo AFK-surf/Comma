@@ -13,60 +13,41 @@ Terminal Slack notices keep exact source/target, Session, installation and IFC c
 
 ## Ordinary Tasks
 
-Each Task has one Worker. Routers delegate commands and own status. Workers publish Messages.
-A person's Task Message reaches both. The Worker answers it. The Router acts only for status, memory or a Router-only action, then posts the result.
-One create-only metadata write commits a new Task and its first command. Earlier failures leave no Task. A same-request retry drops uncommitted Messages.
-After a grace period, `SalixIM.TaskWorkerWatch` reminds a silent Worker once, then tells the initiator once in that Task. In a running Loop, Router notes owe no reply.
-If the Router stops after a Worker result on an active Task, the watch tells the Router once per result. This excludes recurring, Workflow, and Triage Tasks, and a Loop Task while its Loop is active.
-The watch covers only a Worker whose Salix Session reports activity. A [station Task](#station-tasks) has no such Session.
-
-For a Task with a QQ card, the watch also posts working, blocked and paused notices to that card.
-
+Each Task has a primary Worker and may bind up to 6 Worker Sessions reusing `task_worker_agent_id` via Participant `target_key` slots (no new entity or DB migration). Routers delegate commands and own status; Workers publish Messages.
+A person's Task Message reaches both. The Worker answers; the Router acts only for status, memory or Router-only actions, then posts the result.
+One create-only metadata write commits a new Task and its first command. Earlier failures leave no Task; a same-request retry drops uncommitted Messages.
+After a grace period, `SalixIM.TaskWorkerWatch` reminds a silent Worker once (`task_worker_nudge`), then tells the initiator once (`task_worker_stopped`). Passive `context_only` Messages and `wake_reason: "all_sessions"` Messages for secondary Workers do not obligate a reply. In a running Loop, Router notes owe no reply.
+Each `task_worker_nudge` replies to its delegation (`reply_to_message_id`), and replies targeting the nudge move onto that delegation. Clients hide internal watch Messages (`task_status_pending`, `task_worker_nudge`, `task_worker_stopped`).
+If the Router stops after a Worker result on an active Task and all active Workers are idle, the watch tells the Router once per result (excluding recurring, Workflow, Triage, and active Loop Tasks).
+The watch covers only Salix Sessions reporting activity, not [station Tasks](#station-tasks). For a QQ card, it also posts working, blocked and paused notices.
 Provider cards and client timeouts cannot complete, cancel, or reopen Tasks. Telegram review cards complete Tasks through owner review only.
+
+### Multi-session Tasks
+
+A Router may create a multi-session Task (`sessions` 1..6, `initial_wake`: `primary | all`, `human_wakeup_policy`: `primary_only | all_sessions`), add a secondary Session (`im_api.internal.task.add_session`, Router-only, IFC-registered), or toggle `human_wakeup_policy` (`im_api.internal.task.update`).
+Exclusions in v1: Loop (including ended), Collaborative (`People`), Triage, Scheduled, legacy Task Graph, and `TaskRun.switch` on multi-session Tasks return `:bad_request`. `TaskRun.switch` vs `add_session` exclusion is enforced at the ConversationActor commit boundary with an in-memory switch guard (not a cross-system 2PC lock); an owner restart mid-switch falls back to Station `gone` cleanup.
+Primary uses `target_key: nil` (`"lead"` alias) and `notification_filter.messages: "all"`; secondaries use unique slug `target_key` (`^[a-z0-9][a-z0-9_-]{0,31}$`, excluding `all`, `router`, `delegator`, `lead`) and `notification_filter.messages: "mentioned"`.
+`ConversationActor` keeps visibility in `delivery_filter`/explicit `mentions` and freezes `metadata.wake_targets` (leading `@slot` only; `@all` Human/Router only; unaddressed secondary routes to Lead only, never `TaskContinuation` or `TaskCardProjection`).
+Consecutive worker-to-worker handoffs cap at 8 (`worker_handoff_count`, reset on Human/Router messages); hop 9 wakes zero Workers and appends one Router notice (excluding Telegram bound-topic Router).
+Unwoken Sessions incur zero turns or attachment materialization; on wake, delivery prepends live Task Roster and bounded catch-up (<= 200 scan, <= 20 visible non-system messages, <= 16 KiB, filenames only, reference only). `TaskExecution` grants apply only to primary.
 
 ## Station Tasks
 
-A Task with `runs_on` uses a VMM, Cloudflare, physical Station, or a [sandbox](../compute-devices.md#coding-sandboxes) of its own; its Worker Session runs there.
-`SalixWeb.StationTasks` invites the station, gives it each Message (`task.put`) and writes its posts into the Task as the Worker (`task.post`).
-A desktop station must be connected when the Task is made; the Group's Cloud VM need not be: the VM is woken or made, its station invited and given the Task once the VM is ready.
-Its Worker participant is delivered nothing and its Session id names no Salix Session, so `SalixIM.TaskWorkerWatch` reminds and reports nothing for it.
+A Task with `runs_on` uses a VMM, Cloudflare, physical Station, or a [sandbox](../compute-devices.md#coding-sandboxes) of its own; its Worker Session runs there. `SalixWeb.StationTasks` invites the station, sends Messages (`task.put`), and writes posts as the Worker (`task.post`). A desktop station must be connected at creation; a Group Cloud VM need not be (woken/created, then invited on connect). Its Worker participant receives no Salix deliveries and has no Salix Session, so `SalixIM.TaskWorkerWatch` skips it.
 
-`SalixIM.StationTaskWatch` watches it instead.
-A delegation is the latest Message given to the Worker that the Worker did not write; the first Worker Message after it answers it.
-One timer per active station Task with an unanswered delegation; no scan, no poll.
-The owner hands the watch each appended Message, so a Message costs no read. A check reads the Task's last 50 Messages and the station's standing (`SalixIM.Ports.TaskStations.standing/2`) and, once the station has the delegation, asks where its Session stands (`task.status`, one request that starts nothing). The next check comes after `recheck_ms`.
-A delegation past the 50-Message window is still waited for.
-Stages come from the standing and the Session's status; thresholds count from the delegation (`config :salix_im, :station_task_watch`).
+`SalixIM.StationTaskWatch` watches it instead. A delegation is the latest non-`context_only` Message given to the Worker that it did not write; the first Worker Message after it answers it. `task_worker_nudge` replies to its delegation (`reply_to_message_id`), and replies targeting it move onto that delegation. One timer runs per active station Task with an unanswered delegation (no scan or poll). The owner hands each appended Message to the watch. Checks read the last 50 Messages, station standing (`SalixIM.Ports.TaskStations.standing/2`), and—once given—Session status (`task.status`), rechecking after `recheck_ms`. Delegations past the 50-Message window remain waited on. Stages and thresholds (`config :salix_im, :station_task_watch`):
 
 | Stage | Meaning | Default threshold |
 | --- | --- | --- |
-| `vm_not_ready` | The Cloud VM or sandbox is not `ready`, or the Group has no Cloud VM. For the Cloud VM the Router is told once (`task_worker_stopped`, `vm_not_ready`) | 10 minutes (`vm_not_ready_ms`) |
-| `station_offline` | The station's connector is not connected | 10 minutes (`station_offline_ms`) |
-| `not_given` | The station was not given the delegation yet | 10 minutes (`not_given_ms`) |
-| `running` | The Session runs a turn or waits on work it started. Not a stall | 2 hours (`running_ms`), one `station_task_running` info event |
-| `idle_no_reply` | The Session runs nothing, has nothing pending and posted nothing, or the station has no Session of the Task | 10 minutes (`idle_no_reply_ms`), see below |
-| `cannot_start` | Messages are pending and the station's runtime starts no turn; `last_failure` says why | 10 minutes (`cannot_start_ms`), or at once for a sign-in, quota or billing failure |
-| `given_no_reply` | The station has the delegation and cannot say where its Session stands (a station from before `task.status`, no answer in 10 s, an idle Session holding pending Messages) | 30 minutes (`given_no_reply_ms`) |
+| `vm_not_ready` | Cloud VM/sandbox not `ready`, or no Cloud VM (Cloud VM notifies Router once: `task_worker_stopped`, `vm_not_ready`) | 10m (`vm_not_ready_ms`) |
+| `station_offline` | Station connector offline | 10m (`station_offline_ms`) |
+| `not_given` | Station not yet given the delegation | 10m (`not_given_ms`) |
+| `running` | Session active or waiting on work; not a stall | 2h (`running_ms`), `station_task_running` info |
+| `idle_no_reply` | Session idle with nothing pending and no post, or missing Session | 10m (`idle_no_reply_ms`) |
+| `cannot_start` | Pending Messages cannot start a turn; `last_failure` explains | 10m (`cannot_start_ms`), or immediate for sign-in/quota/billing |
+| `given_no_reply` | Delegation given, status unknown (pre-`task.status`, 10s timeout, idle with pending) | 30m (`given_no_reply_ms`) |
 
-A standing that cannot be read is no stage: logged, checked again after `recheck_ms`.
-For `idle_no_reply` the watch reminds and reports as `SalixIM.TaskWorkerWatch` does inside Salix, with its Messages and idempotency keys, at most once each per delegation.
-When the delegation and the Session's idleness (`for_ms`, a duration the station measures) are both `idle_no_reply_ms` old, it appends one `task_worker_nudge` to the Worker, which runs a turn on it, and logs `station_task_nudged`.
-Idle that long again after the reminder with no reply, it appends one `task_worker_stopped` to the Router (`reason: stopped_after_reminder`), ending the Router's `wait_for`.
-For `cannot_start` there is no reminder: `task_worker_stopped` (`reason: cannot_start`, with `last_failure`) goes once the stage is `cannot_start_ms` old, or at once when `last_failure` reads as sign-in, quota or billing.
-A `running` Session is never reminded. A failed append is retried at most 5 times, the stage waiting. With no Router to tell, the stall is still logged and counted.
-A station whose Sessions of the Task ended answers `gone` to `task.put`; Salix removes it from the Task, new Messages do not reach it, the standing is `:not_station`. A check that finds that with the delegation unanswered appends one `task_worker_stopped` for the Router (`reason: station_left`), logs `station_task_stalled` with stage `station_left`, and ends; a Router told for the epoch is not told again, an answered delegation ends quietly.
-`place` is the Task record's `runs_on` (a Task from before it: the last standing read, else `other`).
-`station_task_stalled` is logged once per delegation and stage: waiting stages when the delegation is as old as the threshold; `idle_no_reply`, `cannot_start` and `station_left` when the Router is told. A reminder that works is no incident.
-The event carries `group_id`, `conversation_id`, `worker_agent_id`, `stage`, `place` (`cloud_vm`, `sandbox`, `device`), `vm_status`, `station_state`, `pending_messages`, `last_failure`, `epoch_seq`, `age_ms`.
-`salix.station_tasks.stalled.total{phase, kind}` counts the same events (`phase` the stage, `kind` the place).
-A reported delegation answered later logs `station_task_recovered` with its wait; each answered one records `salix.station_tasks.first_reply.seconds{kind}`.
-`comma_alerting:station_task_stalled` (P2, staging and production) fires for `place=cloud_vm` and `place=sandbox` on every stage but `running` and `given_no_reply`.
-The station reports its own failures (a failed turn, a runtime that did not start) as Worker Messages, answering the delegation.
-A sandbox's `failed` or `lost` notice ends the wait with no first reply or recovery recorded.
-An offline desktop station is only logged and counted.
-A restarted watch rebuilds the delegation and finds its sent reminder and report in the Messages, so it sends neither twice. One younger than `stale_ms` (24 hours) can be reported again; an older one is logged `station_task_stale`, not watched, its first reply not recorded.
-The watch lives in the Task's owner, started on demand only, so after a node start and each placement change each node's `SalixIM.StationTaskWatchRecovery` starts the owners of its active station Tasks (a read per 100 Tasks, a local start per Task, logged `station_task_watch_recovery`).
-A failure inside the watch is logged (`station_task_watch_failed`) and checked again; it never stops the owner.
+Unreadable standing is logged and rechecked after `recheck_ms`. For `idle_no_reply`, when delegation age and Session `for_ms` reach `idle_no_reply_ms`, the watch appends one `task_worker_nudge` (`station_task_nudged`); idle that long again without reply appends `task_worker_stopped` (`stopped_after_reminder`) to the Router. `cannot_start` skips the reminder and sends `task_worker_stopped` (`cannot_start` + `last_failure`). `running` is never reminded. Failed appends retry up to 5 times; missing Routers still log and count. If `task.put` answers `gone`, Salix removes the station (`:not_station`); an unanswered delegation appends `task_worker_stopped` (`station_left`) and logs `station_task_stalled`. `place` comes from `runs_on` (legacy: last standing or `other`). `station_task_stalled` and `salix.station_tasks.stalled.total{phase, kind}` record each delegation/stage once (`group_id`, `conversation_id`, `worker_agent_id`, `stage`, `place`, `vm_status`, `station_state`, `pending_messages`, `last_failure`, `epoch_seq`, `age_ms`). Recovery logs `station_task_recovered` and `salix.station_tasks.first_reply.seconds{kind}`. `comma_alerting:station_task_stalled` (P2) fires for `cloud_vm`/`sandbox` on all stages except `running`/`given_no_reply`. Station-reported failures answer the delegation; sandbox `failed`/`lost` ends the wait; offline desktop stations only log/count. Restarts rebuild state from Messages; delegations older than `stale_ms` (24h) log `station_task_stale`. `SalixIM.StationTaskWatchRecovery` starts owners on node boot and placement change (100 Tasks/page, `station_task_watch_recovery`); watch failures log `station_task_watch_failed` without stopping the owner.
 
 ## Continuation and containment
 
@@ -96,7 +77,7 @@ The Task keeps its row (trigger, limits, runs, checkpoint). `loop.create` there 
 A [Loop Task](../architecture/DOMAIN_CONCEPTS.md#loop-tasks)'s Loop is written `pending` by the Task's request and gets its program from the Worker. The Task's end or archive ends it and keeps the row as `ended`.
 
 A Loop's row may hold a trigger (`every_minutes`, or `cron` with an IANA `timezone`) and limits (`max_runs`, `ends_at`, `stop_condition`).
-`loop.next_run` answers the trigger's next time after `after_ms`, in the trigger's timezone, and records it as `next_run_at`. After missed windows, the latest missed one.
+`loop.next_run` records the trigger's next time (in its timezone) after `after_ms`, default the unreached `next_run_at`, as `next_run_at`; after missed ones, the latest.
 Each delivered `agent.notify` is one run (`run_count`). The run that reaches `max_runs` ends the Loop.
 The first wake, `loop.next_run` or load at or after `ends_at` ends the Loop, and each node's minute sweep ends one page of the rest.
 A guest wait returns after at most 24 hours.

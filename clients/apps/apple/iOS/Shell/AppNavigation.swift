@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import UIKit
 
 /// Where the member is: the selected tab and whether the router chat covers the tabs. Owned by
 /// `AppShellView` and read from the environment.
@@ -10,8 +11,11 @@ final class AppNavigation {
     var newTaskOpen = false
     /// Settings keeps one stack while its master list moves between the trailing column and the full shell.
     var settingsPath: [SettingsRoute] = []
+    /// The open person's id, kept here as Settings' path is, so the shell can make room for its list.
+    var peoplePath: [String] = []
     /// Advances when the selected tab is tapped again; that tab pops to its root and scrolls to the top.
     private(set) var reselect: [AppTab: Int] = [:]
+    private(set) var animatesRouterOpening = false
     var routerOpen: Bool
     /// An open Task's sheet is up, or on its way up, over the router chat and the tabs; minimized to its bar, it is not.
     var taskRaised = false
@@ -21,16 +25,22 @@ final class AppNavigation {
     private(set) var routerFocusRequest = 0
     /// Advances when something covers the router chat and its keyboard should go down.
     private(set) var keyboardDismissal = 0
-    /// The router button in global coordinates, where the router chat zooms from and back into.
-    @ObservationIgnored var routerButtonFrame: CGRect = .zero
-    /// Told, as the router chat starts closing, when it will reach the router button and how hard, so the button can
-    /// take it in then; told nil when a closing chat is stopped before it arrives. Set by the tab bar.
-    @ObservationIgnored var routerLanding: ((RouterLanding?) -> Void)?
+    /// The tab bar owns the button used by the chat's zoom.
+    @ObservationIgnored weak var routerTabBar: (any ShellBar)?
     @ObservationIgnored private var focusAfterOpening = false
 
     init(tab: AppTab = .home, routerOpen: Bool = false) {
         self.tab = tab
         self.routerOpen = routerOpen
+    }
+
+    /// The selected tab has a detail open beside its list (`AppTab.ownsShellColumns`).
+    var columnDetailOpen: Bool {
+        switch tab {
+        case .settings: !settingsPath.isEmpty
+        case .people: !peoplePath.isEmpty
+        case .home, .inbox, .apps, .drive, .plugins: false
+        }
     }
 
     func select(_ next: AppTab) {
@@ -43,6 +53,7 @@ final class AppNavigation {
             if focus { routerFocusRequest += 1 }
             return
         }
+        animatesRouterOpening = true
         focusAfterOpening = focus
         // The chat closes into its circle, which search would cover.
         searchOpen = false
@@ -56,6 +67,8 @@ final class AppNavigation {
 
     /// The router layer finished opening: a pending focus request applies now.
     func routerSettled() {
+        // The opening has landed; a layer built from here on finds the chat already open.
+        animatesRouterOpening = false
         guard routerOpen, focusAfterOpening else { return }
         focusAfterOpening = false
         routerFocusRequest += 1

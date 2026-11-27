@@ -1367,7 +1367,7 @@ test(
   }
 );
 
-for (const sampleRate of [48000, 44100]) {
+for (const sampleRate of [48000, 44100, 8000, 88200]) {
   test(
     `real AAC save and transcription artifacts preserve both tracks at ${sampleRate} Hz`,
     { tag: "@mac" },

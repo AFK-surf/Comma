@@ -8,6 +8,7 @@ defmodule CommaWeb.ClientSurface do
 
   @non_cookie_paths [
     "/v1/comma/billing/stripe/webhook",
+    "/v1/comma/billing/apple/notifications",
     "/v1/comma/billing/stripe/checkout/return",
     "/v1/comma/billing/stripe/checkout/cancel",
     "/v1/comma/integrations/telegram/connect/callback",
@@ -22,6 +23,7 @@ defmodule CommaWeb.ClientSurface do
     "/v1/comma/auth/apple",
     "/v1/comma/auth/apple/link/verify",
     "/v1/comma/auth/watch/exchange",
+    "/v1/comma/auth/raycast/exchange",
     "/v1/comma/auth/email/login",
     "/v1/comma/auth/email/verify",
     "/v1/comma/auth/registration/complete",

@@ -12,7 +12,7 @@ defmodule SalixStore.SearchDocumentEnvelope do
   @message_bytes 32_768
   @message_window_bytes 262_144
   @message_slots 64
-  @query_min_codepoints 2
+  @query_min_codepoints 1
   @query_max_codepoints 128
   @snippet_before 48
   @snippet_after 80
@@ -65,7 +65,7 @@ defmodule SalixStore.SearchDocumentEnvelope do
       kind: kind,
       content: content,
       folded_content: folded_content,
-      short_grams: bigrams(folded_content),
+      short_grams: short_grams(kind, folded_content),
       weight_bytes: max(byte_size(content), byte_size(folded_content))
     }
   end
@@ -102,7 +102,7 @@ defmodule SalixStore.SearchDocumentEnvelope do
       true ->
         folded = fold(raw)
         folded_codepoints = codepoint_count(folded)
-        short_grams = bigrams(folded)
+        short_grams = query_grams(raw, folded)
 
         cond do
           folded_codepoints < @query_min_codepoints ->
@@ -262,6 +262,31 @@ defmodule SalixStore.SearchDocumentEnvelope do
     |> :string.casefold()
     |> IO.iodata_to_binary()
     |> String.normalize(:nfkc)
+  end
+
+  # A title also keeps its single characters, so a one-character query finds
+  # Task titles through the same index. Messages keep only bigrams.
+  defp short_grams(:title, folded_content),
+    do: bigrams(folded_content) ++ unigrams(folded_content)
+
+  defp short_grams(:message, folded_content), do: bigrams(folded_content)
+
+  # A one-codepoint query matches titles only: only titles hold unigrams. One
+  # codepoint can fold to several ("ß" to "ss"); it stays one. A grapheme of
+  # several codepoints ("e" with two accents) folds to several and stays a
+  # bigram query, so it still finds Message text.
+  defp query_grams(raw, folded) do
+    if codepoint_count(raw) == 1 or codepoint_count(folded) == 1,
+      do: unigrams(folded),
+      else: bigrams(folded)
+  end
+
+  @spec unigrams(String.t()) :: [String.t()]
+  def unigrams(folded_content) when is_binary(folded_content) do
+    folded_content
+    |> String.codepoints()
+    |> Enum.map(&("u:" <> &1))
+    |> Enum.uniq()
   end
 
   @spec bigrams(String.t()) :: [String.t()]

@@ -222,6 +222,7 @@ describe("Comma Main client-control API", () => {
         modules: [
           expect.objectContaining({ id: "global-settings" }),
           expect.objectContaining({ id: "client-settings" }),
+          expect.objectContaining({ id: "app" }),
           expect.objectContaining({ id: "in-app-browser" }),
         ],
       });
@@ -243,6 +244,7 @@ describe("Comma Main client-control API", () => {
         "notificationSound",
         "notifyRouterMessages",
         "quickChatEnabled",
+        "showComputerUseInNotch",
         "showInAirDrop",
         "showInDock",
         "showInMenuBar",
@@ -271,7 +273,7 @@ describe("Comma Main client-control API", () => {
         ],
         id: "client-settings",
       });
-      // What the user has already seen is not the agent's to rewrite.
+      // What the user has already seen, and their analytics consent, are not the agent's to rewrite.
       expect(
         Object.keys(
           clientSettings.apis.find((api) => api.id === "update")!.inputSchema.properties
@@ -280,6 +282,7 @@ describe("Comma Main client-control API", () => {
         expect.not.arrayContaining([
           "onboardingCompletedUserIds",
           "routerProfileNoticeSeen",
+          "usageAnalyticsEnabled",
         ])
       );
 
@@ -291,6 +294,7 @@ describe("Comma Main client-control API", () => {
       expect(browser).toMatchObject({
         apis: [
           expect.objectContaining({ id: "open-tab", usage: expect.any(String) }),
+          expect.objectContaining({ id: "close-tab", usage: expect.any(String) }),
           expect.objectContaining({ id: "list-targets", usage: expect.any(String) }),
           ...[
             "snapshot",
@@ -332,6 +336,7 @@ describe("Comma Main client-control API", () => {
       notifyRouterMessages: true,
       quickChatEnabled: true,
       revision: 1,
+      showComputerUseInNotch: true,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
@@ -363,6 +368,7 @@ describe("Comma Main client-control API", () => {
           notificationSound: false,
           notifyRouterMessages: false,
           quickChatEnabled: false,
+          showComputerUseInNotch: false,
           showInAirDrop: false,
           showInNotch: false,
         },
@@ -373,6 +379,7 @@ describe("Comma Main client-control API", () => {
       notificationSound: false,
       notifyRouterMessages: false,
       quickChatEnabled: false,
+      showComputerUseInNotch: false,
       showInAirDrop: false,
       showInNotch: false,
     });
@@ -416,10 +423,11 @@ describe("Comma Main client-control API", () => {
         harness.registry.invoke({ api: "update", input, module: "global-settings" })
       ).rejects.toThrow(/invalid/i);
     }
-    // What the user has already seen is not the agent's to rewrite.
+    // What the user has already seen, and their analytics consent, are not the agent's to rewrite.
     for (const input of [
       { onboardingCompletedUserIds: [] },
       { routerProfileNoticeSeen: true },
+      { usageAnalyticsEnabled: true },
       {},
     ]) {
       await expect(
@@ -478,6 +486,30 @@ describe("Comma Main client-control API", () => {
     ).resolves.toEqual({
       error: "browser_operation_failed",
       message: "Timed out waiting for in-app browser tab t to become ready.",
+    });
+
+    await expect(
+      harness.registry.invoke({
+        api: "close-tab",
+        input: { tabId: "tab-opened" },
+        module: "in-app-browser",
+      })
+    ).resolves.toEqual({ closed: { tabId: "tab-opened" } });
+    expect(harness.browser.closeClientTab).toHaveBeenCalledWith({
+      tabId: "tab-opened",
+    });
+    harness.browser.closeClientTab.mockRejectedValueOnce(
+      new Error("The requested in-app browser tab gone is unavailable.")
+    );
+    await expect(
+      harness.registry.invoke({
+        api: "close-tab",
+        input: { tabId: "gone" },
+        module: "in-app-browser",
+      })
+    ).resolves.toEqual({
+      error: "browser_operation_failed",
+      message: "The requested in-app browser tab gone is unavailable.",
     });
 
     await expect(
@@ -603,6 +635,46 @@ describe("Comma Main client-control API", () => {
     expect(artifacts.some((path) => path.endsWith(".tmp"))).toBe(false);
   });
 
+  it("restarts Comma through Main's relaunch and answers with its result", async () => {
+    const harness = await createHarness();
+    const server = await ClientControlApiServer.open({
+      registry: harness.registry,
+      token: "restart-token",
+    });
+    try {
+      const app = await request(server.endpoint, "restart-token", "/v1/modules/app");
+      expect(app).toMatchObject({
+        apis: [
+          expect.objectContaining({ id: "restart", usage: "comma call app restart" }),
+        ],
+        id: "app",
+      });
+      const response = await fetch(`${server.endpoint}/v1/invoke`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer restart-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ module: "app", api: "restart", input: {} }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ relaunching: true });
+      expect(harness.relaunch).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("answers a build that cannot restart itself as it is", async () => {
+    const harness = await createHarness();
+    harness.relaunch.mockResolvedValueOnce({ relaunching: false });
+
+    await expect(
+      harness.registry.invoke({ api: "restart", input: {}, module: "app" })
+    ).resolves.toEqual({ relaunching: false });
+    expect(harness.relaunch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects oversized bodies before invoking Main handlers", async () => {
     const harness = await createHarness();
     const server = await ClientControlApiServer.open({
@@ -643,6 +715,7 @@ async function createHarness() {
     notifyRouterMessages: true,
     quickChatEnabled: true,
     revision: 0,
+    showComputerUseInNotch: true,
     showInAirDrop: true,
     showInDock: true,
     showInMenuBar: true,
@@ -679,6 +752,7 @@ async function createHarness() {
       pngImage: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
       target: browserTarget(),
     })),
+    closeClientTab: vi.fn(async (_input: { tabId: string }) => undefined),
     listClientTargets: vi.fn(() => [browserTarget()]),
     openClientTab: vi.fn(async ({ url }: { url: string }) => ({
       ...browserTarget(),
@@ -688,12 +762,16 @@ async function createHarness() {
     sendClientCdpCommand: vi.fn(async () => ({ result: { value: "Linear" } })),
     runClientAgentCommand: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   };
+  const relaunch = vi.fn(
+    async (): Promise<{ relaunching: boolean }> => ({ relaunching: true })
+  );
   const registry = createCommaClientControlRegistry({
     appPreferences,
     artifactRoot,
     browser,
+    relaunch,
   });
-  return { appPreferences, artifactRoot, browser, registry };
+  return { appPreferences, artifactRoot, browser, registry, relaunch };
 }
 
 function browserTarget() {

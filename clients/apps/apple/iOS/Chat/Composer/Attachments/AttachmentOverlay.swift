@@ -33,8 +33,8 @@ struct AttachmentOverlay: View {
     /// The + button: what it has open, and its frame in global coordinates.
     let button: AttachmentModel
     let actions: AttachmentActions
-    /// The menu's laid-out height: three 60pt rows and 8pt padding at the default text size.
-    @State private var menuHeight: CGFloat = 196
+    /// The menu's laid-out height: four 68pt rows and 10pt padding at the default text size.
+    @State private var menuHeight: CGFloat = 292
     /// What the card shows. It outlives `surface` while the card folds back into the button, then returns
     /// to the menu, ready for the next touch.
     @State private var shown = AttachmentSurface.menu
@@ -52,8 +52,9 @@ struct AttachmentOverlay: View {
     /// the touch, which never reports an end: a flag left set kept this area over the + and the + dead.
     @GestureState private var reversing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.conversationKeyboardInset) private var keyboardInset
 
-    private static let menuWidth: CGFloat = 260
+    private static let menuWidth: CGFloat = 330
     /// The composer's distance from the keyboard, or from the bottom safe area, below the + button.
     private static let composerInset: CGFloat = 8
     /// The menu's lowest distance from the screen's bottom edge, clear of the display's corners.
@@ -80,12 +81,16 @@ struct AttachmentOverlay: View {
                     .allowsHitTesting(surface != nil)
                     .accessibilityHidden(true)
                 // The card always waits on the button, folded and invisible, so a tap grows it out at once.
-                let target = shown == .menu ? menuFrame(on: plus, in: geometry.size) : window
+                // When the host carries the keyboard inset in `.safeAreaPadding` instead of SwiftUI's keyboard
+                // safe area (TaskDock), `.ignoresSafeArea(.container)` drops it; trim the menu bounds by that overlap.
+                let menuBounds = CGSize(width: geometry.size.width, height: max(0, geometry.size.height - keyboardInset))
+                let width = menuWidth(on: plus, in: geometry.size)
+                let target = shown == .menu ? menuFrame(on: plus, width: width, in: menuBounds) : window
                 // Reduced motion keeps the card in place and only fades it.
                 let rect = open || reduceMotion ? target : plus
                 // Folded, the content still sits where it rests, so the glass grows over it rather than carrying it.
                 let rest = CGSize(width: target.midX - plus.midX, height: target.midY - plus.midY)
-                card(shown, window: window.size, offset: open || reduceMotion ? .zero : rest)
+                card(shown, menuWidth: width, window: window.size, offset: open || reduceMotion ? .zero : rest)
                     .modifier(CardEdges(.vertical, rect.minY, rect.maxY))
                     .modifier(CardEdges(.horizontal, rect.minX, rect.maxX))
                     // Resting, the card is all but transparent rather than gone, so its glass and rows are already drawn
@@ -114,13 +119,13 @@ struct AttachmentOverlay: View {
     }
 
     /// Each surface's content keeps its own size, so the card can clip it at any size on the way.
-    private func card(_ surface: AttachmentSurface, window: CGSize, offset: CGSize) -> some View {
+    private func card(_ surface: AttachmentSurface, menuWidth: CGFloat, window: CGSize, offset: CGSize) -> some View {
         let arriving = AnyTransition.asymmetric(insertion: .opacity.animation(AttachmentMotion.arrive),
                                                 removal: .opacity.animation(AttachmentMotion.leave))
         return AttachmentCard(surface: surface, raised: open) {
             ZStack {
                 AttachmentMenu(showsDrive: actions.openDrive != nil, choose: choose)
-                    .frame(width: Self.menuWidth)
+                    .frame(width: menuWidth)
                     .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { menuHeight = $0 }
                     .opacity(surface == .menu ? 1 : 0)
@@ -144,12 +149,17 @@ struct AttachmentOverlay: View {
         }
     }
 
+    private func menuWidth(on plus: CGRect, in size: CGSize) -> CGFloat {
+        let available = max(0, size.width - plus.minX - Self.windowInset)
+        return available > 0 ? min(Self.menuWidth, available) : Self.menuWidth
+    }
+
     /// Lined up with the + button's leading edge and centred on the composer's bottom edge. It goes no lower
     /// than the screen's corners allow, or, over the keyboard (where this overlay ends), than the + itself.
-    private func menuFrame(on plus: CGRect, in size: CGSize) -> CGRect {
+    private func menuFrame(on plus: CGRect, width: CGFloat, in size: CGSize) -> CGRect {
         let centre = plus.maxY + Self.composerInset
         let bottom = min(centre + menuHeight / 2, max(plus.maxY, size.height - Self.bottomClearance))
-        return CGRect(x: plus.minX, y: bottom - menuHeight, width: Self.menuWidth, height: menuHeight)
+        return CGRect(x: plus.minX, y: bottom - menuHeight, width: width, height: menuHeight)
     }
 
     private func windowFrame(in size: CGSize) -> CGRect {
@@ -240,4 +250,10 @@ struct AttachmentOverlay: View {
         close()
         Task { await actions.attach(images) }
     }
+}
+
+extension EnvironmentValues {
+    /// How far the keyboard overlaps the bottom of the conversation when its host disables SwiftUI's keyboard
+    /// safe area (as `TaskDockViewController` does, applying the inset through `.safeAreaPadding` instead).
+    @Entry var conversationKeyboardInset: CGFloat = 0
 }

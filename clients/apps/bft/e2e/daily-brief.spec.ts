@@ -150,12 +150,70 @@ test("an admin turns the brief on for an Agent Swarm's Slack bot", async ({ page
   await expect(page.getByText("The daily brief is not set up")).toBeVisible();
   await expect(page.getByRole("button", { name: "Sync members" })).toBeDisabled();
   await page.getByText("Send daily briefs").click();
-  await page.getByRole("button", { name: /Slack bot/ }).click();
+  await page.getByRole("button", { name: /Bot/ }).click();
   await page.getByRole("option", { name: /Acme Assistant/ }).click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved")).toBeVisible();
   expect(requests.find((request) => request.method === "PUT")).toMatchObject({
-    body: { enabled: true, slack_connect_id: "slack-main" },
+    body: {
+      enabled: true,
+      provider: "slack",
+      connect_id: "slack-main",
+      slack_connect_id: "slack-main",
+    },
+  });
+});
+
+test("an admin picks a Feishu bot and its team group by name", async ({ page }) => {
+  const feishuMeetings = {
+    ...meetings,
+    connects: [
+      ...meetings.connects,
+      {
+        ...meetings.connects[0],
+        connect_id: "feishu-main",
+        provider: "feishu",
+        app_name: "飞书助理",
+        bot_username: null,
+      },
+    ],
+  };
+  await injectCsrfToken(page);
+  const requests = await routeApi(page, (request) => {
+    if (request.path === "/orgs/acme/context") return ok(context);
+    if (request.path === "/orgs/acme/meetings/p-1") return ok(feishuMeetings);
+    if (request.path === "/orgs/acme/daily-brief") return ok(brief(settings));
+    if (request.path === "/orgs/acme/daily-brief/channels")
+      return ok({
+        channels: [
+          { id: "oc_sales", name: "销售前线" },
+          { id: "oc_product", name: "产品讨论" },
+        ],
+        complete: true,
+      });
+    if (request.method === "PUT") return ok(request.body);
+    return undefined;
+  });
+  await page.goto("/orgs/acme/daily-brief");
+
+  await page.getByRole("button", { name: /Bot/ }).click();
+  await page.getByRole("option", { name: /飞书助理/ }).click();
+  const group = page.getByRole("button", { name: "Team brief group" });
+  await expect(group).toHaveText("Don't post a team brief");
+  await group.click();
+  await page.getByPlaceholder("Filter groups by name").fill("产品");
+  await expect(page.getByRole("button", { name: /销售前线/ })).toHaveCount(0);
+  await page.getByRole("button", { name: /产品讨论/ }).click();
+  await expect(group).toHaveText("产品讨论");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved")).toBeVisible();
+  expect(requests.find((request) => request.method === "PUT")).toMatchObject({
+    body: {
+      provider: "feishu",
+      connect_id: "feishu-main",
+      slack_connect_id: null,
+      team_channel_id: "oc_product",
+    },
   });
 });
 
@@ -177,4 +235,61 @@ test("an admin sees today's briefs and sends a member's brief again", async ({
   expect(requests.filter((request) => request.path.endsWith("/send"))).toMatchObject([
     { method: "POST", path: "/orgs/acme/daily-brief/members/m-1/send", csrf },
   ]);
+});
+
+test("each Agent Swarm has its own brief, and a member's one brief has one sender", async ({
+  page,
+}) => {
+  const swarms = [
+    { id: "p-1", name: "Support Desk" },
+    { id: "p-2", name: "Engineering" },
+  ];
+  const engineering = { ...settings, project_id: "p-2", slack_connect_id: "slack-eng" };
+  const both = (saved: typeof settings) => ({
+    ...brief(saved),
+    configured_projects: swarms.map((swarm) => ({
+      project_id: swarm.id,
+      provider: "slack",
+      enabled: true,
+    })),
+    members: brief(saved).members.map((member) => ({ ...member, project_id: "p-1" })),
+  });
+  await injectCsrfToken(page);
+  const requests = await routeApi(page, (request) => {
+    if (request.path === "/orgs/acme/context")
+      return ok({ ...context, projects: swarms });
+    if (request.path.startsWith("/orgs/acme/meetings/")) return ok(meetings);
+    if (request.path === "/orgs/acme/daily-brief")
+      return ok(
+        request.search === "?project_id=p-2" ? both(engineering) : both(settings)
+      );
+    if (request.path === "/orgs/acme/daily-brief/members/m-1")
+      return ok({ id: "m-1", project_id: "p-2" });
+    return undefined;
+  });
+  await page.goto("/orgs/acme/daily-brief");
+
+  const picker = page.getByRole("button", { name: /Agent Swarm/ }).first();
+  await expect(picker).toHaveText(/Support Desk/);
+  await picker.click();
+  await page.getByRole("option", { name: "Engineering" }).click();
+  await expect(page).toHaveURL(/project=p-2/);
+  // The page's Swarm list has closed before a member's opens.
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  expect(requests.map((request) => request.search)).toContain("?project_id=p-2");
+
+  const sender = page.getByRole("button", { name: /Agent Swarm · Maya Patel/ });
+  await expect(sender).toHaveText(/Support Desk/);
+  await sender.click();
+  const moved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" && response.url().endsWith("/m-1")
+  );
+  await page.getByRole("option", { name: "Engineering" }).click();
+  await moved;
+  expect(requests.find((request) => request.method === "PUT")).toMatchObject({
+    path: "/orgs/acme/daily-brief/members/m-1",
+    csrf,
+    body: { project_id: "p-2" },
+  });
 });

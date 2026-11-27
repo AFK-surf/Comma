@@ -41,6 +41,21 @@ defmodule Salix.Telemetry do
   # comma_alerting:sandbox_checks_stalled takes salix.sandbox.ends.total's
   # zero series as proof that a pod runs the sandbox checks when no pod has
   # published the oldest-start gauge.
+  # The node's Agent VMM worker (SalixStore.AgentVMM.Worker). It reports each
+  # fact as the worker process tells it; nothing scans for them.
+  # salix.agent_vmm.worker.connections / .sessions: how many Agent VMM Host
+  #   connections this node holds, and how many runtime sessions ride on them
+  #   (0 while the worker is down). Sum across pods for the fleet.
+  # salix.agent_vmm.worker.events.total, by kind: does the worker keep running
+  #   (worker_start, worker_exit), how often do Hosts connect and leave
+  #   (host_connected, host_disconnected), do Salix's control decisions reach
+  #   it (control_error), do Host commands end without a known result
+  #   (unknown_outcome), and do outbound iroh tunnels connect (iroh_connect,
+  #   iroh_connect_failure)?
+  # salix.agent_vmm.image_import.*: do runtime image imports succeed, how long
+  #   do they take, and how many archive bytes did the Hosts import?
+  @agent_vmm_worker_events ~w(worker_start worker_exit host_connected host_disconnected control_error unknown_outcome iroh_connect iroh_connect_failure other)
+  @agent_vmm_import_outcomes ~w(success failure canceled stale other)
   @sandbox_states ~w(starting ready stopped lost failed ended other)
   @sandbox_end_states ~w(stopped lost failed ended)
   @sandbox_start_kinds ~w(create wake other)
@@ -68,7 +83,8 @@ defmodule Salix.Telemetry do
     # ifc_resolve: how long do an effect's IFC facts take to read, before the
     # kernel decides? Slow ones log `ifc_resolve_slow` with atom counts by kind.
     # session_fence: how long does a Session's durable write take? Slow ones log
-    # `session_fence_slow` with the fence's kind, each phase and each freeze call.
+    # `session_fence_slow` with the fence's kind, each phase, each freeze call
+    # and each write step.
     # web_http_request: do agent-authored API calls (`web.http_request`) get
     # answers (ok), get refused by the remote (rejected = 4xx, failed = 5xx),
     # or never complete (timeout, error = transport)? URLs stay out of labels.
@@ -88,8 +104,11 @@ defmodule Salix.Telemetry do
     "salix_calendar" => ~w(source_sync source_transition watch other),
     # dictation_first_result: how long after a live dictation segment's speech
     # begins do its first words come back?
+    # meeting_notice_settle: a meeting notice settled without a send: no longer
+    # wanted (skipped), not sent before the meeting started (timeout), or lost
+    # for another reason (dropped; the log line names the reason).
     "salix_meet" =>
-      ~w(calendar_enrollment calendar_enrollment_group calendar_scan calendar_scan_group calendar_join calendar_join_group calendar_join_dispatch calendar_join_dispatch_skip meeting_artifact meeting_asr dictation_asr dictation_stream dictation_first_result meeting_delivery meeting_delivery_claim meeting_runtime_late_event meeting_watchdog meeting_stuck_nonterminal other),
+      ~w(calendar_enrollment calendar_enrollment_group calendar_scan calendar_scan_group calendar_join calendar_join_group calendar_join_dispatch calendar_join_dispatch_skip meeting_artifact meeting_asr dictation_asr dictation_stream dictation_first_result meeting_delivery meeting_delivery_claim meeting_notice_settle meeting_runtime_late_event meeting_watchdog meeting_stuck_nonterminal other),
     "salix_mcp" => ~w(tool mcp other),
     # conversation_log_recovery: are indexed candidates completing, retained, or failing?
     # conversation_log_recovery_claim: can each Pod discover due work within its poll budget?
@@ -122,7 +141,7 @@ defmodule Salix.Telemetry do
       slack_mirror_thread slack_mirror_thread_reactions
       slack_semantic_search slack_message_search slack_semantic_index slack_semantic_file_index
       slack_semantic_enqueue slack_semantic_reconcile feishu_mirror_search qq_mirror_search
-      lark_mirror_search
+      lark_mirror_search feishu_mirror_brief lark_mirror_brief
     ),
     "salix_cluster" =>
       ~w(schedule cluster_membership placement drain session_work_recovery session_work_notification_connection session_work_notification_catch_up session_work_notification_dispatch other),
@@ -189,7 +208,7 @@ defmodule Salix.Telemetry do
   @settlement_outcomes ~w(ok created landed exists precondition_failed indeterminate error other)
   @im_identity_providers ~w(slack feishu other)
   @im_identity_resolutions ~w(fast_hit fallback_hit fallback_miss rejected error other)
-  @dependency_job_kinds ~w(llm compaction tool loop_control other)
+  @dependency_job_kinds ~w(llm compaction tool loop_control handoff other)
   @dependency_job_outcomes ~w(ok error timeout saturated cancelled crashed other)
   @connector_transports ~w(websocket sprites cloudflare other)
   @connector_pending_rpc_outcomes ~w(
@@ -431,6 +450,38 @@ defmodule Salix.Telemetry do
           buckets: @vm_lifecycle,
           zero_series: zero_series(kind: @sandbox_start_kinds, outcome: @sandbox_start_outcomes)
         ]
+      ),
+      last_value("salix.agent_vmm.worker.connections",
+        event_name: [:salix, :agent_vmm, :worker, :sample],
+        measurement: :connections
+      ),
+      last_value("salix.agent_vmm.worker.sessions",
+        event_name: [:salix, :agent_vmm, :worker, :sample],
+        measurement: :sessions
+      ),
+      counter("salix.agent_vmm.worker.events.total",
+        event_name: [:salix, :agent_vmm, :worker, :event],
+        tags: [:kind],
+        tag_values: &agent_vmm_worker_event_tags/1
+      ),
+      counter("salix.agent_vmm.image_import.total",
+        event_name: [:salix, :agent_vmm, :image_import, :stop],
+        tags: [:outcome],
+        tag_values: &agent_vmm_import_tags/1
+      ),
+      distribution("salix.agent_vmm.image_import.duration.seconds",
+        event_name: [:salix, :agent_vmm, :image_import, :stop],
+        measurement: :duration,
+        unit: {:millisecond, :second},
+        tags: [:outcome],
+        tag_values: &agent_vmm_import_tags/1,
+        reporter_options: [buckets: @operation]
+      ),
+      sum("salix.agent_vmm.image_import.bytes.total",
+        event_name: [:salix, :agent_vmm, :image_import, :stop],
+        measurement: :bytes,
+        tags: [:outcome],
+        tag_values: &agent_vmm_import_tags/1
       ),
       counter("salix.sandbox.ends.total",
         event_name: [:salix_web, :sandbox, :end],
@@ -1020,7 +1071,7 @@ defmodule Salix.Telemetry do
       outcome:
         finite(
           metadata[:outcome],
-          ~w(ok stale_revision source_busy saturated retired remote error other)
+          ~w(ok stale_revision source_busy source_unready saturated retired remote error other)
         ),
       reason:
         finite(
@@ -1511,6 +1562,12 @@ defmodule Salix.Telemetry do
 
   defp sandbox_state_tags(metadata),
     do: %{state: finite(metadata[:state], @sandbox_states)}
+
+  defp agent_vmm_worker_event_tags(metadata),
+    do: %{kind: finite(metadata[:event], @agent_vmm_worker_events)}
+
+  defp agent_vmm_import_tags(metadata),
+    do: %{outcome: finite(metadata[:outcome], @agent_vmm_import_outcomes)}
 
   # Every combination of the given tag values but `other`, for
   # `reporter_options: [zero_series: ...]` (SystemsObservability.Metrics).

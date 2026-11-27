@@ -1,5 +1,13 @@
 import userEvent from "@testing-library/user-event";
-import { fireEvent, render, screen, waitFor, within } from "@comma/test-utils/render";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@comma/test-utils/render";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import { describe, expect, it, vi } from "vitest";
 import { ChatPanel } from "../ChatPanel";
 import { ChatPanelImageGroup, stackSlotForDistance } from "../ChatPanelImageGroup";
@@ -73,6 +81,66 @@ describe("stackSlotForDistance", () => {
   });
 });
 
+/**
+ * Stubs Web Animations and layout for the shared-element flight: every
+ * `animate()` call is recorded with its own `cancel` spy, and cancelling one
+ * fires its `cancel` listeners as a browser does.
+ */
+const stubSharedFlightLayout = () => {
+  const cardRect = new DOMRect(40, 120, 165, 220);
+  const slideRect = new DOMRect(200, 80, 600, 450);
+  const animateCalls: {
+    cancel: ReturnType<typeof vi.fn>;
+    finish: () => void;
+    keyframes: Keyframe[];
+    options: KeyframeAnimationOptions;
+  }[] = [];
+
+  stubProperty(Element.prototype, "animate", {
+    configurable: true,
+    value: function mockAnimate(
+      keyframes: Parameters<Element["animate"]>[0],
+      options?: Parameters<Element["animate"]>[1]
+    ) {
+      const listeners = new Map<string, (() => void)[]>();
+      const trigger = (event: string) => {
+        for (const fn of listeners.get(event) ?? []) fn();
+      };
+      const cancel = vi.fn(() => trigger("cancel"));
+      const animation = {
+        addEventListener: (event: string, cb: () => void) => {
+          const list = listeners.get(event) ?? [];
+          list.push(cb);
+          listeners.set(event, list);
+        },
+        cancel,
+        finished: Promise.resolve(),
+      } as unknown as Animation;
+      animateCalls.push({
+        cancel,
+        finish: () => trigger("finish"),
+        keyframes: Array.isArray(keyframes) ? (keyframes as Keyframe[]) : [],
+        options: (options ?? {}) as KeyframeAnimationOptions,
+      });
+      return animation;
+    },
+  });
+  const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function mockRect(this: Element) {
+      if (this.classList.contains("chat-panel-image-filmstrip-slide")) {
+        return slideRect;
+      }
+      if (this.classList.contains("chat-panel-image-group-card")) return cardRect;
+      return originalGetBoundingClientRect.call(this);
+    }
+  );
+  return animateCalls;
+};
+
+const previewOverlay = () =>
+  document.querySelector(".chat-panel-media-preview-overlay");
+
 describe("ChatPanelImageGroup", () => {
   it("renders nothing without images", () => {
     const { container } = render(<ChatPanelImageGroup images={[]} />);
@@ -101,9 +169,29 @@ describe("ChatPanelImageGroup", () => {
       container.querySelector<HTMLElement>(".chat-panel-image-group-cards");
 
     expect(cards()).toHaveAttribute("data-single", "true");
+    expect(screen.getByRole("img")).toHaveAttribute("loading", "eager");
 
     rerender(<ChatPanelImageGroup images={sampleImages(2)} />);
     expect(cards()).not.toHaveAttribute("data-single");
+    for (const img of screen.getAllByRole("img")) {
+      expect(img).toHaveAttribute("loading", "lazy");
+    }
+  });
+
+  it("marks only stackable groups (4+ images) with data-stackable for fan allowance", () => {
+    const { container, rerender } = render(
+      <ChatPanelImageGroup images={sampleImages(2)} />
+    );
+    const cards = () =>
+      container.querySelector<HTMLElement>(".chat-panel-image-group-cards");
+
+    expect(cards()).not.toHaveAttribute("data-stackable");
+
+    rerender(<ChatPanelImageGroup images={sampleImages(3)} />);
+    expect(cards()).not.toHaveAttribute("data-stackable");
+
+    rerender(<ChatPanelImageGroup images={sampleImages(4)} />);
+    expect(cards()).toHaveAttribute("data-stackable", "true");
   });
 
   it("stacks more than three images behind an expand pill", () => {
@@ -380,6 +468,145 @@ describe("ChatPanelImageGroup", () => {
       expect(card.querySelector("img")).toBeNull();
     }
     expect(container.querySelectorAll("img")).toHaveLength(3);
+  });
+
+  it("defaults to end alignment and supports start alignment for agent images", () => {
+    const { container, rerender } = render(
+      <ChatPanelImageGroup images={sampleImages(4)} />
+    );
+    expect(container.querySelector(".chat-panel-image-group")).toHaveAttribute(
+      "data-align",
+      "end"
+    );
+
+    rerender(<ChatPanelImageGroup align="start" images={sampleImages(4)} />);
+    expect(container.querySelector(".chat-panel-image-group")).toHaveAttribute(
+      "data-align",
+      "start"
+    );
+  });
+
+  it("exposes single-image hover copy toolbar and preview copy action when onCopy is provided", async () => {
+    const user = userEvent.setup();
+    const onCopy = vi.fn().mockResolvedValue(undefined);
+    const images = sampleImages(1).map((image) => ({ ...image, onCopy }));
+    const { container } = render(<ChatPanelImageGroup align="start" images={images} />);
+
+    const figure = container.querySelector(".chat-panel-image-group");
+    expect(figure).toHaveAttribute("data-single", "true");
+    await user.click(screen.getByRole("button", { name: "Copy image" }));
+    await waitFor(() => expect(onCopy).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Image copied" })).toBeInTheDocument()
+    );
+
+    await user.click(stackCards(container)[0]!);
+    const dialog = await screen.findByRole("dialog", { name: "Preview image" });
+    await user.click(
+      within(dialog).getByRole("button", { name: /copy image|image copied/i })
+    );
+    await waitFor(() => expect(onCopy).toHaveBeenCalledTimes(2));
+  });
+
+  it("runs shared-element FLIP on preview open, navigation, and close back to the updated front card", async () => {
+    const user = userEvent.setup();
+    const animateCalls = stubSharedFlightLayout();
+
+    const { container } = render(
+      <ChatPanelImageGroup align="start" images={sampleImages(4)} />
+    );
+    const cards = stackCards(container);
+    await user.click(cards[0]!);
+
+    const dialog = await screen.findByRole("dialog", { name: "Preview image" });
+    expect(cards[0]).toHaveAttribute("data-shared-hidden", "true");
+    expect(document.querySelector(".chat-panel-media-preview-overlay")).toHaveAttribute(
+      "data-shared-transition",
+      "opening"
+    );
+    expect(animateCalls.length).toBeGreaterThanOrEqual(1);
+    const openCall = animateCalls.at(-1)!;
+    expect(openCall.options.duration).toBe(280);
+    act(() => {
+      openCall.finish();
+    });
+
+    await waitFor(() => expect(cards[0]).not.toHaveAttribute("data-shared-hidden"));
+
+    await user.click(within(dialog).getByRole("button", { name: "Show next image" }));
+    expect(cards[1]).toHaveAttribute("data-stack-pos", "0");
+
+    await user.click(within(dialog).getByRole("button", { name: "Close preview" }));
+    await waitFor(() => expect(cards[1]).toHaveAttribute("data-shared-hidden", "true"));
+    expect(document.querySelector(".chat-panel-media-preview-overlay")).toHaveAttribute(
+      "data-shared-transition",
+      "closing"
+    );
+    const closeCall = animateCalls.at(-1)!;
+    expect(closeCall.options.duration).toBe(260);
+    act(() => {
+      closeCall.finish();
+    });
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(cards[1]).not.toHaveAttribute("data-shared-hidden");
+  });
+
+  it("hands over to the filmstrip at once when the preview is browsed during the opening flight", async () => {
+    const user = userEvent.setup();
+    const animateCalls = stubSharedFlightLayout();
+    const { container } = render(
+      <ChatPanelImageGroup align="start" images={sampleImages(4)} />
+    );
+    const cards = stackCards(container);
+    await user.click(cards[0]!);
+
+    const dialog = await screen.findByRole("dialog", { name: "Preview image" });
+    expect(previewOverlay()).toHaveAttribute("data-shared-transition", "opening");
+    const openCall = animateCalls.at(-1)!;
+    expect(openCall.options.duration).toBe(280);
+
+    await user.click(within(dialog).getByRole("button", { name: "Show next image" }));
+
+    expect(openCall.cancel).toHaveBeenCalled();
+    expect(previewOverlay()).not.toHaveAttribute("data-shared-transition");
+    expect(document.querySelector(".chat-panel-image-group-shared-flight")).toBeNull();
+    expect(cards[0]).not.toHaveAttribute("data-shared-hidden");
+    expect(cards[1]).toHaveAttribute("data-stack-pos", "0");
+    expect(dialog.querySelector(".chat-panel-image-filmstrip")).toHaveAttribute(
+      "data-active-index",
+      "1"
+    );
+  });
+
+  it("does not interrupt the closing flight when the preview is browsed", async () => {
+    const user = userEvent.setup();
+    const animateCalls = stubSharedFlightLayout();
+    const { container } = render(
+      <ChatPanelImageGroup align="start" images={sampleImages(4)} />
+    );
+    const cards = stackCards(container);
+    await user.click(cards[0]!);
+    const dialog = await screen.findByRole("dialog", { name: "Preview image" });
+    act(() => {
+      animateCalls.at(-1)!.finish();
+    });
+    await waitFor(() =>
+      expect(previewOverlay()).not.toHaveAttribute("data-shared-transition")
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "Close preview" }));
+    await waitFor(() =>
+      expect(previewOverlay()).toHaveAttribute("data-shared-transition", "closing")
+    );
+    const closeCall = animateCalls.at(-1)!;
+    expect(closeCall.options.duration).toBe(260);
+
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+
+    expect(closeCall.cancel).not.toHaveBeenCalled();
+    expect(previewOverlay()).toHaveAttribute("data-shared-transition", "closing");
+    expect(cards[0]).toHaveAttribute("data-shared-hidden", "true");
   });
 
   it("renders inside the chat panel via message images, files as pills", () => {

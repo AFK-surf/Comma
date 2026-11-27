@@ -82,3 +82,17 @@ it("is absent where this computer cannot look for people nearby", () => {
   mount({ ...found, available: false });
   expect(screen.queryByRole("button", { name: "Add someone nearby" })).toBeNull();
 });
+
+it("says when the invite could not reach their computer, and asks again", async () => {
+  const { bridge } = mount({
+    ...found,
+    asks: [{ peerId: "b-mac", status: "unreachable" }],
+  });
+  await userEvent.click(screen.getByRole("button", { name: "Add someone nearby" }));
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByText("Couldn’t reach their computer")).toBeVisible();
+
+  await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+  await act(flush);
+  expect(bridge.nearby.ask).toHaveBeenCalledWith({ inviteUrl, peerId: "b-mac" });
+});

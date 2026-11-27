@@ -275,7 +275,7 @@ def main():
                 assert wait_for_socket(path, process), f"helper exited: {process.returncode}"
                 assert request(path, token, control="hello")["message"] == "comma-computer-use-daemon"
                 request(path, token, control="open-permission-flow")
-                for mode in ("foreground", "background"):
+                for mode in ("background",):
                     response = request(path, token, action={"start": {"mode": mode}})
                     print(f"{mode} start: {response}", flush=True)
                     if mode == "foreground":

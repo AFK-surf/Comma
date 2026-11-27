@@ -6,6 +6,8 @@ metadata:
   icon: doc.richtext.fill
   color: red
   placeholder: Upload a PDF or describe what you need
+roles: worker
+prompt_summary: "Read, extract, create, merge, fill, or visually review PDF files."
 ---
 
 # PDF reading, creation, and review guidance

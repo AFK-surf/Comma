@@ -253,7 +253,7 @@ class AuthMediaHttpTest {
             val displayed = mapConversation(confirmed, resolveMedia = resolve).rows.single { it.attachment != null }
             assertEquals(pendingImage.id, displayed.id)
             assertEquals(ImageDimensions(120, 60), displayed.attachment!!.dimensions)
-            assertEquals(160f, AttachmentCardRenderer(1).bodyHeightDp(displayed, 360f), 0.1f)
+            assertEquals(135f, AttachmentCardRenderer(1).bodyHeightDp(displayed, 360f), 0.1f)
             // The uploaded file, as the server keeps it under its path.
             val uploaded = attached().last().second.getJSONArray("files").getJSONObject(0)
             downloads.serve(MediaSource.UploadedFile(path).fileSource("g-alice"),
@@ -354,6 +354,116 @@ class AuthMediaHttpTest {
         settled { !File(imageDirectory, "ratios.json").exists() && covers.dimensions(download.key) == null && !coverFile.exists() }
         binding.close()
         images.close()
+        components.files.close()
+    }
+
+    @Test fun imageGroupCardFailureRecoveryRetryAndTapGuards() = runBlocking {
+        signIn()
+        val activity = org.robolectric.Robolectric.buildActivity(androidx.activity.ComponentActivity::class.java).setup().get()
+        val components = MediaComponents(activity, auth, media, baseUrl, scope, downloaded)
+        settled { components.http.session.value != null }
+        val session = components.http.session.value!!
+        val bitmap = Bitmap.createBitmap(24, 18, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }
+        val pngBytes = java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        bitmap.recycle()
+
+        val uploadedSource = MediaSource.UploadedFile("/uploads/abcdefghijklmnopqrstuv-retry.png")
+        val msgSource = MediaSource.MessageAttachment("cnv_1", "msg_1", 0, ref(pngBytes))
+        val loadingSource = MediaSource.UploadedFile("/uploads/abcdefghijklmnopqrstuv-loading.png")
+
+        downloads.refuse(uploadedSource.fileSource("g-alice"), "http 500")
+        downloads.refuse(msgSource.fileSource("g-alice"), "http 500")
+
+        val uploadedAtt = surf.comma.android.chat.model.ChatAttachment(
+            MediaAttachment("retry.png", "image/png", pngBytes.size.toLong(), uploadedSource),
+            ImageDimensions(24, 18),
+            session = session.id,
+        )
+        val msgAtt = surf.comma.android.chat.model.ChatAttachment(
+            MediaAttachment("doc_image.png", "image/png", pngBytes.size.toLong(), msgSource),
+            ImageDimensions(24, 18),
+            session = session.id,
+        )
+        val loadingAtt = surf.comma.android.chat.model.ChatAttachment(
+            MediaAttachment("loading.png", "image/png", pngBytes.size.toLong(), loadingSource),
+            ImageDimensions(24, 18),
+            session = session.id,
+        )
+
+        val message = surf.comma.android.chat.model.ChatMessage(
+            id = 7001L,
+            conversationId = "cnv_1",
+            turnId = "t1",
+            role = surf.comma.android.chat.model.ChatRole.AGENT,
+            text = "",
+            createdAt = 0L,
+            cardKind = surf.comma.android.chat.live.LiveRowKinds.ATTACHMENT,
+            attachment = uploadedAtt,
+            attachments = listOf(uploadedAtt, msgAtt),
+        )
+        val precomputer = surf.comma.android.chat.render.MessageLayoutPrecomputer(bubbles = true)
+        val prepared = precomputer.prepare(listOf(message), 1080, activity.resources.displayMetrics.density, 1f, false).single()
+
+        var openedPreviewIndex = -1
+        var openedFile: surf.comma.android.chat.model.ChatAttachment? = null
+        val row = surf.comma.android.chat.live.AttachmentView(activity).apply {
+            mediaComponentsProvider = { components }
+            onOpenMedia = { _, idx -> openedPreviewIndex = idx; true }
+            onOpenFileOverride = { openedFile = it }
+            bind(prepared)
+        }
+        activity.setContentView(row)
+        row.setMediaVisible(true)
+
+        val group = row.imageGroupView!!
+        // 1. Initial HTTP 500 failure puts both cards in failed state with stateDescription and Retry menu entry.
+        settled { group.isFailed(0) && group.isFailed(1) }
+        assertFalse(group.hasLoadedImage(0))
+        assertEquals(activity.getString(surf.comma.android.R.string.media_tile_unavailable), group.cardViewAt(0)!!.stateDescription)
+        val retryLabel = activity.getString(surf.comma.android.R.string.media_tile_retry)
+        val failedMenu = row.menuEntries(uploadedAtt, 0)
+        assertEquals(retryLabel, failedMenu.first().first)
+
+        // 2. Tapping failed MessageAttachment card triggers openFile rather than blank preview.
+        group.cardViewAt(1)!!.performClick()
+        assertEquals(msgAtt, openedFile)
+        assertEquals(-1, openedPreviewIndex)
+
+        // 3. Recover network -> tap original failed UploadedFile card -> retries and loads image, clearing failure.
+        downloads.serve(uploadedSource.fileSource("g-alice"), pngBytes)
+        group.cardViewAt(0)!!.performClick()
+        settled { group.hasLoadedImage(0) && !group.isFailed(0) }
+        assertNull(group.cardViewAt(0)!!.stateDescription)
+        assertFalse(row.menuEntries(uploadedAtt, 0).any { it.first == retryLabel })
+        // Tapping now-loaded card opens preview.
+        group.cardViewAt(0)!!.performClick()
+        assertEquals(0, openedPreviewIndex)
+
+        // 4. Recover MessageAttachment card via Retry menu action.
+        downloads.serve(msgSource.fileSource("g-alice"), pngBytes)
+        row.menuEntries(msgAtt, 1).first { it.first == retryLabel }.second.invoke()
+        settled { group.hasLoadedImage(1) && !group.isFailed(1) }
+
+        // 5. Loading card (not failed, not loaded) intercepts tap and does not open preview.
+        openedPreviewIndex = -1
+        val loadingMsg = message.copy(id = 7002L, attachment = loadingAtt, attachments = listOf(loadingAtt))
+        val loadingPrepared = precomputer.prepare(listOf(loadingMsg), 1080, activity.resources.displayMetrics.density, 1f, false).single()
+        val loadingRow = surf.comma.android.chat.live.AttachmentView(activity).apply {
+            mediaComponentsProvider = { components }
+            onOpenMedia = { _, idx -> openedPreviewIndex = idx; true }
+            bind(loadingPrepared)
+        }
+        activity.setContentView(loadingRow)
+        // Media stays not visible -> image remains in loading state (neither loaded nor failed).
+        val loadingGroup = loadingRow.imageGroupView!!
+        assertFalse(loadingGroup.isFailed(0))
+        assertFalse(loadingGroup.hasLoadedImage(0))
+        loadingGroup.cardViewAt(0)!!.performClick()
+        assertEquals(-1, openedPreviewIndex)
+
+        row.releaseMedia()
+        loadingRow.releaseMedia()
+        components.images().close()
         components.files.close()
     }
 

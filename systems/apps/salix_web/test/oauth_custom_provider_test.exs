@@ -214,6 +214,56 @@ defmodule SalixWeb.OAuthCustomProviderTest do
     assert OAuthBindings.list(group) == []
   end
 
+  test "an optional field may be left empty, and the credential then has no such field", %{
+    tenant: tenant,
+    group: group
+  } do
+    fields = [
+      %{"name" => "app_key", "label" => "App Key", "secret" => false},
+      %{"name" => "app_secret", "label" => "App Secret"},
+      %{"name" => "enterprise_token", "label" => "Enterprise token", "optional" => true}
+    ]
+
+    assert {:ok, %{"state" => state}} = start_fields(tenant, group, fields)
+    assert {:page, 200, form} = OAuthFlow.secret_form(%{"state" => state})
+    assert form =~ ~s(App Secret<input type="password" name="fields[app_secret]" required>)
+
+    assert form =~
+             ~s(Enterprise token<input type="password" name="fields[enterprise_token]">)
+
+    posted =
+      post_form(
+        URI.encode_query(%{
+          "state" => state,
+          "fields[app_key]" => "key-1",
+          "fields[app_secret]" => "s3cr3t-value",
+          "fields[enterprise_token]" => " "
+        })
+      )
+
+    assert posted.status == 200
+    {_binding, connection} = connected(group, "secret")
+
+    assert connection["fields"] == [
+             %{"name" => "app_key", "secret" => false, "value" => "key-1"},
+             %{"name" => "app_secret", "secret" => true, "value" => "s3cr3t-value"}
+           ]
+
+    # A required field still may not be empty, and something must be filled in.
+    only_optional = [%{"name" => "token", "optional" => true}]
+
+    for {wanted, code} <- [
+          {fields, %{"app_key" => "k", "app_secret" => " ", "enterprise_token" => "t"}},
+          {fields, %{"app_key" => "k", "enterprise_token" => "t"}},
+          {only_optional, %{"token" => ""}}
+        ] do
+      {:ok, %{"state" => state}} = start_fields(tenant, group, wanted)
+
+      assert {:page, 400, _} =
+               OAuthFlow.handle_callback("secret", %{"state" => state, "code" => code})
+    end
+  end
+
   test "a request's field names follow the rules", %{tenant: tenant, group: group} do
     many = for i <- 1..9, do: %{"name" => "f#{i}"}
 
@@ -224,6 +274,7 @@ defmodule SalixWeb.OAuthCustomProviderTest do
           [%{"name" => "access_token"}],
           [%{"name" => "Client_Id"}],
           [%{"name" => "user"}, %{"name" => "USER"}],
+          [%{"name" => "token", "optional" => "yes"}],
           many
         ] do
       assert {:error, {:bad_request, _}} = start_fields(tenant, group, fields)

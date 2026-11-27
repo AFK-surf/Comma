@@ -270,6 +270,20 @@ export type {
 } from "./task-board";
 export { TaskChatPanel } from "./task-chat-panel";
 export type { TaskChatPanelProps } from "./task-chat-panel";
+export { TaskFeedEntryRow, TaskFeedView, sortMilestonesNewestFirst } from "./task-feed";
+export type {
+  TaskFeedColumnId,
+  TaskFeedEntry,
+  TaskFeedEntryRowProps,
+  TaskFeedFile,
+  TaskFeedMedia,
+  TaskFeedMilestone,
+  TaskFeedPullRequest,
+  TaskFeedSessionInspectorContext,
+  TaskFeedStatusFilter,
+  TaskFeedTriggerKind,
+  TaskFeedViewProps,
+} from "./task-feed";
 export {
   TASK_STATUS_COLUMNS,
   FilterOptionsPanel,
@@ -426,6 +440,7 @@ export {
   MediaVolumeControl,
   resolveMediaFullWindowShortcut,
   ChatPanelFile,
+  ChatPanelPreviewCard,
   ChatPanelFileApplicationItems,
   ChatPanelFileOpenInMenu,
   useChatPanelFileOpenIn,
@@ -508,7 +523,12 @@ export type {
 } from "./command-palette";
 export { Popup } from "./popup";
 export type { PopupProps } from "./popup";
-export { SelectionActionBar } from "./selection-action-bar";
+export {
+  SelectionActionBar,
+  selectionActionBarAction,
+  selectionActionBarChrome,
+  selectionActionBarLabel,
+} from "./selection-action-bar";
 export type {
   SelectionActionBarAction,
   SelectionActionBarAnchor,

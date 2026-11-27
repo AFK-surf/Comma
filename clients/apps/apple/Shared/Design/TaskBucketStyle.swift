@@ -11,6 +11,7 @@ extension TaskBucket {
         switch self {
         case .archived: Self.neutralIconName
         case .inProgress: "status-in-progress"
+        case .loops: "status-loops"
         case .needsReview: "status-needs-review"
         case .done: "status-done"
         case .cancelled: "status-cancelled"

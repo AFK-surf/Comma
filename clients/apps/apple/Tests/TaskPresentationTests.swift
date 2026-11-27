@@ -10,10 +10,10 @@ final class TaskPresentationTests: XCTestCase {
         } ?? [:])
     }
 
-    /// Every status list, Home's switcher included, reads In progress, Needs review, Done, Cancelled.
+    /// Every status list, Home's switcher included, reads In progress, Needs review, Done, Cancelled, Automated.
     func testStatusesShowInOneOrder() {
-        XCTAssertEqual(TaskListFilter.statusBuckets, [.inProgress, .needsReview, .done, .cancelled])
-        XCTAssertEqual(TaskBucket.homeStatuses, [.inProgress, .needsReview, .done, .cancelled])
+        XCTAssertEqual(TaskListFilter.statusBuckets, [.inProgress, .needsReview, .done, .cancelled, .loops])
+        XCTAssertEqual(TaskBucket.homeStatuses, [.inProgress, .needsReview, .done, .cancelled, .loops])
     }
 
     /// A section or status the app does not know, such as the retired `backlog`, reads as In progress.
@@ -57,7 +57,7 @@ final class TaskPresentationTests: XCTestCase {
 
     func testEveryStatusHasOneName() {
         let names = TaskBucket.allCases.map { String(localized: $0.label) }
-        XCTAssertEqual(names, ["In progress", "Needs review", "Done", "Cancelled", "Archived"])
+        XCTAssertEqual(names, ["In progress", "Needs review", "Done", "Cancelled", "Automated", "Archived"])
     }
 
     /// Seconds and milliseconds name the same day, as the Inbox and the router's Task card read them.

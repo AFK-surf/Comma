@@ -133,6 +133,7 @@ defmodule SalixStore.RepoTestSetup do
       ('slack_triage_channels_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline"}'::jsonb),
       ('station_roster_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"phase":"complete"}'::jsonb),
       ('task_files_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"phase":"complete"}'::jsonb),
+      ('task_feed_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"phase":"complete"}'::jsonb),
       ('oauth_apps_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline"}'::jsonb),
       ('internal_session_format2_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline"}'::jsonb),
       ('session_work_candidates_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline","uncovered_authoritative_work":0}'::jsonb)

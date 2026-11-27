@@ -57,6 +57,19 @@ defmodule SalixIM.IFCLarkScenariosTest do
       end
     end
 
+    defp answer("GET", ["im", "v1", "chats", chat_id, "members", "is_in_chat"], _query) do
+      case Map.get(chats(), chat_id) do
+        %{"bot_present" => "unknown"} ->
+          {503, %{"code" => 503}}
+
+        %{} = chat ->
+          {200, %{"code" => 0, "data" => %{"is_in_chat" => Map.get(chat, "bot_present", true)}}}
+
+        _ ->
+          {404, %{"code" => 404}}
+      end
+    end
+
     # Lark's documented bound, and its answer to a request past it.
     defp answer("GET", ["im", "v1", "chats", _chat_id, "members"], %{"page_size" => size})
          when size not in @page_sizes do
@@ -104,15 +117,38 @@ defmodule SalixIM.IFCLarkScenariosTest do
       end
     end
 
+    # A group the bot creates, and people it adds: what Lark then lists.
+    defp answer("POST", ["im", "v1", "chats"], body) do
+      chat_id = "oc_negotiation"
+
+      put_chat(chat_id, %{
+        "chat_mode" => "group",
+        "chat_type" => "private",
+        "members" => body["user_id_list"]
+      })
+
+      {200, %{"code" => 0, "data" => %{"chat_id" => chat_id}}}
+    end
+
+    defp answer("POST", ["im", "v1", "chats", chat_id, "members"], body) do
+      chat = Map.fetch!(chats(), chat_id)
+      put_chat(chat_id, %{chat | "members" => Enum.uniq(chat["members"] ++ body["id_list"])})
+      {200, %{"code" => 0, "data" => %{"invalid_id_list" => []}}}
+    end
+
     defp answer(_method, _path, _body), do: {404, %{"code" => 404, "msg" => "not found"}}
 
     defp chats, do: SystemsRuntime.get_env(:salix_im, :ifc_lark_test_chats, %{})
+
+    defp put_chat(chat_id, chat),
+      do: SystemsRuntime.put_env(:salix_im, :ifc_lark_test_chats, Map.put(chats(), chat_id, chat))
   end
 
   setup do
     previous = %{
       s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
       api: SystemsRuntime.get_env(:salix_im, :lark_api_base_url),
+      feishu_api: SystemsRuntime.get_env(:salix_im, :feishu_api_base_url),
       facts: SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
     }
 
@@ -120,14 +156,14 @@ defmodule SalixIM.IFCLarkScenariosTest do
     start_supervised!(S3.Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
 
-    SystemsRuntime.put_env(
-      :salix_im,
-      :lark_api_base_url,
-      BanditServer.serve!(API) <> "/open-apis"
-    )
+    # Feishu answers the same OpenAPI paths; one stub stands in for both.
+    api_base = BanditServer.serve!(API) <> "/open-apis"
+    SystemsRuntime.put_env(:salix_im, :lark_api_base_url, api_base)
+    SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, api_base)
 
     SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, SalixIM.IFC.Facts)
     SalixIM.Provider.Lark.API.reset_token_cache()
+    SalixIM.Provider.Feishu.API.reset_token_cache()
 
     SystemsRuntime.put_env(:salix_im, :ifc_lark_test_chats, %{
       @chat_a => %{"chat_mode" => "p2p"},
@@ -144,6 +180,7 @@ defmodule SalixIM.IFCLarkScenariosTest do
       for {app, key, value} <- [
             {:salix_store, :s3_backend, previous.s3},
             {:salix_im, :lark_api_base_url, previous.api},
+            {:salix_im, :feishu_api_base_url, previous.feishu_api},
             {:salix_agent, :ifc_facts_mod, previous.facts}
           ] do
         if value,
@@ -187,18 +224,21 @@ defmodule SalixIM.IFCLarkScenariosTest do
   end
 
   # One Lark inbound, through the same delivery funnel the webhook uses.
-  defp inbound(env, id, sender, chat_id, chat_type, text) do
-    source_id = "im_provider:lark:#{env.connect["connect_id"]}:#{id}"
+  defp inbound(env, id, sender, chat_id, chat_type, text),
+    do: inbound(env, "lark", env.connect, id, sender, chat_id, chat_type, text)
+
+  defp inbound(env, provider, connect, id, sender, chat_id, chat_type, text) do
+    source_id = "im_provider:#{provider}:#{connect["connect_id"]}:#{id}"
 
     metadata = %{
-      "provider" => "lark",
-      "connect_id" => env.connect["connect_id"],
+      "provider" => provider,
+      "connect_id" => connect["connect_id"],
       "chat_id" => chat_id,
       "chat_type" => chat_type,
       "message_id" => id,
       "sender_open_id" => sender,
       "sender_type" => "user",
-      "event_type" => "lark.message",
+      "event_type" => "#{provider}.message",
       "source_actor_type" => "provider_user"
     }
 
@@ -234,7 +274,7 @@ defmodule SalixIM.IFCLarkScenariosTest do
     %{
       messages: messages,
       ifc: wire,
-      ifc_mode: :enforce,
+      ifc_mode: SalixAgent.IFC.mode(get_in(env.group, ["ifc", "mode"])),
       tenant_id: env.tenant,
       group_id: env.group_id,
       trusted_origin: current.origin
@@ -249,10 +289,12 @@ defmodule SalixIM.IFCLarkScenariosTest do
     ref
   end
 
-  defp send(ctx, op, params, sources) do
+  defp send(ctx, op, params, sources), do: send(ctx, "lark", op, params, sources)
+
+  defp send(ctx, provider, op, params, sources) do
     call = %{
       id: "call-#{SystemsRuntime.Proc.unique_integer([:positive])}",
-      name: "im_api.lark." <> op,
+      name: "im_api.#{provider}." <> op,
       args: params,
       ifc: %{"sources" => sources}
     }
@@ -265,9 +307,11 @@ defmodule SalixIM.IFCLarkScenariosTest do
 
   # The background listing ingress asks for (`SalixIM.IFC.MemberRefresh`),
   # run in place: test config does not start it.
-  defp listed(env, chat_id) do
+  defp listed(env, chat_id), do: listed(env, env.connect, chat_id)
+
+  defp listed(env, connect, chat_id) do
     SalixIM.IFC.Projection.refresh(
-      %{tenant_id: env.tenant, group_id: env.group_id, connect_id: env.connect["connect_id"]},
+      %{tenant_id: env.tenant, group_id: env.group_id, connect_id: connect["connect_id"]},
       chat_id
     )
   end
@@ -324,6 +368,263 @@ defmodule SalixIM.IFCLarkScenariosTest do
 
     assert send(ctx, "send_message", %{"chat_id" => @chat_a, "text" => "x"}, a) == :allowed
     assert send(ctx, "send_message", %{"chat_id" => @chat_a, "text" => "x"}, b) == :blocked
+  end
+
+  describe "easy through provider ingress and the real fact resolver" do
+    setup env do
+      {:ok, group} =
+        CasRecord.update(Keys.ctl_group(env.group_id), fn group ->
+          put_in(group, ["ifc", "mode"], "easy")
+        end)
+
+      %{group: group}
+    end
+
+    test "the requester shares their DM in a channel, but another requester cannot", env do
+      ctx = context(env, [env.a, env.team, env.b], env.team)
+
+      assert send(ctx, "send_message", %{"chat_id" => @team, "text" => "shared"}, [
+               ref(ctx, env.a)
+             ]) == :allowed
+
+      other = context(env, [env.a, env.team, env.b], env.b)
+
+      assert send(other, "send_message", %{"chat_id" => @chat_b, "text" => "private"}, [
+               ref(other, env.a)
+             ]) == :blocked
+    end
+
+    test "channel sharing requires the bot, including for supervisors", env do
+      put_chat("oc_bot_boundary", %{
+        "chat_mode" => "group",
+        "members" => [@a],
+        "bot_present" => false
+      })
+
+      source = inbound(env, "om_bot_boundary", @a, "oc_bot_boundary", "group", "secret")
+      listed(env, "oc_bot_boundary")
+      ctx = context(env, [source, env.a], env.a)
+
+      share = fn ->
+        send(ctx, "send_message", %{"chat_id" => @chat_b, "text" => "secret"}, [ref(ctx, source)])
+      end
+
+      assert share.() == :blocked
+
+      {:ok, _} =
+        CasRecord.update(Keys.ctl_group(env.group_id), fn group ->
+          put_in(group, ["ifc", "supervisors"], [
+            "provider_user|#{env.connect["connect_id"]}|#{@a}"
+          ])
+        end)
+
+      assert share.() == :blocked
+
+      put_chat("oc_bot_boundary", %{
+        "chat_mode" => "group",
+        "members" => [@a],
+        "bot_present" => true
+      })
+
+      listed(env, "oc_bot_boundary")
+      assert share.() == :allowed
+
+      assert {:ok, _} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 Map.put(env.connect, "events", "socket"),
+                 %{
+                   "schema" => "2.0",
+                   "header" => %{
+                     "event_type" => "im.chat.member.bot.deleted_v1",
+                     "event_id" => "evt_bot_left"
+                   },
+                   "event" => %{"chat_id" => "oc_bot_boundary"}
+                 }
+               )
+
+      assert share.() == :blocked
+
+      put_chat("oc_bot_boundary", %{
+        "chat_mode" => "group",
+        "members" => [@a],
+        "bot_present" => true
+      })
+
+      listed(env, "oc_bot_boundary")
+      assert share.() == :allowed
+
+      # A read the provider fails keeps what the store last knew.
+      put_chat("oc_bot_boundary", %{
+        "chat_mode" => "group",
+        "members" => [@a],
+        "bot_present" => "unknown"
+      })
+
+      listed(env, "oc_bot_boundary")
+      assert share.() == :allowed
+    end
+
+    test "a bot event about a conversation the store does not know records nothing", env do
+      bot_event = fn type, chat_id ->
+        SalixIM.LarkInbound.handle_socket_event(
+          Map.put(env.connect, "events", "socket"),
+          %{
+            "schema" => "2.0",
+            "header" => %{"event_type" => type, "event_id" => "evt_#{chat_id}_#{type}"},
+            "event" => %{"chat_id" => chat_id}
+          }
+        )
+      end
+
+      bot_event.("im.chat.member.bot.deleted_v1", "oc_never_seen")
+
+      assert {:ok, scopes} =
+               SalixStore.IFC.scopes(env.tenant, env.group_id, env.connect["connect_id"], [
+                 "oc_never_seen"
+               ])
+
+      refute Map.has_key?(scopes, "oc_never_seen")
+    end
+
+    test "a public channel the bot is in reaches the workspace's members, not its guests", env do
+      put_chat("oc_public", %{
+        "chat_mode" => "group",
+        "chat_type" => "public",
+        "members" => [@a],
+        "bot_present" => true
+      })
+
+      put_chat("oc_p2p_carol", %{"chat_mode" => "p2p"})
+      public = inbound(env, "om_pub", @a, "oc_public", "group", "source")
+      carol = inbound(env, "om_c1", @c, "oc_p2p_carol", "p2p", "转一下")
+      listed(env, "oc_public")
+      assert public.origin["ifc"]["label"] == ["scope|#{env.connect["connect_id"]}|oc_public"]
+
+      place = fn user, placement ->
+        {:ok, _} =
+          SalixStore.IFC.put_principal_fact(
+            env.tenant,
+            env.group_id,
+            env.connect["connect_id"],
+            user,
+            placement
+          )
+      end
+
+      place.(@b, "internal")
+      place.(@c, "external")
+
+      # Bob is not on the channel's roster: the workspace is its audience.
+      bob = context(env, [public, env.a, env.b, carol], env.b)
+
+      share = fn ctx ->
+        send(ctx, "send_message", %{"chat_id" => @chat_b, "text" => "x"}, [ref(ctx, public)])
+      end
+
+      assert share.(bob) == :allowed
+
+      guest = context(env, [public, env.a, env.b, carol], carol)
+      assert share.(guest) == :blocked
+
+      {:ok, _} =
+        CasRecord.update(Keys.ctl_group(env.group_id), fn group ->
+          put_in(group, ["ifc", "supervisors"], [
+            "provider_user|#{env.connect["connect_id"]}|#{@c}"
+          ])
+        end)
+
+      assert share.(guest) == :allowed
+
+      assert {:ok, _} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 Map.put(env.connect, "events", "socket"),
+                 %{
+                   "schema" => "2.0",
+                   "header" => %{
+                     "event_type" => "im.chat.member.bot.deleted_v1",
+                     "event_id" => "evt_bot_left_public"
+                   },
+                   "event" => %{"chat_id" => "oc_public"}
+                 }
+               )
+
+      assert share.(bob) == :blocked
+      assert share.(guest) == :blocked
+    end
+  end
+
+  # The Router makes a group for people and writes into it in the same turn.
+  # The decision reads only the stored projection, so the creation and every
+  # member change store the group before that send is decided.
+  for provider <- ~w(feishu lark) do
+    describe "#{provider}: a group the Router creates" do
+      @provider provider
+
+      setup env do
+        connect =
+          if @provider == "lark" do
+            env.connect
+          else
+            # A Feishu connect of the same Group, with its app's secret.
+            SalixIM.TestSupport.ProviderFixture.seed_raw_connect(
+              env.group_id,
+              "imc_feishu_#{SystemsRuntime.Proc.unique_integer([:positive])}",
+              "feishu",
+              %{
+                "tenant_id" => env.tenant,
+                "app_id" => "cli_#{SystemsRuntime.Proc.unique_integer([:positive])}",
+                "app_secret" => "secret",
+                "bot_open_id" => "ou_bot",
+                "status" => "connected"
+              }
+            )
+          end
+
+        team = inbound(env, @provider, connect, "om_t2", @a, @team, "group", "@bot 本周发布节奏")
+        listed(env, connect, @team)
+        bob = inbound(env, @provider, connect, "om_b2", @b, @chat_b, "p2p", "拉我和 Alice 建群同步")
+        %{connect: connect, team_source: team, bob: bob}
+      end
+
+      test "a send right after the creation reaches its members, and an added member closes it",
+           env do
+        ctx = context(env, [env.team_source, env.bob], env.bob)
+        team = [ref(ctx, env.team_source)]
+        to_new = %{"chat_id" => "oc_negotiation", "text" => "本周发布节奏"}
+
+        # Before it exists, the group has unknown members.
+        assert send(ctx, @provider, "send_message", to_new, team) == :blocked
+
+        assert {:ok, %{"chat_id" => "oc_negotiation"}} =
+                 SalixIM.Provider.call_api(
+                   env.router["agent_id"],
+                   @provider,
+                   "#{@provider}.create_chat",
+                   %{
+                     "connect_id" => env.connect["connect_id"],
+                     "params" => %{"name" => "发布", "user_ids" => [@a, @b]}
+                   }
+                 )
+
+        assert send(ctx, @provider, "send_message", to_new, team) == :allowed
+        # Carol is no member of the team, in the new group or alone.
+        assert send(ctx, @provider, "send_message", %{"user_id" => @c, "text" => "x"}, team) ==
+                 :blocked
+
+        assert {:ok, _added} =
+                 SalixIM.Provider.call_api(
+                   env.router["agent_id"],
+                   @provider,
+                   "#{@provider}.add_chat_members",
+                   %{
+                     "connect_id" => env.connect["connect_id"],
+                     "params" => %{"chat_id" => "oc_negotiation", "user_ids" => [@c]}
+                   }
+                 )
+
+        assert send(ctx, @provider, "send_message", to_new, team) == :blocked
+      end
+    end
   end
 
   describe "a Group supervisor" do

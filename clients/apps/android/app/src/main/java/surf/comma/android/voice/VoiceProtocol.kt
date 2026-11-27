@@ -3,7 +3,7 @@ package surf.comma.android.voice
 import org.json.JSONObject
 
 enum class CallResult {
-    Ended, CredentialsExpired, Busy, Unavailable, Disabled, Interrupted;
+    Ended, CredentialsExpired, KeyLimit, Busy, Unavailable, Disabled, Interrupted;
 }
 
 sealed interface VoiceMessage {

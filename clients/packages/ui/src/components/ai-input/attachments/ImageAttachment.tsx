@@ -40,7 +40,7 @@ export const ImageAttachment = ({
   const thumbnail = attachment.thumbnailSrc ? (
     <img
       alt={attachment.alt ?? attachment.name}
-      className="size-full rounded-xl object-cover"
+      className="size-full rounded-2xl object-cover"
       src={attachment.thumbnailSrc}
     />
   ) : (
@@ -65,10 +65,10 @@ export const ImageAttachment = ({
             <>
               <img
                 alt=""
-                className="absolute inset-0 size-full rounded-xl object-cover"
+                className="absolute inset-0 size-full rounded-2xl object-cover"
                 src={attachment.thumbnailSrc}
               />
-              <span className="absolute inset-0 rounded-xl bg-overlay-scrim" />
+              <span className="absolute inset-0 rounded-2xl bg-overlay-scrim" />
             </>
           ) : null}
           <LoadingCircleIcon

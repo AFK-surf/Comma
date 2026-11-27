@@ -59,6 +59,8 @@ const intentSchema = z.object({
   registrationId: id.optional(),
   workspaceId: id.optional(),
   authorizationRequestId: id.optional(),
+  boundDeviceId: id.optional(),
+  resetPendingRebind: z.boolean().optional(),
   request: z
     .object({
       requestId: id,
@@ -72,6 +74,18 @@ const intentSchema = z.object({
 type Intent = z.infer<typeof intentSchema>;
 const INTENT_VERSION = 5;
 const WINDOW_MS = 45 * 60_000;
+const HARD_BLOCKED_PROBLEMS = new Set<ComputeNodeProblem>([
+  "insufficient_disk",
+  "comma_update_required",
+  "service_update_required",
+  "target_older_than_data",
+  "local_data_migration",
+  "registration_revoked",
+  "host_uninstalled",
+  "authorization_attention",
+  "request_blocked",
+  "intent_unreadable",
+]);
 
 export interface ComputeNodeServiceOptions {
   adapter: ComputeNodeRuntimeAdapter;
@@ -83,6 +97,8 @@ export interface ComputeNodeServiceOptions {
     explicit: boolean,
     requireCurrent: () => void
   ) => Promise<HostMaintenanceState | undefined>;
+  /** Whether the Agent VMM Host is installed, read only when its lifecycle helper is missing. */
+  hostInstallation?: () => Promise<HostMaintenanceState["installation"]>;
   filePath: string;
   onStateChanged?: (state: ComputeNodeState) => void;
   installAuthorization?: ComputeNodeInstallAuthorizationOwner;
@@ -111,10 +127,14 @@ export class ComputeNodeService {
   private backoff = 0;
   private receipt: NativeRequestReceipt | undefined;
   private receiptUnreadable = false;
+  /** The person uninstalled the Host: its helper and app are gone, and saved intent waits for a reinstall. */
+  private hostAbsent = false;
   private problem: ComputeNodeProblem | undefined;
   private detail: string | undefined;
   private remoteHostBound: boolean | undefined;
   private remoteStatus: ComputeNodeState["status"] | undefined;
+  private identityMismatch = false;
+  private confirmedLocalReset = false;
   private workActivity: ComputeNodeWorkActivity = "unknown";
   private preparingRequest: NonNullable<Intent["request"]> | undefined;
   private refreshPromise: Promise<ComputeNodeState> | undefined;
@@ -161,7 +181,17 @@ export class ComputeNodeService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") service.readable = false;
     }
     if (options.accountOwner) service.intent.accountOwner = options.accountOwner;
-    void service.refresh().catch(() => undefined);
+    const hadPendingConfigure =
+      service.intent.desiredEnabled && service.intent.request?.kind === "configure";
+    void service
+      .run(async () => {
+        const state = await service.observe(service.receipt?.outcome === "succeeded");
+        if (hadPendingConfigure && service.canAutoContinue(state)) {
+          return service.continueLocked(false);
+        }
+        return state;
+      })
+      .catch(() => undefined);
     return service;
   }
   state() {
@@ -188,6 +218,8 @@ export class ComputeNodeService {
         delete this.intent.registrationId;
         delete this.intent.workspaceId;
         delete this.intent.authorizationRequestId;
+        delete this.intent.boundDeviceId;
+        delete this.intent.resetPendingRebind;
       }
       if (this.intent.workspaceId && this.intent.workspaceId !== input.workspaceId)
         throw new Error("Remove the existing connection before changing workspace.");
@@ -211,20 +243,32 @@ export class ComputeNodeService {
   /** Continue exactly the saved action; a failed remove can never become an enable. */
   continue() {
     return this.run(
-      async () => {
-        this.requireMutable();
-        if (!this.intent.request || this.problem === "request_blocked")
-          return this.observe(true);
-        this.intent.continuation = { deadlineAt: this.clock.now() + WINDOW_MS };
-        this.backoff = 0;
-        await this.save();
-        return this.receipt?.outcome === "succeeded" &&
-          ["configure", "recover"].includes(this.intent.request.kind)
-          ? this.observe(true)
-          : this.execute(true);
-      },
+      () => this.continueLocked(true),
       this.intent.request?.kind === "remove" || this.intent.request?.kind === "drain"
     );
+  }
+  private canAutoContinue(state: ComputeNodeState) {
+    if (!this.readable || this.readOnly) return false;
+    if (!this.intent.desiredEnabled) return false;
+    if (this.intent.request?.kind !== "configure") return false;
+    if (this.confirmedLocalReset) return false;
+    if (state.status !== "action_required") return false;
+    if (state.problem !== "continuation_paused") return false;
+    if (state.problem && HARD_BLOCKED_PROBLEMS.has(state.problem)) return false;
+    if (this.receipt?.outcome === "failed" && !this.receipt.retryable) return false;
+    return true;
+  }
+  private async continueLocked(explicit: boolean): Promise<ComputeNodeState> {
+    this.requireMutable();
+    if (!this.intent.request || this.problem === "request_blocked")
+      return this.observe(true);
+    this.intent.continuation = { deadlineAt: this.clock.now() + WINDOW_MS };
+    this.backoff = 0;
+    await this.save();
+    return this.receipt?.outcome === "succeeded" &&
+      ["configure", "recover"].includes(this.intent.request.kind)
+      ? this.observe(true)
+      : this.execute(explicit);
   }
   drain(expected?: ComputeNodeExpectedBinding) {
     return this.run(async () => {
@@ -245,10 +289,163 @@ export class ComputeNodeService {
     }, true);
   }
   hostDataReset() {
-    return this.refresh();
+    return this.run(async () => {
+      if (this.readable && !this.readOnly && this.intent.registrationId) {
+        this.intent.resetPendingRebind = true;
+        if (
+          this.intent.desiredEnabled &&
+          this.intent.request?.kind !== "remove" &&
+          this.intent.request?.kind !== "drain"
+        ) {
+          this.cancelTimer();
+          this.intent.request = { requestId: randomUUID(), kind: "configure" };
+          delete this.intent.continuation;
+          this.receipt = undefined;
+          this.receiptUnreadable = false;
+          this.problem = undefined;
+          this.detail = undefined;
+        }
+        await this.save();
+      }
+      return this.observe(this.receipt?.outcome === "succeeded");
+    });
+  }
+  /** Marks a loaded non-active account's saved binding for rebind after a shared Host data reset. */
+  markHostDataReset() {
+    const next = this.tail.then(
+      async () => {
+        if (this.readable && !this.readOnly && this.intent.registrationId) {
+          let changed = false;
+          if (!this.intent.resetPendingRebind) {
+            this.intent.resetPendingRebind = true;
+            changed = true;
+          }
+          if (
+            this.intent.desiredEnabled &&
+            this.intent.request?.kind !== "remove" &&
+            this.intent.request?.kind !== "drain"
+          ) {
+            this.cancelTimer();
+            this.intent.request = { requestId: randomUUID(), kind: "configure" };
+            delete this.intent.continuation;
+            this.receipt = undefined;
+            this.receiptUnreadable = false;
+            this.problem = undefined;
+            this.detail = undefined;
+            changed = true;
+          }
+          if (changed) await this.save(false);
+        }
+      },
+      async () => undefined
+    );
+    this.tail = next.catch(() => undefined);
+    return next;
   }
   hostReinstalled() {
-    return this.refresh();
+    return this.run(async () => {
+      const state = await this.observe(this.receipt?.outcome === "succeeded");
+      if (
+        this.readable &&
+        !this.readOnly &&
+        this.intent.desiredEnabled &&
+        this.intent.workspaceId &&
+        (this.intent.resetPendingRebind ||
+          (!this.intent.registrationId && this.intent.request?.kind === "configure"))
+      ) {
+        const previous = this.intent.request;
+        await this.start("configure");
+        return this.execute(true, previous !== this.intent.request, true);
+      }
+      if (this.canAutoContinue(state)) {
+        return this.continueLocked(false);
+      }
+      return state;
+    });
+  }
+  /** Atomically marks the previous binding reset and re-enables the workspace after a Host reset+reinstall. */
+  rebindAfterHostReset(workspaceId: string) {
+    return this.run(async () => {
+      this.requireMutable();
+      if (this.intent.registrationId) this.intent.resetPendingRebind = true;
+      if (this.snapshot.status === "removed") {
+        delete this.intent.registrationId;
+        delete this.intent.workspaceId;
+        delete this.intent.authorizationRequestId;
+        delete this.intent.boundDeviceId;
+        delete this.intent.resetPendingRebind;
+      }
+      if (this.intent.workspaceId && this.intent.workspaceId !== workspaceId)
+        throw new Error("Remove the existing connection before changing workspace.");
+      if (!this.snapshot.eligibility.eligible)
+        throw new Error(this.snapshot.eligibility.reason);
+      this.intent.workspaceId = workspaceId;
+      this.intent.desiredEnabled = true;
+      const previous = this.intent.request;
+      await this.start("configure");
+      return this.execute(true, previous !== this.intent.request, true);
+    });
+  }
+  hostUninstalled(reset = false) {
+    if (!reset) return this.refresh();
+    return this.run(async () => {
+      if (
+        this.readable &&
+        !this.readOnly &&
+        this.intent.registrationId &&
+        this.intent.workspaceId &&
+        this.options.installAuthorization
+      ) {
+        let revoked = false;
+        try {
+          const status = await this.options.installAuthorization.revoke({
+            workspaceId: this.intent.workspaceId,
+            registrationId: this.intent.registrationId,
+          });
+          revoked = status === "removed";
+        } catch (error) {
+          revoked = error instanceof ComputeNodeAuthorizationNotFoundError;
+        }
+        this.requireAuthority();
+        if (revoked) {
+          delete this.intent.registrationId;
+          delete this.intent.resetPendingRebind;
+          delete this.intent.boundDeviceId;
+          delete this.intent.continuation;
+          if (this.intent.desiredEnabled && this.intent.workspaceId) {
+            const nextId = randomUUID();
+            this.intent.authorizationRequestId = nextId;
+            this.intent.request = { requestId: nextId, kind: "configure" };
+          } else {
+            delete this.intent.workspaceId;
+            delete this.intent.authorizationRequestId;
+            delete this.intent.request;
+          }
+          this.receipt = undefined;
+          this.receiptUnreadable = false;
+          this.problem = undefined;
+          this.detail = undefined;
+          await this.save();
+        } else {
+          this.intent.resetPendingRebind = true;
+          if (
+            this.intent.desiredEnabled &&
+            this.intent.request?.kind !== "remove" &&
+            this.intent.request?.kind !== "drain"
+          ) {
+            this.cancelTimer();
+            this.intent.request = { requestId: randomUUID(), kind: "configure" };
+            delete this.intent.continuation;
+            this.receipt = undefined;
+            this.receiptUnreadable = false;
+            this.problem = undefined;
+            this.detail = undefined;
+          }
+          await this.save();
+        }
+      }
+      return this.observe(this.receipt?.outcome === "succeeded");
+    });
   }
   networkRecovered() {
     if (this.timer) this.schedule(0, this.timer.run);
@@ -289,10 +486,15 @@ export class ComputeNodeService {
     this.backoff = 0;
     this.problem = undefined;
     this.detail = undefined;
+    this.hostAbsent = false;
     await this.save();
     this.publish("processing", this.snapshot.observed);
   }
-  private async execute(explicit = false, fresh = false): Promise<ComputeNodeState> {
+  private async execute(
+    explicit = false,
+    fresh = false,
+    localResetConfirmed = false
+  ): Promise<ComputeNodeState> {
     const request = this.intent.request;
     if (!request) return this.observe();
     const owner = this.options.installAuthorization;
@@ -363,7 +565,7 @@ export class ComputeNodeService {
         this.requireRequest(request.requestId);
         this.problem = undefined;
         this.detail = undefined;
-        await this.configureRequest(request, explicit);
+        await this.configureRequest(request, explicit, localResetConfirmed);
       } else if (request.kind === "drain" || request.kind === "remove") {
         // Cloud revocation and native replay fencing are separate facts. A refused/unknown cloud call cannot
         // make native work look complete; native still fences the exact target even after a failed claim.
@@ -504,7 +706,8 @@ export class ComputeNodeService {
   }
   private async configureRequest(
     request: NonNullable<Intent["request"]>,
-    explicit: boolean
+    explicit: boolean,
+    localResetConfirmed = false
   ) {
     const owner = this.options.installAuthorization!;
     const receipt = await this.readRequestReceipt(request);
@@ -549,6 +752,19 @@ export class ComputeNodeService {
             this.intent.registrationId
           )
         );
+      } else if (receipt.kind === "registration-recover") {
+        if (!owner.recoveryDescriptor || !this.options.adapter.recover)
+          throw new Error("Registration recovery is unavailable.");
+        await this.acceptNativeReceipt(
+          request,
+          await this.options.adapter.recover(
+            request.requestId,
+            owner.recoveryDescriptor({
+              workspaceId: this.intent.workspaceId!,
+              registrationId: this.intent.registrationId!,
+            })
+          )
+        );
       } else {
         await this.acceptNativeReceipt(
           request,
@@ -576,45 +792,144 @@ export class ComputeNodeService {
         );
         return;
       }
-    } else {
-      const local = await this.options.adapter.observe(
-        this.intent.registrationId,
-        request.requestId
-      );
+      if (!explicit)
+        throw new Error("Continue this registration to renew its first claim ticket.");
+      const retried = await owner.retry({
+        workspaceId: this.intent.workspaceId!,
+        registrationId: this.intent.registrationId,
+      });
       this.requireRequest(request.requestId);
-      if (
-        local.readability !== "readable" ||
-        (local.registration !== "present" && local.registration !== "absent")
-      )
-        throw new Error("The current Registration cannot be read.");
-      if (local.registration === "present") {
-        await owner.configure({
-          workspaceId: this.intent.workspaceId!,
-          registrationId: this.intent.registrationId,
-          enabled: true,
-        });
-        this.requireRequest(request.requestId);
-        await this.acceptNativeReceipt(
-          request,
-          await this.options.adapter.enable(
-            request.requestId,
-            this.intent.registrationId
-          )
-        );
-        return;
-      }
+      await this.acceptNativeReceipt(
+        request,
+        await this.options.adapter.install(request.requestId, retried.descriptor)
+      );
+      return;
     }
-    if (!explicit)
-      throw new Error("Continue this registration to renew its first claim ticket.");
-    const accepted = await owner.retry({
+    const local = await this.options.adapter.observe(
+      this.intent.registrationId,
+      request.requestId
+    );
+    this.requireRequest(request.requestId);
+    if (
+      local.readability !== "readable" ||
+      (local.registration !== "present" && local.registration !== "absent")
+    )
+      throw new Error("The current Registration cannot be read.");
+    if (local.registration === "present") {
+      if (
+        local.deviceId &&
+        (this.intent.boundDeviceId !== local.deviceId || this.intent.resetPendingRebind)
+      ) {
+        this.intent.boundDeviceId = local.deviceId;
+        delete this.intent.resetPendingRebind;
+        await this.save(false);
+      }
+      await owner.configure({
+        workspaceId: this.intent.workspaceId!,
+        registrationId: this.intent.registrationId,
+        enabled: true,
+      });
+      this.requireRequest(request.requestId);
+      await this.acceptNativeReceipt(
+        request,
+        await this.options.adapter.enable(request.requestId, this.intent.registrationId)
+      );
+      return;
+    }
+    // local.registration === "absent": inspect cloud facts before deciding retry, recover, or rebind.
+    const remote = await owner.inspect({
       workspaceId: this.intent.workspaceId!,
       registrationId: this.intent.registrationId,
     });
     this.requireRequest(request.requestId);
-    await this.acceptNativeReceipt(
-      request,
-      await this.options.adapter.install(request.requestId, accepted.descriptor)
-    );
+    if (remote.hostBound === false && remote.status !== "removed") {
+      if (!explicit)
+        throw new Error("Continue this registration to renew its first claim ticket.");
+      const accepted = await owner.retry({
+        workspaceId: this.intent.workspaceId!,
+        registrationId: this.intent.registrationId,
+      });
+      this.requireRequest(request.requestId);
+      await this.acceptNativeReceipt(
+        request,
+        await this.options.adapter.install(request.requestId, accepted.descriptor)
+      );
+      return;
+    }
+    if (
+      remote.hostBound === true &&
+      local.deviceIdentityState === "ready" &&
+      remote.deviceId &&
+      local.deviceId === remote.deviceId &&
+      owner.recoveryDescriptor &&
+      this.options.adapter.recover
+    ) {
+      await this.acceptNativeReceipt(
+        request,
+        await this.options.adapter.recover(
+          request.requestId,
+          owner.recoveryDescriptor({
+            workspaceId: this.intent.workspaceId!,
+            registrationId: this.intent.registrationId,
+          })
+        )
+      );
+      return;
+    }
+    const confirmedLocalReset =
+      (remote.connected === false ||
+        (localResetConfirmed &&
+          this.intent.resetPendingRebind === true &&
+          (!remote.deviceId ||
+            !this.intent.boundDeviceId ||
+            remote.deviceId === this.intent.boundDeviceId))) &&
+      Boolean(local.deviceId) &&
+      local.deviceId !== remote.deviceId &&
+      (this.intent.resetPendingRebind === true ||
+        (Boolean(this.intent.boundDeviceId) &&
+          remote.deviceId === this.intent.boundDeviceId));
+    if (confirmedLocalReset) {
+      if (!explicit) {
+        this.problem = "authorization_attention";
+        return;
+      }
+      if (remote.status !== "removed") {
+        try {
+          const revokedStatus = await owner.revoke({
+            workspaceId: this.intent.workspaceId!,
+            registrationId: this.intent.registrationId,
+          });
+          if (revokedStatus !== "removed")
+            throw new Error(
+              `Compute node revocation did not complete (${revokedStatus}).`
+            );
+        } catch (error) {
+          if (!(error instanceof ComputeNodeAuthorizationNotFoundError)) throw error;
+        }
+      }
+      this.requireRequest(request.requestId);
+      this.intent.authorizationRequestId = randomUUID();
+      delete this.intent.registrationId;
+      delete this.intent.resetPendingRebind;
+      delete this.intent.boundDeviceId;
+      await this.save(false);
+      this.requireRequest(request.requestId);
+      const accepted = await owner.authorize({
+        requestId: this.intent.authorizationRequestId,
+        workspaceId: this.intent.workspaceId!,
+      });
+      this.intent.registrationId = accepted.registrationId;
+      await this.save(false);
+      this.requireRequest(request.requestId);
+      if (accepted.descriptor) {
+        await this.acceptNativeReceipt(
+          request,
+          await this.options.adapter.install(request.requestId, accepted.descriptor)
+        );
+      }
+      return;
+    }
+    this.problem = "authorization_attention";
   }
   private async acceptNativeReceipt(
     request: NonNullable<Intent["request"]>,
@@ -631,7 +946,12 @@ export class ComputeNodeService {
       request.kind === "recover"
         ? ["registration-recover"]
         : request.kind === "configure"
-          ? ["registration-claim", "registration-enable", "install-managed"]
+          ? [
+              "registration-claim",
+              "registration-enable",
+              "registration-recover",
+              "install-managed",
+            ]
           : request.kind === "drain"
             ? ["registration-drain"]
             : request.kind === "remove"
@@ -641,7 +961,7 @@ export class ComputeNodeService {
       throw new Error("The native receipt belongs to another action.");
     if (request.requestId !== receipt.requestId) {
       if (
-        request.kind !== "recover" ||
+        (request.kind !== "recover" && request.kind !== "configure") ||
         receipt.kind !== "registration-recover" ||
         receipt.correlationRequestId !== request.requestId
       )
@@ -678,8 +998,22 @@ export class ComputeNodeService {
     }
     this.requireAuthority();
     this.receiptUnreadable = false;
+    // No helper and no Host: nothing local can be read until a reinstall. Saved intent and identity stay as they are.
+    this.hostAbsent =
+      observed.reason === "helper_missing" &&
+      Boolean(this.intent.registrationId || this.intent.request) &&
+      (await this.options.hostInstallation?.().catch(() => undefined)) ===
+        "not_installed";
+    this.requireAuthority();
+    if (this.hostAbsent)
+      observed = {
+        ...observed,
+        connector: "absent",
+        host: "absent",
+        readability: "readable",
+      };
     const request = this.intent.request;
-    if (request && !this.unsubmittedPreparationFailed()) {
+    if (request && !this.hostAbsent && !this.unsubmittedPreparationFailed()) {
       try {
         this.receipt = await this.readRequestReceipt(request);
         if (this.receipt?.outcome === "failed")
@@ -705,7 +1039,23 @@ export class ComputeNodeService {
       !settled(this.receipt)
     )
       this.problem = "authorization_attention";
+    if (
+      observed.readability === "readable" &&
+      observed.registration === "present" &&
+      observed.deviceId &&
+      this.readable &&
+      !this.readOnly &&
+      (this.intent.boundDeviceId !== observed.deviceId ||
+        this.intent.resetPendingRebind)
+    ) {
+      this.intent.boundDeviceId = observed.deviceId;
+      delete this.intent.resetPendingRebind;
+      await this.save();
+    }
     this.remoteHostBound = undefined;
+    this.identityMismatch = false;
+    let remoteDeviceId: string | undefined;
+    let remoteConnected: boolean | undefined;
     if (
       this.intent.registrationId &&
       this.intent.workspaceId &&
@@ -719,6 +1069,8 @@ export class ComputeNodeService {
         this.requireAuthority();
         this.remoteStatus = remote.status;
         this.remoteHostBound = remote.hostBound;
+        remoteDeviceId = remote.deviceId;
+        remoteConnected = remote.connected;
         this.workActivity = remote.workActivity;
         if (
           remote.errorCode === "authorization_expired" ||
@@ -744,14 +1096,56 @@ export class ComputeNodeService {
           this.problem = "authorization_attention";
       }
     }
+    this.identityMismatch = Boolean(
+      observed.deviceId && remoteDeviceId && observed.deviceId !== remoteDeviceId
+    );
+    const confirmedLocalReset =
+      this.problem !== "request_blocked" &&
+      this.intent.desiredEnabled &&
+      Boolean(this.intent.registrationId) &&
+      observed.readability === "readable" &&
+      observed.registration === "absent" &&
+      remoteConnected === false &&
+      Boolean(observed.deviceId) &&
+      observed.deviceId !== remoteDeviceId &&
+      (this.intent.resetPendingRebind === true ||
+        (Boolean(this.intent.boundDeviceId) &&
+          remoteDeviceId === this.intent.boundDeviceId));
+    this.confirmedLocalReset = confirmedLocalReset;
+    if (
+      confirmedLocalReset &&
+      !this.intent.request &&
+      this.readable &&
+      !this.readOnly
+    ) {
+      this.intent.request = { requestId: randomUUID(), kind: "configure" };
+      await this.save();
+    }
     if (
       this.problem !== "request_blocked" &&
       this.intent.desiredEnabled &&
       this.intent.registrationId &&
+      observed.readability === "readable" &&
       observed.registration === "absent" &&
-      (this.remoteStatus === "ready" || this.receipt?.outcome === "succeeded")
-    )
-      this.problem = "authorization_attention";
+      (this.remoteHostBound === true ||
+        this.remoteStatus === "ready" ||
+        this.receipt?.outcome === "succeeded")
+    ) {
+      const canAutoRecover =
+        this.remoteHostBound === true &&
+        observed.deviceIdentityState === "ready" &&
+        Boolean(remoteDeviceId) &&
+        observed.deviceId === remoteDeviceId &&
+        Boolean(this.options.installAuthorization?.recoveryDescriptor) &&
+        Boolean(this.options.adapter.recover) &&
+        !observeOnly &&
+        this.intent.request?.kind === "configure" &&
+        !this.receipt &&
+        Boolean(this.intent.continuation) &&
+        this.clock.now() < this.intent.continuation!.deadlineAt;
+      if (!canAutoRecover && !confirmedLocalReset)
+        this.problem = "authorization_attention";
+    }
     let canceledBeforeLocalAcceptance = false;
     if (
       this.remoteStatus === "removed" &&
@@ -828,10 +1222,12 @@ export class ComputeNodeService {
     )
       status = "ready";
     else status = "processing";
+    if (this.hostAbsent) status = "action_required";
     if (
       status === "processing" &&
       this.intent.request &&
-      (!this.intent.continuation ||
+      (confirmedLocalReset ||
+        !this.intent.continuation ||
         this.clock.now() >= this.intent.continuation.deadlineAt)
     ) {
       status = "action_required";
@@ -855,6 +1251,8 @@ export class ComputeNodeService {
         await this.save();
       }
     } else if (
+      !this.hostAbsent &&
+      !confirmedLocalReset &&
       this.problem !== "request_blocked" &&
       this.intent.request &&
       this.intent.continuation &&
@@ -899,7 +1297,7 @@ export class ComputeNodeService {
       this.readable &&
       !this.readOnly &&
       status === "action_required" &&
-      observed.helperContractFailure === "too_old"
+      (observed.helperContractFailure === "too_old" || this.hostAbsent)
     )
       action = "update_host";
     else if (!blocked && status === "action_required")
@@ -913,7 +1311,9 @@ export class ComputeNodeService {
             : this.problem === "host_uninstalled"
               ? "update_host"
               : this.problem === "authorization_attention"
-                ? "recover"
+                ? this.identityMismatch
+                  ? "remove"
+                  : "recover"
                 : (this.problem === "continuation_paused" && request) ||
                     (request?.kind === "configure" && rejectedClaimTicket(this.receipt))
                   ? "continue"
@@ -925,16 +1325,18 @@ export class ComputeNodeService {
                     : "continue";
     const problem = !this.readable
       ? "intent_unreadable"
-      : this.receiptUnreadable
-        ? "operation_unknown"
-        : (this.problem ??
-          (this.receipt?.outcome === "failed"
-            ? request?.kind === "remove"
-              ? "removal_failed"
-              : request?.kind === "drain"
-                ? "stop_failed"
-                : "setup_failed"
-            : undefined));
+      : this.hostAbsent
+        ? "host_uninstalled"
+        : this.receiptUnreadable
+          ? "operation_unknown"
+          : (this.problem ??
+            (this.receipt?.outcome === "failed"
+              ? request?.kind === "remove"
+                ? "removal_failed"
+                : request?.kind === "drain"
+                  ? "stop_failed"
+                  : "setup_failed"
+              : undefined));
     this.snapshot = computeNodeStateSchema.parse({
       desiredEnabled:
         request?.kind === "configure" &&

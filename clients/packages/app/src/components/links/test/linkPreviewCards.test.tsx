@@ -126,6 +126,61 @@ describe("LinkPreviewCard", () => {
     expect(owner).toHaveAttribute("title", "Owner: zanwei");
     expect(card.querySelector('svg[data-provider-logo="google-drive"]')).not.toBeNull();
   });
+
+  it("renders an Outlook message with sender, received time, excerpt, logo, and click hint", () => {
+    pinNoon();
+    render(
+      <LinkPreviewCard
+        preview={{
+          kind: "outlook_message",
+          href: "https://outlook.live.com/owa/?ItemID=AAMk1",
+          title: "Q4 Invoice",
+          excerpt: "Your invoice is due Friday.",
+          sender: "Billing <billing@example.com>",
+          recipients: "peng@example.com",
+          receivedAt: new Date(2026, 7, 22, 10).getTime(),
+          body: "Hello Peng, your invoice is due Friday.",
+          startsAt: null,
+        }}
+      />
+    );
+
+    const card = screen.getByTestId("recommendation-link-card");
+    expect(card).toHaveAttribute("data-kind", "outlook_message");
+    expect(card).toHaveTextContent("Billing <billing@example.com>");
+    expect(card).toHaveTextContent("2h ago");
+    expect(card).toHaveTextContent("Q4 Invoice");
+    expect(card).toHaveTextContent("Your invoice is due Friday.");
+    expect(card).toHaveTextContent("Click to read email");
+    expect(card.querySelector('svg[data-provider-logo="outlook"]')).not.toBeNull();
+  });
+
+  it("renders a Gmail message with sender, received time, excerpt, logo, and click hint", () => {
+    pinNoon();
+    render(
+      <LinkPreviewCard
+        preview={{
+          kind: "gmail_message",
+          href: "https://mail.google.com/mail/u/0/#inbox/198f2ab4",
+          title: "Launch approval",
+          excerpt: "Can you sign off before 5pm?",
+          sender: "Dana Wu <dana@example.com>",
+          recipients: "peng@example.com",
+          receivedAt: new Date(2026, 7, 22, 11).getTime(),
+          body: "Hi Peng, can you sign off before 5pm?",
+        }}
+      />
+    );
+
+    const card = screen.getByTestId("recommendation-link-card");
+    expect(card).toHaveAttribute("data-kind", "gmail_message");
+    expect(card).toHaveTextContent("Dana Wu <dana@example.com>");
+    expect(card).toHaveTextContent("1h ago");
+    expect(card).toHaveTextContent("Launch approval");
+    expect(card).toHaveTextContent("Can you sign off before 5pm?");
+    expect(card).toHaveTextContent("Click to read email");
+    expect(card.querySelector('svg[data-provider-logo="gmail"]')).not.toBeNull();
+  });
 });
 
 describe("providerFromHref", () => {
@@ -159,6 +214,22 @@ describe("providerFromHref", () => {
     expect(providerFromHref("https://drive.google.com/open?id=1AbC_dEf-9")).toEqual({
       appId: "googledrive",
       appName: "Google Drive",
+    });
+    expect(providerFromHref("https://outlook.live.com/owa/?ItemID=AAMk1")).toEqual({
+      appId: "outlook",
+      appName: "Outlook",
+    });
+    expect(providerFromHref("https://outlook.office.com/mail/id/AAMk1")).toEqual({
+      appId: "outlook",
+      appName: "Outlook",
+    });
+    expect(providerFromHref("https://outlook.office365.com/mail/id/AAMk1")).toEqual({
+      appId: "outlook",
+      appName: "Outlook",
+    });
+    expect(providerFromHref("https://mail.google.com/mail/u/0/#inbox/m1")).toEqual({
+      appId: "gmail",
+      appName: "Gmail",
     });
 
     expect(providerFromHref("https://example.com/pull/845")).toBeUndefined();
@@ -253,5 +324,54 @@ describe("LinkCardPerson", () => {
     expect(avatar).toHaveTextContent("C");
     expect(avatar?.querySelector("img")).toBeNull();
     expect(core.sentTo("files.read")).toEqual([]);
+  });
+
+  it("renders a still.fail chat preview with status, station name, latest excerpt, and brand icon", () => {
+    render(
+      <LinkPreviewCard
+        preview={{
+          kind: "stillfail_chat",
+          href: "https://app.youdid.wtf/o/ws/st-1/chat%3Ac-1",
+          ref: "station:st-1:chat:c-1",
+          title: "Duo monoid 发热排查",
+          stationName: "pengx17",
+          status: "need",
+          note: "决定是否重签重装",
+          updatedAt: null,
+          offline: false,
+          messages: [
+            {
+              seq: 1,
+              authorKind: "agent",
+              author: "agent",
+              text: "定位到轮询间隔太短，已修完并通过单测。",
+              createdAt: null,
+              card: {
+                type: "options",
+                choice: null,
+                closed: false,
+                options: ["重签并安装", "先不装"],
+              },
+            },
+          ],
+        }}
+      />
+    );
+
+    const card = screen.getByTestId("recommendation-link-card");
+    expect(card).toHaveAttribute("data-kind", "stillfail_chat");
+    expect(card).toHaveTextContent("Waiting for you");
+    expect(card).toHaveTextContent("pengx17");
+    expect(card).toHaveTextContent("Duo monoid 发热排查");
+    expect(card).toHaveTextContent("定位到轮询间隔太短，已修完并通过单测。");
+    expect(card.querySelector('svg[data-provider-logo="stillfail"]')).not.toBeNull();
+    expect(providerFromHref("https://app.youdid.wtf/o/ws/st-1/chat%3Ac-1")).toEqual({
+      appId: "stillfail",
+      appName: "still.fail",
+    });
+    expect(providerFromHref("https://still.fail/o/ws/st-1/chat%3Ac-1")).toEqual({
+      appId: "stillfail",
+      appName: "still.fail",
+    });
   });
 });

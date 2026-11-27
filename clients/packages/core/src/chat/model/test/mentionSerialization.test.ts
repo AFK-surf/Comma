@@ -7,6 +7,9 @@ import {
   requestMentionMatches,
   requestMentionPlainText,
   requestMentionsAsWords,
+  shareMentionMatches,
+  shareMentionPlainText,
+  shareMentionsAsWords,
   slackMentionLabel,
   slackMentionMatches,
   slackMentionsAsWords,
@@ -79,6 +82,17 @@ describe("request mentions", () => {
     ]);
     expect(requestMentionsAsWords(text)).toBe("@Cats (Juice) review the deck");
     expect(requestMentionsAsWords("no mention")).toBe("no mention");
+  });
+});
+
+describe("shared task mentions", () => {
+  it("travel as a comma:share link naming the person and show as their name", () => {
+    const text = `${shareMentionPlainText("Cats", "usr_1")} plan the offsite`;
+    expect(text).toBe("[Cats](comma:share/usr_1) plan the offsite");
+    expect([...shareMentionMatches(text)]).toEqual([
+      { userId: "usr_1", name: "Cats", start: 0, end: 25, text: text.slice(0, 25) },
+    ]);
+    expect(shareMentionsAsWords(text)).toBe("@Cats plan the offsite");
   });
 });
 

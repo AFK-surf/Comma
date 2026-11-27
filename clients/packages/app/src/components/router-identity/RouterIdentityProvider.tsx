@@ -44,6 +44,9 @@ const RouterIdentityContext = createContext<RouterIdentity | undefined>(undefine
 // them, and nothing else in the identity does.
 const RouterDisplayNameContext = createContext<string | undefined>(undefined);
 
+/** Names the Router on a page with no account to read its name from (a guest's). */
+export const RouterDisplayNameProvider = RouterDisplayNameContext.Provider;
+
 /**
  * One owner per signed-in window for the Router's name. The core reads the
  * workspace's Router once per workspace (no polling); this window takes the

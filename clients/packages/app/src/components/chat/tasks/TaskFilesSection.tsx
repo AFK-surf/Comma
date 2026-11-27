@@ -114,7 +114,7 @@ export function TaskFilesSection({
             {shown.map((file, index) => {
               const size = formatAttachmentSize(file.size, locale);
               return (
-                <li key={`${file.message_id}:${file.index}`}>
+                <li key={file.path ?? `${file.message_id}:${file.index}`}>
                   <HoverCard
                     content={
                       <TaskFilePreviewCard
@@ -134,7 +134,8 @@ export function TaskFilesSection({
                       className="comma-task-panel-pill max-w-full min-w-0"
                       data-interactive="true"
                       data-menu-open={
-                        fileMenu.openOn === `${file.message_id}:${file.index}`
+                        fileMenu.openOn ===
+                        (file.path ?? `${file.message_id}:${file.index}`)
                           ? "true"
                           : undefined
                       }

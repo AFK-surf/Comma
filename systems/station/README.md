@@ -91,6 +91,12 @@ Every station connects out to Salix the same way, whatever machine it runs on.
   signed-in Workspace's connection is a connector instance inside it: a file in `<data>/connector/instances` that the
   app writes with a short-lived credential and removes at sign-out. A static connector the user installs is one more
   instance. launchd then runs the station, so it stays when the app quits.
+- **The system proxy.** The app asks Chromium for the proxy of the Salix server each time it writes a connection's
+  file. While the station is not connected, the app asks again and writes the file if the answer changed. An HTTP or
+  HTTPS proxy goes into the file as `connector.proxy`, and the station dials Salix through it first. If the proxy
+  does not reach Salix in 10 seconds, the station dials Salix directly, but Salix's own refusal through the proxy
+  stands. A new proxy applies at the next dial, and the live connection stays. A SOCKS proxy, the presence socket
+  and the station's HTTP requests do not use the system proxy.
 - **macOS folder permissions.** The app's station is the app's child, so macOS attributes its file access, and that
   of the commands and agents it starts, to the app. The first open of Desktop, Documents or Downloads shows the app's
   prompt with its usage string, on that Mac. The open waits until someone answers. macOS never asks for a station

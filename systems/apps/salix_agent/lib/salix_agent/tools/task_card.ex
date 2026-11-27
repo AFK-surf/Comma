@@ -90,7 +90,7 @@ defmodule SalixAgent.Tools.TaskCard do
       call = %{
         id: to_string(ctx[:tool_call_id]) <> ":task-topic",
         name: "im_api.telegram.open_task_topic",
-        ifc: ctx[:ifc_declaration],
+        ifc: SalixAgent.IFC.Declaration.runtime_sources(ctx[:ifc_declaration]),
         args: %{
           "connect_id" => target["connect_id"],
           "conversation_id" => result["conversation_id"],
@@ -128,7 +128,7 @@ defmodule SalixAgent.Tools.TaskCard do
       call = %{
         id: to_string(ctx[:tool_call_id]) <> ":task-card",
         name: "im_api.qq.post_task_card",
-        ifc: ctx[:ifc_declaration],
+        ifc: SalixAgent.IFC.Declaration.runtime_sources(ctx[:ifc_declaration]),
         args: %{
           "connect_id" => target["connect_id"],
           "conversation_id" => result["conversation_id"],
@@ -158,7 +158,7 @@ defmodule SalixAgent.Tools.TaskCard do
       call = %{
         id: to_string(ctx[:tool_call_id]) <> ":task-card",
         name: "im_api.feishu.post_task_card",
-        ifc: ctx[:ifc_declaration],
+        ifc: SalixAgent.IFC.Declaration.runtime_sources(ctx[:ifc_declaration]),
         args: %{
           "connect_id" => target["connect_id"],
           "conversation_id" => result["conversation_id"],
@@ -192,7 +192,7 @@ defmodule SalixAgent.Tools.TaskCard do
       call = %{
         id: to_string(ctx[:tool_call_id]) <> ":task-card",
         name: "im_api.lark.post_task_card",
-        ifc: ctx[:ifc_declaration],
+        ifc: SalixAgent.IFC.Declaration.runtime_sources(ctx[:ifc_declaration]),
         args: %{
           "connect_id" => target["connect_id"],
           "conversation_id" => result["conversation_id"],
@@ -256,7 +256,7 @@ defmodule SalixAgent.Tools.TaskCard do
         name: "im_api.slack.post_task_card",
         # The card projects the created Task, not unrelated session history.
         # Keep the create call's dependencies, including private ones.
-        ifc: ctx[:ifc_declaration],
+        ifc: SalixAgent.IFC.Declaration.runtime_sources(ctx[:ifc_declaration]),
         args: %{
           "connect_id" => connect,
           "conversation_id" => result["conversation_id"],

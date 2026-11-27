@@ -5,8 +5,10 @@ defmodule SalixIM.Provider.Feishu.AppAvailability do
   admin console), and who that person is.
 
   `CommaWeb.Stations` asks it on every station tool call of a person who has
-  no account in the product (`SalixStore.StationMembers.app_member_role/2`),
-  so an administrator's change applies to the next call. The person's name
+  no account in the product (`SalixStore.StationMembers.app_member_role/2`)
+  when the connect's member scope is `"organization"`
+  (`SalixIM.ProviderConnects.Members`), so an administrator's change applies
+  to the next call. The person's name
   and email are kept per connect and person for at most an hour, in a table
   of at most 10,000 entries that the connect API process owns
   (`SalixIM.Provider.Feishu.API`); availability itself is never kept.

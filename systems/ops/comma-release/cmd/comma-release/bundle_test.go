@@ -387,6 +387,24 @@ func TestBuildBundleBindsAgentVMMTrustToSelectedCluster(t *testing.T) {
 		if got != want {
 			t.Fatal("release config did not use the selected cluster gateway CA")
 		}
+
+		t.Setenv("COMMA_VMM_REMOTE_IP", "203.0.113.7")
+		body, err = buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+			Namespace:   "comma",
+		}, bundleSecretRunner{}, kubectl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var candidate release.CandidateBundle
+		if err = json.Unmarshal(body, &candidate); err != nil {
+			t.Fatal(err)
+		}
+		if candidate.Replacements["COMMA_VMM_REMOTE_IP"] != "203.0.113.7" {
+			t.Fatalf("COMMA_VMM_REMOTE_IP = %q, want 203.0.113.7", candidate.Replacements["COMMA_VMM_REMOTE_IP"])
+		}
 	})
 }
 

@@ -18,6 +18,28 @@ defmodule CommaWeb.LinearIntegrationTest do
 
     def init(opts), do: opts
 
+    defp token_response(conn, form) do
+      # A `user-code-<name>` code authorizes the person <name>; any other
+      # code installs the app.
+      case form["code"] do
+        "user-code-" <> name ->
+          json(conn, 200, %{
+            "access_token" => "linear-user-token:" <> name,
+            "token_type" => "Bearer",
+            "expires_in" => 60 * 60 * 24,
+            "scope" => "read"
+          })
+
+        _app ->
+          json(conn, 200, %{
+            "access_token" => "linear-app-token",
+            "token_type" => "Bearer",
+            "expires_in" => 60 * 60 * 24 * 365,
+            "scope" => "read,write,app:assignable,app:mentionable"
+          })
+      end
+    end
+
     def call(conn, _opts) do
       case {conn.method, conn.path_info} do
         {"POST", ["oauth", "token"]} ->
@@ -25,24 +47,15 @@ defmodule CommaWeb.LinearIntegrationTest do
           form = URI.decode_query(raw)
           SystemsRuntime.Proc.send(test_pid(), {:linear_token_exchange, form})
 
-          # A `user-code-<name>` code authorizes the person <name>; any other
-          # code installs the app.
-          case form["code"] do
-            "user-code-" <> name ->
-              json(conn, 200, %{
-                "access_token" => "linear-user-token:" <> name,
-                "token_type" => "Bearer",
-                "expires_in" => 60 * 60 * 24,
-                "scope" => "read"
-              })
-
-            _app ->
-              json(conn, 200, %{
-                "access_token" => "linear-app-token",
-                "token_type" => "Bearer",
-                "expires_in" => 60 * 60 * 24 * 365,
-                "scope" => "read,write,app:assignable,app:mentionable"
-              })
+          # Linear enforces RFC 7636: a verifier has 43 to 128 unreserved characters.
+          if form["grant_type"] == "authorization_code" and
+               not (form["code_verifier"] =~ ~r/\A[A-Za-z0-9\-._~]{43,128}\z/) do
+            json(conn, 400, %{
+              "error" => "invalid_request",
+              "error_description" => "code_verifier must be 43-128 characters"
+            })
+          else
+            token_response(conn, form)
           end
 
         {"POST", ["oauth", "revoke"]} ->

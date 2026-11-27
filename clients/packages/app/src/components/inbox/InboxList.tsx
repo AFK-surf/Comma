@@ -24,7 +24,10 @@ export type InboxListEntry = ProductInboxItem | InboxRequestEntry;
 
 const isRequest = (entry: InboxListEntry): entry is InboxRequestEntry =>
   "kind" in entry &&
-  (entry.kind === "task_request" || entry.kind === "task_request_sent");
+  (entry.kind === "task_request" ||
+    entry.kind === "task_request_sent" ||
+    entry.kind === "collaboration_invite" ||
+    entry.kind === "people_joined");
 import { isInboxItemUnread, type InboxUnreadMarks } from "./inboxDeletion";
 
 export function InboxList({

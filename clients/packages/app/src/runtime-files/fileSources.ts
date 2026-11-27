@@ -1,7 +1,11 @@
 import { chatAttachmentDownloadMaxBytes } from "@comma/chat-contract";
 import type { CallFn, FileSource } from "@comma/core-client";
 
-/** A message attachment keeps its original conversation as the byte authority. */
+/**
+ * A file of a message. An attachment keeps its original conversation as the byte authority. A file the person sent
+ * with the message is in the Group's uploads instead (`workspacePath`), and is read from there; its
+ * `attachmentIndex` is its place among the message's sent files.
+ */
 export interface ConversationFileSource {
   groupId: string;
   conversationId: string;
@@ -10,6 +14,7 @@ export interface ConversationFileSource {
   fileName: string;
   mimeType?: string;
   size?: number;
+  workspacePath?: string;
 }
 
 export const conversationFileSourceKey = (source: ConversationFileSource) =>
@@ -19,6 +24,7 @@ export const conversationFileSourceKey = (source: ConversationFileSource) =>
     source.messageId,
     source.attachmentIndex,
     source.fileName,
+    ...(source.workspacePath === undefined ? [] : [source.workspacePath]),
   ]);
 
 /** A chat file's bytes as the core reads them, typed as the server gave them. */
@@ -31,14 +37,25 @@ export const readFileBlob = async (
   return new Blob([bytes as Uint8Array<ArrayBuffer>], { type });
 };
 
-/** Where the core reads a message attachment's bytes. */
-export const conversationFileSource = (source: ConversationFileSource): FileSource => ({
-  source: "attachment",
-  group: source.groupId,
-  conversation: source.conversationId,
-  message: source.messageId,
-  index: source.attachmentIndex,
-});
+/** Where the core reads the bytes of a message's file: its attachment, or the upload the person sent with it. */
+export const conversationFileSource = (source: ConversationFileSource): FileSource =>
+  source.workspacePath === undefined
+    ? {
+        source: "attachment",
+        group: source.groupId,
+        conversation: source.conversationId,
+        message: source.messageId,
+        index: source.attachmentIndex,
+      }
+    : {
+        source: "group-file",
+        group: source.groupId,
+        path: source.workspacePath,
+        // A Task together's file is read through that Task's own route.
+        ...(source.workspacePath.startsWith("/task/")
+          ? { task: source.conversationId }
+          : {}),
+      };
 
 /** Saves a message attachment into Downloads as it arrives (desktop): any size, never read whole. */
 export const saveConversationFile =

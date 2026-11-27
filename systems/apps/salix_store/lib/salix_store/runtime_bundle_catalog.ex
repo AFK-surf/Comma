@@ -121,7 +121,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
     root = Keyword.get(opts, :root, bundle_root())
 
     with {:ok, raw} <- SystemsRuntime.FS.read(Path.join(root, "manifest.json")),
-         {:ok, %{"schemaVersion" => 3, "sourceRevision" => revision, "images" => images}}
+         {:ok, %{"schemaVersion" => 4, "sourceRevision" => revision, "images" => images}}
          when is_binary(revision) and is_list(images) <- Jason.decode(raw),
          {:ok, indexed} <- validate_images(images) do
       {:ok, %{source_revision: revision, root: root, images: indexed}}
@@ -143,7 +143,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
                    |> Map.drop(["inputDigest"])
                    |> Map.put(
                      "archiveUrl",
-                     "#{@runtime_bundle_public_base_url}/runtime-bundles/sha256/#{image["archiveSha256"]}.oci.tar"
+                     "#{@runtime_bundle_public_base_url}/runtime-bundles/sha256/#{image["archiveSha256"]}.erofs.zst"
                    )
 
                  {:cont, {:ok, Map.put(acc, class, image)}}
@@ -214,7 +214,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
          hex?(archive_sha) and hex?(manifest_sha) and uri.scheme == "https" and
          is_binary(uri.host) and uri.host != "" and is_nil(uri.userinfo) and
          is_nil(uri.query) and is_nil(uri.fragment) and
-         String.ends_with?(uri.path || "", "/runtime-bundles/sha256/#{archive_sha}.oci.tar") do
+         valid_archive_path?(uri.path, archive_sha) do
       {:ok,
        %{
          "class" => class,
@@ -258,6 +258,13 @@ defmodule SalixStore.RuntimeBundleCatalog do
 
   defp field(value, key) when is_map(value),
     do: Map.get(value, key) || Map.get(value, Atom.to_string(key))
+
+  defp valid_archive_path?(path, archive_sha) when is_binary(path) do
+    String.ends_with?(path, "/runtime-bundles/sha256/#{archive_sha}.erofs.zst") or
+      String.ends_with?(path, "/runtime-bundles/sha256/#{archive_sha}.oci.tar")
+  end
+
+  defp valid_archive_path?(_, _), do: false
 
   defp hex?(value), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, value)
 

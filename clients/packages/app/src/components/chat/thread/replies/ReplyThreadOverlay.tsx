@@ -47,34 +47,79 @@ type ReplyThreadOverlayProps = {
  */
 export function ReplyThreadOverlay({ selection, ...props }: ReplyThreadOverlayProps) {
   const [presented, setPresented] = useState(selection);
-  if (selection && selection.rootId !== presented?.rootId) setPresented(selection);
+  // A thread handed over to the next one slides out while the next slides in.
+  const [leaving, setLeaving] = useState<string>();
+  if (selection && selection.rootId !== presented?.rootId) {
+    if (presented && selection.advance) setLeaving(presented.rootId);
+    setPresented(selection);
+  }
   const closed = useCallback(() => setPresented(undefined), []);
-  if (!presented) return null;
-  return (
-    <ReplyThreadLayer
-      key={presented.rootId}
-      {...props}
-      closing={!selection || selection.rootId !== presented.rootId}
-      onClosed={closed}
-      rootId={presented.rootId}
-    />
-  );
+  const left = useCallback(() => setLeaving(undefined), []);
+  // Layers mounted now. The transcript stays inert while any is up; a count
+  // shared here, because two layers can unmount in one commit and each would
+  // still find the other in the DOM.
+  const inertHolds = useRef(0);
+  const layers = [];
+  if (presented) {
+    const open = selection?.rootId === presented.rootId;
+    layers.push(
+      <ReplyThreadLayer
+        key={presented.rootId}
+        {...props}
+        advance={presented.advance === true}
+        closing={!open}
+        inertHolds={inertHolds}
+        leaving={false}
+        onClosed={closed}
+        progress={open ? selection.progress : undefined}
+        rootId={presented.rootId}
+      />
+    );
+  }
+  if (leaving !== undefined && leaving !== presented?.rootId) {
+    layers.push(
+      <ReplyThreadLayer
+        key={leaving}
+        {...props}
+        advance={false}
+        closing={false}
+        inertHolds={inertHolds}
+        leaving
+        onClosed={left}
+        progress={undefined}
+        rootId={leaving}
+      />
+    );
+  }
+  // One keyed list, so a layer keeps its identity when it starts leaving.
+  return layers.length > 0 ? <>{layers}</> : null;
 }
 
 const TRANSCRIPT_COLUMN = ".comma-chat-scroll-viewport .comma-chat-column";
 const OVERLAY_VIEWPORT = ".comma-chat-reply-thread-viewport";
 
 function ReplyThreadLayer({
+  advance,
   assistantDraft,
   closing,
+  inertHolds,
+  leaving,
   messages,
   onClosed,
   onExit,
+  progress,
   rootId,
   rows,
 }: Omit<ReplyThreadOverlayProps, "selection"> & {
+  /** Enters sideways, taking over from the thread before it. */
+  advance: boolean;
   closing: boolean;
+  /** Layers of this overlay holding the transcript inert. */
+  inertHolds: { current: number };
+  /** Slides out sideways for the thread taking over; the backdrop stays. */
+  leaving: boolean;
   onClosed: () => void;
+  progress: { index: number; total: number } | undefined;
   rootId: string;
 }) {
   const messagesApi = useCommaMessages();
@@ -131,13 +176,16 @@ function ReplyThreadLayer({
     const transcript = layer?.parentElement?.querySelector<HTMLElement>(
       ".comma-chat-scroll-viewport"
     );
-    if (!transcript) return;
+    if (!layer || !transcript) return;
+    inertHolds.current += 1;
     transcript.inert = true;
     return () => {
-      transcript.inert = false;
+      // A thread taking over keeps the transcript inert.
+      inertHolds.current -= 1;
+      if (inertHolds.current === 0) transcript.inert = false;
       restoreSources();
     };
-  }, [restoreSources]);
+  }, [inertHolds, restoreSources]);
 
   // Each copy enters once: from its transcript row when that row is in view,
   // otherwise rising into place. Later arrivals (the reader's reply, the
@@ -145,7 +193,7 @@ function ReplyThreadLayer({
   useLayoutEffect(() => {
     const layer = layerRef.current;
     const column = columnRef.current;
-    if (!layer || !column || closing) return;
+    if (!layer || !column || closing || leaving) return;
     const firstPass = placed.current.size === 0;
     let handoff =
       shownDraftId.current !== undefined &&
@@ -176,7 +224,21 @@ function ReplyThreadLayer({
       }
       const from = source?.getBoundingClientRect();
       const to = row.getBoundingClientRect();
-      if (firstPass && !reduced && from && intersects(from, bounds)) {
+      if (firstPass && advance) {
+        animate(
+          row,
+          [
+            {
+              opacity: 0,
+              transform: reduced
+                ? "none"
+                : `translateX(${motionDistance.replyThreadAdvance}px)`,
+            },
+            { opacity: 1, transform: "none" },
+          ],
+          { duration: motionDuration.replyThreadEnter, easing: motionEasing.drawer }
+        );
+      } else if (firstPass && !reduced && from && intersects(from, bounds)) {
         animate(
           row,
           [
@@ -206,7 +268,47 @@ function ReplyThreadLayer({
         );
       }
     }
-  }, [closing, draftId, thread]);
+  }, [advance, closing, draftId, leaving, thread]);
+
+  // Handing over slides every copy out sideways; the rows behind the backdrop
+  // show again once it is gone.
+  useLayoutEffect(() => {
+    if (!leaving) return;
+    const column = columnRef.current;
+    if (!column) {
+      onClosed();
+      return;
+    }
+    const reduced = prefersReducedMotion();
+    const animations = [
+      ...column.querySelectorAll<HTMLElement>("article[data-message-id]"),
+    ].map((row) =>
+      animate(
+        row,
+        [
+          { opacity: 1, transform: "none" },
+          {
+            opacity: 0,
+            transform: reduced
+              ? "none"
+              : `translateX(${-motionDistance.replyThreadAdvance}px)`,
+          },
+        ],
+        {
+          duration: motionDuration.replyThreadExit,
+          easing: motionEasing.drawer,
+          fill: "forwards",
+        }
+      )
+    );
+    let cancelled = false;
+    void Promise.allSettled(animations).then(() => {
+      if (!cancelled) onClosed();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [leaving, onClosed]);
 
   // Closing sends each copy back to its row, then shows the rows again.
   useLayoutEffect(() => {
@@ -273,7 +375,8 @@ function ReplyThreadLayer({
     <section
       aria-label={messagesApi.chat_reply_thread()}
       className="comma-chat-reply-thread"
-      data-state={closing ? "closing" : "open"}
+      data-enter={advance ? "advance" : undefined}
+      data-state={leaving ? "leaving" : closing ? "closing" : "open"}
       data-testid="chat-reply-thread"
       ref={layerRef}
     >
@@ -287,6 +390,17 @@ function ReplyThreadLayer({
           className="comma-chat-column comma-chat-reply-thread-column"
           ref={columnRef}
         >
+          {progress ? (
+            <output
+              aria-label={messagesApi.chat_reply_thread_progress({
+                index: progress.index,
+                total: progress.total,
+              })}
+              className="comma-chat-reply-thread-progress"
+            >
+              {progress.index} / {progress.total}
+            </output>
+          ) : null}
           {/* Gathered together the messages are visibly one thread: no connectors. */}
           {thread.map((message) => (
             <MessageRow

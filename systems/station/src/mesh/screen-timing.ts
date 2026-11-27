@@ -18,9 +18,9 @@ import { hostNow } from "./screen-pace.ts";
 export const screenTimingOn = (env: NodeJS.ProcessEnv = process.env) => (env.COMMA_STATION_SCREEN_TIMING ?? "0") !== "0" && env.COMMA_STATION_SCREEN_TIMING !== "";
 
 /// What the native mesh says of the view's connection now (native.ts `Connection` `paths`, `stats`), only what it has:
-/// the chosen path's round trip, congestion window (bytes), congestion events, UDP datagrams sent, packets lost; the connection's
-/// UDP bytes both ways and packets lost.
-export type LinkStats = { via?: string | null; rttMs?: number; cwnd?: number; congestionEvents?: number; sentDatagrams?: number; lostPackets?: number; txBytes?: number; rxBytes?: number; lost?: number };
+/// the chosen path's way and relay, round trip, congestion window (bytes), congestion events, UDP datagrams sent, packets
+/// lost; the connection's UDP bytes both ways and packets lost.
+export type LinkStats = { via?: string | null; relay?: string | null; rttMs?: number; cwnd?: number; congestionEvents?: number; sentDatagrams?: number; lostPackets?: number; txBytes?: number; rxBytes?: number; lost?: number };
 
 /// What the pace says now, read only, and how long the station's loop stood still so far (ms, screen-pace.ts LoopStall).
 export type PaceNow = { rate: number | null; rtt: number | null; through: number; unacked: number; stalled: number };

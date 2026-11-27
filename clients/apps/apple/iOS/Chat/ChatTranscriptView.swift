@@ -14,7 +14,6 @@ struct ChatTranscriptView: View {
     var flight: OutgoingFlightController?
     /// The composer has the keyboard. Taking it brings the latest message into view, as in Messages.
     var composerFocused = false
-    var onUserScroll: () -> Void
     var openAttachment: (ChatItem, ChatAttachment) -> Void
     /// The thread gathered over the transcript for a reply, if one is open.
     var replyThread: ReplyThreadSelection? = nil
@@ -27,11 +26,17 @@ struct ChatTranscriptView: View {
     /// The rows of a long conversation that are laid out: the newest, or those the reader scrolled or went to.
     @State private var window = TranscriptWindow()
     @State var highlighted: String?
+    /// How far a leftward drag has moved the rows to show where messages came from (`SourceReveal`).
+    @State private var sourceTravel: CGFloat = 0
     @State private var scroll = TranscriptScroll()
     /// Advances on each release that loads earlier messages; it plays the release haptic.
     @State private var pullLoads = 0
+    /// Advances on each tap of the jump to the latest message.
+    @State private var jumps = 0
     /// The transcript's room inside its safe area, which a short transcript fills.
     @State private var fillHeight: CGFloat = 0
+    /// The horizontal content width available to message rows (viewport width minus horizontal padding).
+    @State var contentWidth: CGFloat = 358
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// Visible transcript row positions, kept outside the layout of the flying reply copies.
     @State var replyFrames = ReplyFlightFrames()
@@ -40,25 +45,50 @@ struct ChatTranscriptView: View {
     /// Pull distance past the top at which releasing loads earlier messages.
     private static let pullThreshold: CGFloat = 64
 
+    /// Names and faces of the other people writing in a Task together, read once one of them has written.
+    @State var people: PeopleModel?
+
     @State var dynamicUI: PhoneDynamicUI?
+    /// A screen a message's card opened (`comma:screen/…`), live in a sheet.
+    @State var screenLink: ScreenLinkRef?
     var body: some View {
         ZStack {
             // The room the transcript is offered inside its safe area, which a short transcript fills. A clear view
             // takes the offer as it is, so the fill follows neither the scroll offset nor the scroll view's own size.
             Color.clear
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fillHeight = $0 }
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                    fillHeight = size.height
+                    let available = max(0, size.width - 32)
+                    if abs(contentWidth - available) > 0.5, available > 0 {
+                        contentWidth = available
+                    }
+                }
             transcript
+            JumpToLatestButton(scroll: scroll, hidden: replyThread != nil) { jumps += 1 }
+                .padding(.bottom, 12)
+                .frame(maxHeight: .infinity, alignment: .bottom)
             if let replyThread {
                 threadLayer(replyThread).transition(replyLayerTransition)
             }
         }
+        .environment(\.screenListings, ScreenListings.of(WorkspaceSettingsScope(store: store, workspace: pane.workspace)))
         .environment(\.chatMedia, pane.target.map {
             ChatMediaContext(gallery: images, store: store, group: $0.groupID, conversation: $0.conversationID)
         })
         .sheet(item: $dynamicUI) { ui in
             NavigationStack { PhoneDynamicUIView(model: PhoneDynamicUIModel(store: store, workspace: pane.workspace, ui: ui), pane: pane) }.commaSheet([.large])
         }
+        // A device's screen takes the whole display, as from the Simulators list.
+        .fullScreenCover(item: $screenLink) { link in
+            NavigationStack { ScreenLinkPage(scope: WorkspaceSettingsScope(store: store, workspace: pane.workspace), link: link) }
+        }
         .background { ChatMediaPresentation(gallery: images, store: store) }
+        .task(id: rows.contains { $0.otherWriter != nil }) {
+            guard rows.contains(where: { $0.otherWriter != nil }) else { return }
+            let model = people ?? PeopleModel(store: store, workspace: pane.workspace)
+            people = model
+            await model.follow()
+        }
         .onChange(of: rows, initial: true) { _, rows in
             guard let target = pane.target else { images.items = []; return }
             images.items = ChatMediaItem.items(in: rows, group: target.groupID, conversation: target.conversationID)
@@ -67,7 +97,7 @@ struct ChatTranscriptView: View {
 
     @ViewBuilder private var transcript: some View {
         let tail = TailRows(last: rows.last?.id,
-                            send: rows.last(where: \.isUser).flatMap { isPending($0) ? $0.id : nil })
+                            send: rows.last(where: \.isMine).flatMap { isPending($0) ? $0.id : nil })
         let shown = window.range(in: rows)
         // Rows above the window come before any the server still has.
         let hasEarlier = shown.lowerBound > 0 || hasOlderMessages
@@ -96,6 +126,8 @@ struct ChatTranscriptView: View {
                         }
                         ForEach(Array(rows[shown].enumerated()), id: \.element.id) { offset, row in
                             rowView(row, proxy: proxy)
+                                .modifier(SourceRevealRow(moves: row.isMine, platform: row.message?.platformSource,
+                                                          travel: sourceTravel))
                                 // While its thread is open, the row's copy stands in for it over the transcript.
                                 .opacity(inOpenThread(row) ? 0 : 1)
                                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
@@ -142,7 +174,14 @@ struct ChatTranscriptView: View {
                     // out: a Task's rows stretch with their avatar column, and a question card squeezed to make room
                     // drew its choices over each other.
                     .fixedSize(horizontal: false, vertical: true)
-                    .overlayPreferenceValue(ChatAnchorKey.self) { anchors in
+                    .contentShape(Rectangle())
+                    .gesture(SourceRevealPan(enabled: replyThread == nil, changed: { translation in
+                        sourceTravel = SourceReveal.travel(translation)
+                    }, ended: { velocity in
+                        withAnimation(reduceMotion ? CommaMotion.stateChange
+                                      : SourceReveal.release(from: sourceTravel, velocity: velocity)) { sourceTravel = 0 }
+                    }))
+                    .backgroundPreferenceValue(ChatAnchorKey.self) { anchors in
                         GeometryReader { geometry in
                             ReplyConnectors(lines: connectors(anchors: anchors, geometry: geometry))
                         }
@@ -152,7 +191,8 @@ struct ChatTranscriptView: View {
                 }
                 .overlay(alignment: .top) { ScrollMark(scroll: scroll, proxy: proxy) }
             }
-            .scrollDismissesKeyboard(.immediately)
+            // The keyboard follows a finger dragged down into it, as in Messages, and goes down when let go there.
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: images.returnMessageID) { _, messageID in
                 guard let messageID, let row = rows.first(where: { $0.message?.id == messageID }) else { return }
                 // Paging in the viewer brings its return thumbnail into the mounted window underneath it.
@@ -160,10 +200,16 @@ struct ChatTranscriptView: View {
                 if window.reveal(row.id, in: rows) { scroll.revealing = row.id }
                 else { proxy.scrollTo(row.id, anchor: .center) }
             }
-            // A sent mention's `comma:task/<id>` link opens that Task; every other link opens as it always has.
+            // A sent mention's `comma:task/<id>` link opens that Task, a screen's `comma:screen/…` that screen live, an
+            // AMap web link the AMap app when it is installed (`MapAppLink`); every other link opens as it always has.
             .environment(\.inlineTaskStore, store)
             .environment(\.openURL, OpenURLAction { url in
                 if store.openMiniApp(url) { return .handled }
+                if let link = ScreenLinkRef(url: url) { screenLink = link; return .handled }
+                if let app = MapAppLink.amapApp(for: url), UIApplication.shared.canOpenURL(app) {
+                    UIApplication.shared.open(app)
+                    return .handled
+                }
                 guard let id = TaskMention.conversationID(from: url) else { return .systemAction }
                 openTask(id)
                 return .handled
@@ -180,6 +226,8 @@ struct ChatTranscriptView: View {
                 if new.pastEnd(readerScrolling: scroll.readerScrolling) { proxy.scrollTo("tail", anchor: .bottom) }
                 // A window away from the end has no tail to follow until it reaches the end again.
                 if let follow = new.follows(after: old, readerScrolling: scroll.readerScrolling) { followTail = follow && window.live }
+                let away = new.awayFromEnd(shown: scroll.awayFromEnd, following: followTail, windowLive: window.live)
+                if away != scroll.awayFromEnd { scroll.awayFromEnd = away }
             }
             // Only crossing the threshold reports, and only the indicator reads it, not every row.
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -201,7 +249,6 @@ struct ChatTranscriptView: View {
                     scroll.held = nil
                     scroll.mark = nil
                     scroll.revealing = nil
-                    onUserScroll()
                 }
                 // Pull down past the top and let go: earlier messages load on the release, not the pull.
                 if old == .interacting, phase != .interacting, scroll.pullArmed, hasEarlier, !loadingMore {
@@ -253,9 +300,11 @@ struct ChatTranscriptView: View {
             .progressiveTopEdge()
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            // The Task sheet or keyboard can shorten the viewport; keep the latest message in view.
+            // The Task sheet or keyboard can shorten the viewport; keep the latest message in view. Not while the
+            // transcript moves: a finger dragging the keyboard down resizes it every frame, and a scroll from here
+            // stops the keyboard where it is when the finger lets go. The bottom anchor holds the end meanwhile.
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in
-                if followTail { proxy.scrollTo("tail", anchor: .bottom) }
+                if followTail, !scroll.moving { proxy.scrollTo("tail", anchor: .bottom) }
             }
             // The Task dock instead raises the transcript's bottom inset with the keyboard, which leaves its size as
             // it was; the latest message stays in view above the keyboard there too.
@@ -274,6 +323,7 @@ struct ChatTranscriptView: View {
                     // in place where the composer's surface lands. The reply's Thinking… row comes in the same update,
                     // and a Worker's Working… row is already there, so the send is never the last row.
                     followTail = true
+                    scroll.awayFromEnd = false
                     if !window.live { window.reset(rows) }
                     proxy.scrollTo("tail", anchor: .bottom)
                 } else if new.last != old.last, followTail {
@@ -288,8 +338,20 @@ struct ChatTranscriptView: View {
                 guard focused, !followTail else { return }
                 scroll.held = nil
                 followTail = true
+                scroll.awayFromEnd = false
                 if !window.live { window.reset(rows) }
                 withAnimation(reduceMotion ? nil : CommaMotion.composerExpand) { proxy.scrollTo("tail", anchor: .bottom) }
+            }
+            // The jump to the latest message: back to the end, the newest rows laid out again, and following from there,
+            // so a reply still streaming is followed as it grows.
+            .onChange(of: jumps) { _, _ in
+                scroll.held = nil
+                scroll.mark = nil
+                scroll.revealing = nil
+                followTail = true
+                scroll.awayFromEnd = false
+                if !window.live { window.reset(rows) }
+                withAnimation(reduceMotion ? nil : CommaMotion.spatialMove) { proxy.scrollTo("tail", anchor: .bottom) }
             }
         }
     }
@@ -382,6 +444,8 @@ struct ChatTranscriptView: View {
     @MainActor @Observable fileprivate final class TranscriptScroll {
         /// Pulled down past the top far enough that letting go loads earlier messages.
         var pullArmed = false
+        /// Far enough above the end that the jump to the latest message shows (`TranscriptTail.awayFromEnd`).
+        var awayFromEnd = false
         /// Where in the content a held place puts the top of the viewport (`ScrollMark`).
         var mark: CGFloat?
         /// Within two screens of the top or the bottom of the rows shown.
@@ -418,6 +482,28 @@ struct ChatTranscriptView: View {
                 .onChange(of: mark) { _, mark in
                     if mark != nil { proxy.scrollTo(Self.id, anchor: .top) }
                 }
+        }
+    }
+
+    /// The round button that floats centred above the composer and goes back to the latest message. Only it reads
+    /// whether the reader is away from the end, so showing it re-renders it and not the rows.
+    private struct JumpToLatestButton: View {
+        let scroll: TranscriptScroll
+        /// A reply thread is open over the transcript.
+        let hidden: Bool
+        let action: () -> Void
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            let shown = scroll.awayFromEnd && !hidden
+            ZStack {
+                if shown {
+                    PanelIconButton(icon: "central-arrow-down", label: "Jump to latest", action: action)
+                        .accessibilityIdentifier("jumpToLatest")
+                        .transition(reduceMotion ? .opacity : .scaleUnseenBelowHalf(0.4))
+                }
+            }
+            .animation(CommaMotion.settle(reduced: reduceMotion), value: shown)
         }
     }
 
@@ -507,4 +593,14 @@ struct TranscriptTail: Equatable {
     /// The offset outlived content that shrank under it as the stack measured its rows, and nobody is moving it.
     /// The scroll view does not pull it back by itself; the rows stayed above the screen until a touch.
     func pastEnd(readerScrolling: Bool) -> Bool { !readerScrolling && distance < -inset - 1 }
+
+    /// Whether the jump to the latest message shows: once the reader is more than a screen above the end, or the
+    /// newest rows are not laid out; not while following the end or once back within reach of it. In between it stays
+    /// as it was ([shown]), so it does not flicker around the threshold.
+    func awayFromEnd(shown: Bool, following: Bool, windowLive: Bool) -> Bool {
+        if following && windowLive { return false }
+        if !windowLive || distance > container { return true }
+        if distance < 48 { return false }
+        return shown
+    }
 }

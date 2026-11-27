@@ -57,7 +57,7 @@ it("reviews a waiting request and accepts it with the owner's title", async () =
     await flush();
   });
   expect(core.sentTo("taskRequests.accept")).toEqual([
-    { workspace: workspace.id, request: "trq_1", to: "task", title: "Summarize Q3" },
+    { workspace: workspace.id, request: "trq_1", title: "Summarize Q3" },
   ]);
   expect(result.current.detail).toBeUndefined();
 });

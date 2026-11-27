@@ -77,6 +77,54 @@ defmodule CommaWeb.Proactive do
   end
 
   @doc """
+  The owner's proactive notification level for connected still.fail chats
+  (`"off"`, `"action_needed"`, `"issues"`, or `"all"`). Defaults to
+  `"action_needed"` when unset or before the Home Conversation exists.
+  """
+  def stillfail_notification_level(group, owner) when is_binary(group) and is_binary(owner) do
+    with {:ok, record} <- SalixIM.GroupDirectory.get_group(group),
+         {:ok, home} <- SalixIM.ConversationIds.group_router(record),
+         {:ok, conversation} <- Conversations.get_group_conversation_record(group, home) do
+      MailInteraction.stillfail_notification_level(conversation, owner)
+    else
+      _ -> "action_needed"
+    end
+  end
+
+  def stillfail_notification_level(_group, _owner), do: "action_needed"
+
+  @doc """
+  Sets the owner's proactive notification level for connected still.fail chats
+  on the Home Conversation.
+  """
+  def set_stillfail_notification_level(user, session, group, level) when is_binary(level) do
+    if level in MailInteraction.stillfail_notification_levels() do
+      with {:ok, workspace, _ctx, home} <- HomeMail.context(user, session, group),
+           true <- workspace["owner_user_id"] == user["id"],
+           request_id = "stillfail-level:" <> SalixStore.Ids.new_message_id(),
+           {:ok, saved} <-
+             ConversationServer.configure_stillfail_notifications(
+               group,
+               home,
+               user["id"],
+               level,
+               request_id
+             ) do
+        CommaWeb.ProactiveNotebook.enqueue(group, user["id"])
+        {:ok, %{"level" => saved["level"]}}
+      else
+        false -> {:error, :forbidden}
+        error -> error
+      end
+    else
+      {:error, {:bad_request, "invalid stillfail notification level"}}
+    end
+  end
+
+  def set_stillfail_notification_level(_user, _session, _group, _level),
+    do: {:error, {:bad_request, "invalid stillfail notification level"}}
+
+  @doc """
   A reminder as a chat message: the model's text, then its source link. Text
   that already names the link keeps it once.
   """
@@ -313,6 +361,9 @@ defmodule CommaWeb.Proactive do
   @doc "The account part of a matter key for a read recipe, shared with watch wakes."
   def source_account(%{"tool" => "recommendation.read", "arguments" => args}),
     do: args["source_id"] || "internal"
+
+  def source_account(%{"tool" => tool}) when tool in ~w(web.search web.read_pages),
+    do: "web"
 
   def source_account(read),
     do: get_in(read, ["arguments", "connected_account_id"]) || "internal"

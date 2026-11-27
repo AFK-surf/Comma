@@ -96,6 +96,7 @@ function start(userId?: string, initialSnapshot = session(userId)) {
   let listener: ((snapshot: SessionLifecycleSnapshot) => void) | undefined;
   const unsubscribe = vi.fn();
   dispose = startCommaAnalytics({
+    enabled: true,
     runtime: "web",
     lifecycle: {
       getSnapshotSync: () => initialSnapshot,
@@ -119,6 +120,7 @@ describe("Comma client analytics", () => {
       session: null,
     };
     dispose = startCommaAnalytics({
+      enabled: true,
       runtime: "electron",
       desktopLaunch: Promise.resolve(launch),
       lifecycle: {
@@ -238,6 +240,7 @@ describe("Comma client analytics", () => {
         host: "electron",
       });
       const stop = startCommaAnalytics({
+        enabled: true,
         runtime: "electron",
         lifecycle: controller.lifecycle,
       });

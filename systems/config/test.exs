@@ -191,6 +191,7 @@ config :salix_im, :conversation_archive_worker, false
 # Tests run the station Task owner sweep themselves (`SalixIM.StationTaskWatchRecovery.sweep/1`).
 config :salix_im, :station_task_watch_recovery, false
 config :salix_im, :task_files_backfill, false
+config :salix_im, :task_feed_backfill, false
 # Its sampler's timer would run beside every test; a test starts its own.
 config :salix_im, :mention_reply_latency, false
 # IFC member listings run in the background in production; tests list a
@@ -207,7 +208,8 @@ config :salix_meet, meeting_group_projection_auditor: false
 config :comma_web,
   port: 0,
   api_token: "test-token",
-  session_cookie: [secure: false]
+  session_cookie: [secure: false],
+  colab_install_reconciler_enabled: false
 
 config :comma_core, :auth,
   challenge_store: Comma.AuthChallengeStore.Memory,
@@ -312,6 +314,13 @@ config :billing_stripe,
   webhook_secret: "whsec_comma",
   stripe_api: BillingStripe.TestAPI
 
+config :billing_apple,
+  api: BillingApple.TestAPI,
+  issuer_id: "apple-issuer",
+  key_id: "APPLEKEY01",
+  private_key: "test-only",
+  bundle_id: "surf.comma.test"
+
 config :billing_core, :pending_charge_worker_enabled, false
 config :billing_core, :llm_usage_worker_enabled, false
 
@@ -347,10 +356,16 @@ config :bridge_for_teams_core, BridgeForTeams.Repo,
 # in the same BEAM, Erpc discovers Node.self() as a Salix node.
 config :bridge_for_teams_core,
   salix_client: BridgeForTeams.Salix.Erpc,
+  quote_signing_secret: "test_only_quote_signing_secret_00000000000000000000000000000000000",
   oidc_provider: BridgeForTeams.Auth.OIDC.Fake,
   feishu_provider: BridgeForTeams.Auth.Feishu.Fake,
   lark_provider: BridgeForTeams.Auth.Lark.Fake,
-  login_link_delivery: BridgeForTeams.LoginLinks.Delivery.Fake
+  login_link_delivery: BridgeForTeams.LoginLinks.Delivery.Fake,
+  m2square: %{
+    base_url: "http://127.0.0.1:1/gateway/base/biz",
+    mch_id: nil,
+    secret_key: nil
+  }
 
 # The magic-link rate limiter is a node-global ETS bucket and ConnTest shares
 # one remote IP; effectively disable the ambient limits so tests that want
@@ -388,12 +403,14 @@ config :salix_web, native_triage: false
 # itself, or starts the worker under its own supervisor.
 config :salix_web,
   subscription_runtime_worker: false,
+  lark_suite_triage_worker: false,
   cloud_vm_archive_gc: false,
   coding_sandboxes: false,
   l4es_recent: false
 
 config :salix_agent,
   subscription_quota_worker: false,
+  colab_reaper_worker: false,
   platform_balance_worker: false,
   delivery_telemetry_worker: false,
   prepared_blob_cleanup: false,
@@ -425,6 +442,8 @@ config :bridge_for_teams_core, BridgeForTeams.DailyBrief.Retention, enabled: fal
 # Context lifecycle tests drive ContextLifecycle.Worker.run_once/1 directly.
 config :bridge_for_teams_core, BridgeForTeams.ContextLifecycle.Worker, enabled: false
 config :bridge_for_teams_core, BridgeForTeams.DailyBrief.DeliveryWorker, enabled: false
+config :bridge_for_teams_core, BridgeForTeams.DailyBrief.StationTaskNotifier, enabled: false
+config :bridge_for_teams_core, BridgeForTeams.OwnerNotifications.Worker, enabled: false
 
 # Ephemeral HTTP port for the web suite.
 config :bridge_for_teams_web,
@@ -459,6 +478,7 @@ end
 config :salix_im,
   provider_runtime: false,
   lark_socket_runtime: false,
+  wecom_socket_runtime: false,
   slack_router_status: false,
   private_chat_status: false
 
@@ -482,6 +502,7 @@ config :salix_cluster,
 # explicitly via Application.put_env.
 config :salix_agent,
   session_titles: false,
+  living_handoff: [enabled: false],
   # Runtime-ownership tests deliberately crash transient FleetSup children.
   # Keep those synthetic failures from sharing the production supervisor's
   # default 3-in-5s restart-intensity circuit breaker across test cases.
@@ -565,6 +586,7 @@ config :salix_im,
   slack_files_base_url: "http://127.0.0.1:1",
   lark_api_base_url: "http://127.0.0.1:1/open-apis",
   lark_socket_base_url: "http://127.0.0.1:1",
+  wecom_socket_url: "ws://127.0.0.1:1",
   feishu_api_base_url: "http://127.0.0.1:1/open-apis",
   feishu_socket_base_url: "http://127.0.0.1:1"
 

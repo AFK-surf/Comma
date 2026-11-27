@@ -30,8 +30,11 @@ defmodule SalixIM.MixProject do
     [
       {:systems_clock, in_umbrella: true},
       {:systems_runtime, in_umbrella: true},
+      {:salix_verified_kernel, path: "../../native/verified_kernel"},
       {:salix_ifc, in_umbrella: true},
       {:salix_store, in_umbrella: true},
+      # JPEG previews of HEIC and other images a browser cannot show.
+      {:salix_media, in_umbrella: true},
       {:salix_agent, in_umbrella: true, only: :test},
       {:telemetry_metrics, "~> 1.0"},
       {:req, "~> 0.5"},

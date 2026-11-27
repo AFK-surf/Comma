@@ -127,16 +127,43 @@ enum AttachmentFile {
                       thumbnail: type.hasPrefix("image/") ? AttachmentPhoto.thumbnail(data) : nil)
     }
 
-    /// A photo as it is sent: kept as it is when it is a JPEG, PNG or GIF of a sensible size, else (HEIC, or a
-    /// very large photo) redrawn upright as a JPEG at most 2,048 pixels on its longer side, which models read
-    /// as well and which uploads in a fraction of the time.
+    /// A photo as it is sent: GIFs and PNGs with alpha up to 4 MB / 4,096 px are kept as they are; small JPEGs and
+    /// opaque PNGs up to 512 KB / 2,048 px are kept as they are; larger opaque PNGs, larger JPEGs, HEIC, or oversized
+    /// photos are redrawn upright as a JPEG at most 2,048 pixels on the longer side, which models read as well and
+    /// which uploads in a fraction of the time.
     @concurrent static func photo(_ image: AttachmentImage) async throws -> (file: AttachmentPayload, thumbnail: Data?) {
-        let kept: [UTType] = [.jpeg, .png, .gif]
-        if kept.contains(image.type), image.data.count <= 4_000_000,
-           AttachmentPhoto.longestSide(image.data) ?? .max <= 4_096 {
+        let verbatimMaxBytes = 4_000_000
+        let verbatimMaxSide = 4_096
+        let compactMaxBytes = 512_000
+        let compactMaxSide = 2_048
+
+        func verbatim() -> (file: AttachmentPayload, thumbnail: Data?) {
             let name = "Photo." + (image.type.preferredFilenameExtension ?? "jpg")
             return (AttachmentPayload(filename: name, contentType: image.type.preferredMIMEType ?? "image/jpeg",
                                       data: image.data), AttachmentPhoto.thumbnail(image.data))
+        }
+
+        let longestSide = AttachmentPhoto.longestSide(image.data) ?? .max
+        let fitsVerbatim = image.data.count <= verbatimMaxBytes && longestSide <= verbatimMaxSide
+        let keepsFormat = image.type == .gif || (image.type == .png && AttachmentPhoto.hasAlpha(image.data))
+
+        if keepsFormat, fitsVerbatim {
+            return verbatim()
+        }
+        if !keepsFormat, image.type == .jpeg || image.type == .png {
+            if image.data.count <= compactMaxBytes && longestSide <= compactMaxSide {
+                return verbatim()
+            }
+            if let jpeg = AttachmentPhoto.jpeg(image.data, maxSide: 2_048, quality: 0.85),
+               jpeg.count <= maxSize,
+               jpeg.count < image.data.count || !fitsVerbatim {
+                return (AttachmentPayload(filename: "Photo.jpg", contentType: "image/jpeg", data: jpeg),
+                        AttachmentPhoto.thumbnail(jpeg))
+            }
+            if fitsVerbatim {
+                return verbatim()
+            }
+            throw CommaError.invalidInput(String(localized: "That photo couldn’t be read."))
         }
         guard let jpeg = AttachmentPhoto.jpeg(image.data, maxSide: 2_048, quality: 0.85), jpeg.count <= maxSize else {
             throw CommaError.invalidInput(String(localized: "That photo couldn’t be read."))
@@ -148,6 +175,15 @@ enum AttachmentFile {
 
 /// Image work for attachments, through Image I/O so a 48-megapixel photo never decodes whole.
 enum AttachmentPhoto {
+    /// Whether the image header declares an alpha channel, without decoding pixels.
+    static func hasAlpha(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            return false
+        }
+        return (properties[kCGImagePropertyHasAlpha] as? Bool) == true
+    }
+
     static func longestSide(_ data: Data) -> Int? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],

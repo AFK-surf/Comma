@@ -74,16 +74,16 @@ export const menuPopoverStaticExitingClasses =
  * duration. Only the exit animates, over the trigger that is already back.
  */
 export const menuPopoverInPlaceExitingClasses =
-  "data-[exiting]:pointer-events-none opacity-0 transition-opacity duration-[var(--motion-duration-menu-exit)] ease-[var(--motion-easing-surface-smooth-out)] motion-reduce:transition-none";
+  "data-[exiting]:pointer-events-none opacity-0 transition-opacity duration-[var(--motion-duration-menu-exit)] ease-[var(--motion-easing-sharp-in)] motion-reduce:transition-none";
 
 export const menuPopoverEnteringClasses =
   "scale-[var(--motion-scale-menu-enter)] motion-safe:data-[placement=bottom]:-translate-y-[var(--motion-distance-menu-enter)] motion-safe:data-[placement=top]:translate-y-[var(--motion-distance-menu-enter)] motion-safe:data-[placement=right]:-translate-x-[var(--motion-distance-menu-enter)] motion-safe:data-[placement=left]:translate-x-[var(--motion-distance-menu-enter)] opacity-0 duration-[var(--motion-duration-menu-enter)]";
 
 export const menuPopoverExitingClasses =
-  "data-[exiting]:pointer-events-none scale-[var(--motion-scale-menu-exit)] opacity-0 duration-[var(--motion-duration-menu-exit)]";
+  "data-[exiting]:pointer-events-none scale-[var(--motion-scale-menu-exit)] opacity-0 duration-[var(--motion-duration-menu-exit)] ease-[var(--motion-easing-sharp-in)]";
 
 export const menuPopoverFadeEnteringClasses =
   "opacity-0 duration-[var(--motion-duration-menu-enter)]";
 
 export const menuPopoverFadeExitingClasses =
-  "data-[exiting]:pointer-events-none opacity-0 duration-[var(--motion-duration-menu-exit)]";
+  "data-[exiting]:pointer-events-none opacity-0 duration-[var(--motion-duration-menu-exit)] ease-[var(--motion-easing-sharp-in)]";

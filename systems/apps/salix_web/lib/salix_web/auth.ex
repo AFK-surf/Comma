@@ -55,9 +55,6 @@ defmodule SalixWeb.Auth do
       registration_claim_path?(path) ->
         authenticate_registration_claim(conn)
 
-      compute_gateway_path?(path) ->
-        authenticate_compute_gateway(conn, token)
-
       router_inbox_path?(path) ->
         authenticate_group_api_key(conn, token, "inbound")
 
@@ -177,8 +174,6 @@ defmodule SalixWeb.Auth do
   defp connect_path?("/v1/connect"), do: true
   defp connect_path?(_path), do: false
 
-  defp compute_gateway_path?(path), do: String.starts_with?(path, "/v1/compute/")
-
   defp registration_claim_path?(path), do: path == "/v1/compute/agent-vmm/registrations/claim"
 
   # Registration owns both the ticket and accepted credential. Claim validates
@@ -190,18 +185,6 @@ defmodule SalixWeb.Auth do
 
       _ ->
         deny(conn)
-    end
-  end
-
-  defp authenticate_compute_gateway(conn, token) do
-    configured = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
-    gateway_ids = get_req_header(conn, "x-agent-vmm-gateway-instance")
-
-    if secure_equal?(token, configured) and match?([id] when id != "", gateway_ids) do
-      [gateway_id] = gateway_ids
-      conn |> assign(:auth_role, :compute_gateway) |> assign(:gateway_instance_id, gateway_id)
-    else
-      deny(conn)
     end
   end
 
@@ -290,13 +273,6 @@ defmodule SalixWeb.Auth do
   end
 
   defp admin_token?(_token), do: false
-
-  defp secure_equal?(left, right)
-       when is_binary(left) and is_binary(right) and left != "" and
-              byte_size(left) == byte_size(right),
-       do: Plug.Crypto.secure_compare(left, right)
-
-  defp secure_equal?(_, _), do: false
 
   @doc """
   The configured system-wide admin token (`:salix_web, :api_token`), or `nil`

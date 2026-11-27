@@ -115,6 +115,27 @@ defmodule SalixAgent.SessionKernelLifecycleTest do
     assert normalized.context_provider_states == %{"migration_notice" => %{"version" => 4}}
   end
 
+  test "normalize adopts the states compacted history kept; a legacy summary takes the seed" do
+    adopted = %{"model_context" => %{"version" => 1}, "migration_notice" => %{"version" => 74}}
+    later = [%{id: 3, role: "user", content: "later"}]
+
+    kept =
+      base(%{
+        compacted_through: 2,
+        summary: "s",
+        messages: later,
+        compacted_provider_states: adopted
+      })
+
+    assert kernel_normalize(kept).context_provider_states == adopted
+
+    legacy = base(%{compacted_through: 2, summary: "s", messages: later})
+
+    assert kernel_normalize(legacy).context_provider_states == %{
+             "migration_notice" => %{"version" => 0}
+           }
+  end
+
   ## prepare_write/1
 
   test "prepare_write reports a duplicate legacy seq" do

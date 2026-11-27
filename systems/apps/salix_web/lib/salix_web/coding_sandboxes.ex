@@ -48,7 +48,12 @@ defmodule SalixWeb.CodingSandboxes do
       So is one still pending on its kept disk 150 s after L4ES accepted its
       start: its node is draining, and L4ES holds the sandbox for it longer
       than the start budget. The Task is told of the new disk, and the start
-      budget runs again from the remake, once per generation.
+      budget runs again from the remake, once per generation. A start L4ES
+      failed is made again too, at most twice and within the start budget,
+      only when its disk never ran or L4ES reports it missing; one that may
+      hold the Task's work fails, and a reply starts it again from its disk.
+      A remade sandbox takes a new name: L4ES keeps the old one until its node
+      confirms the delete.
     * `task_status/3`: the Task ended or was archived: its sandbox is stopped
       (`ended`). As at any stop, L4ES keeps its disk. A Task made active again
       has its sandbox woken as by a Message, only when the Task's latest
@@ -106,6 +111,9 @@ defmodule SalixWeb.CodingSandboxes do
   # (`unplaced/1`): after L4ES's 120 s failover grace, within which it moves
   # the sandbox off a dead or full node itself, and well within the budget.
   @pinned_remake_ms 150_000
+  # A sandbox L4ES failed to start, with no disk of the Task's on a node, is
+  # made again this many times within the start budget (`failed_start/2`).
+  @failed_start_retries 2
   # A sandbox's GitHub token is replaced this long before it expires: within
   # the credential store's refresh leeway (60 s), so the token read is new.
   @github_rotate_ms 45_000
@@ -143,6 +151,7 @@ defmodule SalixWeb.CodingSandboxes do
              repo: r.repo,
              agent_id: r.agent_id,
              start: r.start,
+             starts: r[:starts],
              account_id: r[:account_id],
              requester: r[:requester],
              size: L4ES.config().size
@@ -178,6 +187,155 @@ defmodule SalixWeb.CodingSandboxes do
   def update_github(_group, _conversation, _github),
     do: {:error, "github must be an ACL object or false"}
 
+  @doc """
+  `user` asks to see the screen of Task `conversation`'s sandbox. Only the
+  person whose Task it is may (`screen_owner/2`). The sandbox's station is told to admit them on the mesh
+  for a few minutes (`SalixWeb.StationPlace.show_screen/2`), and the Device
+  the sandbox runs as is given: a client views its display as a computer's,
+  and asks again while it views. Nothing runs for a sandbox no one asks to
+  see.
+
+  `{:error, :sandbox_not_running}` when no sandbox is ready, `:forbidden`
+  for anyone else and for that person with no role in the Group or a
+  read-only one, `:sandbox_has_no_screen` when the sandbox's station has not
+  said it serves one (an image from before, or a station that has yet to
+  prove its key), `:station_unreachable` when it could not be told.
+  """
+  def show_screen(tenant, group, conversation, user) when is_binary(user) do
+    with {:ok, %{spec: %{"state" => "ready"} = spec}} <-
+           Store.get_by_conversation(tenant, conversation),
+         %{"device_id" => device, "connector_run_id" => run}
+         when is_binary(device) and is_binary(run) <- spec do
+      with ^user <- screen_person(spec),
+           :ok <- serves_screen(tenant, group, device),
+           :ok <-
+             SalixWeb.StationPlace.show_screen(
+               %{tenant_id: tenant, group_id: group, connector_run_id: run},
+               user
+             ) do
+        {:ok, device}
+      else
+        {:error, reason} when reason in [:sandbox_has_no_screen, :station_unreachable] ->
+          {:error, reason}
+
+        _ ->
+          {:error, :forbidden}
+      end
+    else
+      _ -> {:error, :sandbox_not_running}
+    end
+  end
+
+  defp serves_screen(tenant, group, device) do
+    with {:ok, device} <- SalixEnv.Registry.get_device(tenant, group, device),
+         true <- serves_screen?(device) do
+      :ok
+    else
+      _ -> {:error, :sandbox_has_no_screen}
+    end
+  end
+
+  @doc """
+  Whether the station of a sandbox's Device (`SalixEnv.Registry.get_device/3`)
+  serves its display now: it is connected, and said so with its station's id.
+  The one rule for `show_screen/4` and for what a client is told of the
+  sandbox.
+  """
+  def serves_screen?(%{
+        "status" => "connected",
+        "meta" => %{"station_id" => station, "capabilities" => %{"screen_view" => true}}
+      })
+      when is_binary(station),
+      do: true
+
+  def serves_screen?(_device), do: false
+
+  # The process groups `SalixWeb.StationTaskIndex` starts, across the cluster.
+  @pg SalixWeb.StationTaskIndex.PG
+
+  @doc """
+  What the station of a sandbox says of itself that its Task's run shows
+  (`CommaWeb.SalixClient.task_run/2`), of its connection's `capabilities`:
+  the models it runs, whether it serves its display, and whether something is
+  on that display now (`screen_active`: a Session's browser is open on it).
+  """
+  def station_says(%{} = capabilities),
+    do: Map.take(capabilities, ~w(task_models screen_view screen_active))
+
+  def station_says(_capabilities), do: %{}
+
+  @doc """
+  Whether something is on the display of a sandbox's Device now, as its
+  station says (`SalixEnv.Registry.get_device/3`).
+  """
+  def screen_active?(%{"meta" => %{"capabilities" => %{"screen_active" => true}}}), do: true
+  def screen_active?(_device), do: false
+
+  @doc """
+  Sends `subscriber` `{:coding_sandbox_said, conversation}` each time the
+  station of that Task's sandbox says something new of itself
+  (`station_says/1`), until it exits. The message carries no fact: who
+  hears it reads the Task's run again.
+  """
+  def subscribe_station(tenant, conversation, subscriber)
+      when is_binary(tenant) and is_binary(conversation) and is_pid(subscriber) do
+    :pg.join(@pg, {:coding_sandbox, tenant, conversation}, subscriber)
+  end
+
+  @doc """
+  The station of sandbox `device` said something new of itself, and it is
+  kept: the Task's open streams are told (`subscribe_station/3`). At most
+  once for each change of `station_says/1` on a connection: as it connects,
+  and as a Session's browser opens or goes.
+  """
+  def station_said(tenant, "dev-sbx-" <> conversation) when is_binary(tenant) do
+    for pid <- :pg.get_members(@pg, {:coding_sandbox, tenant, conversation}),
+        do: SystemsRuntime.Proc.send(pid, {:coding_sandbox_said, conversation})
+
+    :ok
+  end
+
+  def station_said(_tenant, _device), do: :ok
+
+  @doc """
+  Whom the sandbox of `spec` shows its screen to: the person whose Task it
+  is, of its Task conversation `conversation`. That is the person the sandbox
+  was made for (`requester`), else the Task's Comma owner (`owner_user_id`),
+  else the Comma user who asked for it (`source_refs.ifc_requester`). A Task
+  the Router made from a person's message names no owner; the server writes
+  who asked when it makes the Task, and no agent can change it
+  (`SalixIM.IFCSourceRefs`). A provider user who asked in a Slack or Feishu
+  chat is no Comma user: no one is shown the screen. Nil when no one is.
+  This names the person; `show_screen/4` still checks their role at each ask.
+  """
+  def screen_owner(%{"requester" => owner}, _conversation) when is_binary(owner) and owner != "",
+    do: owner
+
+  def screen_owner(_spec, %{"owner_user_id" => owner}) when is_binary(owner) and owner != "",
+    do: owner
+
+  def screen_owner(_spec, %{"source_refs" => %{"ifc_requester" => principal}})
+      when is_binary(principal) do
+    case SalixIFC.Codec.decode_principal(principal) do
+      {:ok, {:comma_user, user}} -> user
+      _other -> nil
+    end
+  end
+
+  def screen_owner(_spec, _conversation), do: nil
+
+  # `screen_owner/2` of the sandbox, its Task conversation read only when the
+  # sandbox does not name the person.
+  defp screen_person(%{"requester" => owner} = spec) when is_binary(owner) and owner != "",
+    do: screen_owner(spec, nil)
+
+  defp screen_person(spec) do
+    case StationTasks.task(spec["group_id"], spec["conversation_id"]) do
+      {:ok, task} -> screen_owner(spec, task)
+      _unread -> nil
+    end
+  end
+
   @doc "The station of a coding Task connected with its exact Workload generation and run."
   def connected(%{tenant_id: tenant, device_id: device} = connection) do
     with {:ok, workload} <- Store.get_by_device(tenant, device),
@@ -212,7 +370,11 @@ defmodule SalixWeb.CodingSandboxes do
              end,
              lock: true
            ) do
-      if workload.spec["invited"] != true, do: invite(workload)
+      # Only reconcile when the primary has not been invited yet or there are secondary slots to reconcile.
+      if workload.spec["invited"] != true or length(spec_starts(workload.spec)) > 1 do
+        reconcile_invites(workload)
+      end
+
       :ok
     else
       # Only a coding Task's station reaches here (`SalixWeb.ConnectorSocket`):
@@ -232,47 +394,2080 @@ defmodule SalixWeb.CodingSandboxes do
     end
   end
 
-  defp invite(workload) do
+  @doc """
+  Reconciles `spec["starts"]` (or single-session `spec["start"]`) directly against
+  idempotent Station `task.invite` and `StationTaskSessions` — no `invited_slots`
+  shadow state. For multi-session Tasks, checks `"multi_session_tasks"` capability
+  before starting any session so an older sandbox image fails cleanly without
+  partial starts.
+  """
+  def reconcile_invites(workload) do
     spec = workload.spec
+    starts = spec_starts(spec)
+    multi? = length(starts) > 1
 
-    invitation = %{
-      tenant_id: spec["tenant_id"],
-      group_id: spec["group_id"],
-      conversation_id: spec["conversation_id"],
-      device_id: spec["device_id"],
-      start: spec["start"]
-    }
+    with :ok <- check_sandbox_multi_capability(spec, multi?),
+         {:ok, existing_rows} <-
+           SalixStore.StationTaskSessions.of_task(spec["group_id"], spec["conversation_id"]) do
+      existing_by_slot =
+        existing_rows
+        |> Enum.reject(&SalixStore.StationTaskSessions.awaited?/1)
+        |> Enum.filter(&(&1.device_id == spec["device_id"]))
+        |> Map.new(fn row ->
+          slot = get_in(row.start || %{}, ["slot"]) || "lead"
+          {slot, row}
+        end)
 
-    with {:ok, session} <- StationTasks.invite(invitation),
-         :ok <-
-           StationTasks.joined(
-             Map.merge(invitation, %{session: session, agent_id: spec["agent_id"]})
-           ) do
-      update(workload, fn spec ->
-        spec |> Map.put("invited", true) |> Map.delete("invite_outcome")
-      end)
-    else
-      {:error, {:station_invite_unknown, why}} ->
-        update(
-          workload,
-          &Map.merge(&1, %{
-            "invite_outcome" => "unknown",
-            "reason" => describe(why),
-            "next_check_at" => iso_in(@starting_check_ms)
-          })
+      primary_slot =
+        case Enum.find(starts, &(&1["is_primary"] == true)) || List.first(starts) do
+          %{"slot" => s} when is_binary(s) and s != "" -> s
+          _ -> "lead"
+        end
+
+      primary_already_joined? =
+        spec["invited"] == true or Map.has_key?(existing_by_slot, primary_slot)
+
+      now_ms = SystemsClock.system_time(:millisecond)
+      by_slot = get_in(spec, ["pending_secondaries", "by_slot"]) || %{}
+
+      {result, dropped_slots, succeeded_slots, stale_slots, transient_failures, deferred_slots,
+       primary_joined?} =
+        starts
+        |> Enum.with_index()
+        |> Enum.reduce_while(
+          {:ok, [], [], [], [], [], primary_already_joined?},
+          fn {entry, idx}, {:ok, dropped, succeeded, stale, failures, deferred, p_joined?} ->
+            slot = entry["slot"] || "lead"
+            join? = idx > 0 and entry["is_primary"] != true
+            next_retry_ms = get_in(by_slot, [slot, "next_retry_at_ms"])
+
+            my_seq =
+              entry["start_seq"] ||
+                get_in(by_slot, [slot, "latest_seq"]) ||
+                get_in(spec, ["slot_seq_hwm", slot]) || 0
+
+            slot_meta = Map.get(by_slot, slot) || %{}
+            pending_deact? = slot_meta["pending_deactivation"] == true
+            deact_seq = slot_meta["deactivation_seq"] || 0
+            existing_row = Map.get(existing_by_slot, slot)
+
+            existing_seq =
+              if existing_row, do: get_in(existing_row.start || %{}, ["start_seq"]) || 0, else: 0
+
+            cond do
+              (existing_row != nil and (my_seq == 0 or existing_seq >= my_seq)) or
+                  (not join? and spec["invited"] == true) ->
+                {:cont,
+                 {:ok, dropped, [{slot, existing_seq} | succeeded], stale, failures, deferred,
+                  p_joined? or slot == primary_slot}}
+
+              join? and p_joined? and pending_deact? and my_seq <= deact_seq ->
+                if is_integer(next_retry_ms) and next_retry_ms > now_ms do
+                  {:cont,
+                   {:ok, dropped, succeeded, stale, failures, [slot | deferred], p_joined?}}
+                else
+                  deact_entry =
+                    if is_binary(slot_meta["participant_id"]) and
+                         slot_meta["participant_id"] != "",
+                       do: Map.put_new(entry, "participant_id", slot_meta["participant_id"]),
+                       else: entry
+
+                  case deactivate_sandbox_slot_participant(
+                         spec["group_id"],
+                         spec["conversation_id"],
+                         deact_entry,
+                         spec["device_id"],
+                         workload_id: workload.id,
+                         expected_seq: deact_seq,
+                         require_pending_deact?: true
+                       ) do
+                    :ok ->
+                      {:cont,
+                       {:ok, [dropped_slot_snapshot(spec, deact_entry) | dropped], succeeded,
+                        stale, failures, deferred, p_joined?}}
+
+                    {:error, :superseded} ->
+                      {:cont,
+                       {:ok, dropped, succeeded, [{slot, my_seq} | stale], failures, deferred,
+                        p_joined?}}
+
+                    {:ok, :already_bound} ->
+                      demoted_token = entry["demoted_binding_token"] || entry["demoted_session"]
+
+                      if sandbox_slot_binding_state(spec, slot, demoted_token, my_seq) == :yes do
+                        {:cont,
+                         {:ok, dropped, [{slot, my_seq} | succeeded], stale, failures, deferred,
+                          p_joined?}}
+                      else
+                        {:cont,
+                         {:ok, dropped, succeeded, stale,
+                          [
+                            {slot,
+                             {:pending_deactivation, deact_seq, entry_participant_id(deact_entry)}}
+                            | failures
+                          ], deferred, p_joined?}}
+                      end
+
+                    {:error, _deact_err} ->
+                      {:cont,
+                       {:ok, dropped, succeeded, stale,
+                        [
+                          {slot,
+                           {:pending_deactivation, deact_seq, entry_participant_id(deact_entry)}}
+                          | failures
+                        ], deferred, p_joined?}}
+                  end
+                end
+
+              join? and p_joined? and is_integer(next_retry_ms) and next_retry_ms > now_ms ->
+                # Backed-off secondary slot: skip for now and keep attempting subsequent slots (e.g. `qa`).
+                {:cont, {:ok, dropped, succeeded, stale, failures, [slot | deferred], p_joined?}}
+
+              true ->
+                invitation =
+                  %{
+                    tenant_id: spec["tenant_id"],
+                    group_id: spec["group_id"],
+                    conversation_id: spec["conversation_id"],
+                    device_id: spec["device_id"],
+                    start: entry["start"],
+                    slot: slot,
+                    join: join?,
+                    multi_session: multi?
+                  }
+
+                explicit_seq = if my_seq > 0, do: my_seq, else: nil
+
+                with {:ok, {session, used_run_id}} <- StationTasks.invite_with_run(invitation),
+                     :ok <-
+                       StationTasks.register_slot_binding(
+                         invitation
+                         |> build_slot_binding_entry(
+                           spec,
+                           entry,
+                           session,
+                           used_run_id,
+                           explicit_seq
+                         )
+                         |> Map.put(:pre_join_check, fn ->
+                           verify_reconcile_slot_live(workload.id, slot, my_seq)
+                         end)
+                       ) do
+                  {:cont,
+                   {:ok, dropped, [{slot, my_seq} | succeeded], stale, failures, deferred,
+                    p_joined? or slot == primary_slot}}
+                else
+                  {:error, {:stale_slot_binding, _reason}} when join? and p_joined? ->
+                    {:cont,
+                     {:ok, dropped, succeeded, [{slot, my_seq} | stale], failures, deferred,
+                      p_joined?}}
+
+                  {:error, {:station_refused, why} = reason}
+                  when join? and p_joined? and is_binary(why) ->
+                    cond do
+                      String.contains?(why, "no_active_primary") ->
+                        {:cont,
+                         {:ok, dropped, succeeded, stale, [{slot, reason} | failures], deferred,
+                          p_joined?}}
+
+                      verify_reconcile_slot_live(workload.id, slot, my_seq) != :ok ->
+                        # Superseded by a newer generation (e.g. B(2)) while this invite was in-flight:
+                        # never deactivate participant, never drop `starts`, only trim `seq <= my_seq`.
+                        {:cont,
+                         {:ok, dropped, succeeded, [{slot, my_seq} | stale], failures, deferred,
+                          p_joined?}}
+
+                      true ->
+                        Logger.warning(
+                          "coding sandbox secondary slot #{slot} permanently refused (#{inspect(reason)}); keeping healthy primary sandbox alive and deactivating unbound secondary participant: task=#{spec["conversation_id"]}"
+                        )
+
+                        case deactivate_sandbox_slot_participant(
+                               spec["group_id"],
+                               spec["conversation_id"],
+                               entry,
+                               spec["device_id"],
+                               workload_id: workload.id,
+                               expected_seq: my_seq
+                             ) do
+                          {:error, :superseded} ->
+                            {:cont,
+                             {:ok, dropped, succeeded, [{slot, my_seq} | stale], failures,
+                              deferred, p_joined?}}
+
+                          {:ok, :already_bound} ->
+                            # Only clear pending when an active binding row with `start_seq >= my_seq`
+                            # (and a different binding_token) is confirmed in DB; otherwise keep retrying.
+                            demoted_token =
+                              entry["demoted_binding_token"] || entry["demoted_session"]
+
+                            if sandbox_slot_binding_state(spec, slot, demoted_token, my_seq) ==
+                                 :yes do
+                              {:cont,
+                               {:ok, dropped, [{slot, my_seq} | succeeded], stale, failures,
+                                deferred, p_joined?}}
+                            else
+                              {:cont,
+                               {:ok, dropped, succeeded, stale, [{slot, reason} | failures],
+                                deferred, p_joined?}}
+                            end
+
+                          :ok ->
+                            notify_sandbox_slot_refused(spec, slot, reason)
+
+                            {:cont,
+                             {:ok, [dropped_slot_snapshot(spec, entry) | dropped], succeeded,
+                              stale, failures, deferred, p_joined?}}
+
+                          {:error, _deact_err} ->
+                            {:cont,
+                             {:ok, dropped, succeeded, stale,
+                              [
+                                {slot,
+                                 {:pending_deactivation, my_seq, entry_participant_id(entry)}}
+                                | failures
+                              ], deferred, p_joined?}}
+                        end
+                    end
+
+                  {:error, :station_outdated = reason} when join? and p_joined? ->
+                    if verify_reconcile_slot_live(workload.id, slot, my_seq) != :ok do
+                      {:cont,
+                       {:ok, dropped, succeeded, [{slot, my_seq} | stale], failures, deferred,
+                        p_joined?}}
+                    else
+                      Logger.warning(
+                        "coding sandbox secondary slot #{slot} refused (station_outdated); keeping healthy primary sandbox alive and deactivating unbound secondary participant: task=#{spec["conversation_id"]}"
+                      )
+
+                      case deactivate_sandbox_slot_participant(
+                             spec["group_id"],
+                             spec["conversation_id"],
+                             entry,
+                             spec["device_id"],
+                             workload_id: workload.id,
+                             expected_seq: my_seq
+                           ) do
+                        {:error, :superseded} ->
+                          {:cont,
+                           {:ok, dropped, succeeded, [{slot, my_seq} | stale], failures, deferred,
+                            p_joined?}}
+
+                        {:ok, :already_bound} ->
+                          demoted_token =
+                            entry["demoted_binding_token"] || entry["demoted_session"]
+
+                          if sandbox_slot_binding_state(spec, slot, demoted_token, my_seq) == :yes do
+                            {:cont,
+                             {:ok, dropped, [{slot, my_seq} | succeeded], stale, failures,
+                              deferred, p_joined?}}
+                          else
+                            {:cont,
+                             {:ok, dropped, succeeded, stale, [{slot, reason} | failures],
+                              deferred, p_joined?}}
+                          end
+
+                        :ok ->
+                          notify_sandbox_slot_refused(spec, slot, reason)
+
+                          {:cont,
+                           {:ok, [dropped_slot_snapshot(spec, entry) | dropped], succeeded, stale,
+                            failures, deferred, p_joined?}}
+
+                        {:error, _deact_err} ->
+                          {:cont,
+                           {:ok, dropped, succeeded, stale,
+                            [
+                              {slot, {:pending_deactivation, my_seq, entry_participant_id(entry)}}
+                              | failures
+                            ], deferred, p_joined?}}
+                      end
+                    end
+
+                  {:error, reason} when join? and p_joined? ->
+                    # Primary is already healthy: back off THIS secondary slot only and
+                    # continue attempting subsequent slots (e.g. `qa`) without starving them.
+                    Logger.warning(
+                      "coding sandbox secondary slot #{slot} transient invite error (#{inspect(reason)}); keeping healthy primary sandbox alive and continuing remaining slots: task=#{spec["conversation_id"]}"
+                    )
+
+                    {:cont,
+                     {:ok, dropped, succeeded, stale, [{slot, reason} | failures], deferred,
+                      p_joined?}}
+
+                  {:error, _} = err ->
+                    {:halt, {err, dropped, succeeded, stale, failures, deferred, p_joined?}}
+                end
+            end
+          end
         )
 
-      {:error, reason}
-      when is_map_key(spec, "invite_outcome") and
-             :erlang.map_get("invite_outcome", spec) == "unknown" ->
-        retry(workload, "the invitation outcome is still unknown: #{describe(reason)}")
+      _ = primary_joined?
+
+      case result do
+        :ok when transient_failures != [] or deferred_slots != [] or stale_slots != [] ->
+          schedule_secondary_retries(
+            workload,
+            spec,
+            Enum.reverse(transient_failures),
+            dropped_slots,
+            succeeded_slots,
+            primary_joined?,
+            nil,
+            false,
+            stale_slots
+          )
+
+        :ok ->
+          if spec["invited"] != true or spec["invite_outcome"] != nil or
+               spec["pending_secondaries"] != nil or dropped_slots != [] or
+               succeeded_slots != [] do
+            update(workload, fn s ->
+              {next_s, next_by_slot} =
+                apply_reconcile_slot_updates(s, succeeded_slots, [], dropped_slots)
+
+              has_remaining? = map_size(next_by_slot) > 0
+
+              next_s
+              |> Map.put("invited", true)
+              |> Map.delete("invite_outcome")
+              |> put_pending_secondaries(next_by_slot, has_remaining?)
+              |> then(fn cur ->
+                if has_remaining? do
+                  Map.put(cur, "next_check_at", iso_in(@starting_check_ms))
+                else
+                  cur
+                end
+              end)
+            end)
+          else
+            :ok
+          end
+
+        {:error, {:secondary_transient, failed_slot, why}} ->
+          schedule_secondary_retry(workload, spec, failed_slot, dropped_slots, why)
+
+        {:error, {:station_transient, why}} ->
+          Logger.warning(
+            "coding sandbox primary invite transient error (#{inspect(why)}); keeping sandbox alive and scheduling retry: task=#{spec["conversation_id"]}"
+          )
+
+          update(workload, fn s ->
+            by_slot = get_in(s, ["pending_secondaries", "by_slot"]) || %{}
+
+            s
+            |> put_pending_secondaries(by_slot, true)
+            |> Map.put("reason", describe(why))
+            |> put_earliest_next_check_at(iso_in(@starting_check_ms))
+          end)
+
+        {:error, {:station_invite_unknown, why}} ->
+          update(
+            workload,
+            &Map.merge(&1, %{
+              "invite_outcome" => "unknown",
+              "reason" => describe(why),
+              "next_check_at" => iso_in(@starting_check_ms)
+            })
+          )
+
+        {:error, reason}
+        when is_map_key(spec, "invite_outcome") and
+               :erlang.map_get("invite_outcome", spec) == "unknown" ->
+          retry(workload, "the invitation outcome is still unknown: #{describe(reason)}")
+
+        {:error, reason} ->
+          Logger.warning(
+            "a coding sandbox's station did not take its Task: task=#{spec["conversation_id"]} #{inspect(reason)}"
+          )
+
+          stop(workload, "failed", "the sandbox did not take the Task: #{describe(reason)}")
+      end
+    else
+      {:error, :station_outdated} ->
+        case sandbox_primary_joined(spec) do
+          :yes ->
+            case SalixStore.StationTaskSessions.of_task(spec["group_id"], spec["conversation_id"]) do
+              {:ok, rows} ->
+                Logger.warning(
+                  "coding sandbox image lacks multi_session_tasks capability; keeping healthy primary sandbox alive and stripping unjoined secondary starts: task=#{spec["conversation_id"]}"
+                )
+
+                existing_bound_slots =
+                  rows
+                  |> Enum.filter(
+                    &(not SalixStore.StationTaskSessions.awaited?(&1) and
+                        &1.device_id == spec["device_id"])
+                  )
+                  |> MapSet.new(fn r -> get_in(r.start || %{}, ["slot"]) || "lead" end)
+
+                {_keep_entries, stripped_secondaries} =
+                  Enum.split_with(starts, fn entry ->
+                    slot = entry["slot"] || "lead"
+
+                    entry["is_primary"] == true or slot == "lead" or
+                      MapSet.member?(existing_bound_slots, slot)
+                  end)
+
+                {deactivated, failed_deact} =
+                  Enum.reduce(stripped_secondaries, {[], []}, fn entry, {deact_acc, fail_acc} ->
+                    slot = entry["slot"] || "lead"
+
+                    my_seq =
+                      entry["start_seq"] ||
+                        get_in(spec, ["pending_secondaries", "by_slot", slot, "latest_seq"]) ||
+                        get_in(spec, ["slot_seq_hwm", slot]) || 0
+
+                    case deactivate_sandbox_slot_participant(
+                           spec["group_id"],
+                           spec["conversation_id"],
+                           entry,
+                           spec["device_id"],
+                           workload_id: workload.id,
+                           expected_seq: my_seq
+                         ) do
+                      {:error, :superseded} ->
+                        # A newer generation (e.g. C(3)) already superseded this slot:
+                        # never deactivate its participant and never drop its `starts` entry.
+                        {deact_acc, fail_acc}
+
+                      {:ok, :already_bound} ->
+                        {deact_acc, fail_acc ++ [entry]}
+
+                      :ok ->
+                        notify_sandbox_slot_refused(spec, slot, :station_outdated)
+                        {deact_acc ++ [entry], fail_acc}
+
+                      {:error, _} ->
+                        {deact_acc, fail_acc ++ [entry]}
+                    end
+                  end)
+
+                deactivated_snapshots = Enum.map(deactivated, &dropped_slot_snapshot(spec, &1))
+
+                if failed_deact != [] do
+                  schedule_secondary_retry(
+                    workload,
+                    spec,
+                    hd(failed_deact)["slot"],
+                    deactivated_snapshots,
+                    :station_outdated
+                  )
+                else
+                  update(workload, fn s ->
+                    safe_dropped_set = safe_drop_slot_set(s, deactivated_snapshots)
+
+                    kept_starts =
+                      case Enum.reject(
+                             spec_starts(s),
+                             &MapSet.member?(safe_dropped_set, &1["slot"])
+                           ) do
+                        [] -> Enum.take(spec_starts(s), 1)
+                        list -> list
+                      end
+
+                    latest_by_slot =
+                      (get_in(s, ["pending_secondaries", "by_slot"]) || %{})
+                      |> Enum.reject(fn {k, _} -> MapSet.member?(safe_dropped_set, k) end)
+                      |> Map.new()
+
+                    reconcile_pending? =
+                      get_in(s, ["pending_secondaries", "reconcile_pending"]) == true
+
+                    s
+                    |> Map.put("starts", kept_starts)
+                    |> put_pending_secondaries(latest_by_slot, reconcile_pending?)
+                  end)
+                end
+
+              {:error, of_err} ->
+                Logger.warning(
+                  "coding sandbox could not read StationTaskSessions during station_outdated check (#{inspect(of_err)}); retrying without deactivating secondaries: task=#{spec["conversation_id"]}"
+                )
+
+                schedule_secondary_retry(workload, spec, nil, [], of_err, true)
+            end
+
+          :unknown ->
+            Logger.warning(
+              "coding sandbox primary binding state unknown during station_outdated check; retrying without stopping sandbox: task=#{spec["conversation_id"]}"
+            )
+
+            schedule_secondary_retry(workload, spec, nil, [], :station_outdated, false)
+
+          :no ->
+            Logger.warning(
+              "coding sandbox image lacks multi_session_tasks capability: task=#{spec["conversation_id"]}"
+            )
+
+            stop(
+              workload,
+              "failed",
+              "the sandbox station image does not support multi-session Tasks (station_outdated)"
+            )
+        end
 
       {:error, reason} ->
-        Logger.warning(
-          "a coding sandbox's station did not take its Task: task=#{spec["conversation_id"]} #{inspect(reason)}"
-        )
+        case sandbox_primary_joined(spec) do
+          state when state in [:yes, :unknown] ->
+            Logger.warning(
+              "coding sandbox secondary reconciliation check failed (#{inspect(reason)}, primary=#{state}); keeping sandbox alive for retry: task=#{spec["conversation_id"]}"
+            )
 
-        stop(workload, "failed", "the sandbox did not take the Task: #{describe(reason)}")
+            schedule_secondary_retry(workload, spec, nil, [], reason, state == :yes)
+
+          :no ->
+            Logger.warning(
+              "a coding sandbox's station did not take its Task: task=#{spec["conversation_id"]} #{inspect(reason)}"
+            )
+
+            stop(workload, "failed", "the sandbox did not take the Task: #{describe(reason)}")
+        end
+    end
+  end
+
+  @max_secondary_retries 5
+
+  # Per-slot bounded backoff for unjoined secondary slots on an already-healthy sandbox.
+  # - Only increments `pending_secondaries["by_slot"][failed_slot]["attempts"]` (never touching
+  #   unattempted slots like `qa`).
+  # - Never auto-deactivates a slot on transient timeouts/errors: after `@max_secondary_retries`,
+  #   backs off to `@ready_check_ms` so only explicit `:station_refused` / `:station_outdated`
+  #   deactivates a participant.
+  # - Only persists `"invited" => true` when `primary_joined? == true` (NEVER on `:unknown`).
+  defp schedule_secondary_retry(
+         workload,
+         spec,
+         failed_slot,
+         dropped_slots,
+         why,
+         primary_joined? \\ true
+       ) do
+    failures =
+      if is_binary(failed_slot) and failed_slot != "",
+        do: [{failed_slot, why}],
+        else: []
+
+    reconcile_pending? = failures == []
+
+    schedule_secondary_retries(
+      workload,
+      spec,
+      failures,
+      dropped_slots,
+      [],
+      primary_joined?,
+      why,
+      reconcile_pending?
+    )
+  end
+
+  defp schedule_secondary_retries(
+         workload,
+         spec,
+         transient_failures,
+         dropped_slots,
+         succeeded_slots,
+         primary_joined?,
+         fallback_why,
+         reconcile_pending?,
+         stale_slots \\ []
+       ) do
+    now_ms = SystemsClock.system_time(:millisecond)
+
+    reason_text =
+      case transient_failures do
+        [{_slot, why} | _] -> describe(why)
+        [] when fallback_why != nil -> describe(fallback_why)
+        [] -> spec["reason"] || "secondary slots pending retry"
+      end
+
+    update(workload, fn s ->
+      {updated_s, base_by_slot} =
+        apply_reconcile_slot_updates(s, succeeded_slots, stale_slots, dropped_slots)
+
+      next_by_slot =
+        Enum.reduce(transient_failures, base_by_slot, fn {slot, why}, acc ->
+          if is_binary(slot) and slot != "" do
+            prev = Map.get(acc, slot) || %{}
+            attempts = (prev["attempts"] || 0) + 1
+
+            delay =
+              if attempts > @max_secondary_retries, do: @ready_check_ms, else: @starting_check_ms
+
+            extra =
+              case why do
+                {:pending_deactivation, deact_seq, pid} ->
+                  %{
+                    "pending_deactivation" => true,
+                    "deactivation_seq" => deact_seq,
+                    "participant_id" => pid
+                  }
+
+                _ ->
+                  %{}
+              end
+
+            Map.put(
+              acc,
+              slot,
+              prev
+              |> Map.merge(%{
+                "attempts" => attempts,
+                "next_retry_at_ms" => now_ms + delay
+              })
+              |> Map.merge(extra)
+            )
+          else
+            acc
+          end
+        end)
+
+      keep_reconcile? =
+        reconcile_pending? or
+          get_in(s, ["pending_secondaries", "reconcile_pending"]) == true or
+          map_size(next_by_slot) > 0
+
+      backoff_ms =
+        next_by_slot
+        |> Map.values()
+        |> Enum.map(& &1["next_retry_at_ms"])
+        |> Enum.filter(&is_integer/1)
+        |> case do
+          [] -> @starting_check_ms
+          times -> max(1_000, Enum.min(times) - now_ms)
+        end
+
+      updated_s
+      |> then(&if(primary_joined?, do: Map.put(&1, "invited", true), else: &1))
+      |> put_pending_secondaries(next_by_slot, keep_reconcile?)
+      |> then(fn cur ->
+        if map_size(next_by_slot) == 0 and not keep_reconcile? do
+          cur
+        else
+          cur
+          |> Map.put("reason", reason_text)
+          |> Map.put("next_check_at", iso_in(backoff_ms))
+        end
+      end)
+    end)
+  end
+
+  defp apply_reconcile_slot_updates(s, succeeded_slots, stale_slots, dropped_slots) do
+    safe_dropped_set = safe_drop_slot_set(s, dropped_slots)
+    initial_by_slot = get_in(s, ["pending_secondaries", "by_slot"]) || %{}
+
+    by_slot_after_drop =
+      initial_by_slot
+      |> Enum.reject(fn {k, _} -> MapSet.member?(safe_dropped_set, k) end)
+      |> Map.new()
+
+    s_after_drop =
+      if MapSet.size(safe_dropped_set) > 0 do
+        kept = Enum.reject(spec_starts(s), &MapSet.member?(safe_dropped_set, &1["slot"]))
+        Map.put(s, "starts", kept)
+      else
+        s
+      end
+
+    # Apply generation-fenced updates for succeeded slots: only clear `request_seqs` with
+    # `seq <= my_seq` and advance `slot_confirmed_seq` only when `my_seq >= live_seq`.
+    {s_after_succ, by_slot_after_succ} =
+      Enum.reduce(succeeded_slots, {s_after_drop, by_slot_after_drop}, fn item, {acc_s, acc_bs} ->
+        {slot, my_seq} =
+          case item do
+            {sl, sq} when is_binary(sl) -> {sl, sq || 0}
+            sl when is_binary(sl) -> {sl, 0}
+          end
+
+        if MapSet.member?(safe_dropped_set, slot) do
+          {acc_s, acc_bs}
+        else
+          cur_entry = Enum.find(spec_starts(acc_s), &(&1["slot"] == slot))
+          slot_meta = Map.get(acc_bs, slot)
+          hwm = get_in(acc_s, ["slot_seq_hwm", slot]) || 0
+
+          live_seq =
+            Enum.max([
+              (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+              (is_map(slot_meta) && slot_meta["latest_seq"]) || 0,
+              hwm
+            ])
+
+          next_s =
+            if cur_entry != nil and my_seq >= live_seq and my_seq > 0 do
+              prev_conf = get_in(acc_s, ["slot_confirmed_seq", slot]) || 0
+
+              Map.put(
+                acc_s,
+                "slot_confirmed_seq",
+                Map.put(acc_s["slot_confirmed_seq"] || %{}, slot, max(prev_conf, my_seq))
+              )
+            else
+              acc_s
+            end
+
+          next_bs = trim_slot_meta_by_seq(acc_bs, acc_s, slot, my_seq, true)
+          {next_s, next_bs}
+        end
+      end)
+
+    # Apply generation-fenced updates for stale slots: NEVER touch `starts` or `slot_confirmed_seq`,
+    # only trim `request_seqs` with `seq <= my_seq`, preserving newer requests (e.g. B(2)) & backoff!
+    final_by_slot =
+      Enum.reduce(stale_slots, by_slot_after_succ, fn {slot, my_seq}, acc_bs ->
+        if MapSet.member?(safe_dropped_set, slot) do
+          acc_bs
+        else
+          trim_slot_meta_by_seq(acc_bs, s_after_succ, slot, my_seq || 0, false)
+        end
+      end)
+
+    {s_after_succ, final_by_slot}
+  end
+
+  defp trim_slot_meta_by_seq(by_slot, spec, slot, my_seq, clear_backoff_if_empty?) do
+    case Map.get(by_slot, slot) do
+      %{} = slot_meta ->
+        req_seqs =
+          case slot_meta["request_seqs"] do
+            %{} = m -> m
+            _ -> Map.new(slot_request_ids(spec, slot), &{&1, slot_meta["latest_seq"] || 0})
+          end
+
+        remaining_seqs =
+          req_seqs
+          |> Enum.reject(fn {_id, seq} -> (seq || 0) <= my_seq end)
+          |> Map.new()
+
+        has_backoff? =
+          is_integer(slot_meta["next_retry_at_ms"]) or (slot_meta["attempts"] || 0) > 0
+
+        cond do
+          map_size(remaining_seqs) > 0 ->
+            updated_meta =
+              slot_meta
+              |> Map.delete("request_id")
+              |> Map.put("request_ids", Map.keys(remaining_seqs))
+              |> Map.put("request_seqs", remaining_seqs)
+              |> then(fn m ->
+                if clear_backoff_if_empty? do
+                  m |> Map.delete("attempts") |> Map.delete("next_retry_at_ms")
+                else
+                  m
+                end
+              end)
+
+            Map.put(by_slot, slot, updated_meta)
+
+          not clear_backoff_if_empty? and has_backoff? ->
+            Map.put(
+              by_slot,
+              slot,
+              slot_meta
+              |> Map.delete("request_id")
+              |> Map.delete("request_ids")
+              |> Map.delete("request_seqs")
+            )
+
+          true ->
+            Map.delete(by_slot, slot)
+        end
+
+      _ ->
+        by_slot
+    end
+  end
+
+  defp verify_reconcile_slot_live(workload_id, slot, my_seq) do
+    case Store.get(workload_id) do
+      {:ok, w} ->
+        cur_entry = Enum.find(spec_starts(w.spec), &(&1["slot"] == slot))
+        slot_meta = get_in(w.spec, ["pending_secondaries", "by_slot", slot]) || %{}
+        hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+        live_seq =
+          Enum.max([
+            (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+            slot_meta["latest_seq"] || 0,
+            hwm
+          ])
+
+        if cur_entry != nil and my_seq >= live_seq do
+          :ok
+        else
+          {:error, {:stale_slot_binding, :superseded}}
+        end
+
+      {:error, :not_found} ->
+        {:error, {:stale_slot_binding, :superseded}}
+    end
+  end
+
+  defp put_pending_secondaries(spec, by_slot, keep_reconcile?) do
+    cond do
+      map_size(by_slot) == 0 and not keep_reconcile? ->
+        Map.delete(spec, "pending_secondaries")
+
+      keep_reconcile? ->
+        Map.put(spec, "pending_secondaries", %{
+          "by_slot" => by_slot,
+          "reconcile_pending" => true
+        })
+
+      true ->
+        Map.put(spec, "pending_secondaries", %{"by_slot" => by_slot})
+    end
+  end
+
+  defp put_earliest_next_check_at(spec, candidate_iso) when is_binary(candidate_iso) do
+    case {spec["next_check_at"], DateTime.from_iso8601(candidate_iso)} do
+      {existing_iso, {:ok, candidate_dt, _}} when is_binary(existing_iso) ->
+        case DateTime.from_iso8601(existing_iso) do
+          {:ok, existing_dt, _} ->
+            if DateTime.compare(existing_dt, candidate_dt) != :gt,
+              do: spec,
+              else: Map.put(spec, "next_check_at", candidate_iso)
+
+          _ ->
+            Map.put(spec, "next_check_at", candidate_iso)
+        end
+
+      _ ->
+        Map.put(spec, "next_check_at", candidate_iso)
+    end
+  end
+
+  defp entry_participant_id(entry) when is_map(entry) do
+    entry["participant_id"] || get_in(entry["start"] || %{}, ["participant_id"])
+  end
+
+  defp entry_participant_id(_), do: nil
+
+  defp slot_request_ids(spec, slot) do
+    case get_in(spec, ["pending_secondaries", "by_slot", slot]) do
+      %{"request_ids" => list} when is_list(list) -> list
+      %{"request_id" => id} when is_binary(id) -> [id]
+      _ -> []
+    end
+  end
+
+  defp dropped_slot_snapshot(spec, entry) when is_map(entry) do
+    slot = entry["slot"]
+
+    %{
+      slot: slot,
+      participant_id: entry_participant_id(entry),
+      request_ids: slot_request_ids(spec, slot),
+      start_seq: entry["start_seq"] || 0
+    }
+  end
+
+  defp safe_drop_slot_set(latest_spec, dropped_items) do
+    dropped_items
+    |> Enum.reduce(MapSet.new(), fn
+      %{slot: slot} = snap, acc when is_binary(slot) ->
+        if slot_superseded?(latest_spec, snap), do: acc, else: MapSet.put(acc, slot)
+
+      slot, acc when is_binary(slot) ->
+        MapSet.put(acc, slot)
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp slot_superseded?(latest_spec, %{
+         slot: slot,
+         participant_id: old_pid,
+         request_ids: old_ids,
+         start_seq: old_seq
+       }) do
+    cur_entry = Enum.find(spec_starts(latest_spec), &(&1["slot"] == slot))
+    cur_pid = entry_participant_id(cur_entry)
+
+    pid_changed? =
+      is_binary(cur_pid) and cur_pid != "" and cur_pid != old_pid
+
+    cur_seq = (is_map(cur_entry) && cur_entry["start_seq"]) || 0
+    latest_seq = get_in(latest_spec, ["pending_secondaries", "by_slot", slot, "latest_seq"]) || 0
+    hwm_seq = get_in(latest_spec, ["slot_seq_hwm", slot]) || 0
+    seq_advanced? = cur_seq > old_seq or latest_seq > old_seq or hwm_seq > old_seq
+
+    old_id_set = MapSet.new(old_ids)
+    latest_ids = slot_request_ids(latest_spec, slot)
+    has_new_request? = Enum.any?(latest_ids, &(not MapSet.member?(old_id_set, &1)))
+
+    pid_changed? or seq_advanced? or has_new_request?
+  end
+
+  # Tri-state check (`:yes | :no | :unknown`) so DB read failures never falsely
+  # classify a healthy primary sandbox as unjoined and trigger `stop("failed")`.
+  defp sandbox_primary_joined(spec) do
+    if spec["invited"] == true do
+      :yes
+    else
+      case SalixStore.StationTaskSessions.of_task(spec["group_id"], spec["conversation_id"]) do
+        {:ok, rows} ->
+          if Enum.any?(
+               rows,
+               &(not SalixStore.StationTaskSessions.awaited?(&1) and
+                   &1.device_id == spec["device_id"])
+             ),
+             do: :yes,
+             else: :no
+
+        {:error, _} ->
+          :unknown
+      end
+    end
+  end
+
+  defp notify_sandbox_slot_refused(spec, slot, reason) when is_binary(slot) and slot != "" do
+    _ =
+      StationTasks.notice(
+        spec["group_id"],
+        spec["conversation_id"],
+        spec["agent_id"],
+        "slot-refused:#{slot}",
+        "Secondary session slot #{slot} could not join the sandbox (#{describe(reason)}) and was deactivated; remaining sessions continue."
+      )
+
+    :ok
+  end
+
+  defp notify_sandbox_slot_refused(_spec, _slot, _reason), do: :ok
+
+  defp spec_starts(%{"starts" => [_ | _] = starts}) do
+    Enum.sort_by(starts, fn s -> if s["is_primary"] == true, do: 0, else: 1 end)
+  end
+
+  defp spec_starts(%{"start" => start, "agent_id" => agent_id}) do
+    [%{"slot" => "lead", "is_primary" => true, "agent_id" => agent_id, "start" => start}]
+  end
+
+  # Tri-state check (`:yes | :no | :unknown`) comparing `binding_token` (or legacy `session`)
+  # so DB read errors NEVER falsely classify a slot as unbound.
+  defp sandbox_slot_binding_state(spec, slot, demoted_token, min_seq \\ nil) do
+    case SalixStore.StationTaskSessions.of_task(spec["group_id"], spec["conversation_id"]) do
+      {:ok, rows} ->
+        if Enum.any?(rows, fn r ->
+             current_token = get_in(r.start || %{}, ["binding_token"]) || r.session
+             row_seq = get_in(r.start || %{}, ["start_seq"]) || 0
+
+             not SalixStore.StationTaskSessions.awaited?(r) and r.device_id == spec["device_id"] and
+               (get_in(r.start || %{}, ["slot"]) || "lead") == slot and
+               (is_nil(demoted_token) or current_token != demoted_token) and
+               (not is_integer(min_seq) or min_seq <= 0 or row_seq >= min_seq)
+           end),
+           do: :yes,
+           else: :no
+
+      {:error, _} ->
+        :unknown
+    end
+  end
+
+  defp call_sandbox_deactivate_unbound(group_id, conversation_id, pid, stale_token, verify_fun) do
+    mod = StationTasks.conversations_module()
+
+    if function_exported?(mod, :deactivate_unbound_task_participant, 5) do
+      mod.deactivate_unbound_task_participant(
+        group_id,
+        conversation_id,
+        pid,
+        stale_token,
+        verify_fun
+      )
+    else
+      SalixIM.ConversationServer.deactivate_unbound_task_participant(
+        group_id,
+        conversation_id,
+        pid,
+        stale_token,
+        verify_fun
+      )
+    end
+  end
+
+  defp deactivate_sandbox_slot_participant(
+         group_id,
+         conversation_id,
+         entry,
+         device_id,
+         opts
+       ) do
+    pid = entry["participant_id"] || get_in(entry, ["start", "participant_id"])
+    stale_token = entry["demoted_binding_token"] || entry["demoted_session"]
+    slot = entry["slot"] || get_in(entry, ["start", "slot"])
+    workload_id = Keyword.get(opts, :workload_id)
+    expected_seq = Keyword.get(opts, :expected_seq)
+    require_pending_deact? = Keyword.get(opts, :require_pending_deact?, false)
+
+    base_verify_fun =
+      StationTasks.slot_verify_unbound_fun(group_id, conversation_id, device_id, slot)
+
+    verify_unbound_fun =
+      if is_binary(workload_id) and is_integer(expected_seq) do
+        fn stale_tok ->
+          case SalixStore.StationTaskSessions.with_device_lock(
+                 group_id,
+                 conversation_id,
+                 device_id,
+                 fn ->
+                   case Store.get(workload_id) do
+                     {:ok, w} ->
+                       cur_entry = Enum.find(spec_starts(w.spec), &(&1["slot"] == slot))
+                       slot_meta = get_in(w.spec, ["pending_secondaries", "by_slot", slot]) || %{}
+                       hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+                       live_seq =
+                         Enum.max([
+                           (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+                           slot_meta["latest_seq"] || 0,
+                           hwm
+                         ])
+
+                       if live_seq > expected_seq or
+                            (require_pending_deact? and slot_meta["pending_deactivation"] != true) do
+                         {:ok, {:abort, :superseded}}
+                       else
+                         {:ok, base_verify_fun.(stale_tok)}
+                       end
+
+                     {:error, :not_found} ->
+                       {:ok, base_verify_fun.(stale_tok)}
+                   end
+                 end
+               ) do
+            {:ok, verdict} -> verdict
+            {:error, _} -> :unknown
+          end
+        end
+      else
+        base_verify_fun
+      end
+
+    if is_binary(pid) and pid != "" do
+      case call_sandbox_deactivate_unbound(
+             group_id,
+             conversation_id,
+             pid,
+             stale_token,
+             verify_unbound_fun
+           ) do
+        {:ok, :already_bound} -> {:ok, :already_bound}
+        {:ok, _} -> :ok
+        :ok -> :ok
+        {:error, :not_found} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      slot = entry["slot"]
+
+      if is_binary(slot) and slot != "" do
+        case SalixIM.Conversations.list_group_conversation_participants(group_id, conversation_id) do
+          {:ok, %{"participants" => parts}} when is_list(parts) ->
+            case Enum.find(
+                   parts,
+                   &(&1["actor_type"] == "agent" and &1["role_label"] == "worker" and
+                       &1["target_key"] == slot and &1["state"] != "inactive")
+                 ) do
+              %{"participant_id" => found_pid} ->
+                case call_sandbox_deactivate_unbound(
+                       group_id,
+                       conversation_id,
+                       found_pid,
+                       stale_token,
+                       verify_unbound_fun
+                     ) do
+                  {:ok, :already_bound} -> {:ok, :already_bound}
+                  {:ok, _} -> :ok
+                  :ok -> :ok
+                  {:error, :not_found} -> :ok
+                  {:error, reason} -> {:error, reason}
+                end
+
+              nil ->
+                :ok
+            end
+
+          {:error, :not_found} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        :ok
+      end
+    end
+  rescue
+    e -> {:error, e}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp check_sandbox_multi_capability(_spec, false), do: :ok
+
+  defp check_sandbox_multi_capability(spec, true) do
+    case SalixEnv.Registry.get_device(spec["tenant_id"], spec["group_id"], spec["device_id"]) do
+      {:ok, %{"meta" => %{"capabilities" => capabilities}}} when is_map(capabilities) ->
+        if SalixStore.StationReadiness.multi_session_ready?(capabilities),
+          do: :ok,
+          else: {:error, :station_outdated}
+
+      {:ok, _device_without_caps} ->
+        {:error, :station_outdated}
+
+      {:error, reason} ->
+        {:error, {:registry_unavailable, reason}}
+    end
+  end
+
+  defp invite(workload), do: reconcile_invites(workload)
+
+  @doc """
+  Appends a dynamically added secondary session start entry to a sandbox Task's
+  `spec["starts"]`.
+  - When the sandbox is already `ready`, checks `multi_session_tasks` capability
+    and invites + joins the new slot directly FIRST. Any failure returns
+    `{:error, reason}` cleanly without stopping the healthy sandbox or persisting
+    the failed slot into `spec["starts"]`.
+  - When the sandbox is not yet `ready` (`starting`, `stopped`, etc.), appends
+    to `spec["starts"]` so `connected/1` reconciles it when the sandbox connects.
+  """
+  def add_session_start(tenant, conversation, %{"slot" => slot} = entry)
+      when is_binary(tenant) and is_binary(conversation) and is_binary(slot) do
+    with {:ok, workload} <- Store.get_by_conversation(tenant, conversation) do
+      if workload.spec["state"] == "ready" do
+        spec = workload.spec
+
+        invitation = %{
+          tenant_id: spec["tenant_id"],
+          group_id: spec["group_id"],
+          conversation_id: spec["conversation_id"],
+          device_id: spec["device_id"],
+          start: entry["start"],
+          slot: slot,
+          join: true,
+          multi_session: true
+        }
+
+        # Persist the pending start into `spec["starts"]` + `pending_secondaries`
+        # with a unique `request_id` BEFORE firing `task.invite`; if persistence fails, send 0 RPCs.
+        request_id =
+          case entry["invite_id"] do
+            id when is_binary(id) and id != "" -> id
+            _ -> SalixStore.Ids.new_session_id()
+          end
+
+        with :ok <- check_sandbox_multi_capability(spec, true),
+             {:ok, _persisted, my_seq} <-
+               reserve_sandbox_slot_start(
+                 workload.id,
+                 spec,
+                 slot,
+                 entry,
+                 request_id
+               ) do
+          case StationTasks.invite_with_run(invitation) do
+            {:ok, {session, used_run_id}} when is_binary(session) ->
+              case StationTasks.register_slot_binding(
+                     invitation
+                     |> build_slot_binding_entry(spec, entry, session, used_run_id, my_seq)
+                     |> Map.put(:pre_join_check, fn ->
+                       verify_slot_request_live(workload.id, slot, request_id, my_seq)
+                     end)
+                   ) do
+                :ok ->
+                  _ = confirm_start_entry(workload.id, slot, entry, request_id, my_seq)
+                  :ok
+
+                {:error, {:stale_slot_binding, _live_session}} ->
+                  # Authoritatively verify whether DB holds an active binding with
+                  # `start_seq >= my_seq` BEFORE dropping the request anchor!
+                  case sandbox_slot_binding_state(spec, slot, nil, my_seq) do
+                    :yes ->
+                      _ = drop_stale_request_id(workload.id, slot, request_id)
+                      :ok
+
+                    :no ->
+                      # Single atomic Store.update: either keeps remaining requests/backoff and
+                      # drops only `request_id`, OR atomically converts the last unconfirmed
+                      # request into a persisted `pending_deactivation: true` anchor so a crash
+                      # or deactivation failure can NEVER lose the retry anchor!
+                      case transition_stale_request_to_deactivation_or_drop(
+                             workload.id,
+                             slot,
+                             request_id,
+                             entry_participant_id(entry)
+                           ) do
+                        {:ok, {:pending_deactivation, live_seq}} ->
+                          case deactivate_sandbox_slot_participant(
+                                 spec["group_id"],
+                                 spec["conversation_id"],
+                                 entry,
+                                 spec["device_id"],
+                                 workload_id: workload.id,
+                                 expected_seq: live_seq,
+                                 require_pending_deact?: true
+                               ) do
+                            :ok ->
+                              _ = cleanup_unconfirmed_stale_slot(workload.id, slot, live_seq)
+                              {:error, :stale_slot_binding}
+
+                            {:ok, :already_bound} ->
+                              if sandbox_slot_binding_state(spec, slot, nil, my_seq) == :yes do
+                                _ = clear_slot_pending_deactivation(workload.id, slot, live_seq)
+                                :ok
+                              else
+                                {:error, :stale_slot_binding}
+                              end
+
+                            {:error, :superseded} ->
+                              {:error, :stale_slot_binding}
+
+                            {:error, _deact_err} ->
+                              # `pending_deactivation: true` + `reconcile_pending: true` are
+                              # already atomically persisted; periodic `reconcile_invites` will finish.
+                              {:error, :stale_slot_binding}
+                          end
+
+                        {:ok, :keep} ->
+                          {:error, :stale_slot_binding}
+
+                        {:error, _store_err} ->
+                          # Original `request_id` was NOT dropped; periodic check will reconcile.
+                          {:error, :binding_state_unavailable}
+                      end
+
+                    :unknown ->
+                      _ =
+                        Store.update(workload.id, fn w ->
+                          by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+                          {:ok, put_pending_secondaries(w.spec, by_slot, true)}
+                        end)
+
+                      {:error, :binding_state_unavailable}
+                  end
+
+                {:error, _} = err ->
+                  err
+              end
+
+            {:error, reason} = err ->
+              permanent_refusal? =
+                reason == :station_outdated or
+                  (match?({:station_refused, _}, reason) and
+                     not (is_binary(elem(reason, 1)) and
+                            String.contains?(elem(reason, 1), "no_active_primary")))
+
+              if permanent_refusal? and sandbox_slot_binding_state(spec, slot, nil) == :no do
+                _ = remove_start_entry(workload.id, slot, request_id, my_seq)
+              end
+
+              err
+          end
+        end
+      else
+        request_id =
+          case entry["invite_id"] do
+            id when is_binary(id) and id != "" -> id
+            _ -> SalixStore.Ids.new_session_id()
+          end
+
+        with {:ok, _persisted, _my_seq} <-
+               reserve_sandbox_slot_start(
+                 workload.id,
+                 workload.spec,
+                 slot,
+                 entry,
+                 request_id,
+                 reconcile_pending?: true
+               ) do
+          :ok
+        end
+      end
+    end
+  end
+
+  # Serializes version allocation (`append_pending_start_entry`) through the same
+  # `ConversationParticipantActor` mailbox as `deactivate_if_unbound` and `bind_station_session`
+  # (global lock order: Actor -> `lock_device_tx` -> `workloads` / `station_task_sessions`),
+  # eliminating any window where `C(3)` reserves a generation while `B(2)` deactivates the participant.
+  defp reserve_sandbox_slot_start(workload_id, spec, slot, entry, request_id, opts \\ []) do
+    reserve_fun = fn ->
+      append_pending_start_entry(workload_id, spec, slot, entry, request_id, opts)
+    end
+
+    pid = entry_participant_id(entry)
+
+    if is_binary(pid) and pid != "" do
+      mod = StationTasks.conversations_module()
+
+      res =
+        if function_exported?(mod, :reserve_task_participant_session, 4) do
+          mod.reserve_task_participant_session(
+            spec["group_id"],
+            spec["conversation_id"],
+            pid,
+            reserve_fun
+          )
+        else
+          SalixIM.ConversationServer.reserve_task_participant_session(
+            spec["group_id"],
+            spec["conversation_id"],
+            pid,
+            reserve_fun
+          )
+        end
+
+      case res do
+        {:error, :not_found} when mod != SalixWeb.StationTasks.Conversations ->
+          reserve_fun.()
+
+        other ->
+          other
+      end
+    else
+      reserve_fun.()
+    end
+  end
+
+  defp append_pending_start_entry(workload_id, spec, slot, entry, request_id, opts) do
+    force_reconcile? = Keyword.get(opts, :reconcile_pending?, false)
+
+    do_append = fn ->
+      case check_sandbox_slot_config_conflict(spec, slot, entry) do
+        :ok ->
+          case Store.update(workload_id, fn w ->
+                 existing = spec_starts(w.spec)
+                 prev_slot = get_in(w.spec, ["pending_secondaries", "by_slot", slot]) || %{}
+                 cur_idx = Enum.find_index(existing, &(&1["slot"] == slot))
+                 cur_entry = if cur_idx, do: Enum.at(existing, cur_idx), else: nil
+
+                 hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+                 next_seq =
+                   Enum.max([
+                     (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+                     prev_slot["latest_seq"] || 0,
+                     hwm
+                   ]) + 1
+
+                 next_hwm_map = Map.put(w.spec["slot_seq_hwm"] || %{}, slot, next_seq)
+
+                 next_starts =
+                   case cur_idx do
+                     nil ->
+                       existing ++ [Map.put(entry, "start_seq", next_seq)]
+
+                     idx ->
+                       new_pid = entry_participant_id(entry)
+                       cur_pid = entry_participant_id(cur_entry)
+
+                       updated_entry =
+                         if is_map(entry["start"]) do
+                           entry
+                           |> then(fn e ->
+                             if (is_nil(new_pid) or new_pid == "") and is_binary(cur_pid) and
+                                  cur_pid != "",
+                                do: Map.put(e, "participant_id", cur_pid),
+                                else: e
+                           end)
+                           |> Map.put("start_seq", next_seq)
+                         else
+                           Map.put(cur_entry, "start_seq", next_seq)
+                         end
+
+                       List.replace_at(existing, idx, updated_entry)
+                   end
+
+                 prev_ids = slot_request_ids(w.spec, slot)
+
+                 next_ids =
+                   if request_id in prev_ids, do: prev_ids, else: prev_ids ++ [request_id]
+
+                 prev_req_seqs =
+                   case prev_slot["request_seqs"] do
+                     %{} = m -> m
+                     _ -> Map.new(prev_ids, &{&1, prev_slot["latest_seq"] || 0})
+                   end
+
+                 next_req_seqs = Map.put(prev_req_seqs, request_id, next_seq)
+
+                 by_slot =
+                   (get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{})
+                   |> Map.put(
+                     slot,
+                     prev_slot
+                     |> Map.delete("request_id")
+                     |> Map.delete("pending_deactivation")
+                     |> Map.delete("deactivation_seq")
+                     |> Map.delete("deactivation_participant_id")
+                     |> Map.merge(%{
+                       "attempts" => prev_slot["attempts"] || 0,
+                       "latest_seq" => next_seq,
+                       "request_ids" => next_ids,
+                       "request_seqs" => next_req_seqs
+                     })
+                   )
+
+                 reconcile_pending? =
+                   force_reconcile? or
+                     get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+
+                 next_spec =
+                   w.spec
+                   |> Map.put("starts", next_starts)
+                   |> Map.put("slot_seq_hwm", next_hwm_map)
+                   |> put_pending_secondaries(by_slot, reconcile_pending?)
+                   |> then(fn s ->
+                     if force_reconcile?,
+                       do: put_earliest_next_check_at(s, iso_in(@starting_check_ms)),
+                       else: s
+                   end)
+
+                 {:ok, next_spec}
+               end) do
+            {:ok, updated} ->
+              assigned_seq =
+                get_in(updated.spec, [
+                  "pending_secondaries",
+                  "by_slot",
+                  slot,
+                  "request_seqs",
+                  request_id
+                ]) ||
+                  get_in(updated.spec, ["pending_secondaries", "by_slot", slot, "latest_seq"]) ||
+                  1
+
+              _ =
+                SalixStore.StationTaskSessions.advance_slot_seq_hwm(
+                  spec["group_id"],
+                  spec["conversation_id"],
+                  spec["device_id"],
+                  slot,
+                  assigned_seq
+                )
+
+              {:ok, {updated, assigned_seq}}
+
+            other ->
+              other
+          end
+
+        {:error, _} = conflict_err ->
+          conflict_err
+      end
+    end
+
+    case SalixStore.StationTaskSessions.with_device_lock(
+           spec["group_id"],
+           spec["conversation_id"],
+           spec["device_id"],
+           do_append
+         ) do
+      {:ok, {updated, assigned_seq}} -> {:ok, updated, assigned_seq}
+      other -> other
+    end
+  end
+
+  defp check_sandbox_slot_config_conflict(spec, slot, entry) do
+    new_start = entry["start"]
+
+    if is_map(new_start) do
+      case SalixStore.StationTaskSessions.of_task(spec["group_id"], spec["conversation_id"]) do
+        {:ok, rows} ->
+          active_row =
+            Enum.find(rows, fn r ->
+              not SalixStore.StationTaskSessions.awaited?(r) and
+                r.device_id == spec["device_id"] and
+                (get_in(r.start || %{}, ["slot"]) || "lead") == slot
+            end)
+
+          if active_row && slot_config_conflicts?(active_row.start, new_start) do
+            {:error, :slot_config_conflict}
+          else
+            :ok
+          end
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      :ok
+    end
+  end
+
+  defp slot_config_conflicts?(existing_start, new_start)
+       when is_map(existing_start) and is_map(new_start) do
+    Enum.any?(~w(model runtime harness profile effort), fn key ->
+      old_val = existing_start[key]
+      new_val = new_start[key]
+
+      is_binary(new_val) and new_val != "" and old_val != new_val
+    end)
+  end
+
+  defp slot_config_conflicts?(_, _), do: false
+
+  defp build_slot_binding_entry(
+         invitation,
+         spec,
+         entry,
+         session,
+         used_run_id,
+         explicit_seq
+       ) do
+    slot = invitation[:slot] || entry["slot"] || "lead"
+
+    effective_seq =
+      explicit_seq ||
+        entry["start_seq"] ||
+        get_in(spec, ["pending_secondaries", "by_slot", slot, "latest_seq"]) ||
+        get_in(spec, ["slot_seq_hwm", slot])
+
+    start_map =
+      (entry["start"] || %{})
+      |> then(fn m ->
+        if is_integer(effective_seq) and effective_seq > 0 do
+          Map.put(m, "start_seq", effective_seq)
+        else
+          m
+        end
+      end)
+      |> then(fn m ->
+        if is_binary(used_run_id) and used_run_id != "" do
+          Map.put(m, "connector_run_id", used_run_id)
+        else
+          m
+        end
+      end)
+
+    Map.merge(invitation, %{
+      session: session,
+      agent_id: entry["agent_id"] || spec["agent_id"],
+      participant_id: entry["participant_id"],
+      start: start_map
+    })
+  end
+
+  defp verify_slot_request_live(workload_id, slot, request_id, my_seq) do
+    case Store.get(workload_id) do
+      {:ok, w} ->
+        starts = spec_starts(w.spec)
+        slot_present? = Enum.any?(starts, &(&1["slot"] == slot))
+        hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+        slot_meta = get_in(w.spec, ["pending_secondaries", "by_slot", slot]) || %{}
+
+        req_present? =
+          case slot_meta["request_seqs"] do
+            %{} = m -> Map.has_key?(m, request_id)
+            _ -> request_id in slot_request_ids(w.spec, slot)
+          end
+
+        if slot_present? and my_seq >= hwm and req_present? do
+          :ok
+        else
+          {:error, {:stale_slot_binding, :slot_removed}}
+        end
+
+      {:error, :not_found} ->
+        {:error, {:stale_slot_binding, :slot_removed}}
+    end
+  end
+
+  # Single atomic Store.update for online stale cleanup when DB has NO `>= my_seq` binding:
+  # - If removing `request_id` still leaves other in-flight requests, independent backoff, or
+  #   `confirmed_seq >= live_seq`, drops ONLY `request_id` and returns `{:ok, :keep}`.
+  # - Otherwise atomically converts the slot in-place into `pending_deactivation: true` with
+  #   `reconcile_pending: true` + `next_check_at`, returning `{:ok, {:pending_deactivation, live_seq}}`.
+  # - If `Store.update` itself fails, `request_id` remains untouched so periodic reconcile recovers.
+  defp transition_stale_request_to_deactivation_or_drop(
+         workload_id,
+         slot,
+         request_id,
+         participant_id
+       ) do
+    outcome_ref = :atomics.new(1, [])
+    now = now_ms()
+
+    case Store.update(workload_id, fn w ->
+           all_by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+           slot_meta = Map.get(all_by_slot, slot) || %{}
+
+           reconcile_pending? =
+             get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+
+           req_seqs =
+             case slot_meta["request_seqs"] do
+               %{} = m -> m
+               _ -> Map.new(slot_request_ids(w.spec, slot), &{&1, slot_meta["latest_seq"] || 0})
+             end
+
+           remaining_seqs = Map.delete(req_seqs, request_id)
+
+           has_backoff? =
+             is_integer(slot_meta["next_retry_at_ms"]) or (slot_meta["attempts"] || 0) > 0
+
+           cur_entry = Enum.find(spec_starts(w.spec), &(&1["slot"] == slot))
+           hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+           live_seq =
+             Enum.max([
+               (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+               slot_meta["latest_seq"] || 0,
+               hwm
+             ])
+
+           confirmed_seq = get_in(w.spec, ["slot_confirmed_seq", slot]) || 0
+
+           if map_size(remaining_seqs) == 0 and not has_backoff? and confirmed_seq < live_seq do
+             :atomics.put(outcome_ref, 1, live_seq)
+
+             next_slot =
+               slot_meta
+               |> Map.delete("request_id")
+               |> Map.delete("request_ids")
+               |> Map.delete("request_seqs")
+               |> Map.merge(%{
+                 "pending_deactivation" => true,
+                 "deactivation_seq" => max(slot_meta["deactivation_seq"] || 0, live_seq),
+                 "participant_id" => participant_id || slot_meta["participant_id"],
+                 "attempts" => max(slot_meta["attempts"] || 0, 1),
+                 "next_retry_at_ms" => now + @starting_check_ms
+               })
+
+             next_by_slot = Map.put(all_by_slot, slot, next_slot)
+
+             {:ok,
+              w.spec
+              |> put_pending_secondaries(next_by_slot, true)
+              |> put_earliest_next_check_at(iso_in(@starting_check_ms))}
+           else
+             :atomics.put(outcome_ref, 1, 0)
+
+             has_id? =
+               Map.has_key?(req_seqs, request_id) or request_id in slot_request_ids(w.spec, slot)
+
+             if not has_id? do
+               {:ok, w.spec}
+             else
+               next_by_slot =
+                 cond do
+                   map_size(remaining_seqs) > 0 ->
+                     Map.put(
+                       all_by_slot,
+                       slot,
+                       slot_meta
+                       |> Map.delete("request_id")
+                       |> Map.put("request_ids", Map.keys(remaining_seqs))
+                       |> Map.put("request_seqs", remaining_seqs)
+                     )
+
+                   has_backoff? ->
+                     Map.put(
+                       all_by_slot,
+                       slot,
+                       slot_meta
+                       |> Map.delete("request_id")
+                       |> Map.delete("request_ids")
+                       |> Map.delete("request_seqs")
+                     )
+
+                   true ->
+                     Map.delete(all_by_slot, slot)
+                 end
+
+               {:ok, put_pending_secondaries(w.spec, next_by_slot, reconcile_pending?)}
+             end
+           end
+         end) do
+      {:ok, _} ->
+        case :atomics.get(outcome_ref, 1) do
+          0 -> {:ok, :keep}
+          seq -> {:ok, {:pending_deactivation, seq}}
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp clear_slot_pending_deactivation(workload_id, slot, expected_seq) do
+    Store.update(workload_id, fn w ->
+      all_by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+      slot_meta = Map.get(all_by_slot, slot) || %{}
+      cur_entry = Enum.find(spec_starts(w.spec), &(&1["slot"] == slot))
+      hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+      live_seq =
+        Enum.max([
+          (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+          slot_meta["latest_seq"] || 0,
+          hwm
+        ])
+
+      if live_seq <= expected_seq and slot_meta["pending_deactivation"] == true do
+        reconcile_pending? =
+          get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+
+        by_slot = Map.delete(all_by_slot, slot)
+
+        {:ok,
+         put_pending_secondaries(w.spec, by_slot, reconcile_pending? and map_size(by_slot) > 0)}
+      else
+        {:ok, w.spec}
+      end
+    end)
+  end
+
+  # After guarded deactivation confirms `:ok`: removes the orphaned `spec["starts"]` entry
+  # ONLY if `live_seq <= expected_seq` (preserving any newer concurrent generation C(3) and `slot_seq_hwm`).
+  defp cleanup_unconfirmed_stale_slot(workload_id, slot, expected_seq) do
+    cleaned_ref = :atomics.new(1, [])
+
+    case Store.update(workload_id, fn w ->
+           all_by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+           slot_meta = Map.get(all_by_slot, slot) || %{}
+
+           reconcile_pending? =
+             get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+
+           req_seqs =
+             case slot_meta["request_seqs"] do
+               %{} = m -> m
+               _ -> Map.new(slot_request_ids(w.spec, slot), &{&1, slot_meta["latest_seq"] || 0})
+             end
+
+           cur_entry = Enum.find(spec_starts(w.spec), &(&1["slot"] == slot))
+           hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+           live_seq =
+             Enum.max([
+               (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+               slot_meta["latest_seq"] || 0,
+               hwm
+             ])
+
+           confirmed_seq = get_in(w.spec, ["slot_confirmed_seq", slot]) || 0
+
+           if live_seq <= expected_seq and map_size(req_seqs) == 0 and confirmed_seq < live_seq do
+             :atomics.put(cleaned_ref, 1, 1)
+             kept = Enum.reject(spec_starts(w.spec), &(&1["slot"] == slot))
+             by_slot = Map.delete(all_by_slot, slot)
+
+             {:ok,
+              w.spec
+              |> Map.put("starts", kept)
+              |> put_pending_secondaries(
+                by_slot,
+                reconcile_pending? and map_size(by_slot) > 0
+              )}
+           else
+             {:ok, w.spec}
+           end
+         end) do
+      {:ok, _} ->
+        if :atomics.get(cleaned_ref, 1) == 1, do: {:ok, :cleaned}, else: {:ok, :kept}
+
+      other ->
+        other
+    end
+  end
+
+  # Drops ONLY `request_id` from `pending_secondaries["by_slot"][slot]` without touching
+  # `spec["starts"]`, `slot_confirmed_seq`, or independent background backoff state.
+  # No-op if `request_id` is not present.
+  @doc false
+  def drop_stale_request_id(workload_id, slot, request_id) do
+    Store.update(workload_id, fn w ->
+      all_by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+      slot_meta = Map.get(all_by_slot, slot)
+      reconcile_pending? = get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+
+      if is_map(slot_meta) do
+        req_seqs =
+          case slot_meta["request_seqs"] do
+            %{} = m -> m
+            _ -> Map.new(slot_request_ids(w.spec, slot), &{&1, slot_meta["latest_seq"] || 0})
+          end
+
+        has_id? =
+          Map.has_key?(req_seqs, request_id) or request_id in slot_request_ids(w.spec, slot)
+
+        if not has_id? do
+          {:ok, w.spec}
+        else
+          remaining_seqs = Map.delete(req_seqs, request_id)
+
+          has_backoff? =
+            is_integer(slot_meta["next_retry_at_ms"]) or (slot_meta["attempts"] || 0) > 0
+
+          by_slot =
+            cond do
+              map_size(remaining_seqs) > 0 ->
+                Map.put(
+                  all_by_slot,
+                  slot,
+                  slot_meta
+                  |> Map.delete("request_id")
+                  |> Map.put("request_ids", Map.keys(remaining_seqs))
+                  |> Map.put("request_seqs", remaining_seqs)
+                )
+
+              has_backoff? ->
+                Map.put(
+                  all_by_slot,
+                  slot,
+                  slot_meta
+                  |> Map.delete("request_id")
+                  |> Map.delete("request_ids")
+                  |> Map.delete("request_seqs")
+                )
+
+              true ->
+                Map.delete(all_by_slot, slot)
+            end
+
+          {:ok, put_pending_secondaries(w.spec, by_slot, reconcile_pending?)}
+        end
+      else
+        {:ok, w.spec}
+      end
+    end)
+  end
+
+  # Monotonic `start_seq`-fenced confirmation:
+  # - If `my_seq < live_seq` OR the slot is no longer alive (`cur_idx == nil` and `request_id`
+  #   not in `req_seqs`), NEVER overwrite or resurrect `spec["starts"]` and NEVER clear newer
+  #   requests (`seq > my_seq`); only drop A's `request_id` if present.
+  # - Otherwise, ensure `starts[slot]["start_seq"] == my_seq` and clear `seq <= my_seq`.
+  @doc false
+  def confirm_start_entry(workload_id, slot, entry, request_id, my_seq) do
+    Store.update(workload_id, fn w ->
+      existing = spec_starts(w.spec)
+      cur_idx = Enum.find_index(existing, &(&1["slot"] == slot))
+      cur_entry = if cur_idx, do: Enum.at(existing, cur_idx), else: nil
+      all_by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+      slot_meta = Map.get(all_by_slot, slot) || %{}
+      reconcile_pending? = get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+      hwm = get_in(w.spec, ["slot_seq_hwm", slot]) || 0
+
+      live_seq =
+        Enum.max([
+          (is_map(cur_entry) && cur_entry["start_seq"]) || 0,
+          slot_meta["latest_seq"] || 0,
+          hwm
+        ])
+
+      req_seqs =
+        case slot_meta["request_seqs"] do
+          %{} = m -> m
+          _ -> Map.new(slot_request_ids(w.spec, slot), &{&1, slot_meta["latest_seq"] || 0})
+        end
+
+      still_alive? = cur_idx != nil or Map.has_key?(req_seqs, request_id)
+
+      if my_seq < live_seq or not still_alive? do
+        has_id? =
+          Map.has_key?(req_seqs, request_id) or request_id in slot_request_ids(w.spec, slot)
+
+        if not has_id? do
+          {:ok, w.spec}
+        else
+          remaining_seqs = Map.delete(req_seqs, request_id)
+
+          has_backoff? =
+            is_integer(slot_meta["next_retry_at_ms"]) or (slot_meta["attempts"] || 0) > 0
+
+          by_slot =
+            cond do
+              map_size(remaining_seqs) > 0 ->
+                Map.put(
+                  all_by_slot,
+                  slot,
+                  slot_meta
+                  |> Map.delete("request_id")
+                  |> Map.put("request_ids", Map.keys(remaining_seqs))
+                  |> Map.put("request_seqs", remaining_seqs)
+                )
+
+              has_backoff? ->
+                Map.put(
+                  all_by_slot,
+                  slot,
+                  slot_meta
+                  |> Map.delete("request_id")
+                  |> Map.delete("request_ids")
+                  |> Map.delete("request_seqs")
+                )
+
+              true ->
+                Map.delete(all_by_slot, slot)
+            end
+
+          {:ok, put_pending_secondaries(w.spec, by_slot, reconcile_pending?)}
+        end
+      else
+        next_starts =
+          case cur_idx do
+            nil ->
+              existing ++ [Map.put(entry, "start_seq", my_seq)]
+
+            idx ->
+              List.replace_at(existing, idx, Map.put(cur_entry, "start_seq", my_seq))
+          end
+
+        remaining_seqs =
+          req_seqs
+          |> Enum.reject(fn {id, seq} -> id == request_id or seq <= my_seq end)
+          |> Map.new()
+
+        by_slot =
+          if map_size(remaining_seqs) == 0 do
+            Map.delete(all_by_slot, slot)
+          else
+            Map.put(
+              all_by_slot,
+              slot,
+              slot_meta
+              |> Map.delete("request_id")
+              |> Map.put("request_ids", Map.keys(remaining_seqs))
+              |> Map.put("request_seqs", remaining_seqs)
+            )
+          end
+
+        prev_confirmed = get_in(w.spec, ["slot_confirmed_seq", slot]) || 0
+
+        next_confirmed_map =
+          Map.put(w.spec["slot_confirmed_seq"] || %{}, slot, max(prev_confirmed, my_seq))
+
+        {:ok,
+         w.spec
+         |> Map.put("starts", next_starts)
+         |> Map.put("slot_confirmed_seq", next_confirmed_map)
+         |> put_pending_secondaries(by_slot, reconcile_pending?)}
+      end
+    end)
+  end
+
+  # Monotonic `start_seq`-fenced removal: removes ONLY `expected_request_id`; when no
+  # remaining in-flight requests exist AND `slot_confirmed_seq[slot] < live_seq` (no
+  # request in this generation ever confirmed, and caller verified no DB binding), removes
+  # `slot` from `spec["starts"]` while preserving `slot_seq_hwm[slot]`.
+  defp remove_start_entry(workload_id, slot, expected_request_id, _my_seq) do
+    Store.update(workload_id, fn w ->
+      all_by_slot = get_in(w.spec, ["pending_secondaries", "by_slot"]) || %{}
+      slot_meta = Map.get(all_by_slot, slot)
+      reconcile_pending? = get_in(w.spec, ["pending_secondaries", "reconcile_pending"]) == true
+
+      ids = slot_request_ids(w.spec, slot)
+
+      if expected_request_id in ids do
+        req_seqs =
+          case slot_meta["request_seqs"] do
+            %{} = m -> m
+            _ -> Map.new(ids, &{&1, slot_meta["latest_seq"] || 0})
+          end
+
+        remaining_seqs = Map.delete(req_seqs, expected_request_id)
+        remaining_ids = Map.keys(remaining_seqs)
+        cur_entry = Enum.find(spec_starts(w.spec), &(&1["slot"] == slot))
+
+        live_seq =
+          max((is_map(cur_entry) && cur_entry["start_seq"]) || 0, slot_meta["latest_seq"] || 0)
+
+        confirmed_seq = get_in(w.spec, ["slot_confirmed_seq", slot]) || 0
+
+        if map_size(remaining_seqs) == 0 and confirmed_seq < live_seq do
+          kept = Enum.reject(spec_starts(w.spec), &(&1["slot"] == slot))
+          by_slot = Map.delete(all_by_slot, slot)
+
+          {:ok,
+           w.spec
+           |> Map.put("starts", kept)
+           |> put_pending_secondaries(by_slot, reconcile_pending?)}
+        else
+          by_slot =
+            if map_size(remaining_seqs) == 0 do
+              Map.delete(all_by_slot, slot)
+            else
+              Map.put(
+                all_by_slot,
+                slot,
+                slot_meta
+                |> Map.delete("request_id")
+                |> Map.put("request_ids", remaining_ids)
+                |> Map.put("request_seqs", remaining_seqs)
+              )
+            end
+
+          {:ok, put_pending_secondaries(w.spec, by_slot, reconcile_pending?)}
+        end
+      else
+        {:ok, w.spec}
+      end
+    end)
+  end
+
+  @doc """
+  Hydrates committed `participant_id`s onto reserved sandbox start specs after
+  `ConversationServer.create_task` commits, so when the sandbox connects and
+  reconciles invites every slot carries its exact `participant_id`.
+  """
+  def hydrate_participant_ids(tenant, conversation, pid_by_slot)
+      when is_binary(tenant) and is_binary(conversation) and is_map(pid_by_slot) do
+    if map_size(pid_by_slot) == 0 do
+      :ok
+    else
+      case Store.get_by_conversation(tenant, conversation) do
+        {:ok, workload} ->
+          _ =
+            Store.update(workload.id, fn w ->
+              spec = w.spec
+
+              updated_starts =
+                spec_starts(spec)
+                |> Enum.map(fn entry ->
+                  slot = entry["slot"] || "lead"
+
+                  case Map.get(pid_by_slot, slot) do
+                    pid when is_binary(pid) and pid != "" ->
+                      entry
+                      |> Map.put("participant_id", pid)
+                      |> Map.update(
+                        "start",
+                        %{"participant_id" => pid},
+                        &Map.put(&1, "participant_id", pid)
+                      )
+
+                    _ ->
+                      entry
+                  end
+                end)
+
+              updated_spec = Map.put(spec, "starts", updated_starts)
+
+              updated_spec =
+                case {Map.get(pid_by_slot, "lead"), updated_spec["start"]} do
+                  {pid, %{} = lead_start} when is_binary(pid) and pid != "" ->
+                    Map.put(updated_spec, "start", Map.put(lead_start, "participant_id", pid))
+
+                  _ ->
+                    updated_spec
+                end
+
+              {:ok, updated_spec}
+            end)
+
+          :ok
+
+        {:error, :not_found} ->
+          :ok
+      end
     end
   end
 
@@ -318,6 +2513,7 @@ defmodule SalixWeb.CodingSandboxes do
         case Store.advance(workload.id, %{
                "end" => true,
                "reopened" => nil,
+               "failed_start_retries" => nil,
                "next_check_at" => iso_in(0)
              }) do
           {:ok, _} ->
@@ -439,7 +2635,7 @@ defmodule SalixWeb.CodingSandboxes do
       SystemsRuntime.get_env(
         :salix_web,
         :vm_authorization_mod,
-        SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.Noop
+        SalixWeb.VMAuthorization.Noop
       )
 
   @doc """
@@ -655,6 +2851,9 @@ defmodule SalixWeb.CodingSandboxes do
 
       true ->
         case L4ES.get(spec["group_id"], spec["sandbox"]) do
+          {:ok, %{"state" => "failed"} = s} ->
+            failed_start(workload, s)
+
           {:ok, %{"state" => state} = s} when state in @gone ->
             stop(workload, "failed", "the sandbox stopped: #{s["failure"] || state}")
 
@@ -662,7 +2861,10 @@ defmodule SalixWeb.CodingSandboxes do
             if s["data_status"] == "retained" and
                  elapsed_ms(spec["created_at"]) >= @pinned_remake_ms,
                do: unplaced(workload),
-               else: workload |> rotate_github() |> next(@starting_check_ms)
+               else: workload |> rotate_github() |> waiting(waiting_for(s))
+
+          {:ok, %{"state" => _starting_or_running} = s} ->
+            workload |> rotate_github() |> waiting(waiting_for(s))
 
           _ ->
             workload |> rotate_github() |> next(@starting_check_ms)
@@ -724,6 +2926,42 @@ defmodule SalixWeb.CodingSandboxes do
   defp told_lost(workload) do
     update(workload, &Map.delete(&1, "lost_notice"))
     clear(workload)
+  end
+
+  # A start L4ES failed, such as a node whose download of the system image
+  # broke off, is made again as a new sandbox, at most `@failed_start_retries`
+  # times and within the start budget, which keeps running from the first
+  # start. Only one whose disk cannot hold the Task's work: a disk made in
+  # this generation (`disk_generation`: a new sandbox, or one made again under
+  # a new name), which has not run yet, since a run that connects ends the
+  # start; or one L4ES reports `missing`. L4ES's `data_status` alone does not
+  # tell: a node's reboot resets it to `unknown` while the disk is still
+  # there. Any other fails as before, keeping its disk, and a reply starts it
+  # again from that disk. A Workload made before `disk_generation` was
+  # recorded has none, and is never remade here.
+  defp failed_start(%{spec: spec} = workload, %{"state" => state} = s) do
+    why = s["failure"] || state
+    retries = spec["failed_start_retries"] || 0
+
+    no_work_on_disk? =
+      spec["disk_generation"] == workload.generation or s["data_status"] == "missing"
+
+    if no_work_on_disk? and retries < @failed_start_retries do
+      Logger.warning(
+        "a coding sandbox L4ES failed to start is made again: task=#{spec["conversation_id"]} " <>
+          "sandbox=#{spec["sandbox"]} #{why}"
+      )
+
+      case update(
+             workload,
+             &Map.merge(&1, %{"created" => false, "failed_start_retries" => retries + 1})
+           ) do
+        {:ok, workload} -> remake(workload, "L4ES failed to start it: #{why}")
+        :error -> :ok
+      end
+    else
+      stop(workload, "failed", "the sandbox stopped: #{why}")
+    end
   end
 
   # A sandbox started again from its disk, still pending with its data
@@ -804,14 +3042,24 @@ defmodule SalixWeb.CodingSandboxes do
       # answered (Salix stopped meanwhile) is asked again, or its sandbox
       # stopped, by name.
       {github, user} = identity || {nil, nil}
-      author = git_author(spec, user)
+      # Only coding Tasks with a GitHub repo commit under a git author; repo-less
+      # sandboxes (including member/guest-triggered collaboration sandboxes) never
+      # receive the host's personal email in environment variables.
+      author = if coding?, do: git_author(spec, user), else: nil
 
-      recorded = %{
-        "sandbox" => name,
-        "disk" => name,
-        "created" => false,
-        "github_expires_at" => github && github.expires_at
-      }
+      recorded =
+        %{
+          "sandbox" => name,
+          "disk" => name,
+          "created" => false,
+          "github_expires_at" => github && github.expires_at
+        }
+        |> then(
+          &if(is_nil(spec["disk"]),
+            do: Map.put(&1, "disk_generation", workload.generation),
+            else: &1
+          )
+        )
 
       update(workload, &Map.merge(&1, recorded))
       workload = %{workload | spec: Map.merge(spec, recorded)}
@@ -874,6 +3122,11 @@ defmodule SalixWeb.CodingSandboxes do
   # check. One still stopping (a Message just after an idle stop) is waited
   # for instead, so its disk is kept. `deleted` runs once L4ES accepted the
   # delete, and what it returns is recorded on the Workload with the retry.
+  #
+  # The new sandbox takes a new name (`remade_name/1`). L4ES keeps a deleted
+  # sandbox's name until its node confirms the delete, and refuses a create
+  # of that name meanwhile ("still stopping"): a node that is down or being
+  # reimaged confirms nothing for hours, and the start would wait on it.
   defp remake(%{spec: %{"sandbox" => name} = spec} = workload, why, deleted \\ fn _ -> %{} end) do
     case L4ES.get(spec["group_id"], name) do
       {:ok, %{"state" => state}} when state in ~w(stopping deleting) ->
@@ -888,7 +3141,7 @@ defmodule SalixWeb.CodingSandboxes do
             retry(
               workload,
               "the sandbox is made again: #{why || "L4ES refused it"}",
-              deleted.(workload)
+              Map.merge(deleted.(workload), remade_name(workload))
             )
 
           {:error, reason} ->
@@ -897,8 +3150,41 @@ defmodule SalixWeb.CodingSandboxes do
     end
   end
 
+  # The name of a sandbox made again in place of a deleted one: the
+  # generation's name with the count of remakes so far, which no earlier
+  # sandbox of the Task had.
+  defp remade_name(%{spec: spec} = workload) do
+    remakes = (spec["remakes"] || 0) + 1
+
+    %{
+      "disk" => "#{sandbox_name(spec["conversation_id"], workload.generation)}-r#{remakes}",
+      "disk_generation" => workload.generation,
+      "remakes" => remakes
+    }
+  end
+
+  @doc """
+  The Group that holds the connected GitHub OAuth account for `group_id`:
+  an isolated Collaborative Task Group (`purpose: "collaboration"`) resolves
+  its host Workspace's home Group (`billing_owner.home_group_id`); any other
+  Group resolves to itself.
+  """
+  def github_group_id(group_id) when is_binary(group_id) do
+    case Salix.Control.Groups.get(group_id) do
+      {:ok, %{"purpose" => "collaboration", "billing_owner" => %{"home_group_id" => home}}}
+      when is_binary(home) and home != "" ->
+        home
+
+      _ ->
+        group_id
+    end
+  end
+
+  def github_group_id(group_id), do: group_id
+
   defp github_identity(spec) do
-    with {:ok, %{token: token} = github} <- github().token(spec["tenant_id"], spec["group_id"]),
+    with {:ok, %{token: token} = github} <-
+           github().token(spec["tenant_id"], github_group_id(spec["group_id"])),
          {:ok, user} <- github().user(token),
          do: {:ok, {github, user}}
   end
@@ -932,7 +3218,7 @@ defmodule SalixWeb.CodingSandboxes do
       workload
     else
       with {:ok, %{token: token, expires_at: next}} <-
-             github().token(spec["tenant_id"], spec["group_id"]),
+             github().token(spec["tenant_id"], github_group_id(spec["group_id"])),
            :ok <- L4ES.put_github_token(spec["group_id"], spec["sandbox"], token) do
         update(workload, &Map.put(&1, "github_expires_at", next))
         %{workload | spec: Map.put(spec, "github_expires_at", next)}
@@ -1050,7 +3336,17 @@ defmodule SalixWeb.CodingSandboxes do
           stop(workload, "failed", "its station stopped answering and did not come back")
 
         device["status"] == "connected" and silent_ms < @heartbeat_fresh_ms ->
-          idle_check(workload)
+          case idle_check(workload) do
+            :stopped ->
+              :ok
+
+            _running ->
+              if is_map(spec["pending_secondaries"]) do
+                _ = reconcile_invites(workload)
+              end
+
+              :ok
+          end
 
         true ->
           next(workload, @start_budget_ms - silent_ms + 1)
@@ -1080,16 +3376,18 @@ defmodule SalixWeb.CodingSandboxes do
     end
   end
 
-  # Stop an idle Session's sandbox after 3 minutes for a Task in review or
-  # ended, otherwise after 2 hours. Local repository work stays on its disk.
+  # Stop an idle sandbox only when ALL active Sessions are `:idle` with
+  # `pending == 0` and `min(for_ms) >= stop_after` (3 minutes for a Task in
+  # review or ended, otherwise 2 hours). Never stops on `:unknown`.
   defp idle_check(%{spec: spec} = workload) do
-    case StationTasks.session_status(spec["group_id"], spec["conversation_id"]) do
+    case StationTasks.session_statuses(spec["group_id"], spec["conversation_id"]) do
       {:ok, %{state: :idle, pending: 0, for_ms: for_ms} = status} when is_integer(for_ms) ->
         stop_after = if resting?(spec), do: @resting_idle_ms, else: @idle_stop_ms
 
         if for_ms >= stop_after do
           notice_unsaved(workload, status)
           stop(workload, "stopped", nil)
+          :stopped
         else
           next(workload, min(@ready_check_ms, stop_after - for_ms))
         end
@@ -1111,25 +3409,36 @@ defmodule SalixWeb.CodingSandboxes do
     :ok
   end
 
-  defp notice_unsaved(%{spec: spec}, %{dirty: dirty, unpushed: unpushed})
-       when dirty or unpushed do
-    what =
-      [dirty && "uncommitted changes", unpushed && "commits that were not pushed"]
-      |> Enum.filter(& &1)
-      |> Enum.join(" and ")
+  defp notice_unsaved(%{spec: spec}, status) do
+    dirty = Map.get(status, :dirty) == true
+    unpushed = Map.get(status, :unpushed) == true
+    unmerged = Map.get(status, :unmerged) == true
+    standing_unknown = Map.get(status, :standing_unknown) == true
 
-    StationTasks.notice(
-      spec["group_id"],
-      spec["conversation_id"],
-      spec["agent_id"],
-      "idle-limit:#{spec["sandbox"]}",
-      "The sandbox stopped after being idle. It had #{what} on " <>
-        "#{get_in(spec, ["repo", "branch"])}. They stay on its disk only until the sandbox " <>
-        "service needs the space. Reply to continue."
-    )
+    if dirty or unpushed or unmerged or standing_unknown do
+      what =
+        [
+          dirty && "uncommitted changes",
+          unpushed && "commits that were not pushed",
+          unmerged && "unmerged commits on isolated session branches",
+          standing_unknown && "unknown workspace git standing"
+        ]
+        |> Enum.filter(& &1)
+        |> Enum.join(" and ")
+
+      StationTasks.notice(
+        spec["group_id"],
+        spec["conversation_id"],
+        spec["agent_id"],
+        "idle-limit:#{spec["sandbox"]}",
+        "The sandbox stopped after being idle. It had #{what} on " <>
+          "#{get_in(spec, ["repo", "branch"])}. They stay on its disk only until the sandbox " <>
+          "service needs the space. Reply to continue."
+      )
+    else
+      :ok
+    end
   end
-
-  defp notice_unsaved(_workload, _status), do: :ok
 
   # Stops the sandbox, if there is one (L4ES keeps its disk), and records the
   # end state.
@@ -1224,6 +3533,27 @@ defmodule SalixWeb.CodingSandboxes do
 
   defp next(workload, ms),
     do: update(workload, &Map.put(&1, "next_check_at", iso_in(check_in(&1, ms))))
+
+  # A start still under way: what it waits for is its reason, so a start
+  # that runs out of budget says it (`check/1`).
+  defp waiting(workload, why) do
+    update(workload, fn s ->
+      s
+      |> Map.put("reason", why)
+      |> Map.put("next_check_at", iso_in(check_in(s, @starting_check_ms)))
+    end)
+  end
+
+  # What a made sandbox that has not connected waits for, as L4ES reports it.
+  defp waiting_for(%{"state" => "pending", "data_status" => "retained"}),
+    do: "its disk's L4ES node has not taken it back"
+
+  defp waiting_for(%{"state" => "pending"}), do: "no L4ES node had room for it"
+
+  defp waiting_for(%{"state" => "running"}),
+    do: "the sandbox runs, but its station has not connected"
+
+  defp waiting_for(%{"state" => state}), do: "L4ES is still starting it (#{state})"
 
   # Nothing to check until something changes, unless a sandbox is still to be stopped.
   defp clear(workload) do
@@ -1347,9 +3677,12 @@ defmodule SalixWeb.CodingSandboxes do
 
   @doc """
   The token use a history page (`task.history`) says, as `remember/4` takes
-  it: `{:ok, usage}` (nil when the Session made no model calls), or `:error`
-  for a page that says none, which leaves the kept one as it is.
+  it: prefers aggregate `task_usage` (with `by_slot`, `models`, `partial`),
+  falling back to single-session `usage`. Returns `{:ok, usage}` (nil when
+  no model calls were made), or `:error` for a page that says none, which
+  leaves the kept one as it is.
   """
+  def usage_part(%{"task_usage" => task_usage}) when is_map(task_usage), do: {:ok, task_usage}
   def usage_part(%{"usage" => usage}), do: {:ok, usage}
   def usage_part(_page), do: :error
 
@@ -1360,7 +3693,7 @@ defmodule SalixWeb.CodingSandboxes do
 
   defp pull_request_read(tenant, group, %{"owner" => owner, "name" => name, "branch" => branch})
        when is_binary(branch) and branch != "" do
-    with {:ok, %{token: token}} <- github().token(tenant, group),
+    with {:ok, %{token: token}} <- github().token(tenant, github_group_id(group)),
          {:ok, pull_request} <- github().pull_request(token, owner, name, branch) do
       {:ok, pull_request_fact(pull_request)}
     else
@@ -1416,6 +3749,23 @@ defmodule SalixWeb.CodingSandboxes do
     :ok
   end
 
+  defp keep({"usage", {:ok, value}}, facts, at) do
+    existing_at = get_in(facts, ["usage", "at"])
+    existing = get_in(facts, ["usage", "value"])
+    merged = merge_usage(existing, value, at, existing_at)
+
+    if later_kept?(facts["usage"], at) and merged == existing do
+      facts
+    else
+      at_iso =
+        if later_kept?(facts["usage"], at),
+          do: existing_at || DateTime.to_iso8601(at),
+          else: DateTime.to_iso8601(at)
+
+      Map.put(facts, "usage", %{"at" => at_iso, "value" => merged})
+    end
+  end
+
   defp keep({part, {:ok, value}}, facts, at) do
     if later_kept?(facts[part], at),
       do: facts,
@@ -1423,6 +3773,271 @@ defmodule SalixWeb.CodingSandboxes do
   end
 
   defp keep(_part, facts, _at), do: facts
+
+  # Monotonic merge of Task usage by unique `session_id` with timestamp-fenced
+  # `by_slot` bindings so out-of-order samples (`t0: A=10 -> t1: B=5 -> t0: A=10`)
+  # never double-count a retired session and never revert a slot to an older session.
+  defp merge_usage(nil, incoming, at, _existing_at) do
+    if is_map(incoming) and is_map(incoming["by_slot"]) do
+      merge_slot_usage(%{}, incoming, at, nil)
+    else
+      incoming
+    end
+  end
+
+  defp merge_usage(%{} = existing, nil, _at, _existing_at), do: existing
+  defp merge_usage(_existing, nil, _at, _existing_at), do: nil
+
+  defp merge_usage(%{} = existing, %{} = incoming, at, existing_at) do
+    if is_map(existing["by_slot"]) or is_map(incoming["by_slot"]) do
+      merge_slot_usage(existing, incoming, at, existing_at)
+    else
+      merge_usage_counters(existing, incoming)
+    end
+  end
+
+  defp merge_usage(_existing, incoming, _at, _existing_at), do: incoming
+
+  @usage_numeric_keys ~w(modelCalls inputTokens cachedTokens outputTokens)
+
+  defp merge_slot_usage(existing, incoming, at, existing_at) do
+    at_iso = DateTime.to_iso8601(at)
+    existing_slots = existing["by_slot"] || %{}
+    incoming_slots = incoming["by_slot"] || %{}
+
+    # Canonical per-session monotonic table: every `session_id` appears at most once.
+    # When transitioning from flat single-session usage (no `by_slot` / `sessions`),
+    # attribute the flat prior usage to the primary session id (or `"__legacy_primary__"`)
+    # so even if primary is unreadable in the first multi-session sample, totals sum
+    # `prior_primary + new_secondary` rather than `max(prior_primary, new_secondary)`.
+    flat_legacy? =
+      not is_map(existing["by_slot"]) and not is_map(existing["sessions"]) and
+        Enum.any?(@usage_numeric_keys, &is_number(Map.get(existing, &1)))
+
+    seed_sessions =
+      existing["sessions"] ||
+        %{}
+        |> then(fn acc ->
+          if flat_legacy? do
+            legacy_sid =
+              Enum.find_value(incoming_slots, fn {_slot, entry} ->
+                if is_map(entry) and entry["is_primary"] == true and
+                     is_binary(entry["session"]) and entry["session"] != "",
+                   do: entry["session"]
+              end) ||
+                case get_in(incoming_slots, ["lead", "session"]) do
+                  s when is_binary(s) and s != "" -> s
+                  _ -> "__legacy_primary__"
+                end
+
+            legacy_usage = Map.take(existing, @usage_numeric_keys ++ ["model", "models"])
+            Map.put(acc, legacy_sid, legacy_usage)
+          else
+            acc
+          end
+        end)
+        |> then(fn acc ->
+          Enum.reduce(existing["retired_sessions"] || %{}, acc, fn {sid, u}, s_acc ->
+            if is_binary(sid) and is_map(u),
+              do: Map.update(s_acc, sid, u, &merge_usage_counters(&1, u)),
+              else: s_acc
+          end)
+        end)
+        |> then(fn acc ->
+          Enum.reduce(existing_slots, acc, fn {_slot, entry}, s_acc ->
+            sid = entry["session"]
+            u = entry["usage"]
+
+            if is_binary(sid) and sid != "" and is_map(u),
+              do: Map.update(s_acc, sid, u, &merge_usage_counters(&1, u)),
+              else: s_acc
+          end)
+        end)
+
+    {merged_slots, merged_sessions} =
+      Enum.reduce(incoming_slots, {existing_slots, seed_sessions}, fn {slot, inc_entry},
+                                                                      {slots_acc, sess_acc} ->
+        inc_sess = inc_entry["session"]
+        inc_usage = inc_entry["usage"]
+
+        sess_acc =
+          if is_binary(inc_sess) and inc_sess != "" and is_map(inc_usage) do
+            Map.update(sess_acc, inc_sess, inc_usage, &merge_usage_counters(&1, inc_usage))
+          else
+            sess_acc
+          end
+
+        case Map.get(slots_acc, slot) do
+          nil ->
+            next_entry =
+              inc_entry
+              |> Map.put("at", at_iso)
+              |> put_session_usage(inc_sess, sess_acc)
+
+            {Map.put(slots_acc, slot, next_entry), sess_acc}
+
+          cur_entry ->
+            cur_sess = cur_entry["session"]
+            cur_at = cur_entry["at"] || existing_at
+            late_sample? = is_binary(cur_at) and later_kept?(%{"at" => cur_at}, at)
+
+            cond do
+              is_binary(cur_sess) and is_binary(inc_sess) and cur_sess != inc_sess and
+                  late_sample? ->
+                # Out-of-order late sample for an older session: `sess_acc[inc_sess]` was
+                # already updated monotonically above; keep current slot bound to `cur_sess`.
+                {slots_acc, sess_acc}
+
+              is_binary(cur_sess) and is_binary(inc_sess) and cur_sess != inc_sess ->
+                # Newer sample switched this slot to `inc_sess`.
+                next_entry =
+                  inc_entry
+                  |> Map.put("at", at_iso)
+                  |> put_session_usage(inc_sess, sess_acc)
+
+                {Map.put(slots_acc, slot, next_entry), sess_acc}
+
+              true ->
+                merged_entry =
+                  cur_entry
+                  |> Map.merge(inc_entry)
+                  |> Map.put("at", if(late_sample?, do: cur_at, else: at_iso))
+                  |> Map.put(
+                    "usage",
+                    cond do
+                      is_binary(inc_sess) and Map.has_key?(sess_acc, inc_sess) ->
+                        Map.get(sess_acc, inc_sess)
+
+                      true ->
+                        merge_optional_usage(cur_entry["usage"], inc_usage)
+                    end
+                  )
+                  |> then(fn e ->
+                    if inc_entry["unreadable"] == true and not late_sample?,
+                      do: Map.put(e, "unreadable", true),
+                      else: Map.delete(e, "unreadable")
+                  end)
+
+                {Map.put(slots_acc, slot, merged_entry), sess_acc}
+            end
+        end
+      end)
+
+    # Sum strictly over unique sessions (plus any sessionless slot entries), so no
+    # session can ever be double-counted between `by_slot` and retired history.
+    active_sids =
+      merged_slots
+      |> Map.values()
+      |> Enum.map(& &1["session"])
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> MapSet.new()
+
+    sessionless_usages =
+      merged_slots
+      |> Map.values()
+      |> Enum.filter(fn e -> not (is_binary(e["session"]) and e["session"] != "") end)
+      |> Enum.map(& &1["usage"])
+      |> Enum.filter(&is_map/1)
+
+    all_usages = Map.values(merged_sessions) ++ sessionless_usages
+
+    retired_sessions =
+      merged_sessions
+      |> Enum.reject(fn {sid, _u} -> MapSet.member?(active_sids, sid) end)
+      |> Map.new()
+
+    partial? =
+      incoming["partial"] == true or
+        Enum.any?(merged_slots, fn {_slot, entry} -> entry["unreadable"] == true end)
+
+    models =
+      Enum.reduce(all_usages, %{}, fn u, acc ->
+        cond do
+          is_map(u["models"]) and map_size(u["models"]) > 0 ->
+            Enum.reduce(u["models"], acc, fn {model, counts}, m_acc ->
+              Map.update(m_acc, model, counts, &sum_usage_counters(&1, counts))
+            end)
+
+          is_binary(u["model"]) and u["model"] != "" ->
+            counts = Map.take(u, @usage_numeric_keys)
+            Map.update(acc, u["model"], counts, &sum_usage_counters(&1, counts))
+
+          true ->
+            acc
+        end
+      end)
+
+    totals =
+      Enum.reduce(all_usages, %{}, fn u, acc -> sum_usage_counters(acc, u) end)
+
+    base =
+      existing
+      |> Map.merge(incoming)
+      |> Map.merge(totals)
+      |> Map.put("by_slot", merged_slots)
+      |> Map.put("sessions", merged_sessions)
+      |> Map.put("models", models)
+      |> Map.delete("prior_floor")
+      |> then(fn m ->
+        if map_size(retired_sessions) > 0,
+          do: Map.put(m, "retired_sessions", retired_sessions),
+          else: Map.delete(m, "retired_sessions")
+      end)
+
+    if partial?, do: Map.put(base, "partial", true), else: Map.delete(base, "partial")
+  end
+
+  defp put_session_usage(entry, sid, sess_acc)
+       when is_binary(sid) and sid != "" do
+    case Map.get(sess_acc, sid) do
+      %{} = u -> Map.put(entry, "usage", u)
+      _ -> entry
+    end
+  end
+
+  defp put_session_usage(entry, _sid, _sess_acc), do: entry
+
+  defp merge_optional_usage(nil, inc), do: inc
+  defp merge_optional_usage(cur, nil), do: cur
+  defp merge_optional_usage(%{} = cur, %{} = inc), do: merge_usage_counters(cur, inc)
+
+  defp merge_usage_counters(cur, inc) do
+    merged =
+      Enum.reduce(@usage_numeric_keys, Map.merge(cur, inc), fn key, acc ->
+        v1 = Map.get(cur, key)
+        v2 = Map.get(inc, key)
+
+        cond do
+          is_number(v1) and is_number(v2) -> Map.put(acc, key, max(v1, v2))
+          is_number(v1) -> Map.put(acc, key, v1)
+          is_number(v2) -> Map.put(acc, key, v2)
+          true -> acc
+        end
+      end)
+
+    if is_map(cur["models"]) or is_map(inc["models"]) do
+      models =
+        Map.merge(cur["models"] || %{}, inc["models"] || %{}, fn _k, m1, m2 ->
+          merge_usage_counters(m1 || %{}, m2 || %{})
+        end)
+
+      Map.put(merged, "models", models)
+    else
+      merged
+    end
+  end
+
+  defp sum_usage_counters(acc, u) do
+    Enum.reduce(@usage_numeric_keys, acc, fn key, m ->
+      v = Map.get(u, key)
+
+      if is_number(v) do
+        Map.update(m, key, v, &(&1 + v))
+      else
+        m
+      end
+    end)
+  end
 
   defp later_kept?(%{"at" => kept}, at) do
     case DateTime.from_iso8601(kept) do
@@ -1492,6 +4107,18 @@ defmodule SalixWeb.CodingSandboxes do
     do: "the sandbox image of this release could not be read"
 
   defp describe(:l4es_unreachable), do: "L4ES could not be reached"
+  # A reply alone starts the same refusal again: say what changes it.
+  defp describe({:station_refused, "task.invite: no " <> rest = why}) do
+    case Regex.run(~r/^(claude|codex) profile configured$/, rest) do
+      [_, runtime] ->
+        "the workspace lends a sandbox no #{runtime} account: add one in Settings > Model & API, " <>
+          "or ask for this work with another runtime"
+
+      nil ->
+        why
+    end
+  end
+
   defp describe({:station_refused, why}), do: why
   defp describe(:device_offline), do: "its station disconnected"
   defp describe(reason) when is_binary(reason), do: reason

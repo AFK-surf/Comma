@@ -268,6 +268,27 @@ defmodule SalixAgent.Tools.DynamicUITest do
              })
            ) == 2
 
+    # Places with coordinates draw on a map, and a route is a newer kind.
+    place = %{"name" => "Blue Bottle", "distance" => "650 m"}
+    spot = %{"name" => "虹桥 T2", "lat" => 31.1945, "lng" => 121.3275}
+    assert level.(card("place", %{"title" => "咖啡", "places" => [place]})) == 2
+
+    assert level.(
+             card("place", %{
+               "title" => "咖啡",
+               "places" => [Map.merge(place, %{"lat" => 31.23, "lng" => 121.46})]
+             })
+           ) == 3
+
+    assert level.(
+             card("route", %{
+               "title" => "去机场",
+               "origin" => %{spot | "name" => "当前位置"},
+               "destination" => spot,
+               "duration" => "28 分钟"
+             })
+           ) == 3
+
     # A kind the script computes cannot be read, so the widget takes the current level.
     computed = card("forecast", forecast)
 
@@ -275,7 +296,7 @@ defmodule SalixAgent.Tools.DynamicUITest do
              computed
              | "script" => "comma.card('card', comma.data.kind, comma.data.card);",
                "data" => Map.put(computed["data"], "kind", "forecast")
-           }) == 2
+           }) == 3
 
     # A card reached through an alias cannot be read either.
     for script <- [
@@ -283,7 +304,7 @@ defmodule SalixAgent.Tools.DynamicUITest do
           "comma['card']('card', 'forecast', comma.data.card);",
           "comma.card.call(null, 'card', 'forecast', comma.data.card);"
         ] do
-      assert level.(%{computed | "script" => script}) == 2
+      assert level.(%{computed | "script" => script}) == 3
     end
   end
 
@@ -294,5 +315,32 @@ defmodule SalixAgent.Tools.DynamicUITest do
         "script" => "comma.card('card', '#{kind}', comma.data.card, 'compact');",
         "data" => %{"card" => data}
     }
+  end
+
+  test "create extracts an optional concise title from card data, top-level data, or HTML heading" do
+    ctx = %{agent_id: "agt1_title_test"}
+
+    {card_result, _events} = DynamicUI.create(DynamicUI.example_params(), ctx)
+    card_block = Jason.decode!(card_result)["content"]
+    assert card_block["title"] == "Cafés near Jing'an Temple"
+
+    top_level =
+      Map.merge(input(), %{
+        "data" => %{"title" => "  Nearby  8  Cafés\n", "temperature" => "27 °C"}
+      })
+
+    {top_result, _events} = DynamicUI.create(top_level, ctx)
+    assert Jason.decode!(top_result)["content"]["title"] == "Nearby 8 Cafés"
+
+    html_heading =
+      html_only(
+        "<div class=\"widget-head\"><h2 class=\"widget-title\">Weather Forecast</h2></div><p>27 °C</p>"
+      )
+
+    {html_result, _events} = DynamicUI.create(html_heading, ctx)
+    assert Jason.decode!(html_result)["content"]["title"] == "Weather Forecast"
+
+    {plain_result, _events} = DynamicUI.create(input(), ctx)
+    refute Map.has_key?(Jason.decode!(plain_result)["content"], "title")
   end
 end

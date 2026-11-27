@@ -2,20 +2,22 @@
 // the account is to them and in which workspaces (`stationsHome`, read once while shown), which stations each
 // workspace has and whether each is connected to Comma (`stations`, kept current by the workspace's station events),
 // and signs the member credential a station takes. The station itself is reached over this device's own endpoint on
-// the mesh (`comma/mesh/1`, host.ts `StationMeshPorts`): one connection per station, which the `stations` topic keeps
-// open while it is shown (on a host that stays on, always.ts keeps it whether shown or not) and opens again after it
-// went (1 s, 5 s, then every 30 s); while it is open, its row says how it runs (direct, an iroh relay or Salix), as the
-// endpoint tells each change. An endpoint that can be reached through Salix, the relay of last resort, also
-// keeps a socket to Comma's client relay for each shown workspace with stations, opened with a single-use ticket and
-// again after it went (Salix closes it after an hour).
+// the mesh (`comma/mesh/1`, host.ts `StationMeshPorts`): one connection per station the control plane says is online,
+// which the `stations` topic keeps open while it is shown (on a host that stays on, always.ts keeps those hosting an
+// unfinished Task whether shown or not) and opens again after it went (1 s, 5 s, then every 30 s). A station it says is
+// offline is not dialled: its presence event coming online links it, and one going offline lets its connection go.
+// While a connection is open, its row says how it runs (direct, an iroh relay or Salix), as the endpoint tells each
+// change. An endpoint that can be reached through Salix, the relay of last resort, also keeps a socket to Comma's
+// client relay for each shown workspace with stations, opened with a single-use ticket and again after it went (Salix
+// closes it after an hour).
 //
 // A desktop's own station is in no roster and admits only its owner (systems/station/src/mesh/device-mesh.ts). On a host
 // that says `ownComputers` (every app with the mesh), the stations the person's own Devices name are linked as listed ones are,
 // and shown apart from them (`ownComputers`): nothing else of the Stations area hears of them.
 //
 // Bounds: one control-plane read of the account per showing; per shown workspace one list read, one event stream and
-// one connection per listed station (the control plane bounds how many a workspace has); one credential request per
-// workspace a day (less when the session ends sooner), and one more when a station refuses the credential kept (a
+// one connection per listed station that is online and wanted (the control plane bounds how many a workspace has);
+// one credential request per workspace a day (less when the session ends sooner), and one more when a station refuses the credential kept (a
 // station that refuses a new one too gets no other until it admits one); per shown workspace with stations one relay
 // socket, and a ticket for each socket opened (two a minute while none lasts). With `ownComputers`, one Devices read each
 // time the list is read, of at most one page, and a connection for each station it names. The endpoint is bound only while some
@@ -132,8 +134,11 @@ const accessSchema = lazySchema(() =>
 type Link = { state: StationLinkState; message?: string; via?: StationVia };
 
 type Shown = {
-  /** Who keeps it shown: the `stations` topic, or another view of the workspace's stations. */
-  holders: Set<string>;
+  /**
+   * Who keeps it shown (the `stations` topic, or another view of the workspace's stations), with the stations each
+   * wants linked: null for every listed one, else those named (a host that stays on, always.ts, names only some).
+   */
+  holders: Map<string, ReadonlySet<string> | null>;
   scoped: Scoped;
   loading: boolean;
   error: string | undefined;
@@ -148,6 +153,8 @@ type Shown = {
 type Mesh = {
   scoped: Scoped;
   links: Deferred.Deferred<StationLinks, CoreError>;
+  /** The links once bound: what a wake tells, never waiting for a bind on its way. */
+  bound?: StationLinks;
 };
 
 /** How often the person's own computers are read while shown: one read a workspace. */
@@ -193,6 +200,25 @@ const linkFailure = (error: HostError) =>
 
 /** A station's link before the device heard from it. */
 const CONNECTING: Link = { state: "connecting" };
+/** A listed station the control plane says is offline: not dialled until it says it is online. */
+const OFFLINE: Link = { state: "offline" };
+
+/** The stations a workspace's holders want linked: null for every listed one (some holder wants all). */
+export function wantedOf(
+  holders: ReadonlyMap<string, ReadonlySet<string> | null>
+): ReadonlySet<string> | null {
+  const wanted = new Set<string>();
+  for (const only of holders.values()) {
+    if (only === null) return null;
+    for (const id of only) wanted.add(id);
+  }
+  return wanted;
+}
+
+const sameStations = (a: ReadonlySet<string> | null, b: ReadonlySet<string> | null) =>
+  a === null || b === null
+    ? a === b
+    : a.size === b.size && [...a].every((id) => b.has(id));
 
 /** A listed station's row, made once for the same listing and link. */
 const stationRow = madeOnce(
@@ -217,6 +243,8 @@ export class Stations {
     error: undefined,
   };
   readonly #shown = new Map<string, Shown>();
+  /** The stations whose screens have a view open, by workspace, with how many (`holdComputer`). */
+  readonly #held = new Map<string, Map<string, number>>();
   readonly #links = new Map<string, Link>();
   readonly #credentialLock = Semaphore.makeUnsafe(1);
   /** Stations that refused a newly issued credential and have admitted none since (`#admitted`). */
@@ -245,18 +273,19 @@ export class Stations {
       this.#closeMesh();
       this.#refusing.clear();
       this.#links.clear();
+      this.#held.clear();
       this.#home = { loading: false, error: undefined };
       const shown = [...this.#shown].map(
         ([workspace, s]) => [workspace, [...s.holders]] as const
       );
       for (const [workspace, holders] of shown)
-        for (const holder of holders) this.release(workspace, holder);
+        for (const [holder] of holders) this.release(workspace, holder);
       for (const listener of this.#accountListeners) listener();
       kernel.store.invalidate({ topic: "stationsHome" });
       if (kernel.store.liveTopics().some((t) => t.topic === "stationsHome"))
         this.#readHome();
       for (const [workspace, holders] of shown) {
-        for (const holder of holders) this.retain(workspace, holder);
+        for (const [holder, only] of holders) this.retain(workspace, holder, only);
         this.#changed(workspace);
       }
     });
@@ -319,6 +348,11 @@ export class Stations {
               .pipe(Effect.andThen(this.#readList(account, workspace)))
           ).pipe(Effect.as(null));
         },
+      },
+      // The app is in the foreground again: a bound endpoint is told, so sockets the system took meanwhile are bound
+      // anew (still.fail's wake). Nothing bound: nothing to tell.
+      "stations.wake": {
+        run: () => this.#wake(),
       },
       "stations.toolsAccess": {
         run: (p) => {
@@ -407,19 +441,27 @@ export class Stations {
   // ── a workspace's stations ───────────────────────────────────────────
 
   /**
-   * Keeps `workspace`'s stations shown for `holder`: listed, their presence followed, a connection open to each. The
-   * first holder starts it.
+   * Keeps `workspace`'s stations shown for `holder`: listed, their presence followed, a connection open to each the
+   * control plane says is online (`only`: to those of them it names alone). The first holder starts it; a holder
+   * retained again with other stations changes which it wants.
    */
-  retain(workspace: string, holder: string): void {
+  retain(
+    workspace: string,
+    holder: string,
+    only: ReadonlySet<string> | null = null
+  ): void {
     if (!this.#ctx.host.stationMesh) return;
     const held = this.#shown.get(workspace);
     if (held) {
-      held.holders.add(holder);
+      const before = held.holders.get(holder);
+      held.holders.set(holder, only);
+      if (before === undefined || !sameStations(before, only))
+        this.#followHeld(workspace);
       return;
     }
     const kept = this.#ctx.session.current()?.stationList<ListedStation>(workspace);
     const shown: Shown = {
-      holders: new Set([holder]),
+      holders: new Map([[holder, only]]),
       scoped: this.#ctx.runner.child(),
       loading: !kept,
       error: undefined,
@@ -428,7 +470,8 @@ export class Stations {
       ownComputers: [],
     };
     this.#shown.set(workspace, shown);
-    if (kept) this.#follow(workspace, kept);
+    // (a station a view holds is linked before any list is read)
+    if (kept || this.#held.get(workspace)?.size) this.#follow(workspace, kept ?? []);
     this.#ctx.runner.fork(
       this.#control((account) =>
         this.#readList(account, workspace).pipe(
@@ -460,13 +503,29 @@ export class Stations {
     const shown = this.#shown.get(workspace);
     if (!shown) return;
     shown.holders.delete(holder);
-    if (shown.holders.size > 0) return;
+    if (shown.holders.size > 0) {
+      // What the holders left want: a station only the one gone wanted is let go.
+      this.#followHeld(workspace);
+      return;
+    }
     this.#shown.delete(workspace);
     this.#ctx.runner.close(shown.scoped);
-    for (const id of shown.linked.keys())
+    for (const id of shown.linked.keys()) {
       this.#links.delete(stationLink(workspace, id));
+      this.#letGo(workspace, id);
+    }
     // The endpoint stays only while some workspace's stations are shown.
     if (this.#shown.size === 0) this.#closeMesh();
+  }
+
+  /**
+   * Closes the connection to `station`, no longer linked for `workspace`, unless another shown workspace still links
+   * it. Left open it would last for good: the endpoint's keep-alives keep it from its idle timeout.
+   */
+  #letGo(workspace: string, station: string): void {
+    for (const shown of this.#shown.values()) if (shown.linked.has(station)) return;
+    const links = this.#mesh?.bound;
+    if (links?.drop) this.#ctx.runner.fork(links.drop(stationLink(workspace, station)));
   }
 
   #changed(workspace: string): void {
@@ -520,7 +579,11 @@ export class Stations {
     return {
       workspace,
       stations: kept.map((s) =>
-        stationRow(s, this.#links.get(stationLink(workspace, s.id)) ?? CONNECTING)
+        stationRow(
+          s,
+          this.#links.get(stationLink(workspace, s.id)) ??
+            (s.online ? CONNECTING : OFFLINE)
+        )
       ),
       ...(shown && shown.ownComputers.length > 0
         ? {
@@ -565,6 +628,39 @@ export class Stations {
     );
   }
 
+  /**
+   * A view of `station`'s screen is open: it stays linked, with its relay socket, until the function this gives is
+   * called, though no list names it. The Devices list names the person's own computers alone (`ownComputers`); the
+   * sandbox of a Task of theirs is viewed the same way, is in no list, and is no computer of theirs: it is held apart
+   * from them. One hold for each open view; the last one released lets the station go at once.
+   */
+  holdComputer(workspace: string, station: string): () => void {
+    const held = this.#held.get(workspace) ?? new Map<string, number>();
+    this.#held.set(workspace, held);
+    held.set(station, (held.get(station) ?? 0) + 1);
+    this.#followHeld(workspace);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (held.get(station) ?? 1) - 1;
+      if (left > 0) held.set(station, left);
+      else {
+        held.delete(station);
+        // Let go at once, unless a list still names it. (An account that changed since holds nothing of this.)
+        if (this.#held.get(workspace) === held) this.#followHeld(workspace);
+      }
+    };
+  }
+
+  /** The held stations changed: links follow them now, with the listed ones as they were last read. */
+  #followHeld(workspace: string): void {
+    this.#follow(
+      workspace,
+      this.#ctx.session.current()?.stationList<ListedStation>(workspace) ?? []
+    );
+  }
+
   /** A view of `station`'s screen is asked for: linked now, with its relay socket, whether or not the list has come. */
   linkOwnComputer(workspace: string, station: string): void {
     const shown = this.#shown.get(workspace);
@@ -585,9 +681,9 @@ export class Stations {
           Effect.sync(() => {
             const shown = this.#shown.get(workspace);
             if (!shown || account.closed) return;
-            shown.ownComputers = [
-              ...new Set(devices.flatMap((d) => (d.station_id ? [d.station_id] : []))),
-            ];
+            shown.ownComputers = devices.flatMap((d) =>
+              d.station_id ? [d.station_id] : []
+            );
             this.#follow(
               workspace,
               account.stationList<ListedStation>(workspace) ?? []
@@ -614,6 +710,8 @@ export class Stations {
         (row) => ({ ...row, ...change }),
         this.#ctx.now()
       );
+      // A station that came online is linked now; one that went is let go.
+      if (change.online !== undefined) this.#followHeld(workspace);
       this.#changed(workspace);
     });
   }
@@ -654,16 +752,28 @@ export class Stations {
     });
   }
 
-  /** Keeps a connection to each listed station, and lets go of those no longer listed. */
+  /**
+   * Keeps a connection to each listed station the control plane says is online and a holder wants (`retain`), to each
+   * of the person's own computers and to each station a view holds (`holdComputer`), and lets go of the others. A
+   * listed station that is offline is not dialled: its presence event coming online links it (`#patch`).
+   */
   #follow(workspace: string, stations: readonly ListedStation[]): void {
     const shown = this.#shown.get(workspace);
     if (!shown) return;
-    const listed = new Set([...stations.map((s) => s.id), ...shown.ownComputers]);
+    const wanted = wantedOf(shown.holders);
+    const listed = new Set([
+      ...stations
+        .filter((s) => s.online && (wanted === null || wanted.has(s.id)))
+        .map((s) => s.id),
+      ...shown.ownComputers,
+      ...(this.#held.get(workspace)?.keys() ?? []),
+    ]);
     for (const [id, scoped] of shown.linked) {
       if (listed.has(id)) continue;
       shown.linked.delete(id);
       this.#links.delete(stationLink(workspace, id));
       this.#ctx.runner.close(scoped);
+      this.#letGo(workspace, id);
     }
     for (const id of listed) {
       if (shown.linked.has(id)) continue;
@@ -897,6 +1007,11 @@ export class Stations {
       this.#ctx.runner.fork(
         Effect.exit(open).pipe(
           Effect.tap((exit) => Deferred.done(mesh.links, exit)),
+          Effect.tap((exit) =>
+            Effect.sync(() => {
+              if (Exit.isSuccess(exit)) mesh.bound = exit.value;
+            })
+          ),
           // Not bound: the next one to need it tries again.
           Effect.tap((exit) =>
             Effect.sync(() => {
@@ -909,6 +1024,14 @@ export class Stations {
       );
       return Deferred.await(mesh.links);
     });
+  }
+
+  // Only an endpoint already bound: one binding now has fresh sockets, and the app's return to the foreground does not
+  // wait for its bind.
+  #wake(): Effect.Effect<null> {
+    const links = this.#mesh?.bound;
+    if (!links?.networkChange) return Effect.succeed(null);
+    return links.networkChange().pipe(Effect.ignore, Effect.as(null));
   }
 
   #closeMesh(): void {
@@ -987,8 +1110,12 @@ export class Stations {
       const listed = account
         .stationList<ListedStation>(workspace)
         ?.find((s) => s.id === station);
-      // A computer's station announces nothing and is in no list: it keeps to each of the control plane's relays.
-      const own = !listed && this.#shown.get(workspace)?.ownComputers.includes(station);
+      // A computer's station announces nothing and is in no list, and neither does a station a view holds (a Task's
+      // sandbox): each keeps to each of the control plane's relays.
+      const own =
+        !listed &&
+        (this.#shown.get(workspace)?.ownComputers.includes(station) ||
+          this.#held.get(workspace)?.has(station));
       links.reach(link, {
         relayUrl:
           listed?.home_relay ??

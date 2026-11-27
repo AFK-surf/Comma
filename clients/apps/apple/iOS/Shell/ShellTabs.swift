@@ -2,10 +2,9 @@ import SwiftUI
 import UIKit
 import CommaCore
 
-/// Home, Inbox, Apps and Settings under the system tab bar, which draws the bar and answers it: its glass, the lens a
-/// press lifts, the selection and its haptics. The router chat's button is the bar's separate circle, the place
-/// iOS keeps for a search tab; it opens the router layer instead of becoming a tab. Tapping the selected tab
-/// again returns it to its root (`AppNavigation.reselect`).
+/// Home, Inbox and People under the tab bar, with Apps, Drive, Plugins and Settings in the menu its last slot grows
+/// into (`GlassTabBar`). The router chat's button is the bar's separate circle; it opens the router layer instead of
+/// becoming a tab. Tapping the selected tab again returns it to its root (`AppNavigation.reselect`).
 struct ShellTabs: View {
     let store: CommaStore
     let activity: TaskActivityCoordinator
@@ -21,10 +20,10 @@ struct ShellTabs: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let layout = ShellColumnLayout(width: geometry.size.width, folded: folded, division: geometry.shellFoldDivision)
+            let layout = ShellColumnLayout(size: geometry.size, folded: folded, division: geometry.shellFoldDivision)
             let wide = layout.isWide
             ShellColumns(store: store, navigation: navigation, bar: bar, wide: wide,
-                         settingsColumnsFolded: wide ? folded : nil,
+                         shellColumnsFolded: wide ? folded : nil,
                          leadingWidth: layout.leadingWidth,
                          contentLeadingInset: layout.contentLeadingInset, showsRoutines: showsRoutines) { tab in
                 page(tab).environment(navigation).environment(inbox).environmentObject(activity)
@@ -40,7 +39,18 @@ struct ShellTabs: View {
         // Home lays out its floating status switcher.
         case .home: HomeView(store: store, query: query)
         case .inbox: InboxView(store: store)
-        case .apps: MiniAppsTabView(store: store)
+        case .people: PeopleTabView(store: store)
+        case .apps: MenuTabPage(store: store) { MiniAppsView(store: store, workspace: $0).id("apps-\(store.boundaryToken)-\($0.id)") }
+        case .drive:
+            MenuTabPage(store: store) { workspace in
+                PhoneDriveView(model: PhoneDriveModel(store: store, workspace: workspace))
+                    .id("drive-\(store.boundaryToken)-\(workspace.id)")
+            }
+        case .plugins:
+            MenuTabPage(store: store) { workspace in
+                PhonePluginsView(model: PhonePluginsModel(store: store, workspace: workspace))
+                    .id("plugins-\(store.boundaryToken)-\(workspace.id)")
+            }
         case .settings: SettingsView(store: store)
         }
     }
@@ -58,26 +68,49 @@ struct ShellTabs: View {
     }
 }
 
+/// A page of the bar's menu that Settings used to push: it has its own stack, and shows nothing with no workspace.
+private struct MenuTabPage<Content: View>: View {
+    let store: CommaStore
+    @ViewBuilder let content: (Workspace) -> Content
+
+    var body: some View {
+        NavigationStack {
+            if let workspace = store.workspace { content(workspace) }
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// Nil for a single column; otherwise the shell's current hinge posture. A tab that `ownsShellColumns` lays out
+    /// both columns itself.
+    @Entry var shellColumnsFolded: Bool? = nil
+}
+
 /// Division frames use the same local coordinates as the usable column area. A side bar can make
 /// the fold off-centre in that area, so the two content columns need not have equal widths.
 struct ShellColumnLayout {
     static let minimumColumnWidth: CGFloat = 350
+    /// Keeps candybar phones in landscape (height ~375-440pt) in a single column while allowing unfolded Duo and iPad.
+    static let minimumHeight: CGFloat = 500
     let gap: CGFloat
     let leadingWidth: CGFloat
     let trailingWidth: CGFloat
+    let height: CGFloat
 
     var isWide: Bool {
-        leadingWidth + trailingWidth >= Self.minimumColumnWidth * 2
+        height >= Self.minimumHeight
+            && leadingWidth + trailingWidth >= Self.minimumColumnWidth * 2
             && leadingWidth > 0 && trailingWidth > 0
     }
 
     var contentLeadingInset: CGFloat { isWide ? leadingWidth + gap : 0 }
 
-    init(width: CGFloat, folded: Bool, division: CGRect?) {
-        let centre = folded ? (division?.midX ?? width / 2) : width / 2
+    init(size: CGSize, folded: Bool, division: CGRect?) {
+        height = size.height
+        let centre = folded ? (division?.midX ?? size.width / 2) : size.width / 2
         gap = folded ? max(GroupedSurface.margin * 4, division?.width ?? 0) : 0
         leadingWidth = max(0, centre - gap / 2)
-        trailingWidth = max(0, width - centre - gap / 2)
+        trailingWidth = max(0, size.width - centre - gap / 2)
     }
 }
 
@@ -121,7 +154,7 @@ struct ShellColumns<Page: View>: View, @preconcurrency Animatable {
     let navigation: AppNavigation
     let bar: ShellTabBar
     let wide: Bool
-    var settingsColumnsFolded: Bool? = nil
+    var shellColumnsFolded: Bool? = nil
     var leadingWidth: CGFloat
     var contentLeadingInset: CGFloat
     var showsRoutines = true
@@ -140,7 +173,7 @@ struct ShellColumns<Page: View>: View, @preconcurrency Animatable {
             ShellTabHost(store: store, navigation: navigation, bar: bar,
                          contentLeadingInset: contentLeadingInset, page: page)
                 .environment(\.homeTaskColumn, wide)
-                .environment(\.settingsColumnsFolded, settingsColumnsFolded)
+                .environment(\.shellColumnsFolded, shellColumnsFolded)
                 .ignoresSafeArea()
             if wide && showsRoutines {
                 ShellRoutineColumn(store: store, width: leadingWidth, stride: contentLeadingInset)
@@ -157,18 +190,17 @@ struct ShellRoutineColumn: View {
     @Environment(AppNavigation.self) private var navigation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var settingsDetail: Bool {
-        navigation.tab == .settings && !navigation.settingsPath.isEmpty && !navigation.routerOpen
-    }
+    /// A Settings page or a person is open: its list takes this column, so Routines slide out to the left.
+    private var detailOpen: Bool { navigation.columnDetailOpen && !navigation.routerOpen }
 
     var body: some View {
         RoutineSidebar(store: store)
             .frame(width: width)
-            .offset(x: settingsDetail ? -stride : 0)
-            .animation(reduceMotion ? nil : CommaMotion.release, value: settingsDetail)
+            .offset(x: detailOpen ? -stride : 0)
+            .animation(reduceMotion ? nil : CommaMotion.release, value: detailOpen)
             .opacity(navigation.searchOpen ? 0 : 1)
-            .allowsHitTesting(!settingsDetail && !navigation.searchOpen)
-            .accessibilityHidden(settingsDetail || navigation.searchOpen)
+            .allowsHitTesting(!detailOpen && !navigation.searchOpen)
+            .accessibilityHidden(detailOpen || navigation.searchOpen)
     }
 }
 

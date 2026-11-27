@@ -873,11 +873,14 @@ test("font size preference scales core conversation typography without changing 
       "data-comma-font-size",
       "default"
     );
-    const computerUseButton = page.getByRole("button", { name: "Computer use" });
-    const mixedStrokeIcon = computerUseButton.locator("svg[data-comma-icon]");
-    await expect(mixedStrokeIcon).toBeVisible();
-    const readMixedStrokeIcon = () =>
-      mixedStrokeIcon.evaluate((element) => {
+    const permissionsButton = page.getByRole("button", {
+      name: "Permissions",
+      exact: true,
+    });
+    const categoryIcon = permissionsButton.locator("svg[data-comma-icon]");
+    await expect(categoryIcon).toBeVisible();
+    const readCategoryIcon = () =>
+      categoryIcon.evaluate((element) => {
         const readStroke = (nominal: string) => {
           const shape = element.querySelector(`[stroke-width="${nominal}"]`);
           if (!shape) throw new Error(`Missing stroke-width=${nominal}`);
@@ -889,7 +892,6 @@ test("font size preference scales core conversation typography without changing 
         };
 
         return {
-          stroke075: readStroke("0.75"),
           stroke2: readStroke("2"),
           globalStroke: Number(
             getComputedStyle(element).getPropertyValue("--comma-icon-stroke-width")
@@ -899,7 +901,7 @@ test("font size preference scales core conversation typography without changing 
         };
       });
     const readActionRect = () =>
-      computerUseButton.evaluate((element) => {
+      permissionsButton.evaluate((element) => {
         const { height, width } = element.getBoundingClientRect();
         return {
           clientHeight: element.clientHeight,
@@ -911,11 +913,10 @@ test("font size preference scales core conversation typography without changing 
           width,
         };
       });
-    const defaultIcon = await readMixedStrokeIcon();
+    const defaultIcon = await readCategoryIcon();
     expect(defaultIcon.globalStroke).toBe(iconStrokeWidth);
     expect(defaultIcon.scale).toBe("1");
     expect(defaultIcon.stroke2.computed).toBeCloseTo(iconStrokeWidth, 4);
-    expect(defaultIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
     const defaultActionRect = await readActionRect();
     // Compact category rows are 1.75rem, so their height follows font size.
     // Labels must remain contained while icon geometry stays unchanged.
@@ -934,15 +935,13 @@ test("font size preference scales core conversation typography without changing 
     );
     await expect(page.locator("html")).toHaveAttribute("data-comma-font-size", "small");
     await expect
-      .poll(async () => (await readMixedStrokeIcon()).width)
+      .poll(async () => (await readCategoryIcon()).width)
       .toBeCloseTo(defaultIcon.width, 1);
-    const smallIcon = await readMixedStrokeIcon();
+    const smallIcon = await readCategoryIcon();
     expect(smallIcon.globalStroke).toBe(iconStrokeWidth);
     expect(smallIcon.scale).toBe("1");
     expect(smallIcon.stroke2.nominal).toBe(defaultIcon.stroke2.nominal);
-    expect(smallIcon.stroke075.nominal).toBe(defaultIcon.stroke075.nominal);
     expect(smallIcon.stroke2.computed).toBeCloseTo(defaultIcon.stroke2.computed, 4);
-    expect(smallIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
     const smallActionRect = await readActionRect();
     expect(smallActionRect.width).toBe(defaultActionRect.width);
     expect(smallActionRect.height).toBeCloseTo(1.75 * smallActionRect.rootFontSize, 1);
@@ -956,15 +955,13 @@ test("font size preference scales core conversation typography without changing 
     );
     await expect(page.locator("html")).toHaveAttribute("data-comma-font-size", "large");
     await expect
-      .poll(async () => (await readMixedStrokeIcon()).width)
+      .poll(async () => (await readCategoryIcon()).width)
       .toBeCloseTo(defaultIcon.width, 1);
-    const largeIcon = await readMixedStrokeIcon();
+    const largeIcon = await readCategoryIcon();
     expect(largeIcon.globalStroke).toBe(iconStrokeWidth);
     expect(largeIcon.scale).toBe("1");
     expect(largeIcon.stroke2.nominal).toBe(defaultIcon.stroke2.nominal);
-    expect(largeIcon.stroke075.nominal).toBe(defaultIcon.stroke075.nominal);
     expect(largeIcon.stroke2.computed).toBeCloseTo(defaultIcon.stroke2.computed, 4);
-    expect(largeIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
     const largeActionRect = await readActionRect();
     expect(largeActionRect.width).toBe(defaultActionRect.width);
     expect(largeActionRect.height).toBeCloseTo(1.75 * largeActionRect.rootFontSize, 1);

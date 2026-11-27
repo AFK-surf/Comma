@@ -5,7 +5,9 @@
 //
 // One job: read the Task, save what is new (each save checkpointed in the journal), and wait for the Task to change
 // (one Task-list stream the server keeps open up to 30 s) before reading it again; it ends once all three are saved,
-// fails when the Task settled without them, and gives up after 30 minutes. The lane (tasks.ts) runs two jobs at a time.
+// fails when the Task settled without them, and gives up after 30 minutes. A read of the Task that the network failed
+// is tried again within those minutes: the job is waiting for an agent, not for this read. The lane (tasks.ts) runs two
+// jobs at a time.
 import { lazySchema } from "@comma/chat-contract";
 import { CoreError, fromUtf8 } from "@comma/core-kernel";
 import { Cause, Duration, Effect, Exit } from "effect";
@@ -80,8 +82,11 @@ const STREAM_WAIT_MS = 30_000;
 const JOB_MS = 30 * 60_000;
 const ATTACHMENT_MS = 30_000;
 const MAX_BYTES = 10_000_000;
+const READ_RETRY_MS = 5_000;
 
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+const unreachable = (error: unknown) =>
+  error instanceof CoreError && (error.code === "network" || error.code === "timeout");
 /** An event came: the Task changed. */
 const CHANGED = new CoreError("changed", "the Task changed");
 
@@ -118,12 +123,19 @@ export function archiveMeetingOutputs(
     let heldThrough: number | undefined;
     for (;;) {
       const task = route`/v1/comma/groups/${job.groupId}/conversations/${job.taskId}`;
-      const snapshot = yield* ctx.api.request(
-        account,
-        "GET",
-        heldThrough === undefined ? task : `${task}?after_seq=${heldThrough}`,
-        conversationSchema
-      );
+      const snapshot = yield* ctx.api
+        .request(
+          account,
+          "GET",
+          heldThrough === undefined ? task : `${task}?after_seq=${heldThrough}`,
+          conversationSchema
+        )
+        .pipe(
+          Effect.catchIf(unreachable, () =>
+            Effect.as(Effect.sleep(Duration.millis(READ_RETRY_MS)), null)
+          )
+        );
+      if (snapshot === null) continue;
       yield* saveOutputs(ctx, ports, account, job, snapshot, checkpoint);
       for (const message of snapshot.messages ?? [])
         if (
@@ -148,7 +160,8 @@ export function archiveMeetingOutputs(
         Effect.catchIf(
           (error) => error === CHANGED,
           () => Effect.void
-        )
+        ),
+        Effect.catchIf(unreachable, () => Effect.sleep(Duration.millis(READ_RETRY_MS)))
       );
     }
   }).pipe(

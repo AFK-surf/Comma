@@ -87,6 +87,15 @@ defmodule SalixIM.TestSupport.AgentWorkspace do
   end
 
   @impl true
+  def entries(agent_id, prefix) do
+    if trim(agent_id) == "" do
+      {:error, "agent VFS is not available"}
+    else
+      AgentWorkspace.entries(agent_id, prefix)
+    end
+  end
+
+  @impl true
   def write(agent_id, path, body) do
     cond do
       trim(agent_id) == "" ->

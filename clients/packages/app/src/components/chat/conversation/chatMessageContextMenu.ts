@@ -278,3 +278,298 @@ export function resolveChatMessageCopyText(
   if (selectedText) return selectedText;
   return resolveChatMessageText(article, messages, assistantDraft);
 }
+
+export type ChatSelectionShareJoin = "inline" | "inline-space" | "paragraph";
+
+export type ChatSelectionSharePayload = {
+  selectedText: string;
+  beforeContext: string;
+  afterContext: string;
+  beforeJoin: ChatSelectionShareJoin;
+  afterJoin: ChatSelectionShareJoin;
+  authorRole: "assistant" | "user";
+};
+
+const SHARE_BLOCK_TAG_NAMES = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "DD",
+  "DIV",
+  "DL",
+  "DT",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "P",
+  "PRE",
+  "SECTION",
+  "TR",
+  "UL",
+]);
+
+function closestShareBlock(node: Node, stopAt: Element): Element {
+  let current: Element | null = node instanceof Element ? node : node.parentElement;
+  while (current && current !== stopAt) {
+    if (SHARE_BLOCK_TAG_NAMES.has(current.tagName)) return current;
+    current = current.parentElement;
+  }
+  return stopAt;
+}
+
+function isInsideChatMessageChrome(node: Node, article: Element): boolean {
+  const element = node instanceof Element ? node : node.parentElement;
+  const chrome = element?.closest(CHAT_MESSAGE_CHROME_SELECTOR);
+  return Boolean(chrome && article.contains(chrome));
+}
+
+function normalizeExtractedText(raw: string): string {
+  return raw
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+/**
+ * Extracts the selected text inside a chat message along with the surrounding
+ * text before and after the selection in the same message, preserving exact
+ * inline vs paragraph boundaries for share-image rendering.
+ */
+export function resolveChatMessageSelectionShare(
+  article: HTMLElement
+): ChatSelectionSharePayload | null {
+  if (typeof window === "undefined") return null;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+
+  const liveRange = selection.getRangeAt(0);
+  const bounds = quotableBounds(article);
+
+  // Reject selections that do not intersect this article's quotable body.
+  // Note W3C DOM Range order: START_TO_END compares this.end to source.start;
+  // END_TO_START compares this.start to source.end.
+  if (
+    liveRange.compareBoundaryPoints(Range.START_TO_END, bounds) <= 0 ||
+    liveRange.compareBoundaryPoints(Range.END_TO_START, bounds) >= 0
+  ) {
+    return null;
+  }
+
+  const clamped = liveRange.cloneRange();
+  if (clamped.compareBoundaryPoints(Range.START_TO_START, bounds) < 0) {
+    clamped.setStart(bounds.startContainer, bounds.startOffset);
+  }
+  if (clamped.compareBoundaryPoints(Range.END_TO_END, bounds) > 0) {
+    clamped.setEnd(bounds.endContainer, bounds.endOffset);
+  }
+  if (clamped.collapsed) return null;
+
+  const doc = article.ownerDocument;
+  const probe = doc.createRange();
+  const walker = doc.createTreeWalker(
+    article,
+    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT
+  );
+
+  let before = "";
+  let selected = "";
+  let after = "";
+  let lastBlockBefore: Element | null = null;
+  let lastBlockSelected: Element | null = null;
+  let lastBlockAfter: Element | null = null;
+  let firstSelectedBlock: Element | null = null;
+  let lastBeforeNonEmptyBlock: Element | null = null;
+  let firstAfterNonEmptyBlock: Element | null = null;
+  let sawBrBeforeSelected = false;
+  let sawBrAfterSelected = false;
+  let pendingBr = false;
+
+  const appendBucket = (
+    bucket: "before" | "selected" | "after",
+    chunk: string,
+    block: Element
+  ) => {
+    if (!chunk) return;
+    const hasVisible = chunk.trim().length > 0;
+    if (bucket === "before") {
+      if (before && hasVisible) {
+        if (lastBlockBefore && lastBlockBefore !== block) before += "\n\n";
+        else if (pendingBr) before += "\n";
+      }
+      before += chunk;
+      if (hasVisible) {
+        lastBlockBefore = block;
+        lastBeforeNonEmptyBlock = block;
+        pendingBr = false;
+        sawBrBeforeSelected = false;
+      }
+      return;
+    }
+    if (bucket === "selected") {
+      if (selected && hasVisible) {
+        if (lastBlockSelected && lastBlockSelected !== block) selected += "\n\n";
+        else if (pendingBr) selected += "\n";
+      } else if (!selected && hasVisible) {
+        firstSelectedBlock = block;
+        if (pendingBr) sawBrBeforeSelected = true;
+      }
+      selected += chunk;
+      if (hasVisible) {
+        lastBlockSelected = block;
+        pendingBr = false;
+        sawBrAfterSelected = false;
+      }
+      return;
+    }
+    if (after && hasVisible) {
+      if (lastBlockAfter && lastBlockAfter !== block) after += "\n\n";
+      else if (pendingBr) after += "\n";
+    } else if (!after && hasVisible) {
+      firstAfterNonEmptyBlock = block;
+      if (pendingBr) sawBrAfterSelected = true;
+    }
+    after += chunk;
+    if (hasVisible) {
+      lastBlockAfter = block;
+      pendingBr = false;
+    }
+  };
+
+  let current = walker.nextNode();
+  while (current) {
+    if (isInsideChatMessageChrome(current, article)) {
+      current = walker.nextNode();
+      continue;
+    }
+    if (current.nodeType === Node.ELEMENT_NODE) {
+      if ((current as Element).tagName === "BR") {
+        pendingBr = true;
+      }
+      current = walker.nextNode();
+      continue;
+    }
+    if (current.nodeType === Node.TEXT_NODE) {
+      const textNode = current as Text;
+      const data = textNode.data;
+      const len = data.length;
+      if (len === 0) {
+        current = walker.nextNode();
+        continue;
+      }
+
+      // Check whether this text node lies inside quotable bounds.
+      probe.setStart(textNode, 0);
+      probe.collapse(true);
+      if (probe.compareBoundaryPoints(Range.END_TO_START, bounds) >= 0) {
+        break;
+      }
+
+      let startPos: number;
+      if (textNode === clamped.startContainer) {
+        startPos = Math.min(Math.max(clamped.startOffset, 0), len);
+      } else {
+        startPos =
+          probe.compareBoundaryPoints(Range.START_TO_START, clamped) < 0 ? len : 0;
+      }
+
+      let endPos: number;
+      if (textNode === clamped.endContainer) {
+        endPos = Math.min(Math.max(clamped.endOffset, 0), len);
+      } else {
+        endPos = probe.compareBoundaryPoints(Range.END_TO_START, clamped) < 0 ? len : 0;
+      }
+
+      const clampedEnd = Math.max(startPos, endPos);
+      const block = closestShareBlock(textNode, article);
+
+      appendBucket("before", data.slice(0, startPos), block);
+      appendBucket("selected", data.slice(startPos, clampedEnd), block);
+      appendBucket("after", data.slice(clampedEnd), block);
+    }
+    current = walker.nextNode();
+  }
+
+  const rawSelected = normalizeExtractedText(selected);
+  const normalizedSelected = rawSelected.trim();
+  if (!normalizedSelected) return null;
+
+  const rawBefore = normalizeExtractedText(before);
+  const rawAfter = normalizeExtractedText(after);
+  const beforeEndedWithNewline = /\n\s*$/.test(rawBefore);
+  const afterStartedWithNewline = /^\s*\n/.test(rawAfter);
+  const beforeHasInlineSpace = /[ \t]$/.test(rawBefore) || /^[ \t]/.test(rawSelected);
+  const afterHasInlineSpace = /[ \t]$/.test(rawSelected) || /^[ \t]/.test(rawAfter);
+
+  const normalizedBefore = rawBefore.trim();
+  const normalizedAfter = rawAfter.trim();
+
+  const beforeJoin: ChatSelectionShareJoin =
+    !normalizedBefore ||
+    beforeEndedWithNewline ||
+    sawBrBeforeSelected ||
+    (lastBeforeNonEmptyBlock !== null &&
+      firstSelectedBlock !== null &&
+      lastBeforeNonEmptyBlock !== firstSelectedBlock)
+      ? "paragraph"
+      : beforeHasInlineSpace
+        ? "inline-space"
+        : "inline";
+
+  const afterJoin: ChatSelectionShareJoin =
+    !normalizedAfter ||
+    afterStartedWithNewline ||
+    sawBrAfterSelected ||
+    (lastBlockSelected !== null &&
+      firstAfterNonEmptyBlock !== null &&
+      lastBlockSelected !== firstAfterNonEmptyBlock)
+      ? "paragraph"
+      : afterHasInlineSpace
+        ? "inline-space"
+        : "inline";
+
+  return {
+    selectedText: normalizedSelected,
+    beforeContext: normalizedBefore,
+    afterContext: normalizedAfter,
+    beforeJoin,
+    afterJoin,
+    authorRole: isUserMessageArticle(article) ? "user" : "assistant",
+  };
+}
+
+export type ShareSourceTitleSnapshot = {
+  kind?: string | null | undefined;
+  title?: string | null | undefined;
+  updated_at?: number | null | undefined;
+};
+
+/**
+ * Resolves the title shown on a share card. Only Comma Tasks (`agent_task`)
+ * display a source title; Router / Home chats (`user_chat`) intentionally leave
+ * the title slot empty. For a Task, prefers the fresher Task summary title when
+ * it is at least as recent as the conversation detail snapshot.
+ */
+export function resolveShareSourceTitle(
+  conversation: ShareSourceTitleSnapshot | null | undefined,
+  taskSummary: ShareSourceTitleSnapshot | null | undefined
+): string {
+  const presentation = conversation ?? taskSummary;
+  if (presentation?.kind !== "agent_task") return "";
+  const taskSummaryIsNewer =
+    taskSummary != null &&
+    (taskSummary.updated_at ?? 0) >= (conversation?.updated_at ?? 0);
+  return ((taskSummaryIsNewer && taskSummary.title) || presentation.title || "").trim();
+}

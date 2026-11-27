@@ -48,6 +48,14 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
     end
   end
 
+  defmodule ItemsModel do
+    def compose(%{input: input}) do
+      owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:team_items, input["items"]})
+      {:ok, %{text: "ok", usage: %{input_tokens: 1, output_tokens: 1}}}
+    end
+  end
+
   setup do
     :ok = SystemsClock.manual(epoch: @now)
     on_exit(&SystemsClock.reset/0)
@@ -73,7 +81,7 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
 
     {:ok, _} = Memberships.put_org_member(org.id, user.id, "member")
 
-    {:ok, _member} =
+    {:ok, member} =
       DailyBrief.put_member(%{
         org_id: org.id,
         user_id: user.id,
@@ -99,7 +107,7 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
         enabled: true
       })
 
-    %{settings: settings}
+    %{settings: settings, member: Repo.preload(member, :aliases)}
   end
 
   test "a busy day's team brief, with earlier thread context, stays within 450 KB", ctx do
@@ -191,15 +199,45 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
       text: text
     }
 
-  test "a team brief mentions at most three people" do
+  test "an open follow-up the model leaves out stays on the list" do
+    followups = [
+      %{
+        "kind" => "watch",
+        "what" => "#5286 名片等 Photon 项目 ID",
+        "status" => "open",
+        "evidence" => "m1"
+      },
+      %{"kind" => "promise", "what" => "回报价", "status" => "open", "evidence" => "m2"}
+    ]
+
+    # Given again under other words for the same pull request, done.
+    listed = [
+      %{"kind" => "watch", "what" => "名片 #5286 已合", "status" => "done 已合", "evidence" => "m9"}
+    ]
+
+    assert [
+             %{"what" => "名片 #5286 已合"},
+             %{"what" => "回报价", "status" => "open", "evidence" => ""}
+           ] = Compose.keep_followups(listed, followups)
+
+    # A failed call keeps them all, with no news.
+    assert [%{"evidence" => ""}, %{"evidence" => ""}] = Compose.keep_followups([], followups)
+  end
+
+  test "a team brief mentions at most three people and never pings a bare bot id" do
     people =
       People.build(
         [],
-        Enum.map(~w(UA1 UB1 UC1 UD1), &"slack:#{&1}") ++ ["meeting:alice", "meeting:bob"]
+        Enum.map(~w(B01234 UA1 UB1 UC1 UD1), &"slack:#{&1}") ++ ["meeting:alice", "meeting:bob"]
       )
 
-    assert Compose.few_mentions("@alice 修，@alice 再看；@UB1、@UC1 和 @bob 定，@UA1 跟进", people) ==
-             "@alice 修，@alice 再看；@UB1、@UC1 和 bob 定，某人 跟进"
+    reduced =
+      Compose.few_mentions("@B01234 告警，@alice 修，@alice 再看；@UB1、@UC1 和 @bob 定，@UA1 跟进", people)
+
+    assert reduced == "机器人 告警，@alice 修，@alice 再看；@UB1、@UC1 和 bob 定，某人 跟进"
+
+    assert Compose.finish("@B01234发了通知，@UB1 已看", %{"items" => []}, %{}, people) ==
+             "机器人发了通知，<@UB1> 已看"
   end
 
   test "a known address in backticks stays whole" do
@@ -262,5 +300,159 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
              "在 @Slack 菜单里问 @Bob"
 
     assert Slack.mentions("<@USLACK> 和 <@UBOB12345>") == ["slack:UBOB12345"]
+  end
+
+  test "a host Slack linked reads as the host someone typed while path links stay links" do
+    people = People.build([], [])
+
+    labeled =
+      Slack.label_text(
+        "转发到 <http://youdid.wtf|youdid.wtf> 和 <mailto:ops@youdid.wtf|ops@youdid.wtf>，" <>
+          "见 <https://github.com/acme/app/pull/42|github.com/acme/app/pull/42> 与 <https://x.test/a|文档>",
+        people
+      )
+
+    assert labeled ==
+             "转发到 youdid.wtf 和 ops@youdid.wtf，" <>
+               "见 <https://github.com/acme/app/pull/42|github.com/acme/app/pull/42> 与 <https://x.test/a|文档>"
+
+    assert Compose.finish(
+             "见 [PR](https://github.com/acme/app/pull/42)",
+             %{"items" => [%{"text" => labeled}]},
+             %{},
+             people
+           ) == "见 <https://github.com/acme/app/pull/42|PR>"
+  end
+
+  test "a long window keeps every told thread's final reply before earlier replies", ctx do
+    base = DateTime.to_unix(@window_after)
+
+    messages =
+      Enum.flat_map(1..120, fn i ->
+        root_ts = "#{base + i * 10}.000100"
+
+        [
+          message("C1", root_ts, nil, "线程 #{i}")
+          | for j <- 1..3 do
+              %{
+                channel_id: "C1",
+                ts: "#{base + i * 10 + j}.000100",
+                thread_ts: root_ts,
+                actor_kind: "bot",
+                actor_id: "B01234",
+                subtype: "bot_message",
+                text: "回复 #{i}-#{j}"
+              }
+            end
+        ]
+      end)
+
+    assert {:ok, _} =
+             Compose.write_team(
+               %{
+                 settings: ctx.settings,
+                 shared: %{messages: messages, window: %{after: @window_after, before: @now}},
+                 now: @now
+               },
+               model: ItemsModel,
+               agent_id: "agt"
+             )
+
+    assert_received {:team_items, items}
+    assert length(items) == 120 + 300
+    by_text = Map.new(items, &{&1["text"], &1})
+
+    for i <- 1..120 do
+      assert by_text["回复 #{i}-3"]["t"] == by_text["线程 #{i}"]["t"]
+    end
+
+    refute Map.has_key?(by_text, "回复 1-1")
+    assert Map.has_key?(by_text, "回复 120-1")
+  end
+
+  test "includes connected still.fail station_tasks in brief inputs and preserves their URLs",
+       ctx do
+    stillfail_url = "https://still.fail/o/acme/mac/c-abc123"
+    invented_url = "https://still.fail/o/acme/mac/c-invented"
+
+    defmodule StationBriefModel do
+      def compose(%{view: :mine, input: input}) do
+        owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+        SystemsRuntime.Proc.send(owner, {:mine_station_tasks, input["station_tasks"]})
+
+        {:ok,
+         %{
+           text:
+             Jason.encode!(%{
+               "items" => [
+                 %{
+                   "kind" => "decide",
+                   "what" => "确认部署 staging",
+                   "owner" => "me",
+                   "status" => "open",
+                   "evidence" => ""
+                 }
+               ]
+             }),
+           usage: %{input_tokens: 1, output_tokens: 1}
+         }}
+      end
+
+      def compose(%{input: input}) do
+        owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+        SystemsRuntime.Proc.send(owner, {:brief_station_tasks, input["station_tasks"]})
+
+        {:ok,
+         %{
+           text:
+             "待确认：[上线单](https://still.fail/o/acme/mac/c-abc123) 与 [编造链接](https://still.fail/o/acme/mac/c-invented)",
+           usage: %{input_tokens: 1, output_tokens: 1}
+         }}
+      end
+    end
+
+    assert {:ok, written} =
+             Compose.write(
+               %{
+                 settings: ctx.settings,
+                 member: ctx.member,
+                 shared: %{
+                   messages: [message("C1", "1792720800.000100", nil, "早会同步")],
+                   relevant: %{
+                     ctx.member.id => [
+                       %{
+                         message: message("C1", "1792720800.000100", nil, "早会同步"),
+                         reasons: [:mention],
+                         tier: :p0
+                       }
+                     ]
+                   },
+                   channel_names: %{"C1" => "general"},
+                   window: %{after: @window_after, before: @now}
+                 },
+                 station_tasks: [
+                   %{
+                     "title" => "Proactive 架构深扒",
+                     "state" => "need",
+                     "note" => "CI 已过，是否合并并部署 staging",
+                     "url" => stillfail_url,
+                     "last_activity_at" => DateTime.to_unix(@now, :millisecond) - 60_000
+                   }
+                 ],
+                 now: @now
+               },
+               model: StationBriefModel,
+               agent_id: "agt",
+               members: [ctx.member]
+             )
+
+    assert_received {:mine_station_tasks,
+                     [%{"title" => "Proactive 架构深扒", "state" => "need", "url" => ^stillfail_url}]}
+
+    assert_received {:brief_station_tasks,
+                     [%{"title" => "Proactive 架构深扒", "state" => "need", "url" => ^stillfail_url}]}
+
+    assert written.text =~ stillfail_url
+    refute written.text =~ invented_url
   end
 end

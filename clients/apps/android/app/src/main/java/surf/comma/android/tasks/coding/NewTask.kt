@@ -165,7 +165,10 @@ data class ModelOption(val id: String, val name: String, val serving: List<Strin
  * start takes a new one. [labels] names the fixed environments and the default model in the member's language.
  */
 class NewTaskForm(private val calls: WorkspaceCalls, private val labels: Labels) {
-    data class Labels(val cloud: String, val code: String, val sandbox: String, val defaultModel: String, val modelsUnavailable: String)
+    data class Labels(
+        val cloud: String, val code: String, val sandbox: String, val defaultModel: String, val modelsUnavailable: String,
+        val builtinModel: String,
+    )
 
     var onChange: () -> Unit = {}
     var text = ""
@@ -218,12 +221,18 @@ class NewTaskForm(private val calls: WorkspaceCalls, private val labels: Labels)
             ModelOption(id, json.text("name") ?: return@mapNotNull null, strings(json.optJSONArray("serving")))
         }
 
-    /** The served models, the Workspace's Task model first. */
+    /**
+     * The Workspace's Task model first, then the served models. Comma's built-in model, where the Workspace chose it,
+     * is [BUILTIN_MODEL] (no catalog id is empty), started with no model, which the server runs with it.
+     */
     val cloudModels: List<ModelOption>
         get() {
-            val preferred = modelsValue?.optJSONObject("agents")?.optJSONObject("task_model")?.optJSONObject("selection")?.text("model")
+            val selection = modelsValue?.optJSONObject("agents")?.optJSONObject("task_model")?.optJSONObject("selection")
+            val preferred = selection?.takeIf { it.text("kind") == "catalog" }?.text("model")
             val served = models.filter { it.serving.isNotEmpty() }
-            return served.filter { it.id == preferred } + served.filter { it.id != preferred }
+            val builtin = if (selection?.text("kind") == "builtin") listOf(ModelOption(BUILTIN_MODEL, labels.builtinModel, emptyList()))
+            else emptyList()
+            return builtin + served.filter { it.id == preferred } + served.filter { it.id != preferred }
         }
     val cloudModel: ModelOption? get() = cloudModels.firstOrNull { it.id == cloudModelId } ?: cloudModels.firstOrNull()
     val repo: CodingRepo? get() = repos.firstOrNull { it.id == repoId }
@@ -242,9 +251,16 @@ class NewTaskForm(private val calls: WorkspaceCalls, private val labels: Labels)
                 }
             }
             val profiles = modelsValue?.objects("profiles").orEmpty()
+            // A runtime with no subscription of its own runs on the accounts Salix lends a sandbox: offered only where
+            // they run it. A server that does not list them limits none.
+            val lent = modelsValue?.optJSONObject("agents")?.optJSONObject("task_place")?.optJSONArray("sandbox_runtimes")
+                ?.let { strings(it) }
             return listOf("codex", "claude").flatMap { runtime ->
                 val usable = profiles.filter { it.optBoolean("subscription") && it.optBoolean("usable") && it.text("source") == runtime }
-                if (usable.isEmpty()) return@flatMap listOf(CodingRun(runtime, null, null, if (runtime == "codex") "Codex" else "Claude Code"))
+                if (usable.isEmpty()) {
+                    if (lent != null && runtime !in lent) return@flatMap emptyList()
+                    return@flatMap listOf(CodingRun(runtime, null, null, if (runtime == "codex") "Codex" else "Claude Code"))
+                }
                 usable.flatMap { profile ->
                     val id = profile.text("id") ?: return@flatMap emptyList()
                     val account = profile.text("name") ?: profile.text("email") ?: runtime
@@ -390,7 +406,8 @@ class NewTaskForm(private val calls: WorkspaceCalls, private val labels: Labels)
         when {
             inCloud && cloud != null -> {
                 method = "chat.startTask"
-                params.put("workspaceId", calls.workspaceId).put("model", JSONObject().put("id", cloud.id).put("name", cloud.name))
+                params.put("workspaceId", calls.workspaceId)
+                if (cloud.id != BUILTIN_MODEL) params.put("model", JSONObject().put("id", cloud.id).put("name", cloud.name))
             }
             inSandbox && run != null -> {
                 method = "coding.start"
@@ -437,8 +454,11 @@ class NewTaskForm(private val calls: WorkspaceCalls, private val labels: Labels)
     /** The key the next start sends; tests read it. */
     internal val creationKey: String get() = key
 
-    private companion object {
-        fun strings(array: JSONArray?): List<String> =
+    companion object {
+        /** Comma's built-in model among the cloud's, started with no model. */
+        const val BUILTIN_MODEL = ""
+
+        private fun strings(array: JSONArray?): List<String> =
             if (array == null) emptyList() else (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotEmpty) }
     }
 }

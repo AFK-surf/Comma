@@ -209,9 +209,23 @@ defmodule SalixWeb.StationTasksTest do
     end
   end
 
+  defmodule Links do
+    @moduledoc "Where the product opens the test's Task (`SalixWeb.TaskLinks`); no other Task has links."
+    @behaviour SalixWeb.TaskLinks
+
+    @impl true
+    def links(group, "cnv_task"),
+      do: %{
+        "web" => "https://app.example/#/tasks/ws_1/#{group}/cnv_task",
+        "app" => "comma://task?workspace=ws_1&group=#{group}&task=cnv_task"
+      }
+
+    def links(_group, _task), do: nil
+  end
+
   defmodule Billing do
     @moduledoc "What a wake of a Cloudflare Cloud VM asks billing: each time it is asked, and its answer (`answer/1`)."
-    @behaviour SalixWeb.ComputeProviders.Cloudflare.VMAuthorization
+    @behaviour SalixWeb.VMAuthorization
     use Agent
 
     def start_link(_), do: SystemsRuntime.Agent.start_link(fn -> :ok end, name: __MODULE__)
@@ -355,6 +369,39 @@ defmodule SalixWeb.StationTasksTest do
     )
 
     assert_sent(context.row, 3)
+  end
+
+  test "a station is given where the Task opens, with its invite and each put, once the product has links",
+       context do
+    invitation = %{
+      tenant_id: context.view.tenant_id,
+      group_id: context.view.group_id,
+      conversation_id: "cnv_task",
+      device_id: context.view.device_id,
+      start: %{"requester" => "ann"}
+    }
+
+    run_id = connect!(context.view)
+
+    # Without the product's port, no links.
+    assert {:ok, "ember:c-1"} = StationTasks.invite(invitation)
+    assert_received {:asked, ^run_id, "task.invite", invite}
+    refute Map.has_key?(invite, "links")
+
+    SystemsRuntime.put_env(:salix_web, :task_links, Links)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :task_links) end)
+    links = Links.links(context.view.group_id, "cnv_task")
+
+    assert {:ok, "ember:c-1"} = StationTasks.invite(invitation)
+    assert_received {:asked, ^run_id, "task.invite", %{"links" => ^links}}
+
+    assert :ok = StationTasks.joined(context.row)
+    settle_receive({:asked, ^run_id, "task.put", %{"through" => 2, "links" => ^links}})
+
+    # A Task the product has no links for is given none.
+    assert {:ok, "ember:c-1"} = StationTasks.invite(%{invitation | conversation_id: "cnv_other"})
+    assert_received {:asked, ^run_id, "task.invite", %{"task" => "cnv_other"} = other}
+    refute Map.has_key?(other, "links")
   end
 
   test "where the station stands, for the Task's stall watch", context do
@@ -501,10 +548,14 @@ defmodule SalixWeb.StationTasksTest do
 
     # Its new Session takes the old one's place, still taking part.
     settle_until(fn ->
-      match?(
-        {:ok, [%{session: "ember:c-2", sent: 2, start: ^start}]},
-        StationTaskSessions.of_task(context.row.group_id, "cnv_task")
-      )
+      case StationTaskSessions.of_task(context.row.group_id, "cnv_task") do
+        {:ok, [%{session: "ember:c-2", sent: 2, start: saved}]} when is_map(saved) ->
+          Map.delete(saved, "connector_run_id") == start and
+            saved["connector_run_id"] == run_id
+
+        _ ->
+          false
+      end
     end)
   end
 
@@ -1504,7 +1555,7 @@ defmodule SalixWeb.StationTasksTest do
     end)
   end
 
-  # As `SalixWeb.CloudVM.RuntimeLifecycle.wake/1` leaves an archived VM for the Compute reconciler.
+  # As `SalixWeb.GroupStationLifecycle.wake/1` leaves an archived VM for the Compute reconciler.
   defp assert_wake_requested(group) do
     settle_until(fn ->
       match?(%{"status" => "archived", "wake_requested_at" => at} when is_integer(at), vm(group))

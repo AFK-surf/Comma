@@ -38,6 +38,53 @@ enum MarkdownSlot {
     case prose([MarkdownBlock])
     case code(language: String?, text: String)
     case table(MarkdownTable)
+    /// A line that is only a screen's link: the screen's card, as the desktop's `screenLinkCards` shows it.
+    case screen(ScreenLinkRef)
+}
+
+/**
+ * A screen named in a message: `comma:screen/<computer's device id>/<screen id>`, as the desktop's `parseScreenLink`
+ * reads it. The screen id is `display`, `android:<serial>` or `simulator:<udid>`, escaped as a path's part is.
+ */
+struct ScreenLinkRef: Hashable, Identifiable, Sendable {
+    let device: String
+    let screen: String
+    /// The words of a `[words](comma:screen/…)` link; nil for a bare address.
+    let label: String?
+
+    var id: String { device + "/" + screen }
+    var url: URL? { ScreenLinkRef.url(device: device, screen: screen) }
+
+    init?(href: String, label: String? = nil) {
+        let prefix = "comma:screen/"
+        guard href.hasPrefix(prefix) else { return nil }
+        let parts = href.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, (1...256).contains(parts[0].count), (1...256).contains(parts[1].count),
+              !parts.contains(where: { $0.contains(where: \.isWhitespace) }),
+              let device = String(parts[0]).removingPercentEncoding,
+              let screen = String(parts[1]).removingPercentEncoding,
+              ScreenLinkRef.isScreen(screen) else { return nil }
+        self.device = device; self.screen = screen; self.label = label
+    }
+
+    init?(url: URL) { self.init(href: url.absoluteString) }
+
+    private static func isScreen(_ screen: String) -> Bool {
+        if screen == "display" { return true }
+        for kind in ["android:", "simulator:"] where screen.hasPrefix(kind) {
+            let rest = screen.dropFirst(kind.count)
+            return (1...200).contains(rest.count) && !rest.contains(where: { "/?#".contains($0) || $0.isWhitespace })
+        }
+        return false
+    }
+
+    private static func url(device: String, screen: String) -> URL? {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/:")
+        guard let device = device.addingPercentEncoding(withAllowedCharacters: allowed),
+              let screen = screen.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        return URL(string: "comma:screen/\(device)/\(screen)")
+    }
 }
 
 enum MarkdownTree {
@@ -59,9 +106,17 @@ enum MarkdownTree {
     static func slots(_ tree: NSArray, style: MarkdownStyle, inline: (String) -> Inline?) -> [MarkdownSlot] {
         var slots: [MarkdownSlot] = []
         var startsGroup = true
-        for node in tree {
-            if kind(node) == "hr" { startsGroup = true; continue }
-            let blocks = block(node, style: style, inline: inline)
+        for node in tree.flatMap(screenPieces) {
+            let blocks: [MarkdownBlock]
+            switch node {
+            case .screen(let link):
+                slots.append(.screen(link))
+                startsGroup = true
+                continue
+            case .node(let node):
+                if kind(node) == "hr" { startsGroup = true; continue }
+                blocks = block(node, style: style, inline: inline)
+            }
             for block in blocks {
                 switch block {
                 case .code(let language, let text): slots.append(.code(language: language, text: text))
@@ -78,6 +133,64 @@ enum MarkdownTree {
             }
         }
         return slots
+    }
+
+    enum ScreenPiece {
+        case node(Any)
+        case screen(ScreenLinkRef)
+    }
+
+    /// A top-level node with each line that is only a screen's link cut out as that screen, its other lines kept as
+    /// paragraphs before and after; the node as it is when it has none (the desktop's `screenLinkCards`). A link inside a
+    /// sentence stays the words it is.
+    static func screenPieces(_ node: Any) -> [ScreenPiece] {
+        guard kind(node) == "p" else { return [.node(node)] }
+        // The paragraph's lines, each keeping the break that ended it (a newline in its text, or `br`).
+        var lines: [(nodes: [Any], end: Any?)] = [([], nil)]
+        for child in children(node) {
+            if let words = child as? String {
+                for (index, text) in words.components(separatedBy: "\n").enumerated() {
+                    if index > 0 { lines[lines.count - 1].end = "\n"; lines.append(([], nil)) }
+                    if !text.isEmpty { lines[lines.count - 1].nodes.append(text) }
+                }
+            } else if kind(child) == "br" {
+                lines[lines.count - 1].end = child
+                lines.append(([], nil))
+            } else {
+                lines[lines.count - 1].nodes.append(child)
+            }
+        }
+        var pieces: [ScreenPiece] = []
+        var words: [(nodes: [Any], end: Any?)] = []
+        var carded = false
+        func flush() {
+            let children = words.enumerated().flatMap { index, line in
+                index < words.count - 1 ? line.nodes + (line.end.map { [$0] } ?? []) : line.nodes
+            }
+            words = []
+            let blank = children.allSatisfy { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? (kind($0) == "br") }
+            if !blank { pieces.append(.node(["p", children] as NSArray)) }
+        }
+        for line in lines {
+            guard let link = screenLink(line.nodes) else { words.append(line); continue }
+            carded = true
+            flush()
+            pieces.append(.screen(link))
+        }
+        guard carded else { return [.node(node)] }
+        flush()
+        return pieces
+    }
+
+    /// The screen a line links, when it is nothing else: a link, or the address as plain text.
+    private static func screenLink(_ line: [Any]) -> ScreenLinkRef? {
+        let parts = line.filter { !(($0 as? String)?.trimmingCharacters(in: .whitespaces).isEmpty ?? false) }
+        guard parts.count == 1, let only = parts.first else { return nil }
+        if let words = only as? String { return ScreenLinkRef(href: words.trimmingCharacters(in: .whitespaces)) }
+        guard kind(only) == "a" else { return nil }
+        let label = String(text(children(only), style: MarkdownStyle(), inline: { _ in nil }).characters)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ScreenLinkRef(href: attributes(only)?.text("href") ?? "", label: label.isEmpty ? nil : label)
     }
 
     /// The tree's words, without their styles: what Copy copies.

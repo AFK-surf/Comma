@@ -144,6 +144,28 @@ defmodule Comma.ComputeWorkloadPhaseTest do
              project(pending, claim_error: %{"kind" => "error", "reason" => ":timeout"})
   end
 
+  test "import failures expose image_unavailable without relabeling capacity, connectivity or other stages" do
+    pending = workload("service", "pending")
+
+    for {code, stage, expected} <- [
+          {"image_import_failed", "image_import", "image_unavailable"},
+          {"data_loss", "image_import", "image_unavailable"},
+          {"invalid_argument", "image_import", "image_unavailable"},
+          {"permission_denied", "image_import", "image_unavailable"},
+          {"deadline_exceeded", "image_import", "image_unavailable"},
+          {"aborted", "image_import", "image_unavailable"},
+          {"deadline_exceeded", "container_start", "other"},
+          {"resource_exhausted", "image_import", "capacity_unavailable"},
+          {"unavailable", "image_import", "host_unreachable"},
+          {"unauthenticated", "image_import", "host_unreachable"}
+        ] do
+      error = %{"kind" => "action_required", "code" => code, "stage" => stage}
+
+      assert project(pending, claim_error: error)["problem"] ==
+               %{"code" => expected, "retryable" => false}
+    end
+  end
+
   test "a member may retry a Shell or the Group's own Station when it needs action" do
     parked = %{"kind" => "action_required", "code" => "provider_command_outcome_unknown"}
     station = %{workload("service", "pending") | template_key: "station.default"}

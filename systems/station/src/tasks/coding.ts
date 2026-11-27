@@ -27,13 +27,24 @@ type Json = any;
 
 /// The repository a coding Session works in, as Salix gives it (`start.repo`).
 /// `pull_request`: the open pull request whose head `branch` is, where the Task continues one (Salix checked it).
-export type Repo = { owner: string; name: string; base_ref: string; branch: string; pull_request?: number };
+/// `isolated`: true for a secondary multi-session worker using a non-prefix local branch (`comma-sessions/<task_short>/<slot>`).
+/// `primary_branch`: the primary (Lead) session's branch, preferred as the base ref for isolated secondary worktrees.
+export type Repo = {
+  owner: string;
+  name: string;
+  base_ref: string;
+  branch: string;
+  pull_request?: number;
+  isolated?: boolean;
+  primary_branch?: string;
+};
 
 /// A coding Session's worktree, kept beside its workspace (`<session home>/coding.json`).
 export type Checkout = Repo & { worktree: string; clone: string };
 
-/// Where a worktree stands: uncommitted changes, and commits not pushed to the session branch.
-export type Standing = { dirty: boolean; unpushed: boolean };
+/// Where a worktree stands: uncommitted changes, commits not pushed to the session branch, and (for isolated secondary
+/// worktrees) local commits not yet merged into the primary branch.
+export type Standing = { dirty: boolean; unpushed: boolean; unmerged?: boolean };
 
 /// One file of a diff.
 export type FileChange = { path: string; status: string; additions: number; deletions: number; patch: string | null };
@@ -68,11 +79,20 @@ const CHECK_PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 export function repoOf(start: Json): Repo | null {
   const r = start?.repo;
   if (r === null || typeof r !== "object") return null;
-  const { owner, name, base_ref, branch, pull_request } = r;
+  const { owner, name, base_ref, branch, pull_request, isolated, primary_branch } = r;
   if (typeof owner !== "string" || !NAME.test(owner) || typeof name !== "string" || !NAME.test(name)) return null;
   if (typeof base_ref !== "string" || !REF.test(base_ref) || typeof branch !== "string" || !REF.test(branch)) return null;
   const carried = typeof pull_request === "number" && Number.isSafeInteger(pull_request) && pull_request > 0;
-  return { owner, name, base_ref, branch, ...(carried ? { pull_request } : {}) };
+  const hasPrimary = typeof primary_branch === "string" && REF.test(primary_branch);
+  return {
+    owner,
+    name,
+    base_ref,
+    branch,
+    ...(carried ? { pull_request } : {}),
+    ...(isolated === true ? { isolated: true } : {}),
+    ...(hasPrimary ? { primary_branch } : {}),
+  };
 }
 
 export class CodingRefused extends Error {}
@@ -94,6 +114,8 @@ export class Coding {
   private readonly options: CodingOptions;
   /// Checkouts being made, by Session.
   private readonly making = new Map<string, Promise<Checkout>>();
+  /// Full make() mutex keyed by canonical clone path (serializes clone + fetch + base resolution + worktree add).
+  private readonly cloneLocks = new Map<string, Promise<unknown>>();
   /// Pushes, by worktree.
   private readonly pushing = new Map<string, Promise<boolean>>();
 
@@ -158,31 +180,128 @@ export class Coding {
     return making;
   }
 
+  private async withCloneLock<T>(clone: string, work: () => Promise<T>): Promise<T> {
+    const prev = this.cloneLocks.get(clone) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prev.catch(() => undefined).then(() => gate);
+    this.cloneLocks.set(clone, tail);
+    await prev.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.cloneLocks.get(clone) === tail) this.cloneLocks.delete(clone);
+    }
+  }
+
   private async make(session: string, workspace: string, repo: Repo): Promise<Checkout> {
     const kept = this.get(workspace);
     if (kept !== null && existsSync(join(kept.worktree, ".git"))) return kept;
     const clone = join(this.options.reposDir, "github.com", repo.owner, repo.name);
-    if (!existsSync(join(clone, ".git"))) {
-      mkdirSync(dirname(clone), { recursive: true });
-      // Blobless: every commit and tree now, file contents when a checkout, diff or blame needs them. History stays
-      // whole, so merge-base, log and push work as in a full clone; a shallow one would break them.
-      await this.git(dirname(clone), ["clone", "--filter=blob:none", "--no-checkout", this.remote(repo.owner, repo.name), clone]);
-    }
-    await this.git(clone, ["fetch", "--prune", "origin"]);
-    // A branch pushed before (by an earlier sandbox of the Task) is where it goes on; else from the base.
-    const pushed = await this.git(clone, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${repo.branch}`]).then(
+    return this.withCloneLock(clone, async () => {
+      const keptAgain = this.get(workspace);
+      if (keptAgain !== null && existsSync(join(keptAgain.worktree, ".git"))) return keptAgain;
+      // Crash-safe recovery: if `<workspace>/.git` already exists (even if a crash occurred before `coding.json`
+      // was written), verify ownership via HEAD branch and recover `coding.json` without force-resetting commits.
+      if (existsSync(join(workspace, ".git"))) {
+        const current = await this.git(workspace, ["rev-parse", "--abbrev-ref", "HEAD"], QUICK_TIMEOUT_MS).then(
+          (r) => r.stdout.trim(),
+          () => "",
+        );
+        if (current === repo.branch) {
+          const recovered: Checkout = { ...repo, worktree: workspace, clone };
+          mkdirSync(dirname(workspace), { recursive: true });
+          writeFileSync(join(dirname(workspace), "coding.json"), JSON.stringify(recovered));
+          log.info("coding", "recovered existing coding worktree without reset", { session, repo: `${repo.owner}/${repo.name}`, branch: repo.branch });
+          return recovered;
+        }
+        throw new CodingRefused(
+          `workspace ${workspace} already holds branch ${current || "(unknown)"}, refusing to overwrite for ${repo.branch}`,
+        );
+      }
+      if (!existsSync(join(clone, ".git"))) {
+        mkdirSync(dirname(clone), { recursive: true });
+        // Blobless: every commit and tree now, file contents when a checkout, diff or blame needs them. History stays
+        // whole, so merge-base, log and push work as in a full clone; a shallow one would break them.
+        await this.git(dirname(clone), ["clone", "--filter=blob:none", "--no-checkout", this.remote(repo.owner, repo.name), clone]);
+      }
+      await this.git(clone, ["fetch", "--prune", "origin"]);
+      // Refuse cleanly if target branch is already checked out in another unrelated worktree.
+      const worktrees = await this.git(clone, ["worktree", "list", "--porcelain"], QUICK_TIMEOUT_MS).then(
+        (r) => r.stdout,
+        () => "",
+      );
+      if (this.branchCheckedOutElsewhere(worktrees, repo.branch, workspace)) {
+        throw new CodingRefused(`branch ${repo.branch} is already checked out in another worktree`);
+      }
+      // git worktree add takes an empty directory only if it is not there.
+      if (existsSync(workspace) && readdirSync(workspace).length === 0) rmdirSync(workspace);
+      if (repo.isolated === true) {
+        const localExists = await this.refExists(clone, `refs/heads/${repo.branch}`);
+        if (localExists) {
+          // Reuse existing local branch without resetting unmerged commits.
+          await this.git(clone, ["worktree", "add", workspace, repo.branch]);
+        } else {
+          const from = await this.isolatedBaseRef(clone, repo);
+          await this.git(clone, ["worktree", "add", "-b", repo.branch, workspace, from]);
+        }
+      } else {
+        // Never use `-B` to reset an existing local primary branch that may hold unpushed commits.
+        const pushed = await this.refExists(clone, `refs/remotes/origin/${repo.branch}`);
+        const localExists = await this.refExists(clone, `refs/heads/${repo.branch}`);
+        if (localExists) {
+          await this.git(clone, ["worktree", "add", workspace, repo.branch]);
+        } else {
+          const from = pushed ? `origin/${repo.branch}` : await this.baseRef(clone, repo.base_ref);
+          await this.git(clone, ["worktree", "add", "-b", repo.branch, workspace, from]);
+        }
+        if (pushed) await this.git(workspace, ["branch", "--set-upstream-to", `origin/${repo.branch}`]);
+      }
+      const checkout: Checkout = { ...repo, worktree: workspace, clone };
+      mkdirSync(dirname(workspace), { recursive: true });
+      writeFileSync(join(dirname(workspace), "coding.json"), JSON.stringify(checkout));
+      log.info("coding", "a coding session's checkout is made", { session, repo: `${repo.owner}/${repo.name}`, branch: repo.branch, isolated: repo.isolated === true });
+      return checkout;
+    });
+  }
+
+  private refExists(cwd: string, ref: string): Promise<boolean> {
+    return this.git(cwd, ["rev-parse", "--verify", "--quiet", ref], QUICK_TIMEOUT_MS).then(
       () => true,
       () => false,
     );
-    const from = pushed ? `origin/${repo.branch}` : await this.baseRef(clone, repo.base_ref);
-    // git worktree add takes an empty directory only if it is not there.
-    if (existsSync(workspace) && readdirSync(workspace).length === 0) rmdirSync(workspace);
-    await this.git(clone, ["worktree", "add", "--force", "-B", repo.branch, workspace, from]);
-    if (pushed) await this.git(workspace, ["branch", "--set-upstream-to", `origin/${repo.branch}`]);
-    const checkout: Checkout = { ...repo, worktree: workspace, clone };
-    writeFileSync(join(dirname(workspace), "coding.json"), JSON.stringify(checkout));
-    log.info("coding", "a coding session's checkout is made", { session, repo: `${repo.owner}/${repo.name}`, branch: repo.branch });
-    return checkout;
+  }
+
+  private branchCheckedOutElsewhere(porcelain: string, branch: string, workspace: string): boolean {
+    const targetRef = `refs/heads/${branch}`;
+    let currentPath = "";
+    for (const raw of porcelain.split("\n")) {
+      const line = raw.trim();
+      if (line.startsWith("worktree ")) {
+        currentPath = line.slice("worktree ".length).trim();
+      } else if (line.startsWith("branch ")) {
+        const ref = line.slice("branch ".length).trim();
+        if (ref === targetRef && currentPath !== "" && currentPath !== workspace && existsSync(currentPath)) {
+          return true;
+        }
+      } else if (line === "") {
+        currentPath = "";
+      }
+    }
+    return false;
+  }
+
+  /// Base ref preference for an isolated secondary worktree:
+  /// local `refs/heads/<primary_branch>` > `refs/remotes/origin/<primary_branch>` > `baseRef(clone, repo.base_ref)`.
+  private async isolatedBaseRef(clone: string, repo: Repo): Promise<string> {
+    if (repo.primary_branch) {
+      if (await this.refExists(clone, `refs/heads/${repo.primary_branch}`)) return `refs/heads/${repo.primary_branch}`;
+      if (await this.refExists(clone, `refs/remotes/origin/${repo.primary_branch}`)) return `origin/${repo.primary_branch}`;
+    }
+    return this.baseRef(clone, repo.base_ref);
   }
 
   /// `base_ref` as a revision: a remote branch, else a tag or commit.
@@ -212,7 +331,14 @@ export class Coding {
     const c = this.get(workspace);
     if (c === null) return null;
     const status = await this.git(c.worktree, ["status", "--porcelain"], QUICK_TIMEOUT_MS);
-    return { dirty: status.stdout.trim() !== "", unpushed: (await this.ahead(c)) > 0 };
+    const dirty = status.stdout.trim() !== "";
+    if (c.isolated === true) {
+      const ref = await this.isolatedBaseRef(c.clone, c).catch(() => this.mergeBase(c));
+      const count = await this.git(c.worktree, ["rev-list", "--count", `${ref}..HEAD`], QUICK_TIMEOUT_MS);
+      const unmerged = (Number.parseInt(count.stdout.trim(), 10) || 0) > 0;
+      return { dirty, unpushed: false, unmerged };
+    }
+    return { dirty, unpushed: (await this.ahead(c)) > 0 };
   }
 
   /// Commits on the session branch that the remote branch does not have (all of them, before its first push).
@@ -243,7 +369,12 @@ export class Coding {
 
   private async pushNow(workspace: string): Promise<boolean> {
     const c = this.get(workspace);
-    if (c === null || (await this.ahead(c)) === 0) return false;
+    if (c === null) return false;
+    // Note: L4ES GitHub ACL is sandbox-wide; Station enforces isolation by refusing direct pushes from secondary sessions.
+    if (c.isolated === true) {
+      throw new CodingRefused("isolated secondary sessions cannot push directly; hand changes to the primary session");
+    }
+    if ((await this.ahead(c)) === 0) return false;
     await this.git(c.worktree, ["push", "--set-upstream", "origin", `HEAD:refs/heads/${c.branch}`]);
     log.info("coding", "the session branch is pushed", { branch: c.branch });
     return true;
@@ -428,6 +559,10 @@ export class Coding {
   ): Promise<{ url: string; number: number | null; title: string }> {
     const c = this.get(workspace);
     if (c === null) throw new CodingRefused("this Session works in no repository");
+    // Note: L4ES GitHub ACL is sandbox-wide; Station enforces isolation by refusing PR creation from secondary sessions.
+    if (c.isolated === true) {
+      throw new CodingRefused("isolated secondary sessions cannot open pull requests directly; hand changes to the primary session");
+    }
     await this.push(workspace);
     const pushed = await this.git(c.worktree, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${c.branch}`]).catch(() => null);
     if (pushed === null) throw new CodingRefused("the session branch has no commits to propose");

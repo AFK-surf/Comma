@@ -8,6 +8,7 @@ defmodule SalixAgent.ToolCallProvenance do
   # Modeled in tla/salix/TriageRouterHandoff.tla. A model-authored locator
   # selects one already admitted source; it never creates source authority.
   @task_create "im_api.internal.task.create"
+  @send_message "im_api.internal.send_message"
   @triage_schema "comma.triage-delegation-origin.v1"
 
   def select(call, context) do
@@ -15,33 +16,58 @@ defmodule SalixAgent.ToolCallProvenance do
     ref = value(args, :triage_delegation_ref)
     source = value(args, :source_message_id)
     origins = origins(context)
+    name = value(call, :name)
+    no_guidance_error? = is_nil(value(call, :guidance_error))
 
-    if value(call, :name) == @task_create and is_nil(value(call, :guidance_error)) do
-      cond do
-        not is_nil(source) and not is_nil(ref) ->
-          {:error, "task_source_conflict"}
+    cond do
+      name == @task_create and no_guidance_error? ->
+        cond do
+          not is_nil(source) and not is_nil(ref) ->
+            {:error, "task_source_conflict"}
 
-        not is_nil(source) ->
+          not is_nil(source) ->
+            select_human(context, origins, source)
+
+          Enum.any?(origins, &triage_origin?/1) or not is_nil(ref) ->
+            select_triage(context, origins, ref)
+
+          Enum.any?(origins, &proactive_handoff?/1) ->
+            # Comma handed the Router evidence about a matter. Importance does
+            # not delegate work: the Router offers the step, and the owner's
+            # answer may create the Task by naming that message as its
+            # `source_message_id`. A person's message in the same activation
+            # does not admit a Task that names none.
+            {:error, "proactive_handoff_not_delegation"}
+
+          true ->
+            {:ok, context}
+        end
+
+      name == @send_message and no_guidance_error? and
+        station_conversation?(value(args, :conversation_id)) and
+          Enum.any?(origins, &proactive_handoff?/1) ->
+        # Continuing a still.fail station chat delegates work on the owner's
+        # connected machine, so it enforces the same proactive_handoff invariant
+        # as task creation (normal Home conversation replies remain allowed).
+        # TriageRouterHandoff.tla models the abstract proactive_handoff
+        # non-delegation invariant over delegated actions; gating station
+        # send_message here aligns the implementation with that invariant
+        # without adding a new protocol state.
+        if not is_nil(source) do
           select_human(context, origins, source)
-
-        Enum.any?(origins, &triage_origin?/1) or not is_nil(ref) ->
-          select_triage(context, origins, ref)
-
-        Enum.any?(origins, &proactive_handoff?/1) ->
-          # Comma handed the Router evidence about a matter. Importance does
-          # not delegate work: the Router offers the step, and the owner's
-          # answer may create the Task by naming that message as its
-          # `source_message_id`. A person's message in the same activation
-          # does not admit a Task that names none.
+        else
           {:error, "proactive_handoff_not_delegation"}
+        end
 
-        true ->
-          {:ok, context}
-      end
-    else
-      {:ok, context}
+      true ->
+        {:ok, context}
     end
   end
+
+  defp station_conversation?(id) when is_binary(id),
+    do: String.starts_with?(String.trim(id), "station:")
+
+  defp station_conversation?(_id), do: false
 
   # The argument is only a locator. Role and scope come from the admitted
   # origin, never from model-authored content or the absence of a Triage ref.
@@ -233,7 +259,12 @@ defmodule SalixAgent.ToolCallProvenance do
       Map.update!(result, key, fn events ->
         Enum.map(events, fn
           %{"type" => "async_tool_call_started"} = event ->
-            stamp(event, context)
+            event = stamp(event, context)
+
+            case value(context, :ifc_view_label) do
+              label when is_list(label) -> Map.put(event, "ifc_view_label", label)
+              _ -> event
+            end
 
           %{"type" => "wait_set", "wait" => wait} = event when is_map(wait) ->
             Map.put(event, "wait", stamp(wait, context))

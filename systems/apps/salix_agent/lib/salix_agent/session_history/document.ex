@@ -1,5 +1,6 @@
 defmodule SalixAgent.SessionHistory.Document do
   @moduledoc "Original-history text selection and identical hot/cold normalization."
+  alias SalixAgent.SessionHistory.Episodes
   @excluded ~w(history.search history.list history.get)
   @chunk_size 8192
   @overlap 127
@@ -27,6 +28,7 @@ defmodule SalixAgent.SessionHistory.Document do
       else: plain(data["result_json"] || data["result"] || data["output"])
   end
 
+  def text(%{kind: "fact"} = record), do: Episodes.text(record) || ""
   def text(_), do: ""
 
   def documents(record) do
@@ -42,11 +44,28 @@ defmodule SalixAgent.SessionHistory.Document do
         "part" => part,
         "text" => Enum.join(points),
         "kind" => record.kind,
-        "tool_name" => record.data["tool_name"] || record.data["name"] || "",
-        "label" => get_in(record.data, ["ifc", "label"]) || ["agent_private"]
+        "tool_name" => tool_name(record),
+        "label" => label(record)
       }
     end)
   end
+
+  @doc """
+  The encoded audience of a record: a summary fact's own label, else the
+  record's IFC block, else the one sealed onto its trusted origin. A record
+  with none reads as agent-private.
+  """
+  def label(%{kind: "fact"} = record), do: Episodes.label(record) || ["agent_private"]
+
+  def label(%{data: data}) when is_map(data) do
+    get_in(data, ["ifc", "label"]) || get_in(data, ["trusted_origin", "ifc", "label"]) ||
+      ["agent_private"]
+  end
+
+  def label(_record), do: ["agent_private"]
+
+  defp tool_name(%{kind: "fact", data: data}), do: data["kind"] || ""
+  defp tool_name(%{data: data}), do: data["tool_name"] || data["name"] || ""
 
   defp excluded?(data) when is_map(data),
     do: (data["tool_name"] || data["name"] || get_in(data, ["function", "name"])) in @excluded

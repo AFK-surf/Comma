@@ -10,14 +10,18 @@ defmodule CommaWeb.Stations do
       senders map to a Comma user. The requester must have a role in that Group
       (`SalixStore.StationMembers`). In a Group whose product gives a role to
       the people its chat app is available to
-      (`SalixStore.StationMembers.app_member_role/2`, a CFT Project), a Feishu
-      or Lark sender with no such role still has it when the connect's app is
-      available to them, as Feishu or Lark answers on this call
-      (`SalixIM.ProviderAccounts.app_member/2`), and they have an
-      organization email; their `user_id` is `<provider>:<connect>:<open_id>`.
-      Otherwise the call is refused with `{:requester_refused, reason}`
-      (`:not_available`, `:no_email`, `{:missing_scope, scope}`,
-      `:check_failed`);
+      (`SalixStore.StationMembers.app_member_role/2`, a CFT Project), a Slack,
+      Feishu or Lark sender with no such role still has it by the connect's
+      member scope (`SalixIM.ProviderConnects.Members`). On an
+      `"organization"` connect the provider answers on this call that they
+      are one of the connect's own people (`SalixIM.ProviderAccounts.app_member/2`:
+      the Feishu or Lark app is available to them, or they are a full member
+      of the Slack workspace) and they have an organization email. On an
+      `"external"` connect an admin granted them by name and the grant has
+      not expired; the grant's email is theirs. Their `user_id` is
+      `<provider>:<connect>:<subject>`. Otherwise the call is refused with
+      `{:requester_refused, reason}` (`:not_available`, `:no_email`,
+      `{:missing_scope, scope}`, `:not_granted`, `:check_failed`);
     * the station, which must be listed for that Group by
       `CommaWeb.Stations.Directory`.
 
@@ -40,20 +44,29 @@ defmodule CommaWeb.Stations do
   @impl true
   def configured?, do: Gateway.configured?()
 
-  # One indexed read of the Group's stations per disclosure; any failure,
-  # including a Group whose store this node cannot read, hides the tools.
+  # One indexed read of the Group's stations per disclosure, and of its
+  # still.fail stations when it has none: `station.list` is how an agent finds
+  # those, and they need no station gateway. Any failure, including a Group
+  # whose store this node cannot read, hides the tools.
   @impl true
   def offered?(ctx) do
-    with true <- configured?(),
-         {:ok, {tenant_id, group_id}} <- group(ctx),
-         {:ok, [_ | _]} <- Directory.list_group_stations(tenant_id, group_id) do
-      true
-    else
-      _ -> false
+    case group(ctx) do
+      {:ok, {tenant_id, group_id}} ->
+        roster?(tenant_id, group_id) or stillfail?(group_id)
+
+      _ ->
+        false
     end
   rescue
     _ -> false
   end
+
+  defp roster?(tenant_id, group_id) do
+    configured?() and match?({:ok, [_ | _]}, Directory.list_group_stations(tenant_id, group_id))
+  end
+
+  defp stillfail?(group_id),
+    do: match?({:ok, [_ | _], _more?}, SalixEnv.StillfailDevices.first_page(group_id))
 
   @impl true
   def member(ctx) do
@@ -69,12 +82,15 @@ defmodule CommaWeb.Stations do
     end
   end
 
-  # One bounded read of the Group's devices, for the member who asked;
-  # still.fail stations need no station gateway.
+  # One bounded read of the Group's devices for whoever asked: anyone who can
+  # talk to the Group's agents may read and write in its still.fail
+  # workspaces, and information flow control decides where what they read may
+  # go. still.fail stations need no station gateway.
   @impl true
   def stillfail_stations(ctx) do
-    with {:ok, scope} <- scope(ctx),
-         {:ok, stations, _more?} <- SalixEnv.StillfailDevices.first_page(scope.group_id),
+    with {:ok, ctx} <- SalixAgent.AgentRuntimeConfig.complete_context(ctx),
+         {:ok, {_tenant_id, group_id}} <- group(ctx),
+         {:ok, stations, _more?} <- SalixEnv.StillfailDevices.first_page(group_id),
          do: {:ok, stations}
   end
 
@@ -155,17 +171,18 @@ defmodule CommaWeb.Stations do
   defp requester_id(ctx, :turn), do: requester(ctx)
   defp requester_id(_ctx, {:member, user_id}), do: {:ok, user_id}
 
-  # A Feishu or Lark sender with no member's account, in a Group whose product
-  # gives a role to the people its chat app is available to (a CFT Project):
-  # the app's availability range, asked on every call, decides. They act
-  # under their organization email; any failure refuses (fail closed).
+  # A Slack, Feishu or Lark sender with no member's account, in a Group whose
+  # product gives a role to its chat apps' people (a CFT Project): the
+  # connect's member scope decides. An organization connect asks the provider
+  # on every call; an external one admits only a live grant. They act under
+  # their organization email; any failure refuses (fail closed).
   defp app_member_scope(ctx, tenant_id, group_id) do
     with {:provider_user, connect_id, subject} <-
            SalixAgent.IFC.principal(ctx[:trusted_origin]),
          {:ok, role} <- SalixStore.StationMembers.app_member_role(tenant_id, group_id),
-         {:ok, %{"provider" => provider} = connect} when provider in ~w(feishu lark) <-
+         {:ok, %{"provider" => provider} = connect} when provider in ~w(slack feishu lark) <-
            SalixIM.ProviderConnects.get_active_connect_by_id(group_id, connect_id) do
-      case SalixIM.ProviderAccounts.app_member(connect, subject) do
+      case connect_member(connect, subject) do
         {:ok, %{"email" => email} = person} when is_binary(email) and email != "" ->
           {:ok,
            %{
@@ -190,7 +207,26 @@ defmodule CommaWeb.Stations do
     end
   end
 
-  defp refusal(reason) when reason in [:not_available, :no_email], do: reason
+  defp connect_member(connect, subject) do
+    case SalixIM.ProviderConnects.member_scope(connect) do
+      "organization" ->
+        SalixIM.ProviderAccounts.app_member(connect, subject)
+
+      "external" ->
+        case SalixIM.ProviderConnects.member_grant(connect, subject) do
+          %{"email" => email} = grant when is_binary(email) and email != "" ->
+            {:ok, %{"name" => grant["name"], "email" => email}}
+
+          %{} ->
+            {:error, :no_email}
+
+          nil ->
+            {:error, :not_granted}
+        end
+    end
+  end
+
+  defp refusal(reason) when reason in [:not_available, :no_email, :not_granted], do: reason
   defp refusal({:missing_scope, scope}) when is_binary(scope), do: {:missing_scope, scope}
   defp refusal(_reason), do: :check_failed
 

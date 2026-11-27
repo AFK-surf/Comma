@@ -71,6 +71,10 @@ defmodule SalixAgent.Loops.Capabilities do
   # decide returns typed judgments without granting access to the selected source.
   @external_request_tools ~w(web.http_request decide composio.execute)
 
+  # Generalized Dynamic Island / Live Activity controls so background Loops can
+  # update live status directly without waking the LLM on every poll.
+  @live_activity_tools ~w(live_activity.upsert live_activity.end live_activity.list)
+
   @max_notify_bytes 8 * 1024
   @max_dedup_bytes 128
   @max_log_bytes 1024
@@ -118,6 +122,13 @@ defmodule SalixAgent.Loops.Capabilities do
     Enum.filter(registered, &(&1 in @external_request_tools or String.starts_with?(&1, "ssh.")))
   end
 
+  @doc "The generalized Live Activity tools a Loop may call without waking the LLM."
+  @spec live_activity_tool_names() :: [String.t()]
+  def live_activity_tool_names do
+    registered = Tools.registry() |> Enum.map(&Tools.entry_name/1)
+    Enum.filter(registered, &(&1 in @live_activity_tools))
+  end
+
   @doc "The complete allowlist."
   @spec allowed_names() :: [String.t()]
   def allowed_names,
@@ -127,6 +138,7 @@ defmodule SalixAgent.Loops.Capabilities do
           read_tool_names() ++
           environment_tool_names() ++
           external_request_tool_names() ++
+          live_activity_tool_names() ++
           ["im_api.internal.read_conversation"] ++
           task_create_names()
       )
@@ -167,9 +179,18 @@ defmodule SalixAgent.Loops.Capabilities do
 
   defp pinned_tools(_row), do: []
 
-  # The product owning a Loop may bound a pinned dynamic read before the guest
-  # sees it, so a full provider object fits the program's evidence limits.
-  defp project_result(loop, "mcp." <> _ = tool_name, content) do
+  # The product owning a Loop may bound a pinned dynamic or web read before the
+  # guest sees it, so a full provider object or Markdown page fits the program's
+  # JSON evidence limits.
+  defp project_result(loop, "mcp." <> _ = tool_name, content),
+    do: project_via_adapter(loop, tool_name, content)
+
+  defp project_result(loop, tool_name, content) when tool_name in ~w(web.search web.read_pages),
+    do: project_via_adapter(loop, tool_name, content)
+
+  defp project_result(_loop, _tool_name, content), do: content
+
+  defp project_via_adapter(loop, tool_name, content) do
     module = SystemsRuntime.get_env(:salix_agent, :loop_authorization_adapter)
 
     with true <- not is_nil(module) and function_exported?(module, :project_result, 3),
@@ -179,8 +200,6 @@ defmodule SalixAgent.Loops.Capabilities do
       _ -> content
     end
   end
-
-  defp project_result(_loop, _tool_name, content), do: content
 
   defp pinned_row_tools(loop_id) do
     case SalixStore.Loops.get(loop_id) do
@@ -364,13 +383,16 @@ defmodule SalixAgent.Loops.Capabilities do
   defp check_tool_destination(_tool_name, _arguments), do: :ok
 
   defp execute_tool(loop, tool_name, arguments, max_result_bytes) do
+    {arguments, declaration} = SalixAgent.IFC.Declaration.lift(arguments)
+
     call = %{
       id:
         "loop:" <>
           loop.loop_id <>
           ":" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
       name: tool_name,
-      args: arguments
+      args: arguments,
+      ifc: SalixAgent.IFC.Declaration.runtime_sources(declaration)
     }
 
     ctx = tool_ctx(loop, tool_name)
@@ -459,7 +481,8 @@ defmodule SalixAgent.Loops.Capabilities do
 
   defp tool_ctx(loop, tool_name) do
     origin = origin(loop)
-    role = agent_role(loop.agent_id)
+    agent = loop_agent(loop.agent_id)
+    role = agent && agent["role"]
     ifc_mode = IFC.mode_for(loop.tenant_id, loop.group_id)
 
     base = %{
@@ -473,7 +496,20 @@ defmodule SalixAgent.Loops.Capabilities do
       task_conversation_id: loop[:task_conversation_id],
       round_id: "loop:" <> loop.loop_id <> ":" <> Integer.to_string(loop.incarnation),
       ifc_mode: ifc_mode,
-      defer_tool_observations: true
+      defer_tool_observations: true,
+      # A Loop calls tools as its Agent's rounds do, under the same purpose
+      # policy: a Collaborative Task's Worker's Loop reaches no more than the
+      # Worker. An Agent that cannot be read gets no tools at all.
+      collaboration_policy:
+        if(agent,
+          do: SalixAgent.CollaborationPolicy.policy_for_purpose(agent["purpose"]),
+          else: :unresolved
+        ),
+      guest_policy:
+        if(agent,
+          do: SalixAgent.GuestPolicy.policy_for_purpose(agent["purpose"]),
+          else: :unresolved
+        )
     }
 
     base
@@ -523,9 +559,9 @@ defmodule SalixAgent.Loops.Capabilities do
     _kind, _reason -> nil
   end
 
-  defp agent_role(agent_id) do
+  defp loop_agent(agent_id) do
     case SalixAgent.Control.get(agent_id) do
-      {:ok, agent} -> agent["role"]
+      {:ok, agent} -> agent
       _ -> nil
     end
   end

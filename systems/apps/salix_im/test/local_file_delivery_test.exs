@@ -71,6 +71,41 @@ defmodule SalixIM.LocalFileDeliveryTest do
     refute payload.content =~ "lfi1_"
   end
 
+  describe "a meeting recording's failed import" do
+    @hour 60 * 60 * 1_000
+
+    defp recording(created_at),
+      do: %{"metadata" => %{"message_type" => "meeting_recording"}, "created_at" => created_at}
+
+    test "waits for a device that is away for a day" do
+      away = :local_file_device_disconnected
+      assert SalixIM.ConversationSource.recording_held?(recording(0), away, 23 * @hour)
+      refute SalixIM.ConversationSource.recording_held?(recording(0), away, 24 * @hour)
+    end
+
+    test "tries a failed read again for half an hour" do
+      failed = :local_file_unavailable
+      assert SalixIM.ConversationSource.recording_held?(recording(0), failed, div(@hour, 4))
+      refute SalixIM.ConversationSource.recording_held?(recording(0), failed, div(@hour, 2))
+    end
+
+    test "is the only input held: other messages and other failures are rejected as before" do
+      message = %{"metadata" => %{}, "created_at" => 0}
+
+      refute SalixIM.ConversationSource.recording_held?(
+               message,
+               :local_file_device_disconnected,
+               1
+             )
+
+      refute SalixIM.ConversationSource.recording_held?(
+               recording(0),
+               :local_file_size_mismatch,
+               1
+             )
+    end
+  end
+
   test "device unavailability remains retryable under the delivery owner's bounded lease" do
     SystemsRuntime.PersistentTerm.put({Import, :result}, :unavailable)
 

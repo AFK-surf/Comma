@@ -66,7 +66,7 @@ defmodule VMLifecycleE2E do
     Application.put_env(
       :salix_web,
       :vm_authorization_mod,
-      SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.Noop
+      SalixWeb.VMAuthorization.Noop
     )
 
     Application.put_env(:comma_web, :api_token, @admin_token)

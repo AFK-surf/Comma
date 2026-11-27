@@ -50,23 +50,41 @@ function setup() {
   return { host, core, client, desktop, time: host.time!, api: host.api, start };
 }
 
-const providerPage = (provider: "codex" | "claude", state = "expected") => {
-  const page =
-    provider === "codex"
-      ? new URL("https://auth.openai.com/oauth/authorize")
-      : new URL("https://claude.ai/oauth/authorize");
-  page.searchParams.set(
-    "redirect_uri",
-    provider === "codex"
-      ? "http://localhost:1455/auth/callback"
-      : "http://localhost:54545/callback"
-  );
+const providerPages = {
+  codex: {
+    authorize: "https://auth.openai.com/oauth/authorize",
+    callbackPort: 1455,
+    path: "/auth/callback",
+  },
+  claude: {
+    authorize: "https://claude.ai/oauth/authorize",
+    callbackPort: 54545,
+    path: "/callback",
+  },
+  gemini: {
+    authorize: "https://accounts.google.com/o/oauth2/v2/auth",
+    callbackPort: 51121,
+    path: "/oauth-callback",
+  },
+} as const;
+
+const loopbackUrl = (
+  host: "localhost" | "127.0.0.1",
+  provider: keyof typeof providerPages
+) => {
+  const { callbackPort, path } = providerPages[provider];
+  return `http://${host}:${callbackPort}${path}`;
+};
+
+const providerPage = (provider: keyof typeof providerPages, state = "expected") => {
+  const page = new URL(providerPages[provider].authorize);
+  page.searchParams.set("redirect_uri", loopbackUrl("localhost", provider));
   page.searchParams.set("state", state);
   return page.href;
 };
 
 describe("a subscription's sign-in through the desktop's loopback listener", () => {
-  it.each(["codex", "claude"] as const)(
+  it.each(["codex", "claude", "gemini"] as const)(
     "%s: the browser's return with the sign-in's state finishes it, once; another state is shown invalid",
     async (provider) => {
       const t = setup();
@@ -77,10 +95,7 @@ describe("a subscription's sign-in through the desktop's loopback listener", () 
         mode: "callback",
       });
       t.api.on("POST", `${oauth}/attempt-1`, { ...profile, source: provider });
-      const callback =
-        provider === "codex"
-          ? "http://127.0.0.1:1455/auth/callback"
-          : "http://127.0.0.1:54545/callback";
+      const callback = loopbackUrl("127.0.0.1", provider);
       const signIn = t.start("models.signIn.loopback", { workspace: ws, provider });
       await t.time.pass(100);
       expect(t.api.seen("POST", oauth)[0]!.body).toEqual({

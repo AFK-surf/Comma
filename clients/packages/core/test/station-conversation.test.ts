@@ -710,6 +710,53 @@ describe("a Task a station hosts", () => {
     expect(t.state().draftAttachments).toEqual([]);
   });
 
+  it("names every file that is not an image by its path when the Task runs on this computer's station", async () => {
+    const desktop = new FakeDesktop();
+    const t = setup({ desktop });
+    const main = new CoreClient(inProcessOpener(t.core, t.host), {
+      schedule: () => undefined,
+    });
+    await t.time.pass(500);
+    // Another computer of the workspace: its files go up to the station.
+    await main.call("chat.clientDevices", { devices: { [WS]: "dev_other" } });
+    desktop.pick = () => ({ cancelled: false, errors: [], items: [] });
+    await t.client.call("chatView.pickAttachments", view);
+    expect(desktop.picks.at(-1)?.localPathMode).toBe("none");
+
+    // The computer whose station runs the Task: the files are read where they are.
+    await main.call("chat.clientDevices", { devices: { [WS]: "st_a" } });
+    desktop.pick = () => ({
+      cancelled: false,
+      errors: [],
+      items: [
+        {
+          kind: "local_path",
+          file: { name: "notes.pdf", path: "/Users/me/notes.pdf", size: 2_000_000 },
+        },
+      ],
+    });
+    await t.client.call("chatView.pickAttachments", view);
+    await t.time.pass(100);
+    expect(desktop.picks.at(-1)?.localPathMode).toBe("all_non_images");
+    expect(t.state().draftAttachments).toMatchObject([
+      { name: "notes.pdf", localPath: "/Users/me/notes.pdf", status: "uploaded" },
+    ]);
+    expect(t.state().draftAttachments[0]?.path).toBeUndefined();
+
+    await t.client.call("chatView.send", {
+      ...view,
+      text: "Summarize it",
+      clientRequestId: "req-0004",
+    });
+    await t.time.pass(500);
+    expect(t.a.writes.find((w) => w.path === "/threads/7/messages")?.body).toEqual({
+      text:
+        "Summarize it\n\nAttached local files on the sender's computer:\n" +
+        "- notes.pdf (local path: /Users/me/notes.pdf)",
+    });
+    expect(t.a.writes.some((w) => w.path.startsWith("/uploads/parts"))).toBe(false);
+  });
+
   it("keeps a failed file for each one a pick could not get, which picking again settles", async () => {
     const desktop = new FakeDesktop();
     const t = setup({ desktop });

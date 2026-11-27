@@ -8,7 +8,6 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import androidx.activity.ComponentActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
@@ -22,6 +21,7 @@ import surf.comma.android.R
 import surf.comma.android.auth.AuthGraph
 import surf.comma.android.settings.SettingsDialog
 import surf.comma.android.ui.AppearanceStore
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.kit.CapsuleButton
 import surf.comma.android.ui.kit.CommaSheet
 import surf.comma.android.ui.kit.dp
@@ -45,7 +45,7 @@ class DynamicUiSheet private constructor(
     private val fillDraft: (String) -> Unit,
 ) : CommaSheet(activity, activity.getString(R.string.dynamic_ui_title), Detent.LARGE) {
     private val stage = FrameLayout(activity)
-    private val progress = ProgressBar(activity)
+    private val progress = ActivityIndicator(activity)
     private val failure = activity.label(Level.REGULAR, R.color.token_text_secondary, lines = 4).apply {
         gravity = Gravity.CENTER
         isVisible = false
@@ -66,7 +66,7 @@ class DynamicUiSheet private constructor(
 
     init {
         val margin = activity.resources.getDimensionPixelSize(R.dimen.spacing_xl)
-        stage.addView(progress, FrameLayout.LayoutParams(activity.dp(24), activity.dp(24), Gravity.CENTER))
+        stage.addView(progress, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
         stage.addView(failure, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER).apply {
             marginStart = margin
             marginEnd = margin

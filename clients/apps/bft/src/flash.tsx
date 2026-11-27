@@ -6,6 +6,12 @@ import { messages } from "./messages";
 export interface FlashMessage {
   kind: "info" | "error";
   text: string;
+  /**
+   * The id of the page section the notice is about: it shows at the top of
+   * that section (`SectionFlash`), where the change was made, instead of above
+   * the page.
+   */
+  section?: string;
 }
 
 /**
@@ -57,11 +63,30 @@ function currentFlash(pathname: string) {
 
 export function FlashNotice({ pathname }: { pathname: string }) {
   const all = useSyncExternalStore(subscribe, () => flash.items);
-  const items = all.length > 0 ? currentFlash(pathname) : all;
+  const items = (all.length > 0 ? currentFlash(pathname) : all).filter(
+    (item) => item.section === undefined
+  );
   if (items.length === 0) return null;
+  return <FlashItems className="bft-flash" items={items} />;
+}
 
+/** The notices about the page section `section`, shown inside it. */
+export function SectionFlash({ section }: { section: string }) {
+  const all = useSyncExternalStore(subscribe, () => flash.items);
+  const items = all.filter((item) => item.section === section);
+  if (items.length === 0) return null;
+  return <FlashItems className="bft-section-flash" items={items} />;
+}
+
+function FlashItems({
+  className,
+  items,
+}: {
+  className: string;
+  items: FlashMessage[];
+}) {
   return (
-    <div className="bft-flash">
+    <div className={className}>
       {items.map((item) => (
         <div
           className="bft-notice bft-flash-notice"
@@ -70,14 +95,16 @@ export function FlashNotice({ pathname }: { pathname: string }) {
           role={item.kind === "error" ? "alert" : "status"}
         >
           <p>{item.text}</p>
-          <Button
-            aria-label={messages.common.dismiss}
-            hierarchy="tertiary-gray"
-            iconLeading={<XIcon />}
-            iconOnly
-            onPress={() => setItems(flash.items.filter((other) => other !== item))}
-            size="xs"
-          />
+          <span className="bft-flash-dismiss">
+            <Button
+              aria-label={messages.common.dismiss}
+              hierarchy="tertiary-gray"
+              iconLeading={<XIcon />}
+              iconOnly
+              onPress={() => setItems(flash.items.filter((other) => other !== item))}
+              size="xs"
+            />
+          </span>
         </div>
       ))}
     </div>

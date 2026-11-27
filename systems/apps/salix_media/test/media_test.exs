@@ -178,5 +178,87 @@ defmodule SalixMediaTest do
       assert req["max_tokens"] == 1024
       refute Map.has_key?(req, "reasoning_effort")
     end
+
+    test "Vision describe sends a perception system prompt and honors config prompt overrides" do
+      SalixMedia.MockMedia.set("/chat/completions", %{
+        "choices" => [%{"message" => %{"content" => "Humphrey Bogart portrait."}}]
+      })
+
+      base = %{
+        "endpoint" => SystemsRuntime.get_env(:salix_media, :base_url),
+        "model" => "gpt-5.6-luna"
+      }
+
+      assert {:ok, %{description: "Humphrey Bogart portrait."}} =
+               Vision.describe("https://cdn/avatar.png",
+                 question: "Who is this?",
+                 config: base
+               )
+
+      assert [
+               %{"role" => "system", "content" => default_system},
+               %{
+                 "role" => "user",
+                 "content" => [
+                   %{"type" => "text", "text" => "Who is this?"},
+                   %{"type" => "image_url", "image_url" => %{"url" => "https://cdn/avatar.png"}}
+                 ]
+               }
+             ] = SalixMedia.MockMedia.last_request()["messages"]
+
+      assert is_binary(default_system) and default_system =~ "Do not speculate"
+
+      assert {:ok, _} =
+               Vision.describe("https://cdn/avatar.png",
+                 question: "Who is this?",
+                 system_prompt: "Explicit call system override.",
+                 config: Map.put(base, "system_prompt", "Config system override.")
+               )
+
+      assert [
+               %{"role" => "system", "content" => "Explicit call system override."},
+               %{"role" => "user", "content" => [%{"text" => "Who is this?"}, _image]}
+             ] = SalixMedia.MockMedia.last_request()["messages"]
+
+      assert {:ok, _} =
+               Vision.describe("https://cdn/avatar.png",
+                 question: "   ",
+                 config:
+                   Map.merge(base, %{
+                     "system_prompt" => "Custom visual analyst instructions.",
+                     "default_prompt" => "Custom fallback prompt."
+                   })
+               )
+
+      assert [
+               %{"role" => "system", "content" => "Custom visual analyst instructions."},
+               %{
+                 "role" => "user",
+                 "content" => [
+                   %{"type" => "text", "text" => "Custom fallback prompt."},
+                   %{"type" => "image_url", "image_url" => %{"url" => "https://cdn/avatar.png"}}
+                 ]
+               }
+             ] = SalixMedia.MockMedia.last_request()["messages"]
+
+      assert {:ok, _} =
+               Vision.describe("https://cdn/avatar.png",
+                 config:
+                   Map.merge(base, %{
+                     "system_prompt" => "  ",
+                     "default_prompt" => ""
+                   })
+               )
+
+      assert [
+               %{"role" => "system", "content" => ^default_system},
+               %{
+                 "role" => "user",
+                 "content" => [%{"type" => "text", "text" => fallback_query}, _image]
+               }
+             ] = SalixMedia.MockMedia.last_request()["messages"]
+
+      assert is_binary(fallback_query) and fallback_query =~ "Do not speculate."
+    end
   end
 end

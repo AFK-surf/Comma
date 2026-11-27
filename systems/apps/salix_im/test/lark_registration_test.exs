@@ -102,6 +102,37 @@ defmodule SalixIM.LarkRegistrationTest do
     assert %URI{host: "open.feishu.cn", path: "/page/cli"} = URI.parse(begun.url)
   end
 
+  # The link is shown as a QR code, which holds about 2,900 bytes: a longer
+  # one shows no code at all. The scopes ask for documents as the member and
+  # as the bot, on each platform, and an update of an app names it too.
+  test "the link with every scope still fits a QR code on each platform" do
+    for domain <- ["feishu", "lark"] do
+      assert {:ok, begun} =
+               Registration.begin(domain, "Comma for Ada Lovelace's Workspace",
+                 app_id: "cli_a1b2c3d4e5f6a7b8"
+               )
+
+      assert byte_size(begun.url) < 2_400, "#{domain} link is #{byte_size(begun.url)} bytes"
+
+      scopes =
+        URI.decode_query(URI.parse(begun.url).query)["addons"]
+        |> Base.url_decode64!(padding: false)
+        |> :zlib.gunzip()
+        |> Jason.decode!()
+        |> Map.fetch!("scopes")
+
+      assert scopes["user"] == Registration.member_scopes(domain)
+      assert "docx:document:readonly" in scopes["user"]
+      assert "docx:document:readonly" in scopes["tenant"]
+      assert "im:chat:create" in scopes["tenant"]
+      assert "calendar:calendar" in scopes["tenant"]
+      assert "calendar:calendar:readonly" in scopes["tenant"]
+      assert "calendar:calendar:read" in scopes["tenant"]
+      assert "calendar:calendar.event:read" in scopes["tenant"]
+      refute "offline_access" in scopes["user"]
+    end
+  end
+
   @tag polls: [
          %{"error" => "authorization_pending", "user_info" => %{"tenant_brand" => "lark"}},
          %{

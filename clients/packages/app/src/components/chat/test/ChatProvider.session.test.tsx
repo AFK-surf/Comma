@@ -570,6 +570,57 @@ describe("ChatProvider session ownership", () => {
     ).toHaveTextContent("ready:Chat");
   });
 
+  it("hands the conversation a Raycast draft with its source, whether the conversation is ready or still loading", async () => {
+    const setDraft = vi.spyOn(CoreConversationChannel.prototype, "setDraft");
+
+    // The conversation is ready: the words a Raycast link handed over go to it with their source.
+    core = scriptedChat();
+    workspaceChat.state = strictHome;
+    const ready = render(raycastDraftHome("Book a table"));
+    await flush();
+    expect(setDraft.mock.calls).toContainEqual(["Book a table", "raycast"]);
+    ready.unmount();
+    setDraft.mockClear();
+
+    // The conversation is still loading: the words wait in Home, and keep their source when it is ready.
+    core = scriptedChat();
+    workspaceChat.state = { status: "loading" };
+    const loading = render(raycastDraftHome("And a taxi"));
+    await flush();
+    expect(setDraft).not.toHaveBeenCalled();
+    workspaceChat.state = strictHome;
+    loading.rerender(raycastDraftHome("And a taxi"));
+    await flush();
+    expect(setDraft.mock.calls).toContainEqual(["And a taxi", "raycast"]);
+  });
+
+  it("sends a Raycast draft with its source when the person sends before the conversation is ready, and marks nothing written after it", async () => {
+    const setDraft = vi.spyOn(CoreConversationChannel.prototype, "setDraft");
+    const send = vi.spyOn(CoreConversationChannel.prototype, "send");
+    core = scriptedChat();
+    workspaceChat.state = { status: "loading" };
+    workspaceChat.resolve.mockResolvedValue({ ...strictHome, messages: [] });
+    render(raycastDraftHome("Book a table"));
+    await flush();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await flush();
+    expect(setDraft.mock.calls).toEqual([["Book a table", "raycast"]]);
+    expect(send.mock.calls.map(([text]) => text)).toEqual(["Book a table"]);
+    // The draft got its source before the send that consumes it.
+    expect(setDraft.mock.invocationCallOrder[0]).toBeLessThan(
+      send.mock.invocationCallOrder[0]!
+    );
+
+    // Words typed here afterwards were not written in Raycast.
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "Thanks");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await flush();
+    expect(send.mock.calls.map(([text]) => text)).toEqual(["Book a table", "Thanks"]);
+    expect(setDraft.mock.calls).toEqual([["Book a table", "raycast"]]);
+  });
+
   it("keeps unkeyed Settings state and Home history across a generation bump", async () => {
     core = scriptedChat("Kept through Settings");
     const rendered = render(
@@ -876,6 +927,37 @@ function scriptedChat(historyText?: string, shows = true) {
     },
   });
 }
+
+/** Home with words a Raycast link handed over. */
+const raycastDraftHome = (draft: string) => (
+  <ChatProvider productLease={testProductLease}>
+    <ChatSidebarProvider>
+      <HomeRoute
+        // A new callback each time: Home renders again and reads the Workspace's chat as it is now.
+        onConnectApps={() => undefined}
+        requestedDraft={draft}
+        requestedDraftEntry="raycast"
+      />
+    </ChatSidebarProvider>
+  </ChatProvider>
+);
+
+/** The conversation `scriptedChat` shows, as the Workspace's Home. */
+const strictConversation = {
+  group_id: "grp_strict",
+  id: "cnv_strict",
+  kind: "user_chat" as const,
+  messages: [] as never[],
+  status: "active",
+  title: "Chat",
+};
+
+const strictHome = {
+  status: "ready" as const,
+  workspaceId: "wsp_strict",
+  groupId: "grp_strict",
+  conversation: strictConversation,
+};
 
 type ReadyResolution = ReturnType<typeof readyResolution>;
 

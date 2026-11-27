@@ -22,6 +22,19 @@ describe("task status semantics", () => {
     expect(taskStatusBucket(status)).toBe(bucket);
   });
 
+  it("places active non-ended Loop Tasks into the loops bucket", () => {
+    expect(taskStatusBucket("active", { loopState: "active" })).toBe("loops");
+    expect(taskStatusBucket("active", { loopState: "pending" })).toBe("loops");
+    expect(taskStatusBucket("active", { loopState: "paused" })).toBe("loops");
+    expect(taskStatusBucket("active", { loopState: "ended" })).toBe("in_progress");
+    expect(taskStatusBucket("active")).toBe("in_progress");
+    expect(taskStatusBucket("ready_for_review", { loopState: "active" })).toBe(
+      "needs_review"
+    );
+    expect(taskStatusBucket("completed", { loopState: "active" })).toBe("done");
+    expect(taskStatusBucket("failed", { loopState: "active" })).toBe("cancelled");
+  });
+
   it.each([
     "completed",
     "failed",

@@ -16,6 +16,7 @@ import {
   LarkProviderLogo,
   SlackProviderLogo,
 } from "@comma/ui/components/provider-brand-logos";
+import { taskRequestAcceptBillingFailure } from "../billing/billingError";
 import { toast } from "@comma/ui/components/toast";
 import {
   type SettingsCategoryDefinition,
@@ -138,8 +139,10 @@ export function useTaskRequestsCategory(
       try {
         await write();
         return true;
-      } catch {
-        toast.error(m.task_requests_failed());
+      } catch (failure) {
+        toast.error(
+          taskRequestAcceptBillingFailure(failure, m) ?? m.task_requests_failed()
+        );
         return false;
       } finally {
         setBusy(false);
@@ -322,7 +325,17 @@ export function useTaskRequestsCategory(
               void run(() => call("taskRequests.withdraw", { request: sent.id })),
           },
         }
-      : {}),
+      : sent.status !== "withdrawn"
+        ? {
+            control: {
+              type: "button" as const,
+              label: m.task_requests_delete(),
+              disabled: busy,
+              onPress: () =>
+                void run(() => call("taskRequests.hide", { request: sent.id })),
+            },
+          }
+        : {}),
   }));
   if (value?.sent && sentRows.length === 0)
     sentRows.push({
@@ -467,13 +480,12 @@ export function useTaskRequestsCategory(
   const back = { backLabel: m.task_requests(), onBack: () => setDetail(undefined) };
   let view: SettingsCategoryDetail | undefined;
   if (detail?.kind === "review") {
-    const accept = (to: "task" | "router" = "task") =>
+    const accept = () =>
       workspace &&
       void run(() =>
         call("taskRequests.accept", {
           workspace,
           request: detail.request.id,
-          to,
           ...(detail.title.trim() ? { title: detail.title.trim() } : {}),
         })
       ).then((done) => done && setDetail(undefined));
@@ -499,14 +511,6 @@ export function useTaskRequestsCategory(
             size="sm"
           >
             {m.task_requests_decline()}
-          </Button>
-          <Button
-            hierarchy="secondary-gray"
-            isDisabled={busy}
-            onPress={() => accept("router")}
-            size="sm"
-          >
-            {m.task_requests_to_router()}
           </Button>
           <Button
             hierarchy="primary"

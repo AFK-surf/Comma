@@ -29,6 +29,15 @@ export class AccountComputeNodeService {
   private sessionIdentity?: string;
   private generation = randomUUID();
   private snapshot: ComputeNodeState;
+  /** The maintenance request whose success the node already took in. */
+  private settledMaintenanceId: string | undefined;
+  /** Captured before a destructive reset+reinstall so the node automatically rebinds and returns to ready. */
+  private pendingResetRebind:
+    | { key: string; workspaceId: string; wasEnabled: boolean }
+    | undefined;
+  /** Last (installed -> selected) release pair attempted by silent auto-update, to prevent retry loops. */
+  private autoUpdateKey: string | undefined;
+  private autoUpdateInFlight = false;
   private discoveryEpoch = 0;
   private cloudTargets = new Map<
     string,
@@ -56,14 +65,22 @@ export class AccountComputeNodeService {
   ) {
     this.snapshot = this.emptyState();
     this.sessionChanged(session);
-    // Main's own Host reset deleted the local registrations: the current account replaces its stale installation now.
+    // Main's own Host reset deleted the local registrations: mark all loaded accounts so rebind is authorized.
     this.maintenance?.onHostReset((): void => {
-      const key = this.key;
-      if (!key) return;
-      void this.services
-        .get(key)
-        ?.then((service) => (this.key === key ? service.hostDataReset() : undefined))
-        .catch(() => undefined);
+      const activeKey = this.key;
+      for (const [serviceKey, pending] of this.services) {
+        void pending
+          .then(async (service) => {
+            if (serviceKey === activeKey && this.key === activeKey)
+              await service.hostDataReset();
+            else await service.markHostDataReset();
+          })
+          .catch(() => undefined);
+      }
+    });
+    // A request that succeeds on a background retry shows on the node as a first-try success does.
+    this.maintenance?.onSettled((state): void => {
+      this.afterMaintenance(state);
     });
     // Main's own pending Host maintenance continues, or a stuck one recovers, after a restart, signed in or not.
     void this.maintenance
@@ -88,6 +105,8 @@ export class AccountComputeNodeService {
     if (identity === this.sessionIdentity) return;
     this.sessionIdentity = identity;
     this.key = key;
+    this.pendingResetRebind = undefined;
+    this.autoUpdateKey = undefined;
     this.recoveryTargets.clear();
     this.cloudTargets.clear();
     this.discoveryEpoch++;
@@ -100,8 +119,10 @@ export class AccountComputeNodeService {
   state() {
     return structuredClone(this.snapshot);
   }
-  refresh() {
-    return this.call((service) => service.refresh());
+  async refresh() {
+    const result = await this.call((service) => service.refresh());
+    void this.maybeAutoUpdate();
+    return result;
   }
   reauthorize(expected: ComputeNodeExpectedBinding) {
     return this.call((service) => service.reauthorize(expected));
@@ -110,6 +131,7 @@ export class AccountComputeNodeService {
     return this.call((service) => service.continue());
   }
   configure(input: ComputeNodeConfigureInput) {
+    if (!input.desiredEnabled) this.pendingResetRebind = undefined;
     const generation = this.generation;
     return this.call(async (service) => {
       // The service checks local Host maintenance itself, so continuation can update an idle Host.
@@ -143,9 +165,11 @@ export class AccountComputeNodeService {
     });
   }
   drain(expected?: ComputeNodeExpectedBinding) {
+    this.pendingResetRebind = undefined;
     return this.call((service) => service.drain(expected));
   }
   remove(expected?: ComputeNodeExpectedBinding) {
+    this.pendingResetRebind = undefined;
     return this.call((service) => service.remove(expected));
   }
   /** The server reports running work for the current account's node. */
@@ -164,13 +188,41 @@ export class AccountComputeNodeService {
       .catch(() => undefined);
   }
 
-  hostMaintenanceState() {
+  async hostMaintenanceState() {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
-    return this.maintenance.state();
+    const state = await this.maintenance.state();
+    void this.maybeAutoUpdate(state);
+    return state;
   }
   async maintainHost(input: import("@comma/native-bridge").HostMaintenanceInput) {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
-    return this.afterMaintenance(await this.maintenance.maintain(input));
+    if (input.action === "reinstall" && input.dataPolicy === "reset" && this.key) {
+      const current =
+        (await this.services
+          .get(this.key)
+          ?.then((service) => service.state())
+          .catch(() => this.snapshot)) ?? this.snapshot;
+      this.pendingResetRebind =
+        current.desiredEnabled && current.bindingWorkspaceId
+          ? {
+              key: this.key,
+              workspaceId: current.bindingWorkspaceId,
+              wasEnabled: true,
+            }
+          : undefined;
+    } else if (input.action === "uninstall") {
+      this.pendingResetRebind = undefined;
+    }
+    try {
+      const state = await this.maintenance.maintain(input);
+      if (state.operation?.outcome === "failed") {
+        this.pendingResetRebind = undefined;
+      }
+      return this.afterMaintenance(state);
+    } catch (error) {
+      this.pendingResetRebind = undefined;
+      throw error;
+    }
   }
   async resumeHostMaintenance(input: { requestId: string }) {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
@@ -178,14 +230,76 @@ export class AccountComputeNodeService {
       await this.maintenance.resume(input.requestId, () => this.workActive())
     );
   }
-  /** A reinstall, first try or continued, brings back a Host the person uninstalled: setup that waited goes on. */
-  private afterMaintenance(state: HostMaintenanceState) {
+  /**
+   * Silently updates an installed Host in the background when the node is enabled, idle, and has no
+   * running or failed maintenance operation. Deduplicated per (installed, selected) release pair.
+   */
+  private async maybeAutoUpdate(knownState?: HostMaintenanceState) {
+    if (!this.key || !this.maintenance || this.autoUpdateInFlight) return;
+    if (this.workActive() || !this.snapshot.desiredEnabled) return;
+    const maintenanceState =
+      knownState ?? (await this.maintenance.state().catch(() => undefined));
     if (
-      state.operation?.action === "reinstall" &&
-      state.operation.outcome === "succeeded" &&
-      this.key
+      !maintenanceState ||
+      maintenanceState.installation !== "installed" ||
+      !maintenanceState.updateAvailable
+    )
+      return;
+    if (
+      maintenanceState.operation &&
+      maintenanceState.operation.outcome !== "succeeded"
+    )
+      return;
+    if (!this.key || this.workActive() || !this.snapshot.desiredEnabled) return;
+    const pair = `${maintenanceState.installedReleaseId ?? ""}->${maintenanceState.selectedReleaseId ?? ""}`;
+    if (this.autoUpdateKey === pair) return;
+    this.autoUpdateKey = pair;
+    this.autoUpdateInFlight = true;
+    try {
+      const next = await this.maintenance.automaticUpdate();
+      this.afterMaintenance(next);
+    } catch {
+      // Failure stays visible on the maintenance state with a clear retry entry.
+    } finally {
+      this.autoUpdateInFlight = false;
+    }
+  }
+  /**
+   * A reinstall or update, first try, continued or retried in the background, resumes the node's setup.
+   * A reset reinstall automatically re-enables the previous workspace binding so the node returns to ready.
+   * An uninstall shows on the node at once. Each request is taken in once.
+   */
+  private afterMaintenance(state: HostMaintenanceState) {
+    if (state.operation?.outcome !== "succeeded" || !this.key) return state;
+    if (this.settledMaintenanceId === state.operation.requestId) return state;
+    this.settledMaintenanceId = state.operation.requestId;
+    if (
+      state.operation.action === "reinstall" &&
+      state.operation.dataPolicy === "reset"
+    ) {
+      const rebind = this.pendingResetRebind;
+      this.pendingResetRebind = undefined;
+      if (
+        rebind &&
+        rebind.key === this.key &&
+        rebind.wasEnabled &&
+        rebind.workspaceId
+      ) {
+        void this.call((service) =>
+          service.rebindAfterHostReset(rebind.workspaceId)
+        ).catch(() => undefined);
+      } else {
+        void this.call((service) => service.hostReinstalled()).catch(() => undefined);
+      }
+    } else if (
+      state.operation.action === "reinstall" ||
+      state.operation.action === "update"
     )
       void this.call((service) => service.hostReinstalled()).catch(() => undefined);
+    else if (state.operation.action === "uninstall")
+      void this.call((service) =>
+        service.hostUninstalled(state.operation?.dataPolicy === "reset")
+      ).catch(() => undefined);
     return state;
   }
 
@@ -397,6 +511,8 @@ export class AccountComputeNodeService {
               updateHost: () => this.maintenance!.automaticUpdate(),
               reinstallHost: (explicit: boolean, requireCurrent: () => void) =>
                 this.maintenance!.prepareForSetup(explicit, requireCurrent),
+              hostInstallation: async () =>
+                (await this.maintenance!.state()).installation,
             }
           : {}),
         filePath: join(
@@ -412,6 +528,7 @@ export class AccountComputeNodeService {
           if (this.key !== key) return;
           this.snapshot = state;
           this.options.onStateChanged?.(this.state());
+          if (state.desiredEnabled) void this.maybeAutoUpdate();
         },
       });
       this.services.set(key, pending);

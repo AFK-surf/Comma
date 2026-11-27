@@ -308,7 +308,7 @@ defmodule SalixIM.Provider.OperationRegistry do
         "cursor" =>
           "Optional Slack pagination cursor from next_cursor; preserve the same filters and limit across pages.",
         "types" =>
-          "Optional comma-separated Slack conversation types. Defaults to public_channel,private_channel.",
+          "Optional comma-separated Slack conversation types. Defaults to public_channel,private_channel. With im or mpim, rows carry is_im or is_mpim, and each im row carries the DM peer's user ID as user, so do not call slack.list_channel_members to find a DM.",
         "exclude_archived" => "Optional boolean, default true."
       }
     },
@@ -418,7 +418,8 @@ defmodule SalixIM.Provider.OperationRegistry do
         "conversations.replies: one page of one thread, oldest first. channel plus ts (the thread parent, or an unthreaded message — then only that message is returned). Continue by passing next_cursor back as cursor. oldest/latest/inclusive/limit match Slack; default limit 100, max 1000. before_ts is exclusive latest for the page before the current trigger (do not combine it with cursor, oldest, latest, or inclusive). Each human message's user field is an opaque Slack user ID, not a person's name. Before naming or attributing content to a person, call slack.get_user_info for every relevant ID. Never infer identity from message text, prior memory, or another user's profile. Files are metadata only; fetch bytes with slack.fetch_file. stale=true means this copy may lag a later edit. incomplete.reason=not_synced means older replies are not indexed yet, not that the thread is empty." <>
           " Returned messages still show what was said. Use their supported details without claiming that the history is complete." <>
           " If the request needs original material, fetch the returned file instead of treating its metadata as the material." <>
-          " Do not ask the user to wait for synchronization when the returned messages or an available original file can answer the question.",
+          " Do not ask the user to wait for synchronization when the returned messages or an available original file can answer the question." <>
+          " Each message includes its exact permalink when available (for thread replies, pointing to that reply) and compact reactions when present.",
       "required_params" => ["channel", "ts"],
       "parameters" => %{
         "channel" =>
@@ -448,7 +449,7 @@ defmodule SalixIM.Provider.OperationRegistry do
       "method" => "conversations.history",
       "safety" => "read",
       "description" =>
-        "conversations.history: one page of top-level channel messages, newest first. Does not return thread replies; use slack.get_thread_replies. Continue by passing next_cursor back as cursor. oldest/latest/inclusive/limit match Slack; default limit 100, max 1000. One top-level permalink: oldest=latest=<ts>, inclusive=true, limit=1. Each human message's user field is an opaque Slack user ID, not a person's name. Before naming or attributing content to a person, call slack.get_user_info for every relevant ID. Never infer identity from message text, prior memory, or another user's profile. Files are metadata only; fetch bytes with slack.fetch_file. stale=true means this copy may lag a later edit. incomplete.reason=not_synced means older history is not indexed yet, not that the channel is empty.",
+        "conversations.history: one page of top-level channel messages, newest first. Does not return thread replies; use slack.get_thread_replies. Continue by passing next_cursor back as cursor. oldest/latest/inclusive/limit match Slack; default limit 100, max 1000. One top-level permalink: oldest=latest=<ts>, inclusive=true, limit=1. Each human message's user field is an opaque Slack user ID, not a person's name. Before naming or attributing content to a person, call slack.get_user_info for every relevant ID. Never infer identity from message text, prior memory, or another user's profile. Files are metadata only; fetch bytes with slack.fetch_file. stale=true means this copy may lag a later edit. incomplete.reason=not_synced means older history is not indexed yet, not that the channel is empty. Each message includes its exact permalink when available (for thread replies, pointing to that reply) and compact reactions when present.",
       "required_params" => ["channel"],
       "parameters" => %{
         "channel" =>
@@ -465,7 +466,7 @@ defmodule SalixIM.Provider.OperationRegistry do
       "name" => "slack.search",
       "safety" => "read",
       "description" =>
-        "One page of indexed Slack messages matching query, newest first, including thread replies. Required query. count default 30, max 200. Continue by passing next_cursor back as cursor. sort is timestamp only (default desc); sort=score is rejected. Matching is case-insensitive substring on text and blocks. Juxtaposed terms AND; OR combines AND-groups; -term and -\"phrase\" exclude. Supported modifiers: from:<@U…> or from:U…, in:C… or in:<#C…>, after:YYYY-MM-DD, before:YYYY-MM-DD, has:file, quoted phrases. in: must be a channel id — resolve names with slack.list_channels. Unsupported syntax (-from:, has:link, on:, during:, in:channel_name, parentheses) errors rather than being ignored. Each human message's user field is an opaque Slack user ID, not a person's name. Before naming or attributing content to a person, call slack.get_user_info for every relevant ID. Never infer identity from message text, prior memory, or another user's profile. Files are metadata only; fetch bytes with slack.fetch_file. stale=true means this copy may lag a later edit. incomplete.reason=not_synced means older history is not indexed yet, not that there were no matches. This reads the local index, not Slack search.messages.",
+        "One page of indexed Slack messages matching query, newest first, including thread replies. Required query. count default 30, max 200. Continue by passing next_cursor back as cursor. sort is timestamp only (default desc); sort=score is rejected. Matching is case-insensitive substring on text and blocks. Juxtaposed terms AND; OR combines AND-groups; -term and -\"phrase\" exclude. Supported modifiers: from:<@U…> or from:U…, in:C… or in:<#C…>, after:YYYY-MM-DD, before:YYYY-MM-DD, has:file, quoted phrases. in: must be a channel id — resolve names with slack.list_channels. Unsupported syntax (-from:, has:link, on:, during:, in:channel_name, parentheses) errors rather than being ignored. Each human message's user field is an opaque Slack user ID, not a person's name. Before naming or attributing content to a person, call slack.get_user_info for every relevant ID. Never infer identity from message text, prior memory, or another user's profile. Files are metadata only; fetch bytes with slack.fetch_file. stale=true means this copy may lag a later edit. incomplete.reason=not_synced means older history is not indexed yet, not that there were no matches. This reads the local index, not Slack search.messages. Each message includes its exact permalink when available (for thread replies, pointing to that reply) and compact reactions when present.",
       "required_params" => ["query"],
       "parameters" => %{
         "query" =>
@@ -779,6 +780,34 @@ defmodule SalixIM.Provider.OperationRegistry do
       }
     },
     %{
+      "name" => "feishu.bind_thread_to_task",
+      "method" => "im.feishu.bind_thread_to_task",
+      "safety" => "write",
+      "description" =>
+        "Hand one Feishu group thread to an existing Task you created. Use it apart from Task creation, only when the person asks for it or you decide that later messages of that exact thread should go to the Task directly. From then on a message of the thread enters the Task instead of reaching you, and the Task's visible replies go into the thread. The call posts the Task's supervision link in the thread when one is configured. It creates no Task and no Task card. Calling it again for the same Task is harmless; a thread bound to another Task is refused. If the source message is top-level with no thread_id yet, reply in thread first and pass the thread_id and message_id from that reply.",
+      "required_params" => ["conversation_id", "chat_id", "thread_id", "message_id"],
+      "parameters" => %{
+        "conversation_id" => "Existing Task conversation_id that you created.",
+        "chat_id" => "Feishu chat_id of the group from the source context.",
+        "thread_id" => "Feishu thread_id (omt_...) of the thread from the source context.",
+        "message_id" =>
+          "A message of that thread from the source context, such as the source message_id."
+      }
+    },
+    %{
+      "name" => "feishu.leave_thread",
+      "method" => "im.feishu.leave_thread",
+      "safety" => "write",
+      "description" =>
+        "Stop following one Feishu group thread when people there ask you to (stop watching, 别跟了). Reply in the thread first, saying a mention brings you back, then call this as your last action there. Messages of the thread that do not mention you then stop reaching you; a mention reaches you, and your next reply in the thread follows it again.",
+      "required_params" => ["chat_id", "thread_id"],
+      "parameters" => %{
+        "chat_id" => "Feishu chat_id of the group from the source context.",
+        "thread_id" =>
+          "Feishu thread_id (omt_...) of the thread from the source context. For the messages outside any thread of a group you created, pass its chat_id."
+      }
+    },
+    %{
       "name" => "feishu.send_message",
       "task_payload_params" => ["text"],
       "method" => "POST /im/v1/messages | POST /im/v1/messages/:message_id/reply",
@@ -837,7 +866,7 @@ defmodule SalixIM.Provider.OperationRegistry do
         "receive_id" => "Required chat/user/open ID.",
         "receive_id_type" => "Optional; defaults to chat_id.",
         "text" =>
-          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people; <at user_id=\"ID\">name</at> places one of them in the text. Other at-tags are literal.",
+          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people; <at user_id=\"ID\">name</at> places one of them in the text. An at-tag for an ID not in mentions fails the send.",
         "format" => @feishu_message_format,
         "mentions" =>
           "Optional list of {user_id, name} entries. Resolve named people with list_chat_members or directory tools before sending.",
@@ -856,7 +885,7 @@ defmodule SalixIM.Provider.OperationRegistry do
       "parameters" => %{
         "message_id" => "Required source Feishu message ID.",
         "text" =>
-          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people; <at user_id=\"ID\">name</at> places one of them in the text. Other at-tags are literal.",
+          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people; <at user_id=\"ID\">name</at> places one of them in the text. An at-tag for an ID not in mentions fails the send.",
         "format" => @feishu_message_format,
         "reply_in_thread" =>
           "Optional boolean; defaults to true when chat_type=group and thread_id is absent.",
@@ -996,7 +1025,7 @@ defmodule SalixIM.Provider.OperationRegistry do
       "parameters" => %{
         "message_id" => "Bot-authored message ID.",
         "text" =>
-          "Replacement standard Markdown. External images become labeled links. Body at-tags are literal.",
+          "Replacement standard Markdown. External images become labeled links. An update cannot mention anyone: an at-tag fails it.",
         "format" => @feishu_message_format
       }
     },

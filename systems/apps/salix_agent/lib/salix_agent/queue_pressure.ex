@@ -68,8 +68,21 @@ defmodule SalixAgent.QueuePressure do
   end
 
   @doc "The people's requests queued behind the open activation, oldest first."
-  def people(session),
-    do: session |> unacked_items() |> Enum.filter(&(human_source_wakeable?(&1) and person?(&1)))
+  def people(session) do
+    open_thread = open_unanswered_thread(session)
+
+    session
+    |> unacked_items()
+    |> Enum.filter(fn item ->
+      human_source_wakeable?(item) and person?(item) and
+        (is_nil(open_thread) or InternalSession.origin_thread(origin(item)) != open_thread)
+    end)
+  end
+
+  defp open_unanswered_thread(session) when InternalSession.is_session(session),
+    do: InternalSession.active_unanswered_thread(session)
+
+  defp open_unanswered_thread(_session), do: nil
 
   @doc "Whether a trusted origin names a person as its sender: a provider user or a Comma user."
   def person_origin?(origin) when is_map(origin),
@@ -105,7 +118,7 @@ defmodule SalixAgent.QueuePressure do
         listed ++
         if(omitted > 0, do: ["- #{omitted} more"], else: []) ++
         [
-          "Finish the current request without further direct execution or investigation steps. Ending the turn does not continue this request later: nothing wakes you for it again unless its person writes. Before you end, give remaining work to a Task with task.create and wait_for that result, or tell the person what is done and what is blocked. If the current request is complete, call end_turn with outcome=done and reply={tool,params} for its unsent final answer or status note. Include its IFC declaration in reply when needed. If the answer was already sent, omit reply. Queued requests have separate activations and do not prevent the current request from ending. Do not answer them here."
+          "Finish the current request without further direct execution or investigation steps. Ending the turn does not continue this request later: nothing wakes you for it again unless its person writes. Before you end, give remaining work to a Task with task.create and wait_for that result, or tell the person what is done and what is blocked. If the current request is complete, call end_turn with outcome=done and reply matching its disclosed schema for its unsent final answer or status note. Include its IFC declaration in reply when needed. If the answer was already sent, omit reply. Queued requests have separate activations and do not prevent the current request from ending. Do not answer them here."
         ]
 
     content = Enum.join(lines, "\n")

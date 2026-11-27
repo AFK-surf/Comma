@@ -271,9 +271,7 @@ defmodule CommaWeb.CommaReleaseTest do
     assert output =~ "alert_router.slack.bot_token is required when alert_router.mode=shadow"
   end
 
-  test "runtime binds the gateway control, proxy, routing, and mutual TLS contract together" do
-    secret = String.duplicate("g", 32)
-
+  test "runtime configures the embedded Agent VMM worker when enabled" do
     {output, status} =
       System.cmd(
         "mix",
@@ -284,37 +282,30 @@ defmodule CommaWeb.CommaReleaseTest do
           "--no-deps-check",
           "-e",
           """
-          config = Config.Reader.read!("config/runtime.exs", env: :prod, target: :host)
-          IO.puts("control-bound=" <> to_string(byte_size(get_in(config, [:salix_web, :agent_vmm_gateway_control_secret])) == 32))
-          IO.inspect(get_in(config, [:salix_store, :agent_vmm_gateway_url_template]), label: "route")
-          IO.inspect(get_in(config, [:salix_store, :agent_vmm_gateway_tls]), label: "tls")
+          config = Config.Reader.read!("config/runtime.exs", env: :test, target: :host)
+          IO.inspect(get_in(config, [:salix_store, :agent_vmm_worker]), label: "worker")
           """
         ],
         cd: umbrella_root(),
         env:
           release_env() ++
             [
-              {"COMMA_RELEASE_JOB", "1"},
-              {"COMMA_SUBSYSTEMS", ""},
-              {"SALIX_AGENT_VMM_GATEWAY_URL_TEMPLATE",
-               "https://{instance_id}.salix-vmm-gateway-headless.comma.svc.cluster.local:8443"},
-              {"SALIX_AGENT_VMM_GATEWAY_CONTROL_SECRET", secret},
-              {"SALIX_AGENT_VMM_GATEWAY_CA_FILE", "/tls/ca.crt"},
-              {"SALIX_AGENT_VMM_GATEWAY_CERT_FILE", "/tls/tls.crt"},
-              {"SALIX_AGENT_VMM_GATEWAY_KEY_FILE", "/tls/tls.key"}
+              {"COMMA_RELEASE_JOB", nil},
+              {"COMMA_SUBSYSTEMS", "salix"},
+              {"POD_NAME", "comma-0"},
+              {"SALIX_AGENT_VMM_GATEWAY_ENABLED", "true"},
+              {"SALIX_AGENT_VMM_REMOTE_LISTEN", "0.0.0.0:7443"},
+              {"SALIX_AGENT_VMM_TLS_CERT_FILE", "/tls/tls.crt"},
+              {"SALIX_AGENT_VMM_TLS_KEY_FILE", "/tls/tls.key"}
             ],
         stderr_to_stdout: true
       )
 
     assert status == 0, output
-    assert output =~ "control-bound=true"
-    refute output =~ secret
-    assert output =~ "{instance_id}.salix-vmm-gateway-headless.comma.svc.cluster.local:8443"
-    assert output =~ "verify: :verify_peer"
-    assert output =~ ~s(cacertfile: ~c"/tls/ca.crt")
-    assert output =~ ~s(certfile: ~c"/tls/tls.crt")
-    assert output =~ ~s(keyfile: ~c"/tls/tls.key")
-    assert output =~ ~s(versions: [:"tlsv1.3"])
+    assert output =~ ~s(instance_id: "comma-0")
+    assert output =~ ~s(remote_listen: "0.0.0.0:7443")
+    assert output =~ ~s(tls_cert_file: "/tls/tls.crt")
+    assert output =~ ~s(tls_key_file: "/tls/tls.key")
   end
 
   test "aggregate release migrate supports BFT-only without Stripe config" do

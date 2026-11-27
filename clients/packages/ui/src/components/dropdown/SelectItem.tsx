@@ -81,7 +81,7 @@ export const SelectItem = ({
                   className={cx(
                     "block",
                     virtualized ? "truncate" : "whitespace-nowrap",
-                    subtitle && "leading-5"
+                    subtitle && "font-medium leading-5 text-primary"
                   )}
                   data-slot="dropdown-option-label"
                   {...definedProps({ style: fontFamily ? { fontFamily } : undefined })}
@@ -91,7 +91,10 @@ export const SelectItem = ({
                 {subtitle && (
                   <AriaText
                     slot="description"
-                    className="mt-xxs block max-w-72 truncate text-xs leading-4 text-tertiary"
+                    className={cx(
+                      "mt-xxs block max-w-72 text-xs leading-4 text-tertiary",
+                      virtualized ? "truncate" : "whitespace-normal"
+                    )}
                     data-slot="dropdown-option-subtitle"
                     title={subtitle}
                   >

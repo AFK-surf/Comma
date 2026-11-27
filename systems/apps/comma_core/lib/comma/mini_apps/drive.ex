@@ -20,7 +20,12 @@ defmodule Comma.MiniApps.Drive do
   def max_bytes, do: @max_bytes
 
   @doc "`:ok` when this runtime call may use the app folder."
-  def access(%{kind: kind, guest: guest}) when kind == :link or guest == true,
+  def access(%{app: %{visibility: "collaboration"}}), do: {:error, :unsupported}
+
+  def access(%{app: %{collaboration_conversation_id: id}}) when is_binary(id),
+    do: {:error, :unsupported}
+
+  def access(%{kind: kind, guest: guest}) when kind in [:link, :collaboration] or guest == true,
     do: {:error, :unsupported}
 
   def access(rt) do

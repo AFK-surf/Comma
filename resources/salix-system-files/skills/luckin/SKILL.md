@@ -37,3 +37,9 @@ Fallback: the official `luckin` CLI on the user's Mac
 
 If the preview price is higher than expected, confirm again. `cancelOrder`
 only after the user asks.
+
+## Live Activity
+
+After payment, surface the pickup code and order progress on the Dynamic Island
+with `live_activity.upsert` (`category: "order"`), and call `live_activity.end`
+once ready or picked up.

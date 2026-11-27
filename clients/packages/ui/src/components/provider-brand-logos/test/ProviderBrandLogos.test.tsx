@@ -21,6 +21,8 @@ describe("ProviderBrandLogos", () => {
     ["Google Drive", "google-drive"],
     ["Google Workspace", "google"],
     ["google-calendar", "google-calendar"],
+    ["google-colab", "google-colab"],
+    ["colab", "google-colab"],
     ["linear", "linear"],
     ["notion", "notion"],
     ["outlook", "outlook"],
@@ -32,6 +34,7 @@ describe("ProviderBrandLogos", () => {
     ["PostHog", "posthog"],
     ["Stripe", "stripe"],
     ["Dropbox", "dropbox"],
+    ["Fastmail", "fastmail"],
     ["Canva", "canva"],
     ["HubSpot", "hubspot"],
     ["amap", "amap"],
@@ -45,6 +48,8 @@ describe("ProviderBrandLogos", () => {
     ["tencent-docs", "tencent-docs"],
     ["flomo", "flomo"],
     ["pixso", "pixso"],
+    ["feishu-project", "feishu-project"],
+    ["meegle", "meegle"],
   ])("resolves %s to the %s identity artwork", (provider, expectedLogo) => {
     const Logo = resolveProviderBrandLogo(provider);
     expect(Logo).toBeDefined();

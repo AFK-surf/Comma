@@ -42,6 +42,16 @@ defmodule Comma.Salix.Client do
   @callback create_requested_task(workspace :: map(), attrs :: map(), opts :: keyword()) ::
               {:ok, map()} | {:error, term()}
 
+  @doc """
+  Create a Collaborative Task (`Comma.Collaborations`) in the workspace: an
+  Agent of its own runs it inside Salix on Comma's built-in model, and the
+  workspace's Router receives nothing of it. `attrs` carries `title`,
+  `content`, `client_request_id`, `owner_user_id` and `collaboration` (the
+  host and the members it was started with).
+  """
+  @callback create_collaborative_task(workspace :: map(), attrs :: map()) ::
+              {:ok, map()} | {:error, term()}
+
   @callback ensure_group_router_conversation(workspace :: map()) ::
               {:ok, map()} | {:error, term()}
   @callback ensure_group_router_conversation(workspace :: map(), opts :: keyword()) ::
@@ -63,12 +73,15 @@ defmodule Comma.Salix.Client do
             ) :: {:ok, [map()]} | {:error, term()}
   @callback list_task_files(workspace :: map(), opts :: keyword()) ::
               {:ok, map()} | {:error, term()}
+  @callback list_task_feed(workspace :: map(), opts :: keyword()) ::
+              {:ok, map()} | {:error, term()}
   @callback get_group_conversation(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, map()} | {:error, term()}
   @callback get_group_conversation_participant_history(map(), String.t(), String.t(), keyword()) ::
               {:ok, map()} | {:error, term()}
   @optional_callbacks enter_meeting_task: 3,
                       create_requested_task: 3,
+                      create_collaborative_task: 2,
                       update_meeting_task: 4,
                       get_group_conversation_participant_history: 4
   @callback list_group_conversation_pins(workspace :: map()) ::
@@ -115,6 +128,8 @@ defmodule Comma.Salix.Client do
               subscriber :: pid()
             ) :: {:ok, map()} | {:error, term()}
   @callback list_station_tasks(workspace :: map()) :: {:ok, [map()]} | {:error, term()}
+  @callback list_station_tasks(workspace :: map(), member_scope :: map()) ::
+              {:ok, [map()]} | {:error, term()}
   @callback subscribe_station_tasks(workspace :: map(), subscriber :: pid()) ::
               :ok | {:error, term()}
 
@@ -171,6 +186,40 @@ defmodule Comma.Salix.Client do
               conversation_id :: String.t(),
               attrs :: map()
             ) :: {:ok, map()} | {:error, term()}
+  @doc """
+  Product state written beside a Task's Messages for clients alone
+  (`SalixIM.ConversationServer.append_product_event/5`): no Agent reads it.
+  """
+  @callback append_product_event(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              event_type :: String.t(),
+              data :: map(),
+              idempotency_key :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
+  @optional_callbacks append_product_event: 5
+
+  @doc """
+  A file of a Task together, in its own folder (`/task/...` of its Worker's
+  workspace, which holds nothing of the host's): stored under `name`, or read
+  at `path`.
+  """
+  @callback write_task_file(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              name :: String.t(),
+              body :: binary()
+            ) :: {:ok, map()} | {:error, term()}
+  @callback read_task_file(workspace :: map(), conversation_id :: String.t(), path :: String.t()) ::
+              {:ok, binary()} | {:error, term()}
+  @callback open_task_file(workspace :: map(), conversation_id :: String.t(), path :: String.t()) ::
+              {:ok, map()} | {:error, term()}
+  @callback list_task_folder(workspace :: map(), conversation_id :: String.t()) ::
+              {:ok, [map()]} | {:error, term()}
+  @optional_callbacks write_task_file: 4,
+                      read_task_file: 3,
+                      open_task_file: 3,
+                      list_task_folder: 2
   @callback set_task_archived(map(), String.t(), :archive | :unarchive, pos_integer()) ::
               {:ok, map()} | {:error, term()}
 
@@ -210,12 +259,34 @@ defmodule Comma.Salix.Client do
   @optional_callbacks task_activity_participants: 2
 
   @doc """
+  Bounded list (max 6) of active worker sessions on an `agent_task`, primary
+  first, carrying slot/label/model/runtime identity metadata for multi-session
+  clients without expanding the legacy `<= 2` `participants` array.
+  """
+  @callback task_worker_sessions(workspace :: map(), conversation_id :: String.t()) ::
+              {:ok, [map()]} | {:error, term()}
+  @optional_callbacks task_worker_sessions: 2
+
+  @doc """
   Where a Task runs and the model it runs (`place`, `model`), which Task
   panels show instead of its Agent.
   """
   @callback task_run(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, map()} | {:error, term()}
   @optional_callbacks task_run: 2
+
+  @doc """
+  Sends `subscriber` `{:coding_sandbox_said, conversation_id}` each time the
+  station of that Task's sandbox says something new of what `task_run/2`
+  shows of it, until it exits. The message carries no fact: who hears it reads
+  the run again.
+  """
+  @callback subscribe_task_run(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              subscriber :: pid()
+            ) :: :ok | {:error, term()}
+  @optional_callbacks subscribe_task_run: 3
 
   @doc """
   The Background Loops of at most 50 Tasks of the Workspace's default Group,
@@ -439,8 +510,10 @@ defmodule Comma.Salix.Client do
   connections and turns off its Cloud VM. Repeating it is harmless.
   """
   @callback retire_workspace_scope(workspace :: map()) :: :ok | {:error, term()}
+  @callback retire_collaboration_group(group :: map()) :: :ok | {:error, term()}
 
   @optional_callbacks retire_workspace_scope: 1,
+                      retire_collaboration_group: 1,
                       conversation_uses_private_model?: 2,
                       verify_workspace_scope: 1,
                       get_group_condensed_workspace: 1,
@@ -463,6 +536,7 @@ defmodule Comma.Salix.Client do
                       search_group_tasks: 3,
                       task_message_matches: 3,
                       list_task_files: 2,
+                      list_task_feed: 2,
                       get_group_conversation: 2,
                       list_group_conversation_pins: 1,
                       pin_group_conversation: 2,
@@ -476,6 +550,7 @@ defmodule Comma.Salix.Client do
                       subscribe_group_conversation_list: 3,
                       subscribe_group_conversation_mutations: 2,
                       list_station_tasks: 1,
+                      list_station_tasks: 2,
                       subscribe_station_tasks: 2,
                       subscribe_group_conversation_participant: 4,
                       get_group_conversation_participant_status: 3,
@@ -591,6 +666,12 @@ defmodule Comma.Salix.Client do
 
   def retire_workspace_scope(workspace),
     do: call_optional(:retire_workspace_scope, [workspace])
+
+  def retire_collaboration_group(group),
+    do: call_optional(:retire_collaboration_group, [group])
+
+  def open_task_file(workspace, conversation_id, path),
+    do: call_optional(:open_task_file, [workspace, conversation_id, path])
 
   def get_router_instructions(workspace),
     do: call_optional(:get_router_instructions, [workspace])

@@ -16,11 +16,17 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
   alias BridgeForTeams.{Memberships, UserOnboardings}
   alias BridgeForTeamsWeb.I18n
 
-  def index(conn, _params) do
+  def index(conn, params) do
     if UserOnboardings.onboarded?(conn.assigns.current_user.id) do
       send_index(conn)
     else
-      redirect(conn, to: ~p"/onboarding")
+      case params["org"] do
+        org when is_binary(org) and org != "" ->
+          redirect(conn, to: "/onboarding?" <> URI.encode_query(%{"org" => org}))
+
+        _ ->
+          redirect(conn, to: ~p"/onboarding")
+      end
     end
   end
 
@@ -74,6 +80,18 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
   """
   def task_session(conn, %{"org" => org, "id" => project, "conversation_id" => task}),
     do: redirect(conn, to: ~p"/orgs/#{org}/projects/#{project}/tasks/#{task}")
+
+  @doc """
+  Redirects `/orgs/:org/settings/general` (used by billing return URLs) to
+  `/orgs/:org/settings` while preserving query parameters such as `?m2_order=...`.
+  """
+  def settings_general(conn, %{"org" => org}) do
+    query = if conn.query_string == "", do: "", else: "?" <> conn.query_string
+
+    redirect(conn,
+      to: "/orgs/" <> URI.encode(org, &URI.char_unreserved?/1) <> "/settings" <> query
+    )
+  end
 
   defp send_index(conn) do
     case File.read(index_path()) do

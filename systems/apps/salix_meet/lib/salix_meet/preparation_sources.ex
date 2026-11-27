@@ -12,7 +12,7 @@ defmodule SalixMeet.PreparationSources do
   alias SalixIM.Provider.Slack.{API, MessageRead, SearchQuery}
   alias SalixIM.ProviderConnects
 
-  @operations ~w(history replies search file)
+  @operations ~w(history replies search file recent_meetings)
   @max_file_bytes 256 * 1024
 
   def read(plan, args) do
@@ -28,18 +28,35 @@ defmodule SalixMeet.PreparationSources do
          {:ok, connect} <- connect(plan),
          :ok <- public_channel(connect, channel_id),
          {:ok, params} <- params(operation, args),
-         {:ok, result} <- read_page(operation, connect, params),
+         {:ok, result} <- read_slack_operation(operation, plan, connect, channel_id, params),
          :ok <- public_channel(connect, channel_id) do
       {:ok,
        result
        |> Map.delete("__ifc__")
        |> Map.put("channel", channel_id)
-       |> Map.put("source_label", [scope_label(connect["connect_id"], channel_id)])}
+       |> Map.put("operation", operation)
+       |> Map.put("source_label", [scope_label(connect["connect_id"], channel_id)])
+       |> put_slack_provenance(operation, args)
+       |> maybe_put_slack_unexpanded_threads(operation)}
     else
       {:error, _} = error -> error
       _ -> {:error, :invalid_meeting_shared_source}
     end
   end
+
+  defp read_slack_operation("recent_meetings", plan, connect, channel_id, _params) do
+    scope = %{
+      group_id: plan["group_id"],
+      provider: "slack",
+      connect_id: connect["connect_id"],
+      channel_id: channel_id
+    }
+
+    {:ok, SalixMeet.PreparationRecentMeetings.list_for_scope(plan, scope)}
+  end
+
+  defp read_slack_operation(operation, _plan, connect, _channel_id, params),
+    do: read_page(operation, connect, params)
 
   # Labels come from stored original tool results, never report parameters.
   # Recheck channel visibility before saving: a public channel can become private.
@@ -152,6 +169,8 @@ defmodule SalixMeet.PreparationSources do
       do: {:ok, Map.take(args, ~w(channel file_id))},
       else: {:error, :invalid_meeting_shared_source}
   end
+
+  defp params("recent_meetings", _args), do: {:ok, %{}}
 
   defp params(_operation, args),
     do: {:ok, args |> Map.take(~w(channel ts cursor oldest latest)) |> Map.put("limit", 30)}
@@ -301,10 +320,113 @@ defmodule SalixMeet.PreparationSources do
 
   defp scope_label(connect_id, channel), do: "scope|#{connect_id}|#{channel}"
 
+  defp put_slack_provenance(result, op, args) when op in ~w(history replies search) do
+    result
+    |> Map.put("request_cursor", nonblank_or_nil(args["cursor"]))
+    |> maybe_put_thread_ref("thread_ts", op, args["ts"])
+    |> maybe_put_query_scope(op, Map.take(args, ~w(oldest latest query)))
+  end
+
+  defp put_slack_provenance(result, _op, _args), do: result
+
+  defp put_lark_provenance(result, op, args) when op in ~w(history replies) do
+    next_cursor =
+      if result["has_more"] == true do
+        nonblank_or_nil(
+          result["next_cursor"] || result["page_token"] || result["next_page_token"]
+        )
+      else
+        nil
+      end
+
+    result
+    |> Map.put("request_cursor", nonblank_or_nil(args["page_token"]))
+    |> then(fn map ->
+      if is_binary(next_cursor), do: Map.put_new(map, "next_cursor", next_cursor), else: map
+    end)
+    |> maybe_put_thread_ref("thread_id", op, args["thread_id"])
+    |> maybe_put_query_scope(op, Map.take(args, ~w(start_time end_time)))
+  end
+
+  defp put_lark_provenance(result, _op, _args), do: result
+
+  defp maybe_put_query_scope(result, op, scope_map) when op in ~w(history replies search) do
+    cleaned =
+      scope_map
+      |> Enum.reduce(%{}, fn {k, v}, acc ->
+        case nonblank_or_nil(v) do
+          nil -> acc
+          val -> Map.put(acc, k, val)
+        end
+      end)
+
+    if map_size(cleaned) == 0, do: result, else: Map.put(result, "query_scope", cleaned)
+  end
+
+  defp maybe_put_query_scope(result, _op, _scope_map), do: result
+
+  defp nonblank_or_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp nonblank_or_nil(_value), do: nil
+
+  defp maybe_put_thread_ref(result, key, "replies", value)
+       when is_binary(value) and value != "",
+       do: Map.put_new(result, key, value)
+
+  defp maybe_put_thread_ref(result, _key, _op, _value), do: result
+
+  defp maybe_put_slack_unexpanded_threads(result, op) when op in ~w(history search) do
+    threads =
+      result
+      |> Map.get("messages", [])
+      |> List.wrap()
+      |> Enum.reduce([], fn msg, acc ->
+        count = msg["reply_count"]
+
+        if is_map(msg) and is_integer(count) and count > 0 do
+          ts = msg["thread_ts"] || msg["ts"]
+          if is_binary(ts) and ts != "", do: [ts | acc], else: acc
+        else
+          acc
+        end
+      end)
+      |> Enum.reverse()
+      |> Enum.uniq()
+
+    if threads == [], do: result, else: Map.put(result, "unexpanded_threads", threads)
+  end
+
+  defp maybe_put_slack_unexpanded_threads(result, _op), do: result
+
+  defp maybe_put_lark_unexpanded_threads(result, "history") do
+    threads =
+      result
+      |> Map.get("messages", [])
+      |> List.wrap()
+      |> Enum.reduce([], fn msg, acc ->
+        tid = if is_map(msg), do: msg["thread_id"], else: nil
+
+        if is_binary(tid) and String.starts_with?(tid, "omt_"),
+          do: [tid | acc],
+          else: acc
+      end)
+      |> Enum.reverse()
+      |> Enum.uniq()
+
+    if threads == [], do: result, else: Map.put(result, "unexpanded_threads", threads)
+  end
+
+  defp maybe_put_lark_unexpanded_threads(result, _op), do: result
+
   # ---------------------------------------------------------------------------
   # Feishu/Lark
 
-  @lark_operations ~w(history replies)
+  @lark_operations ~w(history replies recent_meetings)
   @lark_page_size 30
   @lark_member_pages 10
 
@@ -318,14 +440,17 @@ defmodule SalixMeet.PreparationSources do
          operation when operation in @lark_operations <- args["operation"],
          {:ok, provider, connect} <- lark_connect(plan),
          :ok <- shared_chat(provider, connect, plan, chat_id),
-         {:ok, page} <- lark_page(provider, connect, operation, chat_id, args),
-         :ok <- same_chat(page["messages"], chat_id),
+         {:ok, page} <- read_lark_operation(operation, plan, provider, connect, chat_id, args),
+         :ok <- verify_lark_messages(operation, page, chat_id),
          :ok <- shared_chat(provider, connect, plan, chat_id) do
       {:ok,
        page
        |> Map.delete("__ifc__")
        |> Map.put("channel", chat_id)
-       |> Map.put("source_label", [scope_label(connect["connect_id"], chat_id)])}
+       |> Map.put("operation", operation)
+       |> Map.put("source_label", [scope_label(connect["connect_id"], chat_id)])
+       |> put_lark_provenance(operation, args)
+       |> maybe_put_lark_unexpanded_threads(operation)}
     else
       {:error, reason} when is_binary(reason) ->
         {:error, {:meeting_shared_source_unavailable, reason}}
@@ -337,6 +462,23 @@ defmodule SalixMeet.PreparationSources do
         {:error, :invalid_meeting_shared_source}
     end
   end
+
+  defp read_lark_operation("recent_meetings", plan, provider, connect, chat_id, _args) do
+    scope = %{
+      group_id: plan["group_id"],
+      provider: provider,
+      connect_id: connect["connect_id"],
+      channel_id: chat_id
+    }
+
+    {:ok, SalixMeet.PreparationRecentMeetings.list_for_scope(plan, scope)}
+  end
+
+  defp read_lark_operation(operation, _plan, provider, connect, chat_id, args),
+    do: lark_page(provider, connect, operation, chat_id, args)
+
+  defp verify_lark_messages("recent_meetings", _page, _chat_id), do: :ok
+  defp verify_lark_messages(_operation, page, chat_id), do: same_chat(page["messages"], chat_id)
 
   defp authorize_lark_labels(plan, user_id, labels) do
     with {:ok, provider, connect} <- lark_connect(plan) do

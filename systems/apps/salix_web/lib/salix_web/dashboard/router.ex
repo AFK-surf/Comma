@@ -79,6 +79,7 @@ defmodule SalixWeb.Dashboard.Router do
       live("/account-pool", AccountPoolLive, :index)
       live("/platform-profiles", PlatformProfileLive, :index)
       live("/media-settings", MediaSettingsLive, :index)
+      live("/m2square", M2squareSettingsLive, :index)
       live("/platform-model", PlatformModelsLive, :index)
       live("/groups", GroupLive.Index, :index)
       live("/groups/:id", GroupLive.Show, :show)

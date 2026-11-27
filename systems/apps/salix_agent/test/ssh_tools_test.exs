@@ -700,6 +700,18 @@ defmodule SalixAgent.SSHToolsTest do
     assert %{"stdout" => "out\n"} = Jason.decode!(report)
     assert Enum.sort(restricted_label) == Enum.sort(["group|" <> ctx.group_id, "tag|db"])
 
+    # Easy skips the tag restriction on an existing session and retains provenance.
+    easy = outsider |> Map.put(:ifc_mode, :easy) |> Map.put(:ifc, %{})
+
+    assert {:tool_ifc, report, [], %{"label" => easy_label}} =
+             SSH.exec(%{"ssh_session_id" => id, "command" => "report"}, easy)
+
+    assert %{"stdout" => "out\n"} = Jason.decode!(report)
+    assert Enum.sort(easy_label) == Enum.sort(restricted_label)
+
+    assert {:error, %{"code" => "host_restricted"}} =
+             decode(SSH.exec(%{"ssh_session_id" => id, "command" => "report"}, outsider))
+
     # Lifting the restriction admits everyone again.
     assert :ok = KnownHosts.restrict(ctx.group_id, fingerprint, "")
 

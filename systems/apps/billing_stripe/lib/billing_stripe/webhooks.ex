@@ -110,9 +110,22 @@ defmodule BillingStripe.Webhooks do
       end)
 
     case result do
-      {:ok, {_result, false}} = ok ->
+      {:ok, {res, false}} ->
+        {dispatch, clean_res} =
+          if is_map(res), do: Map.pop(res, :after_commit_dispatch), else: {nil, res}
+
+        if dispatch do
+          try do
+            Events.after_commit(dispatch)
+          rescue
+            _ -> :ok
+          catch
+            _, _ -> :ok
+          end
+        end
+
         project_stripe_event(event, "stripe_event_processed", "processed", nil)
-        ok
+        {:ok, {clean_res, false}}
 
       {:ok, {_result, true}} = ok ->
         ok

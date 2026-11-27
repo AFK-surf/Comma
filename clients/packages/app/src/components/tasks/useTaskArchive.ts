@@ -20,8 +20,21 @@ const NONE: ReadonlyMap<string, TaskSummary> = new Map();
 export function useTaskSummaries(
   groupId: string,
   ids: readonly string[],
-  { fetch = true }: { fetch?: boolean } = {}
+  options: { fetch?: boolean } = {}
 ): ReadonlyMap<string, TaskSummary> {
+  return useTaskSummariesState(groupId, ids, options).summaries;
+}
+
+/**
+ * The same facts, and whether they are settled: every id is known, or the
+ * server has answered for it, so a missing one is gone rather than still being
+ * read. No ids are settled at once.
+ */
+export function useTaskSummariesState(
+  groupId: string,
+  ids: readonly string[],
+  { fetch = true }: { fetch?: boolean } = {}
+): { summaries: ReadonlyMap<string, TaskSummary>; settled: boolean } {
   const key = [...new Set(ids.filter(Boolean))].toSorted().join(",");
   const { value } = useTopic(
     groupId && key
@@ -41,11 +54,13 @@ export function useTaskSummaries(
     groupId && key
       ? (value ?? (last.current?.groupId === groupId ? last.current.value : undefined))
       : undefined;
-  return useMemo(
+  const summaries = useMemo(
     () =>
       shown ? new Map(shown.summaries.map((summary) => [summary.id, summary])) : NONE,
     [shown]
   );
+  const settled = !key || (value !== undefined && value !== null && !value.pending);
+  return useMemo(() => ({ summaries, settled }), [summaries, settled]);
 }
 
 /** One Task's facts: the caller renders again only when they change. */

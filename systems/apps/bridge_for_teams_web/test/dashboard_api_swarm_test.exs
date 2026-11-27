@@ -118,6 +118,8 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
   setup %{conn: conn} do
     SalixStore.S3.Fake.reset()
     %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
+    # The swarm model pickers offer only models an account serves.
+    serve_models!(org)
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Acme", "slug" => "acme"})
     drain_all()
     %{conn: conn, user: user, org: org, project: project}
@@ -866,6 +868,109 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                Observability.list_audit_logs(org.id, action: "project.default_task_model_changed")
 
       assert Enum.all?(audits, &(&1.actor_user_id == admin.id and &1.result == "ok"))
+    end
+
+    # Prod 2026-11-18 (HyperShell): the org removed its only Claude account;
+    # the swarm's default Task model stayed a Claude model, listed as an
+    # ordinary choice, and every Task that named no model stopped.
+    test "a default Task model no enabled account serves is named so and the picker leaves it out",
+         %{conn: conn, org: org, project: project} do
+      gpt = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+      opus = %{"kind" => "catalog", "model" => "claude-opus-5-5", "allow_paid" => false}
+      {:ok, org} = BridgeForTeams.Orgs.update_org(org, %{"allowed_models" => [gpt, opus]})
+      {:ok, _} = Projects.set_default_task_model(project, opus)
+
+      tenant = org.salix_tenant_id
+      {:ok, %{"accounts" => accounts}} = SalixAgent.AccountPool.list(tenant)
+      claude = Enum.find(accounts, &((&1["source"] || &1["provider"]) == "claude"))
+      assert {:ok, _} = SalixAgent.AccountPool.delete(tenant, claude["id"], claude["version"])
+
+      assert %{
+               "task_model" => %{
+                 "key" => "catalog:claude-opus-5-5",
+                 "label" => label,
+                 "unserved" => true,
+                 "models" => rows
+               }
+             } =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
+
+      assert label =~ "no enabled account serves it"
+
+      assert [
+               %{"key" => "", "disabled" => false},
+               %{"key" => "catalog:claude-opus-5-5", "disabled" => true, "label" => current},
+               %{"key" => "platform:worker", "disabled" => false},
+               %{"key" => "catalog:gpt-5.5", "disabled" => false}
+             ] = rows
+
+      assert current =~ "(current; no enabled account serves it)"
+
+      # Following an org default that no account serves says so too.
+      {:ok, org} = BridgeForTeams.Orgs.update_org(org, %{"default_task_model" => opus})
+      {:ok, nil} = Projects.clear_default_task_model(project)
+
+      assert %{"task_model" => %{"key" => "", "unserved" => true, "label" => unset}} =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
+
+      assert unset =~ "; no enabled account serves it)"
+    end
+
+    test "without an allowed list, a model only an API key serves is offered pay-per-use and saves",
+         %{conn: conn, org: org, project: project} do
+      {:ok, _key} =
+        SalixAgent.AccountPool.create(org.salix_tenant_id, %{
+          "credential_kind" => "provider_api_key",
+          "source" => "openrouter",
+          "api_key" => "sk-or-v1-0123456789abcdef"
+        })
+
+      assert %{"task_model" => %{"models" => rows}} =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
+
+      # A model no subscription here serves (codex and claude only) is
+      # offered only pay-per-use.
+      keys = MapSet.new(rows, & &1["key"])
+
+      assert %{"key" => key, "choice" => paid, "disabled" => false, "label" => label} =
+               Enum.find(rows, fn row ->
+                 String.ends_with?(row["key"], "+paid") and
+                   not MapSet.member?(keys, String.trim_trailing(row["key"], "+paid"))
+               end)
+
+      assert paid["allow_paid"] == true
+      assert label =~ "(pay-per-use)"
+
+      assert %{"task_model" => %{"key" => ^key}} =
+               conn
+               |> put(swarm_path(org, project, "/settings/task-model"), %{"model" => paid})
+               |> json_response(200)
+               |> data()
+    end
+
+    test "an allowed list that allows a model only plain does not offer it pay-per-use",
+         %{conn: conn, org: org, project: project} do
+      {:ok, _key} =
+        SalixAgent.AccountPool.create(org.salix_tenant_id, %{
+          "credential_kind" => "provider_api_key",
+          "source" => "openrouter",
+          "api_key" => "sk-or-v1-0123456789abcdef"
+        })
+
+      # Only the key serves Claude models now.
+      tenant = org.salix_tenant_id
+      {:ok, %{"accounts" => accounts}} = SalixAgent.AccountPool.list(tenant)
+      claude = Enum.find(accounts, &((&1["source"] || &1["provider"]) == "claude"))
+      assert {:ok, _} = SalixAgent.AccountPool.delete(tenant, claude["id"], claude["version"])
+
+      opus = %{"kind" => "catalog", "model" => "claude-opus-4-8", "allow_paid" => false}
+      gpt = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+      {:ok, org} = BridgeForTeams.Orgs.update_org(org, %{"allowed_models" => [gpt, opus]})
+
+      assert %{"task_model" => %{"models" => rows}} =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
+
+      assert ["", "platform:worker", "catalog:gpt-5.5"] = Enum.map(rows, & &1["key"])
     end
 
     test "archiving waits until every IM connection is disabled", %{

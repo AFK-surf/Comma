@@ -51,12 +51,40 @@ defmodule Comma.Plugins do
   however the person installed it.
   """
   def install(user, session, workspace_id, plugin_id) do
+    with :ok <- ensure_legacy_install_preconditions(user, session, workspace_id, plugin_id),
+         {:ok, plugin} <- install_record_only(user, session, workspace_id, plugin_id) do
+      end_install_requests(workspace_id, plugin_id)
+      {:ok, plugin}
+    end
+  end
+
+  @doc """
+  Enables the plugin in Salix and marks it installed in `Comma.Repo` without
+  settling `plugin.request_install` cards. Used by two-phase commit-ordered
+  reconcilers (`CommaWeb.PluginConnections`) that settle cards strictly after
+  the `Comma.Repo` transaction commits.
+  """
+  def install_record_only(user, session, workspace_id, plugin_id) do
     with {:ok, plugin} <- mutate(user, session, workspace_id, plugin_id, :enable_group),
          :ok <- PluginInstallations.mark_installed(workspace_id, plugin_id) do
-      end_install_requests(workspace_id, plugin_id)
       {:ok, Map.put(plugin, "installed", true)}
     end
   end
+
+  defp ensure_legacy_install_preconditions(user, session, workspace_id, "google-colab") do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      if SalixAgent.Colab.Account.has_active_account?(
+           workspace["salix_tenant_id"],
+           workspace["default_group_id"]
+         ) do
+        :ok
+      else
+        {:error, {:precondition_failed, "Connect a Google Colab account first."}}
+      end
+    end
+  end
+
+  defp ensure_legacy_install_preconditions(_user, _session, _workspace_id, _plugin_id), do: :ok
 
   # Never changes the install's result.
   defp end_install_requests(workspace_id, plugin_id) do
@@ -74,6 +102,13 @@ defmodule Comma.Plugins do
   end
 
   def uninstall(user, session, workspace_id, plugin_id) do
+    uninstall_record_only(user, session, workspace_id, plugin_id)
+  end
+
+  @doc """
+  Disables the plugin in Salix and marks it uninstalled in `Comma.Repo`.
+  """
+  def uninstall_record_only(user, session, workspace_id, plugin_id) do
     with {:ok, plugin} <- mutate(user, session, workspace_id, plugin_id, :disable_group),
          :ok <- PluginInstallations.mark_uninstalled(workspace_id, plugin_id) do
       {:ok, Map.put(plugin, "installed", false)}
@@ -173,7 +208,8 @@ defmodule Comma.Plugins do
     %{
       "id" => definition["plugin_id"],
       "name" => nonblank(definition["name"], definition["plugin_id"]),
-      "summary" => description,
+      # A short line of its own where it has one, else its description.
+      "summary" => nonblank(clean_description(definition["summary"]), description),
       "description" => description,
       "brand" => get_in(definition, ["ui", "brand"]),
       "category" => category(definition),

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../../e2e/helpers/browser-auth";
 import { waitForFiniteAnimations } from "../../../../e2e/helpers/motion";
 import { startChatSmokeStub } from "../../../../e2e/p0/chat-stub";
+import { enableSessionHistory } from "../session-history-settings";
 
 const runningTasks = Array.from({ length: 3 }, (_, index) => ({
   id: `cnv_idle_motion_${index}`,
@@ -371,6 +372,90 @@ test("a Home left mid-transition leaves the next page's shines to the compositor
     // the sweep's end and the test's own calls, not for each step.
     expect(frames.drawn, JSON.stringify(frames)).toBeGreaterThan(0);
     expect(frames.mainThread * 4, JSON.stringify(frames)).toBeLessThan(frames.drawn);
+  } finally {
+    await stub.close();
+  }
+});
+
+// With Session history enabled, the Router's participant chip stays mounted at
+// the top of Home. When the Router is idle or waiting, its mark must stay
+// paused so an idle window schedules no infinite compositor frames.
+test("an idle Home with Session history enabled runs no infinite animations", async ({
+  context,
+  page,
+}) => {
+  await enableSessionHistory(context);
+  const stub = await startChatSmokeStub({
+    externalActivityProvider: "wechat",
+  });
+  try {
+    await page.setViewportSize({ width: 1600, height: 960 });
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "idle-session-history@comma.local",
+      token: "comma_sess_idle_session_history",
+    });
+    await page.goto("/");
+    const participant = page.getByTestId("session-history-participant");
+    const participantLogo = participant.locator('[data-slot="comma-logo-animation"]');
+    const statusSlot = page.getByTestId("participant-status-slot");
+    await expect(participant).toBeVisible();
+    await expect(participantLogo).toHaveAttribute("data-paused", "false");
+    await waitForFiniteAnimations(page);
+
+    const readRunningLoops = () =>
+      page.evaluate(() =>
+        document
+          .getAnimations()
+          .filter(
+            (animation) =>
+              animation.playState === "running" &&
+              animation.effect?.getComputedTiming().iterations === Infinity
+          )
+          .map((animation) => {
+            const effect = animation.effect as KeyframeEffect;
+            const name =
+              animation instanceof CSSAnimation
+                ? animation.animationName
+                : animation.id;
+            return `${name} on ${effect.target?.getAttribute("class") ?? ""}${effect.pseudoElement ?? ""}`;
+          })
+      );
+
+    const readParticipantLoops = () =>
+      participant.evaluate((button) =>
+        button
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.playState === "running")
+          .map((animation) => (animation as CSSAnimation).animationName)
+      );
+
+    expect(await readParticipantLoops()).toContain("comma-logo-zoom");
+
+    stub.publishStreamingParticipantStatus("", undefined, "stopped");
+    await expect(participantLogo).toHaveAttribute("data-paused", "true");
+    await expect(statusSlot).toHaveAttribute("data-active", "false");
+    expect(await readRunningLoops()).toEqual([]);
+
+    stub.publishStreamingParticipantStatus(
+      "Waiting on Tasks",
+      undefined,
+      "active",
+      undefined,
+      { waiting: true }
+    );
+    await expect(statusSlot).toHaveAttribute("data-active", "true");
+    await expect(participantLogo).toHaveAttribute("data-paused", "true");
+    expect(await readParticipantLoops()).toEqual([]);
+
+    stub.publishStreamingParticipantStatus("is thinking...");
+    await expect(participantLogo).toHaveAttribute("data-paused", "false");
+    expect(await readParticipantLoops()).toContain("comma-logo-zoom");
+
+    stub.publishStreamingParticipantStatus("", undefined, "stopped");
+    await expect(participantLogo).toHaveAttribute("data-paused", "true");
+    await expect(statusSlot).toHaveAttribute("data-active", "false");
+    expect(await readRunningLoops()).toEqual([]);
   } finally {
     await stub.close();
   }

@@ -56,8 +56,9 @@
   },
   "email": {
     "postmark_server_token": "...",
-    "owner_notification_from_email": "agents@comma.surf",
-    "magic_link_from_email": "login@comma.surf"
+    "teams_postmark_server_token": "...",
+    "teams_from_email": "Comma for Teams <teams@comma-agents.net>",
+    "teams_reply_to_email": "support@comma.surf"
   },
   "cluster": {
     "strategy": "kubernetes_dns",
@@ -268,6 +269,9 @@
       "viewer_key": "replace-with-at-least-32-random-bytes",
       "template_repo": "AFK-surf/comma-app-template",
       "link_base_url": "https://app.comma.surf/a/"
+    },
+    "proactive": {
+      "web_radar_enabled": false
     }
   },
   "bridge_for_teams": {
@@ -312,6 +316,12 @@
       "webhook_secret": "replace-with-stripe-webhook-secret",
       "portal_configuration_id": "",
       "force_http1": false
+    },
+    "apple": {
+      "issuer_id": "",
+      "key_id": "",
+      "private_key": "",
+      "bundle_id": ""
     },
     "storage_metering": {
       "interval_ms": 3600000,

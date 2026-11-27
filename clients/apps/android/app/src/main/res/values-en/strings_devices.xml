@@ -12,10 +12,7 @@
     <string name="devices_add_bluetooth_off">Bluetooth is off. Turn it on to find your device.</string>
     <string name="devices_add_allow_bluetooth">Allow Bluetooth</string>
     <string name="devices_add_turn_on_bluetooth">Turn on Bluetooth</string>
-    <string name="devices_nearby_permission_title">Find Comma devices near you</string>
-    <string name="devices_nearby_permission_body">Allow Nearby devices to find a new Comma device when you open the app.</string>
     <string name="devices_nearby_permission_not_now">Not now</string>
-    <string name="devices_nearby_permission_continue">Continue</string>
 
     <string name="devices_add_scan_title">Looking for your device</string>
     <string name="devices_add_scan_body">Plug in your Comma device. A new device with a screen says “Hello” on it. To set up a device again, hold its button for 3 seconds, then let go.</string>

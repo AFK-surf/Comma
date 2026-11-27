@@ -19,6 +19,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.ColorRes
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
@@ -32,7 +33,8 @@ import surf.comma.android.ui.theme.DesignTypography.Level
 
 /**
  * A centred card over a dimmed page. The dimming and the card's opacity use the dialog timings;
- * the card's scale uses the scale spring. Dismissing plays the exit before the window goes.
+ * the card's scale uses the scale spring. Dismissing plays the exit before the window goes; when the keyboard is
+ * up, the window also waits for the keyboard to finish going down, because removing the window cuts its animation off.
  */
 internal open class SettingsDialog(private val activity: Activity, keyboard: Boolean = false) {
     // The app's translucent theme: transparent system bars with the right icon colours.
@@ -51,6 +53,13 @@ internal open class SettingsDialog(private val activity: Activity, keyboard: Boo
     private val scaleY = DesignSpring(card, DynamicAnimation.SCALE_Y, DesignMotion.springScale)
     private var fade: ValueAnimator? = null
     private var closing = false
+    private val root: FrameLayout
+    // The keyboard's state the window last reported: the target of a keyboard animation as soon as it starts.
+    private var keyboardUp = false
+    // Keyboard animations under way; one that ends with the keyboard down may let the window go.
+    private val keyboardMoves = mutableSetOf<WindowInsetsAnimationCompat>()
+    private var faded = false
+    private var waitedLongEnough = false
 
     init {
         // The dimming covers the system bars too; only the card keeps clear of them and the keyboard.
@@ -60,7 +69,7 @@ internal open class SettingsDialog(private val activity: Activity, keyboard: Boo
                 marginEnd = activity.dp(24)
             })
         }
-        val root = FrameLayout(activity).apply {
+        root = FrameLayout(activity).apply {
             addView(scrim, FrameLayout.LayoutParams(-1, -1))
             addView(content, FrameLayout.LayoutParams(-1, -1))
             setOnClickListener { dismiss() }
@@ -68,8 +77,20 @@ internal open class SettingsDialog(private val activity: Activity, keyboard: Boo
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
             content.setPadding(0, bars.top, 0, bars.bottom)
+            keyboardUp = insets.isVisible(WindowInsetsCompat.Type.ime())
             WindowInsetsCompat.CONSUMED
         }
+        ViewCompat.setWindowInsetsAnimationCallback(root, object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+                if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) keyboardMoves += animation
+            }
+
+            override fun onProgress(insets: WindowInsetsCompat, running: MutableList<WindowInsetsAnimationCompat>) = insets
+
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                if (keyboardMoves.remove(animation)) finishClosing()
+            }
+        })
         dialog.setContentView(root)
         dialog.window?.apply {
             statusBarColor = Color.TRANSPARENT
@@ -109,7 +130,15 @@ internal open class SettingsDialog(private val activity: Activity, keyboard: Boo
         if (closing || !dialog.isShowing) return
         closing = true
         onClosing()
+        // The keyboard may never report going down (another window took it, or no animation ran): close anyway.
+        root.postDelayed({ waitedLongEnough = true; finishClosing() }, KEYBOARD_EXIT_LIMIT_MS)
         animate(entering = false)
+    }
+
+    /** The window goes once the exit has played and the keyboard is down and still. */
+    private fun finishClosing() {
+        val keyboardDown = !keyboardUp && keyboardMoves.isEmpty()
+        if (closing && faded && (keyboardDown || waitedLongEnough) && dialog.isShowing) dialog.dismiss()
     }
 
     protected open fun onClosing() {}
@@ -125,7 +154,7 @@ internal open class SettingsDialog(private val activity: Activity, keyboard: Boo
                 card.alpha = value
                 scrim.alpha = value * SCRIM_ALPHA
             }
-            if (!entering) doOnEnd { if (dialog.isShowing) dialog.dismiss() }
+            if (!entering) doOnEnd { faded = true; finishClosing() }
             start()
         }
         if (entering) {
@@ -170,17 +199,24 @@ internal open class SettingsDialog(private val activity: Activity, keyboard: Boo
     private companion object {
         const val SCRIM_ALPHA = 0.4f
         const val ENTER_SCALE = 0.96f
+        /** Longer than the system keyboard hide animation, which the window waits for. */
+        const val KEYBOARD_EXIT_LIMIT_MS = 500L
     }
 }
 
 /** A filled button; [textColor] null means white, for the brand and error fills. */
-internal fun Context.filledButton(label: CharSequence, @ColorRes fill: Int, @ColorRes textColor: Int?): TextView =
+internal fun Context.filledButton(
+    label: CharSequence,
+    @ColorRes fill: Int,
+    @ColorRes textColor: Int?,
+    pill: Boolean = false,
+): TextView =
     text(Level.REGULAR, textColor ?: R.color.token_text_primary, DesignFonts.medium).apply {
         text = label
         gravity = Gravity.CENTER
         // White on the brand and error fills, as on the other filled buttons.
         if (textColor == null) setTextColor(Color.WHITE)
-        val radius = dp(12).toFloat()
+        val radius = if (pill) dp(999).toFloat() else dp(12).toFloat()
         background = roundRect(color(fill), radius)
         isClickable = true
         PressScale(this)
@@ -249,6 +285,8 @@ internal open class FieldDialog(
     refused: (String) -> Boolean = { it.isBlank() },
     problem: (String) -> CharSequence? = { null },
     destructive: Boolean = false,
+    requireChange: Boolean = true,
+    maxBytes: Int? = null,
 ) : SettingsDialog(activity, keyboard) {
     private val input = EditText(activity).apply {
         id = inputId
@@ -263,7 +301,10 @@ internal open class FieldDialog(
         isSingleLine = true
         background = roundRect(activity.color(R.color.token_bg_quaternary), activity.dp(10).toFloat())
         setPadding(activity.dp(14), activity.dp(12), activity.dp(14), activity.dp(12))
-        filters = arrayOf(android.text.InputFilter.LengthFilter(maxLength))
+        filters = arrayOf(
+            if (maxBytes != null) Utf8ByteLengthFilter(maxBytes)
+            else android.text.InputFilter.LengthFilter(maxLength),
+        )
     }
     private val error = activity.text(Level.SMALL, R.color.token_text_error_primary).apply { isVisible = false }
     private val save: TextView
@@ -284,7 +325,7 @@ internal open class FieldDialog(
             val message = problem(value)
             error.isVisible = message != null
             error.text = message
-            val enabled = !refused(value) && value.trim() != original
+            val enabled = !refused(value) && (!requireChange || value.trim() != original)
             save.isEnabled = enabled
             save.alpha = if (enabled) 1f else 0.4f
         }
@@ -301,6 +342,64 @@ internal open class FieldDialog(
 
     override fun onClosing() {
         activity.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(input.windowToken, 0)
+    }
+}
+
+/** Limits an [EditText] by UTF-8 byte count without splitting surrogate pairs, matching server byte limits. */
+internal class Utf8ByteLengthFilter(private val maxBytes: Int) : android.text.InputFilter {
+    override fun filter(
+        source: CharSequence,
+        start: Int,
+        end: Int,
+        dest: android.text.Spanned,
+        dstart: Int,
+        dend: Int,
+    ): CharSequence? {
+        val keptBytes = utf8ByteCount(dest, 0, dstart) + utf8ByteCount(dest, dend, dest.length)
+        val remaining = maxBytes - keptBytes
+        if (remaining <= 0) return ""
+        var used = 0
+        var index = start
+        while (index < end) {
+            val ch = source[index]
+            val stepChars: Int
+            val stepBytes: Int
+            if (Character.isHighSurrogate(ch) && index + 1 < end && Character.isLowSurrogate(source[index + 1])) {
+                stepChars = 2
+                stepBytes = 4
+            } else {
+                stepChars = 1
+                stepBytes = utf8CharBytes(ch)
+            }
+            if (used + stepBytes > remaining) {
+                return if (index == start) "" else source.subSequence(start, index)
+            }
+            used += stepBytes
+            index += stepChars
+        }
+        return null
+    }
+
+    private fun utf8ByteCount(text: CharSequence, start: Int, end: Int): Int {
+        var bytes = 0
+        var index = start
+        while (index < end) {
+            val ch = text[index]
+            if (Character.isHighSurrogate(ch) && index + 1 < end && Character.isLowSurrogate(text[index + 1])) {
+                bytes += 4
+                index += 2
+            } else {
+                bytes += utf8CharBytes(ch)
+                index += 1
+            }
+        }
+        return bytes
+    }
+
+    private fun utf8CharBytes(ch: Char): Int = when {
+        ch.code <= 0x7F -> 1
+        ch.code <= 0x7FF -> 2
+        else -> 3
     }
 }
 

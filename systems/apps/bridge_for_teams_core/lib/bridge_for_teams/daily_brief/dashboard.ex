@@ -10,7 +10,7 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
   import Ecto.Query
 
   alias BridgeForTeams.Repo
-  alias BridgeForTeams.DailyBrief.Delivery
+  alias BridgeForTeams.DailyBrief.{Delivery, Members}
 
   alias BridgeForTeams.Schema.{DailyBriefMember, DailyBriefRun, DailyBriefSetting, User}
 
@@ -18,7 +18,10 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
   # The longest run of days off the dashboard looks past.
   @calendar_lookahead_days 31
 
-  @doc "The last team brief, today's member briefs by state, and the next brief time."
+  @doc """
+  The Swarm's last team brief, today's member briefs it sent by state, and
+  the next brief time of the members whose brief it sends.
+  """
   @spec today(DailyBriefSetting.t(), DateTime.t()) :: map()
   def today(%DailyBriefSetting{} = settings, now) do
     team_pass =
@@ -45,7 +48,9 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
     members =
       Repo.all(
         from(m in DailyBriefMember,
-          where: m.org_id == ^settings.org_id and m.enabled,
+          where:
+            m.org_id == ^settings.org_id and m.provider == ^Members.provider(settings) and
+              m.enabled and (m.project_id == ^settings.project_id or is_nil(m.project_id)),
           select: %{
             timezone: m.timezone,
             deliver_at: m.deliver_at,
@@ -116,7 +121,10 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
     end)
   end
 
-  @doc "Per member: when Slack last took a brief in `days`, and a waiting request."
+  @doc """
+  Per member: when the provider last took their brief in `days`, whichever
+  Swarm's bot sent it (a member has one brief), and a waiting request.
+  """
   @spec member_activity(DailyBriefSetting.t(), DateTime.t(), pos_integer()) :: %{
           binary() => map()
         }
@@ -127,7 +135,7 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
       Repo.all(
         from(r in DailyBriefRun,
           where:
-            r.project_id == ^settings.project_id and r.kind == "personal_brief" and
+            r.org_id == ^settings.org_id and r.kind == "personal_brief" and
               r.status == "completed" and r.created_at >= ^from_at,
           group_by: r.member_id,
           select: {r.member_id, max(r.created_at)}
@@ -137,7 +145,7 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
 
     Repo.all(
       from(m in DailyBriefMember,
-        where: m.org_id == ^settings.org_id,
+        where: m.org_id == ^settings.org_id and m.provider == ^Members.provider(settings),
         select: {m.id, m.brief_requested_at}
       )
     )
@@ -151,6 +159,7 @@ defmodule BridgeForTeams.DailyBrief.Dashboard do
   end
 
   # A run's error may hold a provider's message; the page shows only its code.
+  # Only members of the settings' provider are counted.
   defp short(nil), do: nil
 
   defp short(error) do

@@ -637,6 +637,19 @@ defmodule CommaWeb.CommaApiTest do
     assert recent["message_count"] == final["message_count"]
     assert recent["final_message_id"] == assistant_message["message_id"]
 
+    caught_up =
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}?message_limit=24&after_seq=#{assistant_message["seq"]}"
+      )
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert caught_up["messages"] == []
+    assert caught_up["after_seq"] == assistant_message["seq"]
+    assert caught_up["final_message_id"] == final["final_message_id"]
+
     assert inspect(final) =~ workspace["router_agent_id"]
 
     events_resp =
@@ -1285,12 +1298,15 @@ defmodule CommaWeb.CommaApiTest do
     no_auth = Req.get!(base() <> path)
     assert no_auth.status == 401
 
-    user_req(
-      session["token"],
-      :get,
-      "/v1/comma/groups/#{group_id}/conversations/search?q=e%CC%81"
-    )
-    |> expect_status(400)
+    # One character searches titles only, so the boundary Message does not match.
+    assert %{"data" => []} =
+             user_req(
+               session["token"],
+               :get,
+               "/v1/comma/groups/#{group_id}/conversations/search?q=e%CC%81"
+             )
+             |> expect_status(200)
+             |> Map.fetch!(:body)
 
     other_user =
       admin_req(:post, "/v1/comma/admin/users",
@@ -2596,6 +2612,386 @@ defmodule CommaWeb.CommaApiTest do
     assert victim_conversation_id == victim_conversation["id"]
   end
 
+  test "an App Store purchase is recorded for the workspace that started it" do
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
+
+    user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "apple-user-#{unique}@example.com", "name" => "Apple User"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    workspace = create_ready_workspace!(user["id"], %{"name" => "Apple"})
+    issue_billing_grant(workspace)
+
+    session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    on_exit(fn ->
+      for key <- [:test_transactions, :test_statuses, :test_calls],
+          do: SystemsRuntime.delete_env(:billing_apple, key)
+    end)
+
+    plans =
+      Req.get!(base() <> "/v1/comma/billing/plans") |> expect_status(200) |> Map.fetch!(:body)
+
+    assert %{"apple_product_id" => "comma_value_v1"} =
+             Enum.find(plans["data"], &(&1["plan_key"] == "comma_value_v1"))
+
+    store = "/v1/comma/workspaces/#{workspace["id"]}/billing/store"
+
+    intent =
+      user_req(session["token"], :post, store <> "/intent",
+        json: %{"provider" => "apple", "plan_key" => "comma_value_v1"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    assert %{"product_id" => "comma_value_v1", "account_token" => token} = intent
+
+    tid = "#{8_000_000 + unique}"
+    starts = SystemsClock.utc_now() |> DateTime.add(-1, :day) |> DateTime.truncate(:second)
+
+    tx = %{
+      "transactionId" => tid,
+      "originalTransactionId" => tid,
+      "bundleId" => "surf.comma.test",
+      "productId" => "comma_value_v1",
+      "type" => "Auto-Renewable Subscription",
+      "purchaseDate" => DateTime.to_unix(starts, :millisecond),
+      "expiresDate" => starts |> DateTime.shift(month: 1) |> DateTime.to_unix(:millisecond),
+      "price" => 24_990,
+      "appAccountToken" => token
+    }
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      tid => %{environment: :production, tx: tx}
+    })
+
+    SystemsRuntime.put_env(:billing_apple, :test_statuses, %{
+      tid => %{
+        "data" => [
+          %{
+            "lastTransactions" => [
+              %{
+                "originalTransactionId" => tid,
+                "status" => 1,
+                "signedTransactionInfo" => BillingApple.TestAPI.jws(tx),
+                "signedRenewalInfo" => BillingApple.TestAPI.jws(%{"autoRenewStatus" => 1})
+              }
+            ]
+          }
+        ]
+      }
+    })
+
+    user_req(session["token"], :post, store <> "/transactions",
+      json: %{"provider" => "apple", "transaction_id" => tid}
+    )
+    |> expect_status(200)
+
+    summary =
+      user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/billing/summary")
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert %{"provider" => "apple", "package_code" => "comma_value"} =
+             summary["active_subscription"]
+
+    # A redelivered App Store notification records nothing new.
+    notification = %{
+      "signedPayload" =>
+        BillingApple.TestAPI.jws(%{
+          "notificationType" => "SUBSCRIBED",
+          "data" => %{
+            "bundleId" => "surf.comma.test",
+            "signedTransactionInfo" => BillingApple.TestAPI.jws(tx)
+          }
+        })
+    }
+
+    Req.post!(base() <> "/v1/comma/billing/apple/notifications", json: notification)
+    |> expect_status(200)
+
+    %{rows: [[grants]]} =
+      Ecto.Adapters.SQL.query!(
+        BillingCore.Repo,
+        "SELECT count(*) FROM credit_grants WHERE metadata->>'provider_payment_id' = $1",
+        ["apple:" <> tid]
+      )
+
+    assert grants == 1
+
+    user_req(session["token"], :post, store <> "/transactions",
+      json: %{"provider" => "apple", "transaction_id" => "#{9_000_000 + unique}"}
+    )
+    |> expect_status(404)
+
+    # Another app's transaction is never recorded: the client finishes it.
+    other_app = "#{9_500_000 + unique}"
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      other_app => %{
+        environment: :production,
+        tx: Map.merge(tx, %{"transactionId" => other_app, "bundleId" => "other.app"})
+      }
+    })
+
+    assert %{"error" => "store_transaction_not_recordable"} =
+             user_req(session["token"], :post, store <> "/transactions",
+               json: %{"provider" => "apple", "transaction_id" => other_app}
+             )
+             |> expect_status(422)
+             |> Map.fetch!(:body)
+
+    # A Family Sharing transaction is never recorded: 422 to client, 200 to Apple.
+    family_shared = "#{9_550_000 + unique}"
+
+    family_tx =
+      Map.merge(tx, %{
+        "transactionId" => family_shared,
+        "originalTransactionId" => family_shared,
+        "inAppOwnershipType" => "FAMILY_SHARED"
+      })
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      family_shared => %{environment: :production, tx: family_tx}
+    })
+
+    assert %{"error" => "store_transaction_not_recordable"} =
+             user_req(session["token"], :post, store <> "/transactions",
+               json: %{"provider" => "apple", "transaction_id" => family_shared}
+             )
+             |> expect_status(422)
+             |> Map.fetch!(:body)
+
+    family_notification = %{
+      "signedPayload" =>
+        BillingApple.TestAPI.jws(%{
+          "notificationType" => "SUBSCRIBED",
+          "data" => %{
+            "bundleId" => "surf.comma.test",
+            "signedTransactionInfo" => BillingApple.TestAPI.jws(family_tx)
+          }
+        })
+    }
+
+    assert %{"received" => true} =
+             Req.post!(base() <> "/v1/comma/billing/apple/notifications",
+               json: family_notification
+             )
+             |> expect_status(200)
+             |> Map.fetch!(:body)
+
+    # A sandbox purchase pays nothing: it is recorded only for a workspace owner
+    # at a team email domain, such as the App Review account.
+    sandbox = "#{9_600_000 + unique}"
+
+    sandbox_tx = fn token ->
+      Map.merge(tx, %{
+        "transactionId" => sandbox,
+        "originalTransactionId" => sandbox,
+        "appAccountToken" => token
+      })
+    end
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      sandbox => %{environment: :sandbox, tx: sandbox_tx.(token)}
+    })
+
+    assert %{"error" => "store_transaction_not_recordable"} =
+             user_req(session["token"], :post, store <> "/transactions",
+               json: %{"provider" => "apple", "transaction_id" => sandbox}
+             )
+             |> expect_status(422)
+             |> Map.fetch!(:body)
+
+    reviewer =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "apple-review-#{unique}@comma.surf", "name" => "App Review"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    review_workspace = create_ready_workspace!(reviewer["id"], %{"name" => "Review"})
+
+    review_session =
+      admin_req(:post, "/v1/comma/admin/users/#{reviewer["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    review_store = "/v1/comma/workspaces/#{review_workspace["id"]}/billing/store"
+
+    %{"account_token" => review_token} =
+      user_req(review_session["token"], :post, review_store <> "/intent",
+        json: %{"provider" => "apple", "plan_key" => "comma_value_v1"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    review_tx = sandbox_tx.(review_token)
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      sandbox => %{environment: :sandbox, tx: review_tx}
+    })
+
+    SystemsRuntime.put_env(:billing_apple, :test_statuses, %{
+      sandbox => %{
+        "data" => [
+          %{
+            "lastTransactions" => [
+              %{
+                "originalTransactionId" => sandbox,
+                "status" => 1,
+                "signedTransactionInfo" => BillingApple.TestAPI.jws(review_tx),
+                "signedRenewalInfo" => BillingApple.TestAPI.jws(%{"autoRenewStatus" => 1})
+              }
+            ]
+          }
+        ]
+      }
+    })
+
+    user_req(review_session["token"], :post, review_store <> "/transactions",
+      json: %{"provider" => "apple", "transaction_id" => sandbox}
+    )
+    |> expect_status(200)
+
+    # A failed App Store read is the store's failure: the client keeps the transaction to report again.
+    unread = "#{9_700_000 + unique}"
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      unread => {:error, {:apple_http_status, 401}}
+    })
+
+    assert %{"error" => "store_unavailable"} =
+             user_req(session["token"], :post, store <> "/transactions",
+               json: %{"provider" => "apple", "transaction_id" => unread}
+             )
+             |> expect_status(502)
+             |> Map.fetch!(:body)
+
+    # A Stripe subscription blocks a new App Store subscription.
+    other_user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "apple-stripe-#{unique}@example.com", "name" => "Stripe User"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    other = create_ready_workspace!(other_user["id"], %{"name" => "Apple Stripe"})
+    issue_billing_grant(other)
+
+    other_session =
+      admin_req(:post, "/v1/comma/admin/users/#{other_user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    {:ok, _} =
+      BillingCommerce.create_subscription(%{
+        billing_account_id: other["billing_account_id"],
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: other["id"],
+        package_code: "comma_value",
+        package_version: "2026-06",
+        source_type: "stripe_subscription",
+        source_id: "sub_apple_block_#{unique}",
+        source_event_id: "evt_apple_block_#{unique}",
+        idempotency_key: "stripe:subscription:sub_apple_block_#{unique}",
+        periods: [
+          %{cycle_key: "c1", valid_from: starts, expires_at: DateTime.add(starts, 30, :day)}
+        ]
+      })
+
+    blocked =
+      user_req(
+        other_session["token"],
+        :post,
+        "/v1/comma/workspaces/#{other["id"]}/billing/store/intent",
+        json: %{"provider" => "apple", "plan_key" => "comma_value_v1"}
+      )
+      |> expect_status(409)
+
+    assert blocked.body["error"] == "subscription_active_elsewhere"
+  end
+
+  test "a store subscription blocks Stripe checkout and Stripe management" do
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
+
+    user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "store-user-#{unique}@example.com", "name" => "Store User"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    workspace = create_ready_workspace!(user["id"], %{"name" => "Store"})
+    issue_billing_grant(workspace)
+
+    session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    starts = SystemsClock.utc_now() |> DateTime.add(-1, :day) |> DateTime.truncate(:second)
+
+    {:ok, _} =
+      BillingCommerce.create_subscription(%{
+        billing_account_id: workspace["billing_account_id"],
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: workspace["id"],
+        package_code: "comma_value",
+        package_version: "2026-06",
+        source_type: "apple_subscription",
+        source_id: "apple-orig-#{unique}",
+        source_event_id: "apple:orig-#{unique}",
+        idempotency_key: "apple:subscription:orig-#{unique}",
+        periods: [
+          %{cycle_key: "c1", valid_from: starts, expires_at: DateTime.add(starts, 30, :day)}
+        ]
+      })
+
+    summary =
+      user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/billing/summary")
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert summary["active_subscription"]["provider"] == "apple"
+
+    checkout =
+      user_req(
+        session["token"],
+        :post,
+        "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
+        json: %{
+          "plan_key" => "comma_value_v1",
+          "success_url" => "https://comma.test/success",
+          "cancel_url" => "https://comma.test/cancel",
+          "client_request_id" => "store-checkout"
+        }
+      )
+      |> expect_status(409)
+
+    assert checkout.body["error"] == "subscription_active_elsewhere"
+    refute Enum.any?(stripe_calls(), &match?({:checkout, _, _}, &1))
+
+    cancel =
+      user_req(
+        session["token"],
+        :post,
+        "/v1/comma/workspaces/#{workspace["id"]}/billing/subscription/cancel",
+        json: %{"client_request_id" => "store-cancel"}
+      )
+      |> expect_status(409)
+
+    assert cancel.body["error"] == "subscription_managed_by_store"
+  end
+
   test "user can view billing plans, create checkout, open mapped portal, and read summary" do
     unique = SystemsRuntime.Proc.unique_integer([:positive])
 
@@ -2915,6 +3311,410 @@ defmodule CommaWeb.CommaApiTest do
       |> expect_status(400)
 
     assert rejected.body["error"] == "invalid_signature"
+  end
+
+  test "checkout requests and paid checkouts report the payment funnel to product analytics" do
+    seed_stripe_package()
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
+
+    user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "funnel-user-#{unique}@example.com", "name" => "Funnel User"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    workspace = create_ready_workspace!(user["id"], %{"name" => "Funnel"})
+    issue_billing_grant(workspace)
+
+    session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    %{analytics_worker: worker} = Comma.AnalyticsTestSupport.setup_collector()
+
+    checkout = fn plan_key, request_id, headers, status ->
+      user_req(
+        session["token"],
+        :post,
+        "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
+        headers: headers,
+        json: %{
+          "plan_key" => plan_key,
+          "success_url" => "https://comma.test/success",
+          "cancel_url" => "https://comma.test/cancel",
+          "client_request_id" => request_id
+        }
+      )
+      |> expect_status(status)
+      |> Map.fetch!(:body)
+    end
+
+    requested_at = SystemsClock.utc_now()
+    subscription = checkout.("comma_value_v1", "funnel-1", [], 201)
+    # A retry reuses the account's open session: the same created checkout.
+    assert checkout.("comma_value_v1", "funnel-2", [], 201)["id"] == subscription["id"]
+    checkout.("not-a-plan", "funnel-3", [], 400)
+    pack = checkout.("comma_addon_4m_v1", "funnel-4", [], 201)
+    private = checkout.("comma_addon_8m_v1", "funnel-5", [{"dnt", "1"}], 201)
+
+    # What Stripe echoes back on the session: the metadata the checkout set.
+    metadata_of = fn package_code ->
+      BillingStripe.TestAPI.Recorder
+      |> Agent.get(& &1)
+      |> Enum.find_value(fn
+        {:checkout, %{metadata: %{"package_code" => ^package_code} = metadata}, _opts} ->
+          metadata
+
+        _ ->
+          nil
+      end)
+    end
+
+    deliver = fn session_id, package_code, event_id ->
+      payload =
+        Jason.encode!(%{
+          "id" => event_id,
+          "created" => 1_780_272_000,
+          "type" => "checkout.session.completed",
+          "data" => %{
+            "object" => %{
+              "id" => session_id,
+              "mode" => "payment",
+              "payment_status" => "paid",
+              "payment_intent" => "pi_funnel_#{event_id}",
+              "metadata" => metadata_of.(package_code)
+            }
+          }
+        })
+
+      Req.request!(
+        method: :post,
+        url: base() <> "/v1/comma/billing/stripe/webhook",
+        headers: [{"content-type", "application/json"}, {"stripe-signature", "t=1,v1=ok"}],
+        body: payload
+      )
+      |> expect_status(200)
+    end
+
+    # Stripe delivers a webhook again until it is answered: the same completion.
+    deliver.(pack["id"], "comma_addon_4m", "evt_funnel_#{unique}")
+    deliver.(pack["id"], "comma_addon_4m", "evt_funnel_#{unique}")
+    refute Map.has_key?(metadata_of.("comma_addon_4m"), "analytics_opt_out")
+    assert metadata_of.("comma_addon_8m")["analytics_opt_out"] == "true"
+    deliver.(private["id"], "comma_addon_8m", "evt_funnel_private_#{unique}")
+
+    events =
+      worker
+      |> Comma.AnalyticsTestSupport.collect()
+      |> Enum.filter(&String.starts_with?(&1["event"], "comma_checkout_"))
+
+    assert [
+             %{"event" => "comma_checkout_created"} = started,
+             %{"event" => "comma_checkout_created"} = retried,
+             %{"event" => "comma_checkout_failed"} = failed,
+             %{"event" => "comma_checkout_created"} = pack_started,
+             %{"event" => "comma_checkout_completed"} = completed,
+             %{"event" => "comma_checkout_completed"} = replayed
+           ] = events
+
+    assert Enum.all?(events, &(&1["distinct_id"] == user["id"]))
+
+    # PostHog deduplicates by uuid within one event day: a retry must repeat both.
+    assert Map.take(retried, ["uuid", "timestamp"]) == Map.take(started, ["uuid", "timestamp"])
+
+    assert Map.take(replayed, ["uuid", "timestamp"]) ==
+             Map.take(completed, ["uuid", "timestamp"])
+
+    # The client times its request in milliseconds: the checkout it created comes after.
+    {:ok, created_at, 0} = DateTime.from_iso8601(started["timestamp"])
+    assert DateTime.compare(created_at, requested_at) != :lt
+
+    assert %{
+             "workspace_id" => workspace_id,
+             "plan_key" => "comma_value_v1",
+             "checkout_mode" => "subscription"
+           } = started["properties"]
+
+    assert workspace_id == workspace["id"]
+
+    assert %{"failure_kind" => "plan_unavailable"} = failed["properties"]
+    refute Map.has_key?(failed["properties"], "plan_key")
+
+    # A created and a completed checkout of one purchase share its plan key.
+    assert %{"plan_key" => "comma_addon_4m_v1", "checkout_mode" => "payment"} =
+             pack_started["properties"]
+
+    assert %{
+             "plan_key" => "comma_addon_4m_v1",
+             "package_code" => "comma_addon_4m",
+             "checkout_mode" => "payment",
+             "payment_status" => "paid"
+           } = completed["properties"]
+
+    assert completed["timestamp"] == DateTime.to_iso8601(DateTime.from_unix!(1_780_272_000))
+
+    encoded = Jason.encode!(events)
+    refute encoded =~ "cus_"
+    refute encoded =~ "pi_funnel"
+    refute encoded =~ "funnel-user-"
+  end
+
+  test "a redeemed code and an App Store purchase report to product analytics with the owner's plan" do
+    seed_redeem_package()
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
+
+    user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "purchase-events-#{unique}@example.com", "name" => "Purchase Events"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    workspace = create_ready_workspace!(user["id"], %{"name" => "Purchase Events"})
+    issue_billing_grant(workspace)
+
+    session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    on_exit(fn ->
+      for key <- [:test_transactions, :test_statuses, :test_calls],
+          do: SystemsRuntime.delete_env(:billing_apple, key)
+    end)
+
+    {:ok, code} =
+      BillingCommerce.create_redeem_code(%{
+        "code" => "comma-purchase-events-#{unique}",
+        "package_code" => "comma_api_redeem_once",
+        "package_version" => "2026-06",
+        "code_type" => "one_time_package",
+        "surface" => "comma",
+        "max_redemptions" => 1,
+        "per_account_limit" => 1,
+        "valid_from" => "2026-06-01T00:00:00Z"
+      })
+
+    %{analytics_worker: worker} = Comma.AnalyticsTestSupport.setup_collector()
+
+    redeem = fn ->
+      user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/redeem",
+        json: %{"code" => code.code, "client_request_id" => "purchase-events-#{unique}"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+    end
+
+    redemption = redeem.()
+    # The same request again answers the first redemption: nothing new to report.
+    assert redeem.()["idempotent"]
+
+    store = "/v1/comma/workspaces/#{workspace["id"]}/billing/store"
+
+    intent = fn ->
+      user_req(session["token"], :post, store <> "/intent",
+        json: %{"provider" => "apple", "plan_key" => "comma_value_v1"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+    end
+
+    %{"account_token" => token} = intent.()
+    # The payment sheet cancelled and opened again the same day is the same start.
+    intent.()
+
+    tid = "#{6_000_000 + unique}"
+    renewal_id = "#{6_500_000 + unique}"
+    starts = SystemsClock.utc_now() |> DateTime.add(-40, :day) |> DateTime.truncate(:second)
+    renews = DateTime.shift(starts, month: 1)
+
+    tx = %{
+      "transactionId" => tid,
+      "originalTransactionId" => tid,
+      "bundleId" => "surf.comma.test",
+      "productId" => "comma_value_v1",
+      "type" => "Auto-Renewable Subscription",
+      "transactionReason" => "PURCHASE",
+      "purchaseDate" => DateTime.to_unix(starts, :millisecond),
+      "expiresDate" => DateTime.to_unix(renews, :millisecond),
+      "price" => 24_990,
+      "appAccountToken" => token
+    }
+
+    renewal =
+      Map.merge(tx, %{
+        "transactionId" => renewal_id,
+        "transactionReason" => "RENEWAL",
+        "purchaseDate" => DateTime.to_unix(renews, :millisecond),
+        "expiresDate" => renews |> DateTime.shift(month: 1) |> DateTime.to_unix(:millisecond)
+      })
+
+    SystemsRuntime.put_env(:billing_apple, :test_transactions, %{
+      tid => %{environment: :production, tx: tx},
+      renewal_id => %{environment: :production, tx: renewal}
+    })
+
+    SystemsRuntime.put_env(:billing_apple, :test_statuses, %{
+      tid => %{
+        "data" => [
+          %{
+            "lastTransactions" => [
+              %{
+                "originalTransactionId" => tid,
+                "status" => 1,
+                "signedTransactionInfo" => BillingApple.TestAPI.jws(renewal),
+                "signedRenewalInfo" => BillingApple.TestAPI.jws(%{"autoRenewStatus" => 1})
+              }
+            ]
+          }
+        ]
+      }
+    })
+
+    report = fn transaction_id ->
+      user_req(session["token"], :post, store <> "/transactions",
+        json: %{"provider" => "apple", "transaction_id" => transaction_id}
+      )
+      |> expect_status(200)
+    end
+
+    report.(tid)
+    # The app reports a transaction it could not finish again when it next starts.
+    report.(tid)
+    # Apple's renewal charge is no purchase the person made.
+    report.(renewal_id)
+
+    # A redeemed subscription whose last period ended is no current plan.
+    lapsed =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "lapsed-plan-#{unique}@example.com", "name" => "Lapsed Plan"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    lapsed_workspace = create_ready_workspace!(lapsed["id"], %{"name" => "Lapsed Plan"})
+
+    {:ok, _} =
+      BillingCommerce.create_subscription(%{
+        billing_account_id: lapsed_workspace["billing_account_id"],
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: lapsed_workspace["id"],
+        package_code: "comma_value",
+        package_version: "2026-06",
+        source_type: "internal_subscription",
+        source_id: "redemption_lapsed_#{unique}",
+        source_event_id: "evt_lapsed_#{unique}",
+        idempotency_key: "redeem:lapsed:#{unique}",
+        periods: [
+          %{
+            cycle_key: "2026-07",
+            valid_from: ~U[2026-07-01 00:00:00Z],
+            expires_at: ~U[2026-08-01 00:00:00Z]
+          }
+        ]
+      })
+
+    Comma.Analytics.identify(lapsed["id"])
+
+    # A redeemed subscription code is the owner's plan while its period is open.
+    subscriber =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "redeemed-plan-#{unique}@example.com", "name" => "Redeemed Plan"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    subscriber_workspace = create_ready_workspace!(subscriber["id"], %{"name" => "Redeemed Plan"})
+
+    subscriber_session =
+      admin_req(:post, "/v1/comma/admin/users/#{subscriber["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    {:ok, subscription_code} =
+      BillingCommerce.create_redeem_code(%{
+        "code" => "comma-redeemed-plan-#{unique}",
+        "package_code" => "comma_value",
+        "package_version" => "2026-06",
+        "code_type" => "internal_subscription",
+        "surface" => "comma",
+        "max_redemptions" => 1,
+        "per_account_limit" => 1,
+        "valid_from" => "2026-06-01T00:00:00Z"
+      })
+
+    user_req(
+      subscriber_session["token"],
+      :post,
+      "/v1/comma/workspaces/#{subscriber_workspace["id"]}/billing/redeem",
+      json: %{"code" => subscription_code.code, "client_request_id" => "redeemed-plan-#{unique}"}
+    )
+    |> expect_status(201)
+
+    events = Comma.AnalyticsTestSupport.collect(worker)
+
+    assert [
+             %{"event" => "comma_code_redeemed"} = redeemed,
+             %{"event" => "comma_store_purchase_started"} = started,
+             %{"event" => "comma_store_purchase_started"} = started_again,
+             %{"event" => "comma_store_purchase_completed"} = completed,
+             %{"event" => "comma_store_purchase_completed"} = reported_again,
+             %{"event" => "comma_code_redeemed"} = redeemed_subscription
+           ] = Enum.filter(events, &(&1["event"] =~ ~r/^comma_(code|store)_/))
+
+    assert Enum.all?([redeemed, started, completed], &(&1["distinct_id"] == user["id"]))
+    assert started_again["uuid"] == started["uuid"]
+
+    assert %{"package_code" => "comma_value", "redeem_kind" => "subscription"} =
+             redeemed_subscription["properties"]
+
+    assert redeemed_subscription["distinct_id"] == subscriber["id"]
+
+    assert %{
+             "workspace_id" => workspace_id,
+             "package_code" => "comma_api_redeem_once",
+             "redeem_kind" => "one_time"
+           } = redeemed["properties"]
+
+    assert workspace_id == workspace["id"]
+
+    purchase = %{
+      "workspace_id" => workspace["id"],
+      "provider" => "apple",
+      "plan_key" => "comma_value_v1",
+      "package_code" => "comma_value",
+      "checkout_mode" => "subscription"
+    }
+
+    assert Map.take(started["properties"], Map.keys(purchase)) == purchase
+    assert Map.take(completed["properties"], Map.keys(purchase)) == purchase
+    # The purchase's own time, so a transaction reported days later still dates the purchase.
+    {:ok, completed_at, 0} = DateTime.from_iso8601(completed["timestamp"])
+    assert DateTime.compare(completed_at, starts) == :eq
+
+    # PostHog deduplicates by uuid within one event day: a second report must repeat both.
+    assert Map.take(reported_again, ["uuid", "timestamp"]) ==
+             Map.take(completed, ["uuid", "timestamp"])
+
+    plan_of = fn user_id ->
+      events
+      |> Enum.filter(&(&1["event"] == "$identify" and &1["distinct_id"] == user_id))
+      |> List.last()
+      |> get_in(["properties", "$set"])
+      |> Map.take(["plan", "plan_source"])
+    end
+
+    assert plan_of.(user["id"]) == %{"plan" => "comma_value", "plan_source" => "apple"}
+    assert plan_of.(lapsed["id"]) == %{"plan" => "free", "plan_source" => "none"}
+    assert plan_of.(subscriber["id"]) == %{"plan" => "comma_value", "plan_source" => "redeem"}
+
+    encoded = Jason.encode!(events)
+    refute encoded =~ code.code
+    refute encoded =~ redemption["redemption"]["id"]
+    refute encoded =~ token
   end
 
   test "admin billing redeem API creates, audits, disables, and applies without listing plaintext codes" do
@@ -3271,19 +4071,8 @@ defmodule CommaWeb.CommaApiTest do
       |> expect_status(200)
       |> Map.fetch!(:body)
 
-    assert page["data"] == []
-    assert page["has_more"]
-
-    next =
-      user_req(
-        token,
-        :get,
-        "#{base}?archive=only&limit=1&cursor=#{URI.encode_www_form(page["next_cursor"])}"
-      )
-      |> expect_status(200)
-      |> Map.fetch!(:body)
-
-    assert [%{"id" => ^id}] = next["data"]
+    assert [%{"id" => ^id}] = page["data"]
+    refute page["has_more"]
     ordinary = user_req(token, :get, base) |> expect_status(200) |> Map.fetch!(:body)
     assert Enum.map(ordinary["data"], & &1["id"]) == [newer]
 

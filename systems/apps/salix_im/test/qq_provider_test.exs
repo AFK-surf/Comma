@@ -913,25 +913,34 @@ defmodule SalixIM.QQProviderTest do
       {:ok, owner} = SalixIM.ConversationPlacement.ensure_started(ctx.group_id, task)
       {:ok, watch} = SalixIM.ConversationActor.task_worker_watch(owner)
 
+      worker_key = {worker, session}
+
+      watch_stop = fn ->
+        case :sys.get_state(watch).workers do
+          %{^worker_key => %{stop: stop}} -> stop
+          _ -> nil
+        end
+      end
+
       stop = fn ->
         CardActivity.set(worker, session, "stopped")
 
         assert settle_until(fn ->
-                 match?({:scheduled, _, :stopped, _, _, _}, :sys.get_state(watch).stop)
+                 match?({:scheduled, _, :stopped, _, _, _}, watch_stop.())
                end)
 
-        {:scheduled, version, :stopped, nil, _, token} = :sys.get_state(watch).stop
+        {:scheduled, version, :stopped, nil, _, token} = watch_stop.()
         send(watch, {:task_worker_stopped_timeout, {worker, session}, version, token})
 
         assert settle_until(fn ->
-                 match?({:acted, _, :stopped, _, _, _}, :sys.get_state(watch).stop)
+                 match?({:acted, _, :stopped, _, _, _}, watch_stop.())
                end)
       end
 
       stop.()
       settle_refute_receive({:qq_api, "POST", "/v2/groups/" <> _, _, _}, 100)
       CardActivity.set(worker, session, "active")
-      assert settle_until(fn -> :sys.get_state(watch).stop == nil end)
+      assert settle_until(fn -> watch_stop.() == nil end)
       stop.()
       settle_receive({:qq_api, "POST", "/v2/groups/" <> _, paused, _})
       assert paused["markdown"]["content"] =~ "任务执行暂停"
@@ -1072,8 +1081,8 @@ defmodule SalixIM.QQProviderTest do
 
         assert names ==
                  if(scope == "group",
-                   do: ~w(status compact help 总结群聊),
-                   else: ~w(status compact help)
+                   do: ~w(status compact help newgpttask newclaudetask 总结群聊),
+                   else: ~w(status compact help newgpttask newclaudetask)
                  )
       end
 
@@ -1210,6 +1219,7 @@ defmodule SalixIM.QQProviderTest do
       refute help =~ "clear"
       # A shortcut of groups is not in the help of a private chat.
       refute help =~ "总结群聊"
+      assert help =~ "/newgpttask — "
 
       assert router_inputs(
                ctx.group_id,
@@ -1240,6 +1250,29 @@ defmodule SalixIM.QQProviderTest do
       end
 
       refute_received {:qq_api, "POST", "/v2/users/" <> _path, %{"msg_type" => 0}, _authorization}
+    end
+
+    test "a default task shortcut takes the task after its name", ctx do
+      source = "im_provider:qq:#{ctx.connect["connect_id"]}:"
+
+      assert {:ok, _ack} = deliver(ctx, private_message("ROBOT1.0_gpt", "/newgpttask"))
+      assert [bare] = router_inputs(ctx.group_id, source <> "ROBOT1.0_gpt")
+      bare = bare["agent_input"][:trusted_origin]["source_text"]
+      assert bare =~ "Codex worker"
+      assert String.ends_with?(bare, "Task content:")
+
+      assert {:ok, _ack} =
+               deliver(ctx, group_mention("ROBOT1.0_claude", " /newclaudetask  帮我查 CI "))
+
+      assert [task] = router_inputs(ctx.group_id, source <> "ROBOT1.0_claude")
+      task = task["agent_input"][:trusted_origin]["source_text"]
+      assert task =~ "Claude worker"
+      assert String.ends_with?(task, "Task content: 帮我查 CI")
+
+      # A name only starts with a shortcut's name: ordinary input.
+      assert {:ok, _ack} = deliver(ctx, private_message("ROBOT1.0_more", "/newgpttaskfoo"))
+      assert [more] = router_inputs(ctx.group_id, source <> "ROBOT1.0_more")
+      assert more["agent_input"][:trusted_origin]["source_text"] == "/newgpttaskfoo"
     end
 
     test "a shortcut of the command menu stands for its prompt", ctx do

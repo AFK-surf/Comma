@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,6 +72,37 @@ func TestImportedCodexCredentialsRefreshBeforeUse(t *testing.T) {
 				expiry, _ := prepared.Credentials["expired"].(string)
 				if _, err := time.Parse(time.RFC3339, expiry); err != nil {
 					t.Fatal("prepared credential has no usable expiry")
+				}
+			})
+		})
+	}
+}
+
+func TestPrepareDistinguishesRejectedGrantFromTemporaryFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   int
+	}{
+		{"revoked grant", 400, `{"error":"invalid_grant"}`, 401},
+		{"invalidated token", 400, `{"error":{"code":"refresh_token_invalidated"}}`, 401},
+		{"unauthorized", 401, `{"error":"invalid_token"}`, 401},
+		{"provider unavailable", 503, `{"error":"unavailable"}`, 502},
+		{"unclassified bad request", 400, `{"error":"invalid_request"}`, 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				original := http.DefaultTransport
+				http.DefaultTransport = refreshTransport(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: tc.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+				})
+				defer func() { http.DefaultTransport = original }()
+				payload, _ := json.Marshal(Credential{Provider: "codex", ForceRefresh: true, Credentials: map[string]any{"access_token": "old", "refresh_token": "rejection-" + tc.name}})
+				err := execute(context.Background(), "/prepare", payload, Credential{}, func([]byte) error { t.Fatal("failed refresh emitted credentials"); return nil })
+				var failure *operationError
+				if !errors.As(err, &failure) || failure.status != tc.want {
+					t.Fatalf("failure=%v, want status %d", err, tc.want)
 				}
 			})
 		})

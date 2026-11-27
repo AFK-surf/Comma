@@ -10,6 +10,8 @@
     <item name="tab_home" type="id" />
     <item name="tab_inbox" type="id" />
     <item name="home_search" type="id" />
+    <item name="routines_refresh" type="id" />
+    <item name="routines_cleared" type="id" />
     <item name="tab_settings" type="id" />
     <item name="tab_router" type="id" />
     <item name="shell_root" type="id" />

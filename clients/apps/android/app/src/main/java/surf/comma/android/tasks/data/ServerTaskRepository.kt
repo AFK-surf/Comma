@@ -259,7 +259,9 @@ class ServerTaskRepository internal constructor(
                 scheduled = item.optBoolean("scheduled"),
                 changedAt = wireMillis(item.optLong("updatedAt")),
                 host = item.optJSONObject("host")?.let { readHost(it, item.optString("workspaceId")) },
-                unsupported = wireStrings(item.optJSONArray("unsupported")).toSet())
+                url = item.optString("url").takeIf { it.startsWith("https://") },
+                unsupported = wireStrings(item.optJSONArray("unsupported")).toSet(),
+                together = wireStrings(item.optJSONArray("together")))
         }
         val workspaces = json.optJSONArray("workspaces")?.let { array ->
             (0 until array.length()).mapNotNull { index ->

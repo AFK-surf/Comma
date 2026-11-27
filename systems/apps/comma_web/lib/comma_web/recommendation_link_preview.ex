@@ -22,8 +22,8 @@ defmodule CommaWeb.RecommendationLinkPreview do
   #   * Outlook mail/events         -> exact currently collected webLink and Graph id;
   #                                    same consent, source and account, read live
   #
-  # Everything else (including arbitrary Outlook links and Gmail) is
-  # `:not_found`, and the client keeps its generic destination card.
+  # Other public websites use WebLinkPreview. Unsupported private-service
+  # links (including arbitrary Outlook links and Gmail) remain link-only.
   #
   # Slack reads use the Group's managed Slack OAuth binding (the Comma Slack
   # plugin's user token) directly against the Web API. The other providers
@@ -39,6 +39,11 @@ defmodule CommaWeb.RecommendationLinkPreview do
   @google_drive_doc ~r"^https://docs\.google\.com/(?:document|spreadsheets|presentation|forms)/d/([\w-]{10,})(?:[/?#].*)?$"
   @google_drive_file ~r"^https://drive\.google\.com/file/d/([\w-]{10,})(?:[/?#].*)?$"
   @google_drive_open ~r"^https://drive\.google\.com/open\?(?:[^#]*&)?id=([\w-]{10,})"
+  @stillfail_host ~r"^https://(?:app\.youdid\.wtf|still\.fail)(?:/|$)"
+  @stillfail_chat ~r"^https://(?:app\.youdid\.wtf|still\.fail)/o/[^/]+/([^/]+)/([^/?#]+)(?:[/?#].*)?$"
+  @stillfail_urgent_system_cards ~w(login secret vault signin device adb rig)
+  @stillfail_preview_messages_limit 16
+  @stillfail_preview_text_limit 2_400
 
   @pull_request_tool "GITHUB_GET_A_PULL_REQUEST"
   @linear_tool "LINEAR_RUN_QUERY_OR_MUTATION"
@@ -69,77 +74,97 @@ defmodule CommaWeb.RecommendationLinkPreview do
   def preview_connected(workspace, href, source_id, viewer_id) do
     href = if is_binary(href), do: String.trim(href), else: href
 
-    if CommaWeb.RecommendationOutlookPreview.supported_href?(href) do
-      CommaWeb.RecommendationOutlookPreview.preview(workspace, viewer_id, href, source_id)
-    else
-      with true <- is_binary(viewer_id) and workspace["owner_user_id"] == viewer_id,
-           {:ok, target} <- parse_href(href) do
-        managed =
-          if managed_toolkit?(toolkit(target)) do
-            workspace["default_group_id"]
-            |> Salix.Control.OAuthBindings.list()
-            |> Enum.filter(fn binding ->
-              binding["provider"] == toolkit(target) and
-                binding["alias"] == toolkit(target) and
-                binding["group_id"] == workspace["default_group_id"] and
-                binding["status"] == "active" and binding["enabled"] != false
-            end)
-            |> Enum.map(fn binding ->
-              %{
-                "appId" => toolkit(target),
-                "toolkit" => toolkit(target),
-                "kind" => "managed_oauth",
-                "connectionId" => binding["binding_id"],
-                "enabled" => true
-              }
-            end)
-          else
-            []
-          end
+    cond do
+      stillfail_chat_href?(href) ->
+        preview_stillfail_chat(workspace, href, viewer_id)
 
-        # A Routine profile is optional for managed OAuth. It is not an
-        # authorization substitute for a provider connection or resource read.
-        # Composio requires the viewer's explicit, current account receipt.
-        # A Routine profile can contain a stale or different group account and
-        # is not authorization to disclose provider content to this viewer.
-        composio =
-          if toolkit(target) in ~w(googlecalendar googledrive) do
-            for %{"connection_id" => id} <-
-                  Comma.MemberSourceConsents.toolkit_bindings(
-                    workspace["id"],
-                    viewer_id,
-                    toolkit(target)
-                  ),
-                id != "",
-                do: %{
+      match?({:error, _}, parse_href(href)) and CommaWeb.WebLinkPreview.public_page?(href) ->
+        CommaWeb.WebLinkPreview.preview(href)
+
+      true ->
+        preview_provider_connected(workspace, href, source_id, viewer_id)
+    end
+  end
+
+  defp preview_provider_connected(workspace, href, source_id, viewer_id) do
+    href = if is_binary(href), do: String.trim(href), else: href
+
+    cond do
+      CommaWeb.RecommendationOutlookPreview.supported_href?(href) ->
+        CommaWeb.RecommendationOutlookPreview.preview(workspace, viewer_id, href, source_id)
+
+      CommaWeb.RecommendationGmailPreview.supported_href?(href) ->
+        CommaWeb.RecommendationGmailPreview.preview(workspace, viewer_id, href, source_id)
+
+      true ->
+        with true <- is_binary(viewer_id) and workspace["owner_user_id"] == viewer_id,
+             {:ok, target} <- parse_href(href) do
+          managed =
+            if managed_toolkit?(toolkit(target)) do
+              workspace["default_group_id"]
+              |> Salix.Control.OAuthBindings.list()
+              |> Enum.filter(fn binding ->
+                binding["provider"] == toolkit(target) and
+                  binding["alias"] == toolkit(target) and
+                  binding["group_id"] == workspace["default_group_id"] and
+                  binding["status"] == "active" and binding["enabled"] != false
+              end)
+              |> Enum.map(fn binding ->
+                %{
                   "appId" => toolkit(target),
                   "toolkit" => toolkit(target),
-                  "kind" => "composio",
-                  "connectionId" => id,
+                  "kind" => "managed_oauth",
+                  "connectionId" => binding["binding_id"],
                   "enabled" => true
                 }
-          else
-            []
-          end
+              end)
+            else
+              []
+            end
 
-        with {:ok, selected} <- resolve_source(managed ++ composio, source_id, toolkit(target)),
-             {:ok, result} <- preview(workspace, [selected], href, source_id, viewer_id),
-             true <-
-               selected["kind"] != "composio" or
-                 Comma.MemberSourceConsents.binding(
-                   workspace["id"],
-                   viewer_id,
-                   toolkit(target),
-                   selected["connectionId"]
-                 ) != nil do
-          {:ok, result}
+          # A Routine profile is optional for managed OAuth. It is not an
+          # authorization substitute for a provider connection or resource read.
+          # Composio requires the viewer's explicit, current account receipt.
+          # A Routine profile can contain a stale or different group account and
+          # is not authorization to disclose provider content to this viewer.
+          composio =
+            if toolkit(target) in ~w(googlecalendar googledrive) do
+              for %{"connection_id" => id} <-
+                    Comma.MemberSourceConsents.toolkit_bindings(
+                      workspace["id"],
+                      viewer_id,
+                      toolkit(target)
+                    ),
+                  id != "",
+                  do: %{
+                    "appId" => toolkit(target),
+                    "toolkit" => toolkit(target),
+                    "kind" => "composio",
+                    "connectionId" => id,
+                    "enabled" => true
+                  }
+            else
+              []
+            end
+
+          with {:ok, selected} <- resolve_source(managed ++ composio, source_id, toolkit(target)),
+               {:ok, result} <- preview(workspace, [selected], href, source_id, viewer_id),
+               true <-
+                 selected["kind"] != "composio" or
+                   Comma.MemberSourceConsents.binding(
+                     workspace["id"],
+                     viewer_id,
+                     toolkit(target),
+                     selected["connectionId"]
+                   ) != nil do
+            {:ok, result}
+          else
+            _ -> {:error, :not_found}
+          end
         else
-          _ -> {:error, :not_found}
+          false -> {:error, :not_found}
+          {:error, _} = error -> error
         end
-      else
-        false -> {:error, :not_found}
-        {:error, _} = error -> error
-      end
     end
   end
 
@@ -1127,6 +1152,198 @@ defmodule CommaWeb.RecommendationLinkPreview do
   end
 
   defp drive_size(_value), do: nil
+
+  # --------------------------------------------------- still.fail mapping
+
+  defp stillfail_chat_href?(href) when is_binary(href), do: Regex.match?(@stillfail_host, href)
+  defp stillfail_chat_href?(_href), do: false
+
+  defp preview_stillfail_chat(workspace, href, viewer_id) when is_map(workspace) do
+    with true <- is_binary(viewer_id) and workspace["owner_user_id"] == viewer_id,
+         group_id when is_binary(group_id) and group_id != "" <- workspace["default_group_id"],
+         tenant_id when is_binary(tenant_id) and tenant_id != "" <- workspace["salix_tenant_id"],
+         %{} = row <- find_stillfail_row(group_id, href) do
+      scope = %{tenant_id: tenant_id, group_id: group_id}
+      station_name = stillfail_station_name(group_id, row.device_id)
+      {messages, offline?} = read_stillfail_tail(scope, row.station_id, row.thread)
+
+      safe_note =
+        if stillfail_system_card_row?(row) do
+          nil
+        else
+          string(row.note)
+        end
+
+      {:ok,
+       %{
+         "kind" => "stillfail_chat",
+         "href" => string(row.url) || href,
+         "ref" => SalixIM.Ports.StationHostedTasks.ref(row.station_id, row.thread),
+         "title" => string(row.title) || "still.fail",
+         "stationName" => station_name,
+         "status" => stillfail_preview_status(row),
+         "note" => safe_note,
+         "updatedAt" => integer(row.last_activity_at),
+         "offline" => offline?,
+         "messages" => messages
+       }}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp preview_stillfail_chat(_workspace, _href, _viewer_id), do: {:error, :not_found}
+
+  defp find_stillfail_row(group_id, href) do
+    by_path =
+      case Regex.run(@stillfail_chat, href) do
+        [_, station_enc, thread_enc] ->
+          station_id = safe_uri_decode(station_enc)
+          thread = safe_uri_decode(thread_enc)
+          SalixStore.StationTaskIndex.get(group_id, station_id, thread)
+
+        _ ->
+          nil
+      end
+
+    by_path ||
+      group_id
+      |> SalixStore.StationTaskIndex.list_group(500)
+      |> Enum.find(fn row ->
+        is_binary(row.url) and String.trim(row.url) == href
+      end)
+  end
+
+  defp safe_uri_decode(value) do
+    URI.decode(value)
+  rescue
+    ArgumentError -> value
+  end
+
+  defp stillfail_station_name(group_id, device_id) when is_binary(device_id) do
+    case SalixIM.Ports.StationHostedTasks.workspace_names(group_id) do
+      {:ok, names} when is_map(names) -> string(Map.get(names, device_id))
+      _ -> nil
+    end
+  end
+
+  defp stillfail_station_name(_group_id, _device_id), do: nil
+
+  defp read_stillfail_tail(scope, station_id, thread) do
+    case SalixIM.Ports.StationHostedTasks.read(scope, station_id, thread, %{
+           "after" => 0,
+           "limit" => 50
+         }) do
+      {:ok, %{"messages" => list} = page} when is_list(list) ->
+        through = page["through"]
+        last_seq = list |> Enum.map(&(&1["seq"] || 0)) |> Enum.max(fn -> 0 end)
+
+        messages =
+          if is_integer(through) and through > last_seq do
+            tail_after = max(through - @stillfail_preview_messages_limit - 8, 0)
+
+            case SalixIM.Ports.StationHostedTasks.read(scope, station_id, thread, %{
+                   "after" => tail_after,
+                   "limit" => @stillfail_preview_messages_limit + 8
+                 }) do
+              {:ok, %{"messages" => tail}} when is_list(tail) -> tail
+              _ -> list
+            end
+          else
+            list
+          end
+
+        formatted =
+          messages
+          |> Enum.sort_by(&(&1["seq"] || 0), :asc)
+          |> Enum.take(-@stillfail_preview_messages_limit)
+          |> Enum.map(&format_stillfail_message/1)
+
+        {formatted, false}
+
+      _ ->
+        {[], true}
+    end
+  end
+
+  defp format_stillfail_message(msg) when is_map(msg) do
+    %{
+      "seq" => integer(msg["seq"]) || 0,
+      "authorKind" => if(msg["author_kind"] == "person", do: "person", else: "agent"),
+      "author" => string(msg["author"]),
+      "text" => stillfail_message_text(msg["text"]),
+      "createdAt" =>
+        integer(msg["at"]) || integer(msg["created_at"]) || unix_ms(msg["created_at"]),
+      "card" => stillfail_message_card(msg["card"])
+    }
+  end
+
+  defp format_stillfail_message(_msg) do
+    %{
+      "seq" => 0,
+      "authorKind" => "agent",
+      "author" => nil,
+      "text" => "",
+      "createdAt" => nil,
+      "card" => nil
+    }
+  end
+
+  defp stillfail_message_text(text) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    if String.length(trimmed) > @stillfail_preview_text_limit do
+      String.slice(trimmed, 0, @stillfail_preview_text_limit - 1) <> "…"
+    else
+      trimmed
+    end
+  end
+
+  defp stillfail_message_text(_text), do: ""
+
+  defp stillfail_message_card(%{"type" => type} = card) when is_binary(type) and type != "" do
+    options =
+      card["options"]
+      |> List.wrap()
+      |> Enum.take(6)
+      |> Enum.flat_map(fn
+        %{"label" => label} when is_binary(label) ->
+          case string(String.trim(label)) do
+            nil -> []
+            clean_label -> [clean_label]
+          end
+
+        _ ->
+          []
+      end)
+
+    %{
+      "type" => type,
+      "choice" => string(card["choice"]),
+      "closed" => card["closed"] == true,
+      "options" => options
+    }
+  end
+
+  defp stillfail_message_card(_card), do: nil
+
+  defp stillfail_preview_status(row) do
+    cond do
+      row.attention == "need" -> "need"
+      row.attention == "done" -> "done"
+      row.attention == "failed" -> "failed"
+      row.status == "needs_review" -> "need"
+      row.status in ["done", "cancelled", "archived"] -> "done"
+      true -> "running"
+    end
+  end
+
+  defp stillfail_system_card_row?(row) do
+    Enum.any?(row.labels || [], fn
+      "card:" <> kind -> kind in @stillfail_urgent_system_cards
+      _ -> false
+    end)
+  end
 
   # -------------------------------------------------------------- helpers
 

@@ -55,7 +55,12 @@ const currentWorkload = (w: ComputeWorkload) =>
   !["deleted", "cloud_retired"].includes(w.phase ?? "") &&
   !["complete", "cloud_retired"].includes(w.deletion?.phase ?? "");
 
-type Shown = ComputeValue & { reads: number; lock: Semaphore.Semaphore };
+type Shown = ComputeValue & {
+  reads: number;
+  seenPreparing: Set<string>;
+  settledPreparing: Set<string>;
+  lock: Semaphore.Semaphore;
+};
 
 const params = {
   string(raw: unknown, name: string, max = 160): string {
@@ -99,7 +104,13 @@ export class Compute {
       },
       compute: (topic): Value => {
         const shown = this.#shown.get(keyOf(topic)) ?? Compute.#empty();
-        const { reads: _r, lock: _l, ...value } = shown;
+        const {
+          reads: _r,
+          seenPreparing: _sp,
+          settledPreparing: _stp,
+          lock: _l,
+          ...value
+        } = shown;
         return {
           ok: {
             ...value,
@@ -128,7 +139,11 @@ export class Compute {
           Effect.sync(() => {
             for (const topic of this.#topics()) {
               const shown = this.#shown.get(keyOf(topic));
-              if (shown) shown.reads = 0;
+              if (shown) {
+                shown.reads = 0;
+                shown.seenPreparing.clear();
+                shown.settledPreparing.clear();
+              }
               this.#live.stop(topic);
               this.#live.run(topic, this.#keep(topic));
             }
@@ -260,6 +275,8 @@ export class Compute {
       creationReadError: false,
       deletion: null,
       reads: 0,
+      seenPreparing: new Set(),
+      settledPreparing: new Set(),
       lock: Semaphore.makeUnsafe(1),
     };
   }
@@ -396,6 +413,21 @@ export class Compute {
           return;
         }
         shown.projection = projection.value;
+        let progressed = false;
+        let anyPreparing = false;
+        for (const w of projection.value.workloads) {
+          if (preparing(w)) {
+            anyPreparing = true;
+            shown.seenPreparing.add(w.id);
+          } else if (
+            shown.seenPreparing.has(w.id) &&
+            !shown.settledPreparing.has(w.id)
+          ) {
+            shown.settledPreparing.add(w.id);
+            progressed = true;
+          }
+        }
+        if (progressed && anyPreparing && shown.reads > 1) shown.reads = 1;
         shown.error = false;
         shown.creationReadError = false;
         const saved = account.value.meta<Creation>(creationKey(workspace));

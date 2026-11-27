@@ -55,13 +55,16 @@ export function taskDateWindowStart(window: TaskDateWindow, now: number): number
   return at.getTime();
 }
 
-function taskDate(task: TaskViewModel, field: TaskDateField): number | undefined {
+function taskDate(
+  task: Pick<TaskViewModel, "createdAt" | "updatedAt">,
+  field: TaskDateField
+): number | undefined {
   return field === "created" ? task.createdAt : task.updatedAt;
 }
 
 /** Whether every date `selection` names lies in its window; a Task without that date does not. */
 export function taskMatchesDates(
-  task: TaskViewModel,
+  task: Pick<TaskViewModel, "createdAt" | "updatedAt">,
   selection: TaskDateSelection,
   now: number
 ): boolean {

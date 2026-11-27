@@ -36,4 +36,8 @@
     <string name="media_file_share">Share…</string>
     <string name="media_file_saved">Saved</string>
     <string name="media_file_save_failed">Could not save</string>
+    <string name="media_image_group_expand">%1$d Images</string>
+    <string name="media_image_group_hide">Hide</string>
+    <string name="media_image_group_next">Next image</string>
+    <string name="media_image_group_previous">Previous image</string>
 </resources>

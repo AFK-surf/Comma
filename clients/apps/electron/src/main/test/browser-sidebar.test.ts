@@ -1,5 +1,6 @@
 import {
   browserInspectionComposerConsolePrefix,
+  type BrowserSidebarCloseTabRequest,
   type BrowserSidebarOpenTabRequest,
   type BrowserSidebarState,
   type SurfaceBounds,
@@ -10,6 +11,7 @@ import { fakeTimersStepWhenIdle } from "@comma/test-utils/settle";
 import {
   BROWSER_SIDEBAR_PARTITION,
   BROWSER_SIDEBAR_WEB_PREFERENCES,
+  CLIENT_BROWSER_CLOSE_TIMEOUT_MS,
   CLIENT_BROWSER_OPEN_TIMEOUT_MS,
   CLIENT_CDP_TIMEOUT_MS,
   NativeBrowserSidebarService,
@@ -499,6 +501,85 @@ describe("NativeBrowserSidebarService", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("asks the tab's renderer to close a tab and settles once its session is gone", async () => {
+    let requested:
+      | { ownerWindowId: string; request: BrowserSidebarCloseTabRequest }
+      | undefined;
+    const harness = await createHarness({
+      onClientCloseTabRequested: (ownerWindowId, request) => {
+        requested = { ownerWindowId, request };
+        return true;
+      },
+    });
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      sessionId: "renderer-session",
+      tabId: "tab-a",
+      url: "https://example.com/",
+    });
+
+    let settled = false;
+    const closing = harness.service.closeClientTab({ tabId: "tab-a" }).then(() => {
+      settled = true;
+    });
+    expect(requested).toEqual({
+      ownerWindowId: "win_main",
+      request: { tabId: "tab-a" },
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    // The renderer drops the page, and its retained-session cleanup closes it.
+    await harness.service.close({ sessionId: "renderer-session" });
+    await closing;
+    expect(harness.service.listClientTargets()).toEqual([]);
+  });
+
+  it("rejects closing a tab Main does not have", async () => {
+    const onClientCloseTabRequested = vi.fn(() => true);
+    const harness = await createHarness({ onClientCloseTabRequested });
+
+    await expect(harness.service.closeClientTab({ tabId: "tab-gone" })).rejects.toThrow(
+      "The requested in-app browser tab tab-gone is unavailable."
+    );
+    expect(onClientCloseTabRequested).not.toHaveBeenCalled();
+  });
+
+  it("bounds a close request the renderer never carries out", async () => {
+    const harness = await createHarness({ onClientCloseTabRequested: () => true });
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      sessionId: "renderer-session",
+      tabId: "tab-a",
+      url: "https://example.com/",
+    });
+
+    const closing = harness.service.closeClientTab({ tabId: "tab-a" });
+    const rejection = expect(closing).rejects.toThrow(
+      "Timed out waiting for in-app browser tab tab-a to close."
+    );
+    await vi.advanceTimersByTimeAsync(CLIENT_BROWSER_CLOSE_TIMEOUT_MS);
+    await rejection;
+    expect(harness.service.listClientTargets()).toHaveLength(1);
+  });
+
+  it("rejects a pending close when the tab's owner window goes away first", async () => {
+    const harness = await createHarness({ onClientCloseTabRequested: () => true });
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      sessionId: "renderer-session",
+      tabId: "tab-a",
+      url: "https://example.com/",
+    });
+
+    const closing = harness.service.closeClientTab({ tabId: "tab-a" });
+    const rejection = expect(closing).rejects.toThrow(
+      "The browser tab owner window closed before the tab closed."
+    );
+    await harness.service.disposeOwner("win_main");
+    await rejection;
   });
 
   it("lists and controls exact tabs while screenshots use the tab's own view", async () => {
@@ -2256,11 +2337,15 @@ describe("NativeBrowserSidebarService", () => {
 async function createHarness({
   dropWebContentsFromViewOnDestroy,
   loadNavigation,
+  onClientCloseTabRequested,
   onClientOpenTabRequested,
   onBrowserSidebarStateChanged,
 }: {
   dropWebContentsFromViewOnDestroy?: boolean | undefined;
   loadNavigation?: ((url: string) => Promise<unknown>) | undefined;
+  onClientCloseTabRequested?:
+    | ((ownerWindowId: string, request: BrowserSidebarCloseTabRequest) => boolean)
+    | undefined;
   onClientOpenTabRequested?:
     | ((ownerWindowId: string, request: BrowserSidebarOpenTabRequest) => boolean)
     | undefined;
@@ -2316,6 +2401,7 @@ async function createHarness({
     createComposerView,
     composerUrl: "assets://./#/browser-inspection-composer",
     getCallerWindowId: () => "win_main",
+    onClientCloseTabRequested,
     onClientOpenTabRequested,
     onStateChanged: async (_windowId, state) => {
       sidebarStates.push(state);

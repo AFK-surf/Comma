@@ -6,6 +6,10 @@ export const COMMA_PROTOCOL_MARKER = "[[comma-protocol]]";
 const COMMA_FENCE_PATTERN = /```comma:[\s\S]*?(?:```|$)/g;
 const ATTACHED_FILE_LINE_PATTERN =
   /^- (.+?) \(workspace file: (\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)\)$/;
+/** A file on the sender's computer: an absolute macOS/Linux path, a Windows drive path or a UNC path. */
+const ATTACHED_LOCAL_FILE_LINE_PATTERN =
+  /^- (.+?) \(local path: ((?:\/|[A-Za-z]:[\\/]|\\\\)[^\r\n]+)\)$/u;
+const LOCAL_PATH_MARKER = " (local path: ";
 
 export const MAX_ATTACHMENT_BYTES = 10_000_000;
 /** A file uploaded in parts (`ChatApi.uploadLocalFile`): the server's bound (`Comma.GroupFiles`). */
@@ -66,6 +70,9 @@ export const ATTACHMENT_EXTENSIONS = [
 ];
 export const ATTACHMENT_ACCEPT = ATTACHMENT_EXTENSIONS.join(",");
 export const ATTACHED_FILES_HEADER = "Attached files in your workspace:";
+/** Files the message names by their path on the sending computer: none of them was uploaded. */
+export const ATTACHED_LOCAL_FILES_HEADER =
+  "Attached local files on the sender's computer:";
 export const ATTACHED_ONLY_TEXT = "I've attached some files:";
 export const QUOTED_TEXT_HEADER = "Quoted from this conversation:";
 export const ATTACHED_TEXT_HEADER = "Attached text";
@@ -74,6 +81,8 @@ const ATTACHED_TEXT_HEADER_PATTERN = /^Attached text(?: from (.+))?:$/;
 export type AttachedWorkspaceFile = {
   name: string;
   path: string;
+  /** A path on the sender's computer, not a workspace file. */
+  local?: true | undefined;
 };
 
 /** A block of text sent with a message as an attachment, such as a Routine item. */
@@ -96,19 +105,41 @@ export function isCommaContextMessage(text: string) {
   return text.trimStart().startsWith(COMMA_CONTEXT_MARKER);
 }
 
+/**
+ * `text` with its files listed after it: first those named by their path on the sender's computer (`local`), then
+ * the workspace files. Composed again with more workspace files, the local list stays where it is.
+ */
 export function composeMessageWithAttachments(
   text: string,
-  attachments: AttachedWorkspaceFile[]
+  attachments: readonly AttachedWorkspaceFile[]
 ) {
   if (attachments.length === 0) {
     return text;
   }
 
-  const body = text.trim() || ATTACHED_ONLY_TEXT;
-  const lines = attachments.map(
-    (attachment) => `- ${attachment.name} (workspace file: ${attachment.path})`
-  );
-  return `${body}\n\n${ATTACHED_FILES_HEADER}\n${lines.join("\n")}`;
+  const local = attachments.filter((attachment) => attachment.local);
+  const workspace = attachments.filter((attachment) => !attachment.local);
+  let composed = text.trim() || ATTACHED_ONLY_TEXT;
+  if (local.length > 0) {
+    const lines = local.map(
+      (attachment) =>
+        `- ${localFileDisplayName(attachment.name)} (local path: ${attachment.path})`
+    );
+    composed += `\n\n${ATTACHED_LOCAL_FILES_HEADER}\n${lines.join("\n")}`;
+  }
+  if (workspace.length > 0) {
+    const lines = workspace.map(
+      (attachment) => `- ${attachment.name} (workspace file: ${attachment.path})`
+    );
+    composed += `\n\n${ATTACHED_FILES_HEADER}\n${lines.join("\n")}`;
+  }
+  return composed;
+}
+
+/** A local file's name as its line shows it: one line, with nothing that reads as where its path starts. */
+function localFileDisplayName(name: string) {
+  const line = name.replace(/[\r\n]+/g, " ").trim() || "file";
+  return line.split(LOCAL_PATH_MARKER).join(" (local: ");
 }
 
 /**
@@ -216,44 +247,56 @@ export function parseQuotedTextBlock(text: string): {
   return quotes.length > 0 ? { body: rest, quotes } : { body: text, quotes: [] };
 }
 
+/**
+ * The files a message lists after its text, and the text before them: the workspace files' list last, the local
+ * files' list before it, either alone or both. A list with a line that names no file is not one: the text stays
+ * whole.
+ */
 export function parseAttachmentsBlock(text: string): {
   attachments: AttachedWorkspaceFile[];
   body: string;
 } {
-  const headerIndex = text.lastIndexOf(`\n\n${ATTACHED_FILES_HEADER}\n`);
-  if (headerIndex === -1) {
+  const workspace = trailingFileList(text, ATTACHED_FILES_HEADER, (line) => {
+    const [, name, path] = ATTACHED_FILE_LINE_PATTERN.exec(line) ?? [];
+    return name && path ? { name, path } : undefined;
+  });
+  const local = trailingFileList(
+    workspace?.body ?? text,
+    ATTACHED_LOCAL_FILES_HEADER,
+    (line) => {
+      const [, name, path] = ATTACHED_LOCAL_FILE_LINE_PATTERN.exec(line) ?? [];
+      return name && path ? { name, path, local: true as const } : undefined;
+    }
+  );
+  if (!workspace && !local) {
     return { attachments: [], body: text };
   }
 
-  const body = text.slice(0, headerIndex);
-  const rawLines = text
-    .slice(headerIndex + 2 + ATTACHED_FILES_HEADER.length + 1)
-    .trimEnd()
-    .split(/\n/);
-  const attachments: AttachedWorkspaceFile[] = [];
-
-  for (const line of rawLines) {
-    const match = line.match(ATTACHED_FILE_LINE_PATTERN);
-    if (!match) {
-      return { attachments: [], body: text };
-    }
-
-    const [, name, path] = match;
-    if (!name || !path) {
-      return { attachments: [], body: text };
-    }
-
-    attachments.push({ name, path });
-  }
-
-  if (attachments.length === 0) {
-    return { attachments: [], body: text };
-  }
-
+  const body = local?.body ?? workspace!.body;
   return {
-    attachments,
+    attachments: [...(local?.files ?? []), ...(workspace?.files ?? [])],
     body: body.trim() === ATTACHED_ONLY_TEXT ? "" : body,
   };
+}
+
+/** The list under `header` that ends `text`, each line read by `read`; undefined when there is none or a line names no file. */
+function trailingFileList(
+  text: string,
+  header: string,
+  read: (line: string) => AttachedWorkspaceFile | undefined
+): { body: string; files: AttachedWorkspaceFile[] } | undefined {
+  const headerIndex = text.lastIndexOf(`\n\n${header}\n`);
+  if (headerIndex === -1) return undefined;
+  const files: AttachedWorkspaceFile[] = [];
+  for (const line of text
+    .slice(headerIndex + 2 + header.length + 1)
+    .trimEnd()
+    .split(/\n/)) {
+    const file = read(line);
+    if (!file) return undefined;
+    files.push(file);
+  }
+  return files.length > 0 ? { body: text.slice(0, headerIndex), files } : undefined;
 }
 
 export function attachmentExtension(name: string) {
@@ -292,7 +335,24 @@ export function isGroupUploadPath(value: string) {
   return /^\/uploads\/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+$/.test(value);
 }
 
+/** A file people put in a Task together's own folder: `/task/<task>/uploads/<id>-<name>`. */
+const TASK_UPLOAD_PATH =
+  /^\/task\/([A-Za-z0-9_-]+)\/uploads\/[A-Za-z0-9_-]+-[A-Za-z0-9._-]+$/;
+/** Any file of a Task together's Worker's folder, which holds that Task alone: `/task/...`, no `..`. */
+const TASK_FOLDER_PATH =
+  /^\/task\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+export function isTaskFilePath(value: string) {
+  return TASK_FOLDER_PATH.test(value) && !value.split("/").includes("..");
+}
+
+/** The Task together a task file path names, if it names one (an upload's path does). */
+export function taskFileTask(value: string): string | undefined {
+  return TASK_UPLOAD_PATH.exec(value)?.[1];
+}
+
 export function isGroupImagePreviewPath(value: string) {
+  if (isTaskFilePath(value)) return /\.(?:png|jpe?g|gif|webp)$/i.test(value);
   return /^\/uploads\/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp)$/i.test(
     value
   );

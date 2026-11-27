@@ -90,6 +90,7 @@ Conversation metadata, Messages, Participants, and provider receipts use separat
 Runtime Session history stays separate from visible Conversation history.
 Home shows external inputs and successful explicit replies. Only user inputs show a platform icon and `From <platform>` above the bubble.
 `platform_message` carries provider, role, and content. Inputs use checked sender text and attachment names, never Agent prompts.
+An input image shows from the blob staged for the Router, recorded before append. Types a browser cannot show, such as HEIC, get a JPEG preview; failure keeps the name.
 The owner links WeChat replies only to checked Home source Messages.
 Media captions, names, and types grant no access to private runtime paths or provider URLs.
 Badges and reply links survive native transport and reload. External messages do not settle pending Comma replies and do not notify.

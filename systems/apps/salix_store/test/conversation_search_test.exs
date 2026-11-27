@@ -141,7 +141,7 @@ defmodule SalixStore.ConversationSearchTest do
             ]} = ConversationSearch.message_matches("group-a", "task-a", "detached")
 
     assert {:ok, []} = ConversationSearch.message_matches("group-a", "task-a", "plan")
-    assert {:error, :invalid} = ConversationSearch.message_matches("group-a", "task-a", "d")
+    assert {:ok, []} = ConversationSearch.message_matches("group-a", "task-a", "d")
   end
 
   test "two-codepoint CJK and English plus punctuation use bigram acceleration and exact fold" do
@@ -155,8 +155,70 @@ defmodule SalixStore.ConversationSearchTest do
     end
 
     assert {:ok, []} = ConversationSearch.search("group-short", "50_")
-    assert {:error, :invalid} = ConversationSearch.search("group-short", "A")
     assert {:error, :invalid} = ConversationSearch.search("group-short", "A" <> <<0>>)
+  end
+
+  test "a one-character query matches Task titles and not Messages" do
+    project("group-one", "task-title", "安俞真机场照", [])
+    project("group-one", "task-message", "Other", [message("message-1", 1, "安排一下")])
+
+    assert {:ok, [%{"conversation_id" => "task-title", "matched_field" => "title"}]} =
+             ConversationSearch.search("group-one", "安")
+
+    assert {:ok, [%{"conversation_id" => "task-title"}]} =
+             ConversationSearch.search_groups(["group-one"], " 安 ")
+
+    assert {:ok, []} = ConversationSearch.search("group-one", "排")
+  end
+
+  test "more title hits than the limit keep the most recently updated Tasks" do
+    for n <- 1..3, do: project("group-many", "task-#{n}", "安排 #{n}", [])
+
+    assert {:ok, [%{"conversation_id" => "task-3"}]} =
+             ConversationSearch.search("group-many", "安", limit: 1)
+
+    assert {:ok, [%{"conversation_id" => "task-3"}]} =
+             ConversationSearch.search("group-many", "安排", limit: 1)
+  end
+
+  test "the after-rollout pass gives titles projected before it their unigrams" do
+    marker = "conversation_search_title_unigrams_v1:" <> @generation
+    Repo.query!("DELETE FROM salix_cutover_markers WHERE name = $1", [marker])
+    on_exit(fn -> Repo.query!("DELETE FROM salix_cutover_markers WHERE name = $1", [marker]) end)
+
+    project("group-old", "task-a", "安俞真机场照", [])
+    project("group-old", "task-b", "Other", [message("message-1", 1, "安排一下")])
+
+    # Titles an earlier release projected hold bigrams only.
+    Repo.query!(
+      "UPDATE conversation_search_documents SET short_grams = " <>
+        "ARRAY(SELECT gram FROM unnest(short_grams) AS gram WHERE gram NOT LIKE 'u:%')"
+    )
+
+    assert {:ok, []} = ConversationSearch.search("group-old", "安")
+
+    assert {:ok, %{processed: 1, done: false}} =
+             ConversationSearch.title_unigrams_after_rollout_page(1)
+
+    assert {:ok, %{processed: 1, done: false}} =
+             ConversationSearch.title_unigrams_after_rollout_page(1)
+
+    assert {:ok, %{processed: 0, done: true}} =
+             ConversationSearch.title_unigrams_after_rollout_page(1)
+
+    assert {:ok, [%{"conversation_id" => "task-a"}]} = ConversationSearch.search("group-old", "安")
+
+    %{rows: [[title_grams]]} =
+      Repo.query!(
+        "SELECT short_grams FROM conversation_search_documents " <>
+          "WHERE conversation_id = 'task-a' AND document_type = 'title'"
+      )
+
+    assert Enum.sort(title_grams) ==
+             Enum.sort(SearchDocumentEnvelope.build(:title, "安俞真机场照").short_grams)
+
+    assert {:ok, %{processed: 0, done: true}} =
+             ConversationSearch.title_unigrams_after_rollout_page(1)
   end
 
   test "fresh begin atomically unseals an older generation and fences stale seal/read" do

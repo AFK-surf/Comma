@@ -13,6 +13,10 @@ defmodule CommaWeb.IMessageIntegration do
   alias SalixIM.{IMessageRelay, PhotonIMessage, ProviderConnects}
   alias SalixIM.Provider.IMessage
 
+  @unbound_page_size 20
+  @unbound_limit 5
+  @unbound_skew_seconds 5 * 60
+
   def state(user, session, workspace_id) do
     with {:ok, workspace, link} <- IMessageLinks.get(user, session, workspace_id) do
       {:ok,
@@ -175,7 +179,7 @@ defmodule CommaWeb.IMessageIntegration do
 
   defp command(%{"text" => text} = message) when is_binary(text) do
     case String.split(String.trim(text), ~r/\s+/, parts: 4) do
-      ["bridgebot", "connect", code] -> {:connect, code}
+      ["bridgebot", "connect", code] -> connect_command(message, code)
       ["bridgebot", "status"] -> :status
       ["bridgebot" | _] -> :help
       _ -> photon_code(message)
@@ -198,29 +202,148 @@ defmodule CommaWeb.IMessageIntegration do
 
   defp photon_code(_message), do: :message
 
+  # The command form follows the same account rule as the bare code.
+  defp connect_command(%{"transport" => "photon", "sender_handle" => sender}, code) do
+    if not IMessageLinks.photon_claim_code?(sender, code) and
+         IMessageLinks.open_photon_code?(code),
+       do: :wrong_account,
+       else: {:connect, code}
+  end
+
+  defp connect_command(_message, code), do: {:connect, code}
+
   defp connect_message(message, code) do
+    unbound_since = unbound_since(message)
+
     result =
       with {:ok, %{user: user, workspace: workspace, claim: claim}} <-
-             IMessageLinks.take_claim(code, message["transport"], message["sender_handle"]),
-           {:ok, link} <- link_identity(user, workspace, message, claim) do
+             IMessageLinks.take_claim(code, message["transport"], message["sender_handle"])
+             |> connect_stage(:claim),
+           {:ok, link} <- link_identity(user, workspace, message, claim) |> connect_stage(:link) do
         # A Router that started this attempt from the chat is waiting for it.
         CommaWeb.ChannelLinkTools.linked(workspace, "imessage", %{
           "sender_handle" => message["sender_handle"]
         })
+
+        Comma.Analytics.capture(
+          user["id"],
+          "comma_integration_connected",
+          "#{workspace["id"]}:imessage:#{link.connect_id}",
+          %{
+            "workspace_id" => workspace["id"],
+            "integration" => "imessage",
+            "initiator_kind" => "human"
+          }
+        )
 
         {:ok, link}
       end
 
     case result do
       {:ok, _link} ->
-        reply(message, "iMessage is connected to Comma. Send a message here to get started.")
+        reply(message, welcome(message["transport"]))
+        deliver_unbound(message, unbound_since)
 
-      _ ->
-        guide(
-          message,
-          "Could not connect iMessage. Generate a new connection command in Comma Settings → Channels and try again."
+      {:error, stage, reason} ->
+        Logger.warning(
+          "imessage_connect_failed transport=#{message["transport"]} stage=#{stage} reason=#{failure_reason(reason)}"
         )
+
+        text =
+          "Could not connect iMessage. Generate a new connection command in Comma Settings → Channels and try again."
+
+        # Anyone can send an unknown code, so that reply keeps the daily limit.
+        # An accepted code came from the person who started the attempt.
+        if stage == :claim, do: guide(message, text), else: reply(message, text)
     end
+  end
+
+  # A Photon sender's guidance reply marks the start of its time with no
+  # binding. Without one, its earlier Messages may have reached an Agent.
+  defp unbound_since(%{"transport" => "photon", "sender_handle" => sender}),
+    do: IMessageLinks.guidance_replied_at(sender)
+
+  defp unbound_since(_message), do: nil
+
+  # After a Photon connect, the Agent gets the person's latest Messages from
+  # the time with no binding as one input. The guidance reply is written after
+  # the Message that got it arrived, so the window starts a little earlier.
+  defp deliver_unbound(_message, nil), do: :ok
+
+  defp deliver_unbound(message, %DateTime{} = since) do
+    case unbound_messages(message, DateTime.add(since, -@unbound_skew_seconds, :second)) do
+      [] ->
+        :ok
+
+      events ->
+        merged = CommaWeb.IMessagePhotonRuntime.merge(events)
+
+        case deliver(merged, merged["message"]) do
+          {:error, reason} ->
+            Logger.warning("imessage_unbound_delivery_failed reason=#{failure_reason(reason)}")
+
+          _delivered ->
+            :ok
+        end
+    end
+
+    :ok
+  end
+
+  # Newest first: the Messages after the code are not part of the window.
+  # A list that does not show the code yet delivers nothing.
+  defp unbound_messages(message, floor) do
+    case PhotonIMessage.list_space_received(
+           message["chat_guid"],
+           message["agent_user_id"],
+           @unbound_page_size
+         ) do
+      {:ok, items} ->
+        items
+        |> Enum.drop_while(&(&1["id"] != message["message_id"]))
+        |> Enum.drop(1)
+        |> Enum.flat_map(&unbound_event(&1, message, floor))
+        |> Enum.take(@unbound_limit)
+        |> Enum.reverse()
+
+      {:error, reason} ->
+        Logger.warning("imessage_unbound_list_failed reason=#{failure_reason(reason)}")
+        []
+    end
+  end
+
+  defp unbound_event(item, code_message, floor) do
+    with {:ok, at, _offset} <- DateTime.from_iso8601(item["createdAt"] || ""),
+         false <- DateTime.before?(at, floor),
+         {:ok, %{"message" => message} = event} <- PhotonIMessage.to_event(item),
+         true <-
+           message["sender_handle"] == code_message["sender_handle"] and
+             message["chat_guid"] == code_message["chat_guid"] and
+             private_message(message) == :ok and
+             not String.starts_with?(String.trim(message["text"] || ""), "bridgebot") do
+      [{item["id"], at, event}]
+    else
+      _ -> []
+    end
+  end
+
+  defp connect_stage({:ok, _} = ok, _stage), do: ok
+  defp connect_stage({:error, reason}, stage), do: {:error, stage, reason}
+  defp connect_stage(other, stage), do: {:error, stage, other}
+
+  defp failure_reason(reason) when is_atom(reason), do: reason
+  defp failure_reason({reason, _detail}) when is_atom(reason), do: reason
+  defp failure_reason(%{__struct__: module}), do: inspect(module)
+  defp failure_reason(_reason), do: :unexpected
+
+  # Only Photon sends files.
+  defp welcome(transport) do
+    can_do =
+      if transport == "photon",
+        do: "Send text or images, and Comma can reply with images, videos and files.",
+        else: "Send text or images, and Comma can reply with images."
+
+    "iMessage is connected to Comma.\nText Comma here like a teammate. " <> can_do
   end
 
   defp link_identity(user, workspace, message, proof) do
@@ -284,7 +407,16 @@ defmodule CommaWeb.IMessageIntegration do
           {:ok, connect} ->
             case IMessage.inbound(connect, event) do
               {:ok, _} ->
-                :ok
+                Comma.Analytics.capture(
+                  link.owner_user_id,
+                  "comma_channel_message_received",
+                  message["message_id"],
+                  %{
+                    "workspace_id" => workspace["id"],
+                    "integration" => "imessage",
+                    "initiator_kind" => "human"
+                  }
+                )
 
               {:error, reason} when reason in [:not_found, :imessage_link_inconsistent] ->
                 reply(message, "Reconnect iMessage in Comma Settings → Channels.")

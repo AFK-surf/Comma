@@ -14,12 +14,44 @@ defmodule BillingStripe.Events do
     with {:ok, owner} <- BillingStripe.Ownership.resolve(event) do
       case owner do
         :comma -> do_process(event)
+        :bridge -> bridge_event(event)
         :foreign -> {:ok, %{ignored: true, reason: :foreign_product}}
       end
     end
   end
 
   def process(_), do: {:ok, %{ignored: true}}
+
+  def process_payment_rights(%{"type" => type} = event)
+      when type in [
+             "charge.refunded",
+             "charge.dispute.created",
+             "charge.dispute.updated",
+             "charge.dispute.closed"
+           ],
+      do: do_process(event)
+
+  defp bridge_event(event) do
+    case SystemsRuntime.get_env(:billing_stripe, :bridge_event_handler) do
+      nil -> {:error, :teams_billing_unavailable}
+      handler -> handler.process(event)
+    end
+  end
+
+  @doc "Dispatches post-commit side effects returned by the configured bridge event handler."
+  def after_commit(dispatch) do
+    case SystemsRuntime.get_env(:billing_stripe, :bridge_event_handler) do
+      nil ->
+        :ok
+
+      handler ->
+        if Code.ensure_loaded?(handler) and function_exported?(handler, :after_commit, 1) do
+          handler.after_commit(dispatch)
+        else
+          :ok
+        end
+    end
+  end
 
   defp do_process(%{"id" => event_id, "type" => "invoice.paid", "data" => %{"object" => invoice}}) do
     with {:ok, payment} <- BillingStripe.Payments.invoice_payment(invoice) do

@@ -55,7 +55,7 @@ def subset (xs ys : List Term) : Bool := xs.all (contains ys)
 def setEqual (xs ys : List Term) : Bool := subset xs ys && subset ys xs
 
 def atomValid : Term → Bool
-  | .atom "public" | .atom "agent_private" => true
+  | .atom "public" | .atom "agent_private" | .atom "unclassified_non_im" => true
   | .tuple [.atom "scope", .binary _, .binary _] => true
   | .tuple [.atom kind, .binary _] =>
     ["space", "tag", "conversation", "group", "task"].contains kind

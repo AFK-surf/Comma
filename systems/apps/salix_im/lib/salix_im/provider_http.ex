@@ -20,7 +20,9 @@ defmodule SalixIM.ProviderHTTP do
   @feishu_meeting_bot_events ~w(vc.bot.meeting_invited_v1 vc.bot.meeting_ended_v1)
 
   alias SalixIM.IFC.FeishuConfirmation
+  alias SalixIM.FeishuThreadTaskBinding
   alias SalixIM.Provider.Feishu.Message, as: FeishuMessage
+  alias SalixIM.Provider.LarkSuite.Addressee, as: LarkSuiteAddressee
   alias SalixIM.Provider.Slack.API, as: SlackAPI
   alias SalixIM.Provider.Slack, as: SlackProvider
   alias SalixIM.Provider.Slack.ConversationIngress, as: SlackConversationIngress
@@ -1500,6 +1502,14 @@ defmodule SalixIM.ProviderHTTP do
         connect_id: trim(connect["connect_id"])
       }
 
+      if user_id == trim(connect["bot_user_id"]) do
+        SalixIM.IFC.Projection.observe_bot_presence(
+          scope,
+          channel_id,
+          type == "member_joined_channel"
+        )
+      end
+
       if type == "member_joined_channel",
         do: SalixIM.IFC.Projection.observe_join(scope, channel_id, user_id),
         else: SalixIM.IFC.Projection.observe_leave(scope, channel_id, user_id)
@@ -1563,7 +1573,7 @@ defmodule SalixIM.ProviderHTTP do
                     {:ok, :queued} <-
                       enqueue_telegram_message(
                         connect,
-                        telegram_message_content(connect, message),
+                        telegram_message_content(connect, update, message),
                         telegram_message_metadata(connect, update, message),
                         "im_provider:telegram:#{connect["connect_id"]}:#{event_id}",
                         trusted_source_text: telegram_message_text(message),
@@ -1852,7 +1862,10 @@ defmodule SalixIM.ProviderHTTP do
   # refuses every legitimate callback and belongs in the alert numerator,
   # while `:invalid_token` stays the verified-rejection class.
   defp feishu_bot_secrets(connect) do
-    case ProviderAppStore.get_feishu_tenant_app(trim(connect["tenant_id"])) do
+    case ProviderAppStore.get_feishu_tenant_app(
+           trim(connect["tenant_id"]),
+           trim(connect["app_id"])
+         ) do
       {:ok, app} when is_map(app) ->
         case {trim(app["app_id"]), trim(connect["app_id"])} do
           {"", _connect_app_id} ->
@@ -1892,7 +1905,12 @@ defmodule SalixIM.ProviderHTTP do
         # person pressing a button, and nothing about that button is trusted
         # before Feishu's own proof that it came from this app. A card press
         # carries no message id, so it must be taken before the message path.
+        SalixIM.IFC.Projection.observe_bot_event(connect, envelope)
+
         cond do
+          trim(get_in(envelope, ["header", "event_type"])) == "im.chat.member.bot.deleted_v1" ->
+            {:ok, %{ok: true, status: "bot_left_chat"}}
+
           not feishu_from_owner?(connect, envelope) ->
             {:error, {:ignored, :not_owner}}
 
@@ -1909,12 +1927,83 @@ defmodule SalixIM.ProviderHTTP do
           trim(get_in(envelope, ["header", "event_type"])) == SalixIM.LarkChatJoin.event_type() ->
             dispatch_feishu_chat_join(connect, envelope)
 
+          trim(get_in(envelope, ["header", "event_type"])) == SalixIM.LarkBotMenu.event_type() ->
+            dispatch_feishu_bot_menu(connect, envelope)
+
           true ->
             dispatch_feishu_message_event(connect, envelope)
         end
 
       {:error, :invalid_envelope} = error ->
         error
+    end
+  end
+
+  # A tap on the bot's custom menu in a private chat (`SalixIM.LarkBotMenu`).
+  # It names no message, so its receipt is its event ID. A control command
+  # runs at most once: the receipt is claimed before it runs, and only an
+  # error gives it back.
+  defp dispatch_feishu_bot_menu(connect, envelope) do
+    with :ok <- ensure_active_provider_connect(connect, "feishu"),
+         {:ok, menu} <- SalixIM.LarkBotMenu.parse("feishu", connect, envelope),
+         {:ok, status} <-
+           with_event_receipt(
+             connect["connect_id"],
+             menu.receipt,
+             &ProviderReceipts.record_feishu/2,
+             &ProviderReceipts.delete_feishu/2,
+             fn -> enqueue_feishu_bot_menu(connect, envelope, menu) end
+           ) do
+      {:ok, %{ok: true, status: Atom.to_string(status)}}
+    end
+  end
+
+  defp enqueue_feishu_bot_menu(connect, envelope, menu) do
+    lifecycle =
+      &emit_feishu_diagnostic(connect, envelope, {:lifecycle, &1, menu.source_message_id})
+
+    with :ok <-
+           ProviderObservations.upsert_feishu_user(connect, %{
+             "open_id" => menu.open_id,
+             "union_id" => menu.union_id,
+             "user_id" => menu.user_id
+           }) do
+      lifecycle.(:received)
+
+      case ProviderConnects.enqueue_group_router_im_provider_message(
+             connect["group_id"],
+             menu.content,
+             menu.metadata,
+             menu.source_message_id,
+             command_text: menu.command_text,
+             trusted_source_text: menu.trusted_source_text
+           ) do
+        {:ok, :queued} ->
+          lifecycle.(:delivered)
+          {:ok, :queued}
+
+        {:ok, :command} ->
+          lifecycle.(:command)
+          {:ok, :command}
+
+        {:error, reason} = error ->
+          emit_feishu_diagnostic(
+            connect,
+            envelope,
+            {:lifecycle, :delivery_failed, menu.source_message_id, reason}
+          )
+
+          error
+
+        other ->
+          emit_feishu_diagnostic(
+            connect,
+            envelope,
+            {:lifecycle, :delivery_failed, menu.source_message_id, other}
+          )
+
+          {:error, other}
+      end
     end
   end
 
@@ -1992,6 +2081,9 @@ defmodule SalixIM.ProviderHTTP do
       "card.action.trigger" ->
         trim(get_in(envelope, ["event", "operator", "open_id"]))
 
+      "application.bot.menu_v6" ->
+        SalixIM.LarkBotMenu.operator_open_id(envelope)
+
       _other ->
         :none
     end
@@ -2046,7 +2138,7 @@ defmodule SalixIM.ProviderHTTP do
                  &ProviderReceipts.record_feishu/2,
                  &ProviderReceipts.delete_feishu/2,
                  fn ->
-                   dispatch_received_feishu_message(connect, message, answer["message_id"])
+                   dispatch_feishu_router_message(connect, message, answer["message_id"])
                  end
                ) do
             {:ok, :duplicate} -> {:ok, QuestionCard.feishu_answered_before(envelope)}
@@ -2235,7 +2327,67 @@ defmodule SalixIM.ProviderHTTP do
     end
   end
 
+  # A person's message of a thread the Router handed to a Task enters that
+  # Task (`SalixIM.FeishuThreadTaskBinding`). A control command still goes
+  # through the Router funnel, which runs it: a binding grants no command.
   defp dispatch_received_feishu_message(connect, envelope, message_id) do
+    case feishu_bound_task(connect, envelope) do
+      {:ok, binding} ->
+        dispatch_feishu_task_thread_message(connect, envelope, message_id, binding)
+
+      :none ->
+        dispatch_feishu_router_message(connect, envelope, message_id)
+    end
+  end
+
+  defp feishu_bound_task(connect, envelope) do
+    message = get_in(envelope, ["event", "message"]) || %{}
+    thread_id = trim(message["thread_id"])
+
+    cond do
+      trim(message["chat_type"]) != "group" or thread_id == "" ->
+        :none
+
+      SalixIM.ControlCommand.parse(feishu_command_text(connect, envelope)) != :none ->
+        :none
+
+      true ->
+        FeishuThreadTaskBinding.active_binding(connect, trim(message["chat_id"]), thread_id)
+    end
+  end
+
+  defp dispatch_feishu_task_thread_message(connect, envelope, message_id, binding) do
+    source_message_id = feishu_source_message_id(connect, message_id)
+    message = get_in(envelope, ["event", "message"]) || %{}
+    sender_id = get_in(envelope, ["event", "sender", "sender_id"]) || %{}
+
+    with :ok <- upsert_feishu_observed(connect, envelope) do
+      emit_feishu_diagnostic(connect, envelope, {:lifecycle, :received, source_message_id})
+
+      case FeishuThreadTaskBinding.append_message(connect, binding, %{
+             "source_message_id" => source_message_id,
+             "content" => feishu_message_text(connect, message),
+             "metadata" => feishu_message_metadata(connect, envelope, message_id),
+             "user_id" => first_nonblank([sender_id["open_id"], sender_id["user_id"]]),
+             "attachments" => feishu_event_attachments(connect, envelope, message_id)
+           }) do
+        {:ok, _result} ->
+          emit_feishu_diagnostic(connect, envelope, {:lifecycle, :delivered, source_message_id})
+          {:ok, :queued}
+
+        {:error, reason} = error ->
+          emit_feishu_diagnostic(
+            connect,
+            envelope,
+            {:lifecycle, :delivery_failed, source_message_id, reason}
+          )
+
+          error
+      end
+    end
+  end
+
+  defp dispatch_feishu_router_message(connect, envelope, message_id) do
     source_message_id = feishu_source_message_id(connect, message_id)
 
     with :ok <- upsert_feishu_observed(connect, envelope) do
@@ -2345,6 +2497,9 @@ defmodule SalixIM.ProviderHTTP do
          # nested object, so the surface that reads it never walks a value the
          # caller chose the type of.
          :ok <- feishu_validate_optional_map(envelope, ["event", "operator"]),
+         # A tap on the bot's menu (`application.bot.menu_v6`).
+         :ok <- feishu_validate_optional_map(envelope, ["event", "operator", "operator_id"]),
+         :ok <- feishu_validate_optional_timestamp(envelope, ["event", "timestamp"]),
          :ok <- feishu_validate_optional_map(envelope, ["event", "action"]),
          :ok <-
            feishu_validate_optional_binaries(envelope, [
@@ -2372,6 +2527,11 @@ defmodule SalixIM.ProviderHTTP do
              ["event", "operator", "union_id"],
              ["event", "operator", "user_id"],
              ["event", "action", "tag"],
+             ["event", "event_key"],
+             ["event", "operator", "operator_name"],
+             ["event", "operator", "operator_id", "open_id"],
+             ["event", "operator", "operator_id", "union_id"],
+             ["event", "operator", "operator_id", "user_id"],
              ["event", "message", "message_id"],
              ["event", "message", "chat_id"],
              ["event", "message", "chat_type"],
@@ -2392,6 +2552,14 @@ defmodule SalixIM.ProviderHTTP do
     case feishu_nested_value(envelope, path) do
       :missing -> :ok
       {:ok, value} when is_map(value) -> :ok
+      _invalid -> {:error, :invalid_envelope}
+    end
+  end
+
+  defp feishu_validate_optional_timestamp(envelope, path) do
+    case feishu_nested_value(envelope, path) do
+      :missing -> :ok
+      {:ok, value} when is_nil(value) or is_integer(value) or is_binary(value) -> :ok
       _invalid -> {:error, :invalid_envelope}
     end
   end
@@ -3653,8 +3821,11 @@ defmodule SalixIM.ProviderHTTP do
       MentionReplyLatency.mention(%{
         provider: "slack",
         connect_id: connect["connect_id"],
+        group_id: connect["group_id"],
+        workspace_id: connect["workspace_id"],
         source_message_id: message.source_message_id,
         place: message.channel_id,
+        message: message.message_ts,
         thread: [message.thread_ts],
         source_sent_at_ms: sent_at
       })
@@ -4024,12 +4195,20 @@ defmodule SalixIM.ProviderHTTP do
     end
   end
 
-  defp telegram_message_content(connect, message) do
+  defp telegram_message_content(connect, update, message) do
     chat = message["chat"] || %{}
     from = message["from"] || %{}
     chat_id = trim(chat["id"])
     from_user = first_nonblank([from["username"], from["id"]])
-    text = "Telegram message from #{from_user} in #{chat_id}:\n" <> telegram_message_text(message)
+    # A task command of a new message stands for its task request.
+    body =
+      SalixIM.TelegramCommands.expand_message_text(
+        connect,
+        update,
+        telegram_message_text(message)
+      )
+
+    text = "Telegram message from #{from_user} in #{chat_id}:\n" <> body
 
     text =
       case message["reply_to_message"] do
@@ -4056,7 +4235,8 @@ defmodule SalixIM.ProviderHTTP do
   # message. Only a private chat, an @mention, a command, or a reply to the bot
   # wakes the Router; other group traffic (an automated broadcast every few
   # minutes) is kept as context without a round of its own, so it never queues
-  # ahead of the people the Router serves.
+  # ahead of the people the Router serves. A command for another bot
+  # (`/command@other_bot`) does not wake this one.
   defp telegram_addressed_to_bot?(connect, message) do
     chat = message["chat"] || %{}
     text = first_nonblank([message["text"], message["caption"]])
@@ -4067,7 +4247,8 @@ defmodule SalixIM.ProviderHTTP do
       List.wrap(message["entities"]) ++ List.wrap(message["caption_entities"])
 
     trim(chat["type"]) == "private" or
-      String.starts_with?(text, "/") or
+      (String.starts_with?(text, "/") and
+         not SalixIM.TelegramCommands.for_other_bot_command?(connect, text)) or
       (username != "" and
          String.contains?(String.downcase(text), "@" <> String.downcase(username))) or
       (bot_id != "" and
@@ -4146,17 +4327,25 @@ defmodule SalixIM.ProviderHTTP do
 
   defp wechat_message_text(message), do: SalixIM.WeChatMessages.text_body(message)
 
-  defp wechat_message_metadata(connect, _message, event_id) do
-    ProviderRecipientIdentity.put(
-      %{
-        "provider" => "wechat",
-        "connect_id" => connect["connect_id"],
-        "wechat_id" => connect["wechat_id"],
-        "event_id" => event_id
-      },
-      connect
-    )
+  defp wechat_message_metadata(connect, message, event_id) do
+    message_id = SalixIM.WeChatMessages.message_id(message)
+    reply_to = SalixIM.WeChatMessages.reply_to_message_id(message)
+    from_user_id = trim(message["from_user_id"])
+
+    %{
+      "provider" => "wechat",
+      "connect_id" => connect["connect_id"],
+      "wechat_id" => connect["wechat_id"],
+      "event_id" => event_id
+    }
+    |> put_wechat_metadata("message_id", message_id)
+    |> put_wechat_metadata("reply_to_message_id", reply_to)
+    |> put_wechat_metadata("from_user_id", from_user_id)
+    |> ProviderRecipientIdentity.put(connect)
   end
+
+  defp put_wechat_metadata(map, _key, value) when value in [nil, ""], do: map
+  defp put_wechat_metadata(map, key, value), do: Map.put(map, key, value)
 
   defp feishu_message_id(envelope) do
     case feishu_optional_trimmed_binary(envelope, ["event", "message", "message_id"]) do
@@ -4171,8 +4360,10 @@ defmodule SalixIM.ProviderHTTP do
   # process messages actually directed at the bot:
   #
   #   * every message in a 1:1 (`p2p`) chat is directed at the bot, and
-  #   * a group-chat message must @-mention the bot, or be a reply in a thread
-  #     where this bot has successfully replied within the participation TTL.
+  #   * a group-chat message must @-mention the bot, or go on a conversation
+  #     of the bot within the participation TTL: a thread it replied in, a
+  #     quote reply to or a thread under a message it sent, or a person's
+  #     message in a group it created (`feishu_participating_message?/3`).
   #
   # Anything else is ignored so the bot does not process group traffic that was
   # never addressed to it.
@@ -4195,20 +4386,149 @@ defmodule SalixIM.ProviderHTTP do
       trim(message["chat_type"]) == "p2p" ->
         :ok
 
+      feishu_left_thread_app_message?(connect, message, sender) ->
+        {:ignored, :thread_left}
+
+      LarkSuiteAddressee.directed_elsewhere?(connect, message) ->
+        unless feishu_thread_owned?(connect, message, sender) do
+          SalixIM.LarkSuiteTriage.observe_ambient("feishu", connect, message, sender)
+        end
+
+        if trim(connect["bot_open_id"]) == "" do
+          {:ignored, :bot_identity_missing}
+        else
+          {:ignored, :bot_mention_mismatch}
+        end
+
       true ->
         case feishu_message_mentions_bot(connect, message) do
           :ok ->
             :ok
 
           {:ignored, reason} ->
-            chat_id = trim(message["chat_id"])
-            thread_id = trim(message["thread_id"])
-
-            if thread_id != "" and
-                 ProviderConnects.feishu_thread_participating?(connect, chat_id, thread_id),
-               do: :ok,
-               else: {:ignored, reason}
+            if feishu_participating_message?(connect, message, sender) do
+              :ok
+            else
+              # Not for the Router, but maybe for the Group's triage
+              # (`SalixIM.LarkSuiteTriage`); the callback answer is unchanged.
+              SalixIM.LarkSuiteTriage.observe_ambient("feishu", connect, message, sender)
+              {:ignored, reason}
+            end
         end
+    end
+  end
+
+  # A bot's message of a thread the Router left, or a quote reply to a
+  # message whose follow-up it left, does not reach the Router again.
+  defp feishu_left_thread_app_message?(connect, message, sender) do
+    %{chat_id: chat_id, thread_id: thread_id, root_id: root_id} = feishu_address(message)
+
+    trim(sender["sender_type"]) == "app" and
+      ((thread_id != "" and feishu_participation(connect, chat_id, thread_id) == :left) or
+         (thread_id == "" and root_id != "" and
+            feishu_participation(connect, chat_id, root_id) == :left))
+  end
+
+  # A group message without a mention that goes on a conversation of the
+  # bot: a thread it is bound to or replied in, a thread opened under or a
+  # quote reply to a message it sent, or a person's message in a group it
+  # created. A thread the Router left stays left whatever its root is. A
+  # thread opened under the bot's message is marked here, so it is followed
+  # and left on its own. A hit extends the mark.
+  defp feishu_participating_message?(connect, message, sender) do
+    %{chat_id: chat_id, thread_id: thread_id} = address = feishu_address(message)
+
+    if thread_id != "" do
+      FeishuThreadTaskBinding.active_binding(connect, chat_id, thread_id) != :none or
+        case feishu_participation(connect, chat_id, thread_id) do
+          :participating ->
+            feishu_touch(connect, chat_id, thread_id)
+
+          :left ->
+            false
+
+          :none ->
+            feishu_derived_participation?(connect, address, sender, &feishu_touch/3) and
+              record_feishu_derived_thread(connect, chat_id, thread_id) == :ok
+        end
+    else
+      feishu_derived_participation?(connect, address, sender, &feishu_touch/3)
+    end
+  end
+
+  # What `observe_ambient` must not see: the same answer as
+  # `feishu_participating_message?/3`, read without extending a mark.
+  defp feishu_thread_owned?(connect, message, sender) do
+    %{chat_id: chat_id, thread_id: thread_id} = address = feishu_address(message)
+
+    if thread_id != "" do
+      FeishuThreadTaskBinding.active_binding(connect, chat_id, thread_id) != :none or
+        case feishu_participation(connect, chat_id, thread_id) do
+          :participating -> true
+          :left -> false
+          :none -> feishu_derived_participation?(connect, address, sender, &feishu_active?/3)
+        end
+    else
+      feishu_derived_participation?(connect, address, sender, &feishu_active?/3)
+    end
+  end
+
+  # The message's root or parent is a message of the bot's conversation, or
+  # a person writes in a group the bot created. A root the Router left
+  # admits nothing. Only a person's message counts in the created group, so
+  # two bots there do not answer each other forever.
+  defp feishu_derived_participation?(connect, address, sender, active?) do
+    %{chat_id: chat_id, root_id: root_id, parent_id: parent_id} = address
+
+    cond do
+      root_id != "" and feishu_participation(connect, chat_id, root_id) == :left ->
+        false
+
+      root_id != "" and active?.(connect, chat_id, root_id) ->
+        true
+
+      parent_id != "" and parent_id != root_id and active?.(connect, chat_id, parent_id) ->
+        true
+
+      trim(sender["sender_type"]) == "user" and active?.(connect, chat_id, chat_id) ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  defp feishu_address(message) do
+    %{
+      chat_id: trim(message["chat_id"]),
+      thread_id: trim(message["thread_id"]),
+      root_id: trim(message["root_id"]),
+      parent_id: trim(message["parent_id"])
+    }
+  end
+
+  defp feishu_participation(connect, chat_id, id),
+    do: ProviderConnects.feishu_thread_participation_status(connect, chat_id, id)
+
+  defp feishu_active?(connect, chat_id, id),
+    do: ProviderConnects.feishu_thread_participation_active?(connect, chat_id, id)
+
+  defp feishu_touch(connect, chat_id, id),
+    do: ProviderConnects.feishu_thread_participating?(connect, chat_id, id)
+
+  # Best effort: without the mark, the next message of the thread is matched
+  # by its root again.
+  defp record_feishu_derived_thread(connect, chat_id, thread_id) do
+    case ProviderConnects.record_feishu_thread_participation(connect, chat_id, thread_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "feishu thread participation marker write failed connect_id=#{connect["connect_id"]} reason=#{inspect(reason)}"
+        )
+
+        :ok
     end
   end
 
@@ -4242,16 +4562,8 @@ defmodule SalixIM.ProviderHTTP do
         |> Map.get("mentions", [])
         |> List.wrap()
 
-      matched? =
-        Enum.any?(mentions, fn mention ->
-          mention = mention || %{}
-          open_id = (mention["id"] || %{}) |> Map.get("open_id") |> trim()
-
-          open_id == bot_open_id
-        end)
-
       cond do
-        matched? -> :ok
+        LarkSuiteAddressee.mentions_self?(connect, message) -> :ok
         mentions == [] -> {:ignored, :no_bot_mention}
         true -> {:ignored, :bot_mention_mismatch}
       end
@@ -4327,31 +4639,33 @@ defmodule SalixIM.ProviderHTTP do
     sender = event["sender"] || %{}
     sender_id = sender["sender_id"] || %{}
     message = event["message"] || %{}
+    sender_type = trim(sender["sender_type"])
 
-    ProviderRecipientIdentity.put(
-      %{
-        "provider" => "feishu",
-        "connect_id" => connect["connect_id"],
-        "app_name" => connect["app_name"],
-        "tenant_key" => first_nonblank([header["tenant_key"], connect["tenant_key"]]),
-        "chat_id" => trim(message["chat_id"]),
-        "chat_type" => trim(message["chat_type"]),
-        "message_id" => message_id,
-        "message_thread_id" => trim(message["thread_id"]),
-        "message_root_id" => trim(message["root_id"]),
-        "root_message_id" => trim(message["root_id"]),
-        "message_parent_id" => trim(message["parent_id"]),
-        "message_type" => trim(message["message_type"] || message["msg_type"]),
-        "source_sent_at_ms" => integer(message["create_time"]),
-        "sender_open_id" => trim(sender_id["open_id"]),
-        "sender_union_id" => trim(sender_id["union_id"]),
-        "sender_user_id" => trim(sender_id["user_id"]),
-        "sender_type" => trim(sender["sender_type"]),
-        "bot_mentioned" => feishu_bot_mentioned?(connect, message),
-        "structured_mentions" => feishu_structured_mentions(connect, message)
-      },
-      connect
-    )
+    %{
+      "provider" => "feishu",
+      "connect_id" => connect["connect_id"],
+      "app_name" => connect["app_name"],
+      "tenant_key" => first_nonblank([header["tenant_key"], connect["tenant_key"]]),
+      "chat_id" => trim(message["chat_id"]),
+      "chat_type" => trim(message["chat_type"]),
+      "message_id" => message_id,
+      "message_thread_id" => trim(message["thread_id"]),
+      "message_root_id" => trim(message["root_id"]),
+      "root_message_id" => trim(message["root_id"]),
+      "message_parent_id" => trim(message["parent_id"]),
+      "message_type" => trim(message["message_type"] || message["msg_type"]),
+      "source_sent_at_ms" => integer(message["create_time"]),
+      "sender_open_id" => trim(sender_id["open_id"]),
+      "sender_union_id" => trim(sender_id["union_id"]),
+      "sender_user_id" => trim(sender_id["user_id"]),
+      "sender_type" => sender_type,
+      "bot_mentioned" => feishu_bot_mentioned?(connect, message),
+      "structured_mentions" => feishu_structured_mentions(connect, message)
+    }
+    |> then(fn metadata ->
+      if sender_type == "app", do: Map.put(metadata, "app_authored", true), else: metadata
+    end)
+    |> ProviderRecipientIdentity.put(connect)
   end
 
   defp feishu_bot_mentioned?(connect, message),

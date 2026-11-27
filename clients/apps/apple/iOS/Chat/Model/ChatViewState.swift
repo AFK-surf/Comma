@@ -15,6 +15,8 @@ struct ChatViewState: Sendable {
     var participant: ChatParticipant?
     /// The Worker bound to a Task, as its participant status says.
     var boundWorker: ChatBoundWorker?
+    /// Active worker sessions on a multi-session Task (up to 6 entries).
+    var workerSessions: [ChatWorkerSession] = []
     /// The maker of the model the Task runs (the core's `taskRun.vendor`), whose logo stands for its Worker.
     var workerVendor: String?
     var codingSandbox = false
@@ -101,9 +103,14 @@ struct ChatItem: Sendable, Equatable {
     let brief: Bool
     /// An agent's message as the core parsed it (`@comma/core/markdown`'s tree); nil for a person's.
     let markdown: CoreJSON?
+    /// The chat platform a person's message came in from (`wechat`, `telegram`, ...); its bubble takes that platform's colour.
+    var platformSource: String? = nil
+    /// The Participant row that authored this message (distinguishes worker sessions on multi-session Tasks).
+    var participantID: String? = nil
 
     static func == (left: ChatItem, right: ChatItem) -> Bool {
-        left.id == right.id && left.text == right.text && left.parts == right.parts && left.attachments == right.attachments &&
+        left.id == right.id && left.participantID == right.participantID && left.text == right.text && left.parts == right.parts && left.attachments == right.attachments &&
+            left.platformSource == right.platformSource &&
             left.attachedTexts == right.attachedTexts &&
             left.refs == right.refs && left.seq == right.seq && left.markdown?.value as AnyObject? === right.markdown?.value as AnyObject?
     }
@@ -133,7 +140,7 @@ enum ChatPart: Sendable, Equatable {
     case other
 }
 
-/// An Agent's question (the core's `question` part): two to six choices, perhaps more than one picked, perhaps an
+/// An Agent's question (the core's `question` part): one to six choices, perhaps more than one picked, perhaps an
 /// answer in the person's own words, and where the card stands.
 struct ChatQuestion: Sendable, Equatable {
     struct Choice: Sendable, Equatable, Identifiable {
@@ -180,6 +187,8 @@ struct ChatQuestion: Sendable, Equatable {
     let choices: [Choice]
     let multiSelect: Bool
     let allowOther: Bool
+    let skipBehavior: String?
+    let independent: Bool
     var state: State
 
     /// Nil for a part that is not a whole question.
@@ -189,12 +198,14 @@ struct ChatQuestion: Sendable, Equatable {
             guard let id = choice.string("id"), let label = choice.string("label") else { return nil }
             return Choice(id: id, label: label, description: choice.string("description"), recommended: choice.bool("recommended"))
         }
-        guard choices.count >= 2 else { return nil }
+        guard (1...6).contains(choices.count) else { return nil }
         messageID = id
         self.prompt = prompt
         self.choices = choices
         multiSelect = part.bool("multiSelect")
         allowOther = part.bool("allowOther")
+        skipBehavior = part.string("skipBehavior")
+        independent = part.bool("independent")
         state = State(part.object("state"))
     }
 }
@@ -309,6 +320,32 @@ struct ChatBoundWorker: Sendable, Equatable {
     let name: String
 }
 
+struct ChatParticipantIssueDetail: Sendable, Equatable {
+    let source: String?
+    let profileID: String?
+    let profileName: String?
+    let resetAt: Double?
+    let credits: Bool?
+    let trigger: String?
+}
+
+struct ChatWorkerSession: Sendable, Equatable, Identifiable {
+    let participantID: String
+    let actorID: String?
+    let slot: String
+    let label: String
+    let model: String?
+    let runtime: String?
+    let isPrimary: Bool
+    let subscribed: Bool?
+    let state: String
+    let status: String
+    let updatedAt: Double?
+    let issue: String?
+    let issueDetail: ChatParticipantIssueDetail?
+    var id: String { participantID }
+}
+
 struct ChatActivity: Sendable, Equatable {
     let phase: String
     let status: String
@@ -361,6 +398,36 @@ final class ChatViewReader: @unchecked Sendable {
         state.boundWorker = json.object("boundWorker").flatMap { worker in
             worker.string("participantId").map { ChatBoundWorker(participantID: $0, actorID: worker.string("actorId"), name: worker.text("name") ?? "") }
         }
+        state.workerSessions = Array(json.objects("workerSessions").compactMap { session -> ChatWorkerSession? in
+            guard let participantID = session.string("participantId"),
+                  let slot = session.string("slot"),
+                  let label = session.string("label") else { return nil }
+            let detail = session.object("issueDetail").map { d in
+                ChatParticipantIssueDetail(
+                    source: d.string("source"),
+                    profileID: d.string("profileId"),
+                    profileName: d.string("profileName"),
+                    resetAt: d.double("resetAt"),
+                    credits: d.optionalBool("credits"),
+                    trigger: d.string("trigger")
+                )
+            }
+            return ChatWorkerSession(
+                participantID: participantID,
+                actorID: session.string("actorId"),
+                slot: slot,
+                label: label,
+                model: session.string("model"),
+                runtime: session.string("runtime"),
+                isPrimary: session.bool("isPrimary"),
+                subscribed: session.optionalBool("subscribed"),
+                state: session.string("state") ?? "stopped",
+                status: session.text("status") ?? "",
+                updatedAt: session.double("updatedAt"),
+                issue: session.string("issue"),
+                issueDetail: detail
+            )
+        }.prefix(6))
         state.workerVendor = json.object("taskRun")?.string("vendor")
         state.codingSandbox = json.object("taskRun")?.object("place")?.string("kind") == "sandbox" && json.object("taskRun")?.object("place")?.object("repo") != nil
         state.activity = json.object("activity").map { activity in
@@ -494,7 +561,8 @@ final class ChatViewReader: @unchecked Sendable {
                         threadRootMessageID: json.string("threadRootMessageId"), createdAt: json.double("createdAt"),
                         text: text, command: display?.string("command"), quotes: display?.strings("quotes") ?? [], attachedTexts: attachedTexts, files: files,
                         parts: parts, attachments: attachments, refs: refs, brief: json.bool("brief"),
-                        markdown: markdown.map { CoreJSON(value: $0) })
+                        markdown: markdown.map { CoreJSON(value: $0) }, platformSource: json.string("platformSource"),
+                        participantID: json.string("participantId"))
     }
 
     private func files(_ display: NSDictionary?) -> [ChatFile] {
@@ -539,10 +607,36 @@ struct PhoneDynamicUI: Identifiable, Equatable, Sendable {
     let conversation: String
     let message: String
     let index: Int
+    let title: String?
     let summary: String
+
+    init(
+        id: String,
+        conversation: String,
+        message: String,
+        index: Int,
+        title: String? = nil,
+        summary: String
+    ) {
+        self.id = id
+        self.conversation = conversation
+        self.message = message
+        self.index = index
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.title = (trimmed?.isEmpty == false) ? trimmed : nil
+        self.summary = summary
+    }
+
     init?(_ json: NSDictionary) {
         guard let id = json.string("contentId"), let conversation = json.string("conversationId"),
               let message = json.string("messageId"), let index = json.int("attachmentIndex"), index >= 0 else { return nil }
-        self.id = id; self.conversation = conversation; self.message = message; self.index = index; summary = json.string("summary") ?? String(localized: "Interactive content")
+        self.init(
+            id: id,
+            conversation: conversation,
+            message: message,
+            index: index,
+            title: json.string("title"),
+            summary: json.string("summary") ?? String(localized: "Interactive content")
+        )
     }
 }

@@ -24,9 +24,17 @@ defmodule SalixAgent.Placement do
   @callback run_on_owner(agent_id :: String.t(), mfa :: mfa(), timeout :: pos_integer()) ::
               term() | {:error, term()}
 
+  @doc """
+  Whether this node is where placement puts `agent_id`'s below-owner
+  maintenance. Node-wide discovery uses it so that exactly one node takes
+  each Agent's work while the nodes agree on membership.
+  """
+  @callback placed_here?(agent_id :: String.t()) :: boolean()
+
   # Single-node implementations (and test doubles) need no routing: without
-  # the callback the seam applies the function locally.
-  @optional_callbacks run_on_owner: 3
+  # the callbacks the seam applies the function locally and places every
+  # Agent here.
+  @optional_callbacks run_on_owner: 3, placed_here?: 1
 
   @spec ensure_started(String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(agent_id, opts \\ []), do: impl().ensure_started(agent_id, opts)
@@ -41,6 +49,12 @@ defmodule SalixAgent.Placement do
     if function_exported?(impl, :run_on_owner, 3),
       do: impl.run_on_owner(agent_id, mfa, timeout),
       else: apply(module, function, args)
+  end
+
+  @spec placed_here?(String.t()) :: boolean()
+  def placed_here?(agent_id) do
+    impl = impl()
+    if function_exported?(impl, :placed_here?, 1), do: impl.placed_here?(agent_id), else: true
   end
 
   defp impl, do: SystemsRuntime.get_env(:salix_agent, :placement, __MODULE__.LocalFleet)

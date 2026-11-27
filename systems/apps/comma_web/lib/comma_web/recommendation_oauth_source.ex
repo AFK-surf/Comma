@@ -11,8 +11,8 @@ defmodule CommaWeb.RecommendationOAuthSource do
   # and Req owns HTTP/JSON. Official provider SDKs target other languages;
   # keep the Elixir REST/GraphQL adapter isolated and test it through Req.Test.
   def read(workspace, source) do
-    with {:ok, token} <- token(workspace, source) do
-      request(source["appId"], token)
+    with {:ok, token, connection_id} <- group_token(workspace, source) do
+      request(source["appId"], {token, connection_id})
     end
   end
 
@@ -21,6 +21,10 @@ defmodule CommaWeb.RecommendationOAuthSource do
   must be the provider's own alias in this Group; the resolver owns refresh.
   """
   def token(workspace, source) do
+    with {:ok, token, _connection_id} <- group_token(workspace, source), do: {:ok, token}
+  end
+
+  defp group_token(workspace, source) do
     provider = source["appId"]
     tenant = workspace["salix_tenant_id"]
     group = workspace["default_group_id"]
@@ -40,7 +44,7 @@ defmodule CommaWeb.RecommendationOAuthSource do
                }
              }
            }) do
-      {:ok, token}
+      {:ok, token, binding["connection_id"]}
     else
       _ -> {:error, :oauth_source_unavailable}
     end
@@ -217,7 +221,15 @@ defmodule CommaWeb.RecommendationOAuthSource do
          http = fn kind, spec ->
            RecommendationMemberRead.request(deadline, fn -> request(kind, token, spec) end)
          end,
-         {:ok, selected} <- member_request(provider, http, identity, source),
+         {:ok, selected} <-
+           member_request(
+             provider,
+             http,
+             identity,
+             source
+             |> Map.put("salix_tenant_id", workspace["salix_tenant_id"])
+             |> Map.put("salix_token_fingerprint", slack_token_fingerprint(token))
+           ),
          {:ok, ^identity} <-
            CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source) do
       {:ok, selected, identity}
@@ -244,13 +256,25 @@ defmodule CommaWeb.RecommendationOAuthSource do
       )
       when provider in ~w(github slack) do
     with {:ok, identity} <-
-           CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source),
-         {:ok, token} <- member_token(workspace, identity, provider) do
-      kind = if provider == "github", do: "github_object", else: provider
+           CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source) do
+      case provider == "slack" &&
+             CommaWeb.SlackLocalMirror.fetch_url(
+               workspace["salix_tenant_id"],
+               identity["provider_workspace_id"],
+               url
+             ) do
+        {:ok, body} ->
+          {:ok, body}
 
-      RecommendationMemberRead.request(deadline, fn ->
-        request(kind, token, {:get, url, []})
-      end)
+        _ ->
+          with {:ok, token} <- member_token(workspace, identity, provider) do
+            kind = if provider == "github", do: "github_object", else: provider
+
+            RecommendationMemberRead.request(deadline, fn ->
+              request(kind, token, {:get, url, []})
+            end)
+          end
+      end
     end
   end
 
@@ -277,6 +301,8 @@ defmodule CommaWeb.RecommendationOAuthSource do
         SystemsClock.utc_now(),
         Map.take(identity, ~w(provider_user_id provider_workspace_id)),
         opts
+        |> Keyword.put(:tenant_id, workspace["salix_tenant_id"])
+        |> Keyword.put(:token_fingerprint, slack_token_fingerprint(token))
       )
     end
   end
@@ -302,10 +328,22 @@ defmodule CommaWeb.RecommendationOAuthSource do
             request("slack", token, {:get, url, options})
           end)
         end,
-        threads
+        threads,
+        tenant_id: workspace["salix_tenant_id"],
+        workspace_id: identity["provider_workspace_id"],
+        user_id: identity["provider_user_id"],
+        token_fingerprint: slack_token_fingerprint(token)
       )
     end
   end
+
+  defp slack_token_fingerprint({raw_token, _connection_id}),
+    do: slack_token_fingerprint(raw_token)
+
+  defp slack_token_fingerprint(raw_token) when is_binary(raw_token) and raw_token != "",
+    do: :crypto.hash(:sha256, raw_token) |> Base.encode16(case: :lower)
+
+  defp slack_token_fingerprint(_other), do: nil
 
   defp member_token(workspace, identity, provider) do
     case Salix.Bindings.MCPCredentials.resolve(%{
@@ -320,7 +358,8 @@ defmodule CommaWeb.RecommendationOAuthSource do
              }
            }
          }) do
-      {:ok, %{"TOKEN" => token}} -> {:ok, token}
+      # The pinned connection goes with the token, so a refusal marks it.
+      {:ok, %{"TOKEN" => token}} -> {:ok, {token, identity["connection_id"]}}
       {:error, _} = error -> error
       _ -> {:error, :member_source_changed}
     end
@@ -409,18 +448,28 @@ defmodule CommaWeb.RecommendationOAuthSource do
       if Enum.all?(reads, &match?({:error, _}, &1)) do
         issues
       else
+        {mention_items, mention_failures} =
+          github_mentions(github_list(mentions, "items"), login, http)
+
+        {notification_items, notification_failures} =
+          github_notifications(github_list(notifications, "notifications"), login, http)
+
         data =
           id
           |> github_items(
             github_list(issues, "issues"),
             github_list(reviews, "items"),
-            github_mentions(github_list(mentions, "items"), login, http),
+            mention_items,
             github_authored(authored),
-            github_notifications(github_list(notifications, "notifications"), login, http)
+            notification_items
           )
           |> Map.update!("issues", &(&1 ++ github_failed_runs(source, http)))
 
-        {:ok, RecommendationMemberRead.warn(data, failures)}
+        {:ok,
+         RecommendationMemberRead.warn(
+           data,
+           failures ++ mention_failures ++ notification_failures
+         )}
       end
     else
       false -> {:error, :member_source_identity_mismatch}
@@ -451,7 +500,9 @@ defmodule CommaWeb.RecommendationOAuthSource do
            fn "GET", url, options -> http.("slack", {:get, url, options}) end,
            SystemsClock.utc_now(),
            Map.take(identity, ~w(provider_user_id provider_workspace_id)),
-           targets: source["memberTargets"] || %{}
+           targets: source["memberTargets"] || %{},
+           tenant_id: source["salix_tenant_id"],
+           token_fingerprint: source["salix_token_fingerprint"]
          ) do
       {:ok, data, _subject} -> {:ok, data}
       {:error, _} = error -> error
@@ -631,35 +682,52 @@ defmodule CommaWeb.RecommendationOAuthSource do
       )
       |> Enum.take(20)
 
-    subjects = github_subjects(kept, http)
+    {subjects, subject_ids, subject_failures} =
+      case github_subjects(kept, http) do
+        {:ok, subjects, ids} -> {subjects, ids, []}
+        {:error, reason, ids} -> {%{}, ids, [reason]}
+      end
 
-    Enum.map(kept, fn notification ->
-      %{"subject" => subject, "repository" => repository} = notification
-      found = subjects[notification["id"]] || %{}
-      latest = github_latest_comment(found)
+    # When the GraphQL subject lookup fails transiently, omit only the
+    # notifications that depend on it so we do not strip `state` and
+    # `latest_comment` and flip their pooled fingerprints twice.
+    emitted =
+      if subject_failures == [] do
+        kept
+      else
+        Enum.reject(kept, &MapSet.member?(subject_ids, &1["id"]))
+      end
 
-      %{
-        "id" => notification["id"],
-        "title" => subject["title"],
-        "html_url" => github_subject_url(subject, repository["html_url"]),
-        "updated_at" => notification["updated_at"],
-        "reason" => notification["reason"],
-        "type" => subject["type"],
-        "repository" => repository["full_name"],
-        "state" => if(is_binary(found["state"]), do: String.downcase(found["state"])),
-        "latest_comment" => github_comment_context(latest, login)
-      }
-      |> CommaWeb.RecommendationSourceContext.attach(
-        ~w(reason type repository state latest_comment)
-      )
-      |> Map.take(~w(id title html_url updated_at context))
-      |> Map.put("memberRelation", "notified_you")
-      |> RecommendationSourceQuote.put(
-        title: subject["title"],
-        author: latest && latest.author,
-        body: latest && {:markdown, latest.body}
-      )
-    end)
+    items =
+      Enum.map(emitted, fn notification ->
+        %{"subject" => subject, "repository" => repository} = notification
+        found = subjects[notification["id"]] || %{}
+        latest = github_latest_comment(found)
+
+        %{
+          "id" => notification["id"],
+          "title" => subject["title"],
+          "html_url" => github_subject_url(subject, repository["html_url"]),
+          "updated_at" => notification["updated_at"],
+          "reason" => notification["reason"],
+          "type" => subject["type"],
+          "repository" => repository["full_name"],
+          "state" => if(is_binary(found["state"]), do: String.downcase(found["state"])),
+          "latest_comment" => github_comment_context(latest, login)
+        }
+        |> CommaWeb.RecommendationSourceContext.attach(
+          ~w(reason type repository state latest_comment)
+        )
+        |> Map.take(~w(id title html_url updated_at context))
+        |> Map.put("memberRelation", "notified_you")
+        |> RecommendationSourceQuote.put(
+          title: subject["title"],
+          author: latest && latest.author,
+          body: latest && {:markdown, latest.body}
+        )
+      end)
+
+    {items, subject_failures}
   end
 
   # Notification ID => the issue or pull request that GitHub returned.
@@ -677,8 +745,10 @@ defmodule CommaWeb.RecommendationOAuthSource do
       end)
       |> Enum.with_index()
 
+    ids = MapSet.new(subjects, fn {{id, _owner, _name, _number}, _i} -> id end)
+
     if subjects == [] do
-      %{}
+      {:ok, %{}, ids}
     else
       variables =
         subjects
@@ -708,14 +778,22 @@ defmodule CommaWeb.RecommendationOAuthSource do
               [json: %{"query" => query, "variables" => variables}]}
            ) do
         {:ok, %{"data" => data}} ->
-          for {{id, _owner, _name, _number}, i} <- subjects,
-              subject = get_in(data, ["s#{i}", "issueOrPullRequest"]),
-              is_map(subject),
-              into: %{},
-              do: {id, subject}
+          found =
+            for {{id, _owner, _name, _number}, i} <- subjects,
+                subject = get_in(data, ["s#{i}", "issueOrPullRequest"]),
+                is_map(subject),
+                into: %{},
+                do: {id, subject}
+
+          {:ok, found, ids}
+
+        {:error, reason} ->
+          if RecommendationMemberRead.transient?(reason),
+            do: {:error, reason, ids},
+            else: {:ok, %{}, ids}
 
         _unreadable ->
-          %{}
+          {:ok, %{}, ids}
       end
     end
   end
@@ -777,8 +855,12 @@ defmodule CommaWeb.RecommendationOAuthSource do
   defp github_repository_page(_type, repository), do: repository
 
   # The comment that names the member is the request: the issue body may predate it.
-  # The five most recent mentions read their comments; the rest keep the body,
-  # as does a mention whose comments cannot be read.
+  # Read comments for every kept mention so a new mention shifting the list never
+  # switches an older mention's URL between its comment link and its issue link.
+  # A transient comment read error (including GitHub primary/secondary rate-limit
+  # 403 responses normalized to 429 in `request/3`) skips that item with a warning
+  # instead of emitting a duplicate issue-URL item; permanent 404/403 (such as SAML
+  # SSO or OAuth app restrictions) keeps the issue body.
   defp github_mentions(items, login, http) do
     items =
       items
@@ -788,36 +870,44 @@ defmodule CommaWeb.RecommendationOAuthSource do
       end)
       |> Enum.take(10)
 
-    {latest, older} = Enum.split(items, 5)
     since = recent_date() |> DateTime.new!(~T[00:00:00]) |> DateTime.to_iso8601()
     name = ~r/(^|[^A-Za-z0-9-])@#{Regex.escape(login)}(?![A-Za-z0-9-])/i
 
-    latest
-    |> RecommendationMemberRead.map(
-      fn item ->
-        {item,
-         http.(
-           "github_comments",
-           {:get, item["comments_url"], [params: [since: since, per_page: 30]]}
-         )}
-      end,
-      5
-    )
-    |> Enum.map(fn
-      {item, {:ok, %{"comments" => comments}}} ->
-        comment =
-          comments
-          |> Enum.filter(
-            &(is_map(&1) and is_binary(&1["body"]) and Regex.match?(name, &1["body"]))
-          )
-          |> List.last()
+    {mentions, failures} =
+      items
+      |> RecommendationMemberRead.map(
+        fn item ->
+          {item,
+           http.(
+             "github_comments",
+             {:get, item["comments_url"], [params: [since: since, per_page: 30]]}
+           )}
+        end,
+        5
+      )
+      |> Enum.reduce({[], []}, fn
+        {item, {:ok, %{"comments" => comments}}}, {acc, errs} ->
+          comment =
+            comments
+            |> Enum.filter(
+              &(is_map(&1) and is_binary(&1["body"]) and Regex.match?(name, &1["body"]))
+            )
+            |> List.last()
 
-        github_mention(item, comment)
+          {[github_mention(item, comment) | acc], errs}
 
-      {item, _unreadable} ->
-        github_mention(item, nil)
-    end)
-    |> Kernel.++(Enum.map(older, &github_mention(&1, nil)))
+        {item, {:error, reason}}, {acc, errs} ->
+          if RecommendationMemberRead.transient?(reason) do
+            {acc, [reason | errs]}
+          else
+            {[github_mention(item, nil) | acc], errs}
+          end
+
+        {item, _unreadable}, {acc, errs} ->
+          {[github_mention(item, nil) | acc], errs}
+      end)
+
+    {Enum.reverse(mentions), Enum.reverse(failures)}
   end
 
   defp github_mention(item, comment) do
@@ -941,6 +1031,17 @@ defmodule CommaWeb.RecommendationOAuthSource do
 
   defp request(provider, token), do: request(provider, token, request_options(provider))
 
+  # Slack refusing the grant itself, or a 401 from a provider, marks the
+  # connection for reauthorization so Plugins asks the member to reconnect.
+  # A 401 is left to the next refresh for a connection that can refresh.
+  @refused_codes ~w(token_revoked invalid_auth account_inactive)
+
+  defp request(provider, {token, connection_id}, spec) do
+    result = request(provider, token, spec)
+    note_refused(result, connection_id, token)
+    result
+  end
+
   defp request(provider, token, {method, url, options}) do
     {limit, options} = Keyword.pop(options, :max_bytes, 512_000)
 
@@ -979,6 +1080,11 @@ defmodule CommaWeb.RecommendationOAuthSource do
              is_integer(code) ->
         {:error, {:member_provider_error, Integer.to_string(code)}}
 
+      {:ok, %{status: 403, headers: headers, body: body}} when is_map(headers) ->
+        if rate_limited_headers?(headers) or rate_limited_body?(body),
+          do: {:error, {:oauth_provider_http, 429}},
+          else: {:error, {:oauth_provider_http, 403}}
+
       {:ok, %{status: status}} ->
         {:error, {:oauth_provider_http, status}}
 
@@ -986,6 +1092,16 @@ defmodule CommaWeb.RecommendationOAuthSource do
         {:error, :oauth_provider_unavailable}
     end
   end
+
+  defp note_refused({:error, {:member_provider_error, code}}, connection_id, token)
+       when code in @refused_codes and is_binary(connection_id),
+       do: SalixStore.OAuth.mark_token_refused(connection_id, token)
+
+  defp note_refused({:error, {:oauth_provider_http, 401}}, connection_id, token)
+       when is_binary(connection_id),
+       do: SalixStore.OAuth.mark_token_refused(connection_id, token, refreshable: :keep)
+
+  defp note_refused(_result, _connection_id, _token), do: :ok
 
   defp bound_slack_response(options, limit) do
     Keyword.merge(options,
@@ -1092,9 +1208,17 @@ defmodule CommaWeb.RecommendationOAuthSource do
        do: {:ok, body}
 
   # GraphQL answers each lookup alone: one inaccessible repository leaves the
-  # other subjects readable.
+  # other subjects readable. A top-level error with no `data` map (such as
+  # `RATE_LIMITED` returning HTTP 200 with `"data" => nil`) is a query error,
+  # not an empty subject map.
   defp normalize("github_subjects", %{"data" => data}) when is_map(data),
     do: {:ok, %{"data" => data}}
+
+  defp normalize("github_subjects", %{"errors" => [_ | _] = errors}) do
+    if Enum.any?(errors, &github_rate_limited_error?/1),
+      do: {:error, {:oauth_provider_http, 429}},
+      else: {:error, :oauth_provider_query_failed}
+  end
 
   defp normalize("github_graphql", %{"errors" => [_ | _]}),
     do: {:error, :oauth_provider_query_failed}
@@ -1119,4 +1243,33 @@ defmodule CommaWeb.RecommendationOAuthSource do
     do: {:error, {:member_provider_error, to_string(code)}}
 
   defp normalize(_, _), do: {:error, :invalid_provider_response}
+
+  defp rate_limited_headers?(headers) do
+    remaining = header_values(headers, "x-ratelimit-remaining")
+    retry_after = header_values(headers, "retry-after")
+    "0" in remaining or retry_after != []
+  end
+
+  defp header_values(headers, name) do
+    case Map.get(headers, name) do
+      values when is_list(values) -> Enum.filter(values, &(is_binary(&1) and &1 != ""))
+      value when is_binary(value) and value != "" -> [value]
+      _ -> []
+    end
+  end
+
+  defp rate_limited_body?(%{"message" => message}) when is_binary(message),
+    do: String.contains?(String.downcase(message), "rate limit")
+
+  defp rate_limited_body?(body) when is_binary(body),
+    do: String.contains?(String.downcase(body), "rate limit")
+
+  defp rate_limited_body?(_body), do: false
+
+  defp github_rate_limited_error?(%{"type" => "RATE_LIMITED"}), do: true
+
+  defp github_rate_limited_error?(%{"message" => message}) when is_binary(message),
+    do: String.contains?(String.downcase(message), "rate limit")
+
+  defp github_rate_limited_error?(_error), do: false
 end

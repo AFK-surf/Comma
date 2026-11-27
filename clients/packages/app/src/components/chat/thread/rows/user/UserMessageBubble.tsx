@@ -294,11 +294,6 @@ export function UserMessageBubble({
               <button
                 aria-controls={contentId}
                 aria-expanded={expanded}
-                aria-label={
-                  expanded
-                    ? messagesApi.chat_message_collapse()
-                    : messagesApi.chat_message_expand()
-                }
                 className="comma-chat-user-bubble-toggle"
                 data-no-press-feedback
                 onClick={() => {
@@ -311,6 +306,11 @@ export function UserMessageBubble({
                 }}
                 type="button"
               >
+                <span>
+                  {expanded
+                    ? messagesApi.chat_message_collapse()
+                    : messagesApi.chat_message_expand()}
+                </span>
                 <ChevronDownSmallIcon aria-hidden />
               </button>
             </div>

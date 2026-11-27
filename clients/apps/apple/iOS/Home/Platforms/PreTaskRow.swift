@@ -158,11 +158,13 @@ struct PreTaskGroup: View {
 
     var body: some View {
         VStack(spacing: GroupedSurface.groupSpacing) {
-            if let fallback = platform.card?.fallbackText {
-                Text(fallback).font(.callout).foregroundStyle(CommaTheme.textPrimary)
-                    .surfaceRowFrame(vertical: 12)
-                    .background(GroupedSurface.surface,
-                                in: RoundedRectangle(cornerRadius: GroupedSurface.radius, style: .continuous))
+            ForEach(platform.cards.filter { $0.fallbackText != nil }) { card in
+                if let fallback = card.fallbackText {
+                    Text(fallback).font(.callout).foregroundStyle(CommaTheme.textPrimary)
+                        .surfaceRowFrame(vertical: 12)
+                        .background(GroupedSurface.surface,
+                                    in: RoundedRectangle(cornerRadius: GroupedSurface.radius, style: .continuous))
+                }
             }
             ForEach(items) {
                 PreTaskRow(item: $0, feed: feed, source: platform.source, origin: showsOrigin ? platform.heading : nil,
@@ -180,6 +182,6 @@ extension PlatformRoutine {
 extension CommaStore {
     /// Whether a platform has anything for a sheet to draw: pre-tasks, or the card's own words.
     func hasPreTasks(_ platform: PlatformRoutine) -> Bool {
-        platform.card?.fallbackText != nil || !preTasks(of: platform).isEmpty
+        !platform.fallbackTexts.isEmpty || !preTasks(of: platform).isEmpty
     }
 }

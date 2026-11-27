@@ -71,6 +71,17 @@ esac
       await page.evaluate(() => window.commaNative!.computeNode.localOverview({}))
     ).toMatchObject({
       availability: "available",
+      environments: [
+        {
+          origin: "local",
+          state: "observed_active",
+          privateDiskBytes: "1",
+          sampledAt: collectedAt,
+          canDisposeLocal: true,
+          canReadWorkloads: false,
+          canOperate: false,
+        },
+      ],
       disk: {
         usedBytes: "1024",
         imageRuntimeBytes: "700",
@@ -80,14 +91,22 @@ esac
         breakdownSampledAt: collectedAt,
       },
     });
-    await expect(page.getByText("Local data", { exact: true }).first()).toBeVisible();
-    await page.getByRole("button", { name: /Node actions$/ }).click();
     await expect(
-      page.getByRole("menuitem", { name: "Delete local environment", exact: true })
+      page.getByRole("button", { name: "Restart & repair…", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("menuitem", { name: "Workloads", exact: true })
-    ).toHaveCount(0);
+      page.getByRole("button", { name: "Reset environment…", exact: true })
+    ).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Uninstall…", exact: true })
+    ).toBeEnabled();
+    await expect(page.getByText("Workspace workloads", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Reset environment…", exact: true }).click();
+    await expect(
+      page
+        .getByRole("dialog", { name: "Reset sandbox environment", exact: true })
+        .getByRole("button", { name: "Reset environment", exact: true })
+    ).toBeVisible();
   } finally {
     await closeElectronTestApp(app).catch(() => {});
     await rm(directory, { force: true, recursive: true });

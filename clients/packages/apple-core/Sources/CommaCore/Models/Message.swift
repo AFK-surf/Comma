@@ -39,6 +39,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     public let clientRequestID: String?
     public let replyToMessageID: String?
     public let threadRootMessageID: String?
+    public let participantID: String?
     public let agentID: String?
     public let userID: String?
     public let roleLabel: String?
@@ -62,6 +63,11 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         if platformMessage != nil { return true }
         if rawText.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[[comma-context]]") { return false }
         if actorType == "system", agentInput != nil { return false }
+        if actorType == "system",
+           let messageType = metadata?["message_type"]?.string,
+           ["task_status_pending", "task_worker_nudge", "task_worker_stopped"].contains(messageType) {
+            return false
+        }
         if actorType == "system" && kind == "app_event" {
             let event = metadata?["event_type"]?.string ?? ""
             // `mail.*` events record a Home mail interaction's state change and have no content.
@@ -72,16 +78,16 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id = "message_id", kind, actorType = "actor_type", content, clientRequestID = "client_request_id"
         case replyToMessageID = "reply_to_message_id", threadRootMessageID = "thread_root_message_id"
-        case agentID = "agent_id", userID = "user_id", roleLabel = "role_label"
+        case participantID = "participant_id", agentID = "agent_id", userID = "user_id", roleLabel = "role_label"
         case createdAt = "created_at", metadata, agentInput = "agent_input", platformMessage = "platform_message"
     }
     public init(id: String, kind: String, actorType: String, content: [ContentBlock], clientRequestID: String? = nil,
-                replyToMessageID: String? = nil, threadRootMessageID: String? = nil, agentID: String? = nil,
+                replyToMessageID: String? = nil, threadRootMessageID: String? = nil, participantID: String? = nil, agentID: String? = nil,
                 userID: String? = nil, roleLabel: String? = nil, createdAt: Double? = nil,
                 metadata: [String: JSONValue]? = nil, agentInput: JSONValue? = nil, platformMessage: PlatformMessage? = nil) {
         self.id = id; self.kind = kind; self.actorType = actorType; self.content = content
         self.clientRequestID = clientRequestID; self.replyToMessageID = replyToMessageID
-        self.threadRootMessageID = threadRootMessageID; self.agentID = agentID; self.userID = userID; self.roleLabel = roleLabel
+        self.threadRootMessageID = threadRootMessageID; self.participantID = participantID; self.agentID = agentID; self.userID = userID; self.roleLabel = roleLabel
         self.createdAt = createdAt; self.metadata = metadata; self.agentInput = agentInput; self.platformMessage = platformMessage
     }
     /// The text a member may see: everything before the protocol tail, without private `comma:` fences.

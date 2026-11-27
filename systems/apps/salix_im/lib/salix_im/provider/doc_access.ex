@@ -14,6 +14,11 @@ defmodule SalixIM.Provider.DocAccess do
   ones. When their account is refused too, offer to ask the owner for access
   as them. A scope the app does not offer is fixed only by a tenant admin,
   never by sharing the document.
+
+  A member's own bot (an `owner_only` connect, the app a scan in Comma made)
+  has no tenant admin in the developer console and no tenant OAuth app: the
+  person reconnects the plugin in Comma instead, which updates the app's
+  scopes by a new scan and signs them in again.
   """
 
   # Refusals of a document, wiki node, spreadsheet or Base to the identity
@@ -23,7 +28,8 @@ defmodule SalixIM.Provider.DocAccess do
   @app_scope_code "99991672"
   @user_scope_code "99991679"
 
-  @document_reads ~w(fetch_doc list_doc_comments fetch_doc_media)
+  @document_reads ~w(fetch_doc list_doc_comments fetch_doc_media
+                     list_drive_files list_wiki_spaces list_wiki_nodes search_docs)
   @table_reads ~w(get_base list_base_fields list_base_records get_sheet get_sheet_range)
   @writes ~w(update_doc insert_doc_media add_doc_comment reply_doc_comment
              resolve_doc_comment)
@@ -37,7 +43,7 @@ defmodule SalixIM.Provider.DocAccess do
   def next_step({:error, reason}, api, connect) when is_binary(reason) do
     with [prefix, name] <- String.split(api, ".", parts: 2),
          action when not is_nil(action) <- action(name),
-         step when is_binary(step) <- step(code(reason), reason, prefix, action, person?(connect)) do
+         step when is_binary(step) <- step(code(reason), reason, prefix, action, connect) do
       {:error, reason <> step}
     else
       _none -> {:error, reason}
@@ -54,6 +60,19 @@ defmodule SalixIM.Provider.DocAccess do
   defp person?(%{"user_access_token" => token}), do: is_binary(token) and token != ""
   defp person?(_connect), do: false
 
+  @doc "Whether `connect` is a member's own bot, the app a scan in Comma made."
+  @spec own_bot?(map()) :: boolean()
+  def own_bot?(connect), do: is_map(connect) and connect["owner_only"] == true
+
+  @doc """
+  What the person behind a member's own bot does to sign in again or give the
+  app a scope, as a phrase after "ask them to".
+  """
+  @spec reconnect(String.t()) :: String.t()
+  def reconnect(prefix),
+    do:
+      "reconnect the plugin in Comma (Plugins → #{product(prefix)} → Connect), which updates the app's scopes and signs them in again"
+
   defp code(reason) do
     case Regex.run(~r/\berror (\d+)\b/, reason) do
       [_, code] -> code
@@ -61,28 +80,57 @@ defmodule SalixIM.Provider.DocAccess do
     end
   end
 
-  defp step(@app_scope_code, reason, prefix, action, _person?) do
-    " Next: the app lacks the #{product(prefix)} scope #{scopes(reason)}. Only a tenant admin can fix this: enable it in the #{product(prefix)} developer console and publish a new app version. Sharing the document does not help. Until then, " <>
-      as_person(prefix, action)
+  defp step(@app_scope_code, reason, prefix, action, connect) do
+    fix =
+      if own_bot?(connect),
+        do:
+          "This is the person's own bot: ask them to #{reconnect(prefix)}. Sharing the document does not help. Until then, ",
+        else:
+          "Only a tenant admin can fix this: enable it in the #{product(prefix)} developer console and publish a new app version. Sharing the document does not help. Until then, "
+
+    " Next: the app lacks the #{product(prefix)} scope #{scopes(reason)}. " <>
+      fix <> as_person(prefix, action, connect)
   end
 
-  defp step(@user_scope_code, reason, prefix, _action, _person?) do
-    " Next: this person's sign-in lacks the #{product(prefix)} scope #{scopes(reason)}. Call oauth.request_authorization with provider #{prefix}, their alias and scopes [#{grant(reason, prefix)}], and continue when it completes. If the authorization page refuses it (error 20027), a tenant admin must enable these as user scopes in the #{product(prefix)} developer console and publish a new app version. Sharing the document does not help."
+  defp step(@user_scope_code, reason, prefix, _action, connect) do
+    if own_bot?(connect),
+      do:
+        " Next: this person's sign-in lacks the #{product(prefix)} scope #{scopes(reason)}. Ask them to #{reconnect(prefix)}, and continue when they have. Sharing the document does not help.",
+      else:
+        " Next: this person's sign-in lacks the #{product(prefix)} scope #{scopes(reason)}. Call oauth.request_authorization with provider #{prefix}, their alias and scopes [#{grant(reason, prefix)}], and continue when it completes. If the authorization page refuses it (error 20027), a tenant admin must enable these as user scopes in the #{product(prefix)} developer console and publish a new app version. Sharing the document does not help."
   end
 
-  defp step(code, _reason, prefix, action, false) when code in @denied_codes,
-    do: " Next: the app may not #{verb(action)} it. " <> as_person(prefix, action)
+  defp step(code, reason, prefix, action, connect) when code in @denied_codes,
+    do: denied_step(person?(connect), reason, prefix, action, connect)
 
-  defp step(code, _reason, prefix, action, true)
-       when code in @denied_codes and action in [:read, :table_read],
-       do:
-         " Next: this person cannot open it either. Offer to ask the owner for access as them with #{prefix}.request_doc_access, and call it only after they agree."
+  defp step(_code, _reason, _prefix, _action, _connect), do: nil
 
-  defp step(code, _reason, prefix, :write, true) when code in @denied_codes,
+  defp denied_step(false, _reason, prefix, action, connect),
+    do: " Next: the app may not #{verb(action)} it. " <> as_person(prefix, action, connect)
+
+  defp denied_step(true, _reason, prefix, action, _connect) when action in [:read, :table_read],
+    do:
+      " Next: this person cannot open it either. Offer to ask the owner for access as them with #{prefix}.request_doc_access, and call it only after they agree."
+
+  defp denied_step(true, _reason, prefix, :write, _connect),
     do:
       " Next: this person cannot edit it either. Offer to ask the owner for edit access as them with #{prefix}.request_doc_access and perm edit, and call it only after they agree."
 
-  defp step(_code, _reason, _prefix, _action, _person?), do: nil
+  # On a member's own bot the person signs in again, with every scope the
+  # bot reads and writes with, by reconnecting the plugin in Comma.
+  defp as_person(prefix, action, connect) do
+    if own_bot?(connect),
+      do: own_bot_as_person(prefix, action),
+      else: as_person(prefix, action)
+  end
+
+  defp own_bot_as_person(prefix, :write),
+    do:
+      "ask the person who asked whether you may write it as them: the edit history will show them as the author. Only after they agree, write it again with account=<their signed-in account> (#{prefix}.list_accounts). If they have none, it is expired, or it lacks the write scopes, ask them to #{reconnect(prefix)}, and write as them when they have."
+
+  defp own_bot_as_person(prefix, _read),
+    do:
+      "read it again with account=<the signed-in account of the person who asked> (#{prefix}.list_accounts). If they have none, it is expired, or it lacks the scopes, ask them to #{reconnect(prefix)}, and read as them when they have."
 
   defp as_person(prefix, :read),
     do:

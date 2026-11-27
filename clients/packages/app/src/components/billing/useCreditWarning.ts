@@ -102,7 +102,7 @@ export function useCreditWarning(workspaceId: string | undefined, active: boolea
               onPress: () => {
                 if (presented === shown) presented = undefined;
                 dismiss();
-                openUsageBillingSettings();
+                openUsageBillingSettings("credit_warning");
               },
             },
           ],

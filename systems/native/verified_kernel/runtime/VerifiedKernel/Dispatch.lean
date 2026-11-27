@@ -5,6 +5,7 @@ import VerifiedKernel.Schema
 import VerifiedKernel.Session.Query
 import VerifiedKernel.IFC.Dispatch
 import VerifiedKernel.AgentLoop.Dispatch
+import VerifiedKernel.Proactive.Dispatch
 import VerifiedKernel.Provider.Dispatch
 import VerifiedKernel.Session.ArchivePublication
 import VerifiedKernel.Session.BatchExecution
@@ -30,6 +31,10 @@ def dispatch : Term → Term
     match AgentLoop.invoke operation payload with
     | .ok result => ok result
     | .error code => error "agent_loop" code
+  | .tuple [.integer 1, .atom "proactive", .integer 1, operation, payload] =>
+    match Proactive.invoke operation payload with
+    | .ok result => ok result
+    | .error code => error "proactive" code
   | .tuple [.integer 1, .atom "ifc", .integer 1, operation, payload] => ok (IFC.invoke operation payload)
   | .tuple [.integer 1, .atom "codec", .integer 1, .atom "roundtrip", payload] => ok payload
   | _ => error "wire" "unsupported_request"

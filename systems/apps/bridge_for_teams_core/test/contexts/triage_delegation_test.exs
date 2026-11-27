@@ -190,6 +190,33 @@ defmodule BridgeForTeams.TriageDelegationTest do
     refute_received {:router_admission, _, _, _}
   end
 
+  test "worker-assigned delegation binds the canonical Task agent without leaking claim secrets",
+       %{
+         project: project,
+         router: router
+       } do
+    {:ok, %{"agent_id" => task_agent_id}} = BridgeForTeams.TriageContext.task_agent(project)
+    base = claim(project, router)
+
+    delegation =
+      base.payload["delegations"]
+      |> hd()
+      |> Map.put("worker_ref", "comma-agent://" <> task_agent_id)
+
+    claim = put_in(base, [:payload, "delegations"], [delegation])
+
+    assert {:ok, prepared} = TriageDelegation.prepare(claim, delegation, @request_id)
+    assert prepared.worker_agent_id == task_agent_id
+
+    assert get_in(prepared.attrs, ["source_refs", "triage_investigation", "worker_agent_id"]) ==
+             task_agent_id
+
+    worker_prompt = prepared.attrs["content"]
+    refute worker_prompt =~ "claim-secret"
+    refute worker_prompt =~ "hidden-payload-secret"
+    refute worker_prompt =~ "raw-body-secret"
+  end
+
   test "repeated commit retains the stable source id and persists one Router input", %{
     project: project,
     router: router,

@@ -348,8 +348,8 @@ model {
       }
 
       agent_vmm = application 'Agent VMM host / connector' {
-        description '本机 VM/runtime/workspace/service/trust/policy owner；通过 remote connector 接入独立 Salix VMM gateway'
-        technology 'Go host + Go connector'
+        description '本机 VM/runtime/workspace/service/trust/policy owner；通过 vmm-rpc 接入 Salix 内嵌 salix-vmm-worker'
+        technology 'Rust host + connector (vmm-rpc)'
         link ../../../../agent-vmm/docs/architecture.md 'Architecture'
       }
 
@@ -358,12 +358,6 @@ model {
         description '独立 Helm chart、Service、PDB、PrometheusRule 与 relay workload contract 已存在；生产 identity/rotation/fault drill 与 public preview 仍是门禁'
         technology 'Independent Helm release'
         link ../../../k8s/iroh-relay/README.md 'Workload contract'
-      }
-
-      salix_vmm_gateway = application 'Salix VMM Gateway' {
-        description 'remote.v1与PersonalMeshRegistryService transport owner、exact host.v1 reverse proxy；只持有live connection/session，不复制Salix business ledger'
-        technology 'Independent Go workload / Helm release'
-        link ../../../systems/gateway/salix-vmm-gateway/README.md 'Workload contract'
       }
 
     }

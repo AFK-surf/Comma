@@ -1241,6 +1241,85 @@ defmodule SalixIM.LarkProviderTest do
       assert router_inputs(ctx, "om_top") == []
     end
 
+    test "the Router leaves a thread on request, and a mention and its answer bring it back",
+         ctx do
+      thread = "omt_om_leave"
+
+      in_thread = fn id, text, opts ->
+        id
+        |> message_event(@group, "group", text, opts)
+        |> put_in(["event", "message", "thread_id"], thread)
+      end
+
+      first =
+        message_event("om_leave", @group, "group", "@_user_1 hi", mentions: [bot_mention()])
+
+      assert {:ok, %{"ok" => true}} = deliver(ctx, first)
+
+      assert {:ok, %{"message" => %{"thread_id" => ^thread}}} =
+               call(
+                 ctx,
+                 "lark.send_message",
+                 %{"text" => "Hello.", "reply_to" => "om_leave"},
+                 origin(ctx, @group, "om_leave")
+               )
+
+      assert {:ok, %{"ok" => true}} = deliver(ctx, in_thread.("om_before", "more", []))
+      assert [_input] = router_inputs(ctx, "om_before")
+
+      # A Worker cannot leave a thread for the Router.
+      worker =
+        SalixAgent.TestSupport.create_control_agent!(Ids.new_agent_id(ctx.group_id), %{
+          "tenant_id" => ctx.tenant,
+          "group_id" => ctx.group_id,
+          "name" => "Worker",
+          "role" => "worker"
+        })
+
+      leave = %{"chat_id" => @group, "thread_id" => thread}
+
+      assert {:error, "operation is not available to this agent role"} =
+               Provider.call_api(worker["agent_id"], "lark", "lark.leave_thread", %{
+                 "connect_id" => ctx.connect["connect_id"],
+                 "params" => leave
+               })
+
+      assert {:ok, %{"status" => "left", "chat_id" => @group, "thread_id" => ^thread}} =
+               call(ctx, "lark.leave_thread", leave)
+
+      refute SalixIM.LarkThreads.joined?(ctx.connect, @group, thread)
+
+      # People go on without a mention: nothing reaches the Router.
+      assert {:ok, %{"ok" => true}} = deliver(ctx, in_thread.("om_after", "still there?", []))
+      assert router_inputs(ctx, "om_after") == []
+
+      # A mention does, and the answer to it follows the thread again.
+      SystemsRuntime.put_env(:salix_im, :lark_test_threads, %{"om_back" => thread})
+
+      assert {:ok, %{"ok" => true}} =
+               deliver(
+                 ctx,
+                 in_thread.("om_back", "@_user_1 come back", mentions: [bot_mention()])
+               )
+
+      assert [_input] = router_inputs(ctx, "om_back")
+
+      assert {:ok, %{"message" => %{"thread_id" => ^thread}}} =
+               call(
+                 ctx,
+                 "lark.send_message",
+                 %{"text" => "Back.", "reply_to" => "om_back"},
+                 origin(ctx, @group, "om_back")
+               )
+
+      assert {:ok, %{"ok" => true}} = deliver(ctx, in_thread.("om_again", "thanks", []))
+      assert [_input] = router_inputs(ctx, "om_again")
+
+      # Leaving a thread never followed changes nothing and says so the same way.
+      assert {:ok, %{"status" => "left"}} =
+               call(ctx, "lark.leave_thread", %{"chat_id" => @group, "thread_id" => "omt_never"})
+    end
+
     test "a message of a joined thread runs no control command", ctx do
       previous = SystemsRuntime.get_env(:salix_im, :control_command_execution)
       SystemsRuntime.put_env(:salix_im, :control_command_execution, :sync)
@@ -1412,6 +1491,112 @@ defmodule SalixIM.LarkProviderTest do
       # A webhook connect takes no event as if it came on a long connection.
       assert {:error, :invalid_envelope} =
                SalixIM.LarkInbound.handle_socket_event(ctx.connect, mine)
+    end
+
+    test "a tap on the bot's menu reaches the Router once, from its owner only", ctx do
+      previous = SystemsRuntime.get_env(:salix_im, :control_command_execution)
+      SystemsRuntime.put_env(:salix_im, :control_command_execution, :sync)
+      on_exit(fn -> restore(:salix_im, :control_command_execution, previous) end)
+
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(
+          ctx.socket["group_id"],
+          ctx.socket["connect_id"],
+          "lark"
+        )
+
+      tap = fn event_id, key, open_id ->
+        %{
+          "schema" => "2.0",
+          "header" => %{
+            "event_id" => event_id,
+            "event_type" => "application.bot.menu_v6",
+            "tenant_key" => "tenant_key_1"
+          },
+          "event" => %{
+            "operator" => %{
+              "operator_name" => "Alice",
+              "operator_id" => %{"open_id" => open_id, "union_id" => "on_alice"}
+            },
+            "event_key" => key,
+            "timestamp" => 1_700_000_000
+          }
+        }
+      end
+
+      assert {:ok, %{"ok" => true, "status" => "queued"}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 connect,
+                 tap.("evt_gpt", "newgpttask", @user)
+               )
+
+      assert [task] = router_inputs(ctx.socket_ctx, "menu:evt_gpt")
+      request = task["agent_input"][:trusted_origin]["source_text"]
+      assert request =~ "Codex task"
+      assert request =~ ~s(user_id "#{@user}")
+
+      # Lark sends an event again: it reaches the Router once.
+      assert {:ok, %{"status" => "duplicate"}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 connect,
+                 tap.("evt_gpt", "newgpttask", @user)
+               )
+
+      assert [_once] = router_inputs(ctx.socket_ctx, "menu:evt_gpt")
+
+      assert {:ok, %{"status" => "queued"}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 connect,
+                 tap.("evt_claude", "newclaudetask: 修一下 CI", @user)
+               )
+
+      assert [claude] = router_inputs(ctx.socket_ctx, "menu:evt_claude")
+
+      assert claude["agent_input"][:trusted_origin]["source_text"] =~
+               "Create a task using a Claude worker and send the task link to #{@user} via direct message. Task content: 修一下 CI"
+
+      # Any key an admin gives an item reaches the Router.
+      assert {:ok, %{"status" => "queued"}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 connect,
+                 tap.("evt_own", "weekly_report", @user)
+               )
+
+      assert [own] = router_inputs(ctx.socket_ctx, "menu:evt_own")
+      assert own["agent_input"][:trusted_origin]["source_text"] =~ ~s("weekly_report")
+
+      # One person's bot takes nobody else's tap.
+      assert {:ok, %{"ok" => true}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 connect,
+                 tap.("evt_other", "newgpttask", "ou_someone_else")
+               )
+
+      assert router_inputs(ctx.socket_ctx, "menu:evt_other") == []
+
+      # A control command is answered in private: the tap names no chat.
+      drain()
+
+      assert {:ok, %{"status" => "command"}} =
+               SalixIM.LarkInbound.handle_socket_event(connect, tap.("evt_help", "help", @user))
+
+      assert_received {:lark_api, "POST", ["im", "v1", "messages"],
+                       %{"receive_id" => @user, "msg_type" => "text", "content" => content},
+                       %{"receive_id_type" => "open_id"}}
+
+      assert content =~ "status"
+      assert router_inputs(ctx.socket_ctx, "menu:evt_help") == []
+
+      assert {:ok, %{"status" => "duplicate"}} =
+               SalixIM.LarkInbound.handle_socket_event(connect, tap.("evt_help", "help", @user))
+
+      refute_received {:lark_api, "POST", ["im", "v1", "messages"], _body, _params}
+
+      # A tap that names no person is refused.
+      assert {:error, :invalid_envelope} =
+               SalixIM.LarkInbound.handle_socket_event(connect, tap.("evt_nobody", "help", ""))
+
+      refute_received {:lark_api, "POST", ["im", "v1", "messages"], _body, _params}
     end
 
     test "the bot added to a group asks the Router for one optional welcome there", ctx do
@@ -2403,8 +2588,7 @@ defmodule SalixIM.LarkProviderTest do
       assert is_binary(at)
       assert length(kept) == 5
 
-      assert {:ok,
-              %{"users" => [%{"open_id" => "ou_alice"}], "directory" => %{"stored" => true}}} =
+      assert {:ok, %{"users" => [%{"open_id" => "ou_alice"}], "directory" => %{"stored" => true}}} =
                call(ctx, "lark.lookup_users", %{"query" => "alice"})
 
       # A run another node holds keeps this one from reading anything.
@@ -2649,13 +2833,13 @@ defmodule SalixIM.LarkProviderTest do
     @behaviour SalixIM.Ports.LarkUserAccounts
 
     @impl true
-    def list(_group_id) do
+    def list(_group_id, _acting) do
       {:ok,
        [%{"alias" => "lark-ann", "open_id" => "ou_ann", "name" => "Ann", "status" => "active"}]}
     end
 
     @impl true
-    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+    def access_token(_agent_id, alias_name, _acting), do: {:ok, "u-" <> alias_name}
   end
 
   describe "an external chat Lark refuses to read" do

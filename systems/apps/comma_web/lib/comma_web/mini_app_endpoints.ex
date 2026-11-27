@@ -220,6 +220,14 @@ defmodule CommaWeb.MiniAppEndpoints do
     end)
   end
 
+  def collaboration_bundle(conn, group_id, task_id, app_id, number) do
+    with_runtime(conn, app_id, fn user, session ->
+      with {:ok, app, version} <-
+             MiniApps.collaboration_bundle(user, session, group_id, task_id, app_id, number),
+           do: send_bundle(conn, app, version)
+    end)
+  end
+
   ## Link routes
 
   def link(conn, token) do
@@ -427,12 +435,16 @@ defmodule CommaWeb.MiniAppEndpoints do
   end
 
   # A Workspace viewer with the capability granted; writes need the owner's billing.
+  # Collaboration Mini Apps never reach the host's Drive.
   defp with_drive(conn, id, write?, fun) do
     with_runtime(conn, id, fn user, session ->
       with {:ok, rt} <- MiniApps.runtime(user, session, id, via(conn), requested(conn)),
+           :ok <- if(MiniApps.collaboration?(rt.app), do: {:error, :unsupported}, else: :ok),
            :ok <- MiniAppDrive.access(rt),
+           %{salix_group_id: group_id} when is_binary(group_id) <-
+             rt.workspace || {:error, :unsupported},
            :ok <- if(write?, do: MiniApps.owner_available(rt.app, "drive"), else: :ok) do
-        fun.(rt.workspace.salix_group_id, rt.app)
+        fun.(group_id, rt.app)
       end
     end)
   end

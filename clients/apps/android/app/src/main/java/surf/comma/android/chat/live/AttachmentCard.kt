@@ -9,6 +9,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import kotlinx.coroutines.*
 import surf.comma.android.R
+import surf.comma.android.chat.model.ChatAttachment
 import surf.comma.android.chat.model.ChatMessage
 import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.MessageStatus
@@ -21,13 +22,56 @@ import surf.comma.android.media.video.VideoPlayerActivity
 import surf.comma.android.media.viewer.ChatMediaLink
 import surf.comma.android.media.viewer.ImageViewerActivity
 import surf.comma.android.ui.theme.DesignTypography
+import kotlin.math.roundToInt
+
+/** Per-conversation UI state for multi-image group rows, surviving RecyclerView recycling. */
+internal interface ImageGroupHost {
+    fun isExpanded(rowId: Long): Boolean
+    fun setExpanded(rowId: Long, expanded: Boolean)
+    fun browseState(rowId: Long): MediaImageGroupBrowseState
+    fun setBrowseState(rowId: Long, state: MediaImageGroupBrowseState)
+}
+
+/** Exact precomputed height for image group attachment rows matching [MediaImageGroupView.onMeasure]. */
+internal class MediaImageGroupLayout(
+    private val density: Float,
+    private val isExpanded: (Long) -> Boolean,
+) : ChatCardHeights {
+    override fun bodyHeightPx(message: ChatMessage, rowWidthPx: Int, sideMarginPx: Int): Int? {
+        if (message.cardKind != LiveRowKinds.ATTACHMENT) return null
+        val group = message.imageGroup
+        if (group.isEmpty()) return null
+        val columnWidthDp = (rowWidthPx - sideMarginPx * 2).coerceAtLeast(1) / density
+        val first = group.first()
+        val bodyDp = MediaImageGroupGeometry.totalHeightDp(
+            columnWidthDp = columnWidthDp,
+            count = group.size,
+            expanded = isExpanded(message.id),
+            singleWidthPx = first.dimensions?.width,
+            singleHeightPx = first.dimensions?.height,
+        ) + if (message.status == MessageStatus.FAILED) AttachmentCardRenderer.FAILURE_HEIGHT_DP else 0f
+        return (bodyDp * density).roundToInt()
+    }
+}
 
 internal class AttachmentCardRenderer(override val viewType: Int) : ChatCardRenderer {
     override val kind = LiveRowKinds.ATTACHMENT
     override fun bodyHeightDp(message: ChatMessage, cardWidthDp: Float): Float {
-        val media = message.attachment
-        val body = if (media == null || media.display == AttachmentDisplay.FILE) FILE_CARD_HEIGHT_DP
+        val group = message.imageGroup
+        val body = if (group.isNotEmpty()) {
+            val first = group.first()
+            MediaImageGroupGeometry.totalHeightDp(
+                columnWidthDp = cardWidthDp,
+                count = group.size,
+                expanded = false,
+                singleWidthPx = first.dimensions?.width,
+                singleHeightPx = first.dimensions?.height,
+            )
+        } else {
+            val media = message.attachment
+            if (media == null || media.display == AttachmentDisplay.FILE) FILE_CARD_HEIGHT_DP
             else imageBoxWidthDp(cardWidthDp + CARD_SIDE_INSET_DP, ratio(message)) / ratio(message)
+        }
         return body + if (message.status == MessageStatus.FAILED) FAILURE_HEIGHT_DP else 0f
     }
     override fun create(context: Context): View = AttachmentView(context)
@@ -49,19 +93,30 @@ internal class AttachmentCardRenderer(override val viewType: Int) : ChatCardRend
 internal class AttachmentView(context: Context) : FrameLayout(context), TimelineMediaCell, FlightTarget {
     var onSendFailed: ((Long) -> Unit)? = null
     /** Opens the chat's media viewer at this row's image or video; false when no page handled it. */
-    var onOpenMedia: ((PreparedChatMessage) -> Boolean)? = null
+    var onOpenMedia: ((PreparedChatMessage, Int) -> Boolean)? = null
+    var imageGroupHost: ImageGroupHost? = null
+    /** Optional test override for [MediaComponents]; defaults to [MediaGraph.get]. */
+    internal var mediaComponentsProvider: (() -> MediaComponents)? = null
+    /** Optional test hook observing failed `MediaSource.MessageAttachment` file-open taps. */
+    internal var onOpenFileOverride: ((ChatAttachment) -> Unit)? = null
     /** The picture's read failed; a tap then retries or opens the file instead of the viewer. */
     private var failed = false
     private var registered: Long? = null
+    private var registeredGroup: MediaImageGroupView? = null
     private var item: PreparedChatMessage? = null
     private var scope: CoroutineScope? = null
     private var binding: MediaImageBinding? = null
     internal var flightImage: SendImagePresentation? = null
         private set
+    internal var imageGroupView: MediaImageGroupView? = null
+        private set
     private var video: VideoCardView? = null
     private var file: FileCardView? = null
     private var visible = false
-    private val surface = FrameLayout(context)
+    private val surface = FrameLayout(context).apply {
+        clipChildren = false
+        clipToPadding = false
+    }
     // Neither error label belongs on the common three-image layout path. Construct on failure.
     private var failure: TextView? = null
     private fun showSendFailure(show: Boolean) {
@@ -77,18 +132,29 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         failure?.visibility = if (show) View.VISIBLE else View.GONE
     }
 
-    init { addView(surface) }
+    init {
+        clipChildren = false
+        clipToPadding = false
+        addView(surface)
+    }
 
     fun bind(next: PreparedChatMessage) {
+        val previousGroup = item?.message?.imageGroup.orEmpty()
+        val nextGroup = next.message.imageGroup
         val previous = item?.message?.attachment
         val attachment = next.message.attachment
-        val changed = item?.message?.id != next.message.id || item?.let(::boxWidth) != boxWidth(next) ||
-            previous?.session != attachment?.session || previous?.display != attachment?.display || previous?.file?.source != attachment?.file?.source ||
-            previous?.dimensions != attachment?.dimensions || previous?.preview != attachment?.preview ||
-            (attachment?.display == AttachmentDisplay.FILE && previous != attachment)
+        val changed = item?.message?.id != next.message.id ||
+            previousGroup != nextGroup ||
+            (nextGroup.isEmpty() && (
+                item?.let(::boxWidth) != boxWidth(next) ||
+                    previous?.session != attachment?.session || previous?.display != attachment?.display ||
+                    previous?.file?.source != attachment?.file?.source ||
+                    previous?.dimensions != attachment?.dimensions || previous?.preview != attachment?.preview ||
+                    (attachment?.display == AttachmentDisplay.FILE && previous != attachment)
+                ))
         item = next
         showSendFailure(next.message.status == MessageStatus.FAILED)
-        contentDescription = next.message.attachment?.file?.displayName
+        contentDescription = nextGroup.firstOrNull()?.file?.displayName ?: next.message.attachment?.file?.displayName
         if (changed) {
             releaseMedia()
             surface.removeAllViews()
@@ -101,8 +167,13 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
     override fun onDetachedFromWindow() { releaseMedia(); super.onDetachedFromWindow() }
 
     private fun start() {
-        if (scope != null) return
+        if (scope != null || imageGroupView != null) return
         val current = item ?: return
+        val group = current.message.imageGroup
+        if (group.isNotEmpty()) {
+            startImageGroup(current, group)
+            return
+        }
         val attachment = current.message.attachment ?: return
         val owner = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope = it }
         val media = MediaGraph.get(context)
@@ -114,41 +185,17 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         val widthPx = boxWidth(current)
         failed = false
         if (attachment.display != AttachmentDisplay.FILE) {
-            ChatMediaLink.register(current.message.id, surface)
+            ChatMediaLink.register(current.message.id, surface, flightCornerRadius)
             registered = current.message.id
-            surface.setOnLongClickListener { showMenu(); true }
+            surface.setOnLongClickListener { showMenu(attachment, surface); true }
         }
         when (attachment.display) {
-            AttachmentDisplay.IMAGE -> {
-                val image = SendImageView(context)
-                flightImage = image.presentation
-                surface.addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-                image.contentDescription = attachment.file.displayName
-                image.stateDescription = null
-                image.setOnLongClickListener { showMenu(); true }
-                image.setOnClickListener {
-                    when {
-                        failed -> if (attachment.file.source is MediaSource.MessageAttachment) openFile() else retry()
-                        // A tap on a loading tile leaves its read running.
-                        image.presentation.target == null -> Unit
-                        else -> open()
-                    }
-                }
-                owner.launch {
-                    val images = media.images()
-                    if (!currentSession()) return@launch
-                    try {
-                        binding = images.bind(image, attachment.image()!!, widthPx, visible,
-                            AttachmentCardRenderer.ratio(current.message).toDouble(), onLoaded = ::clearFailure) { showFailure() }
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { showFailure() }
-                }
-            }
+            AttachmentDisplay.IMAGE -> Unit // Handled by startImageGroup above.
             AttachmentDisplay.VIDEO -> {
                 val card = VideoCardView(context).also { video = it }
                 // A video opens in the viewer from its Play button, even before its cover is read.
-                card.onOpen = { open() }
-                card.setOnLongClickListener { showMenu(); true }
+                card.onOpen = { open(0) }
+                card.setOnLongClickListener { showMenu(attachment, surface); true }
                 surface.addView(card)
                 owner.launch {
                     val covers = media.covers()
@@ -168,123 +215,160 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         }
     }
 
+    private fun startImageGroup(current: PreparedChatMessage, group: List<ChatAttachment>) {
+        surface.removeAllViews()
+        failed = false
+        val rowId = current.message.id
+        val view = MediaImageGroupView(context).also { imageGroupView = it }
+        view.mediaComponentsProvider = mediaComponentsProvider
+        val host = imageGroupHost
+        view.bind(
+            items = group,
+            alignEnd = current.message.role == ChatRole.USER,
+            expanded = host?.isExpanded(rowId) ?: false,
+            browseState = host?.browseState(rowId) ?: MediaImageGroupBrowseState(),
+            session = group.firstOrNull()?.session,
+        )
+        view.setMediaVisible(visible)
+        view.onCardClick = { index ->
+            val attachment = group.getOrNull(index)
+            when {
+                attachment == null -> Unit
+                view.isFailed(index) -> {
+                    if (attachment.file.source is MediaSource.MessageAttachment) openFile(attachment)
+                    else view.retryCard(index)
+                }
+                !view.hasLoadedImage(index) -> Unit
+                else -> open(index)
+            }
+        }
+        view.onCardLongClick = { index, anchor ->
+            group.getOrNull(index)?.let { showMenu(it, anchor, imageIndex = index) }
+        }
+        view.onExpandedChange = { exp -> host?.setExpanded(rowId, exp) }
+        view.onBrowseStateChange = { st -> host?.setBrowseState(rowId, st) }
+        flightImage = view.primaryFlightImage
+        surface.addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        ChatMediaLink.register(rowId, surface, flightCornerRadius)
+        ChatMediaLink.registerGroup(rowId, view)
+        registered = rowId
+        registeredGroup = view
+    }
+
     /** The image or file card, where a sent attachment lands. */
     override fun flightBounds(out: android.graphics.RectF): Boolean {
         if (item == null || surface.width <= 0) return false
+        val group = imageGroupView
+        val card = group?.cardViewAt(0)
+        if (group != null && card != null && card.width > 0 && card.height > 0) {
+            val container = card.parent as? View
+            val dx = surface.left + group.left + (container?.left ?: 0)
+            val dy = surface.top + group.top + (container?.top ?: 0)
+            out.set(
+                (dx + card.left).toFloat(),
+                (dy + card.top).toFloat(),
+                (dx + card.right).toFloat(),
+                (dy + card.bottom).toFloat(),
+            )
+            return true
+        }
         out.set(surface.left.toFloat(), surface.top.toFloat(), surface.right.toFloat(), surface.bottom.toFloat())
         return true
     }
 
     override val flightCornerRadius: Float get() = resources.getDimension(
-        when (item?.message?.attachment?.display) {
-            AttachmentDisplay.IMAGE, AttachmentDisplay.VIDEO -> R.dimen.radius_4xl
+        when {
+            item?.message?.imageGroup?.isNotEmpty() == true -> R.dimen.radius_xl
+            item?.message?.attachment?.display == AttachmentDisplay.VIDEO -> R.dimen.radius_4xl
             else -> R.dimen.radius_xl
         },
     )
 
     override fun setMediaVisible(visible: Boolean) {
         this.visible = visible
+        imageGroupView?.setMediaVisible(visible)
         binding?.setVisible(visible)
         video?.setVisible(visible)
     }
 
-    /** The read failed: the tile keeps its size and shows the file's name with a file glyph instead. */
-    private fun showFailure() {
-        failed = true
-        val name = item?.message?.attachment?.file?.displayName.orEmpty()
-        val panel = surface.findViewWithTag<View>(FAILURE_TAG) ?: LinearLayout(context).apply {
-            tag = FAILURE_TAG
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            val padding = (8 * resources.displayMetrics.density).toInt()
-            setPadding(padding, padding, padding, padding)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(context.getColor(R.color.token_bg_secondary))
-                setStroke((resources.displayMetrics.density).toInt().coerceAtLeast(1), context.getColor(R.color.token_border_primary))
-                cornerRadius = resources.getDimension(R.dimen.radius_4xl)
-            }
-            addView(ImageView(context).apply {
-                setImageResource(R.drawable.ic_media_file_image)
-                imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.token_text_secondary))
-            }, LinearLayout.LayoutParams((20 * resources.displayMetrics.density).toInt(), (20 * resources.displayMetrics.density).toInt()))
-            addView(TextView(context).apply {
-                DesignTypography.applyTo(this, DesignTypography.Level.MINI)
-                setTextColor(context.getColor(R.color.token_text_secondary))
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER
-                text = name
-            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = (6 * resources.displayMetrics.density).toInt() })
-            // The panel passes taps and presses to the tile under it.
-            isClickable = false
-            surface.addView(this, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        }
-        panel.visibility = View.VISIBLE
-        (surface.getChildAt(0) as? SendImageView)?.stateDescription = context.getString(R.string.media_tile_unavailable)
-    }
-
-    private fun clearFailure() {
-        failed = false
-        surface.findViewWithTag<View>(FAILURE_TAG)?.visibility = View.GONE
-        (surface.getChildAt(0) as? SendImageView)?.stateDescription = null
-    }
-
-    private fun retry() {
-        clearFailure()
-        binding?.retry()
-        val attachment = item?.message?.attachment
-        if (attachment?.display == AttachmentDisplay.VIDEO) MediaGraph.get(context).files.download(attachment.file)?.start()
-    }
-
-    private fun open() {
+    private fun open(imageIndex: Int) {
         val current = item ?: return
-        val attachment = current.message.attachment ?: return
-        val media = MediaGraph.get(context)
+        val group = current.message.imageGroup
+        val attachment = group.getOrNull(imageIndex) ?: current.message.attachment ?: return
+        val media = mediaComponentsProvider?.invoke() ?: MediaGraph.get(context)
         val session = media.http.session.value ?: return
         if (attachment.session != null && (attachment.session != session.id || !media.http.isCurrent(session))) return
-        if (onOpenMedia?.invoke(current) == true) return
-        if (attachment.gallery.isNotEmpty()) ImageViewerActivity.start(context, attachment.gallery, attachment.galleryIndex)
+        if (onOpenMedia?.invoke(current, imageIndex) == true) return
+        if (attachment.gallery.isNotEmpty()) {
+            val targetIndex = attachment.galleryIndex.coerceIn(0, attachment.gallery.lastIndex)
+            ImageViewerActivity.start(context, attachment.gallery, targetIndex)
+        }
     }
 
-    /** Downloads the message's attachment and hands it to another app. */
-    private fun openFile() = withFile { file, attachment -> FileCardView.open(context, file, attachment) }
+    /** Downloads the attachment and hands it to another app. */
+    private fun openFile(attachment: ChatAttachment) {
+        onOpenFileOverride?.let {
+            it(attachment)
+            return
+        }
+        withFile(attachment) { file, media -> FileCardView.open(context, file, media) }
+    }
 
-    /** Downloads the message's attachment, then runs [act] with it while this row still shows it. */
-    private fun withFile(act: (java.io.File, MediaAttachment) -> Unit) {
-        val attachment = item?.message?.attachment?.file ?: return
-        val owner = scope ?: return
-        val download = MediaGraph.get(context).files.download(attachment) ?: return
+    /** Downloads the attachment, then runs [act] with it while this row still shows it. */
+    private fun withFile(attachment: ChatAttachment, act: (java.io.File, MediaAttachment) -> Unit) {
+        val mediaFile = attachment.file
+        val owner = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope = it }
+        val media = mediaComponentsProvider?.invoke() ?: MediaGraph.get(context)
+        val download = media.files.download(mediaFile) ?: return
         owner.launch {
             val file = download.awaitFile() ?: return@launch
-            if (isAttachedToWindow) act(file, attachment)
+            if (isAttachedToWindow) act(file, mediaFile)
         }
     }
 
-    /** The tile's menu: Retry while it has no picture, then Open file, Save as and Share for a downloadable file. */
-    private fun showMenu() {
-        val attachment = item?.message?.attachment ?: return
-        val menu = surf.comma.android.ui.ActionMenu(context)
-        val pictureMissing = if (attachment.display == AttachmentDisplay.VIDEO)
-            MediaGraph.get(context).files.download(attachment.file)?.state?.value is surf.comma.android.media.MediaDownloadState.Failed
-        else (surface.getChildAt(0) as? SendImageView)?.presentation?.target == null
-        if (pictureMissing) menu.item(context.getString(R.string.media_tile_retry)) { retry() }
-        if (attachment.file.source is MediaSource.MessageAttachment) menu.item(context.getString(R.string.media_tile_open_file)) { openFile() }
+    /** The menu entries for [attachment] (optionally at [imageIndex] inside an image group). */
+    internal fun menuEntries(attachment: ChatAttachment, imageIndex: Int? = null): List<Pair<String, () -> Unit>> {
+        val entries = ArrayList<Pair<String, () -> Unit>>()
+        val media = mediaComponentsProvider?.invoke() ?: MediaGraph.get(context)
+        val imageRetryable = imageIndex != null && imageGroupView?.let { it.isFailed(imageIndex) || !it.hasLoadedImage(imageIndex) } == true
+        val videoFailed = attachment.display == AttachmentDisplay.VIDEO &&
+            media.files.download(attachment.file)?.state?.value is surf.comma.android.media.MediaDownloadState.Failed
+        if (imageRetryable) {
+            entries += context.getString(R.string.media_tile_retry) to { imageGroupView?.retryCard(imageIndex!!) ?: Unit }
+        } else if (videoFailed) {
+            entries += context.getString(R.string.media_tile_retry) to { media.files.download(attachment.file)?.start() ?: Unit }
+        }
+        if (attachment.file.source is MediaSource.MessageAttachment) {
+            entries += context.getString(R.string.media_tile_open_file) to { openFile(attachment) }
+        }
         if (attachment.file.source != null) {
-            menu.item(context.getString(R.string.media_file_save_as)) {
-                withFile { file, media -> AttachmentFileActions.saveAs(context, file, media) }
+            entries += context.getString(R.string.media_file_save_as) to {
+                withFile(attachment) { file, fileMedia -> AttachmentFileActions.saveAs(context, file, fileMedia) }
             }
-            menu.item(context.getString(R.string.media_file_share)) {
-                withFile { file, media -> AttachmentFileActions.share(context, file, media) }
+            entries += context.getString(R.string.media_file_share) to {
+                withFile(attachment) { file, fileMedia -> AttachmentFileActions.share(context, file, fileMedia) }
             }
         }
-        menu.show(surface, haptic = true)
+        return entries
+    }
+
+    /** The tile's menu: Retry while failed or unloaded, then Open file, Save as and Share for a downloadable file. */
+    private fun showMenu(attachment: ChatAttachment, anchor: View, imageIndex: Int? = null) {
+        val menu = surf.comma.android.ui.ActionMenu(context)
+        menuEntries(attachment, imageIndex).forEach { (label, action) -> menu.item(label) { action() } }
+        menu.show(anchor, haptic = true)
     }
 
     override fun releaseMedia() {
-        registered?.let { ChatMediaLink.unregister(it, surface) }
+        registered?.let { id ->
+            ChatMediaLink.unregister(id, surface)
+            registeredGroup?.let { ChatMediaLink.unregisterGroup(id, it) }
+        }
         registered = null
+        registeredGroup = null
         surface.setOnLongClickListener(null)
-        surface.findViewWithTag<View>(FAILURE_TAG)?.let(surface::removeView)
+        imageGroupView?.releaseMedia()
+        imageGroupView = null
         binding?.close(); binding = null
         flightImage?.clear(); flightImage = null
         video?.unbind(); video = null
@@ -302,17 +386,36 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         else (body * AttachmentCardRenderer.ratio(current.message)).toInt().coerceAtLeast(1)
     }
 
-    private companion object {
-        const val FAILURE_TAG = "attachment-failure"
-    }
-
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val current = item
         val width = MeasureSpec.getSize(widthMeasureSpec)
-        val height = current?.cellHeightPx ?: 0
+        if (current == null) {
+            setMeasuredDimension(width, 0)
+            return
+        }
+        val failureHeight = if (failure?.visibility == View.VISIBLE) {
+            (AttachmentCardRenderer.FAILURE_HEIGHT_DP * resources.displayMetrics.density).toInt()
+        } else 0
+
+        if (current.message.imageGroup.isNotEmpty()) {
+            val columnWidth = (width - current.sideMarginPx * 2).coerceAtLeast(1)
+            surface.measure(
+                MeasureSpec.makeMeasureSpec(columnWidth, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+            )
+            val totalHeight = current.topMarginPx + surface.measuredHeight + failureHeight
+            if (failureHeight > 0) {
+                failure?.measure(
+                    MeasureSpec.makeMeasureSpec(columnWidth, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(failureHeight, MeasureSpec.EXACTLY),
+                )
+            }
+            setMeasuredDimension(width, totalHeight)
+            return
+        }
+
+        val height = current.cellHeightPx
         setMeasuredDimension(width, height)
-        if (current == null) return
-        val failureHeight = if (failure?.visibility == View.VISIBLE) (AttachmentCardRenderer.FAILURE_HEIGHT_DP * resources.displayMetrics.density).toInt() else 0
         val boxWidth = if (current.message.attachment?.display == AttachmentDisplay.FILE)
             (width - current.sideMarginPx * 2).coerceAtLeast(1) else boxWidth(current)
         surface.measure(MeasureSpec.makeMeasureSpec(boxWidth, MeasureSpec.EXACTLY),
@@ -322,7 +425,13 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         val current = item ?: return
-        val x = if (current.message.role == ChatRole.USER) width - current.sideMarginPx - surface.measuredWidth else current.sideMarginPx
+        val x = if (current.message.imageGroup.isNotEmpty()) {
+            current.sideMarginPx
+        } else if (current.message.role == ChatRole.USER) {
+            width - current.sideMarginPx - surface.measuredWidth
+        } else {
+            current.sideMarginPx
+        }
         val y = current.topMarginPx
         surface.layout(x, y, x + surface.measuredWidth, y + surface.measuredHeight)
         failure?.takeIf { it.visibility == View.VISIBLE }?.let { it.layout(x, surface.bottom, x + it.measuredWidth, height) }

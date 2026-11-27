@@ -323,9 +323,109 @@ defmodule SalixIM.DailyBriefSourceTest do
                      @after_us}
   end
 
+  test "names a person or bot that shows no display name by its full name", ctx do
+    assert {:ok, names} =
+             DailyBriefSource.user_names(Map.put(ctx.source, :user_ids, ["U0ALICE1", "U0BOT1"]))
+
+    assert names == %{"U0ALICE1" => "alice", "U0BOT1" => "Deploy Bot"}
+  end
+
   test "rejects a connect from another tenant", ctx do
     assert DailyBriefSource.read_window(%{window(ctx.source, "C_PUBLIC") | tenant_id: "other"}) ==
              {:error, :source_unavailable}
+  end
+
+  test "caches channel eligibility after channels/1 so read_window and messages skip conversations.info",
+       ctx do
+    assert {:ok, _} =
+             DailyBriefSource.channels(Map.put(ctx.source, :member_slack_ids, ["U_ALICE"]))
+
+    flush_slack_calls()
+
+    assert {:ok, _} = DailyBriefSource.read_window(window(ctx.source, "C_PUBLIC"))
+
+    assert {:ok, _} =
+             DailyBriefSource.messages(
+               Map.merge(ctx.source, %{channel_id: "C_PUBLIC", ts: ["1786930000.000100"]})
+             )
+
+    assert {:error, :channel_ineligible} =
+             DailyBriefSource.read_window(window(ctx.source, "C_PRIVATE"))
+
+    refute_received {:slack, "/api/conversations.info", _params}
+  end
+
+  test "builds message and thread permalinks locally with one auth.test and zero chat.getPermalink calls",
+       ctx do
+    assert {:ok, _} = DailyBriefSource.channels(Map.put(ctx.source, :member_slack_ids, []))
+    flush_slack_calls()
+
+    messages = [
+      %{channel_id: "C_PUBLIC", ts: "1786930000.000100", thread_ts: nil},
+      %{channel_id: "C_PUBLIC", ts: "1786930005.000200", thread_ts: "1786930000.000100"},
+      %{channel_id: "C_PUBLIC", ts: "1786930010.000300", thread_ts: "1786930010.000300"}
+    ]
+
+    assert {:ok, links} = DailyBriefSource.permalinks(Map.put(ctx.source, :messages, messages))
+
+    assert links == %{
+             {"C_PUBLIC", "1786930000.000100"} =>
+               "https://brief-team.slack.com/archives/C_PUBLIC/p1786930000000100",
+             {"C_PUBLIC", "1786930005.000200"} =>
+               "https://brief-team.slack.com/archives/C_PUBLIC/p1786930005000200?thread_ts=1786930000.000100&cid=C_PUBLIC",
+             {"C_PUBLIC", "1786930010.000300"} =>
+               "https://brief-team.slack.com/archives/C_PUBLIC/p1786930010000300"
+           }
+
+    assert_received {:slack, "/api/auth.test", _}
+    refute_received {:slack, "/api/auth.test", _}
+    refute_received {:slack, "/api/chat.getPermalink", _}
+    refute_received {:slack, "/api/conversations.info", _}
+  end
+
+  test "serves mirror-seeded and cached user names with zero users.info calls on repeat reads",
+       ctx do
+    SystemsRuntime.put_env(:salix_im, :daily_brief_test_search, fn _opts ->
+      {:ok,
+       page([
+         %{
+           "type" => "message",
+           "channel" => "C_PUBLIC",
+           "ts" => "1786930000.000100",
+           "user" => "U0SEEDED1",
+           "actor_label" => "Seeded Carol",
+           "text" => "hello"
+         }
+       ])}
+    end)
+
+    assert {:ok, _} = DailyBriefSource.read_window(window(ctx.source, "C_PUBLIC"))
+    flush_slack_calls()
+
+    assert {:ok, %{"U0SEEDED1" => "Seeded Carol", "U0CACHED1" => "dave"}} =
+             DailyBriefSource.user_names(
+               Map.put(ctx.source, :user_ids, ["U0SEEDED1", "U0CACHED1"])
+             )
+
+    assert_received {:slack, "/api/users.info", %{"user" => "U0CACHED1"}}
+    refute_received {:slack, "/api/users.info", %{"user" => "U0SEEDED1"}}
+
+    flush_slack_calls()
+
+    assert {:ok, %{"U0SEEDED1" => "Seeded Carol", "U0CACHED1" => "dave"}} =
+             DailyBriefSource.user_names(
+               Map.put(ctx.source, :user_ids, ["U0SEEDED1", "U0CACHED1"])
+             )
+
+    refute_received {:slack, "/api/users.info", _}
+  end
+
+  defp flush_slack_calls do
+    receive do
+      {:slack, _path, _params} -> flush_slack_calls()
+    after
+      0 -> :ok
+    end
   end
 
   defp window(source, channel_id),
@@ -338,6 +438,9 @@ defmodule SalixIM.DailyBriefSourceTest do
       })
 
   defp page(messages), do: %{messages: messages, next_cursor: nil, has_more?: false}
+
+  defp slack("/api/auth.test", _params),
+    do: %{"ok" => true, "url" => "https://brief-team.slack.com/", "team_id" => "T_BRIEF"}
 
   defp slack("/api/users.conversations", %{"user" => "U_ALICE"}) do
     %{
@@ -367,6 +470,15 @@ defmodule SalixIM.DailyBriefSourceTest do
     }
   end
 
+  defp slack("/api/users.info", %{"user" => "U0ALICE1"}),
+    do: user("U0ALICE1", %{"display_name" => "alice", "real_name" => "Alice Smith"})
+
+  defp slack("/api/users.info", %{"user" => "U0CACHED1"}),
+    do: user("U0CACHED1", %{"display_name" => "dave", "real_name" => "Dave Lee"})
+
+  defp slack("/api/users.info", %{"user" => id}),
+    do: user(id, %{"display_name" => "", "real_name" => "Deploy Bot"}, %{"is_bot" => true})
+
   defp slack("/api/conversations.info", %{"channel" => "C_PRIVATE"}),
     do: %{"ok" => true, "channel" => channel("C_PRIVATE", "private", %{"is_private" => true})}
 
@@ -378,6 +490,9 @@ defmodule SalixIM.DailyBriefSourceTest do
 
   defp slack("/api/conversations.info", %{"channel" => id}),
     do: %{"ok" => true, "channel" => channel(id, "public")}
+
+  defp user(id, profile, overrides \\ %{}),
+    do: %{"ok" => true, "user" => Map.merge(%{"id" => id, "profile" => profile}, overrides)}
 
   defp channel(id, name, overrides \\ %{}) do
     Map.merge(

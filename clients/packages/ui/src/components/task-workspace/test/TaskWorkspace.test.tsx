@@ -197,7 +197,7 @@ describe("TaskWorkspace", () => {
 
     const viewPanel = screen.getByRole("dialog", { name: "View" });
     expect(viewPanel).toHaveClass(
-      "w-[var(--spacing-11xl)]",
+      "w-56",
       "rounded-xl",
       "bg-popup-secondary",
       "p-sm",
@@ -206,13 +206,17 @@ describe("TaskWorkspace", () => {
       "ring-primary"
     );
     const viewMenu = within(viewPanel).getByRole("menu", { name: "View" });
-    expect(viewMenu).toHaveClass("grid", "grid-cols-2", "gap-sm");
+    expect(viewMenu).toHaveClass("grid", "grid-cols-3", "gap-sm");
     const boardOption = within(viewMenu).getByRole("menuitemradio", {
       name: "Board",
     });
     const listOption = within(viewMenu).getByRole("menuitemradio", {
       name: "List",
     });
+    const feedOption = within(viewMenu).getByRole("menuitemradio", {
+      name: "Feed",
+    });
+    expect(feedOption).toHaveAttribute("aria-checked", "false");
     expect(boardOption).toHaveAttribute("aria-checked", "true");
     expect(boardOption.firstElementChild).toHaveClass(
       "min-h-[var(--spacing-7xl)]",
@@ -716,7 +720,7 @@ describe("TaskWorkspace", () => {
     ).toHaveAttribute("aria-checked", "true");
     expect(within(statusMenu).getByText("1 task")).toBeVisible();
     expect(within(statusMenu).getByText("2 tasks")).toBeVisible();
-    expect(within(statusMenu).getAllByText("0 tasks")).toHaveLength(2);
+    expect(within(statusMenu).getAllByText("0 tasks")).toHaveLength(3);
 
     const inProgressItem = within(statusMenu).getByRole("menuitemcheckbox", {
       name: "In progress",
@@ -965,6 +969,98 @@ describe("TaskWorkspace", () => {
     await userEvent.click(screen.getByRole("button", { name: task.title }));
 
     expect(onOpenTask).toHaveBeenCalledWith(task, [task]);
+  });
+
+  it("shows All tasks and Filter in Feed view, narrows Feed columns on filter, and renders filter empty state when no entries match", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <TaskWorkspace
+        feed={{
+          entries: [
+            {
+              id: "e-rev",
+              conversationId: "c-rev",
+              groupId: "g1",
+              clusterKey: "k-rev",
+              triggerKind: "brief",
+              taskTitle: "Review latency benchmark",
+              taskStatus: "ready_for_review",
+              statusBucket: "needs_review",
+              taskUpdatedAt: 1_700_000_000_000,
+              occurredAt: 1_700_000_000_000,
+              isLoop: false,
+              milestones: [],
+              milestoneCount: 0,
+              media: [],
+              files: [],
+            },
+            {
+              id: "e-done",
+              conversationId: "c-done",
+              groupId: "g1",
+              clusterKey: "k-done",
+              triggerKind: "brief",
+              taskTitle: "Ship search index",
+              taskStatus: "completed",
+              statusBucket: "done",
+              taskUpdatedAt: 1_700_000_000_000,
+              occurredAt: 1_700_000_000_000,
+              isLoop: false,
+              milestones: [],
+              milestoneCount: 0,
+              media: [],
+              files: [],
+            },
+          ],
+        }}
+        initialView="feed"
+        tasks={[]}
+      />
+    );
+
+    // Unfiltered Feed shows "All tasks" and Filter button without badge.
+    expect(screen.getByText("All tasks")).toBeInTheDocument();
+    const filterTrigger = screen.getByRole("button", { name: "Filter tasks" });
+    expect(filterTrigger).toHaveAttribute("data-filtered", "false");
+    expect(
+      container.querySelector('[data-slot="task-status-filter-badge"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-slot="task-feed-add-column"]')
+    ).not.toBeNull();
+
+    // Open Filter -> Status: counts fall back to feed.entries when tasks=[].
+    await user.click(filterTrigger);
+    await user.click(
+      within(screen.getByRole("menu", { name: "Filter tasks" })).getByRole("menuitem", {
+        name: "Status",
+      })
+    );
+    const statusDialog = await screen.findByRole("dialog", { name: "Status" });
+    expect(
+      within(statusDialog).getByRole("menuitemcheckbox", { name: "Done" })
+    ).toHaveTextContent("1 task");
+
+    // Deselect Done -> toolbar switches to Filtered tasks + badge, Done column disappears, [+] hidden.
+    await user.click(
+      within(statusDialog).getByRole("menuitemcheckbox", { name: "Done" })
+    );
+    expect(screen.getByText("Filtered tasks")).toBeInTheDocument();
+    expect(filterTrigger).toHaveAttribute("data-filtered", "true");
+    expect(
+      container.querySelector('[data-slot="task-status-filter-badge"]')
+    ).not.toBeNull();
+    expect(screen.getByText("Review latency benchmark")).toBeInTheDocument();
+    expect(screen.queryByText("Ship search index")).toBeNull();
+    expect(container.querySelector('[data-slot="task-feed-add-column"]')).toBeNull();
+
+    // Deselect Needs Review too -> no matching entries -> native filter empty state.
+    await user.click(
+      within(statusDialog).getByRole("menuitemcheckbox", { name: "Needs Review" })
+    );
+    expect(
+      container.querySelector('[data-slot="task-workspace-filter-empty-state"]')
+    ).not.toBeNull();
   });
 });
 

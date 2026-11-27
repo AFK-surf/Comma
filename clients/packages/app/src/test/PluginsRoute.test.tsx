@@ -25,6 +25,7 @@ import type {
   PluginCategory,
   PluginInstallAnswer,
   PluginNotice,
+  PluginSourcesValue,
   PluginStationsValue,
   PluginToolGroupsValue,
   PluginsValue,
@@ -111,6 +112,8 @@ type Script = {
   toolGroups: PluginToolGroupsValue;
   /** Every plugin page's still.fail stations (none said: none read yet). */
   stations?: PluginStationsValue;
+  /** Every plugin page's personal sources (none said: none read yet). */
+  personalSources?: PluginSourcesValue;
   mcpServers: McpServersValue;
 };
 
@@ -139,6 +142,7 @@ function say(change: Partial<Script>) {
     "session",
     "pluginToolGroups",
     "pluginStations",
+    "pluginSources",
     "mcpServers",
   ])
     core.changed(topic);
@@ -176,7 +180,24 @@ function scriptedCore() {
         case "pluginToolGroups":
           return script.toolGroups;
         case "pluginStations":
-          return script.stations ?? { stations: null, error: null, pending: null };
+          return (
+            script.stations ?? {
+              stations: null,
+              notificationLevel: "action_needed",
+              notificationPending: false,
+              error: null,
+              pending: null,
+            }
+          );
+        case "pluginSources":
+          return (
+            script.personalSources ?? {
+              sources: null,
+              error: null,
+              confirmation: null,
+              pending: null,
+            }
+          );
         case "mcpServers":
           return script.mcpServers;
         default:
@@ -388,6 +409,8 @@ describe("PluginsRoute", () => {
     const larkPlugin = { ...linearPlugin, id: "lark", name: "Lark", brand: "lark" };
     script.catalog = [notionPlugin, larkPlugin];
     script.activity = { lark: "scanning" };
+    const writeText = vi.fn(async () => ({ ok: true as const }));
+    installNativeBridgeMock({ clipboard: { writeText }, platform: "electron" });
     render(<PluginsRoute />);
     await flush();
 
@@ -403,6 +426,12 @@ describe("PluginsRoute", () => {
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
       "https://open.larksuite.com/page/cli?user_code=TEST"
     );
+
+    // The link also goes to the clipboard, for a browser or device signed in to Lark.
+    await press(within(dialog).getByRole("button", { name: "Copy Link" }));
+    expect(writeText).toHaveBeenCalledWith({
+      text: "https://open.larksuite.com/page/cli?user_code=TEST",
+    });
 
     await press(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(core.sentTo("plugin.cancel")).toEqual([{ plugin: "lark", workspace: WS }]);
@@ -1256,7 +1285,7 @@ describe("PluginsRoute", () => {
     ]);
   });
 
-  it("lists the still.fail stations it connected and disconnects one, asked first", async () => {
+  it("lists the still.fail workspaces it connected and disconnects one, asked first", async () => {
     say({
       catalog: [{ ...notionPlugin, stations: true }, linearPlugin],
       stations: {
@@ -1266,9 +1295,24 @@ describe("PluginsRoute", () => {
             name: "Acme · desk",
             connected: true,
             connectedAt: "2026-11-08T10:00:00Z",
+            workspace: "Acme",
+            emoji: null,
+            station: "desk",
+            stationCount: 3,
           },
-          { id: "dev_b", name: null, connected: false, connectedAt: null },
+          {
+            id: "dev_b",
+            name: null,
+            connected: false,
+            connectedAt: null,
+            workspace: null,
+            emoji: null,
+            station: null,
+            stationCount: null,
+          },
         ],
+        notificationLevel: "action_needed",
+        notificationPending: false,
         error: null,
         pending: null,
       },
@@ -1282,13 +1326,34 @@ describe("PluginsRoute", () => {
       workspace: WS,
       plugin: "notion",
     });
-    expect(screen.getByText("Acme · desk")).toBeVisible();
-    expect(screen.getByText("Connected")).toBeVisible();
-    expect(screen.getByText("Station not connected yet")).toBeVisible();
+    expect(screen.getByText("Acme")).toBeVisible();
+    expect(screen.getByText("via desk")).toBeVisible();
+    expect(screen.getByText("3 stations")).toBeVisible();
+    expect(screen.getByText("Not connected yet")).toBeVisible();
 
-    await press(screen.getAllByRole("button", { name: "Disconnect" })[0]!);
+    expect(
+      screen.getByText(
+        "Notify when a chat needs your approval, login, choice, or reply."
+      )
+    ).toBeVisible();
+    const notificationsTrigger = screen.getByRole("button", {
+      name: /Notifications/,
+    });
+    expect(notificationsTrigger).toHaveTextContent("Action needed");
+
+    await press(notificationsTrigger);
+    await flush();
+    await press(screen.getByRole("option", { name: /Action & failures/ }));
+    expect(core.sentTo("plugin.station.notificationLevel.set")).toEqual([
+      { workspace: WS, plugin: "notion", level: "issues" },
+    ]);
+
+    await press(screen.getByRole("button", { name: "More for Acme" }));
+    await flush();
+    await press(screen.getByRole("menuitem", { name: "Disconnect" }));
+    await flush();
     expect(core.sentTo("plugin.station.disconnect")).toEqual([]);
-    const dialog = screen.getByRole("dialog", { name: "Disconnect Acme · desk?" });
+    const dialog = screen.getByRole("dialog", { name: "Disconnect Acme?" });
     await press(within(dialog).getByRole("button", { name: "Disconnect" }));
     expect(core.sentTo("plugin.station.disconnect")).toEqual([
       { workspace: WS, plugin: "notion", station: "dev_a" },
@@ -1949,5 +2014,409 @@ describe("PluginsRoute Blender", () => {
       screen.getByRole("switch", { name: "Connect Blender on this computer" })
     ).not.toBeChecked();
     expect(core.sentTo("plugin.uninstall")).toEqual([]);
+  });
+});
+
+describe("PluginsRoute Google Colab", () => {
+  beforeEach(() => {
+    nextNotice = 0;
+    subscribed = [];
+    script = {
+      catalog: [notionPlugin],
+      activity: {},
+      notices: [],
+      skills: { status: "ready", skills },
+      session: signedIn("user-1"),
+      toolGroups: { groups: [], error: null, pending: null },
+      mcpServers: { servers: [], error: null },
+    };
+    answers = {
+      "plugin.notice.claim": ({ id }) => {
+        say({ notices: script.notices.filter((notice) => notice.id !== id) });
+        return true;
+      },
+      "plugin.uninstall": () => null,
+    };
+    core = scriptedCore();
+    harness.navigate.mockReset();
+    harness.openNativePlatformExternalUrl.mockReset();
+    harness.openNativePlatformExternalUrl.mockResolvedValue(undefined);
+  });
+
+  it("connects Google Colab via two-step oauth_code dialog, refreshes PKCE in place, displays CU/VM stats, reconnects with bindingId, and confirms uninstall", async () => {
+    const user = setupUser();
+    const colabPlugin: CommaPlugin = {
+      brand: "google-colab",
+      category: "Compute",
+      description: "Connect your Google Colab account for GPU workloads.",
+      id: "google-colab",
+      installed: false,
+      locked: false,
+      mcps: [],
+      name: "Google Colab",
+      skills: [{ id: "colab-gpu", name: "Colab GPU" }],
+      summary: "Run GPU workloads on your Google Colab account",
+    };
+    script.catalog = [notionPlugin, colabPlugin];
+    answers["plugin.install"] = (params) => {
+      if (!params.configValues) {
+        notify({
+          kind: "configure",
+          origin: "plugins",
+          plugin: "google-colab",
+          configuration: {
+            workspace: WS,
+            plugin: colabPlugin,
+            operation: "install",
+            setup: {
+              key: "GOOGLE_COLAB_AUTH_CODE",
+              label: "Authorization code",
+              helpUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=s1",
+              format: "oauth_code",
+              attemptId: "colab_att_1",
+            },
+          },
+        });
+        return {};
+      }
+      if (params.attemptId === "colab_att_1") {
+        notify({
+          kind: "configure",
+          origin: "plugins",
+          plugin: "google-colab",
+          configuration: {
+            workspace: WS,
+            plugin: colabPlugin,
+            operation: "install",
+            setup: {
+              key: "GOOGLE_COLAB_AUTH_CODE",
+              label: "Authorization code",
+              helpUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=s2",
+              format: "oauth_code",
+              attemptId: "colab_att_2",
+              error: "Authorization expired. Sign in again to get a new code.",
+            },
+          },
+        });
+        return {};
+      }
+      say({ catalog: withPlugin(installed(colabPlugin)) });
+      return {};
+    };
+    answers["plugin.reauthorize"] = (params) => {
+      if (!params.configValues) {
+        notify({
+          kind: "configure",
+          origin: "plugins",
+          plugin: "google-colab",
+          configuration: {
+            workspace: WS,
+            plugin: installed(colabPlugin),
+            operation: "reauthorize",
+            connectionId: "google-colab-oauth",
+            bindingId: "colab_acc_1",
+            setup: {
+              key: "GOOGLE_COLAB_AUTH_CODE",
+              label: "Authorization code",
+              helpUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=reauth",
+              format: "oauth_code",
+              attemptId: "colab_reauth_1",
+            },
+          },
+        });
+        return {};
+      }
+      return {};
+    };
+
+    render(<PluginsRoute />);
+    await flush();
+
+    // Catalog shows Google Colab with its brand artwork
+    expect(
+      document.querySelector(
+        '[data-plugin-brand="googlecolab"] [data-provider-logo="google-colab"]'
+      )
+    ).not.toBeNull();
+
+    // Step 1: click Add Google Colab -> opens two-step OAuth dialog
+    await user.click(screen.getByRole("button", { name: "Add Google Colab" }));
+    await flush();
+    await flush();
+    const dialog = await screen.findByRole("dialog", { name: "Connect Google Colab" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Sign in with Google" })
+    );
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
+      "https://accounts.google.com/o/oauth2/v2/auth?state=s1"
+    );
+    // The sign-in page names another app; the dialog says so before the reader goes there.
+    expect(dialog).toHaveTextContent(/Google Cloud SDK/);
+
+    // Step 2 (expired attempt) -> refreshes PKCE helpUrl & attemptId in place and clears input
+    const input = within(dialog).getByRole("textbox", { name: "Authorization code" });
+    await user.type(input, "  expired-code  ");
+    await user.click(within(dialog).getByRole("button", { name: "Connect" }));
+    await flush();
+    await flush();
+    const refreshedDialog = await screen.findByRole("dialog", {
+      name: "Connect Google Colab",
+    });
+    expect(core.sentTo("plugin.install").at(-1)).toEqual({
+      workspace: WS,
+      plugin: "google-colab",
+      attemptId: "colab_att_1",
+      configValues: { GOOGLE_COLAB_AUTH_CODE: "expired-code" },
+    });
+    expect(
+      within(refreshedDialog).getByText(
+        "Authorization expired. Sign in again to get a new code."
+      )
+    ).toBeVisible();
+    expect(
+      within(refreshedDialog).getByRole("textbox", { name: "Authorization code" })
+    ).toHaveValue("");
+
+    // Step 2 (fresh attempt with full callback URL) -> completes install
+    await user.type(
+      within(refreshedDialog).getByRole("textbox", { name: "Authorization code" }),
+      "https://localhost/?code=good-code&state=s2"
+    );
+    await user.click(within(refreshedDialog).getByRole("button", { name: "Connect" }));
+    await flush();
+    await flush();
+    expect(core.sentTo("plugin.install").at(-1)).toEqual({
+      workspace: WS,
+      plugin: "google-colab",
+      attemptId: "colab_att_2",
+      configValues: {
+        GOOGLE_COLAB_AUTH_CODE: "https://localhost/?code=good-code&state=s2",
+      },
+    });
+    expect(screen.queryByRole("dialog", { name: "Connect Google Colab" })).toBeNull();
+
+    // Open installed Google Colab details -> names the row by its email, with CU balance and active VM count under it
+    say({
+      personalSources: {
+        sources: [
+          {
+            bindingId: "colab_acc_1",
+            connectionId: "google-colab-oauth",
+            toolkit: "google-colab",
+            kind: "oauth_code_paste",
+            state: "ready",
+            selectedAccountId: "alice@gmail.com",
+            candidates: [],
+            metadata: {
+              ccuBalance: 2400,
+              consumptionRateHourly: 1.96,
+              activeVmCount: 1,
+            },
+          },
+        ],
+        error: null,
+        confirmation: null,
+        pending: null,
+      },
+    });
+    await user.click(
+      screen.getByRole("button", { name: "View Google Colab plugin details" })
+    );
+    await flush();
+    expect(screen.getByText("alice@gmail.com")).toBeVisible();
+    expect(screen.getByText("2,400 CU · 1 active VM")).toBeVisible();
+
+    // Null ccuBalance omits CU gracefully
+    say({
+      personalSources: {
+        sources: [
+          {
+            bindingId: "colab_acc_1",
+            connectionId: "google-colab-oauth",
+            toolkit: "google-colab",
+            kind: "oauth_code_paste",
+            state: "ready",
+            selectedAccountId: "alice@gmail.com",
+            candidates: [],
+            metadata: { ccuBalance: null, activeVmCount: 0 },
+          },
+        ],
+        error: null,
+        confirmation: null,
+        pending: null,
+      },
+    });
+    await flush();
+    expect(screen.getByText("alice@gmail.com")).toBeVisible();
+    expect(screen.queryByText(/\d CU/)).toBeNull();
+
+    // Reconnect forwards bindingId and routes Step 2 to plugin.reauthorize
+    await user.click(screen.getByRole("button", { name: "Reconnect alice@gmail.com" }));
+    await flush();
+    await flush();
+    expect(core.sentTo("plugin.reauthorize")[0]).toEqual({
+      workspace: WS,
+      plugin: "google-colab",
+      connection: "google-colab-oauth",
+      bindingId: "colab_acc_1",
+    });
+    const reauthDialog = await screen.findByRole("dialog", {
+      name: "Reconnect Google Colab",
+    });
+    await user.type(
+      within(reauthDialog).getByRole("textbox", { name: "Authorization code" }),
+      "reauth-code"
+    );
+    await user.click(within(reauthDialog).getByRole("button", { name: "Reconnect" }));
+    await flush();
+    await flush();
+    expect(core.sentTo("plugin.reauthorize").at(-1)).toEqual({
+      workspace: WS,
+      plugin: "google-colab",
+      connection: "google-colab-oauth",
+      bindingId: "colab_acc_1",
+      attemptId: "colab_reauth_1",
+      configValues: { GOOGLE_COLAB_AUTH_CODE: "reauth-code" },
+    });
+
+    // Uninstall prompts with active-VM & expired-credential warning before calling plugin.uninstall
+    await user.click(screen.getByRole("button", { name: "Uninstall Google Colab" }));
+    await flush();
+    const uninstallDialog = await screen.findByRole("dialog", {
+      name: "Uninstall Google Colab?",
+    });
+    expect(uninstallDialog).toHaveTextContent(/active Colab GPU VMs/i);
+    // Uninstalling leaves the Google grant; the dialog opens where it is revoked.
+    await user.click(
+      within(uninstallDialog).getByRole("button", {
+        name: "Open Google Account permissions",
+      })
+    );
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenLastCalledWith(
+      "https://myaccount.google.com/permissions"
+    );
+    expect(core.sentTo("plugin.uninstall")).toEqual([]);
+    await user.click(
+      within(uninstallDialog).getByRole("button", { name: "Uninstall" })
+    );
+    await flush();
+    expect(core.sentTo("plugin.uninstall")).toEqual([
+      { plugin: "google-colab", workspace: WS },
+    ]);
+  });
+
+  it("shows Monoid offline banner and Monoid brand copy without an inline task list", async () => {
+    const user = setupUser();
+    const monoidPlugin: CommaPlugin = {
+      brand: "stillfail",
+      category: "Integrations",
+      description: "Connect Monoid workspaces.",
+      id: "stillfail",
+      installed: true,
+      locked: false,
+      mcps: [{ id: "stillfail-mcp", name: "Monoid" }],
+      name: "Monoid",
+      skills: [],
+      stations: true,
+      summary: "Connect Monoid workspaces.",
+    };
+    script.catalog = [monoidPlugin];
+    script.stations = {
+      stations: [
+        {
+          id: "dev_online",
+          name: "AFK-surf · tokyo",
+          connected: true,
+          connectedAt: "2026-11-25T01:00:00.000Z",
+          workspace: "AFK-surf",
+          emoji: "🦊",
+          station: "tokyo",
+          stationCount: 2,
+        },
+        {
+          id: "dev_offline",
+          name: "Lab · mini",
+          connected: false,
+          connectedAt: "2026-11-24T20:00:00.000Z",
+          workspace: "Lab",
+          emoji: null,
+          station: "mini",
+          stationCount: 1,
+        },
+        {
+          id: "dev_offline_2",
+          name: "Staging · box",
+          connected: false,
+          connectedAt: "2026-11-24T19:00:00.000Z",
+          workspace: "Staging",
+          emoji: null,
+          station: "box",
+          stationCount: 1,
+        },
+      ],
+      notificationLevel: "action_needed",
+      notificationPending: false,
+      error: null,
+      pending: null,
+    };
+
+    render(<PluginsRoute />);
+    await flush();
+
+    await user.click(
+      screen.getByRole("button", { name: "View Monoid plugin details" })
+    );
+    await flush();
+
+    // Offline banner uses plural-safe phrasing for multiple offline workspaces
+    expect(screen.getByRole("status")).toHaveTextContent(/Offline: Lab, Staging\./i);
+
+    // Lightweight notification dropdown shows selected level description and Monoid copy in options
+    const notificationsTrigger = screen.getByRole("button", {
+      name: /Notifications/,
+    });
+    expect(notificationsTrigger).toHaveTextContent("Action needed");
+    expect(notificationsTrigger).not.toBeDisabled();
+    await user.click(notificationsTrigger);
+    await flush();
+    expect(screen.getByRole("option", { name: /^Off/ })).toHaveTextContent(
+      /No proactive reminders for Monoid chats/i
+    );
+
+    // Plugin settings stays a clean configuration page (Monoid tasks live in the main Tasks board)
+    expect(screen.queryByRole("heading", { name: "Monoid tasks" })).toBeNull();
+  });
+
+  it("disables the Monoid notification dropdown while saving", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const monoidPlugin: CommaPlugin = {
+      brand: "stillfail",
+      category: "Integrations",
+      description: "Connect Monoid workspaces.",
+      id: "stillfail",
+      installed: true,
+      locked: false,
+      mcps: [{ id: "stillfail-mcp", name: "Monoid" }],
+      name: "Monoid",
+      skills: [],
+      stations: true,
+      summary: "Connect Monoid workspaces.",
+    };
+    script.catalog = [monoidPlugin];
+    script.stations = {
+      stations: [],
+      notificationLevel: "action_needed",
+      notificationPending: true,
+      error: null,
+      pending: null,
+    };
+    render(<PluginsRoute />);
+    await flush();
+    await user.click(
+      screen.getByRole("button", { name: "View Monoid plugin details" })
+    );
+    await flush();
+
+    expect(screen.getByRole("button", { name: /Notifications/ })).toBeDisabled();
   });
 });

@@ -1,13 +1,9 @@
 import SwiftUI
 import UIKit
 import CommaCore
+@preconcurrency import ActivityKit
 
-enum SettingsRoute: Hashable { case profile, workspace, notifications, labels, devices, myDevices, deleteAccount, changeEmail, plugins, models, router, routines, usage, drive, requests, shares, voice, channels, routerKeys, compute }
-
-extension EnvironmentValues {
-    /// Nil for a single column; otherwise the shell's current hinge posture.
-    @Entry var settingsColumnsFolded: Bool? = nil
-}
+enum SettingsRoute: Hashable { case profile, workspace, apps, notifications, labels, devices, myDevices, deleteAccount, changeEmail, plugins, models, router, routines, usage, drive, requests, shares, voice, channels, routerKeys, compute }
 
 /// Settings follows the desktop groups. Comma holds desktop navigation entries without a phone tab.
 /// Selecting this tab again returns to the top of the list.
@@ -15,10 +11,15 @@ struct SettingsView: View {
     let store: CommaStore
     @Environment(AppNavigation.self) private var navigation
     @Environment(\.openURL) private var openURL
-    @Environment(\.settingsColumnsFolded) private var columnsFolded
+    @Environment(\.shellColumnsFolded) private var columnsFolded
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingSignOut = false
     @State private var archivedOpen = false
+    /// The hidden backend switch: Version tapped seven times shows it, in TestFlight and development builds.
+    @AppStorage("comma.backend-switch-shown") private var backendSwitchShown = false
+    @State private var versionTaps = 0
+    @State private var choosingBackend = false
+    @State private var perfShareFile: SharedPerfLog?
 
     private static let top = "settings-top"
 
@@ -26,7 +27,7 @@ struct SettingsView: View {
         @Bindable var navigation = navigation
         GeometryReader { geometry in
             let split = columnsFolded != nil && !navigation.settingsPath.isEmpty
-            let columns = ShellColumnLayout(width: geometry.size.width, folded: columnsFolded ?? false,
+            let columns = ShellColumnLayout(size: geometry.size, folded: columnsFolded ?? false,
                                             division: geometry.shellFoldDivision)
             ZStack(alignment: .leading) {
                 // The native push owns detail entry, back navigation, and nested pages.
@@ -59,6 +60,9 @@ struct SettingsView: View {
             ArchivedTasksView(store: store) { task in Task { await store.openTask(id: task.id) } }
                 .environment(\.inSheet, true)
         }
+        .sheet(item: $perfShareFile) { file in
+            PerfLogShareSheet(url: file.url)
+        }
         .task(whileShowing: .settings) { await store.loadProfile() }
         .onChange(of: navigation.reselect[.settings]) { _, _ in navigation.settingsPath = [] }
         // The app badge depends on whether message notifications are on.
@@ -83,6 +87,9 @@ struct SettingsView: View {
                 archived
                 shared
                 advanced
+                if PerformanceRecord.isAvailable {
+                    diagnostics
+                }
                 accounts
                 signOut
                 danger
@@ -119,14 +126,20 @@ struct SettingsView: View {
         }
     }
 
-    private var comma: some View {
-        SettingsSection(Text("Comma")) {
-            if store.workspace != nil {
-                link(.drive, id: "openDrive") {
-                    SettingsRow(Text("Drive and System Files"), icon: "central-file-bend") { SettingsChevron() }
-                }
-                link(.plugins, id: "openPlugins") {
-                    SettingsRow(Text("Plugins"), icon: "central-puzzle") { SettingsChevron() }
+    /// Before iOS 26 only: from iOS 26 these are pages of the tab bar's menu.
+    @ViewBuilder private var comma: some View {
+        if #unavailable(iOS 26.0) {
+            SettingsSection(Text("Comma")) {
+                if store.workspace != nil {
+                    link(.apps, id: "openApps") {
+                        SettingsRow(Text("Apps"), icon: "icon-square-grid") { SettingsChevron() }
+                    }
+                    link(.drive, id: "openDrive") {
+                        SettingsRow(Text("Drive and System Files"), icon: "central-file-bend") { SettingsChevron() }
+                    }
+                    link(.plugins, id: "openPlugins") {
+                        SettingsRow(Text("Plugins"), icon: "central-puzzle") { SettingsChevron() }
+                    }
                 }
             }
         }
@@ -152,6 +165,7 @@ struct SettingsView: View {
                     SettingsChevron()
                 }
             }
+            locationSharing
             // iOS keeps the per-app language on Comma's page in the Settings app.
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
@@ -168,6 +182,28 @@ struct SettingsView: View {
                 link(.usage, id: "openUsage") {
                     SettingsRow(Text("Usage"), icon: "icon-info") { SettingsChevron() }
                 }
+            }
+        }
+    }
+
+    /// On: each message carries where this iPhone is, so the Agent can suggest things nearby without asking.
+    @ViewBuilder private var locationSharing: some View {
+        let sharing = store.locationSharing
+        if let enabled = sharing.enabled {
+            SettingsToggle(title: Text("Share location"), icon: "central-map-pin",
+                           isOn: Binding(get: { enabled }, set: { on in Task { await sharing.set(on) } }))
+                .accessibilityIdentifier("locationSharingToggle")
+                .accessibilityHint("Sends this iPhone’s location with your messages so Comma can suggest things nearby.")
+            // Refused now, or allowed once and turned off in iOS Settings since.
+            if sharing.denied || (enabled && !DeviceLocation.allowed) {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                } label: {
+                    SettingsNote(icon: "central-map-pin") {
+                        Text("Location is off for Comma. Allow it in Settings, then turn this on again.")
+                    }
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -198,8 +234,17 @@ struct SettingsView: View {
                     SettingsRow(Text("Voice settings"), icon: "icon-info") { SettingsChevron() }
                 }
             }
-            SettingsRow(Text("Version"), icon: "icon-info", value: Self.version.isEmpty ? nil : Text(Self.version))
+            SettingsRow(Text("Version"), icon: "icon-info", value: version.isEmpty ? nil : Text(version))
                 .textSelection(.enabled)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard BackendEnvironment.switchAvailable, !backendSwitchShown else { return }
+                    versionTaps += 1
+                    if versionTaps >= 7 { backendSwitchShown = true }
+                }
+            if BackendEnvironment.switchAvailable, backendSwitchShown || store.configuration.storageSuffix != "" {
+                backendSwitch
+            }
         }
     }
 
@@ -245,6 +290,33 @@ struct SettingsView: View {
             }
             link(.devices, id: "openSignedInDevices") {
                 SettingsRow(Text("Signed-in devices"), icon: "icon-devices") { SettingsChevron() }
+            }
+        }
+    }
+
+    /// This device's local performance record (CPU, threads, power, thermal state, core activity). Never uploaded.
+    private var diagnostics: some View {
+        let perf = PerformanceRecord.shared
+        return SettingsSection(
+            Text("Diagnostics"),
+            footer: Text("Every 5 s, writes CPU use, busiest threads, power, thermal state, and core activity to \(PerformanceRecord.storageLocationLabel) on this device (\(PerformanceRecord.formattedByteCount(perf.recordedBytes)) so far). Never uploaded.")
+        ) {
+            SettingsToggle(
+                title: Text("Performance recording"),
+                icon: "central-console-simple",
+                isOn: Binding(get: { perf.isEnabled }, set: { perf.setEnabled($0) })
+            )
+            .accessibilityIdentifier("performanceRecordingToggle")
+            if perf.recordedBytes > 0 {
+                Button {
+                    if let url = perf.exportFileURL() {
+                        perfShareFile = SharedPerfLog(url: url)
+                    }
+                } label: {
+                    SettingsRow(Text("Share recording"), icon: "central-share-os", role: .action)
+                }
+                .buttonStyle(SurfaceRowButtonStyle())
+                .accessibilityIdentifier("sharePerformanceRecording")
             }
         }
     }
@@ -332,6 +404,11 @@ struct SettingsView: View {
                 PhoneUsageView(model: PhoneUsageModel(store: store, workspace: workspace))
                     .id("usage-\(store.boundaryToken)-\(workspace.id)")
             }
+        case .apps:
+            if let workspace = store.workspace {
+                MiniAppsView(store: store, workspace: workspace)
+                    .id("apps-\(store.boundaryToken)-\(workspace.id)")
+            }
         case .drive:
             if let workspace = store.workspace {
                 PhoneDriveView(model: PhoneDriveModel(store: store, workspace: workspace))
@@ -385,6 +462,39 @@ struct SettingsView: View {
         }
     }
 
+    /// The version, and the backend when it is not production, so a tester sees which one the app uses.
+    private var version: String {
+        guard let environment = store.configuration.environment, environment != .production else { return Self.version }
+        return Self.version + " · " + environment.name
+    }
+
+    /// Moving to the other backend takes effect on the next launch, so the app closes once the choice is kept.
+    private var backendSwitch: some View {
+        let current = store.configuration.environment
+        return Button { choosingBackend = true } label: {
+            SettingsRow(Text("Server"), icon: "icon-globe", value: Text(current?.name ?? store.configuration.baseURL.host ?? ""))
+        }
+        .buttonStyle(SurfaceRowButtonStyle())
+        .disabled(store.loading)
+        .accessibilityIdentifier("chooseBackend")
+        .confirmationDialog("Switch server?", isPresented: $choosingBackend, titleVisibility: .visible) {
+            ForEach(BackendEnvironment.allCases.filter { $0 != current }, id: \.self) { environment in
+                Button("Use \(environment.name)") { Task { await switchBackend(to: environment) } }
+            }
+        } message: {
+            Text("Comma closes now. Open it again to use the other server. Each server keeps its own sign-in.")
+        }
+    }
+
+    private func switchBackend(to environment: BackendEnvironment) async {
+        await store.chooseBackend(environment)
+        PhonePairingBridge.shared.backendChanged(to: environment)
+        // The current backend's activities would keep updating from it: end them before the app closes.
+        for activity in Activity<TaskActivityAttributes>.activities { await activity.end(nil, dismissalPolicy: .immediate) }
+        for activity in Activity<LiveStatusAttributes>.activities { await activity.end(nil, dismissalPolicy: .immediate) }
+        exit(0)
+    }
+
     /// The app's version and build, as iOS shows them: "1.0 (5)".
     private static var version: String {
         let info = Bundle.main.infoDictionary
@@ -398,4 +508,17 @@ struct SettingsView: View {
         let code = Bundle.main.preferredLocalizations.first ?? "en"
         return Locale(identifier: code).localizedString(forIdentifier: code) ?? code
     }
+}
+
+private struct SharedPerfLog: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+private struct PerfLogShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

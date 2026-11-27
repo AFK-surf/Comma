@@ -1,6 +1,7 @@
 import { countTaskLoopRules, taskLoopRuleKey } from "@comma/core/task-loop-filter";
 import { openTaskTarget } from "./openTaskTarget";
 import { useNewTaskDialog } from "./station/NewTaskDialogContext";
+import { useTaskFeed } from "./useTaskFeed";
 import { useTaskLoopRuleFilter } from "./useTaskLoopRuleFilter";
 import {
   taskMatchesDates,
@@ -9,8 +10,9 @@ import {
   type TaskDateSelection,
   type TaskDateWindow,
 } from "./useTaskDateFilter";
-import { useCall } from "@comma/core-client";
+import { useCall, useWarmTopic } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { getNativeBridge } from "@comma/native-bridge";
 import {
   InfinityIcon,
   InviteIcon,
@@ -18,7 +20,13 @@ import {
   SquareGridCircleIcon,
   TagLabelIcon,
 } from "@comma/ui/components/icons";
+import type { TaskView } from "@comma/ui/components/task-board";
 import {
+  type TaskFeedEntry,
+  type TaskFeedFile,
+  type TaskFeedMedia,
+  type TaskFeedPullRequest,
+  type TaskFeedSessionInspectorContext,
   type TaskStatusBucket,
   TaskWorkspace,
   type TaskFilterOption,
@@ -30,10 +38,36 @@ import {
 import { toast } from "@comma/ui/components/toast";
 import { uiClock } from "@comma/ui/clock";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import { ConversationPreparation } from "../chat/prepareConversations";
-import { nativePlatformClipboard } from "../../nativePlatformActions";
+import {
+  createTaskFilePreviewCache,
+  releaseTaskFilePreviewCache,
+} from "../chat/tasks/TaskFilePreviewCard";
+import {
+  FeedFileHoverCard,
+  FeedMediaStrip,
+  FeedPullRequestHoverCard,
+  type TaskFileListCache,
+} from "./FeedAttachmentHoverCards";
+import { FeedColumnTaskChat } from "./FeedColumnTaskChat";
+import {
+  nativePlatformClipboard,
+  openNativePlatformExternalUrl,
+} from "../../nativePlatformActions";
 import { useCommaAuth } from "../AuthGate";
+import {
+  tasksSidebarHost,
+  useOptionalChatSidebarActions,
+  useOptionalRegisterChatSidebarHost,
+} from "../chat-sidebar/ChatSidebarContext";
 import { isStaleChatSessionError, useChatRegistry } from "../chat/ChatProvider";
 import { resolveWorkspaceChat } from "../chat/useWorkspaceChat";
 import { useCommaUiThemeName } from "../commaUiTheme";
@@ -55,6 +89,7 @@ import {
 import { taskLoopFilterOptions, useOpenTasksFilter } from "./taskChips";
 import { taskMentionsDraft } from "./taskMentions";
 import { taskSequenceEntry } from "./taskSequence";
+import { readStoredTaskView, storeTaskView } from "./tasksSearch";
 import { useTaskBadges } from "./useTaskBadges";
 import { useTaskOrder } from "./useTaskOrder";
 import {
@@ -148,7 +183,30 @@ export function TasksRoute() {
     schedule: scheduleParam,
     loopRule: loopRuleParam,
     request: requestParam,
+    view: viewParam,
   } = useSearch({ strict: false });
+  const [activeView, setActiveView] = useState<TaskView>(
+    () => viewParam ?? readStoredTaskView() ?? "board"
+  );
+  useEffect(() => {
+    if (viewParam) setActiveView(viewParam);
+  }, [viewParam]);
+  const changeView = useCallback(
+    (view: TaskView) => {
+      setActiveView(view);
+      storeTaskView(view);
+      // A `?view=` link must not bring the old view back on browser Back.
+      if (viewParam && viewParam !== view) {
+        void navigate({
+          replace: true,
+          search: (previous) => ({ ...previous, view }),
+          to: "/tasks",
+        });
+      }
+    },
+    [navigate, viewParam]
+  );
+  const [feedAttentionOnly, setFeedAttentionOnly] = useState(false);
   // A request's Task has a Request filter of its own: an older `?platform=task_request` link selects it there.
   const requestLink = platformParam === "task_request";
   const platformLink = requestLink ? undefined : taskOriginKey(platformParam);
@@ -369,7 +427,10 @@ export function TasksRoute() {
       ) {
         void navigate({
           replace: true,
-          search: statusParam ? { status: statusParam } : {},
+          search: {
+            ...(statusParam ? { status: statusParam } : {}),
+            ...(viewParam ? { view: viewParam } : {}),
+          },
           to: "/tasks",
         });
       }
@@ -390,6 +451,7 @@ export function TasksRoute() {
       requestParam,
       requestSelection,
       statusParam,
+      viewParam,
     ]
   );
 
@@ -554,18 +616,298 @@ export function TasksRoute() {
     tasks,
   ]);
 
+  useOptionalRegisterChatSidebarHost(tasksSidebarHost);
+  const sidebarActions = useOptionalChatSidebarActions();
+
   // A Task runs in Comma's cloud or a cloud sandbox from any app; only the desktop app also reaches the machines,
   // which the dialog offers when they are online.
   const newTask = useNewTaskDialog();
   const shownWorkspace = result?.activeWorkspaceId;
-  const openTask = useCallback(
-    (task: TaskViewModel, shown: readonly TaskViewModel[]) => {
+  const taskFeed = useTaskFeed({
+    attentionOnly: feedAttentionOnly,
+    enabled: activeView === "feed",
+    workspaceId: shownWorkspace,
+  });
+
+  const warmTopic = useWarmTopic();
+  const lastFeedPrepareRef = useRef<{ key: string; at: number } | null>(null);
+  const prepareTaskView = useCallback(
+    (view: TaskView) => {
+      if (view !== "feed" || activeView === "feed" || !shownWorkspace) return;
+      const attention = feedAttentionOnly ? "1" : "";
+      const key = `${shownWorkspace}:${attention}`;
+      const nowMs = uiClock.now();
+      const last = lastFeedPrepareRef.current;
+      if (last && last.key === key && nowMs - last.at < 15_000) {
+        return;
+      }
+      lastFeedPrepareRef.current = { key, at: nowMs };
+      warmTopic(
+        {
+          topic: "taskFeed",
+          workspace: shownWorkspace,
+          attention,
+        },
+        10_000
+      );
+    },
+    [activeView, feedAttentionOnly, shownWorkspace, warmTopic]
+  );
+
+  const openFeedEntry = useCallback(
+    (entry: TaskFeedEntry, messageId?: string) => {
+      const targetWorkspaceId = taskFeed.workspaceId ?? shownWorkspace;
+      if (!targetWorkspaceId) return;
       void navigate({
-        ...openTaskTarget(task),
-        state: { taskSequence: shown.map(taskSequenceEntry) },
+        ...openTaskTarget({
+          workspaceId: targetWorkspaceId,
+          groupId: entry.groupId,
+          conversationId: entry.conversationId,
+        }),
+        search: messageId ? { message: messageId } : {},
       });
     },
-    [navigate]
+    [navigate, shownWorkspace, taskFeed.workspaceId]
+  );
+
+  const [feedFilePreviewCache] = useState(createTaskFilePreviewCache);
+  const feedFileListCacheRef = useRef<TaskFileListCache>(new Map());
+  useEffect(
+    () => () => releaseTaskFilePreviewCache(feedFilePreviewCache),
+    [feedFilePreviewCache]
+  );
+
+  const renderFeedPullRequest = useCallback(
+    (
+      pullRequest: TaskFeedPullRequest,
+      _entry: TaskFeedEntry,
+      defaultNode: ReactElement
+    ) => {
+      const targetWorkspaceId = taskFeed.workspaceId ?? shownWorkspace;
+      if (!targetWorkspaceId) return defaultNode;
+      return (
+        <FeedPullRequestHoverCard
+          anchor={defaultNode}
+          pullRequest={pullRequest}
+          workspaceId={targetWorkspaceId}
+        />
+      );
+    },
+    [shownWorkspace, taskFeed.workspaceId]
+  );
+
+  const renderFeedFile = useCallback(
+    (file: TaskFeedFile, entry: TaskFeedEntry, defaultNode: ReactElement) => (
+      <FeedFileHoverCard
+        anchor={defaultNode}
+        entry={entry}
+        file={file}
+        fileListCache={feedFileListCacheRef.current}
+        previewCache={feedFilePreviewCache}
+      />
+    ),
+    [feedFilePreviewCache]
+  );
+
+  const renderFeedMedia = useCallback(
+    (media: readonly TaskFeedMedia[], entry: TaskFeedEntry) => (
+      <FeedMediaStrip
+        entry={entry}
+        fileListCache={feedFileListCacheRef.current}
+        media={media}
+      />
+    ),
+    []
+  );
+
+  const renderSessionInspector = useCallback(
+    (context: TaskFeedSessionInspectorContext) => {
+      const targetWorkspaceId = taskFeed.workspaceId ?? shownWorkspace;
+      if (!targetWorkspaceId) return null;
+      return (
+        <FeedColumnTaskChat
+          conversationId={context.entry.conversationId}
+          groupId={context.entry.groupId}
+          key={context.entry.conversationId}
+          revealMessageId={context.revealMessageId}
+          title={context.entry.taskTitle}
+          workspaceId={targetWorkspaceId}
+        />
+      );
+    },
+    [shownWorkspace, taskFeed.workspaceId]
+  );
+
+  const tasksByConversationId = useMemo(
+    () => new Map(tasks.map((task) => [task.conversationId, task])),
+    [tasks]
+  );
+  const visibleTaskConversationIds = useMemo(
+    () => new Set(visibleTasks.map((task) => task.conversationId)),
+    [visibleTasks]
+  );
+  const visibleFeedEntries = useMemo(() => {
+    if (!narrowing) return taskFeed.entries;
+    const normalizeMs = (ts: number) => (ts < 1e12 ? ts * 1000 : ts);
+    return taskFeed.entries.filter((entry) => {
+      if (tasksByConversationId.has(entry.conversationId)) {
+        return visibleTaskConversationIds.has(entry.conversationId);
+      }
+      if (loopRuleSelection !== undefined) return false;
+      if (scheduleSelection) {
+        const loopKey = !entry.isLoop
+          ? "not_scheduled"
+          : entry.loopKind === "event_triggered" || entry.loopKind === "events"
+            ? "event_triggered"
+            : entry.loopKind === "scheduled" ||
+                entry.loopKind === "cron" ||
+                entry.loopKind === "interval"
+              ? "scheduled"
+              : "unknown";
+        if (!scheduleSelection.has(loopKey)) return false;
+      }
+      if (
+        clientPlatformSelection &&
+        !clientPlatformSelection.has(
+          metaById.get(entry.conversationId)?.clientPlatform ?? ""
+        )
+      ) {
+        return false;
+      }
+      if (platformSelection) {
+        const originKey = taskOriginKey(entry.origin);
+        if (!originKey || !platformSelection.has(originKey)) return false;
+      }
+      if (requestSelection) {
+        const entryRequestKey =
+          entry.origin === "task_request" ? requestPersonKey("from", {}) : NOT_REQUEST;
+        if (!requestSelection.has(entryRequestKey)) return false;
+      }
+      if (
+        !taskMatchesDates(
+          {
+            createdAt: normalizeMs(entry.occurredAt),
+            updatedAt: normalizeMs(entry.taskUpdatedAt),
+          },
+          dateSelection,
+          now
+        )
+      ) {
+        return false;
+      }
+      if (labelSelection) {
+        if (!metaById.has(entry.conversationId)) return false;
+        const labels = knownLabels(entry.conversationId) ?? [];
+        const matches =
+          labels.length === 0
+            ? labelSelection.has(NO_LABEL_OPTION)
+            : labels.some((id) => labelSelection.has(id));
+        if (!matches) return false;
+      }
+      return true;
+    });
+  }, [
+    clientPlatformSelection,
+    dateSelection,
+    knownLabels,
+    labelSelection,
+    loopRuleSelection,
+    metaById,
+    narrowing,
+    now,
+    platformSelection,
+    requestSelection,
+    scheduleSelection,
+    taskFeed.entries,
+    tasksByConversationId,
+    visibleTaskConversationIds,
+  ]);
+
+  const feedProps = useMemo(
+    () => ({
+      attentionOnly: feedAttentionOnly,
+      entries: visibleFeedEntries,
+      hasMore: taskFeed.hasMore,
+      lastSeenAt: taskFeed.lastSeenAt,
+      loadError: taskFeed.loadError,
+      loadMoreError: taskFeed.loadMoreError,
+      loadMorePending: taskFeed.loadMorePending,
+      loading: taskFeed.loading,
+      onApproveEntry: taskFeed.approveEntry,
+      onAttentionOnlyChange: setFeedAttentionOnly,
+      onLoadMore: taskFeed.loadMore,
+      onMarkCaughtUp: taskFeed.markCaughtUp,
+      onOpenEntry: openFeedEntry,
+      onReplyEntry: taskFeed.replyEntry,
+      onRetry: taskFeed.refresh,
+      onRevealMilestone: (entry: TaskFeedEntry, messageId: string) =>
+        openFeedEntry(entry, messageId),
+      renderFile: renderFeedFile,
+      renderMedia: renderFeedMedia,
+      renderPullRequest: renderFeedPullRequest,
+      renderSessionInspector,
+    }),
+    [
+      feedAttentionOnly,
+      openFeedEntry,
+      renderFeedFile,
+      renderFeedMedia,
+      renderFeedPullRequest,
+      renderSessionInspector,
+      taskFeed,
+      visibleFeedEntries,
+    ]
+  );
+  // A still.fail chat's page in still.fail, by Task id.
+  const pages = useMemo(
+    () =>
+      new Map(
+        tasks.flatMap((task) => (task.url ? [[task.id, task.url] as const] : []))
+      ),
+    [tasks]
+  );
+  const workspaceTasks = useMemo(
+    () =>
+      visibleTasks.map((task) => {
+        const page = pages.get(task.id);
+        if (!page) return task;
+        return {
+          ...task,
+          openExternalAction: {
+            run: () => {
+              void openNativePlatformExternalUrl(page);
+            },
+          },
+        };
+      }),
+    [pages, visibleTasks]
+  );
+  const openTask = useCallback(
+    (task: TaskViewModel, shown: readonly TaskViewModel[]) => {
+      // A Monoid chat opens in the right embedded browser on desktop when available,
+      // falling back to the external browser on web or without a sidebar host.
+      const page = pages.get(task.id);
+      if (page) {
+        if (sidebarActions && getNativeBridge().platform === "electron") {
+          sidebarActions.openBrowser(tasksSidebarHost, {
+            title: task.title,
+            url: page,
+          });
+        } else {
+          void openNativePlatformExternalUrl(page);
+        }
+        return;
+      }
+      void navigate({
+        ...openTaskTarget(task),
+        state: {
+          taskSequence: shown
+            .filter((other) => !pages.has(other.id))
+            .map(taskSequenceEntry),
+        },
+      });
+    },
+    [navigate, pages, sidebarActions]
   );
   const openCommaHome = useCallback(() => {
     void navigate({ to: "/" });
@@ -655,7 +997,9 @@ export function TasksRoute() {
     <TaskStepCards active>
       <TaskWorkspace
         key={statusParam ?? "all"}
+        feed={feedProps}
         initialStatus={statusParam as TaskStatusBucket | undefined}
+        initialView={activeView}
         capabilityState="ready"
         codeClipboard={nativePlatformClipboard}
         filterSections={filterSections}
@@ -669,15 +1013,26 @@ export function TasksRoute() {
         onChatWithComma={openCommaHome}
         onLoadMore={loadMore}
         onOpenTask={openTask}
+        onPrepareView={prepareTaskView}
+        onViewChange={changeView}
         {...(shownWorkspace
-          ? { onCreateTask: () => newTask.open(shownWorkspace) }
+          ? {
+              onCreateTask: () =>
+                activeView === "feed"
+                  ? newTask.open(shownWorkspace, {
+                      onCreated: () => {
+                        void taskFeed.refresh();
+                      },
+                    })
+                  : newTask.open(shownWorkspace),
+            }
           : {})}
         onVisibleTasksChange={prepareVisibleTasks}
         onRetry={result?.source === "error" ? retryTasks : undefined}
         onTaskOrderChange={setBucketOrder}
         renderTaskBadges={renderTaskBadges}
         taskOrder={orders}
-        tasks={visibleTasks}
+        tasks={workspaceTasks}
         userEmail={auth.userEmail}
       />
     </TaskStepCards>

@@ -21,6 +21,10 @@ defmodule CommaWeb.CORS do
       CommaWeb.TaskShareEndpoints.public_path?(conn.request_path) ->
         CommaWeb.TaskShareEndpoints.put_public_cors(conn)
 
+      # External email guest collaboration routes use bearer `cgs_...` tokens, never cookies.
+      CommaWeb.CollaborationGuestEndpoints.public_path?(conn.request_path) ->
+        CommaWeb.CollaborationGuestEndpoints.put_public_cors(conn)
+
       true ->
         first_party_call(conn)
     end

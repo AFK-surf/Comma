@@ -11,7 +11,12 @@
       "@comma/ui/*": ["../../packages/ui/src/*"]
     }
   },
-  "include": ["vite.config.ts", "wrangler.worker.ts", "../../vite/*.ts"],
+  "include": [
+    "vite.config.ts",
+    "wrangler.worker.ts",
+    "assetlinks.json",
+    "../../vite/*.ts"
+  ],
   "exclude": [
     "**/*.test.*",
     "**/*.spec.*",

@@ -42,7 +42,8 @@ defmodule SalixIM.TaskConversationInput do
          initial when is_map(initial) <- attrs["initial_message_attrs"],
          {:ok, group} <- GroupDirectory.get_group(group_id),
          :ok <- validate_model_input(published, group, attrs),
-         {:ok, delegator} <- task_agent(delegator_agent_id, group_id),
+         {:ok, delegator} <-
+           delegator_agent(delegator_agent_id, group_id, collaboration_attrs?(attrs)),
          {:ok, worker} <- worker_agent(worker_agent_id, group_id),
          source_refs <- stringify(attrs["source_refs"] || %{}),
          {:ok, investigation} <-
@@ -53,6 +54,7 @@ defmodule SalixIM.TaskConversationInput do
              attrs
            ),
          :ok <- validate_parent_refs(group_id, source_refs),
+         :ok <- admit_teams_task(published, group, initial, source_refs),
          :ok <- request_loop(group, conversation_id, worker_agent_id, attrs["loop"]),
          initial = loop_command(initial, attrs["loop"]),
          {:ok, owner_user_id} <- owner_user_id(group_id, attrs, source_refs),
@@ -85,7 +87,11 @@ defmodule SalixIM.TaskConversationInput do
                    # The Mini App a build Task makes (`SalixIM.TaskPlacement`): its
                    # sandbox's station may deploy that app only.
                    "mini_app" => attrs["mini_app"],
-                   "metadata" => stringify(attrs["conversation_metadata"] || %{}),
+                   "metadata" =>
+                     attrs["conversation_metadata"]
+                     |> Kernel.||(%{})
+                     |> stringify()
+                     |> put_present("human_wakeup_policy", attrs["human_wakeup_policy"]),
                    "labels" => attrs["labels"],
                    "latest_artifact" => attrs["latest_artifact"],
                    "artifact_manifest" => attrs["artifact_manifest"]
@@ -114,22 +120,51 @@ defmodule SalixIM.TaskConversationInput do
                "delegator_agent_id" => delegator_agent_id,
                "initial_message" => initial,
                "initial_delivery" => Keyword.get(opts, :initial_delivery, :command)
-             },
+             }
+             |> put_present("initial_wake", attrs["initial_wake"])
+             |> Map.put("initial_worker_slots", initial_worker_slots(attrs["sessions"]))
+             |> then(fn spec ->
+               case wake_on_create_slots(attrs["sessions"]) do
+                 nil -> spec
+                 slots -> Map.put(spec, "wake_on_create_slots", slots)
+               end
+             end),
              published,
              group,
              attrs,
              delegator_agent_id,
              worker
            ),
+         attrs_with_owner = Map.put(attrs, "owner_user_id", owner_user_id),
          {:ok, station_session} <-
            invite_station(
              group,
              conversation_id,
              worker,
-             Map.put(attrs, "owner_user_id", owner_user_id)
+             participants,
+             attrs_with_owner
            ),
          {:ok, appended} <- ConversationServer.create_task(group_id, conversation_id, spec),
-         :ok <- station_joined(group, conversation_id, worker, attrs, station_session) do
+         committed_participants =
+           committed_task_participants(group_id, conversation_id, participants),
+         hydrated_station_session =
+           hydrate_station_session_participants(
+             group,
+             conversation_id,
+             worker,
+             committed_participants,
+             attrs_with_owner,
+             station_session
+           ),
+         :ok <-
+           station_joined(
+             group,
+             conversation_id,
+             worker,
+             committed_participants,
+             attrs_with_owner,
+             hydrated_station_session
+           ) do
       observe_created_task(appended, group_id, conversation_id, now, attrs)
 
       {:ok,
@@ -146,6 +181,27 @@ defmodule SalixIM.TaskConversationInput do
       {:error, _reason} = error -> error
     end
   end
+
+  defp admit_teams_task(nil, group, initial, source_refs) do
+    if SalixIM.TeamsAdmission.new_work?(initial) and
+         not accepted_parent?(group, initial, source_refs),
+       do: SalixIM.TeamsAdmission.authorize_group(group),
+       else: :ok
+  end
+
+  defp admit_teams_task(_published, _group, _initial, _refs), do: :ok
+
+  defp accepted_parent?(group, %{"actor_type" => "user", "user_id" => user}, %{
+         "parent_conversation_id" => parent,
+         "parent_message_id" => message
+       }) do
+    case Conversations.get_group_conversation_message(group["group_id"], parent, message) do
+      {:ok, %{"actor_type" => "user", "user_id" => ^user}} -> true
+      _ -> false
+    end
+  end
+
+  defp accepted_parent?(_, _, _), do: false
 
   defp validate_model_input(nil, group, attrs),
     do: SalixIM.TaskModelSelection.validate_explicit(group, attrs)
@@ -211,6 +267,112 @@ defmodule SalixIM.TaskConversationInput do
          attrs,
          now
        ) do
+    with {:ok, delegator_participants} <-
+           delegator_participants(group, conversation, delegator, investigation, attrs, now),
+         {:ok, worker_participants} <-
+           worker_participants(group, conversation, worker, attrs, now) do
+      {:ok,
+       SalixIM.Triage.Investigation.result_participants(investigation, now) ++
+         owner_participants(owner_user_id, now) ++
+         personal_status_participants(group["group_id"], conversation, now) ++
+         origin_provider_participants(
+           group["group_id"],
+           conversation["conversation_id"],
+           source_refs,
+           now
+         ) ++
+         delegator_participants ++ worker_participants}
+    end
+  end
+
+  defp worker_participants(
+         group,
+         conversation,
+         worker,
+         %{"sessions" => [_ | _] = sessions} = attrs,
+         now
+       ) do
+    sessions
+    |> Enum.reduce_while({:ok, []}, fn session, {:ok, acc} ->
+      primary? = session["primary"] == true
+      target_key = if primary?, do: nil, else: session["slot"]
+
+      base_opts =
+        if primary? do
+          worker_participant_opts(
+            Map.put(attrs, "session_model", session["model"] || attrs["session_model"]),
+            group
+          )
+        else
+          filter =
+            if match?(%{"runs_on" => %{"device_id" => _}}, attrs),
+              do: @station_worker_filter,
+              else: %{"messages" => "mentioned", "statuses" => "none"}
+
+          [
+            notification_filter: filter,
+            session_model: session["model"] || default_task_model(group)
+          ]
+        end
+
+      opts =
+        base_opts
+        |> Keyword.put(:target_key, target_key)
+        |> Keyword.put(:session_slot, session["slot"])
+        |> Keyword.put(:session_label, session["label"])
+        |> Keyword.put(:role_instructions, session["role"])
+
+      case task_agent_participant(group, conversation, worker, "worker", now, opts) do
+        {:ok, participant} -> {:cont, {:ok, [participant | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      error -> error
+    end
+  end
+
+  defp worker_participants(group, conversation, worker, attrs, now) do
+    with {:ok, participant} <-
+           task_agent_participant(
+             group,
+             conversation,
+             worker,
+             "worker",
+             now,
+             worker_participant_opts(attrs, group)
+           ) do
+      {:ok, [participant]}
+    end
+  end
+
+  defp wake_on_create_slots(sessions) when is_list(sessions) and length(sessions) > 1 do
+    sessions
+    |> Enum.filter(&(&1["wake_on_create"] == true and &1["primary"] != true))
+    |> Enum.map(& &1["slot"])
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp wake_on_create_slots(_sessions), do: nil
+
+  defp initial_worker_slots(sessions) when is_list(sessions) and sessions != [] do
+    Enum.map(sessions, fn entry ->
+      if entry["primary"] == true,
+        do: nil,
+        else: SalixIM.TaskSessionSlots.normalize_target_key(entry["slot"])
+    end)
+  end
+
+  defp initial_worker_slots(_sessions), do: [nil]
+
+  defp delegator_participants(_group, conversation, nil, _investigation, _attrs, _now) do
+    if collaboration?(conversation),
+      do: {:ok, []},
+      else: {:error, {:bad_request, "delegator agent is required"}}
+  end
+
+  defp delegator_participants(group, conversation, delegator, investigation, attrs, now) do
     with {:ok, delegator_participant} <-
            task_agent_participant(
              group,
@@ -222,29 +384,14 @@ defmodule SalixIM.TaskConversationInput do
              notification_filter:
                cond do
                  investigation != nil -> %{"messages" => "none", "statuses" => "none"}
+                 # A Collaborative Task is shared with people outside the Group:
+                 # the host's Router, whose Session holds the host's private
+                 # context, receives none of it.
+                 collaboration?(conversation) -> %{"messages" => "none", "statuses" => "none"}
                  true -> %{"messages" => "all", "statuses" => "none"}
                end
-           ),
-         {:ok, worker_participant} <-
-           task_agent_participant(
-             group,
-             conversation,
-             worker,
-             "worker",
-             now,
-             worker_participant_opts(attrs, group)
            ) do
-      {:ok,
-       SalixIM.Triage.Investigation.result_participants(investigation, now) ++
-         owner_participants(owner_user_id, now) ++
-         personal_status_participants(group["group_id"], conversation, now) ++
-         origin_provider_participants(
-           group["group_id"],
-           conversation["conversation_id"],
-           source_refs,
-           now
-         ) ++
-         [delegator_participant, worker_participant]}
+      {:ok, [delegator_participant]}
     end
   end
 
@@ -254,8 +401,13 @@ defmodule SalixIM.TaskConversationInput do
     original_worker =
       Enum.find(
         published.participants,
-        &(&1["actor_type"] == "agent" and &1["agent_id"] == worker)
-      )
+        &(&1["actor_type"] == "agent" and &1["agent_id"] == worker and
+            SalixIM.TaskSessionSlots.primary_worker?(&1))
+      ) ||
+        Enum.find(
+          published.participants,
+          &(&1["actor_type"] == "agent" and &1["agent_id"] == worker)
+        )
 
     attrs
     |> Map.drop(~w(runs_on repo mini_app session_model))
@@ -363,21 +515,20 @@ defmodule SalixIM.TaskConversationInput do
          group,
          conversation_id,
          worker,
+         participants,
          %{"runs_on" => %{"kind" => "sandbox", "device_id" => device_id}} = attrs
        ) do
+    starts = station_starts(worker, participants, conversation_id, attrs)
+    primary = Enum.find(starts, & &1["is_primary"]) || hd(starts)
+
     case SalixIM.Ports.TaskStations.sandbox(%{
            tenant_id: group["tenant_id"],
            group_id: group["group_id"],
            conversation_id: conversation_id,
            device_id: device_id,
            agent_id: worker["agent_id"],
-           start:
-             station_start(
-               worker["agent_id"],
-               attrs["session_model"],
-               attrs["repo"],
-               attrs["mini_app"]
-             ),
+           start: primary["start"],
+           starts: starts,
            repo: attrs["repo"],
            account_id: attrs["account_id"],
            requester: attrs["owner_user_id"]
@@ -391,59 +542,261 @@ defmodule SalixIM.TaskConversationInput do
   end
 
   # The station is asked before the Task is made: one that cannot take it
-  # (not connected, no such model) refuses the create, and nothing is written.
-  # A create asked again asks again; the station keeps its first Session.
-  # The Group's Cloud VM that is not connected now (it sleeps, or was never
-  # made) is the one exception: the product wakes it, so the Task is made and
-  # the station expected in it (`:when_connected`), invited and given the
-  # Task once it connects (`station_joined/5`).
+  # (not connected, no such model, outdated for multi-session) refuses the create,
+  # and nothing is written.
   defp invite_station(
          group,
          conversation_id,
          worker,
+         participants,
          %{"runs_on" => %{"device_id" => device_id}} = attrs
        ) do
-    # An already joined Task owns its Session even while the Station is away.
-    # The delivery path handles reconnect/catchup; a create replay starts none.
-    joined =
-      case SalixStore.StationTaskSessions.of_task(group["group_id"], conversation_id) do
-        {:ok, rows} ->
-          Enum.find(rows, &(&1.device_id == device_id and &1.agent_id == worker["agent_id"]))
+    starts = station_starts(worker, participants, conversation_id, attrs)
 
-        _ ->
-          nil
-      end
-
-    if joined do
-      {:ok, joined.session}
+    if length(starts) > 1 do
+      invite_station_multi(group, conversation_id, device_id, starts, attrs)
     else
-      ask_station(group, conversation_id, worker, attrs)
+      # An already joined Task owns its Session even while the Station is away.
+      # The delivery path handles reconnect/catchup; a create replay starts none.
+      case SalixStore.StationTaskSessions.of_task(group["group_id"], conversation_id) do
+        {:error, reason} ->
+          {:error, reason}
+
+        {:ok, rows} ->
+          joined =
+            Enum.find(rows, &(&1.device_id == device_id and &1.agent_id == worker["agent_id"]))
+
+          if joined do
+            {:ok, :already_joined_multi}
+          else
+            primary = hd(starts)
+
+            ask_station(group, conversation_id, device_id, primary["start"],
+              slot: primary["slot"]
+            )
+          end
+      end
     end
   end
 
-  defp invite_station(_group, _conversation_id, _worker, _attrs), do: {:ok, nil}
+  defp invite_station(_group, _conversation_id, _worker, _participants, _attrs), do: {:ok, nil}
 
-  defp ask_station(
-         group,
-         conversation_id,
-         worker,
-         %{"runs_on" => %{"device_id" => device_id}} = attrs
-       ) do
-    case SalixIM.Ports.TaskStations.invite(%{
-           tenant_id: group["tenant_id"],
-           group_id: group["group_id"],
-           conversation_id: conversation_id,
-           device_id: device_id,
-           start: station_start(worker["agent_id"], attrs["session_model"])
-         }) do
-      {:ok, session} when is_binary(session) ->
-        {:ok, session}
+  defp invite_station_multi(group, conversation_id, device_id, starts, attrs) do
+    # Replay protection & per-slot reconciliation:
+    # - DB read error propagates directly for retry (never treated as empty).
+    # - If all slots are already bound on this device, return :already_joined_multi.
+    # - If primary is bound but some secondaries are missing, invite ONLY the missing
+    #   secondaries (never calling `leave_device`).
+    # - On fresh create, never call device-wide `leave_device` on secondary failure
+    #   (which could kill a concurrent duplicate create's sessions).
+    with {:ok, rows} <- SalixStore.StationTaskSessions.of_task(group["group_id"], conversation_id) do
+      existing_active =
+        Enum.filter(
+          rows,
+          &(&1.device_id == device_id and not SalixStore.StationTaskSessions.awaited?(&1))
+        )
+
+      if existing_active != [] do
+        bound_slots =
+          MapSet.new(existing_active, fn r -> get_in(r.start || %{}, ["slot"]) || "lead" end)
+
+        missing = Enum.reject(starts, &MapSet.member?(bound_slots, &1["slot"]))
+
+        if missing == [] do
+          {:ok, :already_joined_multi}
+        else
+          with :ok <-
+                 check_station_multi_capability(
+                   group["tenant_id"],
+                   group["group_id"],
+                   attrs["runs_on"]
+                 ) do
+            invite_missing_secondaries(group, conversation_id, device_id, missing)
+          end
+        end
+      else
+        with :ok <-
+               check_station_multi_capability(
+                 group["tenant_id"],
+                 group["group_id"],
+                 attrs["runs_on"]
+               ) do
+          [primary | secondaries] = starts
+          claim_token = "create:" <> SalixStore.Ids.new_session_id()
+
+          case ask_station(group, conversation_id, device_id, primary["start"],
+                 slot: primary["slot"],
+                 multi_session: true,
+                 claim_token: claim_token
+               ) do
+            {:ok, :when_connected} ->
+              {:ok, {:when_connected_multi, starts}}
+
+            {:ok, {primary_session, primary_run_id}} when is_binary(primary_session) ->
+              primary_entry =
+                attach_session_and_run(primary, primary_session, primary_run_id, claim_token)
+
+              secondaries
+              |> Enum.with_index()
+              |> Enum.reduce_while({:ok, [primary_entry]}, fn {entry, idx}, {:ok, acc} ->
+                case ask_station(group, conversation_id, device_id, entry["start"],
+                       slot: entry["slot"],
+                       join: true,
+                       multi_session: true,
+                       claim_token: claim_token
+                     ) do
+                  {:ok, {session, used_run_id}} when is_binary(session) ->
+                    {:cont,
+                     {:ok,
+                      [attach_session_and_run(entry, session, used_run_id, claim_token) | acc]}}
+
+                  {:ok, :when_connected} ->
+                    remaining = Enum.drop(secondaries, idx)
+                    {:halt, {:partial, Enum.reverse(acc), remaining}}
+
+                  {:error, _} = err ->
+                    {:halt, {:rollback, err, [entry | acc]}}
+                end
+              end)
+              |> case do
+                {:ok, entries} ->
+                  {:ok, {:multi, Enum.reverse(entries)}}
+
+                {:partial, entries, remaining} ->
+                  {:ok, {:multi_partial, entries, remaining}}
+
+                {:rollback, err, attempted_entries} ->
+                  # Fresh first-time create (confirmed no existing bindings above):
+                  # undo EVERY attempted slot (primary, started secondaries, AND the
+                  # failed/timed-out slot whose session id may be unknown) fenced by
+                  # `claim_token`, so a concurrent create B that shared the same session
+                  # keeps it alive even across Station restarts!
+                  Enum.each(attempted_entries, fn attempted ->
+                    _ =
+                      SalixIM.Ports.TaskStations.leave_session(
+                        group["tenant_id"],
+                        group["group_id"],
+                        conversation_id,
+                        device_id,
+                        attempted["session"],
+                        get_in(attempted, ["start", "connector_run_id"]),
+                        claim_token,
+                        attempted["slot"]
+                      )
+                  end)
+
+                  err
+              end
+
+            {:error, {:station_invite_unknown, _}} = err ->
+              _ =
+                SalixIM.Ports.TaskStations.leave_session(
+                  group["tenant_id"],
+                  group["group_id"],
+                  conversation_id,
+                  device_id,
+                  nil,
+                  nil,
+                  claim_token,
+                  primary["slot"]
+                )
+
+              err
+
+            {:error, _} = err ->
+              err
+          end
+        end
+      end
+    end
+  end
+
+  defp invite_missing_secondaries(group, conversation_id, device_id, missing) do
+    missing
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {entry, idx}, {:ok, acc} ->
+      case ask_station(group, conversation_id, device_id, entry["start"],
+             slot: entry["slot"],
+             join: true,
+             multi_session: true
+           ) do
+        {:ok, {session, used_run_id}} when is_binary(session) ->
+          {:cont, {:ok, [attach_session_and_run(entry, session, used_run_id) | acc]}}
+
+        {:ok, :when_connected} ->
+          remaining = Enum.drop(missing, idx)
+          {:halt, {:partial, Enum.reverse(acc), remaining}}
+
+        {:error, _} = err ->
+          {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, {:multi, Enum.reverse(entries)}}
+      {:partial, entries, remaining} -> {:ok, {:multi_partial_append, entries, remaining}}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp attach_session_and_run(entry, session, used_run_id, claim_token \\ nil) do
+    entry
+    |> Map.put("session", session)
+    |> Map.update("start", %{}, fn st ->
+      st
+      |> then(fn s ->
+        if is_binary(used_run_id) and used_run_id != "",
+          do: Map.put(s, "connector_run_id", used_run_id),
+          else: s
+      end)
+      |> then(fn s ->
+        if is_binary(claim_token) and claim_token != "" do
+          s
+          |> Map.put("claim_token", claim_token)
+          |> Map.put("claim_confirmed", false)
+        else
+          s
+        end
+      end)
+    end)
+  end
+
+  defp check_station_multi_capability(tenant_id, group_id, runs_on) do
+    case SalixIM.Ports.TaskStations.check_multi_session(tenant_id, group_id, runs_on) do
+      :ok -> :ok
+      {:error, :station_outdated} -> {:error, :station_outdated}
+      {:error, {:station_outdated, _}} -> {:error, :station_outdated}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp ask_station(group, conversation_id, device_id, start, opts) do
+    invitation =
+      %{
+        tenant_id: group["tenant_id"],
+        group_id: group["group_id"],
+        conversation_id: conversation_id,
+        device_id: device_id,
+        start: start
+      }
+      |> then(&if(opts[:slot], do: Map.put(&1, :slot, opts[:slot]), else: &1))
+      |> then(&if(opts[:join] == true, do: Map.put(&1, :join, true), else: &1))
+      |> then(&if(opts[:multi_session] == true, do: Map.put(&1, :multi_session, true), else: &1))
+      |> then(
+        &if(opts[:claim_token], do: Map.put(&1, :claim_token, opts[:claim_token]), else: &1)
+      )
+
+    case SalixIM.Ports.TaskStations.invite_with_run(invitation) do
+      {:ok, {session, used_run_id}} when is_binary(session) ->
+        {:ok, {session, used_run_id}}
 
       {:ok, :when_connected} ->
         {:ok, :when_connected}
 
       {:error, :device_offline} ->
         {:error, {:bad_request, "that station is not connected now; the Task was not made"}}
+
+      {:error, :station_outdated} ->
+        {:error, :station_outdated}
 
       {:error, {:station_refused, why}} ->
         {:error, {:bad_request, "the station did not take the Task: #{why}"}}
@@ -452,6 +805,147 @@ defmodule SalixIM.TaskConversationInput do
         error
     end
   end
+
+  @doc "Builds per-slot station start descriptors (primary first) for a Task's active worker participants."
+  def station_starts(worker, participants, conversation_id, attrs) do
+    worker_agent_id = worker["agent_id"]
+    person = canonical_person(attrs)
+
+    workers =
+      participants
+      |> Enum.filter(
+        &(&1["actor_type"] == "agent" and &1["agent_id"] == worker_agent_id and
+            &1["role_label"] == "worker" and &1["state"] != "inactive")
+      )
+      |> Enum.sort_by(fn p ->
+        if SalixIM.TaskSessionSlots.primary_worker?(p),
+          do: {0, ""},
+          else: {1, p["target_key"] || ""}
+      end)
+
+    case workers do
+      [] ->
+        [
+          %{
+            "slot" => "lead",
+            "is_primary" => true,
+            "participant_id" => nil,
+            "agent_id" => worker_agent_id,
+            "start" =>
+              station_start(
+                worker_agent_id,
+                attrs["session_model"],
+                attrs["repo"],
+                attrs["mini_app"],
+                slot: "lead",
+                is_primary: true,
+                person: person
+              )
+          }
+        ]
+
+      list ->
+        roster =
+          if length(list) > 1 do
+            Enum.map(list, fn p ->
+              %{
+                "slot" => SalixIM.TaskSessionSlots.worker_slot(p) || "lead",
+                "label" => SalixIM.TaskSessionSlots.worker_label(p),
+                "role" => get_in(p, ["payload", "role_instructions"]),
+                "primary" => SalixIM.TaskSessionSlots.primary_worker?(p)
+              }
+            end)
+          else
+            nil
+          end
+
+        multi? = length(list) > 1
+
+        Enum.map(list, fn p ->
+          primary? = SalixIM.TaskSessionSlots.primary_worker?(p)
+          slot = SalixIM.TaskSessionSlots.worker_slot(p) || "lead"
+
+          model =
+            get_in(p, ["payload", "session_model"]) ||
+              if(primary?, do: attrs["session_model"], else: nil)
+
+          repo =
+            if primary?,
+              do: attrs["repo"],
+              else: secondary_repo(attrs["repo"], conversation_id, slot)
+
+          start_opts =
+            cond do
+              multi? ->
+                [
+                  slot: slot,
+                  is_primary: primary?,
+                  participant_id: p["participant_id"],
+                  person: person,
+                  roster: roster
+                ]
+
+              slot != "lead" ->
+                [
+                  slot: slot,
+                  is_primary: primary?,
+                  participant_id: p["participant_id"],
+                  person: person
+                ]
+
+              true ->
+                [person: person]
+            end
+
+          %{
+            "slot" => slot,
+            "is_primary" => primary?,
+            "participant_id" => p["participant_id"],
+            "agent_id" => worker_agent_id,
+            "start" =>
+              station_start(
+                worker_agent_id,
+                model,
+                repo,
+                if(primary?, do: attrs["mini_app"], else: nil),
+                start_opts
+              )
+          }
+        end)
+    end
+  end
+
+  @doc "Derives the isolated secondary git worktree repo config (`comma-sessions/<task_short>/<slot>`)."
+  def secondary_repo(%{"branch" => primary_branch} = repo, conversation_id, slot)
+      when is_binary(primary_branch) and primary_branch != "" and is_binary(slot) and slot != "" do
+    task_short =
+      conversation_id |> String.replace(~r/[^A-Za-z0-9]/, "") |> String.slice(-10, 10)
+
+    repo
+    |> Map.delete("pull_request")
+    |> Map.merge(%{
+      "branch" => "comma-sessions/#{task_short}/#{slot}",
+      "isolated" => true,
+      "primary_branch" => primary_branch
+    })
+  end
+
+  def secondary_repo(_repo, _conversation_id, _slot), do: nil
+
+  @doc "Canonical human person ID for Station usage attribution (never an `@agents.salix` agent)."
+  def canonical_person(%{"owner_user_id" => owner})
+      when is_binary(owner) and owner != "",
+      do: owner
+
+  def canonical_person(%{"source_refs" => %{"ifc_requester" => principal}})
+      when is_binary(principal) do
+    case SalixIFC.Codec.decode_principal(principal) do
+      {:ok, {:comma_user, user}} when is_binary(user) and user != "" -> user
+      _ -> nil
+    end
+  end
+
+  def canonical_person(_attrs), do: nil
 
   # A sandbox Task (`runs_on {kind: sandbox}`) runs on the device its sandboxes'
   # stations register as, the same for every sandbox. A coding Task (`repo`)
@@ -485,7 +979,7 @@ defmodule SalixIM.TaskConversationInput do
   (`mini_app {app_id}`), which gives its Session the app tools. The station
   keeps the start with its Session, so an invite again carries them too.
   """
-  def station_start(agent_id, session_model, repo \\ nil, mini_app \\ nil) do
+  def station_start(agent_id, session_model, repo \\ nil, mini_app \\ nil, opts \\ []) do
     model = if is_map(session_model), do: session_model, else: %{}
 
     %{"requester" => agent_id <> "@agents.salix", "title" => agent_id}
@@ -494,9 +988,243 @@ defmodule SalixIM.TaskConversationInput do
     |> put_present("effort", model["reasoning_effort"])
     |> put_present("repo", repo)
     |> put_present("mini_app", mini_app)
+    |> put_present("slot", opts[:slot])
+    |> put_present("participant_id", opts[:participant_id])
+    |> put_present("person", opts[:person])
+    |> then(
+      &if(is_boolean(opts[:is_primary]),
+        do: Map.put(&1, "is_primary", opts[:is_primary]),
+        else: &1
+      )
+    )
+    |> then(&if(is_list(opts[:roster]), do: Map.put(&1, "roster", opts[:roster]), else: &1))
   end
 
-  defp station_joined(_group, _conversation_id, _worker, _attrs, nil), do: :ok
+  defp committed_task_participants(group_id, conversation_id, fallback) do
+    case Conversations.list_group_conversation_participants(group_id, conversation_id) do
+      {:ok, %{"participants" => [_ | _] = list}} -> list
+      {:ok, [_ | _] = list} -> list
+      _ -> fallback
+    end
+  end
+
+  defp hydrate_station_session_participants(
+         group,
+         conversation_id,
+         worker,
+         committed_participants,
+         attrs,
+         station_session
+       ) do
+    worker_agent_id = worker["agent_id"]
+
+    pid_by_slot =
+      committed_participants
+      |> Enum.filter(fn p ->
+        p["actor_type"] == "agent" and p["agent_id"] == worker_agent_id and
+          p["role_label"] == "worker" and p["state"] != "inactive" and
+          is_binary(p["participant_id"]) and p["participant_id"] != ""
+      end)
+      |> Map.new(fn p ->
+        slot = SalixIM.TaskSessionSlots.worker_slot(p) || "lead"
+        {slot, p["participant_id"]}
+      end)
+
+    if get_in(attrs, ["runs_on", "kind"]) == "sandbox" and map_size(pid_by_slot) > 0 do
+      _ =
+        SalixIM.Ports.TaskStations.hydrate_participant_ids(
+          group["tenant_id"],
+          conversation_id,
+          pid_by_slot
+        )
+    end
+
+    hydrate_entries = fn entries ->
+      Enum.map(entries, fn entry ->
+        slot = entry["slot"] || "lead"
+
+        case Map.get(pid_by_slot, slot) do
+          pid when is_binary(pid) and pid != "" ->
+            entry
+            |> Map.put("participant_id", pid)
+            |> Map.update(
+              "start",
+              %{"participant_id" => pid},
+              &Map.put(&1, "participant_id", pid)
+            )
+
+          _ ->
+            entry
+        end
+      end)
+    end
+
+    case station_session do
+      {:multi, entries} ->
+        {:multi, hydrate_entries.(entries)}
+
+      {:multi_partial, entries, remaining} ->
+        {:multi_partial, hydrate_entries.(entries), hydrate_entries.(remaining)}
+
+      {:multi_partial_append, entries, remaining} ->
+        {:multi_partial_append, hydrate_entries.(entries), hydrate_entries.(remaining)}
+
+      {:when_connected_multi, starts} ->
+        {:when_connected_multi, hydrate_entries.(starts)}
+
+      other ->
+        other
+    end
+  end
+
+  defp station_joined(_group, _conversation_id, _worker, _participants, _attrs, nil), do: :ok
+
+  defp station_joined(
+         _group,
+         _conversation_id,
+         _worker,
+         _participants,
+         _attrs,
+         :already_joined_multi
+       ),
+       do: :ok
+
+  defp station_joined(
+         group,
+         conversation_id,
+         worker,
+         _participants,
+         %{"runs_on" => %{"device_id" => device_id}},
+         {:multi_partial_append, entries, remaining}
+       ) do
+    # Replay partial join: join newly invited secondaries and ALWAYS append `remaining`
+    # onto the real primary row via `append_pending_multi_start` (never onto a secondary).
+    with :ok <-
+           station_joined(
+             group,
+             conversation_id,
+             worker,
+             [],
+             %{"runs_on" => %{"device_id" => device_id}},
+             {:multi, entries}
+           ) do
+      Enum.reduce_while(remaining, :ok, fn entry, :ok ->
+        case SalixStore.StationTaskSessions.append_pending_multi_start(
+               group["group_id"],
+               conversation_id,
+               device_id,
+               entry
+             ) do
+          {:ok, _entry} -> {:cont, :ok}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+    end
+  end
+
+  defp station_joined(
+         group,
+         conversation_id,
+         worker,
+         _participants,
+         %{"runs_on" => %{"device_id" => device_id}},
+         {:multi_partial, entries, remaining}
+       ) do
+    if entries == [] and remaining != [] do
+      # Primary was already joined; append remaining missing secondaries onto primary row.
+      Enum.reduce_while(remaining, :ok, fn entry, :ok ->
+        case SalixStore.StationTaskSessions.append_pending_multi_start(
+               group["group_id"],
+               conversation_id,
+               device_id,
+               entry
+             ) do
+          {:ok, _entry} -> {:cont, :ok}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+    else
+      entries =
+        case entries do
+          [primary | rest] when remaining != [] ->
+            remaining_with_ids =
+              Enum.map(remaining, fn entry ->
+                if is_binary(entry["invite_id"]) and entry["invite_id"] != "" do
+                  entry
+                else
+                  Map.put(entry, "invite_id", SalixStore.Ids.new_session_id())
+                end
+              end)
+
+            updated_primary =
+              Map.update(
+                primary,
+                "start",
+                %{"pending_multi_starts" => remaining_with_ids},
+                &Map.put(&1, "pending_multi_starts", remaining_with_ids)
+              )
+
+            [updated_primary | rest]
+
+          other ->
+            other
+        end
+
+      station_joined(
+        group,
+        conversation_id,
+        worker,
+        [],
+        %{"runs_on" => %{"device_id" => device_id}},
+        {:multi, entries}
+      )
+    end
+  end
+
+  defp station_joined(
+         group,
+         conversation_id,
+         worker,
+         _participants,
+         %{"runs_on" => %{"device_id" => device_id}},
+         {:multi, entries}
+       ) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      case SalixIM.Ports.TaskStations.joined(%{
+             tenant_id: group["tenant_id"],
+             group_id: group["group_id"],
+             conversation_id: conversation_id,
+             device_id: device_id,
+             session: entry["session"],
+             agent_id: worker["agent_id"],
+             start: entry["start"]
+           }) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp station_joined(
+         group,
+         conversation_id,
+         worker,
+         _participants,
+         %{"runs_on" => %{"device_id" => device_id}},
+         {:when_connected_multi, starts}
+       ) do
+    primary = hd(starts)
+
+    SalixIM.Ports.TaskStations.joined(%{
+      tenant_id: group["tenant_id"],
+      group_id: group["group_id"],
+      conversation_id: conversation_id,
+      device_id: device_id,
+      session: nil,
+      agent_id: worker["agent_id"],
+      start: Map.put(primary["start"], "multi_starts", starts)
+    })
+  end
 
   # A station expected in the Task (`:when_connected`) joins it with no
   # Session: the product invites it when it connects.
@@ -504,19 +1232,40 @@ defmodule SalixIM.TaskConversationInput do
          group,
          conversation_id,
          worker,
+         participants,
          %{"runs_on" => %{"device_id" => device_id}} = attrs,
-         session
-       ),
-       do:
-         SalixIM.Ports.TaskStations.joined(%{
-           tenant_id: group["tenant_id"],
-           group_id: group["group_id"],
-           conversation_id: conversation_id,
-           device_id: device_id,
-           session: if(session == :when_connected, do: nil, else: session),
-           agent_id: worker["agent_id"],
-           start: station_start(worker["agent_id"], attrs["session_model"])
-         })
+         session_or_pair
+       ) do
+    starts = station_starts(worker, participants, conversation_id, attrs)
+    primary = hd(starts)
+
+    {session, start_map} =
+      case session_or_pair do
+        {sess, used_run_id} when is_binary(sess) ->
+          st =
+            if is_binary(used_run_id) and used_run_id != "",
+              do: Map.put(primary["start"], "connector_run_id", used_run_id),
+              else: primary["start"]
+
+          {sess, st}
+
+        :when_connected ->
+          {nil, primary["start"]}
+
+        sess ->
+          {sess, primary["start"]}
+      end
+
+    SalixIM.Ports.TaskStations.joined(%{
+      tenant_id: group["tenant_id"],
+      group_id: group["group_id"],
+      conversation_id: conversation_id,
+      device_id: device_id,
+      session: session,
+      agent_id: worker["agent_id"],
+      start: start_map
+    })
+  end
 
   defp put_present(map, _key, value) when value in [nil, ""], do: map
   defp put_present(map, key, value), do: Map.put(map, key, value)
@@ -673,6 +1422,16 @@ defmodule SalixIM.TaskConversationInput do
     |> Map.reject(fn {_key, value} -> value in [nil, "", %{}] end)
   end
 
+  defp delegator_agent(nil, _group_id, true), do: {:ok, nil}
+  defp delegator_agent(agent_id, group_id, _collab?), do: task_agent(agent_id, group_id)
+
+  defp collaboration_attrs?(attrs) when is_map(attrs) do
+    case attrs["conversation_metadata"] do
+      %{"collaboration" => %{} = collaboration} -> map_size(collaboration) > 0
+      _ -> false
+    end
+  end
+
   defp task_agent(agent_id, group_id) do
     with {:ok, %{"group_id" => ^group_id} = agent} <- GroupDirectory.get_agent(agent_id) do
       {:ok, agent}
@@ -699,16 +1458,20 @@ defmodule SalixIM.TaskConversationInput do
         "statuses" => "none"
       })
 
-    participant = %{
-      "actor_type" => "agent",
-      "agent_id" => agent["agent_id"],
-      "agent_name" => agent["name"],
-      "role_label" => role_label,
-      "state" => "active",
-      "notification_filter" => notification_filter,
-      "created_at" => now,
-      "updated_at" => now
-    }
+    target_key = SalixIM.TaskSessionSlots.normalize_target_key(Keyword.get(opts, :target_key))
+
+    participant =
+      %{
+        "actor_type" => "agent",
+        "agent_id" => agent["agent_id"],
+        "agent_name" => agent["name"],
+        "role_label" => role_label,
+        "state" => "active",
+        "notification_filter" => notification_filter,
+        "created_at" => now,
+        "updated_at" => now
+      }
+      |> put_present("target_key", target_key)
 
     ConversationInput.prepare_agent_for_create(
       group["group_id"],
@@ -733,6 +1496,11 @@ defmodule SalixIM.TaskConversationInput do
   end
 
   defp owner_participants(_value, _now), do: []
+
+  defp collaboration?(%{"metadata" => %{"collaboration" => %{} = collaboration}}),
+    do: map_size(collaboration) > 0
+
+  defp collaboration?(_conversation), do: false
 
   # A Task the Router creates while answering a provider chat (a Linear agent
   # session) keeps that provider on it, so the Task's progress reaches the

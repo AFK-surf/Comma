@@ -199,6 +199,63 @@ defmodule BridgeForTeamsWeb.DashboardAPISettingsTest do
       assert %{"from" => nil, "to" => %{"kind" => "catalog", "model" => "claude-opus-4-8"}} =
                audit.redacted_diff["default_task_model"]
     end
+
+    test "with a platform Router the default Router model is shown read-only and kept", %{
+      conn: conn,
+      org: org
+    } do
+      {:ok, org} = Orgs.update_org(org, %{"default_router_model" => @haiku})
+      SalixAgent.TestSupport.configure_platform_models!()
+
+      {:ok, key} =
+        SalixAgent.AccountPool.create(SalixAgent.AccountPool.platform_tenant(), %{
+          "credential_kind" => "provider_api_key",
+          "source" => "openrouter",
+          "api_key" => "sk-or-v1-platform-router-0000"
+        })
+
+      on_exit(fn ->
+        SalixAgent.SubscriptionStore.query("DELETE FROM subscription_accounts WHERE id=$1", [
+          key["id"]
+        ])
+
+        SalixAgent.PlatformRouter.delete(org.salix_tenant_id)
+      end)
+
+      assert conn
+             |> get(settings_path(org, "models"))
+             |> json_response(200)
+             |> data()
+             |> Map.get("platform_router") == nil
+
+      {:ok, _} =
+        SalixAgent.PlatformRouter.put(org.salix_tenant_id, %{
+          "model" => "gpt-5.5",
+          "billing" => "deduct"
+        })
+
+      data = conn |> get(settings_path(org, "models")) |> json_response(200) |> data()
+      # The model and its name only: no billing, nothing about platform keys.
+      assert data["platform_router"] == %{"model" => "gpt-5.5", "label" => "GPT-5.5"}
+
+      # A default Router model in the save is ignored, and the stored one,
+      # outside the new allowed list, does not block it.
+      data =
+        conn
+        |> put(settings_path(org, "models"), %{
+          "allowed_models" => [@opus],
+          "default_router_model" => @opus,
+          "default_task_model" => @opus
+        })
+        |> json_response(200)
+        |> data()
+
+      assert data["platform_router"]["model"] == "gpt-5.5"
+      {:ok, reloaded} = Orgs.get_org(org.id)
+      assert reloaded.default_router_model == @haiku
+      assert reloaded.default_task_model == @opus
+      assert reloaded.allowed_models == [@opus]
+    end
   end
 
   describe "Single sign-on" do
@@ -693,6 +750,42 @@ defmodule BridgeForTeamsWeb.DashboardAPISettingsTest do
 
       assert %{"error" => %{"code" => "feishu_app_not_found"}} =
                conn |> put(feishu_app_path(org, "not-a-uuid"), %{}) |> json_response(404)
+    end
+
+    test "two department bot apps each list the Agent Swarm they route to",
+         %{conn: conn, org: org} do
+      for {app_id, name} <- [{"cli_rd", "研发部飞书助手"}, {"cli_fin", "财务部飞书助手"}] do
+        {:ok, _} =
+          FeishuAppBindings.upsert_binding(org.id, %{
+            "app_id" => app_id,
+            "display_name" => name,
+            "app_secret" => "secret-#{app_id}",
+            "bot_enabled" => true
+          })
+      end
+
+      use_salix_client(FeishuRouteClient)
+      rd = bare_project_fixture(org, %{name: "研发部"})
+      fin = bare_project_fixture(org, %{name: "财务部"})
+
+      FeishuRouteClient.put_connects(rd.salix_group_id, [
+        %{"connect_id" => "route-rd", "provider" => "feishu", "app_id" => "cli_rd"}
+      ])
+
+      FeishuRouteClient.put_connects(fin.salix_group_id, [
+        %{"connect_id" => "route-fin", "provider" => "feishu", "app_id" => "cli_fin"}
+      ])
+
+      feishu =
+        conn
+        |> get(settings_path(org, "integrations"))
+        |> json_response(200)
+        |> get_in(["data", "feishu"])
+
+      routes = Map.new(feishu["apps"], &{&1["app_id"], &1["routes"]})
+
+      assert [%{"connect_id" => "route-rd", "project_name" => "研发部"}] = routes["cli_rd"]
+      assert [%{"connect_id" => "route-fin", "project_name" => "财务部"}] = routes["cli_fin"]
     end
 
     test "reads the payload in a fixed number of queries and bounds the Agent Swarms",

@@ -51,6 +51,7 @@ export function ChoiceList({
   className,
 }: ChoiceListProps) {
   const picked = new Set(value);
+  const hasShortcuts = showShortcuts || Boolean(onOptionKeyDown);
   const toggle = (id: string, checked: boolean) => {
     if (!multiple) {
       onChange([id]);
@@ -85,7 +86,9 @@ export function ChoiceList({
           >
             <input
               aria-describedby={descriptionId}
-              aria-keyshortcuts={index < 9 ? String(index + 1) : undefined}
+              aria-keyshortcuts={
+                hasShortcuts && index < 9 ? String(index + 1) : undefined
+              }
               checked={checked}
               className="comma-choice-list-input"
               disabled={disabled}
@@ -113,7 +116,7 @@ export function ChoiceList({
                 </span>
               ) : null}
             </span>
-            {index < 9 ? (
+            {hasShortcuts && index < 9 ? (
               <kbd aria-hidden="true" className="comma-choice-list-key">
                 {index + 1}
               </kbd>

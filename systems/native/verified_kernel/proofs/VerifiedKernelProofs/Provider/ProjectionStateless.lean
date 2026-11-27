@@ -21,6 +21,9 @@ theorem Provider.Content.systemText.stateless (m : Term) : Stateless (Content.sy
 theorem Provider.Content.inputTime.stateless (m content : Term) (textType : String) :
     Stateless (Content.inputTime m content textType) := by stateless
 theorem Provider.Content.fileText.stateless (block : Term) : Stateless (Content.fileText block) := by stateless
+theorem Provider.Content.dynamicUiText.stateless (block : Term) : Stateless (Content.dynamicUiText block) := by stateless
+theorem Provider.Content.conversationRefText.stateless (block : Term) :
+    Stateless (Content.conversationRefText block) := by stateless
 theorem Provider.Content.block.stateless (protocol : String) (v : Term) : Stateless (Content.block protocol v) := by
   stateless
 theorem Provider.Content.convert.stateless (protocol : String) (m : Term) :

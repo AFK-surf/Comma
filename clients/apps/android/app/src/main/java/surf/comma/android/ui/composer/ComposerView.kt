@@ -188,10 +188,10 @@ class ComposerView @JvmOverloads constructor(
     val capsuleTop: Float get() = y + pill.y
 
     /**
-     * Adds [text] to the draft after a blank line and raises the keyboard on it. The member sends it; nothing is
-     * sent here. The added words fade in where they land.
+     * Adds [text] to the draft after a blank line and, with [focus], raises the keyboard on it. The member sends it;
+     * nothing is sent here. The added words fade in where they land.
      */
-    fun fillDraft(text: String) {
+    fun fillDraft(text: String, focus: Boolean = true) {
         val current = editText.text.toString().trimEnd()
         val next = if (current.isEmpty()) text else "$current\n\n$text"
         editText.setText(next)
@@ -199,7 +199,7 @@ class ComposerView @JvmOverloads constructor(
         editText.alpha = 0f
         editText.animate().alpha(1f).setDuration(surf.comma.android.ui.theme.DesignMotion.durationMillis(
             surf.comma.android.ui.theme.DesignMotion.dialogEnter)).setInterpolator(surf.comma.android.ui.theme.DesignMotion.smoothOut).start()
-        focusInput()
+        if (focus) focusInput()
     }
 
     /** The text field, for the @ and / menus that read and edit the draft at the caret. */

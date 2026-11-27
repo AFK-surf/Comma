@@ -14,6 +14,28 @@ defmodule SalixEnv.ComputeReconcilerTest do
   defmodule HostHTTP do
     @request_id_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}\z/
 
+    def session_call(instance_id, session, "compute.image.import", payload, _timeout_ms) do
+      url = session_url(instance_id, session, "compute.image.import")
+
+      case post_import(url, Map.to_list(payload)) do
+        {:ok, body} -> {:ok, 200, body}
+        error -> error
+      end
+    end
+
+    def session_call(instance_id, session, operation, payload, _timeout_ms) do
+      url = session_url(instance_id, session, operation)
+
+      case post(url, payload) do
+        {:ok, body} -> {:ok, 200, body}
+        error -> error
+      end
+    end
+
+    def session_url(instance_id, session, operation) do
+      "worker://#{instance_id}/#{session.registration_id}/#{session.allocation_id}/#{session.allocation_generation}/#{session.connection_epoch}/#{operation}"
+    end
+
     def post(url, body) do
       execution_lifecycle? =
         String.ends_with?(url, "/compute.execution.acquire") or
@@ -282,6 +304,24 @@ defmodule SalixEnv.ComputeReconcilerTest do
   end
 
   defmodule ConcurrentHostHTTP do
+    def session_call(instance_id, session, "compute.image.import", payload, _timeout_ms) do
+      url = HostHTTP.session_url(instance_id, session, "compute.image.import")
+
+      case post_import(url, Map.to_list(payload)) do
+        {:ok, body} -> {:ok, 200, body}
+        error -> error
+      end
+    end
+
+    def session_call(instance_id, session, operation, payload, _timeout_ms) do
+      url = HostHTTP.session_url(instance_id, session, operation)
+
+      case post(url, payload) do
+        {:ok, body} -> {:ok, 200, body}
+        error -> error
+      end
+    end
+
     def post(url, body) do
       seed(url)
       HostHTTP.post(url, body)
@@ -310,6 +350,19 @@ defmodule SalixEnv.ComputeReconcilerTest do
   end
 
   defmodule RoundHostHTTP do
+    def session_call(instance_id, session, "compute.image.import", payload, _timeout_ms) do
+      url = HostHTTP.session_url(instance_id, session, "compute.image.import")
+
+      case post_import(url, Map.to_list(payload)) do
+        {:ok, body} -> {:ok, 200, body}
+        error -> error
+      end
+    end
+
+    def session_call(instance_id, session, operation, payload, timeout_ms) do
+      HostHTTP.session_call(instance_id, session, operation, payload, timeout_ms)
+    end
+
     def post(url, body), do: HostHTTP.post(url, body)
 
     def post_import(_url, _headers) do
@@ -328,6 +381,15 @@ defmodule SalixEnv.ComputeReconcilerTest do
     use SystemsRuntime.Server
 
     def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
+
+    def session_call(instance_id, session, operation, payload, _timeout_ms) do
+      url = HostHTTP.session_url(instance_id, session, operation)
+
+      case post(url, payload) do
+        {:ok, body} -> {:ok, 200, body}
+        error -> error
+      end
+    end
 
     def post(url, body) do
       SystemsRuntime.Server.call(
@@ -424,19 +486,14 @@ defmodule SalixEnv.ComputeReconcilerTest do
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])
 
     previous = %{
-      instances: SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_instances),
-      client: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_http_client),
+      caller: SystemsRuntime.get_env(:salix_store, :agent_vmm_session_caller),
       pid: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_pid),
       runtime_url: SystemsRuntime.get_env(:salix_store, :compute_runtime_base_url),
       runtime_secret: SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret),
       auth_pid: SystemsRuntime.get_env(:salix_store, :compute_reconciler_test_pid)
     }
 
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_gateway_instances, %{
-      "gateway-a" => "https://gateway.internal"
-    })
-
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, HostHTTP)
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_session_caller, HostHTTP)
 
     SystemsRuntime.put_env(
       :salix_store,
@@ -468,8 +525,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
     Process.delete(:compute_reconciler_volumes)
 
     on_exit(fn ->
-      restore(:agent_vmm_gateway_instances, previous.instances)
-      restore(:agent_vmm_host_http_client, previous.client)
+      restore(:agent_vmm_session_caller, previous.caller)
       restore(:agent_vmm_host_client_test_pid, previous.pid)
       restore(:compute_runtime_base_url, previous.runtime_url)
       restore(:compute_workload_credential_secret, previous.runtime_secret)
@@ -580,7 +636,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
   test "a completion after a peer clears the round waits for the original periodic deadline",
        fixture do
     open_host_session!(fixture, "round-race")
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, RoundHostHTTP)
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_session_caller, RoundHostHTTP)
 
     started_at = SystemsClock.monotonic_time(:millisecond)
     first = start_supervised!({ComputeReconciler, name: nil}, id: :round_first)
@@ -705,11 +761,17 @@ defmodule SalixEnv.ComputeReconcilerTest do
                  end)
              })
 
+    # Reconnecting prepares the Group Station as well. This fixture measures
+    # only its six Shells; do not let the unrelated Station claim a fifth row.
+    station = Repo.get_by!(Compute.Workload, template_key: "station.default")
+    Repo.delete!(station)
+    Repo.delete!(Repo.get!(Compute.Allocation, station.allocation_id))
+
     Enum.each(fixtures, fn item ->
       open_host_session!(item, "slot-#{item.workload.id}", "8")
     end)
 
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, RoundHostHTTP)
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_session_caller, RoundHostHTTP)
     coordinator = start_supervised!({ComputeReconciler, name: nil}, id: :round_slots)
 
     blocked =
@@ -906,7 +968,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
            lose_reply: kind == "service"}
         )
 
-      SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, RecoveryHost)
+      SystemsRuntime.put_env(:salix_store, :agent_vmm_session_caller, RecoveryHost)
       SystemsRuntime.put_env(:salix_store, :compute_recovery_host, host)
       on_exit(fn -> SystemsRuntime.delete_env(:salix_store, :compute_recovery_host) end)
 
@@ -1184,7 +1246,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
              AgentVMM.claim_registration_command("registration", "gateway-a", "7")
 
     assert refresh_command_id == refresh_command.id
-    refreshed_expiry_unix_millis = SystemsClock.system_time(:millisecond) + 900_000
+    refreshed_expiry_unix_millis = SystemsClock.system_time(:millisecond) + 1_020_000
 
     assert :ok =
              AgentVMM.commit_registration_result(
@@ -1219,7 +1281,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
     # The production command/result and fair-reconcile path can consume two
     # bounded 60-second stages, and Host inventory has a 95-second bound. Model
     # those elapsed stages before the import decision. The refreshed session
-    # must still carry the complete 660-second stream authority.
+    # must still carry the complete 780-second stream authority.
     delayed_expiry =
       refreshed_expiry_unix_millis
       |> DateTime.from_unix!(:millisecond)
@@ -1333,6 +1395,175 @@ defmodule SalixEnv.ComputeReconcilerTest do
     assert create_args["volumes"] == []
     assert create_args["read_only_root"] == true
     assert Repo.get!(Compute.Workload, fixture.workload.id).spec["volume_requirements"] == []
+  end
+
+  defp ready_import_session(fixture) do
+    Process.put(:compute_reconciler_image_reference, fixture.image_reference)
+    Process.put(:compute_reconciler_manifest_digest, "sha256:" <> String.duplicate("c", 64))
+
+    assert {:ok, %{outcome: :pending, command: session_command}} =
+             ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
+
+    assert {:ok, %Compute.Command{status: "admitted"}} =
+             AgentVMM.claim_registration_command("registration", "gateway-a", "7")
+
+    expires_unix_millis = SystemsClock.system_time(:millisecond) + 900_000
+
+    session = %{
+      "allocationId" => fixture.allocation.id,
+      "allocationGeneration" => fixture.allocation.generation,
+      "tunnelNonce" => "tunnel-1",
+      "expiresUnixMillis" => expires_unix_millis
+    }
+
+    assert :ok =
+             AgentVMM.commit_registration_result(
+               "registration",
+               "gateway-a",
+               "7",
+               session_command.id,
+               "succeeded",
+               %{"result" => %{"sessionReady" => session}}
+             )
+
+    assert {:ok, :ok} =
+             AgentVMM.observe_session(
+               "registration",
+               "gateway-a",
+               Map.put(session, "connectionEpoch", "7")
+             )
+  end
+
+  defp import_claim(fixture) do
+    Repo.get_by!(Compute.ReconcilerClaim,
+      workload_id: fixture.workload.id,
+      generation: fixture.workload.generation
+    )
+  end
+
+  defp import_error(code) do
+    {:error,
+     {:gateway_error,
+      %{
+        "code" => code,
+        "stage" => "image_import",
+        "resource" => if(code == "import_in_progress", do: "runtime", else: "image"),
+        "message" => "Import did not complete."
+      }}}
+  end
+
+  test "running imports poll without consuming the failure window or replacing diagnostics",
+       fixture do
+    ready_import_session(fixture)
+    Process.put(:compute_reconciler_image_import_result, import_error("import_in_progress"))
+
+    for _ <- 1..6 do
+      ComputeReconciler.sweep(32)
+      assert import_claim(fixture).last_error == %{}
+
+      assert DateTime.diff(
+               import_claim(fixture).next_retry_at,
+               SystemsClock.utc_now(),
+               :millisecond
+             ) == 5_000
+
+      SystemsClock.advance(5_000)
+    end
+
+    Process.put(:compute_reconciler_image_import_result, import_error("image_import_failed"))
+    ComputeReconciler.sweep(32)
+    prior = import_claim(fixture).last_error
+    assert prior["image_import_failures"] == 1
+    SystemsClock.advance(5_000)
+    Process.put(:compute_reconciler_image_import_result, import_error("import_in_progress"))
+
+    for _ <- 1..6 do
+      ComputeReconciler.sweep(32)
+      assert import_claim(fixture).last_error == prior
+      assert import_claim(fixture).next_retry_at
+      SystemsClock.advance(5_000)
+    end
+  end
+
+  test "image failures get five attempts independent of claim attempts and Retry reopens the window",
+       fixture do
+    ready_import_session(fixture)
+    Process.put(:compute_reconciler_image_import_result, import_error("import_in_progress"))
+
+    for _ <- 1..5 do
+      ComputeReconciler.sweep(32)
+      SystemsClock.advance(5_000)
+    end
+
+    assert import_claim(fixture).attempt_count == 5
+    Process.put(:compute_reconciler_image_import_result, import_error("image_import_failed"))
+
+    for failures <- 1..5 do
+      ComputeReconciler.sweep(32)
+      claim = import_claim(fixture)
+      assert claim.last_error["image_import_failures"] == failures
+      assert claim.last_error["code"] == "image_import_failed"
+
+      if failures < 5 do
+        assert claim.last_error["kind"] == "provider_error"
+        delay = 5_000 * Integer.pow(2, failures - 1)
+        assert DateTime.diff(claim.next_retry_at, SystemsClock.utc_now(), :millisecond) == delay
+        SystemsClock.advance(delay)
+      else
+        assert claim.last_error["kind"] == "action_required"
+        assert is_nil(claim.next_retry_at)
+      end
+    end
+
+    assert :complete = ComputeReconciler.sweep(32)
+
+    assert {:ok, _} =
+             SalixStore.ComputeWorkloadManagement.retry(
+               "tenant",
+               "project",
+               fixture.workload.id,
+               fixture.workload.generation,
+               fn -> :ok end
+             )
+
+    assert import_claim(fixture).last_error == %{}
+    ComputeReconciler.sweep(32)
+    assert import_claim(fixture).last_error["image_import_failures"] == 1
+  end
+
+  test "deterministic image errors park on their first failure", fixture do
+    ready_import_session(fixture)
+
+    for code <- ~w(data_loss invalid_argument not_found permission_denied) do
+      Process.put(:compute_reconciler_image_import_result, import_error(code))
+      ComputeReconciler.sweep(32)
+      claim = import_claim(fixture)
+      assert claim.last_error["code"] == code
+      assert claim.last_error["kind"] == "action_required"
+      assert is_nil(claim.next_retry_at)
+
+      assert {:ok, _} =
+               SalixStore.ComputeWorkloadManagement.retry(
+                 "tenant",
+                 "project",
+                 fixture.workload.id,
+                 fixture.workload.generation,
+                 fn -> :ok end
+               )
+    end
+  end
+
+  test "successful image import clears its failure window before container reconciliation",
+       fixture do
+    ready_import_session(fixture)
+    Process.put(:compute_reconciler_image_import_result, import_error("image_import_failed"))
+    ComputeReconciler.sweep(32)
+    assert import_claim(fixture).last_error["image_import_failures"] == 1
+    SystemsClock.advance(5_000)
+    Process.delete(:compute_reconciler_image_import_result)
+    ComputeReconciler.sweep(32)
+    assert import_claim(fixture).last_error == %{}
+    assert Repo.get!(Compute.Workload, fixture.workload.id).observed_state != "ready"
   end
 
   test "a busy import slot retries the claim while missing storage headroom awaits action",
@@ -2246,7 +2477,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
              })
   end
 
-  defp open_host_session!(fixture, tunnel_nonce, epoch \\ "7", ttl_ms \\ 720_000) do
+  defp open_host_session!(fixture, tunnel_nonce, epoch \\ "7", ttl_ms \\ 900_000) do
     assert {:ok, %{outcome: :pending, command: command}} =
              ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
 

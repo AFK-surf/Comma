@@ -86,14 +86,14 @@ defmodule SalixIM.ProviderConversationInput do
     {:ok, message}
   end
 
-  @spec stage_worker_attachments(String.t(), list()) :: {:ok, list(), list()}
-  def stage_worker_attachments(agent_id, attachments) when is_list(attachments),
-    do: ProviderAttachments.stage(agent_id, attachments)
+  @spec stage_worker_attachments(String.t(), list(), list() | nil) :: {:ok, list(), list()}
+  def stage_worker_attachments(agent_id, attachments, label \\ nil) when is_list(attachments),
+    do: ProviderAttachments.stage(agent_id, attachments, label)
 
-  @spec publish_worker_attachments(String.t(), list()) :: {:ok, list(), list()}
-  def publish_worker_attachments(agent_id, prepared_attachments)
+  @spec publish_worker_attachments(String.t(), list(), list() | nil) :: {:ok, list(), list()}
+  def publish_worker_attachments(agent_id, prepared_attachments, label \\ nil)
       when is_list(prepared_attachments),
-      do: ProviderAttachments.publish(agent_id, prepared_attachments)
+      do: ProviderAttachments.publish(agent_id, prepared_attachments, label)
 
   @spec content_with_attachments(list(), term(), list()) :: list()
   def content_with_attachments([], content, []), do: normalize_content_blocks(content)

@@ -18,6 +18,7 @@ import type { SessionProductLease } from "@comma/session-contract";
 import type { ChatChannel } from "./channel/ChatChannel";
 import { CoreConversationChannel } from "./channel/CoreConversationChannel";
 import { DraftSelectionsProvider } from "./composer/draftSelections";
+import { useFollowLocationSharing } from "../location/locationSharing";
 import { DraftSnippetsProvider } from "./composer/draftSnippets";
 import {
   idleConversationChannelState,
@@ -155,12 +156,6 @@ const ChatSessionContext = createContext<ChatSession | null>(null);
 let nextSessionIdentity = 0;
 
 export function ChatProvider({ children, ...sessionProps }: ChatSessionProviderProps) {
-  // The core words chat's messages (errors, defaults) in this window's language.
-  const locale = useCommaLocale();
-  const call = useCall();
-  useEffect(() => {
-    void call("chat.locale", { locale }).catch(() => undefined);
-  }, [call, locale]);
   return (
     <ChatSessionProvider {...sessionProps}>
       <ChatConsumerBoundary>{children}</ChatConsumerBoundary>
@@ -185,6 +180,14 @@ export function ChatSessionProvider({
 }: ChatSessionProviderProps) {
   const locale = useCommaLocale();
   const core = useCore();
+  const call = useCall();
+  // The core words chat's messages (errors, defaults) in this window's language.
+  useEffect(() => {
+    void call("chat.locale", { locale }).catch(() => undefined);
+  }, [call, locale]);
+  // Each message carries this device's position while the person shares it, and the Agent's requests for it are
+  // answered without a card.
+  useFollowLocationSharing();
   const owner = useRef<ChatSessionOwner>({
     current: undefined,
     channelSeeds: undefined,

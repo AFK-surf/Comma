@@ -36,6 +36,24 @@ defmodule SalixStore.TenantProfiles do
 
   def router_only?(_tenant_id), do: false
 
+  @doc "The router-only Tenants among at most #{@limit_page} ids, in one query."
+  @spec router_only_ids([String.t()]) :: MapSet.t(String.t())
+  def router_only_ids([]), do: MapSet.new()
+
+  def router_only_ids(tenant_ids)
+      when is_list(tenant_ids) and length(tenant_ids) <= @limit_page do
+    from(row in TenantConfigs.Row,
+      where: row.name == @name and row.tenant_id in ^tenant_ids,
+      select: {row.tenant_id, row.value}
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn
+      {tenant_id, %{"router_only" => true}} -> [tenant_id]
+      _other -> []
+    end)
+    |> MapSet.new()
+  end
+
   @doc "Mark a Tenant router-only and set its dependency admission limit."
   @spec put_router_only(String.t(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def put_router_only(tenant_id, dependency_max_children)

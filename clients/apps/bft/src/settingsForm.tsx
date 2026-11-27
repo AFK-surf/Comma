@@ -2,10 +2,11 @@ import { Button } from "@comma/ui/components/Button";
 import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
-import { Fragment, useId, useState, type ReactNode } from "react";
+import { Fragment, useId, useState, type HTMLAttributes, type ReactNode } from "react";
 import { BftApiError, type BftFieldErrors } from "./api";
 import { ConfirmDialog, DialogError, writeErrorMessage } from "./dialogs";
 import { messages } from "./messages";
+import { SectionFlash } from "./flash";
 import { dataKey, type Resource } from "./resource";
 import { ErrorState, Skeleton } from "./states";
 
@@ -152,6 +153,7 @@ export function FormSection({
         {action}
       </div>
       {description ? <p className="bft-form-section-note">{description}</p> : null}
+      {id ? <SectionFlash section={id} /> : null}
       <div className="bft-form">{children}</div>
     </section>
   );
@@ -201,11 +203,18 @@ export function Step({
 export interface WriteState {
   busy: boolean;
   error: string | undefined;
+  code: string | undefined;
   fields: BftFieldErrors;
   saved: boolean;
 }
 
-const idle: WriteState = { busy: false, error: undefined, fields: {}, saved: false };
+const idle: WriteState = {
+  busy: false,
+  error: undefined,
+  code: undefined,
+  fields: {},
+  saved: false,
+};
 
 /**
  * One write at a time for a form or dialog: the server's message and its
@@ -213,17 +222,28 @@ const idle: WriteState = { busy: false, error: undefined, fields: {}, saved: fal
  */
 export function useWrite() {
   const [state, setState] = useState<WriteState>(idle);
-  const run = <T,>(write: () => Promise<T>, onDone: (data: T) => void) => {
+  /**
+   * Runs `write`, then `onDone` with its answer. While a promise `onDone`
+   * returns is pending (such as the page being read again), the form stays
+   * busy; it settles either way.
+   */
+  const run = <T,>(write: () => Promise<T>, onDone: (data: T) => unknown) => {
     setState({ ...idle, busy: true });
     write().then(
       (data) => {
         setState({ ...idle, saved: true });
-        onDone(data);
+        const after = onDone(data);
+        if (after instanceof Promise) {
+          setState({ ...idle, busy: true });
+          const settle = () => setState({ ...idle, saved: true });
+          after.then(settle, settle);
+        }
       },
       (caught: unknown) =>
         setState({
           ...idle,
           error: writeErrorMessage(caught),
+          code: caught instanceof BftApiError ? caught.code : undefined,
           fields: caught instanceof BftApiError ? caught.fields : {},
         })
     );
@@ -322,6 +342,7 @@ export function TextField({
   hint,
   placeholder,
   disabled,
+  inputMode,
 }: {
   label: string;
   value: string;
@@ -330,6 +351,7 @@ export function TextField({
   hint?: string;
   placeholder?: string;
   disabled?: boolean;
+  inputMode?: HTMLAttributes<HTMLInputElement>["inputMode"];
 }) {
   return (
     <InputField
@@ -341,6 +363,7 @@ export function TextField({
       onChange={(event) => onChange(event.target.value)}
       value={value}
       wrapperClassName="bft-form-field"
+      {...(inputMode ? { inputMode } : {})}
       {...(error ? { errorMessage: error } : {})}
       {...(hint ? { hint } : {})}
       {...(placeholder ? { placeholder } : {})}

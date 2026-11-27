@@ -443,6 +443,48 @@ describe("a window's channel on a conversation", () => {
     vi.restoreAllMocks();
   });
 
+  it("previews collaborative task images through chat.readGroupImage with conversationId", async () => {
+    installNativeBridgeMock({
+      platform: "web",
+      self: { role: "main-window", windowId: "win_main" },
+    });
+    let nextObjectUrl = 0;
+    vi.spyOn(URL, "createObjectURL").mockImplementation(
+      () => `blob:task-preview-${++nextObjectUrl}`
+    );
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+    const view = scriptView((name) => (name === "chat.readGroupImage" ? png : null));
+    const channel = open(view.core);
+    view.show({});
+    await flush();
+
+    const taskUploadPath = "/task/cnv_1/uploads/AAAAAAAAAAAAAAAAAAAAAA-image.png";
+    const uploaded = await channel.previewLocalFile(taskUploadPath);
+    expect(uploaded?.url).toBe("blob:task-preview-1");
+    expect(view.core.sentTo("chat.readGroupImage").at(-1)).toMatchObject({
+      conversationId: "cnv_1",
+      groupId: "grp_1",
+      path: taskUploadPath,
+      source: "group-file",
+    });
+
+    const taskFolderPath = "/task/charts/plot.png";
+    const workerImage = await channel.previewLocalFile(taskFolderPath);
+    expect(workerImage?.url).toBe("blob:task-preview-2");
+    expect(view.core.sentTo("chat.readGroupImage").at(-1)).toMatchObject({
+      conversationId: "cnv_1",
+      groupId: "grp_1",
+      path: taskFolderPath,
+      source: "group-file",
+    });
+
+    uploaded?.release();
+    workerImage?.release();
+    channel.stop();
+    vi.restoreAllMocks();
+  });
+
   it("hands Electron's Main files from disk with the view's lease and room, and sends only once Main attached them", async () => {
     let attached!: () => void;
     const pickAttachments = vi.fn(

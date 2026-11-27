@@ -27,7 +27,6 @@ defmodule SalixWeb.StationLLM do
   alias Salix.Control.Groups
   alias SalixAgent.{LLMMetering, PlatformModels, SubscriptionStore}
 
-  @tier "worker"
   @prefix "slm1."
   @seal_id "station-llm"
   @receive_timeout_ms 600_000
@@ -38,15 +37,7 @@ defmodule SalixWeb.StationLLM do
   def path?(path), do: path == base_path() <> "/responses"
 
   @doc "The platform tier a station is lent, when it is configured for Codex (`responses`)."
-  def tier do
-    with {:ok, template} <- PlatformModels.record(@tier),
-         "responses" <- get_in(template, ["provider_config", "protocol"]) do
-      {:ok, template}
-    else
-      {:error, _} = error -> error
-      _ -> {:error, :platform_model_not_responses}
-    end
-  end
+  def tier, do: PlatformModels.station_tier()
 
   @doc "A key for the station of `connection` (its device and the Workload generation it proved)."
   def token(%{tenant_id: tenant} = connection) do
@@ -285,7 +276,7 @@ defmodule SalixWeb.StationLLM do
   end
 
   defp billing_owner(%{tenant_id: tenant, group_id: group}) do
-    with {:ok, record} <- Groups.get(group, tenant),
+    with {:ok, record} <- Groups.get_for_runtime(group, tenant),
          owner when is_map(owner) <- record["billing_owner"] do
       %{
         billing_account_id: owner["billing_account_id"],

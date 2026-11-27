@@ -278,6 +278,44 @@ defmodule SalixIM.ConversationPGStore do
   def read(%__MODULE__{} = scope), do: load(scope, "", true)
   def read_creation(%__MODULE__{} = scope), do: load(scope, "")
 
+  @doc """
+  The published, live Conversation records of `group_id` among
+  `conversation_ids` (at most 200), by id, in one query. One absent is not
+  there or not published.
+  """
+  def read_many(group_id, conversation_ids)
+      when is_binary(group_id) and is_list(conversation_ids) and length(conversation_ids) <= 200 do
+    case query(
+           """
+           SELECT conversation_id, metadata, kind, updated_at, message_tail_seq, message_head_seq,
+                  log_start_seq, provider_status_version, membership_revision
+           FROM salix_conversations
+           WHERE group_id = $1 AND conversation_id = ANY($2) AND revision > 0
+             AND deleted_at IS NULL
+           """,
+           [group_id, conversation_ids]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Map.new(rows, fn [id, payload, kind, updated, tail, head, start, status, membership] ->
+           {id,
+            decode_projection(group_id, id, payload, %{
+              "kind" => kind,
+              "updated_at" => updated,
+              "message_tail_seq" => tail,
+              "message_head_seq" => head,
+              "log_start_seq" => start,
+              "provider_status_version" => status,
+              "membership_revision" => membership,
+              "deleted_at" => nil
+            })}
+         end)}
+
+      {:error, _} ->
+        {:error, :unavailable}
+    end
+  end
+
   def create(scope, record), do: execute(prepare_create(scope, record))
 
   def prepare_create(%__MODULE__{} = scope, record) when is_map(record) do
@@ -292,6 +330,8 @@ defmodule SalixIM.ConversationPGStore do
       |> Map.put_new("log_start_seq", 0)
       |> Map.put_new("provider_status_version", 0)
       |> Map.put_new("membership_revision", 0)
+      |> Map.put_new("last_final_message_id", nil)
+      |> Map.put_new("last_final_message_seq", nil)
 
     %Pending{
       kind: :create,
@@ -317,6 +357,8 @@ defmodule SalixIM.ConversationPGStore do
       |> Map.put("message_head_seq", 1)
       |> Map.put("updated_at", append_time(pending.record, message))
       |> project_task_message(message)
+      |> project_message_summary(message)
+      |> SalixIM.TaskFeed.project_cluster(message)
       |> then(&canonical(scope, &1))
 
     %{
@@ -399,8 +441,10 @@ defmodule SalixIM.ConversationPGStore do
     end
   end
 
-  def prepare_append(%__MODULE__{} = scope, {previous, revision}, message)
-      when is_map(previous) and is_map(message) do
+  def prepare_append(scope, previous_and_revision, message, conversation_updates \\ %{})
+
+  def prepare_append(%__MODULE__{} = scope, {previous, revision}, message, conversation_updates)
+      when is_map(previous) and is_map(message) and is_map(conversation_updates) do
     seq = previous["message_tail_seq"] + 1
 
     message =
@@ -408,10 +452,12 @@ defmodule SalixIM.ConversationPGStore do
 
     record =
       previous
+      |> Map.merge(conversation_updates)
       |> Map.put("message_tail_seq", seq)
       |> Map.put("message_head_seq", max(previous["message_head_seq"] || 0, 1))
       |> Map.put("updated_at", append_time(previous, message))
       |> project_task_message(message)
+      |> project_message_summary(message)
       |> then(&canonical(scope, &1))
 
     {:ok,
@@ -425,9 +471,10 @@ defmodule SalixIM.ConversationPGStore do
      }}
   end
 
-  def prepare_append(%__MODULE__{} = scope, expected_revision, message) when is_map(message) do
+  def prepare_append(%__MODULE__{} = scope, expected_revision, message, conversation_updates)
+      when is_map(message) and is_map(conversation_updates) do
     with {:ok, previous, _revision} <- read(scope) do
-      prepare_append(scope, {previous, expected_revision}, message)
+      prepare_append(scope, {previous, expected_revision}, message, conversation_updates)
     end
   end
 
@@ -849,6 +896,11 @@ defmodule SalixIM.ConversationPGStore do
       pending.scope.conversation_id
     )
 
+    SalixStore.TaskFeed.delete_conversation!(
+      pending.scope.group_id,
+      pending.scope.conversation_id
+    )
+
     Repo.query!(
       "DELETE FROM salix_conversations WHERE group_id = $1 AND conversation_id = $2",
       [pending.scope.group_id, pending.scope.conversation_id]
@@ -894,6 +946,7 @@ defmodule SalixIM.ConversationPGStore do
     bind_local_refs!(pending, pending.message)
     publish_message(pending.scope, pending.message, nil)
     task_files!(pending.scope, nil, record, pending.message)
+    SalixIM.TaskFeed.sync!(pending.scope, nil, record, pending.message)
     search_target!(pending.scope, record, :message, pending.message)
     {:ok, :inserted, record, inserted_message(pending.message), revision}
   end
@@ -907,6 +960,7 @@ defmodule SalixIM.ConversationPGStore do
     else
       save(pending.scope, pending.record, revision + 1)
       task_files!(pending.scope, pending.previous, pending.record, nil)
+      SalixIM.TaskFeed.sync!(pending.scope, pending.previous, pending.record, nil)
       search_target!(pending.scope, pending.record, :rebuild)
 
       if Map.take(
@@ -1134,6 +1188,23 @@ defmodule SalixIM.ConversationPGStore do
   def identity_by_request_identity(%__MODULE__{} = scope, identity),
     do: read_identity(scope, "request_identity = $3", normalize_identity(identity))
 
+  def recent_hot_messages(%__MODULE__{} = scope, limit)
+      when is_integer(limit) and limit in 1..200 do
+    case query(
+           "SELECT payload FROM salix_conversation_messages " <>
+             "WHERE group_id = $1 AND conversation_id = $2 " <>
+             "AND seq IS NOT NULL AND NOT tombstone AND payload IS NOT NULL " <>
+             "ORDER BY seq DESC LIMIT $3",
+           [scope.group_id, scope.conversation_id, limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [payload] -> decode(payload) end)}
+
+      error ->
+        error
+    end
+  end
+
   def messages(%__MODULE__{} = scope, first_seq, last_seq, limit)
       when is_integer(first_seq) and is_integer(last_seq) and is_integer(limit) and
              limit in 0..1_000 do
@@ -1267,12 +1338,15 @@ defmodule SalixIM.ConversationPGStore do
       updated
       |> Map.put("updated_at", append_time(conversation, message))
       |> project_task_message(message)
+      |> project_message_summary(message)
+      |> SalixIM.TaskFeed.project_cluster(message)
 
     next = revision + 1
 
     bind_local_refs!(pending, message)
     publish_message(scope, message, reservation)
     task_files!(scope, conversation, updated, message)
+    SalixIM.TaskFeed.sync!(scope, conversation, updated, message)
 
     save(scope, updated, next)
     publish_targets(scope, updated)
@@ -1322,6 +1396,35 @@ defmodule SalixIM.ConversationPGStore do
 
         {:error, :not_found} ->
           :ok
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # Projects Messages appended before the Task Feed projection existed
+  # (`SalixIM.TaskFeed.backfill_page/0`). The Conversation row is held with
+  # FOR SHARE so a rename, archive, or deletion cannot interleave.
+  def index_task_feed(scope, messages, initial_cluster \\ nil)
+
+  def index_task_feed(_scope, [], initial_cluster), do: {:ok, initial_cluster}
+
+  def index_task_feed(%__MODULE__{} = scope, messages, initial_cluster)
+      when is_list(messages) do
+    transaction(fn ->
+      case load(scope, " FOR SHARE") do
+        {:ok, %{"kind" => "agent_task", "deleted_at" => nil} = record, _revision} ->
+          next_cluster =
+            SalixIM.TaskFeed.backfill_messages!(scope, record, messages, initial_cluster)
+
+          {:ok, next_cluster}
+
+        {:ok, _not_a_live_task, _revision} ->
+          {:ok, nil}
+
+        {:error, :not_found} ->
+          {:ok, nil}
 
         {:error, reason} ->
           Repo.rollback(reason)
@@ -1413,6 +1516,18 @@ defmodule SalixIM.ConversationPGStore do
   end
 
   defp project_task_message(conversation, _message), do: conversation
+
+  defp project_message_summary(
+         conversation,
+         %{"actor_type" => actor_type, "message_id" => id, "seq" => seq}
+       )
+       when actor_type in ["agent", "system"] and is_binary(id) and is_integer(seq) do
+    conversation
+    |> Map.put("last_final_message_id", id)
+    |> Map.put("last_final_message_seq", seq)
+  end
+
+  defp project_message_summary(conversation, _message), do: conversation
 
   defp existing_message(scope, incoming) do
     case request_identity(incoming) do

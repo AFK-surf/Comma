@@ -43,6 +43,7 @@ const { core, dispose: disposeCore } = connectWebCore(apiBaseUrl, {
 // The session is the core's: the page shows it and asks the core to change it.
 const sessionController = createCoreSessionHostController({ apiBaseUrl, core, locale });
 const stopAnalytics = startCommaAnalytics({
+  enabled: initialSettings.usageAnalyticsEnabled,
   runtime: "web",
   lifecycle: sessionController.lifecycle,
 });

@@ -82,6 +82,23 @@ final class WatchCallTests: XCTestCase {
         XCTAssertFalse(call.phase.isLive)
     }
 
+    func testPhoneBackendChangeClearsWatchSessionAndSelectsNewBackend() async throws {
+        let suite = "WatchBackendSwitchTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = try store()
+        let bridge = WatchPairingBridge()
+        bridge.configure(store: store)
+        defaults.set("parent-session", forKey: "comma.watch-parent-session")
+        await bridge.receive(parent: "parent-session", authenticated: true,
+                             baseURL: "https://salix-staging.comma.surf", defaults: defaults)
+        XCTAssertNil(store.session)
+        XCTAssertEqual(BackendEnvironment.chosen(defaults), .staging)
+        XCTAssertNil(defaults.string(forKey: "comma.watch-parent-session"))
+        XCTAssertFalse(bridge.pairedBefore)
+        XCTAssertEqual(bridge.error, "Your iPhone uses Staging. Close Comma on this watch and open it again.")
+    }
+
     private func store() throws -> CommaStore {
         let configuration = AppConfiguration(baseURL: URL(string: "https://watch-call.test")!, credentialService: "WatchCallTests")
         let store = CommaStore(configuration: configuration, client: try configuration.makeClient())

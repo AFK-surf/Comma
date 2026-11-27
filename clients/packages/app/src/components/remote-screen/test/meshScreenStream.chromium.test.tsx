@@ -1060,6 +1060,9 @@ it("opens the view's figures from the toolbar's bars: what the station says, the
   expect(row("Codec")).toBe("H.264");
   expect(row("Capture")).toBe("ScreenCaptureKit");
   expect(row("Encoder")).toBe("Hardware");
+  // A station that says no round trip or packet loss: neither row, no 0%.
+  expect(row("Round trip")).toBeUndefined();
+  expect(row("Packet loss")).toBeUndefined();
   // Frames and bits a second: what came over the second the figures were open.
   // (none before its first second: left out, not a dash)
   expect(row("Frame rate")).toBeUndefined();
@@ -1076,5 +1079,79 @@ it("opens the view's figures from the toolbar's bars: what the station says, the
   expect(row("Frame rate")).toBe(String(FRAMES.length));
   const bits = FRAMES.reduce((sum, frame) => sum + bytes(frame).byteLength * 8, 0);
   expect(row("Bandwidth")).toBe(bitrateText(bits));
+  page.unmount();
+});
+
+/** The connection bars' icon, and the warning or error colour an element has, if any. */
+const bars = () =>
+  screen.getByRole("button", { name: "Connection" }).querySelector("svg")!;
+const tone = (element: Element | null | undefined) =>
+  element?.getAttribute("class")?.match(/text-(error|warning)-primary/)?.[0];
+
+it("colours the bars by the link its station says before the figures are read, and shows the round trip and packet loss", async () => {
+  const core = createScriptedCore();
+  const view = viewing();
+  const page = render(
+    core.wrap(
+      <ScreenStreamPanel
+        active
+        appName="Calculator"
+        source={meshSource(view, "mesh-link")}
+        via="relay"
+      />
+    )
+  );
+  await view.started();
+  view.frames();
+  await untilPage(() => panel().getAttribute("data-state") === "live");
+  const clock = createVirtualUiClock();
+  onTestFinished(installUiClock(clock));
+  const every = vi.spyOn(clock, "every");
+  expect(tone(bars())).toBeUndefined();
+
+  // Most of its packets lost on a fast relay: the bars say so with the figures closed, which nothing reads meanwhile.
+  view.emit({ type: "state", state: { rtt: 57, loss: 28.6 } });
+  await untilPage(() => tone(bars()) !== undefined);
+  expect(tone(bars())).toBe("text-error-primary");
+  expect(every).not.toHaveBeenCalled();
+
+  screen.getByRole("button", { name: "Connection" }).click();
+  await untilPage(() => screen.queryByTestId("remote-screen-stats-panel") !== null);
+  expect(every).toHaveBeenCalled();
+  const figures = screen.getByTestId("remote-screen-stats-panel");
+  const value = (name: string) =>
+    [...figures.querySelectorAll("dl > div")]
+      .find((r) => r.querySelector("dt")?.textContent === name)
+      ?.querySelector("dd");
+  const names = () =>
+    [...figures.querySelectorAll("dl:first-of-type dt")].map((dt) => dt.textContent);
+  expect(value("Round trip")?.textContent).toBe("57 ms");
+  expect(tone(value("Round trip")?.firstElementChild)).toBeUndefined();
+  expect(value("Packet loss")?.textContent).toBe("28.6%");
+  expect(tone(value("Packet loss")?.firstElementChild)).toBe("text-error-primary");
+  // The round trip first, the loss after the frames' figures.
+  expect(names()[0]).toBe("Round trip");
+  expect(names().at(-1)).toBe("Packet loss");
+
+  // A slow round trip and no loss: a warning, the loss 0% in no colour of its own.
+  view.emit({ type: "state", state: { rtt: 420, loss: 0 } });
+  act(() => clock.advance(1000));
+  await untilPage(() => value("Round trip")?.textContent === "420 ms");
+  expect(tone(value("Round trip")?.firstElementChild)).toBe("text-warning-primary");
+  expect(value("Packet loss")?.textContent).toBe("0%");
+  expect(tone(value("Packet loss")?.firstElementChild)).toBeUndefined();
+  expect(tone(bars())).toBe("text-warning-primary");
+
+  // Figures that cannot be are not taken.
+  view.emit({ type: "state", state: { rtt: -1, loss: 140 } });
+  act(() => clock.advance(1000));
+  expect(value("Round trip")?.textContent).toBe("420 ms");
+  expect(value("Packet loss")?.textContent).toBe("0%");
+
+  // A well link: the bars in their own colour.
+  view.emit({ type: "state", state: { rtt: 24, loss: 0 } });
+  act(() => clock.advance(1000));
+  await untilPage(() => value("Round trip")?.textContent === "24 ms");
+  expect(tone(bars())).toBeUndefined();
   page.unmount();
 });

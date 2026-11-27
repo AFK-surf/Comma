@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "baseImages": {
-    "go": "golang:1.26.10-bookworm@sha256:fe3da92a5cb2881e4aa75e625cb0b7c50571632fb4cf340cbe53e6ccdcffdd51",
+    "go": "golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0",
     "station": "node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d",
     "codingSandbox": "node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea"
   },
-  "packageSnapshot": "20261105T035013Z",
+  "packageSnapshot": "20261127T035023Z",
   "npm": {
     "package": "npm",
     "version": "11.19.0",
@@ -83,6 +83,13 @@
     "license": "MIT",
     "tarball": "https://codeload.github.com/kn007/silk-v3-decoder/tar.gz/507be6bca8ce1fb977a061481f1d79e8c610e309",
     "integrity": "sha512-twjdjYUpmUv0rQ8jeTPjl9N2VXa2jDUR8E5TlfS2Oj2M2aIoNyunYJzEd2gT2os/5s1tQKXy3IRuZoaH9o0SjA=="
+  },
+  "playwrightMcp": {
+    "package": "@playwright/mcp",
+    "version": "0.0.85",
+    "license": "Apache-2.0",
+    "tarball": "https://registry.npmjs.org/@playwright/mcp/-/mcp-0.0.85.tgz",
+    "integrity": "sha512-bSfECMbLXhJdWkGhLzNMxTZuazG+9IDJ679gflji3yyD94e7ARnGdqmJmG6lTPB+gYX+OiFLmX5myBl62+wZEw=="
   },
   "elanAmd64": {
     "repository": "https://github.com/leanprover/elan",

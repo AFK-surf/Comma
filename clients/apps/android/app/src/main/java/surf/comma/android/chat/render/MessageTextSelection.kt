@@ -34,7 +34,9 @@ internal class MessageTextSelection(
     private val brand = cell.context.getColor(R.color.token_bg_brand_solid)
     private val highlight = Paint().apply {
         val tint = if (geometry.item.drawBubble && geometry.item.message.role == ChatRole.USER)
-            ChatPalette.from(cell.context).userText else brand
+            PlatformBubble.colors(geometry.item.message.platformSource, false)?.text
+                ?: ChatPalette.from(cell.context).userText
+        else brand
         color = ColorUtils.setAlphaComponent(tint, 64)
     }
     private val location = IntArray(2)

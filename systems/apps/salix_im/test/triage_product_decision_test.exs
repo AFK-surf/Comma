@@ -229,4 +229,86 @@ defmodule SalixIM.TriageProductDecisionTest do
     assert {:error, :invalid_triage_product_decision} =
              ProductDecision.validate(unknown_kind, @source_refs, @principal_refs)
   end
+
+  test "delegations must anchor to the current target thread or due scheduled recheck" do
+    slack_context = %{
+      "messages" => [
+        %{"source_ref" => "source://run/s001", "thread_ref" => "thread://run/t001"},
+        %{"source_ref" => "source://run/s002", "thread_ref" => "thread://run/t002"}
+      ],
+      "source_refs" => ["source://run/s001", "source://run/s002"],
+      "decision_target" => %{"source_ref" => "source://run/s002"}
+    }
+
+    memory = %{
+      "facts" => [
+        %{
+          "kind" => "retained_follow_up",
+          "source_ref" => "source://run/s010",
+          "text" =>
+            "login-stuck: Check login flow\nFollow-up basis: unconfirmed. Next check at 100."
+        },
+        %{
+          "kind" => "retained_follow_up",
+          "source_ref" => "source://run/s011",
+          "text" =>
+            "due-check: Recheck deployment\nFollow-up basis: agent_owned. Next check at 200. This follow-up triggered the current scheduled recheck. Do not postpone this occurrence based on the next check time; it may already name a future retry."
+        }
+      ]
+    }
+
+    anchors = ProductDecision.delegation_anchor_refs(slack_context, memory, "periodic_patrol")
+    assert anchors == ["source://run/s002"]
+
+    mixed = %{
+      "schema" => ProductDecision.schema(),
+      "communication" => %{
+        "kind" => "reply",
+        "text" => "Checking the Tokyo mini order.",
+        "source_refs" => ["source://run/s002"]
+      },
+      "context_candidates" => [],
+      "delegations" => [
+        %{"task" => "Check Tokyo mini quote", "source_refs" => ["source://run/s002"]},
+        %{"task" => "Check unrelated login follow-up", "source_refs" => ["source://run/s010"]},
+        %{"task" => "Check other thread in channel batch", "source_refs" => ["source://run/s001"]}
+      ],
+      "identity_interpretation" => %{"topic" => "none", "referenced_principal_refs" => []}
+    }
+
+    assert {:error, :unanchored_delegation} =
+             ProductDecision.validate_delegation_anchors(mixed, anchors)
+
+    enforced = ProductDecision.enforce_delegation_anchors(mixed, anchors)
+    assert enforced["communication"] == mixed["communication"]
+
+    assert enforced["delegations"] == [
+             %{"task" => "Check Tokyo mini quote", "source_refs" => ["source://run/s002"]}
+           ]
+
+    assert :ok = ProductDecision.validate_delegation_anchors(enforced, anchors)
+
+    # Scheduled recheck allows the due follow-up ref that triggered this run, not unrelated follow-ups.
+    recheck_anchors =
+      ProductDecision.delegation_anchor_refs(slack_context, memory, "scheduled_recheck")
+
+    assert Enum.sort(recheck_anchors) == ["source://run/s002", "source://run/s011"]
+
+    recheck_decision = %{
+      "delegations" => [
+        %{"task" => "Verify due deployment follow-up", "source_refs" => ["source://run/s011"]}
+      ]
+    }
+
+    assert :ok = ProductDecision.validate_delegation_anchors(recheck_decision, recheck_anchors)
+
+    unrelated_recheck = %{
+      "delegations" => [
+        %{"task" => "Verify unrelated follow-up", "source_refs" => ["source://run/s010"]}
+      ]
+    }
+
+    assert {:error, :unanchored_delegation} =
+             ProductDecision.validate_delegation_anchors(unrelated_recheck, recheck_anchors)
+  end
 end

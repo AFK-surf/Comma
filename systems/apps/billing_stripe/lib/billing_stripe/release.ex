@@ -32,6 +32,18 @@ defmodule BillingStripe.Release do
     end
   end
 
+  def sync_teams_catalog(opts \\ []) do
+    prepare_apps()
+    Application.load(:bridge_for_teams_core)
+
+    for repo <- repos() do
+      case sync_repo_with_retries(repo, %{}, Keyword.put(opts, :teams_sync, true)) do
+        {:ok, summary} -> summary
+        {:error, reason} -> raise "failed to sync Teams catalog: #{inspect(reason)}"
+      end
+    end
+  end
+
   defp sync_repo_with_retries(repo, catalog, opts) do
     max_attempts = Keyword.get(opts, :max_attempts, 1)
     sync_repo_attempt(repo, catalog, opts, 1, max_attempts)
@@ -40,9 +52,17 @@ defmodule BillingStripe.Release do
   defp sync_repo_attempt(repo, catalog, opts, attempt, max_attempts) do
     result =
       Ecto.Migrator.with_repo(repo, fn started_repo ->
-        if opts[:portal_sync],
-          do: BillingStripe.PortalSync.sync(catalog, Keyword.put(opts, :repo, started_repo)),
-          else: sync_repo(started_repo, catalog, opts)
+        cond do
+          opts[:teams_sync] ->
+            Module.concat([BridgeForTeams, TeamsPricing])
+            |> apply(:sync, [Keyword.put(opts, :repo, started_repo)])
+
+          opts[:portal_sync] ->
+            BillingStripe.PortalSync.sync(catalog, Keyword.put(opts, :repo, started_repo))
+
+          true ->
+            sync_repo(started_repo, catalog, opts)
+        end
       end)
 
     case result do

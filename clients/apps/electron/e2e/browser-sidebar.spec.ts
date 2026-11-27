@@ -747,6 +747,9 @@ test(
       await expect(
         inspectedUserMessage.getByRole("img", { name: "inspected-element.png" })
       ).toBeVisible();
+      // The optimistic message paints the staged screenshot before its HTTP
+      // upload finishes reaching the stub.
+      await apiStub.waitForUploads(1);
       const screenshotUpload = apiStub.uploads.find(
         (upload) => upload.filename === "inspected-element.png"
       );

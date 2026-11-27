@@ -68,9 +68,9 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
   The wizard: status, the step to resume on, the capability grants, and the
   identity and teammates the profile step shows.
   """
-  def show(user) do
-    with {:ok, onboarding} <- ensure(user) do
-      org = Orgs.first_org_for_user(user.id)
+  def show(user, params \\ %{}) do
+    with {:ok, org, _explicit?} <- resolve_target_org(user, params),
+         {:ok, onboarding} <- ensure(user) do
       if org && onboarding.status == "in_progress", do: ensure_default_swarm(org, user)
       {:ok, payload(onboarding, user, org)}
     end
@@ -81,9 +81,10 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
   messaging, and the connected providers the profile plans depend on. A
   Salix failure degrades the step, not the call.
   """
-  def integrations(user) do
-    org = Orgs.first_org_for_user(user.id)
-    {:ok, integrations_payload(org, user)}
+  def integrations(user, params \\ %{}) do
+    with {:ok, org, _explicit?} <- resolve_target_org(user, params) do
+      {:ok, integrations_payload(org, user)}
+    end
   end
 
   # ---- Writes ----
@@ -94,7 +95,8 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
   is not a boolean is refused.
   """
   def save_capabilities(user, params) do
-    with {:ok, changes} <- capability_changes(params["capabilities"]),
+    with {:ok, org, _explicit?} <- resolve_target_org(user, params),
+         {:ok, changes} <- capability_changes(params["capabilities"]),
          {:ok, onboarding} <- ensure(user),
          {:ok, onboarding} <-
            write(
@@ -106,7 +108,7 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
              )
            ),
          {:ok, onboarding} <- write(UserOnboardings.advance(onboarding, "profile")) do
-      {:ok, payload(onboarding, user, Orgs.first_org_for_user(user.id))}
+      {:ok, payload(onboarding, user, org)}
     end
   end
 
@@ -114,9 +116,9 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
   Capture the profile the step showed (built from real data here, not taken
   from the request) and move on to the integrations step.
   """
-  def save_profile(user) do
-    with {:ok, onboarding} <- ensure(user) do
-      org = Orgs.first_org_for_user(user.id)
+  def save_profile(user, params \\ %{}) do
+    with {:ok, org, _explicit?} <- resolve_target_org(user, params),
+         {:ok, onboarding} <- ensure(user) do
       project = org && Projects.default_project_for_user(org.id, user.id)
 
       with {:ok, onboarding} <-
@@ -132,51 +134,88 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
   Connect Link; Composio returns the browser to the integrations step.
   """
   def connect(user, params, base_url) do
-    toolkit = params["toolkit"]
-    org = Orgs.first_org_for_user(user.id)
-    project = org && Projects.default_project_for_user(org.id, user.id)
+    with {:ok, org, explicit?} <- resolve_target_org(user, params) do
+      toolkit = params["toolkit"]
+      project = org && Projects.default_project_for_user(org.id, user.id)
 
-    cond do
-      toolkit not in ProjectComposioConnections.toolkits() ->
-        {:error, 422, "unsupported_toolkit", gettext("That account type is not offered here."),
-         %{}}
+      callback_url =
+        if explicit? and org do
+          base_url <> "/onboarding/integrations?" <> URI.encode_query(%{"org" => org.slug})
+        else
+          base_url <> "/onboarding/integrations"
+        end
 
-      is_nil(project) ->
-        {:error, 409, "no_swarm", gettext("Create an Agent Swarm first to connect accounts."),
-         %{}}
+      cond do
+        toolkit not in ProjectComposioConnections.toolkits() ->
+          {:error, 422, "unsupported_toolkit", gettext("That account type is not offered here."),
+           %{}}
 
-      not can_connect?(user, project) ->
-        record_denied(org, user, project, toolkit)
+        is_nil(project) ->
+          {:error, 409, "no_swarm", gettext("Create an Agent Swarm first to connect accounts."),
+           %{}}
 
-        {:error, 403, "forbidden", gettext("Only this swarm's owners can connect accounts."), %{}}
+        not can_connect?(user, project) ->
+          record_denied(org, user, project, toolkit)
 
-      true ->
-        org.id
-        |> ProjectComposioConnections.start_connection(
-          project.id,
-          toolkit,
-          %{"callback_url" => base_url <> "/onboarding/integrations"},
-          actor_user_id: user.id,
-          actor_label: actor_label(user)
-        )
-        |> started()
+          {:error, 403, "forbidden", gettext("Only this swarm's owners can connect accounts."),
+           %{}}
+
+        true ->
+          org.id
+          |> ProjectComposioConnections.start_connection(
+            project.id,
+            toolkit,
+            %{"callback_url" => callback_url},
+            actor_user_id: user.id,
+            actor_label: actor_label(user)
+          )
+          |> started()
+      end
     end
   end
 
   @doc "Finish onboarding. Answers where to go and the notice to show there."
-  def complete(user) do
-    finish(user, &UserOnboardings.complete/1, gettext("You're all set."))
+  def complete(user, params \\ %{}) do
+    finish(user, params, &UserOnboardings.complete/1, gettext("You're all set."))
   end
 
   @doc "Skip onboarding; it counts as finished. Answers where to go."
-  def skip(user), do: finish(user, &UserOnboardings.skip/1, nil)
+  def skip(user, params \\ %{}), do: finish(user, params, &UserOnboardings.skip/1, nil)
 
-  defp finish(user, write, notice) do
-    with {:ok, onboarding} <- ensure(user),
+  defp finish(user, params, write, notice) do
+    with {:ok, org, _explicit?} <- resolve_target_org(user, params),
+         {:ok, onboarding} <- ensure(user),
          {:ok, _finished} <- write(write.(onboarding)) do
-      {:ok, %{"redirect" => home(user), "notice" => notice}}
+      {:ok, %{"redirect" => home(org), "notice" => notice}}
     end
   end
+
+  defp resolve_target_org(user, params) when is_map(params) do
+    if Map.has_key?(params, "org") do
+      case params["org"] do
+        slug when is_binary(slug) ->
+          trimmed = String.trim(slug)
+
+          with true <- trimmed != "",
+               {:ok, org} <- Orgs.get_org_by_slug(trimmed),
+               {:ok, _role} <- Memberships.org_role(org.id, user.id) do
+            {:ok, org, true}
+          else
+            _ ->
+              {:error, 403, "organization_unavailable",
+               gettext("You do not have access to that organization."), %{}}
+          end
+
+        _ ->
+          {:error, 403, "organization_unavailable",
+           gettext("You do not have access to that organization."), %{}}
+      end
+    else
+      {:ok, Orgs.first_org_for_user(user.id), false}
+    end
+  end
+
+  defp resolve_target_org(user, _params), do: {:ok, Orgs.first_org_for_user(user.id), false}
 
   # ---- Payloads ----
 
@@ -414,13 +453,9 @@ defmodule BridgeForTeamsWeb.DashboardOnboardingWizard do
   defp can_connect?(user, project),
     do: match?({:ok, "admin"}, Memberships.project_role(project.id, user.id))
 
-  # Where `/` takes the user: their first organization, or the no-organization page.
-  defp home(user) do
-    case Orgs.first_org_for_user(user.id) do
-      nil -> "/"
-      org -> "/orgs/#{URI.encode(org.slug, &URI.char_unreserved?/1)}"
-    end
-  end
+  # Where `/` takes the user: the target organization, or the no-organization page.
+  defp home(nil), do: "/"
+  defp home(org), do: "/orgs/#{URI.encode(org.slug, &URI.char_unreserved?/1)}"
 
   defp started({:ok, %{"redirect_url" => url}}) when is_binary(url) and url != "",
     do: {:ok, %{"redirect_url" => url}}

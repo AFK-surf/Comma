@@ -101,7 +101,7 @@ defmodule SalixAgent.OAuthCredentials do
          {:ok, %{tenant: tenant, group_id: group_id}} <- agent_context(agent_id),
          {:ok, bindings} <- group_bindings(group_id) do
       Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, acc} ->
-        case resolve_one(ref, tenant, bindings, opts) do
+        case resolve_one(ref, tenant, bindings, Keyword.put(opts, :group_id, group_id)) do
           {:ok, value, secret} -> {:cont, {:ok, [{ref.env_var, value, secret} | acc]}}
           {:error, reason} -> {:halt, {:error, resolve_error(ref, reason)}}
         end
@@ -134,6 +134,50 @@ defmodule SalixAgent.OAuthCredentials do
       {:ok, Map.new(resolved, fn {env_var, value, _secret} -> {env_var, value} end),
        for({_env_var, value, true} <- resolved, do: value)}
     end
+  end
+
+  @doc """
+  After a request to `host` that carried `secrets` (the values of the
+  `entries` it actually placed in the request) got `status` and `body` back:
+  mark each of those credentials whose provider says its own API refused the
+  token (`token_refused?/3` of its adapter) as needing reauthorization, so
+  `oauth.list_credentials` and Plugins stop showing it as usable. A token
+  replaced meanwhile is not marked. Best effort, never raises.
+  """
+  @spec note_response(
+          String.t(),
+          term(),
+          %{String.t() => String.t()},
+          String.t(),
+          integer(),
+          term()
+        ) :: :ok
+  def note_response(agent_id, entries, secrets, host, status, body) do
+    with true <- map_size(secrets) > 0,
+         {:ok, refs} <- normalize_entries(entries),
+         {:ok, %{group_id: group_id}} <- agent_context(agent_id),
+         {:ok, bindings} <- group_bindings(group_id) do
+      Enum.each(refs, &note_refused(&1, bindings, secrets, host, status, body))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp note_refused(ref, bindings, secrets, host, status, body) do
+    with token when is_binary(token) <- Map.get(secrets, ref.env_var),
+         {:ok, adapter} <- adapter_for(ref.provider),
+         true <- refused?(adapter, host, status, body),
+         {:ok, binding} <- find_binding(bindings, ref),
+         {:ok, conn_id} <- connection_id(binding) do
+      _ = SalixStore.OAuth.mark_token_refused(conn_id, token)
+    end
+  end
+
+  defp refused?(adapter, host, status, body) do
+    Code.ensure_loaded?(adapter) and function_exported?(adapter, :token_refused?, 3) and
+      adapter.token_refused?(host, status, body) == true
   end
 
   @doc """
@@ -261,7 +305,8 @@ defmodule SalixAgent.OAuthCredentials do
          {:ok, conn_id} <- connection_id(binding),
          {:ok, conn} <- load_connection(conn_id),
          :ok <- check_status(conn),
-         {:ok, value} <- resolve_conn_value(ref, tenant, conn_id, conn, opts) do
+         {:ok, value} <-
+           resolve_conn_value(ref, tenant, conn_id, conn, Keyword.put(opts, :binding, binding)) do
       {:ok, value, secret_value?(ref, conn)}
     end
   end
@@ -393,11 +438,11 @@ defmodule SalixAgent.OAuthCredentials do
         {:ok, conn}
 
       true ->
-        do_refresh(adapter, tenant, provider, conn_id, conn, now)
+        do_refresh(adapter, tenant, provider, conn_id, conn, now, opts)
     end
   end
 
-  defp do_refresh(adapter, tenant, provider, conn_id, conn, now) do
+  defp do_refresh(adapter, tenant, provider, conn_id, conn, now, opts) do
     with {:ok, app} <- connection_app(tenant, provider, conn) do
       refresher = fn record ->
         case refresher_fn().(adapter, app, record) do
@@ -417,12 +462,12 @@ defmodule SalixAgent.OAuthCredentials do
           reload_connection(conn_id)
 
         {:error, :reauthorization_required} ->
-          _ = SalixStore.OAuth.mark_reauthorization_required(conn_id, conn)
+          mark_reauthorization_required(conn_id, conn, provider, opts)
           {:error, "refresh failed (reauthorization required)"}
 
         {:error, reason} ->
           if invalid_grant?(reason) do
-            _ = SalixStore.OAuth.mark_reauthorization_required(conn_id, conn)
+            mark_reauthorization_required(conn_id, conn, provider, opts)
             {:error, "refresh failed (reauthorization required): #{format_reason(reason)}"}
           else
             {:error, "refresh failed: #{format_reason(reason)}"}
@@ -479,6 +524,26 @@ defmodule SalixAgent.OAuthCredentials do
   end
 
   # willow resolver.go isInvalidGrant.
+  # The connection's owners hear of it once it can no longer refresh: an agent
+  # cannot fix a refused grant, and it stays refused until someone reconnects.
+  defp mark_reauthorization_required(conn_id, conn, provider, opts) do
+    # A mark skipped because another caller already rotated the token leaves
+    # the connection usable: only a stored refusal is news for the owners.
+    with :ok <- SalixStore.OAuth.mark_reauthorization_required(conn_id, conn),
+         {:ok, %{"status" => "reauthorization_required"}} <- SalixStore.OAuth.get(conn_id) do
+      alias_name = get_in(opts, [:binding, "alias"]) || ""
+
+      SalixAgent.Ports.OwnerAlerts.notify(
+        opts[:group_id],
+        "reauthorization_required",
+        provider <> "/" <> alias_name,
+        %{"provider" => provider, "alias" => alias_name}
+      )
+    end
+
+    :ok
+  end
+
   defp invalid_grant?(reason) when is_binary(reason) do
     msg = String.downcase(reason)
 

@@ -81,13 +81,16 @@ defmodule SalixAgent.BuiltinSkills do
 
     with {:ok, body} <- File.read(Path.join(dir, "SKILL.md")),
          {:ok, files} <- read_files(dir),
-         {:ok, metadata} <- SkillFrontmatter.metadata(body, %{"name" => id}) do
+         {:ok, metadata} <- SkillFrontmatter.metadata(body, %{"name" => id}),
+         {:ok, roles} <- SkillFrontmatter.parse_builtin_roles(metadata["roles"]) do
       {:ok,
        %{
          "skill_id" => id,
          "name" => metadata["name"] || id,
          "description" => metadata["description"] || metadata["summary"] || "",
+         "prompt_summary" => metadata["prompt_summary"],
          "activation" => metadata["activation"],
+         "roles" => roles,
          "origin" => "builtin",
          "editable" => false,
          "version" => 1,

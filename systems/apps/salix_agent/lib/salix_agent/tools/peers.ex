@@ -269,6 +269,12 @@ defmodule SalixAgent.Tools.Peers do
   # Case C: remote source (caller's env) → peer VFS destination. Chunked stream
   # into a fresh blob, then a cross-agent manifest commit.
   defp copy_cross_agent(ctx, %{dst_env: "vfs"} = c) do
+    # Refuse before any bytes are stored, not only at the commit.
+    SalixAgent.Tools.Memory.authorize_events!(
+      [%{"type" => "vfs_write", "path" => c.dst_path}],
+      ctx
+    )
+
     {stream, reported_size} = read_copy_source(ctx, c.src_env, c.src_path)
     {stream, count_fn} = counted_stream(stream)
 
@@ -328,6 +334,10 @@ defmodule SalixAgent.Tools.Peers do
     do: copy_source_stream(AgentWorkspace.stream(agent_id, path), path)
 
   defp commit_peer_copy!(ctx, c, event, size) do
+    # A copy into a peer's VFS commits here rather than as one of this call's
+    # events, so it answers to the Group's memory writers itself.
+    SalixAgent.Tools.Memory.authorize_events!([event], ctx)
+
     billing_context =
       Map.get(ctx, :billing_context) || Map.get(ctx, "billing_context") || %{}
 
@@ -1375,6 +1385,10 @@ defmodule SalixAgent.Tools.Peers do
         else: EnvDispatch.get_device(ctx.agent_id, device_id)
 
     case lookup do
+      {:ok, %{"device_kind" => "stillfail"}} ->
+        raise ~s|tool "#{tool}": device #{device_id} is a connected still.fail workspace, which runs no command and serves no file. | <>
+                SalixAgent.Tools.Stations.stillfail_note()
+
       {:ok, device} ->
         ids =
           for %{"environment_id" => id} when is_binary(id) <- device["environments"] || [], do: id

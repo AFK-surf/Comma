@@ -511,12 +511,30 @@ defmodule AlertRouter.Catalog do
       service: "l4es_cluster",
       family: "availability",
       summary: "L4ES 集群健康检查未通过",
-      impact: "L4ES 集群有一项健康检查没过：可能是节点不在线、空闲槽位不够、沙箱排队，或数据库没有异地备份。",
+      impact: "L4ES 集群有一项健康检查没过：可能是节点不在线、沙箱排队、serving slot 无应答，或数据库没有异地备份。",
       firing_latest: "至少两个公网探测区域访问 L4ES /cluster-ok 失败。",
       evidence_values: %{"threshold" => ">= 3 个区域中的 2 个", "duration" => "60 秒"},
       first_checks: [
         "登录控制面 VM，sudo cat /var/lib/l4es/health/status.txt 看哪一项没过",
         "看 journalctl -u l4es-health -n 20 和 sbx node ls"
+      ],
+      runbook: @github_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "l4es_capacity_low"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:production],
+      environments: ~w(production),
+      priority: "P3",
+      team: "comma",
+      service: "l4es_capacity",
+      family: "capacity",
+      summary: "L4ES 空闲槽位不足一个节点",
+      impact: "L4ES 集群空闲槽位少于最小节点的 max_sandboxes，再掉一台节点或再来一批沙箱就会排队或报 no capacity。",
+      firing_latest: "至少两个公网探测区域连续 300 秒访问 L4ES /capacity-ok 失败。",
+      evidence_values: %{"threshold" => ">= 3 个区域中的 2 个", "duration" => "300 秒"},
+      first_checks: [
+        "登录控制面 VM，sudo cat /var/lib/l4es/health/status.txt 看当前空闲槽位数",
+        "运行 sbx node ls 看各节点在线状态和槽位占用"
       ],
       runbook: @github_runbook
     },

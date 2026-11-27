@@ -10,6 +10,7 @@ import {
   realpathSync,
   readdirSync,
   utimesSync,
+  chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -509,7 +510,29 @@ test("runners on one LAN share tool caches through the Synchronicity gateway", a
 
     // Rust builds retain dependency downloads, compiled crates, and keyed
     // native binaries when the next job lands on another host.
-    const rust = async (host, mode, key = "rust-toolchain-and-lockfiles") => {
+    // A stand-in for rustup: installing writes a toolchain that runs and has
+    // every requested target's standard library, and counts the downloads.
+    const rustupBin = join(root, "rustup-bin");
+    const downloads = join(root, "rustup-downloads");
+    mkdirSync(rustupBin, { recursive: true });
+    writeFileSync(
+      join(rustupBin, "rustup"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `echo "$*" >> ${JSON.stringify(downloads)}`,
+        'dir="$RUSTUP_HOME/toolchains/$3-aarch64-apple-darwin"',
+        'mkdir -p "$dir/bin"',
+        "printf '#!/bin/sh\\necho rustc fixture\\n' > \"$dir/bin/rustc\"",
+        'chmod +x "$dir/bin/rustc"',
+        'targets="${*##*--target }"',
+        'for t in ${targets//,/ }; do mkdir -p "$dir/lib/rustlib/$t/lib"; done',
+      ].join("\n") + "\n",
+    );
+    chmodSync(join(rustupBin, "rustup"), 0o755);
+    // Keys as the workflows make them: the job's kind, its inputs' hash, the SDK.
+    const stationKey = (hash) => `station-rust-v1-${hash.repeat(64)}-26.2`;
+    const rust = async (host, mode, key = stationKey("a")) => {
       const temp = join(root, host.name, "rust-job");
       mkdirSync(temp, { recursive: true });
       const output = join(temp, "env");
@@ -521,6 +544,8 @@ test("runners on one LAN share tool caches through the Synchronicity gateway", a
           env: {
             ...process.env,
             RUNNER_OS: "macOS",
+            HOME: temp,
+            PATH: `${rustupBin}:${process.env.PATH}`,
             RUNNER_TEMP: temp,
             GITHUB_ENV: output,
             SYNCH_CACHE_SHARED_DIRECTORY: host.shared,
@@ -557,9 +582,6 @@ test("runners on one LAN share tool caches through the Synchronicity gateway", a
       join(rustA.CARGO_HOME, "credentials.toml"),
       "private fixture",
     );
-    const rustc = join(rustA.RUSTUP_HOME, "toolchains/pinned/bin/rustc");
-    mkdirSync(join(rustc, ".."), { recursive: true });
-    writeFileSync(rustc, "toolchain");
     await rust(hosts[0], "save");
     const { values: rustB, stdout: rustRestore } = await rust(
       hosts[1],
@@ -571,24 +593,38 @@ test("runners on one LAN share tool caches through the Synchronicity gateway", a
     }
     assert.equal(existsSync(join(rustB.CARGO_HOME, "credentials.toml")), false);
     // A key nothing was published under (a changed lockfile) starts from the
-    // newest snapshot of any key: Cargo rebuilds only what changed.
+    // newest snapshot of the same kind of job: Cargo rebuilds only what
+    // changed. Another kind's, published after it, is not taken.
+    await rust(hosts[0], "save", `phone-mesh-rust-v1-client-mesh-ios-arm64-${"c".repeat(64)}-26.2`);
     const { values: rustC, stdout: rustFallback } = await rust(
       hosts[2],
       "restore",
-      "new-toolchain",
+      stationKey("b"),
     );
-    assert.match(rustFallback, /station-rust: restored rust-toolchain-and-lockfiles/);
+    assert.match(rustFallback, new RegExp(`station-rust: restored ${stationKey("a")} from peers`));
     for (const [variable, path, content] of rustEntries) {
       assert.equal(readFileSync(join(rustC[variable], path), "utf8"), content);
     }
     assert.equal(existsSync(join(rustC.CARGO_HOME, "credentials.toml")), false);
     // The toolchain a job installed reaches another host's guest once, in a
-    // snapshot of its own (one per version, not one per Rust key).
-    assert.match(rustRestore, /rust-toolchain: restored rust-/);
-    assert.equal(
-      readFileSync(join(rustB.RUSTUP_HOME, "toolchains/pinned/bin/rustc"), "utf8"),
-      "toolchain",
-    );
+    // snapshot of its own (one per version, not one per Rust key), with every
+    // target the clients' mesh builds.
+    assert.equal(readFileSync(downloads, "utf8").trim().split("\n").length, 1);
+    assert.match(rustRestore, /rust-toolchain: restored rust-[^ ]*-clients-/);
+    for (const values of [rustB, rustC]) {
+      const toolchains = readdirSync(join(values.RUSTUP_HOME, "toolchains"));
+      assert.equal(toolchains.length, 1);
+      for (const target of ["aarch64-linux-android", "aarch64-apple-ios", "aarch64-apple-ios-sim", "wasm32-unknown-unknown"]) {
+        assert.ok(existsSync(join(values.RUSTUP_HOME, "toolchains", toolchains[0], "lib/rustlib", target, "lib")));
+      }
+    }
+    // The installing host keeps a copy, used when no peer can serve one.
+    for (const key of objects.keys()) {
+      if (key.includes("/rust-toolchain/")) objects.delete(key);
+    }
+    const { stdout: fromHost } = await rust(hosts[0], "restore");
+    assert.match(fromHost, /Rust toolchain: restored rust-[^ ]*-clients-[^ ]* from this host/);
+    assert.equal(readFileSync(downloads, "utf8").trim().split("\n").length, 1);
 
     // A complete dependency archive transfers once and retains relative links.
     // A second producer cannot overwrite the immutable install for that key.

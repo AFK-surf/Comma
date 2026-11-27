@@ -13,9 +13,10 @@ export interface NearbyPerson {
   via: "airdrop" | "wifi";
   /**
    * `idle` until picked; `asking` once picked, until they answer; `connected` once they accept; `unanswered` when
-   * they declined or did not answer, and can be asked again.
+   * they declined or did not answer, and can be asked again; `unreachable` when the invite could not reach their
+   * computer at all, and can be tried again.
    */
-  status: "idle" | "asking" | "connected" | "unanswered";
+  status: "idle" | "asking" | "connected" | "unanswered" | "unreachable";
 }
 
 const initials = (name: string) =>
@@ -104,9 +105,11 @@ export function NearbyPeopleDialog({
                       ? m.nearby_connected_title()
                       : person.status === "unanswered"
                         ? m.nearby_dialog_unanswered()
-                        : person.via === "wifi"
-                          ? m.nearby_dialog_same_wifi()
-                          : m.nearby_dialog_nearby()}
+                        : person.status === "unreachable"
+                          ? m.nearby_dialog_unreachable()
+                          : person.via === "wifi"
+                            ? m.nearby_dialog_same_wifi()
+                            : m.nearby_dialog_nearby()}
                 </span>
               </span>
               {person.status === "connected" ? (

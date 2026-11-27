@@ -343,6 +343,49 @@ defmodule SalixWeb.EnvGetTest do
     assert device["environments"] == []
   end
 
+  # A still.fail station takes Tasks and answers for its chats only: an agent
+  # sees it as one (device_kind) with no environment to run a command in, so
+  # a command sent to it is refused here, not by the station.
+  test "a connected still.fail station offers no command environment", ctx do
+    device_id = Ids.new_device_id()
+
+    {:ok, _transport_id, _device} =
+      Registry.connect("stillfail-node", %{
+        "tenant_id" => ctx.tenant_id,
+        "group_id" => ctx.group_id,
+        "device_id" => device_id,
+        "connector_id" => "stillfail-connector",
+        "name" => "Hypershell · Tokyo",
+        "device_kind" => "stillfail",
+        "os" => "darwin",
+        "capabilities" => %{
+          "execution_boundary" => "stillfail-connect",
+          "tasks" => 2,
+          "task_models" => %{"claude" => []}
+        }
+      })
+
+    assert {:ok, device} = EnvDispatch.get_device(ctx.agent["agent_id"], device_id)
+    assert device["device_kind"] == "stillfail"
+    assert device["status"] == "connected"
+    assert device["environments"] == []
+
+    assert {:ok, %{devices: devices}} =
+             EnvDispatch.list_devices(ctx.agent["agent_id"], limit: 100)
+
+    assert %{"device_kind" => "stillfail"} = Enum.find(devices, &(&1["device_id"] == device_id))
+
+    environment = RuntimeIds.device_environment_id(device_id, "connector", "default")
+
+    assert {:error, :no_environment} =
+             EnvDispatch.exec(
+               ctx.agent["agent_id"],
+               %{device_id: device_id, environment_id: environment},
+               "ls ~/.stillfail",
+               %{}
+             )
+  end
+
   test "missing, cross-scope, mismatched, and failed exact device reads do not fall back", ctx do
     now = SystemsClock.system_time(:millisecond)
     {_connector_run_id, binding} = connect_runtime!(ctx.tenant_id, ctx.group_id, now)

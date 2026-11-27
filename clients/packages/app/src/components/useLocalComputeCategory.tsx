@@ -206,7 +206,8 @@ export function useLocalComputeCategory(
     readWorkloads,
     stateLabel,
     refresh,
-    disposal: overview?.disposal,
+    // Without a Host no local deletion can finish, so an unfinished one waits unshown until a reinstall.
+    disposal: maintenance.needsInstall ? undefined : overview?.disposal,
     nextPage: () => setCursor(overview?.nextCursor),
     firstPage: () => setCursor(undefined),
     hasPreviousPage: !!cursor,

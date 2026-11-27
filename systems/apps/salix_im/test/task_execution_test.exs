@@ -138,9 +138,11 @@ defmodule SalixIM.TaskExecutionTest do
       {:ok, raw, conn} = read_body(conn)
 
       body =
-        if String.starts_with?(conn.request_path, "/api/"),
-          do: URI.decode_query(raw),
-          else: Jason.decode!(raw)
+        cond do
+          String.starts_with?(conn.request_path, "/api/") -> URI.decode_query(raw)
+          raw == "" -> %{}
+          true -> Jason.decode!(raw)
+        end
 
       response =
         cond do
@@ -168,6 +170,28 @@ defmodule SalixIM.TaskExecutionTest do
             )
 
             %{"code" => 0, "data" => %{"message_id" => "om1"}}
+
+          # Every other Feishu or Lark call: the chat is a public group, a
+          # message is of that chat, and a send succeeds.
+          String.starts_with?(conn.request_path, ["/open-apis/", "/lark-apis/"]) ->
+            [_, prefix | _] = String.split(conn.request_path, "/", parts: 3)
+
+            SystemsRuntime.Proc.send(
+              SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
+              {:suite_api, prefix, conn.method, conn.request_path, body}
+            )
+
+            %{
+              "code" => 0,
+              "data" => %{
+                "chat_id" => "oc_1",
+                "chat_type" => "public",
+                "chat_mode" => "group",
+                "name" => "Team",
+                "message_id" => "om_sent",
+                "items" => [%{"message_id" => "om_source", "chat_id" => "oc_1"}]
+              }
+            }
 
           true ->
             SystemsRuntime.Proc.send(
@@ -218,6 +242,7 @@ defmodule SalixIM.TaskExecutionTest do
     old_api = SystemsRuntime.get_env(:salix_im, :telegram_api_base_url)
     old_slack_api = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
     old_feishu_api = SystemsRuntime.get_env(:salix_im, :feishu_api_base_url)
+    old_lark_api = SystemsRuntime.get_env(:salix_im, :lark_api_base_url)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn p -> {Bandit, plug: TelegramAPI, port: p} end)
@@ -225,6 +250,7 @@ defmodule SalixIM.TaskExecutionTest do
     SystemsRuntime.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
     SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
     SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
+    SystemsRuntime.put_env(:salix_im, :lark_api_base_url, "http://127.0.0.1:#{port}/lark-apis")
 
     on_exit(fn ->
       SalixIM.TestSupport.Fleet.stop_all!()
@@ -233,7 +259,8 @@ defmodule SalixIM.TaskExecutionTest do
       for {app, key, value} <- [
             {:salix_im, :telegram_api_base_url, old_api},
             {:salix_im, :slack_api_base_url, old_slack_api},
-            {:salix_im, :feishu_api_base_url, old_feishu_api} | previous
+            {:salix_im, :feishu_api_base_url, old_feishu_api},
+            {:salix_im, :lark_api_base_url, old_lark_api} | previous
           ] do
         if is_nil(value),
           do: SystemsRuntime.delete_env(app, key),
@@ -299,6 +326,51 @@ defmodule SalixIM.TaskExecutionTest do
     refute Enum.any?(connects, &Map.has_key?(&1, "task_execution_requests"))
     assert {:ok, %{"apis" => apis}} = Provider.provider_manual("telegram", f.worker, context)
     assert Enum.all?(apis, &(&1["safety"] == "read"))
+  end
+
+  test "a Task keeps the provider that asked for it in the user chat as its origin", f do
+    own = router_context_saying(f, "Summarize today's notes")
+    chat = own["trusted_origin"]["conversation_id"]
+    assert origin_provider(f, router_create_task(f, own)) == "comma"
+
+    # The Linear bridge hands an issue to the Router in a user chat as a
+    # Linear user's Message.
+    {:ok, linear} =
+      ConversationServer.ensure_group_conversation_provider_participant(
+        f.group,
+        chat,
+        SalixIM.ProviderConversationInput.provider_participant(
+          %{"provider" => "linear", "agent_session_id" => "sess-1", "surface" => "chat"},
+          %{
+            "role_label" => "linear_agent",
+            "notification_filter" => %{"messages" => "all", "statuses" => "none"}
+          }
+        )
+      )
+
+    {:ok, _} =
+      ConversationServer.append_group_conversation_message(f.group, chat, %{
+        "kind" => "message",
+        "participant_id" => linear["participant_id"],
+        "actor_type" => "provider_user",
+        "provider" => "linear",
+        "user_id" => "linear-user-1",
+        "user_name" => "Linear user",
+        "content" => [%{"type" => "text", "text" => "ENG-1: Fix login redirect"}],
+        "metadata" => %{"provider" => "linear", "linear_agent_session_id" => "sess-1"},
+        "source_message_id" => "linear_agent_session:sess-1:request"
+      })
+
+    router = f.router
+
+    settle_receive(
+      {:delivered, ^router, %{trusted_origin: %{"provider" => "internal"}} = payload}
+    )
+
+    from_linear = tool_context(f, router, payload)
+    assert from_linear["trusted_origin"]["source_actor_type"] == "provider_user"
+
+    assert origin_provider(f, router_create_task(f, from_linear)) == "linear"
   end
 
   test "Comma owner request creates a Task whose Worker discovers and removes the exact Telegram keyboard",
@@ -1056,6 +1128,11 @@ defmodule SalixIM.TaskExecutionTest do
     person = "comma_user|" <> f.user
     source = context["source_message_id"]
 
+    assert {:ok, [["task|" <> _]]} = SalixIM.TaskExecution.ifc_projection_targets(ctx)
+
+    assert :none =
+             SalixIM.TaskExecution.ifc_projection_targets(%{ctx | session_id: "foreign-session"})
+
     # A tool with no grant of its own, as its sandbox would call it.
     assert {:ok, ^source, ^person} =
              Provider.task_execution_request("compute.workloads.list", %{}, ctx)
@@ -1178,7 +1255,15 @@ defmodule SalixIM.TaskExecutionTest do
 
     update = Map.put(target, "status", "ready_for_review")
 
-    for invalid <- [Map.put(update, "status", "failed"), Map.put(update, "source_refs", %{})] do
+    # A plain Task may also be marked failed.
+    assert {:ok, _, _} =
+             Provider.task_execution_request(
+               "im_api.internal.update_conversation",
+               Map.put(update, "status", "failed"),
+               ctx
+             )
+
+    for invalid <- [Map.put(update, "status", "active"), Map.put(update, "source_refs", %{})] do
       assert :none =
                Provider.task_execution_request(
                  "im_api.internal.update_conversation",
@@ -1495,6 +1580,121 @@ defmodule SalixIM.TaskExecutionTest do
         )
 
       assert :none = Provider.task_execution_request("im_api.slack.reply_message", args, ctx)
+    end
+  end
+
+  for provider <- ~w(feishu lark) do
+    @tag suite: provider
+    test "#{provider}: Router replies to the original message after the Worker report and can mark the Task failed",
+         f do
+      provider = f.suite
+      {task, connect} = suite_task(f, provider)
+      ctx = router_report_context(f, task)
+      ref = SalixAgent.IFC.input_ref(1)
+      principal = "provider_user|#{connect}|ou_1"
+      prefix = if provider == "feishu", do: "open-apis", else: "lark-apis"
+
+      {:ok, record} =
+        Conversations.get_group_conversation_record(f.group, task["conversation_id"])
+
+      target = %{"connect_id" => connect, "chat_id" => "oc_1", "message_id" => "om_source"}
+      assert get_in(record, ["source_refs", "ifc_return", "target"]) == target
+
+      assert %{"provider" => ^provider, "chat_id" => "oc_1", "message_id" => "om_source"} =
+               get_in(record, ["source_refs", "task_reply_source"])
+
+      reply = %{
+        "connect_id" => connect,
+        "chat_id" => "oc_1",
+        "reply_to" => "om_source",
+        "text" => "Analysis complete"
+      }
+
+      send_api = "im_api.#{provider}.send_message"
+      assert {:ok, _, ^principal, _label} = Provider.task_execution_request(send_api, reply, ctx)
+
+      result = execute(ctx, send_api, reply, %{"request" => ref, "sources" => [ref]})
+      assert result.status == "completed", inspect(result)
+      reply_path = "/#{prefix}/im/v1/messages/om_source/reply"
+      {:messages, messages} = Process.info(SystemsRuntime.Proc.self(), :messages)
+
+      assert Enum.any?(messages, fn
+               {:suite_api, ^prefix, "POST", ^reply_path, %{"content" => content}} ->
+                 content =~ "Analysis complete"
+
+               _ ->
+                 false
+             end)
+
+      if provider == "feishu" do
+        reply_text = %{
+          "connect_id" => connect,
+          "message_id" => "om_source",
+          "chat_id" => "oc_1",
+          "reply_in_thread" => true,
+          "text" => "Analysis complete"
+        }
+
+        assert {:ok, _, ^principal, _} =
+                 Provider.task_execution_request("im_api.feishu.reply_text", reply_text, ctx)
+
+        assert :none =
+                 Provider.task_execution_request(
+                   "im_api.feishu.reply_text",
+                   Map.put(reply_text, "message_id", "om_other"),
+                   ctx
+                 )
+      end
+
+      for invalid <- [
+            Map.put(reply, "chat_id", "oc_other"),
+            Map.put(reply, "reply_to", "om_other"),
+            Map.put(reply, "user_id", "ou_2"),
+            Map.put(reply, "path", "/workspace/report.txt"),
+            Map.put(reply, "mentions", [%{"user_id" => "ou_2", "name" => "Other"}]),
+            Map.put(reply, "connect_id", "other")
+          ] do
+        assert :none = Provider.task_execution_request(send_api, invalid, ctx)
+      end
+
+      private = %{
+        "ref" => "src:t-private",
+        "label" => ["agent_private"],
+        "integrity" => "data",
+        "principal" => nil
+      }
+
+      tainted = update_in(ctx, [:ifc, "items"], &(&1 ++ [private]))
+
+      denied =
+        execute(tainted, send_api, reply, %{"request" => ref, "sources" => [private["ref"]]})
+
+      assert denied.status == "guidance", inspect(denied)
+
+      failed = %{
+        "connect_id" => "internal",
+        "conversation_id" => task["conversation_id"],
+        "status" => "failed"
+      }
+
+      result =
+        execute(ctx, "im_api.internal.update_conversation", failed, %{
+          "request" => ref,
+          "sources" => [ref]
+        })
+
+      assert result.status == "completed", inspect(result)
+
+      assert {:ok, %{"status" => "failed"}} =
+               Conversations.get_group_conversation_record(f.group, task["conversation_id"])
+
+      # The closing reply still reaches the original message after failure.
+      assert {:ok, _, ^principal, _} = Provider.task_execution_request(send_api, reply, ctx)
+
+      {:ok, _} =
+        CasRecord.update(Keys.ctl_im_connect(f.group, connect), &Map.put(&1, "app_id", "cli_b"))
+
+      assert :none = Provider.task_execution_request(send_api, reply, ctx)
     end
   end
 
@@ -1815,6 +2015,91 @@ defmodule SalixIM.TaskExecutionTest do
     {task, Map.put(ctx, :ifc_evidence, %{"requester" => principal}), connect}
   end
 
+  # A Task a person asked for in a public Feishu or Lark group, under IFC enforce.
+  defp suite_task(f, provider) do
+    connect = Ids.new_connect_id()
+
+    {:ok, _} =
+      CasRecord.create(Keys.ctl_im_connect(f.group, connect), %{
+        "tenant_id" => f.tenant,
+        "group_id" => f.group,
+        "connect_id" => connect,
+        "provider" => provider,
+        "status" => "connected",
+        "app_id" => "cli_a",
+        "app_secret" => "test-secret",
+        "tenant_access_token" => "t-test"
+      })
+
+    {:ok, group} =
+      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    source = "im_provider:#{provider}:#{connect}:om_source"
+
+    metadata = %{
+      "provider" => provider,
+      "connect_id" => connect,
+      "chat_id" => "oc_1",
+      "chat_type" => "group",
+      "message_id" => "om_source",
+      "sender_open_id" => "ou_1",
+      "sender_type" => "user",
+      "user_placement" => "internal"
+    }
+
+    ifc =
+      SalixIM.IFC.Ingress.provider_block(group, metadata, %{
+        "connect_id" => connect,
+        "subject_id" => "ou_1"
+      })
+
+    assert %{"principal" => "provider_user|" <> _, "integrity" => "command"} = ifc
+
+    origin = %{
+      "provider" => provider,
+      "source_actor_type" => "provider_user",
+      "agent_group_id" => f.group,
+      "source_message_id" => source,
+      "ifc" => ifc,
+      "provider_context" => Map.delete(metadata, "provider")
+    }
+
+    input = %{
+      id: 1,
+      role: "user",
+      content: "Analyze the videos",
+      source_message_id: source,
+      trusted_origin: origin
+    }
+
+    base = runtime_context(f, router_request_context(f), "router", :enforce)
+
+    ctx = %{
+      base
+      | trusted_origin: origin,
+        source_message_id: source,
+        source_message_ids: [source],
+        input_messages: [input],
+        ifc:
+          SalixAgent.IFC.Context.build(%{messages: [input]},
+            source_message_id: source,
+            source_message_ids: [source],
+            trusted_origin: origin
+          )
+    }
+
+    ref = SalixAgent.IFC.input_ref(1)
+
+    params =
+      Map.merge(task_params(f), %{"execution_requests" => nil, "connect_id" => "internal"})
+
+    result =
+      execute(ctx, "im_api.internal.task.create", params, %{"request" => ref, "sources" => [ref]})
+
+    assert result.status == "completed", inspect(result)
+    {Jason.decode!(result.content), connect}
+  end
+
   defp create_task(f, extra \\ %{}, mode \\ :off) do
     context = router_request_context(f)
     router = f.router
@@ -1850,6 +2135,24 @@ defmodule SalixIM.TaskExecutionTest do
     worker = f.worker
     settle_receive({:delivered, ^worker, worker_payload})
     {task, tool_context(f, worker, worker_payload)}
+  end
+
+  defp router_create_task(f, context) do
+    assert {:ok, %{"conversation_id" => task_id}} =
+             Provider.call_api(f.router, "internal", "internal.task.create", %{
+               "connect_id" => "internal",
+               "tool_context" => context,
+               "params" => Map.put(task_params(f), "execution_requests", nil)
+             })
+
+    worker = f.worker
+    settle_receive({:delivered, ^worker, _payload})
+    task_id
+  end
+
+  defp origin_provider(f, task_id) do
+    {:ok, task} = Conversations.get_group_conversation_record(f.group, task_id)
+    get_in(task, ["metadata", "origin", "provider"])
   end
 
   defp runtime_context(f, context, role, mode) do

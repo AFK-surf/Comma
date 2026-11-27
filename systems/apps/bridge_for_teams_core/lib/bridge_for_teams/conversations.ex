@@ -62,12 +62,24 @@ defmodule BridgeForTeams.Conversations do
          else: arguments
 
     result =
-      case Client.call_optional(:create_placed_task_conversation, arguments) do
-        {:error, :unsupported} -> {:error, :task_conversation_create_unavailable}
-        result -> result
+      with :ok <- admit_user_task(project, opts) do
+        case Client.call_optional(:create_placed_task_conversation, arguments) do
+          {:error, :unsupported} -> {:error, :task_conversation_create_unavailable}
+          result -> result
+        end
       end
 
     task_created(result, project, router, opts)
+  end
+
+  defp admit_user_task(project, opts) do
+    if is_binary(opts[:actor_user_id]) do
+      with {:ok, org} <- BridgeForTeams.Orgs.get_org(project.org_id),
+           {:ok, _} <- BillingCore.TeamsAccess.check(org.billing_account_id),
+           do: :ok
+    else
+      :ok
+    end
   end
 
   @doc """

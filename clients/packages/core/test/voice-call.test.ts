@@ -127,8 +127,62 @@ describe("a desktop call to the Router", () => {
 
     t.socket({ kind: "closed", code: 4409, reason: "busy" });
     await t.time.pass(100);
-    expect(t.call()).toMatchObject({ phase: "idle" });
+    expect(t.call()).toMatchObject({
+      phase: "idle",
+      lastEnd: { phase: "calling", reason: "busy" },
+    });
     expect(t.host.api.seen("DELETE", `${keys}/gak_call`)).toHaveLength(1);
+  });
+
+  it("records billing_unavailable endings when dialing or mid-call, and clears them on dismiss, hangup, or next start", async () => {
+    const t = setup();
+    await t.time.pass(100);
+
+    // Refused during dial before session.started.
+    const dial = t.client.call("voiceCall.start", { workspace: "wsp_1" });
+    await t.time.pass(100);
+    await dial;
+    t.socket({ kind: "closed", code: 1000, reason: "billing_unavailable" });
+    await t.time.pass(100);
+    expect(t.call()).toMatchObject({
+      phase: "idle",
+      lastEnd: { phase: "calling", reason: "billing_unavailable" },
+    });
+    const firstId = t.call()?.lastEnd?.id;
+    expect(firstId).toEqual(expect.any(Number));
+
+    // UI acknowledgement clears lastEnd so remounts or other windows do not re-toast.
+    const dismissed = t.client.call("voiceCall.dismissEnd", { id: firstId ?? -1 });
+    await t.time.pass(100);
+    await dismissed;
+    expect(t.call()?.lastEnd).toBeNull();
+
+    // Ended mid-call via session.ended frame.
+    const second = t.client.call("voiceCall.start", { workspace: "wsp_1" });
+    await t.time.pass(100);
+    await second;
+    t.socket({ kind: "open" });
+    t.socket({
+      kind: "message",
+      text: JSON.stringify({ type: "session.started", call_id: "vc_2" }),
+    });
+    t.socket({
+      kind: "message",
+      text: JSON.stringify({ type: "session.ended", reason: "billing_unavailable" }),
+    });
+    t.socket({ kind: "closed", code: 1000, reason: "billing_unavailable" });
+    await t.time.pass(100);
+    expect(t.call()).toMatchObject({
+      phase: "idle",
+      lastEnd: { phase: "connected", reason: "billing_unavailable" },
+    });
+    expect(t.call()?.lastEnd?.id).toBeGreaterThan(firstId ?? 0);
+
+    // Hanging up while idle also clears any unacknowledged lastEnd.
+    const cleared = t.client.call("voiceCall.end", {});
+    await t.time.pass(100);
+    await cleared;
+    expect(t.call()?.lastEnd).toBeNull();
   });
 
   it("goes back to idle when the key cannot be made", async () => {

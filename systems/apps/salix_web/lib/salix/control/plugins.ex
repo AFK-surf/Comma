@@ -45,6 +45,12 @@ defmodule Salix.Control.Plugins do
     offline_access
   )
   @github_mcp_scopes ~w(repo read:org read:user user:email)
+  @google_colab_scopes ~w(
+    openid
+    https://www.googleapis.com/auth/userinfo.email
+    https://www.googleapis.com/auth/userinfo.profile
+    https://www.googleapis.com/auth/colaboratory
+  )
   @google_workspace_mcp_scopes ~w(
     https://www.googleapis.com/auth/gmail.readonly
     https://www.googleapis.com/auth/drive.readonly
@@ -283,7 +289,7 @@ defmodule Salix.Control.Plugins do
       "plugin_id" => "feishu",
       "name" => "飞书",
       "description" => "Workspace messaging and bot routing through Feishu.",
-      # Listed with the services of mainland China (`SalixMCP.ChinaServices`).
+      # Listed with the China services in `SalixMCP.HostedServices`.
       "ui" => %{"brand" => "feishu", "category" => "中国服务"},
       "default_enabled" => true,
       "setup" => %{
@@ -558,9 +564,10 @@ defmodule Salix.Control.Plugins do
       # connector credential of a device of the Group) a member pastes into
       # the station's connects; uninstalling removes that device.
       "plugin_id" => "stillfail",
-      "name" => "still.fail",
+      "name" => "Monoid",
+      "summary" => "Run Comma Tasks on your Monoid agents",
       "description" =>
-        "Run Tasks on your still.fail agents: a still.fail station connects with the line this shows.",
+        "Connect a Monoid workspace through one of its stations. Comma runs Tasks on that station and sees chats and usage from the whole workspace.",
       "ui" => %{"brand" => "stillfail"},
       "default_enabled" => false,
       "setup" => %{
@@ -570,14 +577,49 @@ defmodule Salix.Control.Plugins do
           %{
             "id" => "stillfail-connect",
             "kind" => "stillfail_connect",
-            "label" => "still.fail station",
-            "credential_label" => "Line for still.fail",
+            "label" => "Monoid station",
+            "credential_label" => "Line for Monoid",
             "help_url" => "https://still.fail"
           }
         ],
         "mcps" => []
       },
       "refs" => %{"tool_refs" => []}
+    },
+    %{
+      "plugin_id" => "google-colab",
+      "name" => "Google Colab",
+      "summary" => "Run GPU workloads on Google Colab",
+      "description" =>
+        "Connect your Google Colab account so agents can run PyTorch, CUDA, rendering, and ML workloads on Colab GPUs.",
+      "ui" => %{
+        "brand" => "google-colab",
+        "category" => "Compute",
+        "requires" => ["plugin-oauth-code"]
+      },
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "google-colab-oauth",
+        "required_connections" => ["google-colab-oauth"],
+        "connections" => [
+          %{
+            "id" => "google-colab-oauth",
+            "kind" => "oauth_code_paste",
+            "label" => "Google Colab",
+            "provider" => "google_colab",
+            "alias" => "google-colab",
+            "config_key" => "GOOGLE_COLAB_AUTH_CODE",
+            "credential_label" => "Authorization code",
+            "scopes" => @google_colab_scopes
+          }
+        ],
+        "mcps" => []
+      },
+      "refs" => %{
+        "tool_refs" => ["colab.*"],
+        "skill_refs" => ["colab-gpu"]
+      }
     },
     %{
       "plugin_id" => "linear",
@@ -882,13 +924,6 @@ defmodule Salix.Control.Plugins do
       "refs" => %{"tool_refs" => ~w(preview.publish_html)}
     },
     %{
-      "plugin_id" => "owner-notification",
-      "name" => "Owner Notification",
-      "description" => "Send email notifications to group owners.",
-      "default_enabled" => true,
-      "refs" => %{"tool_refs" => ~w(email.send_to_owners)}
-    },
-    %{
       "plugin_id" => "composio",
       "name" => "Composio",
       "description" => "Composio-hosted external SaaS connections and tool execution.",
@@ -904,7 +939,7 @@ defmodule Salix.Control.Plugins do
     }
   ]
 
-  @system_plugins @listed_system_plugins ++ SalixMCP.ChinaServices.plugin_definitions()
+  @system_plugins @listed_system_plugins ++ SalixMCP.HostedServices.plugin_definitions()
 
   @doc false
   def system_plugins, do: @system_plugins
@@ -977,6 +1012,10 @@ defmodule Salix.Control.Plugins do
          {:ok, %{"tenant_id" => ^tenant_id} = group} <- Groups.get(group_id) do
       [tenant_definitions, group_definitions, enablements] =
         read_group_catalog_slices(tenant_id, group_id)
+
+      # Isolated Collaborative Task Groups never inherit the host tenant's plugins.
+      tenant_definitions =
+        if group["purpose"] == "collaboration", do: [], else: tenant_definitions
 
       {:ok,
        %{
@@ -1165,6 +1204,25 @@ defmodule Salix.Control.Plugins do
     end
   end
 
+  @doc """
+  Fast cached effective-enablement check backed by `PluginCatalogCache` (zero
+  S3 reads on cache hit). Fails closed (`false`) on error or missing definition.
+  """
+  def plugin_enabled?(tenant_id, group_id, plugin_id) do
+    tenant_id = trim(tenant_id)
+    group_id = trim(group_id)
+    plugin_id = trim(plugin_id)
+
+    with {:ok, catalog} <- PluginCatalogCache.snapshot(tenant_id, group_id),
+         definition when is_map(definition) <-
+           Enum.find(catalog.definitions, &(&1["plugin_id"] == plugin_id)) do
+      enablement_by_id = Map.new(catalog.enablements, &{&1["plugin_id"], &1})
+      effective_enabled?(definition, enablement_by_id)
+    else
+      _ -> false
+    end
+  end
+
   def enable_group(tenant_id, group_id, plugin_id) do
     set_group_enabled(tenant_id, group_id, plugin_id, true)
   end
@@ -1329,6 +1387,7 @@ defmodule Salix.Control.Plugins do
       "created_at" => 0,
       "updated_at" => 0
     }
+    |> maybe_put("summary", trim(attrs["summary"]))
     |> maybe_put("setup", attrs["setup"])
     |> maybe_put("ui", attrs["ui"])
     |> maybe_put("trust", attrs["trust"])
@@ -1478,7 +1537,13 @@ defmodule Salix.Control.Plugins do
     plugin_id = trim(plugin_id)
 
     with {:ok, definition} <- get_definition(tenant_id, group_id, plugin_id),
-         :ok <- ensure_enablement_allowed(definition, enabled) do
+         :ok <- ensure_enablement_allowed(definition, enabled),
+         # A plugin with nothing to connect is set up as it is enabled.
+         :ok <-
+           if(enabled,
+             do: PluginSetup.ensure_automatic_bindings(tenant_id, group_id, definition),
+             else: :ok
+           ) do
       key = Keys.ctl_group_plugin_enablement(tenant_id, group_id, plugin_id)
       now = Store.now()
 

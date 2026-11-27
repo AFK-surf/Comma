@@ -22,6 +22,7 @@ extension EnvironmentValues {
     var returnMessageID: String?
     @ObservationIgnored var items: [ChatMediaItem] = []
     @ObservationIgnored var open: ((ChatMediaItem, UIImage?) -> Void)?
+    @ObservationIgnored private var viewerPageHandlers: [String: (String) -> Void] = [:]
     @ObservationIgnored private var sources: [String: NSHashTable<UIImageView>] = [:]
     @ObservationIgnored private let thumbnails = NSCache<NSString, UIImage>()
     @ObservationIgnored private let fullImages = NSCache<NSString, UIImage>()
@@ -44,6 +45,18 @@ extension EnvironmentValues {
     func unregister(_ view: UIImageView, id: String) {
         sources[id]?.remove(view)
         if sources[id]?.allObjects.isEmpty == true { sources[id] = nil }
+    }
+
+    func registerViewerSync(messageID: String, handler: @escaping (String) -> Void) {
+        viewerPageHandlers[messageID] = handler
+    }
+
+    func unregisterViewerSync(messageID: String) {
+        viewerPageHandlers[messageID] = nil
+    }
+
+    func notifyViewerPageChanged(item: ChatMediaItem) {
+        viewerPageHandlers[item.messageID]?(item.id)
     }
 
     func source(for id: String) -> UIImageView? {
@@ -197,33 +210,61 @@ struct ChatMediaThumbnail: View {
     }
 }
 
-private struct ChatMediaSourceView: UIViewRepresentable {
+struct ChatMediaSourceView: UIViewRepresentable {
     let image: UIImage?
     let id: String
     let gallery: ChatMediaGallery
+    var cornerRadius: CGFloat = CommaTheme.imageRadius
+    var registerSource: Bool = true
 
     func makeUIView(context: Context) -> UIImageView {
         let view = UIImageView()
         view.contentMode = .scaleAspectFill
         view.clipsToBounds = true
-        view.layer.cornerRadius = CommaTheme.imageRadius
+        view.layer.cornerRadius = cornerRadius
+        view.layer.cornerCurve = .continuous
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.setContentHuggingPriority(.defaultLow, for: .vertical)
-        gallery.register(view, id: id)
+        if registerSource {
+            gallery.register(view, id: id)
+            context.coordinator.registered = true
+        }
         return view
     }
 
-    func updateUIView(_ view: UIImageView, context: Context) { view.image = image }
+    func updateUIView(_ view: UIImageView, context: Context) {
+        view.image = image
+        view.layer.cornerRadius = cornerRadius
+        if context.coordinator.id != id {
+            if context.coordinator.registered {
+                gallery.unregister(view, id: context.coordinator.id)
+                context.coordinator.registered = false
+            }
+            context.coordinator.id = id
+        }
+        if registerSource && !context.coordinator.registered {
+            gallery.register(view, id: id)
+            context.coordinator.registered = true
+        } else if !registerSource && context.coordinator.registered {
+            gallery.unregister(view, id: id)
+            context.coordinator.registered = false
+        }
+    }
+
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIImageView, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? CommaTheme.imageTileSide, height: proposal.height ?? CommaTheme.imageTileSide)
     }
     func makeCoordinator() -> Coordinator { Coordinator(gallery: gallery, id: id) }
     static func dismantleUIView(_ view: UIImageView, coordinator: Coordinator) {
-        coordinator.gallery.unregister(view, id: coordinator.id)
+        if coordinator.registered {
+            coordinator.gallery.unregister(view, id: coordinator.id)
+            coordinator.registered = false
+        }
     }
     final class Coordinator {
         let gallery: ChatMediaGallery
-        let id: String
+        var id: String
+        var registered = false
         init(gallery: ChatMediaGallery, id: String) { self.gallery = gallery; self.id = id }
     }
 }

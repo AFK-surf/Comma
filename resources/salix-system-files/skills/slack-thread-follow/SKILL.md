@@ -1,6 +1,7 @@
 ---
 name: slack-thread-follow
 description: Follow a Slack thread after posting in it as the user through mcp.slack.*, so replies reach you within about a minute. Use after every such post that someone may answer.
+prompt_summary: "Follow a Slack thread after posting as the user when someone may reply (Workers ask Router in report); replies arrive in ~1 minute."
 ---
 
 # Follow a Slack thread

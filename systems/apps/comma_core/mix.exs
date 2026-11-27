@@ -82,7 +82,7 @@ defmodule CommaCore.MixProject do
       {:x509, "~> 0.9", only: :test},
       {:ex_json_schema, "~> 0.11"},
       {:req, "~> 0.6"},
-      {:posthog, "~> 2.16"},
+      {:product_analytics, in_umbrella: true},
       {:gen_smtp, "~> 1.3"}
     ]
   end

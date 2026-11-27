@@ -25,6 +25,7 @@ defmodule Comma.MiniApps.App do
     field(:grants, {:array, :string}, default: [])
     field(:secrets, :map, default: %{})
     field(:data_script, :boolean, default: false)
+    field(:collaboration_conversation_id, :string)
 
     timestamps(
       type: :utc_datetime_usec,

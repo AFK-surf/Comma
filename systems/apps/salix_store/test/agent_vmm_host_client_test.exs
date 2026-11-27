@@ -5,78 +5,65 @@ defmodule SalixStore.AgentVMMHostClientTest do
   import Ecto.Query
   alias SalixStore.{AgentVMM, AgentVMMHostClient, Compute, Repo}
 
-  defmodule HTTP do
-    def post(url, body) do
+  defmodule SessionCaller do
+    def session_call(instance_id, session, "compute.image.import", payload, timeout_ms) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_store, :agent_vmm_host_client_test_pid),
+        {
+          :host_import_request,
+          instance_id,
+          session,
+          payload
+        }
+      )
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_store, :agent_vmm_host_client_test_pid),
+        {:host_import_timeout, timeout_ms}
+      )
+
+      case SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_result) do
+        :stream_stale -> {:error, :stale_session}
+        _ -> {:ok, 200, %{"reference" => payload["x-comma-image-reference"]}}
+      end
+    end
+
+    def session_call(instance_id, session, operation, payload, timeout_ms) do
       SystemsRuntime.Proc.send(
         SystemsRuntime.fetch_env!(:salix_store, :agent_vmm_host_client_test_pid),
         {
           :host_request,
-          url,
-          body
+          instance_id,
+          session,
+          operation,
+          payload
         }
       )
+
+      if operation == "compute.exec" do
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.fetch_env!(:salix_store, :agent_vmm_host_client_test_pid),
+          {:host_exec_timeout, timeout_ms}
+        )
+      end
 
       case SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_result) do
         {:error, _} = error ->
           error
 
         _ ->
-          successful_post(url, body)
+          successful_call(operation, payload)
       end
     end
 
-    defp successful_post(url, body) do
-      case String.ends_with?(url, "/compute.exec") do
-        true ->
-          {:ok, %{"outcome" => "succeeded", "exit_code" => 0}}
+    defp successful_call("compute.exec", _body),
+      do: {:ok, 200, %{"outcome" => "succeeded", "exit_code" => 0}}
 
-        false ->
-          if is_binary(body["path"]) do
-            {:ok, %{"path" => body["path"], "kind" => "WORKSPACE_ENTRY_KIND_FILE"}}
-          else
-            {:ok, %{"outcome" => "succeeded"}}
-          end
-      end
-    end
+    defp successful_call(_operation, %{"path" => path}) when is_binary(path),
+      do: {:ok, 200, %{"path" => path, "kind" => "WORKSPACE_ENTRY_KIND_FILE"}}
 
-    def post_import(url, headers) do
-      SystemsRuntime.Proc.send(
-        SystemsRuntime.fetch_env!(:salix_store, :agent_vmm_host_client_test_pid),
-        {
-          :host_import_request,
-          url,
-          headers
-        }
-      )
-
-      case SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_result) do
-        :stream_stale -> {:error, :stale_session}
-        _ -> {:ok, %{"reference" => elem(List.keyfind(headers, "x-comma-image-reference", 0), 1)}}
-      end
-    end
-  end
-
-  defmodule GatewayErrorHTTP do
-    import Plug.Conn
-
-    def init(options), do: options
-
-    def call(conn, _options) do
-      body =
-        SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_error_body, %{
-          "code" => "resource_capacity_exhausted",
-          "stage" => "import_admission",
-          "resource" => "storage_headroom",
-          "message" => "Guest storage headroom is unavailable.",
-          "available_bytes" => 1_073_741_824,
-          "required_bytes" => 2_147_483_648,
-          "ignored" => "not part of the contract"
-        })
-
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(429, Jason.encode!(body))
-    end
+    defp successful_call(_operation, _body),
+      do: {:ok, 200, %{"outcome" => "succeeded"}}
   end
 
   setup do
@@ -85,19 +72,12 @@ defmodule SalixStore.AgentVMMHostClientTest do
     )
 
     previous = %{
-      instances: SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_instances),
-      template: SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_url_template),
-      client: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_http_client),
+      caller: SystemsRuntime.get_env(:salix_store, :agent_vmm_session_caller),
       pid: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_pid),
-      result: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_result),
-      gateway_error_body: SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_error_body)
+      result: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_client_test_result)
     }
 
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_gateway_instances, %{
-      "gateway-a" => "https://gateway.internal"
-    })
-
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, HTTP)
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_session_caller, SessionCaller)
 
     SystemsRuntime.put_env(
       :salix_store,
@@ -106,18 +86,35 @@ defmodule SalixStore.AgentVMMHostClientTest do
     )
 
     SystemsRuntime.delete_env(:salix_store, :agent_vmm_host_client_test_result)
-    SystemsRuntime.delete_env(:salix_store, :agent_vmm_gateway_error_body)
 
     on_exit(fn ->
-      restore(:agent_vmm_gateway_instances, previous.instances)
-      restore(:agent_vmm_gateway_url_template, previous.template)
-      restore(:agent_vmm_host_http_client, previous.client)
+      restore(:agent_vmm_session_caller, previous.caller)
       restore(:agent_vmm_host_client_test_pid, previous.pid)
       restore(:agent_vmm_host_client_test_result, previous.result)
-      restore(:agent_vmm_gateway_error_body, previous.gateway_error_body)
     end)
 
     :ok
+  end
+
+  test "import errors retain progress and deterministic artifact identity across the worker boundary" do
+    for {code, resource} <- [
+          {"import_in_progress", "runtime"},
+          {"data_loss", "image"},
+          {"invalid_argument", "image"},
+          {"not_found", "image"},
+          {"permission_denied", "image"},
+          {"data_loss", "runtime"}
+        ] do
+      error = %{
+        "code" => code,
+        "stage" => "image_import",
+        "resource" => resource,
+        "message" => "Image import result."
+      }
+
+      assert {:error, {:gateway_error, ^error}} =
+               AgentVMMHostClient.HTTP.import_result(503, error)
+    end
   end
 
   test "one dispatch resolves current authority once and the next dispatch observes revocation" do
@@ -137,7 +134,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
     on_exit(fn -> :telemetry.detach(handler) end)
 
     assert {:ok, _} = AgentVMMHostClient.exec_workload(%{"command" => ["true"]}, workload.id)
-    settle_receive({:host_request, _, %{"command" => ["true"]}})
+    settle_receive({:host_request, _, _, _, %{"command" => ["true"]}})
     assert_received :vmm_target_query
     refute_received :vmm_target_query
 
@@ -149,7 +146,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
 
     assert_received :vmm_target_query
     refute_received :vmm_target_query
-    settle_refute_receive({:host_request, _, _})
+    settle_refute_receive({:host_request, _, _, _, _})
   end
 
   test "dispatches through the current workload, allocation, runtime, and gateway fence" do
@@ -168,10 +165,17 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, first_url, %{"path" => "src/main.ex"}})
+    settle_receive(
+      {:host_request, "gateway-a", first_session, "compute.workspace.stat",
+       %{"path" => "src/main.ex"}}
+    )
 
-    assert first_url ==
-             "https://gateway.internal/v1/sessions/registration/allocation/1/4/compute.workspace.stat"
+    assert first_session == %{
+             registration_id: "registration",
+             allocation_id: "allocation",
+             allocation_generation: 1,
+             connection_epoch: "4"
+           }
 
     assert {:ok, execution_target} = AgentVMMHostClient.execution_target(workload.id)
 
@@ -196,7 +200,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
     }
 
     assert {:ok, _} = AgentVMMHostClient.runtime_execution("acquire", auth, workload.id)
-    settle_receive({:host_request, _, %{"execution_id" => "auth-verify"}})
+    settle_receive({:host_request, _, _, _, %{"execution_id" => "auth-verify"}})
 
     assert {:error, :workload_updating} =
              AgentVMMHostClient.runtime_execution(
@@ -229,9 +233,10 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, execution_acquire_url, execution_acquire})
-    assert String.contains?(execution_acquire_url, "/allocation/1/4/")
-    assert String.ends_with?(execution_acquire_url, "/compute.execution.acquire")
+    settle_receive(
+      {:host_request, "gateway-a", ^first_session, "compute.execution.acquire", execution_acquire}
+    )
+
     assert execution_acquire["execution_id"] == "execution-1"
     assert execution_acquire["deadline_unix_nano"] == "0"
 
@@ -241,8 +246,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, exec_url, args})
-    assert String.ends_with?(exec_url, "/compute.exec")
+    settle_receive({:host_request, "gateway-a", ^first_session, "compute.exec", args})
     assert args["command"] == ["printf", "ok"]
     assert Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}\z/, args["request_id"])
 
@@ -257,8 +261,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, build_url, build_args})
-    assert String.ends_with?(build_url, "/compute.build.run")
+    settle_receive({:host_request, "gateway-a", ^first_session, "compute.build.run", build_args})
     assert build_args["request_id"] == "build-request-1"
 
     manifest_digest = "sha256:" <> String.duplicate("b", 64)
@@ -268,8 +271,8 @@ defmodule SalixStore.AgentVMMHostClientTest do
       "reference" => "comma.local/runtime/station@" <> manifest_digest,
       "platform" => "linux/arm64",
       "archiveUrl" =>
-        "https://comma-release.afk.surf/runtime-bundles/sha256/#{String.duplicate("a", 64)}.oci.tar",
-      "archiveSize" => byte_size("oci-archive"),
+        "https://comma-release.afk.surf/runtime-bundles/sha256/#{String.duplicate("a", 64)}.erofs.zst",
+      "archiveSize" => byte_size("erofs-archive"),
       "archiveSha256" => String.duplicate("a", 64),
       "manifestDigest" => manifest_digest
     }
@@ -279,15 +282,27 @@ defmodule SalixStore.AgentVMMHostClientTest do
     assert {:ok, %{"reference" => ^expected_image_reference}} =
              AgentVMMHostClient.import_workload_image(image, workload.id)
 
-    settle_receive({:host_import_request, import_url, import_headers})
-    assert String.ends_with?(import_url, "/compute.image.import")
-    assert {"content-length", "0"} in import_headers
-    assert {"x-comma-archive-size", Integer.to_string(byte_size("oci-archive"))} in import_headers
-    assert {"x-comma-archive-url", image["archiveUrl"]} in import_headers
-    assert {"x-comma-image-reference", image["reference"]} in import_headers
+    settle_receive({:host_import_request, "gateway-a", ^first_session, import_headers})
+    assert_received {:host_import_timeout, 760_000}
+    assert import_headers["content-length"] == "0"
+    assert import_headers["x-comma-archive-size"] == Integer.to_string(byte_size("erofs-archive"))
+    assert import_headers["x-comma-archive-url"] == image["archiveUrl"]
+    assert import_headers["x-comma-image-reference"] == image["reference"]
 
-    assert {"x-comma-import-request-id", request_id} =
-             Enum.find(import_headers, &match?({"x-comma-import-request-id", _}, &1))
+    legacy_oci_image = %{
+      image
+      | "archiveUrl" =>
+          "https://comma-release.afk.surf/runtime-bundles/sha256/#{String.duplicate("a", 64)}.oci.tar"
+    }
+
+    assert {:ok, %{"reference" => ^expected_image_reference}} =
+             AgentVMMHostClient.import_workload_image(legacy_oci_image, workload.id)
+
+    settle_receive({:host_import_request, "gateway-a", ^first_session, legacy_headers})
+    assert_received {:host_import_timeout, 760_000}
+    assert legacy_headers["x-comma-archive-url"] == legacy_oci_image["archiveUrl"]
+
+    request_id = Map.fetch!(import_headers, "x-comma-import-request-id")
 
     assert byte_size(request_id) == 63
 
@@ -334,13 +349,13 @@ defmodule SalixStore.AgentVMMHostClientTest do
              )
 
     Repo.update_all(AgentVMM.Session,
-      set: [expires_at: DateTime.add(SystemsClock.utc_now(), 600, :second)]
+      set: [expires_at: DateTime.add(SystemsClock.utc_now(), 779, :second)]
     )
 
     assert {:error, :insufficient_session_authority} =
              AgentVMMHostClient.import_workload_image(image, workload.id)
 
-    settle_refute_receive({:host_import_request, _, _}, 20)
+    settle_refute_receive({:host_import_request, _, _, _}, 20)
     Repo.update_all(AgentVMM.Session, set: [expires_at: session_expiry])
 
     assert {:ok, %{"outcome" => "succeeded"}} =
@@ -349,8 +364,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, process_url, process_args})
-    assert String.ends_with?(process_url, "/process.start")
+    settle_receive({:host_request, "gateway-a", ^first_session, "process.start", process_args})
     assert process_args["request_id"] == "process-request-1"
 
     assert {:error, :invalid_command} =
@@ -365,7 +379,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_refute_receive({:host_request, _, %{"command" => ["sh"]}}, 20)
+    settle_refute_receive({:host_request, _, _, _, %{"command" => ["sh"]}}, 20)
 
     assert {:ok, _} =
              AgentVMMHostClient.runtime_execution(
@@ -379,33 +393,23 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, execution_release_url, execution_release})
-    assert String.contains?(execution_release_url, "/allocation/1/4/")
-    assert String.ends_with?(execution_release_url, "/compute.execution.release")
+    settle_receive(
+      {:host_request, "gateway-a", ^first_session, "compute.execution.release", execution_release}
+    )
+
     assert execution_release["execution_id"] == "execution-1"
     assert execution_release["expected_instance_id"] == execution_target["container_instance_id"]
 
     assert {:ok, _} =
              AgentVMMHostClient.import_workload_image(image, workload.id)
 
-    settle_receive({:host_import_request, renewed_import_url, renewed_headers})
-    assert String.contains?(renewed_import_url, "/allocation/1/4/compute.image.import")
+    settle_receive({:host_import_request, "gateway-a", ^first_session, renewed_headers})
+    assert renewed_headers["x-comma-import-request-id"] == request_id
 
-    assert {"x-comma-import-request-id", ^request_id} =
-             Enum.find(renewed_headers, &match?({"x-comma-import-request-id", _}, &1))
-
-    Repo.update_all(AgentVMM.Session, set: [gateway_instance_id: "salix-vmm-gateway-1"])
+    Repo.update_all(AgentVMM.Session, set: [gateway_instance_id: "comma-1"])
 
     Repo.update_all(AgentVMM.Registration,
-      set: [current_gateway_instance_id: "salix-vmm-gateway-1"]
-    )
-
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_gateway_instances, %{})
-
-    SystemsRuntime.put_env(
-      :salix_store,
-      :agent_vmm_gateway_url_template,
-      "https://{instance_id}.salix-vmm-gateway-headless.comma.svc.cluster.local:8443"
+      set: [current_gateway_instance_id: "comma-1"]
     )
 
     assert {:ok, _} =
@@ -415,10 +419,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, routed_url, _})
-
-    assert routed_url ==
-             "https://salix-vmm-gateway-1.salix-vmm-gateway-headless.comma.svc.cluster.local:8443/v1/sessions/registration/allocation/1/4/compute.workspace.stat"
+    settle_receive({:host_request, "comma-1", ^first_session, "compute.workspace.stat", _})
 
     revision_before_stale = Repo.get!(Compute.Allocation, allocation.id).revision
 
@@ -433,7 +434,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
 
     assert Repo.get_by!(AgentVMM.Session, allocation_generation: 1).status == "stale"
     assert Repo.get!(Compute.Allocation, allocation.id).revision == revision_before_stale + 1
-    settle_receive({:host_import_request, _, _})
+    settle_receive({:host_import_request, _, _, _})
     Repo.update_all(AgentVMM.Session, set: [status: "ready"])
     revision_before_stale = Repo.get!(Compute.Allocation, allocation.id).revision
 
@@ -452,8 +453,8 @@ defmodule SalixStore.AgentVMMHostClientTest do
     assert {:error, :not_found} =
              AgentVMMHostClient.call(:workspace_stat, %{"path" => "vanished"}, workload.id)
 
-    settle_receive({:host_request, _, %{"path" => "vanished"}})
-    settle_refute_receive({:host_request, _, %{"path" => "vanished"}})
+    settle_receive({:host_request, _, _, _, %{"path" => "vanished"}})
+    settle_refute_receive({:host_request, _, _, _, %{"path" => "vanished"}})
 
     assert {:error, :not_found} =
              AgentVMMHostClient.call(:workspace_stat, %{"path" => "."}, "other")
@@ -488,7 +489,28 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_refute_receive({:host_request, _, _})
+    settle_refute_receive({:host_request, _, _, _, _})
+  end
+
+  test "a session on a node whose worker does not answer is unavailable, not stale" do
+    %{workload: workload} = ready_host_workload!("shell")
+    previous_worker = SystemsRuntime.get_env(:salix_store, :agent_vmm_worker)
+    on_exit(fn -> restore(:agent_vmm_worker, previous_worker) end)
+
+    # No session caller or worker is configured: target is unavailable.
+    SystemsRuntime.delete_env(:salix_store, :agent_vmm_session_caller)
+
+    assert {:error, :runtime_execution_target_unavailable} =
+             AgentVMMHostClient.list_processes(%{}, workload.id)
+
+    # A node that runs workers resolves the target, and finds no worker of that instance.
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_worker, [])
+    assert {:error, :gateway_unavailable} = AgentVMMHostClient.list_processes(%{}, workload.id)
+    settle_refute_receive({:host_request, _, _, _, _})
+
+    # The Host may still hold the session on the node that left: Salix keeps it.
+    assert {:ok, session} = AgentVMM.current_host_session_for_workload(workload.id)
+    assert session.status == "ready"
   end
 
   test "Shell commands use Host authority without a Runtime Agent and retain target fences" do
@@ -500,8 +522,14 @@ defmodule SalixStore.AgentVMMHostClientTest do
     )
 
     assert {:ok, _} = AgentVMMHostClient.list_processes(%{}, workload.id)
-    settle_receive({:host_request, url, %{}})
-    assert String.ends_with?(url, "/allocation/1/4/process.list")
+    settle_receive({:host_request, "gateway-a", session, "process.list", %{}})
+
+    assert session == %{
+             registration_id: "registration",
+             allocation_id: "allocation",
+             allocation_generation: 1,
+             connection_epoch: "4"
+           }
 
     assert {:ok, _} =
              AgentVMMHostClient.start_process(
@@ -509,7 +537,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
                workload.id
              )
 
-    settle_receive({:host_request, _, %{"request_id" => "shell-start"}})
+    settle_receive({:host_request, _, _, _, %{"request_id" => "shell-start"}})
     assert {:error, :not_found} = AgentVMMHostClient.execution_target(workload.id)
 
     for kind <- ["external_worker", "meeting_runtime", "service"] do
@@ -534,9 +562,193 @@ defmodule SalixStore.AgentVMMHostClientTest do
     Repo.update_all(Compute.Allocation, set: [generation: allocation.generation + 1])
     assert {:error, :not_found} = AgentVMMHostClient.list_processes(%{}, workload.id)
     Repo.update_all(Compute.Allocation, set: [generation: allocation.generation])
-    settle_refute_receive({:host_request, _, _})
+    settle_refute_receive({:host_request, _, _, _, _})
     assert {:ok, _} = AgentVMMHostClient.list_processes(%{}, workload.id)
-    settle_receive({:host_request, ^url, %{}})
+    settle_receive({:host_request, "gateway-a", ^session, "process.list", %{}})
+  end
+
+  test "workspace list, read, and write bind the workload /workspace volume_id while stat omits it" do
+    %{workload: workload} = ready_host_workload!("shell")
+    volume_id = "salix-vol-" <> String.duplicate("a", 52)
+
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^workload.id),
+      set: [
+        spec: %{
+          "volume_requirements" => [
+            %{
+              "role" => "provider_state",
+              "volume_id" => volume_id,
+              "destination" => "/workspace",
+              "owner_uid" => 10_001,
+              "owner_gid" => 10_001,
+              "mode" => 0o755,
+              "read_only" => false
+            }
+          ]
+        }
+      ]
+    )
+
+    assert {:ok, _} = AgentVMMHostClient.call(:workspace_list, %{"path" => "."}, workload.id)
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "compute.workspace.list",
+       %{"path" => ".", "volume_id" => ^volume_id}}
+    )
+
+    assert {:ok, _} =
+             AgentVMMHostClient.call(
+               :workspace_read,
+               %{"path" => "note.txt", "volume_id" => ""},
+               workload.id
+             )
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "compute.workspace.read",
+       %{"path" => "note.txt", "volume_id" => ^volume_id}}
+    )
+
+    assert {:ok, _} =
+             AgentVMMHostClient.call(
+               :workspace_write,
+               %{"path" => "note.txt", "content_base64" => Base.encode64("hi")},
+               workload.id
+             )
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "compute.workspace.write",
+       %{"path" => "note.txt", "volume_id" => ^volume_id}}
+    )
+
+    assert {:ok, _} =
+             AgentVMMHostClient.call(
+               :workspace_read,
+               %{"path" => "note.txt", "volume_id" => "explicit-vol"},
+               workload.id
+             )
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "compute.workspace.read",
+       %{"path" => "note.txt", "volume_id" => "explicit-vol"}}
+    )
+
+    assert {:ok, _} = AgentVMMHostClient.call(:workspace_stat, %{"path" => "."}, workload.id)
+    settle_receive({:host_request, "gateway-a", _, "compute.workspace.stat", stat_payload})
+    refute Map.has_key?(stat_payload, "volume_id")
+  end
+
+  test "tail_process validates wait_ms bounds and forwards valid wait_ms" do
+    %{workload: workload} = ready_host_workload!("shell")
+
+    assert {:ok, _} =
+             AgentVMMHostClient.tail_process(
+               %{"process_id" => "proc-1", "wait_ms" => 0},
+               workload.id
+             )
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "process.tail", %{"process_id" => "proc-1", "wait_ms" => 0}}
+    )
+
+    assert {:ok, _} =
+             AgentVMMHostClient.tail_process(
+               %{"process_id" => "proc-1", "wait_ms" => 30_000},
+               workload.id
+             )
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "process.tail",
+       %{"process_id" => "proc-1", "wait_ms" => 30_000}}
+    )
+
+    for invalid <- [-1, 30_001, "100", 1.5] do
+      assert {:error, :invalid_wait_ms} =
+               AgentVMMHostClient.tail_process(
+                 %{"process_id" => "proc-1", "wait_ms" => invalid},
+                 workload.id
+               )
+    end
+
+    settle_refute_receive({:host_request, _, _, "process.tail", _})
+  end
+
+  test "stop_process validates optional signal values" do
+    %{workload: workload} = ready_host_workload!("shell")
+
+    for signal <- ["term", "int", "kill", "TERM"] do
+      assert {:ok, _} =
+               AgentVMMHostClient.stop_process(
+                 %{"process_id" => "proc-1", "signal" => signal},
+                 workload.id
+               )
+
+      settle_receive(
+        {:host_request, "gateway-a", _, "process.stop",
+         %{"process_id" => "proc-1", "signal" => ^signal}}
+      )
+    end
+
+    for invalid <- ["hup", "SIGKILL", 9] do
+      assert {:error, :invalid_process_signal} =
+               AgentVMMHostClient.stop_process(
+                 %{"process_id" => "proc-1", "signal" => invalid},
+                 workload.id
+               )
+    end
+
+    settle_refute_receive({:host_request, _, _, "process.stop", _})
+  end
+
+  test "exec_workload validates optional timeout_ms, allows full option set, and scales worker timeout" do
+    %{workload: workload} = ready_host_workload!("shell")
+
+    assert {:ok, _} =
+             AgentVMMHostClient.exec_workload(
+               %{
+                 "command" => ["sh", "-c", "echo ok"],
+                 "env" => ["A=1"],
+                 "workdir" => "/workspace",
+                 "user" => "10001:10001",
+                 "timeout_ms" => 180_000,
+                 "request_id" => "exec-timeout-valid"
+               },
+               workload.id
+             )
+
+    settle_receive(
+      {:host_request, "gateway-a", _, "compute.exec",
+       %{"command" => ["sh", "-c", "echo ok"], "timeout_ms" => 180_000}}
+    )
+
+    assert_received {:host_exec_timeout, 200_000}
+
+    assert {:ok, _} =
+             AgentVMMHostClient.exec_workload(
+               %{"command" => ["true"], "timeout_ms" => 1_000},
+               workload.id
+             )
+
+    settle_receive({:host_request, "gateway-a", _, "compute.exec", %{"timeout_ms" => 1_000}})
+    assert_received {:host_exec_timeout, 95_000}
+
+    assert {:ok, _} =
+             AgentVMMHostClient.exec_workload(
+               %{"command" => ["true"], "timeout_ms" => 300_000},
+               workload.id
+             )
+
+    settle_receive({:host_request, "gateway-a", _, "compute.exec", %{"timeout_ms" => 300_000}})
+    assert_received {:host_exec_timeout, 320_000}
+
+    for invalid <- [0, 999, 300_001, "60000", 1.5] do
+      assert {:error, :invalid_timeout_ms} =
+               AgentVMMHostClient.exec_workload(
+                 %{"command" => ["true"], "timeout_ms" => invalid},
+                 workload.id
+               )
+    end
+
+    settle_refute_receive({:host_request, _, _, "compute.exec", _})
   end
 
   defp ready_host_workload!(kind) do
@@ -644,7 +856,7 @@ defmodule SalixStore.AgentVMMHostClientTest do
         []
       )
 
-    session_expiry = DateTime.add(SystemsClock.utc_now(), 720, :second)
+    session_expiry = DateTime.add(SystemsClock.utc_now(), 900, :second)
     session_expires_unix_millis = DateTime.to_unix(session_expiry, :millisecond)
 
     tunnel_one =

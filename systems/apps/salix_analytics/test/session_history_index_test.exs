@@ -42,13 +42,52 @@ defmodule SalixAnalytics.SessionHistoryIndexTest do
     documents = [doc(1, "你好跨越边界 needle %_\\"), doc(2, "next needle")]
     assert :ok = Index.transfer("agent", "session", documents)
     assert :ok = Index.transfer("agent", "session", documents)
-    assert {:ok, [second, first]} = Index.search("agent", "session", "needle", 2, 3, 0, 20)
+    assert {:ok, [second, first]} = Index.search("agent", "session", ["needle"], 2, 3, 0, 20)
     assert {:ok, [^second, ^first]} = Index.search("agent", "session", nil, 2, 3, 0, 20)
     assert second["seq"] == 2
     assert first["seq"] == 1
-    assert {:ok, []} = Index.search("agent", "other", "needle", 2, 3, 0, 20)
-    assert {:ok, [^first]} = Index.search("agent", "session", "你好", 2, 3, 0, 20)
-    assert {:ok, [^first]} = Index.search("agent", "session", "%_\\", 2, 3, 0, 20)
+    assert {:ok, []} = Index.search("agent", "other", ["needle"], 2, 3, 0, 20)
+    assert {:ok, [^first]} = Index.search("agent", "session", ["你好"], 2, 3, 0, 20)
+    assert {:ok, [^first]} = Index.search("agent", "session", ["%_\\"], 2, 3, 0, 20)
+    assert {:ok, [^first]} = Index.search("agent", "session", ["needle", "你好"], 2, 3, 0, 20)
+    assert {:ok, []} = Index.search("agent", "session", ["next", "你好"], 2, 3, 0, 20)
+  end
+
+  test "summaries returns one kind's rows that contain any term, newest first" do
+    summary = fn seq, text ->
+      %{doc(seq, text) | "kind" => "fact", "tool_name" => "compaction_summary"}
+    end
+
+    documents = [
+      summary.(1, "telethon login on the mac"),
+      doc(2, "telethon in a tool result"),
+      summary.(3, "telegram brief"),
+      summary.(4, "unrelated")
+    ]
+
+    assert :ok = Index.transfer("agent", "session", documents)
+
+    assert {:ok, rows} =
+             Index.summaries(
+               "agent",
+               "session",
+               "compaction_summary",
+               ["telethon", "telegram"],
+               4,
+               10
+             )
+
+    assert Enum.map(rows, & &1["seq"]) == [3, 1]
+
+    assert {:ok, [%{"seq" => 1}]} =
+             Index.summaries("agent", "session", "compaction_summary", ["telethon"], 2, 10)
+
+    # A search reads original records only; a listing keeps every record.
+    assert {:ok, [%{"seq" => 2}]} =
+             Index.search("agent", "session", ["telethon"], 4, 5, 0, 20)
+
+    assert {:ok, listed} = Index.search("agent", "session", nil, 4, 5, 0, 20)
+    assert Enum.map(listed, & &1["seq"]) == [4, 3, 2, 1]
   end
 
   test "HTTP handoff repairs replaced placeholder text before releasing hot documents", %{
@@ -98,7 +137,7 @@ defmodule SalixAnalytics.SessionHistoryIndexTest do
 
     assert :ok = Worker.index(agent, session)
     assert %{indexed: 300, cold: 44} = Hot.state(agent, session)
-    assert {:ok, [^document]} = Index.search(agent, session, "{{database}}", 44, 45, 0, 20)
+    assert {:ok, [^document]} = Index.search(agent, session, ["{{database}}"], 44, 45, 0, 20)
 
     assert [[0]] =
              Repo.query!(

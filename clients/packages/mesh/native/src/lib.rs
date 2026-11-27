@@ -409,6 +409,10 @@ impl Inner {
             let (transport, queues) = salix::transport(key.public());
             builder = builder.add_custom_transport(transport);
             relay = Some(queues);
+            // `salix-first`: the relay only while neither Salix nor a direct path has a round trip.
+            if a.get("routePolicy").and_then(Value::as_str) != Some("relay-first") {
+                builder = builder.relay_last();
+            }
         }
         // Which relay a station is on, found by its id when the control plane did not say.
         if !relays.is_empty() {

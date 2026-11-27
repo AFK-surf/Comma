@@ -70,8 +70,8 @@ data class TaskListFilter(
     companion object {
         /** Every status in display order, the desktop board's column order. */
         val STATUS_BUCKETS = listOf(
-            TaskStatusBucket.IN_PROGRESS, TaskStatusBucket.NEEDS_REVIEW,
-            TaskStatusBucket.DONE, TaskStatusBucket.CANCELLED,
+            TaskStatusBucket.IN_PROGRESS, TaskStatusBucket.NEEDS_REVIEW, TaskStatusBucket.DONE,
+            TaskStatusBucket.CANCELLED, TaskStatusBucket.LOOPS,
         )
         const val NO_LABEL = "comma:no-label"
         const val UNSPECIFIED = "comma:unspecified"

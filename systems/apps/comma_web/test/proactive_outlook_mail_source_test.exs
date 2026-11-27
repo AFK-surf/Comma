@@ -164,4 +164,50 @@ defmodule CommaWeb.ProactiveOutlookMailSourceTest do
     refute Map.has_key?(pdf, "text")
     refute Map.has_key?(big, "text")
   end
+
+  test "normalizes attachment-only Outlook messages with empty body and feeds full_mail merge" do
+    empty_with_attachment =
+      message("AAMk-att", "")
+      |> Map.put("body", %{"contentType" => "text", "content" => "   "})
+      |> Map.put("hasAttachments", true)
+
+    assert {:ok, normalized} =
+             ProactiveOutlookMailSource.normalize(
+               empty_with_attachment,
+               %{"value" => [empty_with_attachment]},
+               "me@example.com"
+             )
+
+    assert [%{"message_id" => "AAMk-att", "body" => "", "attachments" => ["unread attachments"]}] =
+             normalized["messages"]
+
+    item = %{
+      "toolkit" => "outlook",
+      "messageId" => "AAMk-att",
+      "context" => %{"scope" => "snippet", "text" => "", "attachments" => "unread"}
+    }
+
+    mail_with_attachments =
+      Map.merge(normalized, %{
+        "attachments_read" => true,
+        "attachments" => [%{"name" => "notes.txt", "text" => "Signed contract attached"}]
+      })
+
+    assert {:ok, merged} = CommaWeb.ProactiveCheck.merge_full_mail(item, mail_with_attachments)
+    assert merged["context"]["attachments"] == "read"
+    assert merged["context"]["text"] =~ "Signed contract attached"
+
+    # Empty Outlook message without attachments still fails normalization.
+    empty_without_attachment =
+      message("AAMk-empty", "")
+      |> Map.put("body", %{"contentType" => "text", "content" => ""})
+      |> Map.put("hasAttachments", false)
+
+    assert {:error, :mail_body_unavailable_or_too_large} =
+             ProactiveOutlookMailSource.normalize(
+               empty_without_attachment,
+               %{"value" => [empty_without_attachment]},
+               "me@example.com"
+             )
+  end
 end

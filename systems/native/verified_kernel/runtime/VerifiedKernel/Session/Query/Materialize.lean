@@ -207,6 +207,13 @@ def personOvertake (deferred : List Term) (room : Nat) : KernelM (List Term) := 
       let taken ← personActivation person key deferred room
       pure (if taken.contains person then taken else [])
 
+/-- Source message IDs of queued wakeable follow-ups in `openThread`. -/
+def followupSources (openThread : Term) (deferred : List Term) : KernelM (List Term) := do
+  if openThread == nil then return []
+  let members ← deferred.filterM (fun item => return (← threadKey item) == openThread)
+  members.mapM (fun item => do
+    access (← stringify ((← pickText item "payload").default empty)) (b "source_message_id"))
+
 /-- `materialize_batch/3`: the admitted items, the queue-ack item, and the exact consumes. -/
 def materializeBatch (state : Term) (items : List Term) (limit : Int) :
     KernelM (List Term × Term × List Term) := do
@@ -230,8 +237,16 @@ def materializeBatch (state : Term) (items : List Term) (limit : Int) :
       let kept ← overtakeLeading deferred leading
       return (kept ++ jumped, kept.getLast?.getD nil, jumped)
   let wait ← field state "wait"
+  let openThread ← activeUnansweredThread state
+  let followups ← followupSources openThread deferred
   let remaining := limit - Int.ofNat leading.length
-  let consumes ← takeMatching (fun item => currentSourceRuntimeItem item sourceIds wait)
+  let consumes ← takeMatching (fun item => do
+      if ← currentSourceRuntimeItem item sourceIds wait then return true
+      if openThread == nil then return false
+      if ← humanSourceWakeable item then return (← threadKey item) == openThread
+      let payload ← stringify ((← pickText item "payload").default empty)
+      let owner ← access payload (b "activation_source_message_id")
+      return owner != nil && followups.contains owner)
     deferred (if remaining ≤ 0 then 0 else remaining.toNat)
   return (leading ++ consumes, leading.getLast?.getD nil, consumes)
 

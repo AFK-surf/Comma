@@ -23,6 +23,10 @@
 //   session.vault {} → the vault; session.change {change} → {value}; session.google {clientId, nonce} → the grant;
 //     session.googleDone {grant, ok} (Android); session.apple {clientId, nonce} → {identityToken} (iOS); abort {id}
 //     (an operation given up: never answered)
+//   store.products {ids} → {products: [{id, displayPrice}]}; store.purchase {productId, accountToken} → {status:
+//     "purchased", transaction: {id, productId}} | {status: "pending" | "cancelled"}; store.unfinished {} →
+//     {transactions: [{id, productId}]}; store.finish {transaction}; store.sync {}; store.manage {} (asked only of an
+//     app that `sellsInStore`: StoreKit's verified transactions on iOS)
 //   mesh.* (mobile-mesh.ts): this phone's iroh, which the engine answers itself where the app carries it
 //     (`commaNative.mesh`); the app never sees them
 // And at once (`callSync`, answering {value} or {error}): session.gate {snapshot, lease}; sql.open {name} → id
@@ -54,6 +58,10 @@ import type {
   SessionLease,
   ScreenFramePorts,
   StationMeshPorts,
+  StorePorts,
+  StorePurchase,
+  StoreProduct,
+  StoreTransaction,
   StreamResponse,
 } from "../host.ts";
 import type { MobileNative } from "./mobile-globals.ts";
@@ -210,6 +218,29 @@ const failed = (e: unknown) =>
     ? e
     : new HostError(e instanceof Error ? e.message : String(e));
 
+function mobileStore(bridge: Bridge, platform: MobileStart["platform"]): StorePorts {
+  const ask = <A>(op: string, json: unknown = {}) =>
+    Effect.map(bridge.call(`store.${op}`, json), (a) => a.json as A);
+  return {
+    provider: platform === "ios" ? "apple" : "google",
+    products: (ids) =>
+      Effect.map(
+        ask<{ products: StoreProduct[] }>("products", { ids }),
+        (a) => a.products
+      ),
+    purchase: (input) => ask<StorePurchase>("purchase", input),
+    unfinished: Effect.suspend(() =>
+      Effect.map(
+        ask<{ transactions: StoreTransaction[] }>("unfinished"),
+        (a) => a.transactions
+      )
+    ),
+    finish: (transaction) => Effect.asVoid(ask("finish", { transaction })),
+    sync: Effect.suspend(() => Effect.asVoid(ask("sync"))),
+    manage: Effect.suspend(() => Effect.asVoid(ask("manage"))),
+  };
+}
+
 export interface MobileStart {
   /** Which app runs the core: what its sign-ins name, and whether it signs in with Google or Apple. */
   platform: "android" | "ios";
@@ -223,6 +254,8 @@ export interface MobileStart {
   readsLocalFiles?: boolean;
   /** The app's version, as the core's requests report it (`Host.client`). */
   version?: string;
+  /** The app sells plans and credit packs through its platform's store (`store.*`). */
+  sellsInStore?: boolean;
 }
 
 class MobileHost implements Host {
@@ -232,6 +265,7 @@ class MobileHost implements Host {
   readonly client: ClientIdentity;
   readonly deviceSetup?: import("../host.ts").DeviceSetupPort;
   readonly downloads: DownloadPorts;
+  readonly store?: StorePorts;
   readonly stationMesh?: StationMeshPorts;
   readonly screenFrames?: ScreenFramePorts;
   readonly readLocalFile?: NonNullable<Host["readLocalFile"]>;
@@ -275,6 +309,7 @@ class MobileHost implements Host {
           bridge.call("localFiles.read", { ref, offset, length }),
           (answer) => answer.bytes ?? new Uint8Array()
         );
+    if (start.sellsInStore === true) this.store = mobileStore(bridge, start.platform);
     this.#device = new MobileSql(bridge, "device");
     this.#device.exec(
       "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL)"

@@ -38,6 +38,14 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
         result -> result
       end
     end
+
+    @impl true
+    def release(group, event) do
+      case SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_runtime_test_release, :ok) do
+        release when is_function(release, 2) -> release.(group, event)
+        result -> result
+      end
+    end
   end
 
   defmodule TestChannel do
@@ -370,6 +378,53 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
 
       assert [joined] = RuntimeDriver.calls()
       assert joined["state"]["source"]["calendar_id"] == bob["calendar_id"]
+    end
+
+    test "a member's copy that leaves its calendar is released, and a failed release is retried",
+         %{alice: alice, bob: bob} do
+      parent = SystemsRuntime.Proc.self()
+
+      on_exit(fn ->
+        SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin_runtime_test_release)
+      end)
+
+      release = fn result ->
+        SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_runtime_test_release, fn
+          unit, event ->
+            SystemsRuntime.Proc.send(parent, {:released, unit["calendar_id"], event["meet_url"]})
+            result
+        end)
+      end
+
+      release.(:ok)
+      set_events(&[member_event(&1, "planning", @now + :timer.hours(3))])
+      assert [_, _] = CalendarAutojoin.scan_once([alice, bob], now: @now)
+      refute_received {:released, _, _}
+
+      # Alice's copy is deleted from her calendar; Bob's stays.
+      alice_calendar = alice["calendar_id"]
+
+      set_events(fn
+        %{"calendar_id" => ^alice_calendar} -> []
+        unit -> [member_event(unit, "planning", @now + :timer.hours(3))]
+      end)
+
+      # A failed release keeps the copy for the next pass.
+      release.({:error, :unavailable})
+      group_id = alice["group_id"]
+
+      assert [{^group_id, {:partial, 1, [%{reason: {:member_release, :unavailable}}]}}] =
+               CalendarAutojoin.scan_once([alice], now: @now)
+
+      assert_received {:released, ^alice_calendar, "https://meet.google.com/abc-defg-hij"}
+
+      release.(:ok)
+      assert [{^group_id, 0}] = CalendarAutojoin.scan_once([alice], now: @now)
+      assert_received {:released, ^alice_calendar, _meet_url}
+
+      # Released once, the copy is gone; Bob's copy is never released.
+      assert [_, _] = CalendarAutojoin.scan_once([alice, bob], now: @now)
+      refute_received {:released, _, _}
     end
   end
 

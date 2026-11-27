@@ -1,6 +1,1293 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Dismissed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dismissed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已忽略"
+          }
+        }
+      }
+    },
+    "Workspaces" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Workspaces"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作区"
+          }
+        }
+      }
+    },
+    "Action needed and failures" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Action needed and failures"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要处理或出错时"
+          }
+        }
+      }
+    },
+    "All updates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All updates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有动态"
+          }
+        }
+      }
+    },
+    "Also when a chat finishes and stays unread for 3 minutes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Also when a chat finishes and stays unread for 3 minutes."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话完成且 3 分钟未读时也会提醒。"
+          }
+        }
+      }
+    },
+    "Also when a chat stops with an error." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Also when a chat stops with an error."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话出错中止时也会提醒。"
+          }
+        }
+      }
+    },
+    "Close without copying?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close without copying?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不复制就关闭？"
+          }
+        }
+      }
+    },
+    "Comma stops reaching this workspace and deletes what its station sent. The plugin and your other workspaces stay connected." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma stops reaching this workspace and deletes what its station sent. The plugin and your other workspaces stay connected."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma 将不再访问这个工作区，并删除它的 station 上报的数据。插件和其他工作区不受影响。"
+          }
+        }
+      }
+    },
+    "Connect a workspace" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect a workspace"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接工作区"
+          }
+        }
+      }
+    },
+    "Connect line" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect line"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接码"
+          }
+        }
+      }
+    },
+    "Copy line" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy line"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制连接码"
+          }
+        }
+      }
+    },
+    "Disconnecting %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disconnecting %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在断开 %@"
+          }
+        }
+      }
+    },
+    "No reminders for Monoid chats. You can still ask Comma about them anytime." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No reminders for Monoid chats. You can still ask Comma about them anytime."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不提醒 Monoid 对话。你仍可随时向 Comma 询问。"
+          }
+        }
+      }
+    },
+    "No workspaces are connected yet. Connect one to get a line to paste into its Monoid station." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No workspaces are connected yet. Connect one to get a line to paste into its Monoid station."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有连接工作区。连接后会得到一行连接码，粘贴到对应的 Monoid station 即可。"
+          }
+        }
+      }
+    },
+    "Online" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Online"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在线"
+          }
+        }
+      }
+    },
+    "Paste this line into a Monoid station: in Monoid, add a connect and choose Comma." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paste this line into a Monoid station: in Monoid, add a connect and choose Comma."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "把这行连接码粘贴到 Monoid station：在 Monoid 中添加连接并选择 Comma。"
+          }
+        }
+      }
+    },
+    "Send line" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send line"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送连接码"
+          }
+        }
+      }
+    },
+    "Some workspaces are offline. Task sync and Home card replies resume when they reconnect." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some workspaces are offline. Task sync and Home card replies resume when they reconnect."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "部分工作区离线。重新连上后，任务同步和主页卡片回复会自动恢复。"
+          }
+        }
+      }
+    },
+    "This line can’t be shown again. To get a new one, connect the workspace again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This line can’t be shown again. To get a new one, connect the workspace again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这行连接码不会再显示。如需新的连接码，请重新连接工作区。"
+          }
+        }
+      }
+    },
+    "This line is shown only once. To connect another workspace, get a new line." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This line is shown only once. To connect another workspace, get a new line."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这行连接码只显示一次。连接其他工作区时会生成新的连接码。"
+          }
+        }
+      }
+    },
+    "When a chat needs your approval, a sign-in, a choice, or a reply." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When a chat needs your approval, a sign-in, a choice, or a reply."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话需要你批准、登录、选择或回复时提醒。"
+          }
+        }
+      }
+    },
+    "When action is needed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When action is needed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要处理时"
+          }
+        }
+      }
+    },
+    "Not connected yet" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not connected yet"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没连上"
+          }
+        }
+      }
+    },
+    "Waiting for its line to be pasted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting for its line to be pasted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待粘贴连接行"
+          }
+        }
+      }
+    },
+    "via %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "via %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "经 %@"
+          }
+        }
+      }
+    },
+    "%lld items" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld item"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld items"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项"
+          }
+        }
+      }
+    },
+    "%lld stations" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld stations"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共 %lld 台 station"
+          }
+        }
+      }
+    },
+    "Disconnect %@?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disconnect %@?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "断开 %@？"
+          }
+        }
+      }
+    },
+    "Disconnect workspace?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disconnect workspace?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "断开工作区？"
+          }
+        }
+      }
+    },
+    "Couldn’t disconnect %@. Try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t disconnect %@. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法断开 %@，请重试。"
+          }
+        }
+      }
+    },
+    "Couldn’t disconnect workspace. Try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t disconnect workspace. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法断开工作区，请重试。"
+          }
+        }
+      }
+    },
+    "Couldn’t read the connected Monoid workspaces." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t read the connected Monoid workspaces."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取已连接的 Monoid 工作区。"
+          }
+        }
+      }
+    },
+    "Connect another workspace" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect another workspace"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接另一个工作区"
+          }
+        }
+      }
+    },
+    "Couldn’t save notification level. Try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t save notification level. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存提醒级别，请重试。"
+          }
+        }
+      }
+    },
+    "Comma will stop using Google Colab in this workspace. Its running Colab VMs are stopped first. If the account needs reconnecting, reconnect the same Google account before you remove it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma will stop using Google Colab in this workspace. Its running Colab VMs are stopped first. If the account needs reconnecting, reconnect the same Google account before you remove it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma 将停止在此工作空间中使用 Google Colab，并先停止正在运行的 Colab VM。如果账号需要重新连接，请先重新连接同一个 Google 账号再移除。"
+          }
+        }
+      }
+    },
+    "Sign in with Google, then paste the code the page shows here." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in with Google, then paste the code the page shows here."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Google 登录后，把页面上显示的授权码粘贴到这里。"
+          }
+        }
+      }
+    },
+    "That code didn’t work. Check that you pasted the whole code, then try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That code didn’t work. Check that you pasted the whole code, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个授权码无法使用。请确认粘贴了完整的授权码后重试。"
+          }
+        }
+      }
+    },
+    "Reconnect this account to keep using it" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reconnect this account to keep using it"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新连接此账号后才能继续使用"
+          }
+        }
+      }
+    },
+    "%@ compute units left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ compute units left"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %@ 计算单元"
+          }
+        }
+      }
+    },
+    "Running Colab VMs: %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Running Colab VMs: %lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行中的 Colab VM：%lld 台"
+          }
+        }
+      }
+    },
+    "Add to Comma" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add to Comma"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加到 Comma"
+          }
+        }
+      }
+    },
+    "Added %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Added %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已添加 %@"
+          }
+        }
+      }
+    },
+    "You did not add %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You did not add %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你没有添加 %@"
+          }
+        }
+      }
+    },
+    "The request expired. The Agent did not get the plugin." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The request expired. The Agent did not get the plugin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求已过期，Agent 没有获得这个插件。"
+          }
+        }
+      }
+    },
+    "Server" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器"
+          }
+        }
+      }
+    },
+    "Switch server?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换服务器？"
+          }
+        }
+      }
+    },
+    "Use %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 %@"
+          }
+        }
+      }
+    },
+    "Comma closes now. Open it again to use the other server. Each server keeps its own sign-in." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma 会立即关闭，重新打开后连接另一个服务器。两个服务器的登录状态分开保存。"
+          }
+        }
+      }
+    },
+    "%@ credits" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 额度"
+          }
+        }
+      }
+    },
+    "%@ credits / month" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每月 %@ 额度"
+          }
+        }
+      }
+    },
+    "%@ · Yearly" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · 按年"
+          }
+        }
+      }
+    },
+    "Credit packs" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "额度包"
+          }
+        }
+      }
+    },
+    "Current" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前"
+          }
+        }
+      }
+    },
+    "Manage subscription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理订阅"
+          }
+        }
+      }
+    },
+    "Managed in Google Play" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Google Play 中管理"
+          }
+        }
+      }
+    },
+    "Managed on the web" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在网页上管理"
+          }
+        }
+      }
+    },
+    "No purchases to restore." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可恢复的购买。"
+          }
+        }
+      }
+    },
+    "Pack credits expire at the end of the month you buy them in (UTC)." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "额度包的额度在购买当月月底（UTC）过期。"
+          }
+        }
+      }
+    },
+    "Plans" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "方案"
+          }
+        }
+      }
+    },
+    "Purchase complete. Your credits are ready." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "购买成功，额度已到账。"
+          }
+        }
+      }
+    },
+    "Purchase received. Your credits appear once it is confirmed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已收到购买，确认后额度会到账。"
+          }
+        }
+      }
+    },
+    "Purchases restored." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已恢复购买。"
+          }
+        }
+      }
+    },
+    "Restore purchases" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复购买"
+          }
+        }
+      }
+    },
+    "Subscriptions renew automatically through your Apple Account until you cancel them at least 24 hours before the period ends. [Terms of Use](https://www.apple.com/legal/internet-services/itunes/dev/stdeula/) · [Privacy Policy](https://comma.surf/privacy/)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订阅会通过你的 Apple 账户自动续订，除非你在当前周期结束前至少 24 小时取消。[使用条款](https://www.apple.com/legal/internet-services/itunes/dev/stdeula/) · [隐私政策](https://comma.surf/privacy/)"
+          }
+        }
+      }
+    },
+    "This purchase could not be applied to your account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此购买无法入账到当前账户。"
+          }
+        }
+      }
+    },
+    "Action needed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要关注"
+          }
+        }
+      }
+    },
+    "Live status background updates are unavailable. Reconnect and try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时状态后台更新暂不可用。请重新连接后再试。"
+          }
+        }
+      }
+    },
+    "Progress" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "进度"
+          }
+        }
+      }
+    },
+    "Screen ended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "画面已结束"
+          }
+        }
+      }
+    },
+    "Text Comma from Messages like any other chat. Send text and images; Comma can reply with images, videos, and files." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "像和朋友聊天一样，在“信息”里给 Comma 发消息。可以发文字和图片，Comma 会回复图片、视频和文件。"
+          }
+        }
+      }
+    },
+    "Group chats are not supported." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不支持群聊。"
+          }
+        }
+      }
+    },
+    "Waiting for your message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在等你的消息"
+          }
+        }
+      }
+    },
+    "Tap Send in Messages. Send it from %@; a message from another account does not connect." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“信息”里点发送。请用 %@ 发送，从其他账号发送不会完成连接。"
+          }
+        }
+      }
+    },
+    "Tap Send in Messages. The account that sends the code connects to Comma." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“信息”里点发送。发送连接码的账号会连接到 Comma。"
+          }
+        }
+      }
+    },
+    "Or send %@ to %@ from another device." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "也可以在其他设备上把 %1$@ 发到 %2$@。"
+          }
+        }
+      }
+    },
+    "Messages you send from %@ go to Comma." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你从 %@ 发的消息会发给 Comma。"
+          }
+        }
+      }
+    },
+    "Messages you send from your iMessage account go to Comma." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你从 iMessage 账号发的消息会发给 Comma。"
+          }
+        }
+      }
+    },
+    "Your subscription was bought outside the App Store. Change it where you bought it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的订阅不是在 App Store 购买的，请在购买的地方更改。"
+          }
+        }
+      }
+    },
+    "Your subscription was bought outside the App Store. Change or cancel it where you bought it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的订阅不是在 App Store 购买的，请在购买的地方更改或取消。"
+          }
+        }
+      }
+    },
+    "iMessage connected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iMessage 已连接"
+          }
+        }
+      }
+    },
+    "Chat with Comma in iMessage" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 iMessage 中与 Comma 对话"
+          }
+        }
+      }
+    },
+    "Your iMessage account" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 iMessage 账号"
+          }
+        }
+      }
+    },
+    "Use an email enabled in Messages, or a phone number with + and the country code." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用已在“信息”中启用的邮箱，或带 + 和国家/地区代码的手机号。"
+          }
+        }
+      }
+    },
+    "This code expired" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接码已过期"
+          }
+        }
+      }
+    },
+    "Get a new code to connect." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取新的连接码后再连接。"
+          }
+        }
+      }
+    },
+    "Copy code" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制连接码"
+          }
+        }
+      }
+    },
+    "Copy number" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制号码"
+          }
+        }
+      }
+    },
+    "Get code" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取连接码"
+          }
+        }
+      }
+    },
+    "Open Messages" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开“信息”"
+          }
+        }
+      }
+    },
+    "Use another account" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用其他账号"
+          }
+        }
+      }
+    },
+    "Get a new code" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取新的连接码"
+          }
+        }
+      }
+    },
+    "Expires in %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 后过期"
+          }
+        }
+      }
+    },
     "%@ · up to %lld a day": {
       "extractionState": "manual",
       "localizations": {
@@ -86,23 +1373,6 @@
         }
       }
     },
-    "File scope": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "File scope"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文件范围"
-          }
-        }
-      }
-    },
     "Folder is empty": {
       "extractionState": "manual",
       "localizations": {
@@ -133,23 +1403,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "关联聊天账号"
-          }
-        }
-      }
-    },
-    "Location": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Location"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "位置"
           }
         }
       }
@@ -2483,7 +3736,21 @@
       }
     },
     "Add %@" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 %@"
+          }
+        }
+      }
     },
     "Add %lld" : {
       "extractionState" : "manual",
@@ -3178,8 +4445,21 @@
         }
       }
     },
-    "Ask Comma to build an app. Apps you create or install in this workspace appear here." : {
-
+    "Ask Comma to build one, such as “Build a habit tracker for my team.”" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ask Comma to build one, such as\n“Build a habit tracker for my team.”"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可以让 Comma 构建一个，\n例如“为我的团队做一个习惯打卡应用”。"
+          }
+        }
+      }
     },
     "Ask me first" : {
       "extractionState" : "manual",
@@ -3296,6 +4576,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "可用插件"
+          }
+        }
+      }
+    },
+    "Automated" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automated"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时与监控"
           }
         }
       }
@@ -3552,6 +4849,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此设备无法使用相机。"
+          }
+        }
+      }
+    },
+    "Build a Comma app that " : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build a Comma app that "
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "帮我做一个 Comma 应用，用来"
           }
         }
       }
@@ -3961,7 +5274,20 @@
 
     },
     "Choose or create a workspace to see your apps." : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose or create a workspace to see your apps."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择或创建一个工作区来查看你的应用。"
+          }
+        }
+      }
     },
     "Choose Photo…" : {
       "extractionState" : "manual",
@@ -4631,6 +5957,17 @@
         }
       }
     },
+    "Computer screen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "电脑屏幕"
+          }
+        }
+      }
+    },
     "Concise" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5144,6 +6481,23 @@
         }
       }
     },
+    "Couldn’t establish a secure connection." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t establish a secure connection."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法建立安全连接。"
+          }
+        }
+      }
+    },
     "Couldn’t find that task. Restore it from Archived tasks." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5314,6 +6668,23 @@
         }
       }
     },
+    "Couldn’t reach the server." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t reach the server."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接到服务器。"
+          }
+        }
+      }
+    },
     "Couldn’t remove your photo." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5366,7 +6737,21 @@
       }
     },
     "Couldn’t upload. Tap to retry." : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t upload. Tap to retry."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上传失败，轻点重试。"
+          }
+        }
+      }
     },
     "Create link" : {
       "extractionState" : "manual",
@@ -5621,6 +7006,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "分享位置"
+          }
+        }
+      }
+    },
+    "Only this time" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only this time"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅这次"
+          }
+        }
+      }
+    },
+    "Always share" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Always share"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "始终分享"
+          }
+        }
+      }
+    },
+    "Sends this iPhone’s location with your messages so Comma can suggest things nearby." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sends this iPhone’s location with your messages so Comma can suggest things nearby."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发消息时附上这台 iPhone 的位置，方便 Comma 推荐附近的东西。"
+          }
+        }
+      }
+    },
+    "Location is off for Comma. Allow it in Settings, then turn this on again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Location is off for Comma. Allow it in Settings, then turn this on again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma 的定位权限已关闭。请在系统设置中允许后再打开。"
           }
         }
       }
@@ -6030,6 +7483,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "描述（可选）"
+          }
+        }
+      }
+    },
+    "Device screen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备屏幕"
           }
         }
       }
@@ -8395,7 +9859,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在生成你的例程简报…"
+            "value" : "正在生成你的简报…"
           }
         }
       }
@@ -8497,6 +9961,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "绿色"
+          }
+        }
+      }
+    },
+    "Half fold" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "半折叠"
           }
         }
       }
@@ -8704,6 +10179,39 @@
         }
       }
     },
+    "Inner landscape" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内屏横屏"
+          }
+        }
+      }
+    },
+    "Inner portrait" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内屏竖屏"
+          }
+        }
+      }
+    },
+    "Inner screen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内屏"
+          }
+        }
+      }
+    },
     "Install in a workspace" : {
 
     },
@@ -8723,6 +10231,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "指令已在其他设备上更改。请查看最新内容，再次确认后保存。"
+          }
+        }
+      }
+    },
+    "iOS Simulator" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iOS 模拟器"
           }
         }
       }
@@ -8879,6 +10398,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "语言"
+          }
+        }
+      }
+    },
+    "Laptop" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "笔记本模式"
           }
         }
       }
@@ -9100,6 +10630,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "加载更多"
+          }
+        }
+      }
+    },
+    "Loading apps…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading apps…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载应用…"
           }
         }
       }
@@ -9756,6 +11302,22 @@
         }
       }
     },
+    "New app" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New app"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新建应用"
+          }
+        }
+      }
+    },
     "New label" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9791,7 +11353,20 @@
       }
     },
     "No apps yet" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No apps yet"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有应用"
+          }
+        }
+      }
     },
     "No archived tasks" : {
       "extractionState" : "manual",
@@ -9861,6 +11436,23 @@
         }
       }
     },
+    "No internet connection." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No internet connection."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无网络连接。"
+          }
+        }
+      }
+    },
     "No label" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9913,7 +11505,20 @@
       }
     },
     "No matching apps" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No matching apps"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有匹配的应用"
+          }
+        }
+      }
     },
     "No matching tasks" : {
       "extractionState" : "manual",
@@ -10057,13 +11662,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No routines yet. Connect apps on the desktop so Comma can brief you."
+            "value" : "Connect apps on the desktop so Comma can brief you."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "还没有生成例程。在桌面端连接应用后，Comma 就能为你生成简报。"
+            "value" : "在桌面端连接应用后，Comma 就能为你生成每日简报。"
           }
         }
       }
@@ -10171,7 +11776,20 @@
       }
     },
     "No workspace" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No workspace"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有工作区"
+          }
+        }
+      }
     },
     "No workspace is available, so message notifications can’t be enabled." : {
       "extractionState" : "manual",
@@ -10545,6 +12163,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开表单"
+          }
+        }
+      }
+    },
+    "%@ (optional)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@（可不填）"
           }
         }
       }
@@ -11131,6 +12766,23 @@
         }
       }
     },
+    "More, %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多，%@"
+          }
+        }
+      }
+    },
     "Plugins" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11161,6 +12813,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此工作空间无法使用插件。"
+          }
+        }
+      }
+    },
+    "Posture" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "姿态"
           }
         }
       }
@@ -11494,13 +13157,76 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Refresh routines"
+            "value" : "Refresh briefing"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "刷新例程"
+            "value" : "刷新简报"
+          }
+        }
+      }
+    },
+    "%lld things need you" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld thing needs you"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld things need you"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 件事需要你处理"
+          }
+        }
+      }
+    },
+    "All cleared" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All cleared"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已全部清空"
+          }
+        }
+      }
+    },
+    "Congrats, routines cleared" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Congrats, briefing cleared"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "简报已全部清空"
           }
         }
       }
@@ -11517,7 +13243,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点击刷新，生成你的第一份例程简报。"
+            "value" : "点击刷新，生成你的第一份简报。"
           }
         }
       }
@@ -11993,6 +13719,17 @@
         }
       }
     },
+    "Rotate" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "旋转"
+          }
+        }
+      }
+    },
     "Router" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -12050,13 +13787,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Routines"
+            "value" : "Briefing"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "例程"
+            "value" : "简报"
           }
         }
       }
@@ -12067,13 +13804,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Routines can’t read %@. Reconnect it in Plugins on the desktop."
+            "value" : "Briefing can’t read %@. Reconnect it in Plugins on the desktop."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "例程无法读取 %@，请在桌面端的插件中重新连接。"
+            "value" : "简报无法读取 %@，请在桌面端的插件中重新连接。"
           }
         }
       }
@@ -12084,13 +13821,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Routines couldn’t be loaded."
+            "value" : "Briefing couldn’t be loaded."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法加载例程。"
+            "value" : "无法加载简报。"
           }
         }
       }
@@ -12800,13 +14537,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Shows your whole routine"
+            "value" : "Shows your whole briefing"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示完整的例程"
+            "value" : "显示完整的简报"
           }
         }
       }
@@ -13008,6 +14745,17 @@
         }
       }
     },
+    "Simulators" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模拟器"
+          }
+        }
+      }
+    },
     "Skills" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -13089,6 +14837,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "扬声器"
+          }
+        }
+      }
+    },
+    "Start a simulator" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模拟器"
           }
         }
       }
@@ -13502,6 +15261,17 @@
         }
       }
     },
+    "Tent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "帐篷模式"
+          }
+        }
+      }
+    },
     "Text" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -13637,6 +15407,23 @@
         }
       }
     },
+    "The answer broke off." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The answer broke off."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "响应连接中断。"
+          }
+        }
+      }
+    },
     "The answer sends when the images finish uploading." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -13705,6 +15492,23 @@
         }
       }
     },
+    "The network connection was lost." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The network connection was lost."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网络连接中断。"
+          }
+        }
+      }
+    },
     "The photo could not be prepared. Try again." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -13756,6 +15560,40 @@
         }
       }
     },
+    "The request got no answer." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The request got no answer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求未收到响应。"
+          }
+        }
+      }
+    },
+    "The request timed out." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The request timed out."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求超时。"
+          }
+        }
+      }
+    },
     "The request was cancelled." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -13786,6 +15624,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "响应大小超过支持范围。"
+          }
+        }
+      }
+    },
+    "The screen stopped." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏幕已停止。"
           }
         }
       }
@@ -14777,6 +16626,28 @@
         }
       }
     },
+    "Volume down" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "调低音量"
+          }
+        }
+      }
+    },
+    "Volume up" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "调高音量"
+          }
+        }
+      }
+    },
     "Waiting for authorization…" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14824,6 +16695,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "警告"
+          }
+        }
+      }
+    },
+    "Watch" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观看"
+          }
+        }
+      }
+    },
+    "Watch or control" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观看或控制"
           }
         }
       }
@@ -15456,6 +17349,17 @@
         }
       }
     },
+    "Android device" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Android 设备"
+          }
+        }
+      }
+    },
     "Another Comma account uses this email. Use another email, or sign in to that account and delete it first (deletion completes after 7 days)." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -15662,17 +17566,6 @@
         }
       }
     },
-    "Accept request" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "接受请求"
-          }
-        }
-      }
-    },
     "Accepted" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -15823,6 +17716,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "允许此 App 发送通知？"
+          }
+        }
+      }
+    },
+    "An agent is using this device" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体正在使用此设备"
           }
         }
       }
@@ -16185,6 +18089,17 @@
         }
       }
     },
+    "Comma built-in" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comma 内置"
+          }
+        }
+      }
+    },
     "Comma cloud" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16348,10 +18263,16 @@
     "Couldn’t load Routines settings" : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t load Briefing settings"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法加载例程设置"
+            "value" : "无法加载简报设置"
           }
         }
       }
@@ -16396,6 +18317,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法读取渠道状态"
+          }
+        }
+      }
+    },
+    "Cover landscape" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外屏横屏"
+          }
+        }
+      }
+    },
+    "Cover portrait" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外屏竖屏"
           }
         }
       }
@@ -16615,28 +18558,6 @@
         }
       }
     },
-    "Decline reason (optional)" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "拒绝原因（可选）"
-          }
-        }
-      }
-    },
-    "Decline request" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "拒绝请求"
-          }
-        }
-      }
-    },
     "Decline this request?" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16743,6 +18664,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "描述"
+          }
+        }
+      }
+    },
+    "Direct connection" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直连"
           }
         }
       }
@@ -17088,6 +19020,23 @@
         }
       }
     },
+    "Jump to latest" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jump to latest"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回到最新消息"
+          }
+        }
+      }
+    },
     "Keep issue status" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17183,6 +19132,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "加载更多仓库"
+          }
+        }
+      }
+    },
+    "Lock" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "锁定"
           }
         }
       }
@@ -17545,6 +19505,17 @@
         }
       }
     },
+    "Open live" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时打开"
+          }
+        }
+      }
+    },
     "Open on GitHub" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17640,6 +19611,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "其他选项"
+          }
+        }
+      }
+    },
+    "Outer screen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外屏"
           }
         }
       }
@@ -18098,17 +20080,6 @@
     "Router API keys" : {
 
     },
-    "Router chat" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Router 聊天"
-          }
-        }
-      }
-    },
     "Run in" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18225,17 +20196,6 @@
         }
       }
     },
-    "Send this code from the account you entered:" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "请从填写的账号发送此验证码："
-          }
-        }
-      }
-    },
     "Send this command to the Signal number:" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18243,17 +20203,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "将此命令发送给以下 Signal 号码："
-          }
-        }
-      }
-    },
-    "Send to" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "发送到"
           }
         }
       }
@@ -18375,17 +20324,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "信息来源"
-          }
-        }
-      }
-    },
-    "Space" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "空间"
           }
         }
       }
@@ -18643,6 +20581,17 @@
         }
       }
     },
+    "This computer has no simulators." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台电脑没有模拟器。"
+          }
+        }
+      }
+    },
     "This conversation has no running browser." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18650,6 +20599,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此对话暂无正在运行的浏览器。"
+          }
+        }
+      }
+    },
+    "This device is not running on the computer now." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台设备现在没有在电脑上运行。"
           }
         }
       }
@@ -18709,6 +20669,28 @@
         }
       }
     },
+    "Through a relay" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "经中继"
+          }
+        }
+      }
+    },
+    "Through Comma's relay" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "经 Comma 中继"
+          }
+        }
+      }
+    },
     "Time zone" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18738,6 +20720,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "试用中"
+          }
+        }
+      }
+    },
+    "Type on the device" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设备上输入"
           }
         }
       }
@@ -18881,17 +20874,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "验证"
-          }
-        }
-      }
-    },
-    "Verify in iMessage" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在 iMessage 中验证"
           }
         }
       }
@@ -19148,6 +21130,888 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请缩小搜索范围以查看更多结果。"
+          }
+        }
+      }
+    },
+    "Delivery" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delivery"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配送"
+          }
+        }
+      }
+    },
+    "Flight" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flight"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "航班"
+          }
+        }
+      }
+    },
+    "Order" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Order"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订单"
+          }
+        }
+      }
+    },
+    "Package" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Package"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "包裹"
+          }
+        }
+      }
+    },
+    "Ride" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ride"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "行程"
+          }
+        }
+      }
+    },
+    "Timer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "计时"
+          }
+        }
+      }
+    },
+    "Train" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Train"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "列车"
+          }
+        }
+      }
+    },
+    "Transit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "出行"
+          }
+        }
+      }
+    },
+    "People" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "伙伴"
+          }
+        }
+      }
+    },
+    "Choose or create a workspace to see your people." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择或创建一个工作区来查看你的伙伴。"
+          }
+        }
+      }
+    },
+    "Loading people…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载伙伴…"
+          }
+        }
+      }
+    },
+    "Share invite link" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享我的邀请链接"
+          }
+        }
+      }
+    },
+    "Use an invite link" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入对方的邀请链接"
+          }
+        }
+      }
+    },
+    "Add" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加"
+          }
+        }
+      }
+    },
+    "No one here yet" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有伙伴"
+          }
+        }
+      }
+    },
+    "Share your invite link, or use one someone sent you." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "把你的邀请链接发给对方，或输入对方发来的链接。"
+          }
+        }
+      }
+    },
+    "Tasks you share with %@ show here." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你和 %@ 一起的任务会显示在这里。"
+          }
+        }
+      }
+    },
+    "Stop requests from %@?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不再接收 %@ 的请求？"
+          }
+        }
+      }
+    },
+    "Stop requests" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不再接收请求"
+          }
+        }
+      }
+    },
+    "Requests from them that still wait will be declined." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对方还在等待的请求会被拒绝。"
+          }
+        }
+      }
+    },
+    "Delete request" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除请求"
+          }
+        }
+      }
+    },
+    "Delete this request?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除这个请求？"
+          }
+        }
+      }
+    },
+    "It will be removed from your lists across devices. The recipient's task is not affected." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将从你所有设备的列表中移除，不会影响对方的任务。"
+          }
+        }
+      }
+    },
+    "Needs input" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等你回复"
+          }
+        }
+      }
+    },
+    "Request actions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求操作"
+          }
+        }
+      }
+    },
+    "From %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自 %@"
+          }
+        }
+      }
+    },
+    "To %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发给 %@"
+          }
+        }
+      }
+    },
+    "No result yet." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有结果。"
+          }
+        }
+      }
+    },
+    "Collaborate" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "协作"
+          }
+        }
+      }
+    },
+    "Request their Comma" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求 TA 的 Comma"
+          }
+        }
+      }
+    },
+    "Their requests" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对方发来的请求"
+          }
+        }
+      }
+    },
+    "Stop requests from %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不再接收 %@ 的请求"
+          }
+        }
+      }
+    },
+    "More for %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的更多操作"
+          }
+        }
+      }
+    },
+    "%@ invited you" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 邀请你"
+          }
+        }
+      }
+    },
+    "Hosted by %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 发起"
+          }
+        }
+      }
+    },
+    "Their request · %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对方的请求 · %@"
+          }
+        }
+      }
+    },
+    "Your request · %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的请求 · %@"
+          }
+        }
+      }
+    },
+    "Invite someone not on Comma" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "邀请还没有 Comma 的人"
+          }
+        }
+      }
+    },
+    "We email them an invite. They join by signing up to Comma with this email." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我们会给这个邮箱发邀请，对方用它注册 Comma 后即可加入。"
+          }
+        }
+      }
+    },
+    "To:" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收件人："
+          }
+        }
+      }
+    },
+    "Add people" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加伙伴"
+          }
+        }
+      }
+    },
+    "What should you work on together?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你们要一起做什么？"
+          }
+        }
+      }
+    },
+    "You pay. No one can join once it starts." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由你付费，开始后不能再加人。"
+          }
+        }
+      }
+    },
+    "We email them an invite: they join by signing up to Comma with that email." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我们会发邮件邀请对方，对方用该邮箱注册 Comma 后即可加入。"
+          }
+        }
+      }
+    },
+    "Start" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始"
+          }
+        }
+      }
+    },
+    "Not enough credits to start it. Add credits, then try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "额度不足，没能开始。充值后再试。"
+          }
+        }
+      }
+    },
+    "This collaboration has already started." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个协作任务已经开始了。"
+          }
+        }
+      }
+    },
+    "Couldn’t start it: check the people and the message, then try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没能开始：请检查成员和要说的话，再试一次。"
+          }
+        }
+      }
+    },
+    "Couldn’t start it. Try again in a moment." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没能开始，请稍后再试。"
+          }
+        }
+      }
+    },
+    "%@’s Comma" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的 Comma"
+          }
+        }
+      }
+    },
+    "What should their Comma do?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要 TA 的 Comma 做什么？"
+          }
+        }
+      }
+    },
+    "No more requests to %@ today." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今天不能再向 %@ 发请求了。"
+          }
+        }
+      }
+    },
+    "%@’s Comma does it, with what %@ has. %lld of %lld sent today." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 %1$@ 的 Comma 用 %2$@ 那边的资料完成。今天已发 %3$lld/%4$lld 个。"
+          }
+        }
+      }
+    },
+    "Paste the link they sent you" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴对方发来的邀请链接"
+          }
+        }
+      }
+    },
+    "Each invite link works once and expires in 7 days." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "邀请链接 7 天内可用一次。"
+          }
+        }
+      }
+    },
+    "This is your own invite link. Send it to someone you want to work with." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这是你自己的邀请链接，请发给想一起合作的人。"
+          }
+        }
+      }
+    },
+    "%@ wants to add you to People." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 想把你加为伙伴。"
+          }
+        }
+      }
+    },
+    "Accept" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接受"
+          }
+        }
+      }
+    },
+    "%@ pays" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 承担费用"
+          }
+        }
+      }
+    },
+    "Only this task is shared" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只共享这一个任务"
+          }
+        }
+      }
+    },
+    "Join to see what is said in it, its files and its Worker’s progress." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入后可以看到对话、文件和 Worker 的进展。"
+          }
+        }
+      }
+    },
+    "Join" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入"
+          }
+        }
+      }
+    },
+    "Invitations" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "邀请"
+          }
+        }
+      }
+    },
+    "%@ invited you to collaborate" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 邀请你协作"
+          }
+        }
+      }
+    },
+    "Search people" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索伙伴"
+          }
+        }
+      }
+    },
+    "Creates a new task in your workspace. You can edit the title or content before accepting." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Creates a new task in your workspace. You can edit the title or content before accepting."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接受后会在你的工作区创建新任务。接受前可修改标题或内容。"
+          }
+        }
+      }
+    },
+    "Reason (optional)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reason (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原因（可选）"
+          }
+        }
+      }
+    },
+    "The sender will see your reason if you add one." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The sender will see your reason if you add one."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "填写的原因会显示给发请求的人。"
+          }
+        }
+      }
+    },
+    "Diagnostics" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diagnostics"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "诊断"
+          }
+        }
+      }
+    },
+    "Performance recording" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Performance recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "性能记录"
+          }
+        }
+      }
+    },
+    "Share recording" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Share recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享记录"
+          }
+        }
+      }
+    },
+    "Every 5 s, writes CPU use, busiest threads, power, thermal state, and core activity to %@ on this device (%@ so far). Never uploaded." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Every 5 s, writes CPU use, busiest threads, power, thermal state, and core activity to %1$@ on this device (%2$@ so far). Never uploaded."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每 5 秒把 CPU、各线程占用、功耗、发热等级和核心活动记在本机 %1$@（现有 %2$@），不会上传。"
           }
         }
       }

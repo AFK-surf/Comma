@@ -189,6 +189,39 @@ defmodule SalixAgent.MigrationToolsTest do
     assert AgentWorkspace.list(ctx.agent_id, "/imports/") == []
   end
 
+  defmodule RestrictedMemoryGroupContext do
+    @moduledoc false
+    @behaviour SalixAgent.GroupContext
+
+    @impl true
+    def list(_tenant_id), do: []
+
+    @impl true
+    def get(group_id, tenant_id),
+      do:
+        {:ok,
+         %{
+           "group_id" => group_id,
+           "tenant_id" => tenant_id,
+           "memory_writers" => %{"restricted" => true, "writers" => []}
+         }}
+  end
+
+  test "an export with dated logs is refused when the sender may not change memory",
+       %{ctx: ctx} do
+    previous = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
+    SystemsRuntime.put_env(:salix_agent, :group_context_mod, RestrictedMemoryGroupContext)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_agent, :group_context_mod, previous) end)
+
+    seed!(ctx, "/uploads/openclaw.zip", zip(@openclaw))
+
+    assert run_error(ctx, "migration.import", %{"path" => "/uploads/openclaw.zip"}) =~
+             "only by the people an administrator named"
+
+    assert AgentWorkspace.list(ctx.agent_id, "/imports/") == []
+    assert AgentWorkspace.list(ctx.agent_id, "/memory/") == []
+  end
+
   test "a second instructions call reopens files only the first one held", %{ctx: ctx} do
     files = [
       {"workspace/SOUL.md", "Be warm."},
@@ -250,6 +283,169 @@ defmodule SalixAgent.MigrationToolsTest do
              SalixAgent.IFC.FileLabels.join_private([])
   end
 
+  test "a zip larger than the 10 MiB full-read cap is imported", %{ctx: ctx} do
+    part = noise(5_600_000, 1)
+
+    archive =
+      stored_zip([
+        {".openclaw/workspace/SOUL.md", "You are Pip."},
+        {".openclaw/workspace/a.bin", part},
+        {".openclaw/workspace/b.bin", part}
+      ])
+
+    assert byte_size(archive) > 10 * 1024 * 1024
+    seed_stream!(ctx, "/uploads/large.zip", archive)
+
+    %{"import" => base} = run!(ctx, "migration.import", %{"path" => "/uploads/large.zip"})
+
+    assert read!(ctx, base <> "/files/workspace/SOUL.md") == "You are Pip."
+    assert read!(ctx, base <> "/files/workspace/a.bin") == part
+  end
+
+  test "an archive over the limit is refused from its size, before any body read",
+       %{ctx: ctx} do
+    limit = SalixAgent.Migration.limits().archive_bytes
+    {:ok, event} = AgentWorkspace.prepare_write(ctx.agent_id, "/uploads/huge.zip", "small")
+
+    event =
+      event
+      |> Map.put("size", limit + 1)
+      |> put_in(["ref", "size"], limit + 1)
+
+    seed_event!(ctx, event)
+
+    assert run_error(ctx, "migration.import", %{"path" => "/uploads/huge.zip"}) =~
+             "larger than 50 MB"
+
+    assert AgentWorkspace.list(ctx.agent_id, "/imports/") == []
+  end
+
+  test "a tar.gz export keeps real files and drops links, noise and unsafe names",
+       %{ctx: ctx} do
+    chinese = ".openclaw/workspace/" <> String.duplicate("记忆", 20) <> ".md"
+    long = ".openclaw/workspace/" <> String.duplicate("long-", 25) <> ".md"
+
+    archive =
+      :zlib.gzip(
+        tar([
+          tar_file("./.openclaw/workspace/SOUL.md", "You are Pip."),
+          tar_file("./.openclaw/workspace/._SOUL.md", <<0, 5, 22, 7>>),
+          tar_file("./.openclaw/workspace/link.md", "", ?2, "/etc/passwd"),
+          tar_file("../escape.md", "outside"),
+          pax_file(chinese, "中文路径"),
+          gnu_long_file(long, "long name")
+        ])
+      )
+
+    seed!(ctx, "/uploads/export.tar.gz", archive)
+    %{"import" => base} = run!(ctx, "migration.import", %{"path" => "/uploads/export.tar.gz"})
+
+    files = base <> "/files/"
+    assert read!(ctx, files <> "workspace/SOUL.md") == "You are Pip."
+
+    assert read!(ctx, files <> String.replace_prefix(chinese, ".openclaw/", "")) == "中文路径"
+    assert read!(ctx, files <> String.replace_prefix(long, ".openclaw/", "")) == "long name"
+
+    listed = AgentWorkspace.list(ctx.agent_id, files)
+    refute Enum.any?(listed, &String.ends_with?(&1, "._SOUL.md"))
+    refute Enum.any?(listed, &String.ends_with?(&1, "link.md"))
+    refute Enum.any?(listed, &String.ends_with?(&1, "escape.md"))
+
+    manifest = ctx |> read!(base <> "/manifest.json") |> Jason.decode!()
+
+    assert %{"status" => "skipped", "reason" => "unsafe file name"} =
+             Enum.find(manifest["entries"], &(&1["path"] == "../escape.md"))
+  end
+
+  test "a plain tar and a tar.gz larger than the full-read cap are imported", %{ctx: ctx} do
+    seed!(
+      ctx,
+      "/uploads/plain.tar",
+      tar([tar_file("memories/MEMORY.md", "Prefers tea"), tar_file("config.yaml", "a: 1")])
+    )
+
+    assert %{"platform" => "hermes"} =
+             run!(ctx, "migration.import", %{"path" => "/uploads/plain.tar"})
+
+    part = noise(5_600_000, 2)
+
+    archive =
+      :zlib.gzip(
+        tar([
+          tar_file(".openclaw/workspace/SOUL.md", "You are Pip."),
+          tar_file(".openclaw/workspace/a.bin", part),
+          tar_file(".openclaw/workspace/b.bin", part)
+        ])
+      )
+
+    assert byte_size(archive) > 10 * 1024 * 1024
+    seed_stream!(ctx, "/uploads/large.tgz", archive)
+
+    %{"import" => base} = run!(ctx, "migration.import", %{"path" => "/uploads/large.tgz"})
+    assert read!(ctx, base <> "/files/workspace/b.bin") == part
+  end
+
+  test "a gzip bomb, an oversized tar member and gzip of non-tar are refused", %{ctx: ctx} do
+    seed!(ctx, "/uploads/bomb.tar.gz", :zlib.gzip(:binary.copy(<<0>>, 110_000_000)))
+
+    assert run_error(ctx, "migration.import", %{"path" => "/uploads/bomb.tar.gz"}) =~
+             "expands to more than"
+
+    big = :zlib.gzip(tar([tar_file("workspace/big.bin", :binary.copy("a", 10_000_001))]))
+    seed!(ctx, "/uploads/big.tar.gz", big)
+    error = run_error(ctx, "migration.import", %{"path" => "/uploads/big.tar.gz"})
+    assert error =~ "larger than"
+    assert error =~ "big.bin"
+
+    seed!(ctx, "/uploads/notes.txt.gz", :zlib.gzip("plain text, not a tar"))
+
+    assert run_error(ctx, "migration.import", %{"path" => "/uploads/notes.txt.gz"}) =~
+             "not a readable"
+
+    assert AgentWorkspace.list(ctx.agent_id, "/imports/") == []
+  end
+
+  test "tar sizes from a PAX record and in GNU base-256 are read", %{ctx: ctx} do
+    pax = pax_record("size", "11")
+    notes = "Works nights"
+
+    archive =
+      tar([
+        tar_header("PaxHeaders/entry", byte_size(pax), ?x, ""),
+        pax,
+        tar_padding(byte_size(pax)),
+        tar_header("memories/MEMORY.md", 0, ?0, ""),
+        "Prefers tea",
+        tar_padding(11),
+        tar_header("memories/notes.md", <<0x80, byte_size(notes)::88>>, ?0, ""),
+        notes,
+        tar_padding(byte_size(notes)),
+        tar_file("config.yaml", "a: 1")
+      ])
+
+    seed!(ctx, "/uploads/sizes.tar", archive)
+    %{"import" => base} = run!(ctx, "migration.import", %{"path" => "/uploads/sizes.tar"})
+
+    assert read!(ctx, base <> "/files/memories/MEMORY.md") == "Prefers tea"
+    assert read!(ctx, base <> "/files/memories/notes.md") == notes
+  end
+
+  test "a tar with too many files and a truncated gzip are refused", %{ctx: ctx} do
+    many = tar(for index <- 1..2_001, do: tar_file("memories/#{index}.md", ""))
+    seed!(ctx, "/uploads/many.tar", many)
+
+    assert run_error(ctx, "migration.import", %{"path" => "/uploads/many.tar"}) =~
+             "more than 2000 files"
+
+    whole = :zlib.gzip(tar([tar_file("memories/MEMORY.md", "Prefers tea")]))
+    seed!(ctx, "/uploads/cut.tar.gz", binary_part(whole, 0, byte_size(whole) - 6))
+
+    assert run_error(ctx, "migration.import", %{"path" => "/uploads/cut.tar.gz"}) =~
+             "the archive is corrupt"
+
+    assert AgentWorkspace.list(ctx.agent_id, "/imports/") == []
+  end
+
   # A stored zip with the declared sizes in both headers patched to 1 byte.
   defp lying_zip(name, body) do
     bin = zip([{name, body}])
@@ -265,9 +461,116 @@ defmodule SalixAgent.MigrationToolsTest do
     bin
   end
 
+  defp stored_zip(files) do
+    entries = Enum.map(files, fn {path, body} -> {String.to_charlist(path), body} end)
+
+    {:ok, {_name, bin}} =
+      :zip.create(~c"export.zip", entries, [:memory, {:uncompress, :all}])
+
+    bin
+  end
+
+  # Seeded bytes that gzip cannot shrink.
+  defp noise(size, seed) do
+    :crypto.crypto_one_time(
+      :aes_256_ctr,
+      <<seed::256>>,
+      <<0::128>>,
+      :binary.copy(<<0>>, size),
+      true
+    )
+  end
+
+  defp tar(members), do: IO.iodata_to_binary([members, :binary.copy(<<0>>, 1_024)])
+
+  defp tar_file(name, body, type \\ ?0, link \\ "") do
+    [tar_header(name, byte_size(body), type, link), body, tar_padding(byte_size(body))]
+  end
+
+  defp pax_file(path, body) do
+    record = pax_record("path", path)
+
+    [
+      tar_header("PaxHeaders/entry", byte_size(record), ?x, ""),
+      record,
+      tar_padding(byte_size(record)),
+      tar_file("short-name", body)
+    ]
+  end
+
+  defp gnu_long_file(path, body) do
+    name = path <> <<0>>
+
+    [
+      tar_header("././@LongLink", byte_size(name), ?L, ""),
+      name,
+      tar_padding(byte_size(name)),
+      tar_file("short-name", body)
+    ]
+  end
+
+  # The length counts the whole record, its own digits included.
+  defp pax_record(key, value) do
+    rest = byte_size(" #{key}=#{value}\n")
+    digits = String.length(Integer.to_string(rest))
+
+    digits =
+      if String.length(Integer.to_string(rest + digits)) > digits, do: digits + 1, else: digits
+
+    "#{rest + digits} #{key}=#{value}\n"
+  end
+
+  defp tar_padding(size), do: :binary.copy(<<0>>, rem(512 - rem(size, 512), 512))
+
+  defp tar_header(name, size, type, link) do
+    head = [
+      tar_field(name, 100),
+      tar_octal(0o644, 8),
+      tar_octal(0, 8),
+      tar_octal(0, 8),
+      if(is_binary(size), do: size, else: tar_octal(size, 12)),
+      tar_octal(0, 12)
+    ]
+
+    tail = [
+      <<type>>,
+      tar_field(link, 100),
+      "ustar",
+      <<0>>,
+      "00",
+      :binary.copy(<<0>>, 247)
+    ]
+
+    blank = IO.iodata_to_binary([head, "        ", tail])
+    sum = blank |> :binary.bin_to_list() |> Enum.sum()
+    checksum = String.pad_leading(Integer.to_string(sum, 8), 6, "0") <> <<0, ?\s>>
+    IO.iodata_to_binary([head, checksum, tail])
+  end
+
+  defp tar_field(value, size), do: value <> :binary.copy(<<0>>, size - byte_size(value))
+
+  defp tar_octal(value, size) do
+    String.pad_leading(Integer.to_string(value, 8), size - 1, "0") <> <<0>>
+  end
+
   defp seed!(ctx, path, body) do
     {:ok, event} = AgentWorkspace.prepare_write(ctx.agent_id, path, body)
+    seed_event!(ctx, event)
+  end
 
+  defp seed_stream!(ctx, path, body) do
+    chunks =
+      Stream.unfold(body, fn
+        <<>> -> nil
+        <<chunk::binary-size(1_048_576), rest::binary>> -> {chunk, rest}
+        rest -> {rest, <<>>}
+      end)
+
+    {:ok, event} = AgentWorkspace.prepare_write_stream(ctx.agent_id, path, chunks)
+    seed_event!(ctx, event)
+  end
+
+  defp seed_event!(ctx, event) do
     {:ok, _} =
       AgentWorkspace.seed_operation(
         ctx.agent_id,

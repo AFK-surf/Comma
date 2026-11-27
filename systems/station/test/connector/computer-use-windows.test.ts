@@ -79,7 +79,7 @@ function fakeDriver() {
   return { calls, connection };
 }
 
-function windowsComputerUse() {
+function windowsComputerUse(full = false) {
   const driver = fakeDriver();
   const stored: unknown[] = [];
   const cu = makeWindowsComputerUse(
@@ -88,7 +88,10 @@ function windowsComputerUse() {
       home: "home",
       cursorThemes: "themes",
       env: {},
-      storeImage: (response) => Effect.sync(() => (stored.push(response), { ok: true, image_path: "capture-1.png", image_width: response.imageWidth })),
+      storeImage: (response) =>
+        full
+          ? Effect.fail(new Error("computer_use screenshot storage is full; retry after screenshots expire"))
+          : Effect.sync(() => (stored.push(response), { ok: true, image_path: "capture-1.png", image_width: response.imageWidth })),
     },
     async () => driver.connection,
   );
@@ -118,6 +121,18 @@ test("TestWindowsGetAppStateReadsTheAppsWindowWithItsScreenshot", async () => {
     include_screenshot: true,
     max_image_dimension: 1568,
   });
+});
+
+test("TestWindowsActionThatRanIsNotFailedByAFullScreenshotStore", async () => {
+  const { cu, calls } = windowsComputerUse(true);
+  assert.equal((await run(cu.call("get_app_state", { app: "notepad" }))).ok, true);
+  const clicked = await run(cu.call("click", { snapshot_id: "w1", element_index: 3 }));
+  // The click reached the driver, so the result says it completed: the agent must not click again.
+  assert.equal(calls.filter(([name]) => name === "click").length, 1);
+  assert.equal(clicked.ok, true);
+  assert.equal(clicked.image_path, undefined);
+  assert.match(String(clicked.text), /Snapshot: w2/);
+  assert.match(String(clicked.text), /computer_use screenshot storage is full/);
 });
 
 test("TestWindowsActionsAddressSnapshotElementsAndReturnTheNewState", async () => {

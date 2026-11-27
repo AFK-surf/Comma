@@ -83,7 +83,7 @@ export const dialogComposeHeader =
   "flex h-[calc(var(--spacing-3xl)+var(--spacing-xs))] w-full min-w-0 items-center gap-xs";
 
 /** Compose title: the breadcrumb's last step, set like its text rather than as a heading. */
-export const dialogComposeTitle = "truncate text-sm font-regular text-primary";
+export const dialogComposeTitle = "min-w-0 text-sm font-regular text-primary";
 
 /**
  * Compact close control: an xs (4xl) icon button centred on the compose title row, lg from the top. Its glyph is

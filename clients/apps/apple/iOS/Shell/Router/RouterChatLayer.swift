@@ -1,70 +1,63 @@
 import SwiftUI
 import UIKit
 
-/// The router chat as a layer over the tabs and their chrome, under the Task dock. It zooms out of the
-/// router button and back into it. A finger can pick it up and close it (`RouterLayerController+Drag`); so do
-/// the close button and the VoiceOver escape gesture.
+/// The router chat as a layer over the tabs and their chrome, under the Task dock. It zooms out of the router button
+/// and back into it with the system zoom transition, which also lets a finger close it; so do the close button and the
+/// VoiceOver escape gesture.
 struct RouterChatLayer: UIViewControllerRepresentable {
     let store: CommaStore
     let open: Bool
     var sharesRoutineColumn = false
     @Environment(AppNavigation.self) private var navigation
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(CallController.self) private var call: CallController?
 
     func makeUIViewController(context: Context) -> RouterLayerController {
-        RouterLayerController(content: content(context))
+        RouterLayerController(content: content(context), open: open)
     }
 
-    func updateUIViewController(_ controller: RouterLayerController, context: Context) {
-        controller.update(content: content(context), open: open, reduceMotion: reduceMotion)
+    func updateUIViewController(_ presenter: RouterLayerController, context: Context) {
+        presenter.update(content: content(context), open: open)
     }
 
-    /// The layer's SwiftUI side, built here where the navigation is in the environment; the controller takes it
-    /// whole and finds the navigation on it.
+    static func dismantleUIViewController(_ presenter: RouterLayerController, coordinator: ()) {
+        presenter.cancelOpeningFrame()
+        presenter.restoreRouterButton()
+    }
+
     private func content(_ context: Context) -> HostedContent<RouterLayerContent> {
         HostedContent(content: RouterLayerContent(store: store, navigation: navigation, call: call,
                                                  sharesRoutineColumn: sharesRoutineColumn), environment: context.environment)
     }
 }
 
-/// UIKit owns the layer and Core Animation zooms the chat's rendered layers (`RouterZoomFrame`): the transcript
-/// lays out once at full size, and the zoom keeps its pace while the main thread is busy. Closed, every touch
-/// passes through to the tabs.
-final class RouterLayerController: UIViewController {
+/// UIKit owns the layer. Closed, the chat waits on `parking`; opening pushes `page`, which takes the chat and zooms out
+/// of the router button. Closed, and from the moment it starts closing, every touch passes through to the tabs.
+final class RouterLayerController: UIViewController, UINavigationControllerDelegate {
     let hosting: UIHostingController<HostedContent<RouterLayerContent>>
-    /// Holds the lens; the zoom masks it to the zoom's rect.
-    private let stage = UIView()
-    /// Holds the chat at the layer's full size; the zoom scales and moves it with its own transform. On screen, an
-    /// animated `sublayerTransform` on the stage did not keep pace with the mask and the button's face, so the chat
-    /// spilled past its card and the face swelled back out after the chat had reached the button.
-    private let lens = UIView()
-    /// Masks the chat to the zoom's rect and corners while it is not settled open.
-    private let mask = CALayer()
-    /// The button's face, which the chat turns into as it closes and grows out of as it opens.
-    private let face = RouterButtonFace()
-    /// Darkens the page behind the chat as the chat grows over it, so the chat reads as a card lifted off the page
-    /// while it zooms; clear with the chat at the button, darkest at full size, where the chat covers it.
-    private let shade = CALayer()
-    var navigation: AppNavigation { hosting.rootView.content.navigation }
-    /// Where the layer is going; the zoom may still be on its way there.
-    private(set) var open = false
-    private var wantsOpen = false
-    private(set) var reduceMotion = false
-    private var laidOut = false
-    /// Advances whenever a zoom starts or stops, so a stopped zoom's completion knows it is stale.
-    private var zoomGeneration = 0
-    /// Closed and still. The chat is then masked away, opaque and at full size, rather than hidden or
-    /// transparent: SwiftUI counts a hidden or transparent transcript's rows as out of view and does not look
-    /// again when the chat opens, so a chat mounted ahead of its first opening would never count a reply as seen.
-    private var closedAtRest = true
-    /// The finger holding the chat, while one does.
-    var hold: RouterHold?
+    private let stack = UINavigationController()
+    private let parking = UIViewController()
+    private let page = UIViewController()
+    private let touchOrigin = RouterTouchOrigin()
+    private var navigation: AppNavigation { hosting.rootView.content.navigation }
+    private var programmaticPop = false
+    /// A finger let the chat go past the point of closing, and the navigation already has it closed.
+    private var closedByFinger = false
+    private var statedCorners: [CGFloat] = []
+    private var startsOpen: Bool
+    private var requestedOpen: Bool
+    /// The zoom out waits for this frame, until the button's face has been on screen in its source page.
+    private var openingFrame: CADisplayLink?
+    /// Advances with each push of the chat, so a timer left from an earlier opening does not settle a later one.
+    private var openingGeneration = 0
+    /// Advances on every badge hide/reveal schedule so a cancelled or re-opened zoom never reveals a stale badge.
+    private var badgeRevealGeneration = 0
 
-    init(content: HostedContent<RouterLayerContent>) {
-        hosting = RouterContentHostingController(rootView: content)
+    init(content: HostedContent<RouterLayerContent>, open: Bool) {
+        hosting = UIHostingController(rootView: content)
         // The chat page inside the navigation stack avoids the keyboard itself.
         hosting.safeAreaRegions = .container
+        startsOpen = open && !content.content.navigation.animatesRouterOpening
+        requestedOpen = open
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -76,216 +69,342 @@ final class RouterLayerController: UIViewController {
         view = container
     }
 
+    /// Whether the chat takes touches: once it is on its way open, and until it starts closing.
+    fileprivate var takesTouches: Bool { stack.topViewController === page }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
-        stage.accessibilityElementsHidden = true
-        mask.backgroundColor = UIColor.black.cgColor
-        mask.cornerCurve = .continuous
-        shade.backgroundColor = UIColor.black.cgColor
-        shade.opacity = 0
-        view.layer.addSublayer(shade)
-        view.addSubview(stage)
-        stage.addSubview(lens)
-        addChild(hosting)
+        stack.setNavigationBarHidden(true, animated: false)
+        stack.view.backgroundColor = .clear
+        parking.view.backgroundColor = .clear
+        page.view.backgroundColor = UIColor(CommaTheme.bgPrimary)
+        page.view.addGestureRecognizer(touchOrigin)
         hosting.view.backgroundColor = .clear
-        lens.addSubview(hosting.view)
-        hosting.didMove(toParent: self)
-        view.addSubview(face)
-        installDrag()
+        addChild(stack)
+        stack.view.frame = view.bounds
+        stack.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(stack.view)
+        stack.didMove(toParent: self)
+        stack.setViewControllers([parking], animated: false)
+        stack.delegate = self
+        moveContent(to: parking)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        synchronize()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard view.bounds.width > 0, stage.frame != view.bounds else { return }
-        // A new layer size lands the zoom where it was going, before the new frames: UIKit works out the chat's safe
-        // area through the lens when they change, and a lens still scaled toward the button (to nothing while the
-        // chat rests closed) left the chat no top inset, so its navigation bar sat under the status bar.
-        stopZoom()
-        hold = nil
-        land()
-        stage.frame = view.bounds
-        face.frame = view.bounds
-        shade.frame = view.bounds
-        lens.frame = stage.bounds
-        hosting.view.frame = lens.bounds
-        guard !laidOut else { return }
-        laidOut = true
-        if wantsOpen { appear() }
+        if #available(iOS 26.0, *) { stateCorners() }
     }
 
-    /// Open from the start, as the app opens on the chat: it is simply there, with no zoom out of its button.
-    private func appear() {
-        open = true
-        view.accessibilityViewIsModal = !hosting.rootView.content.sharesRoutineColumn
-        closedAtRest = false
-        land()
-        navigation.routerSettled()
+    /// The zoom rounds the chat page to the page's own corners, which are concentric with this layer. The app card
+    /// around the layer is square while no Task docks, so a held chat had only the page's minimum corners. Stated here
+    /// without clipping, the layer's corners are the display's, as the system zoom rounds a page; above a docked Task the
+    /// card's own foot is rounder than square, and its corners are kept there.
+    @available(iOS 26.0, *)
+    private func stateCorners() {
+        guard view.window != nil else { return }
+        func corner(_ corner: UIRectCorner) -> CGFloat {
+            var ancestor = view.superview
+            while let current = ancestor {
+                let radius = current.effectiveRadius(corner: corner)
+                if radius > 0 { return radius }
+                ancestor = current.superview
+            }
+            return 0
+        }
+        let corners = [corner(.topLeft), corner(.topRight), corner(.bottomLeft), corner(.bottomRight)]
+        guard corners != statedCorners else { return }
+        statedCorners = corners
+        view.cornerConfiguration = .corners(topLeftRadius: .fixed(corners[0]), topRightRadius: .fixed(corners[1]),
+                                            bottomLeftRadius: .fixed(corners[2]), bottomRightRadius: .fixed(corners[3]))
     }
 
-    func update(content: HostedContent<RouterLayerContent>, open next: Bool, reduceMotion: Bool) {
+    func update(content: HostedContent<RouterLayerContent>, open: Bool) {
         hosting.rootView = content
-        viewIfLoaded?.accessibilityViewIsModal = next && !content.content.sharesRoutineColumn
-        self.reduceMotion = reduceMotion
-        wantsOpen = next
-        if laidOut, next != open { move(open: next, velocity: 0) }
+        view.accessibilityViewIsModal = open && !content.content.sharesRoutineColumn
+        guard open != requestedOpen else { return }
+        requestedOpen = open
+        if open { hideRouterBadge(animated: true) }
+        // Closing ends editing after SwiftUI has finished updating the tab bar's keyboard inset.
+        DispatchQueue.main.async { [weak self] in self?.synchronize() }
     }
 
-    func close() { navigation.closeRouter() }
-
-    /// The router button the chat closes into, in the layer.
-    var closedFrame: RouterZoomFrame {
-        let button = view.convert(navigation.routerButtonFrame, from: nil)
-        guard button.isEmpty else { return .closed(into: button) }
-        // Before the button reports its frame, the bottom trailing corner.
-        return .closed(into: CGRect(x: view.bounds.maxX - 72, y: view.bounds.maxY - 90, width: 56, height: 56))
-    }
-
-    /// Where the chat is on screen now.
-    var shownFrame: RouterZoomFrame {
-        stage.layer.mask == nil ? .open(in: view.bounds) : RouterZoomFrame(shownBy: mask)
-    }
-
-    /// Zooms toward open or closed. `velocity` is the finger's speed toward that end, as a fraction of the
-    /// remaining distance per second, so the zoom carries on at the finger's pace.
-    func move(open next: Bool, velocity: CGFloat) {
-        open = next
-        wantsOpen = next
-        view.accessibilityViewIsModal = next && !hosting.rootView.content.sharesRoutineColumn
-        // The keyboard goes down before the closing zoom starts.
-        if !next { view.endEditing(true) }
-        let fromButton = closedAtRest
-        if closedAtRest {
-            stage.layer.opacity = 0
-            place(reduceMotion ? .open(in: view.bounds) : closedFrame)
-            closedAtRest = false
+    /// Brings the stack to where the navigation has the chat. A change asked for while the stack moves waits for it
+    /// to land: the stack drops a push or pop started during another one.
+    private func synchronize() {
+        guard viewIfLoaded?.window != nil else { return }
+        // A docking Task can round the card's foot without resizing this layer.
+        if #available(iOS 26.0, *) { stateCorners() }
+        if let moving = stack.transitionCoordinator {
+            moving.animate(alongsideTransition: nil) { [weak self] _ in
+                DispatchQueue.main.async { self?.synchronize() }
+            }
+            return
         }
-        // VoiceOver, and anything else reading the screen, finds the chat once it has arrived.
-        stage.accessibilityElementsHidden = true
-        let from = stopZoom()
-        // With Reduce Motion the chat fades where it is instead of zooming.
-        let target: RouterZoomFrame = switch (next, reduceMotion) {
-        case (true, false): .opening(in: view.bounds)
-        case (true, true): .open(in: view.bounds)
-        case (false, false): closedFrame
-        case (false, true): from
+        if navigation.routerOpen, stack.topViewController === parking {
+            guard openingFrame == nil else { return }
+            moveContent(to: page)
+            // A launch directly into chat skips the zoom. Its return page still needs the whole button
+            // in place before UIKit takes the first frame of a dismissal.
+            _ = navigation.routerTabBar?.zoomSource(in: parking.view, viewport: view)
+            hideRouterBadge(animated: !startsOpen)
+            configureTransition()
+            if startsOpen {
+                startsOpen = false
+                openingGeneration += 1
+                stack.pushViewController(page, animated: false)
+                return
+            }
+            // The zoom hides its source as it starts and draws the source itself only once that has been on screen.
+            // The face took the button's place just now, so the push waits a frame: the button would otherwise be
+            // missing for the zoom's first frame, and for several on the first zoom after launch.
+            let frame = CADisplayLink(target: self, selector: #selector(openAfterFrame))
+            frame.add(to: .main, forMode: .common)
+            openingFrame = frame
+        } else if !navigation.routerOpen, stack.topViewController === page {
+            roundPage(true)
+            programmaticPop = true
+            putKeyboardAway()
+            stack.popViewController(animated: true)
         }
-        let generation = zoomGeneration
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        CATransaction.setCompletionBlock { [weak self] in
-            guard let self, self.zoomGeneration == generation else { return }
-            self.land()
-            if next { self.navigation.routerSettled() }
-            UIAccessibility.post(notification: .screenChanged, argument: nil)
-        }
-        stage.layer.mask = mask
-        target.animate(layer: lens.layer, mask: mask, from: from, velocity: velocity, reduceMotion: reduceMotion)
-        fade(to: next ? 1 : 0, velocity: velocity)
-        let darkness = RouterSpring.animation("opacity", velocity: velocity, reduceMotion: reduceMotion)
-        darkness.fromValue = shading(at: from)
-        shade.opacity = shading(at: target)
-        darkness.toValue = shade.opacity
-        shade.add(darkness, forKey: "routerZoom.opacity")
-        face.zoom(from: from, to: target, button: closedFrame.rect, opening: next, fromButton: fromButton,
-                  velocity: velocity, reduceMotion: reduceMotion)
-        if !next, !reduceMotion {
-            let landing = RouterSpring.landing(velocity: velocity, distance: from.rect.width - closedFrame.rect.width)
-            face.takeIn(landing)
-            navigation.routerLanding?(landing)
-        }
-        CATransaction.commit()
     }
 
-    /// Stops the zoom where it is on screen and returns that frame.
-    @discardableResult func stopZoom() -> RouterZoomFrame {
-        zoomGeneration += 1
-        let frame = shownFrame
-        let opacity = stage.layer.shown.opacity
-        stage.layer.removeAnimation(forKey: "routerZoom.opacity")
-        lens.layer.removeAnimation(forKey: "routerZoom.transform")
-        mask.removeAllAnimations()
-        shade.removeAllAnimations()
-        face.stop()
-        navigation.routerLanding?(nil)
-        stage.layer.opacity = opacity
-        if stage.layer.mask != nil { place(frame) }
-        return frame
+    /// The face has been on screen: the chat zooms out of it, or, closed again meanwhile, stays parked. The push
+    /// leaves the frame's callback first: a zoom started inside it jumped straight to its end.
+    @objc private func openAfterFrame() {
+        openingFrame?.invalidate()
+        DispatchQueue.main.async { [weak self] in self?.openFromFace() }
     }
 
-    func place(_ frame: RouterZoomFrame) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        stage.layer.mask = mask
-        frame.apply(to: lens.layer, mask: mask)
-        shade.opacity = shading(at: frame)
-        CATransaction.commit()
+    fileprivate func cancelOpeningFrame() {
+        openingFrame?.invalidate()
+        openingFrame = nil
     }
 
-    /// The shade with the chat at `frame`: none with it at the button's size, deepest at the screen's.
-    private func shading(at frame: RouterZoomFrame) -> Float {
-        let button = closedFrame.rect.width, full = view.bounds.width
-        guard !reduceMotion, full > button else { return 0 }
-        let grown = Float(min(1, max(0, (frame.rect.width - button) / (full - button))))
-        return grown * (traitCollection.userInterfaceStyle == .dark ? 0.45 : 0.2)
-    }
-
-    /// Puts the chat where it is going, at once. Settled open it drops its mask, which would cost an offscreen
-    /// pass on every frame it scrolls.
-    private func land() {
-        if open {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            stage.layer.mask = nil
-            lens.layer.transform = CATransform3DIdentity
-            stage.layer.opacity = 1
-            // Under the chat, the shade would only cost a pass on every frame.
-            shade.opacity = 0
-            CATransaction.commit()
+    private func openFromFace() {
+        guard openingFrame != nil else { return }
+        openingFrame = nil
+        guard stack.topViewController === parking else { return }
+        if navigation.routerOpen, viewIfLoaded?.window != nil {
+            roundPage(true)
+            openingGeneration += 1
+            stack.pushViewController(page, animated: true)
         } else {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            stage.layer.mask = mask
-            lens.layer.transform = CATransform3DIdentity
-            mask.bounds = .zero
-            stage.layer.opacity = 1
-            CATransaction.commit()
-            closedAtRest = true
+            moveContent(to: parking)
+            restoreRouterButton()
         }
-        face.stop()
-        stage.accessibilityElementsHidden = !open
     }
 
-    /// Opening, the chat fades in over the zoom's first third. Closing, it fades under the button's face as it
-    /// arrives at the button, and is gone by the time the face starts handing over to the button
-    /// (`RouterButtonFace.zoom`); still there then, the transcript showed through the button.
-    private func fade(to opacity: Float, velocity: CGFloat) {
-        let span: (CGFloat, CGFloat) = opacity > stage.layer.opacity ? (0, 1 / 3) : (0.7, 0.9)
-        RouterSpring.fade(stage.layer, to: opacity, over: span, velocity: velocity, reduceMotion: reduceMotion)
+    /// Ends editing before the page leaves the stack. The stack keeps a leaving page's keyboard and brings it back
+    /// when the same page is pushed again, so ending it once the pop has begun reopened the chat with its keyboard up.
+    private func putKeyboardAway() {
+        hosting.view.endEditing(true)
+    }
+
+    /// The zoom under Reduce Motion too: UIKit then fades the page in and out instead of scaling it, and a finger can
+    /// still close it, which a cross-dissolve does not allow.
+    private func configureTransition() {
+        let zoom = UIViewController.Transition.ZoomOptions()
+        // The button opens the entire conversation. UIKit scales the page, including its toolbar and transcript.
+        zoom.interactiveDismissShouldBegin = { [weak self] interaction in
+            guard let self, canDismiss(at: touchOrigin.activeLocation ?? interaction.location,
+                                       velocity: interaction.velocity) else { return false }
+            putKeyboardAway()
+            roundPage(true)
+            if #available(iOS 26.0, *) { stateCorners() }
+            return true
+        }
+        page.preferredTransition = .zoom(options: zoom) { [weak self] context in
+            guard let self else { return nil }
+            return navigation.routerTabBar?.zoomSource(in: context.sourceViewController.view, viewport: view)
+        }
+    }
+
+    /// The page has the app card's corners only while it zooms. Landed open it fills the layer, which the card
+    /// clips to its own corners when a Task docks under it: a page kept rounded showed the tabs at its corners on a
+    /// display with smaller corners than the card's (iPhone SE, iPad, Duo's fold).
+    private func roundPage(_ rounded: Bool) {
+        if rounded { return page.view.clipToAppCardCorners() }
+        page.view.clipsToBounds = false
+        if #available(iOS 26.0, *) {
+            page.view.cornerConfiguration = .corners(radius: .fixed(0))
+        } else {
+            page.view.layer.cornerRadius = 0
+        }
+    }
+
+    fileprivate func restoreRouterButton() {
+        if let sourcePage = parking.viewIfLoaded {
+            navigation.routerTabBar?.restoreRouterFace(from: sourcePage, revealBadge: !navigation.routerOpen)
+        }
+    }
+
+    private func hideRouterBadge(animated: Bool = true) {
+        badgeRevealGeneration += 1
+        navigation.routerTabBar?.setRouterBadgeHidden(true, animated: animated)
+    }
+
+    private func scheduleRouterBadgeReveal(after delay: TimeInterval) {
+        badgeRevealGeneration += 1
+        let generation = badgeRevealGeneration
+        let reveal = { [weak self] in
+            guard let self, generation == badgeRevealGeneration, !navigation.routerOpen else { return }
+            navigation.routerTabBar?.setRouterBadgeHidden(false)
+        }
+        if delay <= 0 {
+            reveal()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: reveal)
+        }
+    }
+
+    private func moveContent(to container: UIViewController) {
+        guard hosting.parent !== container else { return }
+        if hosting.parent != nil {
+            hosting.willMove(toParent: nil)
+            hosting.view.removeFromSuperview()
+            hosting.removeFromParent()
+        }
+        container.addChild(hosting)
+        hosting.view.isHidden = container === parking
+        hosting.view.alpha = 1
+        hosting.view.frame = container.view.bounds
+        hosting.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.view.addSubview(hosting.view)
+        hosting.didMove(toParent: container)
+    }
+
+    func navigationController(_ navigationController: UINavigationController, willShow controller: UIViewController,
+                              animated: Bool) {
+        // The stack reports its first page as it first appears, which can come after the chat opened over it.
+        guard controller === navigationController.topViewController else { return }
+        let opening = controller === page
+        let coordinator = animated ? navigationController.transitionCoordinator : nil
+        // Let go past the point of closing, the chat is closed from then on, not once the zoom's spring settles about
+        // a second later: until then the button would find the chat still open and not open it again.
+        if !opening, let coordinator {
+            if coordinator.isInteractive {
+                coordinator.notifyWhenInteractionChanges { [weak self] context in
+                    guard let self, !context.isCancelled else { return }
+                    closedByFinger = true
+                    navigation.closeRouter()
+                    let remaining = max(0, 1 - context.percentComplete)
+                    let delay = UIAccessibility.isReduceMotionEnabled ? 0
+                        : min(0.26, max(0.18, coordinator.transitionDuration * remaining * 0.65))
+                    scheduleRouterBadgeReveal(after: delay)
+                }
+                coordinator.animate(alongsideTransition: nil) { [weak self] context in
+                    guard let self, context.isCancelled, stack.topViewController === page else { return }
+                    roundPage(false)
+                }
+            } else {
+                let delay = UIAccessibility.isReduceMotionEnabled ? 0
+                    : min(0.32, max(0.24, coordinator.transitionDuration * 0.82))
+                scheduleRouterBadgeReveal(after: delay)
+            }
+        }
+        // The zoom's spring has the chat in place by its nominal duration but reports landing only once it has settled,
+        // about three times as long; a composer waiting to take focus need not wait for that.
+        if opening, let coordinator, !coordinator.isInteractive {
+            let generation = openingGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + coordinator.transitionDuration) { [weak self] in
+                guard let self, generation == openingGeneration, stack.topViewController === page else { return }
+                navigation.routerSettled()
+            }
+        }
+    }
+
+    func navigationController(_ navigationController: UINavigationController, didShow controller: UIViewController,
+                              animated: Bool) {
+        guard controller === navigationController.topViewController else { return }
+        if controller === page {
+            roundPage(false)
+            navigation.routerSettled()
+        } else {
+            // Keep the source mounted in the return page through a cancelled drag and the entire pop.
+            restoreRouterButton()
+            if hosting.parent === page {
+                // Closed by a finger, the navigation may since have opened the chat again; it opens once this lands.
+                if !programmaticPop, !closedByFinger { navigation.closeRouter() }
+                moveContent(to: parking)
+            }
+        }
+        programmaticPop = false
+        closedByFinger = false
+        DispatchQueue.main.async { [weak self] in self?.synchronize() }
+    }
+
+    private func towardTrailing(_ delta: CGFloat) -> CGFloat {
+        view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -delta : delta
+    }
+
+    private func leadingDistance(to point: CGPoint) -> CGFloat {
+        view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? view.bounds.maxX - point.x : point.x
+    }
+
+    /// Whether the zoom's own drag from `point` at `velocity` may close the chat: downward only from its header, as
+    /// below it a downward drag scrolls the transcript, and toward the trailing edge not on a message, which that drag
+    /// answers instead, nor on anything that scrolls sideways.
+    func canDismiss(at point: CGPoint, velocity: CGVector) -> Bool {
+        if velocity.dy > abs(velocity.dx) {
+            #if canImport(SwiftUI, _version: 8.0.85)
+            if #available(iOS 27.1, *), traitCollection.verticalBarEdge != .unspecified { return false }
+            #endif
+            return point.y <= view.safeAreaInsets.top + 52
+        }
+        let fromLeading = leadingDistance(to: point)
+        guard fromLeading <= view.bounds.width / 3, towardTrailing(velocity.dx) > abs(velocity.dy) else { return false }
+        if fromLeading <= ReplySwipeRegions.edge { return true }
+        let pane = hosting.rootView.content.store.router.pane.map(ObjectIdentifier.init)
+        if ReplySwipeRegions.shared.claims(view.convert(point, to: nil), in: pane) { return false }
+        var hit = view.hitTest(point, with: nil)
+        while let current = hit, current !== view {
+            if let scroll = current as? UIScrollView, scroll.isScrollEnabled,
+               scroll.contentSize.width > scroll.bounds.width + 1 { return false }
+            hit = current.superview
+        }
+        return true
+    }
+
+    override func accessibilityPerformEscape() -> Bool {
+        guard navigation.routerOpen else { return false }
+        navigation.closeRouter()
+        return true
     }
 }
 
-/// The chat stays at its container's full size while its rendered layers zoom. UIKit can retain a zero top inset
-/// on the hosting view after a reply/keyboard transition, although every ancestor still has the screen's inset.
-/// Keep that container-owned space on this host; the navigation stack adds its own bar below it.
-private final class RouterContentHostingController: UIHostingController<HostedContent<RouterLayerContent>> {
-    override func viewSafeAreaInsetsDidChange() {
-        super.viewSafeAreaInsetsDidChange()
-        reconcileContainerTopInset()
+/// The zoom asks whether it may start after the finger has moved. Remember the initial touch so an edge
+/// swipe keeps its priority over a reply on the adjacent bubble. UIKit owns the gesture itself.
+private final class RouterTouchOrigin: UIGestureRecognizer {
+    private weak var touch: UITouch?
+    private var start = CGPoint.zero
+
+    var activeLocation: CGPoint? {
+        switch touch?.phase {
+        case .began, .moved, .stationary: start
+        default: nil
+        }
     }
 
-    override func viewWillLayoutSubviews() {
-        super.viewWillLayoutSubviews()
-        reconcileContainerTopInset()
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let first = touches.first {
+            touch = first
+            start = first.location(in: view)
+        }
+        state = .failed
     }
+}
 
-    private func reconcileContainerTopInset() {
-        guard let container = parent?.viewIfLoaded, let hosted = viewIfLoaded else { return }
-        var additional = additionalSafeAreaInsets
-        let inherited = hosted.safeAreaInsets.top - additional.top
-        let missing = max(0, container.safeAreaInsets.top - inherited)
-        guard additional.top != missing else { return }
-        additional.top = missing
-        additionalSafeAreaInsets = additional
+/// Passes touches through to the tabs while the chat does not take them.
+private final class RouterContainerView: UIView {
+    weak var controller: RouterLayerController?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        controller?.takesTouches == true ? super.hitTest(point, with: event) : nil
     }
 }

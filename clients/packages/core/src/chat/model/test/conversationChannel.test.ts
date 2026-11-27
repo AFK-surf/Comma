@@ -1,6 +1,6 @@
 import type { CommaLocale } from "@comma/i18n";
 import { conversationProjectionSchema } from "@comma/chat-contract";
-import { Runner, TurnScheduler } from "@comma/core-kernel";
+import { CoreError, Runner, TurnScheduler } from "@comma/core-kernel";
 import { Effect } from "effect";
 import {
   type PromiseChatApi,
@@ -31,9 +31,42 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE,
 } from "../protocol";
 import type { AttachmentTranscoder } from "../conversationChannel";
+import { pickQuota } from "../attachmentQuota";
+import { decodeUserMessage } from "../userMessageText";
 
-describe("the runtime's note to a Task's Router", () => {
-  it("is not a message a person sees; a Worker's report beside it is", () => {
+describe("a guest's message in a Task together", () => {
+  it("carries the name the server gave the guest, and a member's carries none", () => {
+    const [guest, member] = normalizeServerMessages(
+      [
+        {
+          message_id: "from-guest",
+          actor_type: "user",
+          user_id: "guest:tc_2",
+          kind: "message",
+          metadata: { guest_collaborator_id: "tc_2", author_name: "Gabriel Souza" },
+          content: [{ type: "text", text: "I can share the vendor list" }],
+        },
+        {
+          message_id: "from-member",
+          actor_type: "user",
+          user_id: "u_lin",
+          kind: "message",
+          metadata: { author_name: "Not a guest" },
+          content: [{ type: "text", text: "Thursday works" }],
+        },
+      ] as SalixMessage[],
+      [],
+      "agent_task",
+      "task"
+    );
+    expect(guest?.authorName).toBe("Gabriel Souza");
+    expect(guest?.createdBy).toBe("guest:tc_2");
+    expect(member?.authorName).toBeUndefined();
+  });
+});
+
+describe("the runtime's watch notes in a Task", () => {
+  it("hides task_status_pending, task_worker_nudge, and task_worker_stopped from people", () => {
     const shown = normalizeServerMessages(
       [
         {
@@ -45,12 +78,38 @@ describe("the runtime's note to a Task's Router", () => {
           content: [{ type: "text", text: "Done" }],
         },
         {
-          message_id: "note",
+          message_id: "status_note",
           actor_type: "system",
           role_label: "runtime",
           kind: "message",
           metadata: { message_type: "task_status_pending" },
           content: [{ type: "text", text: "Decide its status now" }],
+        },
+        {
+          message_id: "nudge_note",
+          actor_type: "system",
+          role_label: "runtime",
+          kind: "message",
+          metadata: { message_type: "task_worker_nudge" },
+          content: [
+            {
+              type: "text",
+              text: "Your session stopped without publishing a result Message.",
+            },
+          ],
+        },
+        {
+          message_id: "stopped_note",
+          actor_type: "system",
+          role_label: "runtime",
+          kind: "message",
+          metadata: { message_type: "task_worker_stopped" },
+          content: [
+            {
+              type: "text",
+              text: "The Worker for this Task stopped without publishing a result.",
+            },
+          ],
         },
       ] as SalixMessage[],
       [],
@@ -58,6 +117,73 @@ describe("the runtime's note to a Task's Router", () => {
       "task"
     );
     expect(shown.map((row) => row.messageId)).toEqual(["report"]);
+  });
+
+  it("re-points replies to a hidden task_worker_nudge to its delegation or clears legacy self-roots", () => {
+    const shown = normalizeServerMessages(
+      [
+        {
+          message_id: "req_1",
+          seq: 1,
+          actor_type: "user",
+          user_id: "usr_1",
+          kind: "message",
+          thread_root_message_id: "req_1",
+          content: [{ type: "text", text: "@Comma check files" }],
+        },
+        {
+          message_id: "nudge_with_parent",
+          seq: 2,
+          actor_type: "system",
+          role_label: "runtime",
+          kind: "message",
+          reply_to_message_id: "req_1",
+          thread_root_message_id: "req_1",
+          metadata: { message_type: "task_worker_nudge" },
+          content: [{ type: "text", text: "Continue the work." }],
+        },
+        {
+          message_id: "reply_1",
+          seq: 3,
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          role_label: "worker",
+          kind: "message",
+          reply_to_message_id: "nudge_with_parent",
+          thread_root_message_id: "req_1",
+          content: [{ type: "text", text: "Checked." }],
+        },
+        {
+          message_id: "legacy_nudge",
+          seq: 4,
+          actor_type: "system",
+          role_label: "runtime",
+          kind: "message",
+          thread_root_message_id: "legacy_nudge",
+          metadata: { message_type: "task_worker_nudge" },
+          content: [{ type: "text", text: "Continue the work." }],
+        },
+        {
+          message_id: "reply_2",
+          seq: 5,
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          role_label: "worker",
+          kind: "message",
+          reply_to_message_id: "legacy_nudge",
+          thread_root_message_id: "legacy_nudge",
+          content: [{ type: "text", text: "Legacy reply." }],
+        },
+      ] as SalixMessage[],
+      [],
+      "agent_task",
+      "task"
+    );
+    expect(shown.map((row) => row.messageId)).toEqual(["req_1", "reply_1", "reply_2"]);
+    expect(shown[1]?.replyToMessageId).toBe("req_1");
+    expect(shown[1]?.threadRootMessageId).toBe("req_1");
+    expect(shown[2]?.replyToMessageId).toBeUndefined();
+    expect(shown[2]?.threadRootMessageId).toBeUndefined();
   });
 });
 
@@ -86,6 +212,11 @@ function taskMessage(id: string, extra: Partial<SalixMessage>): SalixMessage {
     ...extra,
   };
 }
+
+/** A station Task's post, with what its Session declared. */
+const stationPost = (declared?: string) => ({
+  metadata: { kind: "station_task", ...(declared ? { declared } : {}) },
+});
 
 describe("ConversationChannel", () => {
   it("recovers runnable UI only from bound Agent content and keeps version replies", () => {
@@ -131,6 +262,27 @@ describe("ConversationChannel", () => {
         "task"
       )[0]?.parts
     ).toEqual([{ kind: "markdown", text: block.summary }]);
+
+    const titledWire: SalixMessage = {
+      ...wire,
+      content: [{ ...block, title: "  附近  8  家咖啡店\n" }],
+    };
+    const titled = normalizeServerMessages([titledWire], initial, "agent_task", "task");
+    expect(titled).not.toBe(initial);
+    expect(titled[0]?.parts).toEqual([
+      {
+        kind: "dynamic-ui",
+        contentId: "a".repeat(32),
+        uiRef: "weather",
+        title: "附近 8 家咖啡店",
+        summary: block.summary,
+        version: 1,
+        conversationId: "task",
+        messageId: "card",
+        attachmentIndex: 0,
+        originTaskId: undefined,
+      },
+    ]);
   });
   it("keeps chat replies visible while delivery events stay out of the transcript", () => {
     const reply: SalixMessage = {
@@ -215,6 +367,28 @@ describe("ConversationChannel", () => {
     expect(messages[0]!.display).toBeUndefined();
   });
 
+  it("marks a station Worker's message that ends its turn, and no update it posts before that", () => {
+    const messages = normalizeServerMessages(
+      [
+        taskMessage("update", stationPost()),
+        taskMessage("waiting", stationPost("waiting")),
+        taskMessage("result", stationPost("all_done")),
+        taskMessage("asks", stationPost("need_help")),
+        taskMessage("other", { metadata: { declared: "all_done" } }),
+      ],
+      [],
+      "agent_task",
+      "task"
+    );
+    expect(messages.map((each) => each.endsTurn === true)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      false,
+    ]);
+  });
+
   it("marks the Router speaking in its own words as worth a notification, with its words as plain text", () => {
     const said = (id: string, text: string, extra: Partial<SalixMessage> = {}) =>
       taskMessage(id, { content: [{ type: "text", text }], ...extra });
@@ -223,6 +397,15 @@ describe("ConversationChannel", () => {
         said(
           "router",
           "## Done\n\n**Shipped** it, see [the PR](https://x.test/1).\n\n```sh\nls\n```"
+        ),
+        said(
+          "table",
+          "唐家湾镇卫生院\n\n| 项 | 内容 |\n| --- | --- |\n| 地址 | **唐家湾镇** 1 号 |\n| 电话 | `0756-1234` |\n\n---\n\n- 周一 ![门诊](https://x.test/a.png)\n- [ ] 预约"
+        ),
+        said("money", "| 收入 | 支出 |\n| --- | --- |\n| 100 | 80 |"),
+        said(
+          "columns",
+          "| 日期 | 上午 | 下午 |\n| --- | --- | --- |\n| 周一 |  | 休诊 |\n\n:::warning{禁止上线}\n构建完成\n:::"
         ),
         said("system", "Notice", { actor_type: "system" }),
         said("person", "Hi", { actor_type: "user" }),
@@ -233,7 +416,10 @@ describe("ConversationChannel", () => {
       "chat"
     );
     expect(home.map((each) => each.notice?.preview)).toEqual([
-      "Done\n\nShipped it, see the PR.\n\nls",
+      "Done\nShipped it, see the PR.\nls",
+      "唐家湾镇卫生院\n项 · 内容\n地址 · 唐家湾镇 1 号\n电话 · 0756-1234\n周一 门诊\n预约",
+      "收入 · 支出\n100 · 80",
+      "日期 · 上午 · 下午\n周一 · — · 休诊\nWarning\n构建完成",
       undefined,
       undefined,
       undefined,
@@ -249,6 +435,26 @@ describe("ConversationChannel", () => {
       normalizeServerMessages([said("long", "a".repeat(900))], [], "user_chat")[0]!
         .notice?.preview
     ).toHaveLength(500);
+    // A long reply is read whole: a long link, or one defined at its end, still reads as its text.
+    const longLink = `[查看报告](https://x.test/${"a".repeat(2100)})`;
+    const preview = (text: string) =>
+      normalizeServerMessages([said("long", text)], [], "user_chat")[0]!.notice
+        ?.preview;
+    expect(preview(`开头\n\n${longLink}`)).toBe("开头\n查看报告");
+    expect(preview(`[报告][r]\n\n${"b".repeat(2100)}\n\n[r]: https://x.test/r`)).toBe(
+      `报告\n${"b".repeat(497)}`
+    );
+    // A message read before has its preview read again once its text changes.
+    const [first] = normalizeServerMessages(
+      [said("kept", "**Done**")],
+      [],
+      "user_chat"
+    );
+    const held = [{ ...first!, notice: { preview: "held" } }];
+    expect(
+      normalizeServerMessages([said("kept", "**Shipped**")], held, "user_chat")[0]!
+        .notice
+    ).toEqual({ preview: "Shipped" });
   });
 
   it("reads where the next reply stands the same way for every client", () => {
@@ -2521,6 +2727,87 @@ describe("ConversationChannel", () => {
     expect(onLocalFilesCommitted).not.toHaveBeenCalled();
   });
 
+  it("names files by their path at once and lists them with an image that uploads after", async () => {
+    const api = createConversationApi();
+    const uploadLocalFile = vi.fn();
+    Object.assign(api.client, { uploadLocalFile });
+    const channel = createChannel(api, {
+      getClientDeviceId: () => "dev_mac",
+      requestIds: ["att_zip", "att_mp3", "att_png", "req_mixed"],
+    });
+    const zip = {
+      name: "项目 资料 (1).zip",
+      path: "/Users/me/下载/项目 资料 (1).zip",
+      size: 40_000_000,
+    };
+    const mp3 = {
+      name: "podcast.mp3",
+      path: "/Users/me/podcast.mp3",
+      size: 90_000_000,
+    };
+
+    channel.attachLocalPaths([zip, mp3, { ...zip }]);
+    channel.attachFiles([{ name: "shot.png", size: 3, data: new Blob(["png"]) }]);
+    expect(channel.getSnapshot().draftAttachments).toEqual([
+      expect.objectContaining({
+        id: "att_zip",
+        localPath: zip.path,
+        status: "uploaded",
+      }),
+      expect.objectContaining({
+        id: "att_mp3",
+        localPath: mp3.path,
+        status: "uploaded",
+      }),
+      expect.objectContaining({ id: "att_png", status: "uploading" }),
+    ]);
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+    expect(api.uploadCalls.map((call) => call.name)).toEqual(["shot.png"]);
+
+    const send = start(channel.send("unpack and transcribe"));
+    expect(api.sendCalls).toHaveLength(0);
+    api.resolveUpload(0, {
+      path: "/uploads/AAAAAAAAAAAAAAAAAAAAAA-shot.png",
+      name: "shot.png",
+      size: 3,
+    });
+    await flushMicrotasks();
+    expect(api.sendCalls[0]).toMatchObject({
+      clientDeviceId: "dev_mac",
+      clientRequestId: "req_mixed",
+      localFiles: undefined,
+      text:
+        "unpack and transcribe\n\nAttached local files on the sender's computer:\n" +
+        "- 项目 资料 (1).zip (local path: /Users/me/下载/项目 资料 (1).zip)\n" +
+        "- podcast.mp3 (local path: /Users/me/podcast.mp3)\n\n" +
+        `${ATTACHED_FILES_HEADER}\n- shot.png (workspace file: /uploads/AAAAAAAAAAAAAAAAAAAAAA-shot.png)`,
+    });
+    expect(decodeUserMessage(api.sendCalls[0]!.text)).toMatchObject({
+      body: "unpack and transcribe",
+      files: [
+        { name: zip.name, path: zip.path, local: true },
+        { name: mp3.name, path: mp3.path, local: true },
+        { name: "shot.png", path: "/uploads/AAAAAAAAAAAAAAAAAAAAAA-shot.png" },
+      ],
+    });
+    api.resolveSend(0, conversation({ status: "waiting" }, []));
+    await send;
+  });
+
+  it("does not count files named by their path against the uploads or the snapshot bytes", () => {
+    const channel = createChannel(createConversationApi(), {
+      requestIds: Array.from({ length: 20 }, (_, i) => `att_${i}`),
+    });
+    channel.attachLocalPaths([
+      { name: "huge.mov", path: "/Users/me/huge.mov", size: 2 * 1024 * 1024 * 1024 },
+    ]);
+    expect(pickQuota(channel.getSnapshot().draftAttachments)).toEqual({
+      maxFiles: 49,
+      maxTotalSize: 1024 * 1024 * 1024,
+      maxUploadFiles: MAX_ATTACHMENTS_PER_MESSAGE,
+    });
+  });
+
   it("has the server store a message's attachment by reference, of any size, and sends its path", async () => {
     const api = createConversationApi();
     const stored: {
@@ -2843,6 +3130,38 @@ describe("ConversationChannel", () => {
       clientRequestId: "req_inspection",
       text: "What is this?",
     });
+  });
+
+  it("maps CoreError timeout and network upload failures to localized messages", async () => {
+    for (const [locale, expectedTimeout, expectedNetwork] of [
+      ["en", "Upload timed out", "Network error, couldn’t upload"],
+      ["zh-CN", "上传超时", "网络错误，上传失败"],
+    ] as const) {
+      const api = createConversationApi();
+      const channel = createChannel(api, {
+        locale,
+        requestIds: ["att_timeout", "att_network"],
+      });
+
+      channel.attachFiles([{ name: "shot.png", size: 128, data: new Blob(["png"]) }]);
+      api.rejectUpload(
+        0,
+        new CoreError("timeout", "POST /v1/comma/groups/:id/files took too long")
+      );
+      await flushMicrotasks();
+      expect(channel.getSnapshot().draftAttachments[0]).toMatchObject({
+        status: "failed",
+        error: expectedTimeout,
+      });
+
+      channel.attachFiles([{ name: "doc.pdf", size: 256, data: new Blob(["pdf"]) }]);
+      api.rejectUpload(1, new CoreError("network", "Failed to fetch"));
+      await flushMicrotasks();
+      expect(channel.getSnapshot().draftAttachments[1]).toMatchObject({
+        status: "failed",
+        error: expectedNetwork,
+      });
+    }
   });
 
   it("blocks sends while attachments are failed and retries attachment uploads", async () => {

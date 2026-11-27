@@ -50,6 +50,8 @@ export interface DialogPanelProps {
   variant?: "default" | "input" | "compose";
   /** compose: where the new item goes (a chip), before the title. */
   titleLeading?: ReactNode;
+  /** compose: subtle trailing metadata aligned to the right of the title row. */
+  titleTrailing?: ReactNode;
   input?: DialogInputProps;
   onClose?: () => void;
   actions?: DialogAction[];

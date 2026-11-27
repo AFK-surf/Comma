@@ -88,6 +88,8 @@ describe("loadNotificationAuthorizationAddon", () => {
     await expect(addon.authorizationStatus()).resolves.toBe("denied");
     await expect(addon.requestAuthorization()).resolves.toBe("denied");
     await expect(addon.setBadgeCount(3)).resolves.toBe("cleared");
+    await expect(addon.locationAuthorizationStatus()).resolves.toBe("denied");
+    await expect(addon.requestLocationAuthorization()).resolves.toBe("denied");
   });
 
   it("rejects an addon built before it could request authorization", async () => {
@@ -130,5 +132,6 @@ describe("loadNotificationAuthorizationAddon", () => {
     expect(addon.loaded).toBe(false);
     await expect(addon.authorizationStatus()).resolves.toBe("unavailable");
     await expect(addon.requestAuthorization()).resolves.toBe("unavailable");
+    await expect(addon.requestLocationAuthorization()).resolves.toBe("unavailable");
   });
 });

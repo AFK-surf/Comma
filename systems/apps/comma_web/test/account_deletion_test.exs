@@ -43,6 +43,66 @@ defmodule CommaWeb.AccountDeletionTest do
     %{user: user, email: email, token: session["token"], workspace: workspace, prefix: prefix}
   end
 
+  test "account deletion records and retires hosted collaboration isolated Salix groups", ctx do
+    collab_group_id = "grp_collab_#{ctx.prefix}"
+    now = SystemsClock.utc_now()
+
+    Repo.insert!(%Comma.Data.TaskCollaborator{
+      id: "tcb_del_#{ctx.prefix}",
+      workspace_id: ctx.workspace.id,
+      group_id: collab_group_id,
+      conversation_id: "cnv_del_#{ctx.prefix}",
+      title: "Shared Task",
+      host_user_id: ctx.user["id"],
+      invited_email: "guest@example.com",
+      status: "active",
+      inserted_at: now,
+      updated_at: now
+    })
+
+    Repo.insert!(%Comma.Data.CollaborationGuestSession{
+      id: "cgs_del_#{ctx.prefix}",
+      collaborator_id: "tcb_del_#{ctx.prefix}",
+      workspace_id: ctx.workspace.id,
+      group_id: collab_group_id,
+      conversation_id: "cnv_del_#{ctx.prefix}",
+      email: "guest@example.com",
+      token_hash: "hash_#{ctx.prefix}",
+      expires_at: DateTime.add(now, 86_400, :second),
+      inserted_at: now,
+      updated_at: now
+    })
+
+    challenge = call(:post, "/v1/comma/me/account-deletion/code", %{}, ctx.token) |> json()
+
+    deleted =
+      call(
+        :post,
+        "/v1/comma/me/account-deletion",
+        %{"challenge_id" => challenge["challenge_id"], "code" => challenge["code"]},
+        ctx.token
+      )
+
+    assert deleted.status == 200
+    {:ok, scheduled_at, 0} = DateTime.from_iso8601(json(deleted)["deletion_scheduled_at"])
+
+    Comma.AccountDeletion.delete_due(scheduled_at)
+
+    # Collaborator rows and guest sessions are cascade-deleted, and the isolated
+    # collaboration group is recorded in the operation metadata for async retirement.
+    refute Repo.get(Comma.Data.TaskCollaborator, "tcb_del_#{ctx.prefix}")
+    refute Repo.get(Comma.Data.CollaborationGuestSession, "cgs_del_#{ctx.prefix}")
+
+    op = Repo.get!(ExternalOperation, "op_account_deletion_" <> ctx.user["id"])
+
+    assert op.metadata["collaboration_groups"] == [
+             %{
+               "group_id" => collab_group_id,
+               "salix_tenant_id" => ctx.workspace.salix_tenant_id
+             }
+           ]
+  end
+
   test "a user deletes their account with the code mailed to them", ctx do
     {:ok, _identity} =
       Repository.ensure_identity(ctx.user["id"], %{
@@ -233,6 +293,200 @@ defmodule CommaWeb.AccountDeletionTest do
                "SELECT status FROM billing_subscriptions WHERE id = $1",
                [subscription]
              ).rows
+  end
+
+  test "AccountDeletion succeeds across multiple workspaces when first tenant has an unassign_unconfirmed Colab lease without resetting its 7-day TTL",
+       ctx do
+    prev_salix_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    prev_colab_oauth = SystemsRuntime.get_env(:salix_agent, :colab_oauth)
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+
+    SystemsRuntime.put_env(:salix_agent, :colab_oauth,
+      client_id: "test-colab-client-id",
+      client_secret: "test-secret",
+      redirect_uri: "https://sdk.cloud.google.com/applicationdefaultauthcode.html",
+      auth_uri: "https://accounts.google.com/o/oauth2/auth",
+      token_uri: "https://oauth2.googleapis.com/token",
+      userinfo_uri: "https://www.googleapis.com/oauth2/v2/userinfo",
+      colab_base_url: "https://colab.research.google.com",
+      req_options: [
+        plug: fn conn ->
+          now = SystemsClock.system_time(:second)
+
+          case conn.request_path do
+            "/token" ->
+              header =
+                Base.url_encode64(Jason.encode!(%{"alg" => "RS256", "typ" => "JWT"}),
+                  padding: false
+                )
+
+              payload =
+                Base.url_encode64(
+                  Jason.encode!(%{
+                    "iss" => "https://accounts.google.com",
+                    "aud" => "test-colab-client-id",
+                    "sub" => "sub-acct-del-unconfirmed",
+                    "email" => "acctdel@gmail.com",
+                    "exp" => now + 3600
+                  }),
+                  padding: false
+                )
+
+              Plug.Conn.send_resp(
+                conn |> Plug.Conn.put_resp_content_type("application/json"),
+                200,
+                Jason.encode!(%{
+                  "access_token" => "ya29.acctdel",
+                  "refresh_token" => "1//refresh-acctdel",
+                  "expires_in" => 3600,
+                  "token_type" => "Bearer",
+                  "scope" =>
+                    "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/colaboratory",
+                  "id_token" => "#{header}.#{payload}.sig"
+                })
+              )
+
+            "/tun/m/ccu-info" ->
+              Plug.Conn.send_resp(
+                conn |> Plug.Conn.put_resp_content_type("application/json"),
+                200,
+                ")]}\'\n" <>
+                  Jason.encode!(%{"currentBalance" => 100.0, "consumptionRateHourly" => 1.0})
+              )
+
+            _ ->
+              Plug.Conn.send_resp(conn, 404, "not found")
+          end
+        end
+      ]
+    )
+
+    on_exit(fn ->
+      if is_nil(prev_salix_client),
+        do: SystemsRuntime.delete_env(:comma_core, :salix_client),
+        else: SystemsRuntime.put_env(:comma_core, :salix_client, prev_salix_client)
+
+      if is_nil(prev_colab_oauth),
+        do: SystemsRuntime.delete_env(:salix_agent, :colab_oauth),
+        else: SystemsRuntime.put_env(:salix_agent, :colab_oauth, prev_colab_oauth)
+    end)
+
+    ws1 = ctx.workspace
+    ws2 = insert_workspace!(ctx.user["id"])
+
+    # Create a Colab account in ws1's (tenant_id, group_id) via single-authority Postgres flow,
+    # insert a lease, mark unassign_unconfirmed, then delete account.
+    {:ok, attempt} =
+      SalixAgent.Colab.Account.start_oauth_attempt(
+        ws1.salix_tenant_id,
+        ws1.salix_group_id,
+        ctx.user["id"],
+        operation: :install
+      )
+
+    state = URI.decode_query(URI.parse(attempt.authorize_url).query)["state"]
+
+    {:ok, %{binding_id: binding_id}} =
+      SalixAgent.Colab.Account.complete_oauth_attempt(
+        ws1.salix_tenant_id,
+        ws1.salix_group_id,
+        ctx.user["id"],
+        attempt.attempt_id,
+        "https://sdk.cloud.google.com/applicationdefaultauthcode.html?code=4/del-code&state=#{state}",
+        operation: :install
+      )
+
+    spec = %{variant: "GPU", accelerator: "G4", high_mem: false}
+
+    {:ok, lease, _} =
+      SalixAgent.Colab.Leases.insert_assigning(
+        ws1.salix_tenant_id,
+        ws1.salix_group_id,
+        "session:ag:del",
+        nil,
+        binding_id,
+        spec
+      )
+
+    {:ok, active} =
+      SalixAgent.Colab.Leases.promote_active(
+        lease.vm_id,
+        1,
+        "m-s-acct-del-1",
+        "https://abc.prod.colab.dev"
+      )
+
+    {:ok, unconfirmed} =
+      SalixAgent.Colab.Leases.mark_unassign_unconfirmed(
+        active.vm_id,
+        active.generation,
+        "authorization_revoked"
+      )
+
+    orig_reap_after = unconfirmed.reap_after
+
+    on_exit(fn ->
+      for table <- [
+            "colab_vm_leases",
+            "colab_accounts",
+            "colab_group_install_states",
+            "colab_oauth_attempts"
+          ] do
+        _ =
+          SalixStore.Repo.query(
+            "DELETE FROM #{table} WHERE tenant_id IN ($1, $2)",
+            [ws1.salix_tenant_id, ws2.salix_tenant_id]
+          )
+      end
+
+      _ =
+        SalixStore.Repo.query(
+          "DELETE FROM colab_retired_scopes WHERE scope_key IN ($1, $2)",
+          ["tenant:" <> ws1.salix_tenant_id, "tenant:" <> ws2.salix_tenant_id]
+        )
+    end)
+
+    # Mark both workspaces deleted and create the AccountDeletion external operation
+    for ws <- [ws1, ws2] do
+      Repo.update!(Ecto.Changeset.change(ws, status: "deleted"))
+    end
+
+    op_id = "acct-del-colab-#{ctx.prefix}"
+
+    Repo.insert!(
+      ExternalOperation.changeset(%ExternalOperation{}, %{
+        operation_id: op_id,
+        operation_type: "account_deletion",
+        owner_type: "user",
+        owner_id: ctx.user["id"],
+        external_idempotency_key: op_id,
+        generation: 1,
+        status: "pending",
+        metadata: %{"workspace_ids" => Enum.sort([ws1.id, ws2.id])}
+      })
+    )
+
+    # Run AccountDeletion with final_attempt?: true -> MUST succeed across BOTH workspaces!
+    assert {:ok,
+            %ExternalOperation{
+              status: "succeeded",
+              metadata: %{"terminal_evidence" => %{"workspaces" => 2}}
+            }} =
+             Comma.Workers.AccountDeletion.run(op_id, final_attempt?: true)
+
+    # unassign_unconfirmed lease row MUST remain untouched with its 7-day reap_after preserved
+    assert {:ok, after_retire} = SalixAgent.Colab.Leases.get_by_id(unconfirmed.vm_id)
+    assert after_retire.state == "unassign_unconfirmed"
+    assert after_retire.reap_after == orig_reap_after
+
+    # Tenant retirement fence MUST block late first-connects
+    assert {:error, :scope_retired} =
+             SalixAgent.Colab.Account.start_oauth_attempt(
+               ws1.salix_tenant_id,
+               ws1.salix_group_id,
+               ctx.user["id"],
+               operation: :install
+             )
   end
 
   defp ensure_billing_account(workspace) do

@@ -1,6 +1,8 @@
 defmodule SalixMeet.MeetingPlan do
   @moduledoc "Durable preparation state that binds Calendar, Conversation and Schedule."
 
+  require Logger
+
   alias SalixCalendar.{OccurrenceQualification, Occurrences, Recurrence}
   alias SalixCalendar.OccurrenceQualification.Result
   alias SalixCalendar.Server, as: Calendar
@@ -42,7 +44,11 @@ defmodule SalixMeet.MeetingPlan do
   # dispatch revision itself is unchanged (adding or removing a trigger):
   # re-minting every schedule id and resetting decisions would replay T-30
   # prompts at in-flight plans for no reason.
-  @preparation_progress_keys ~w(research_task research_decision opened_triggers deadline_status baseline report card_status card_settled_at personal_status personal_settled_at)
+  @preparation_progress_keys ~w(research_task research_decision opened_triggers deadline_status baseline report card_status card_settled_at personal_status personal_settled_at personal_unmatched)
+  # The preparation settings a plan stores. They are the only settings that
+  # enter its dispatch revision (`preparation_policy/5`), so the trigger-time
+  # check, which reads them back from the plan, computes the same revision.
+  @settings ~w(calendar_source_ids calendar_writeback managed_calendar preparation_lead_minutes research_enabled personal_preparation personal_recipients channel_notice publication_target)a
 
   def ensure(group_id, calendar_item, occurrence_view, opts \\ [])
       when is_map(calendar_item) and is_map(occurrence_view) do
@@ -53,14 +59,17 @@ defmodule SalixMeet.MeetingPlan do
     with {:ok, source_ids} <- source_ids(opts),
          {:ok, publication_target} <- normalize_publication_target(opts[:publication_target]),
          :ok <- validate_occurrence(group_id, item, occurrence_ref) do
-      opts =
+      # Keyword.get semantics: a caller's first key wins.
+      settings =
         opts
         |> Keyword.put(:calendar_source_ids, source_ids)
         |> Keyword.put(:publication_target, publication_target)
         |> channel_notice_policy()
+        |> then(fn opts -> Map.new(@settings, &{Atom.to_string(&1), Keyword.get(opts, &1)}) end)
+        |> settings()
 
       case qualification(item, occurrence, opts) do
-        %Result{authorized: true} -> provision(group_id, item, occurrence, opts)
+        %Result{authorized: true} -> provision(group_id, item, occurrence, settings, opts)
         %Result{reason: :cancelled} -> cancel(group_id, occurrence_ref, opts)
         %Result{reason: reason} -> retire(group_id, occurrence_ref, reason, opts)
       end
@@ -78,17 +87,15 @@ defmodule SalixMeet.MeetingPlan do
         with {:ok, plan} <- get_plan(group_id, plan_id),
              {:ok, %{"item" => item, "occurrence" => occurrence}} <-
                current_occurrence(plan) do
-          ensure(group_id, item, occurrence,
-            source_ids: plan["calendar_source_ids"],
-            calendar_writeback: plan["calendar_writeback"] == true,
-            managed_calendar: plan["managed_calendar"] == true,
-            policy_revision: get_in(plan, ["preparation", "policy_revision"]) || 1,
-            preparation_lead_minutes: plan["preparation_lead_minutes"] || 10,
-            research_enabled: plan["research_enabled"] != false,
-            personal_preparation: plan["personal_preparation"] != false,
-            personal_recipients: plan["personal_recipients"],
-            channel_notice: plan["channel_notice"] != false,
-            publication_target: plan["publication_target"]
+          ensure(
+            group_id,
+            item,
+            occurrence,
+            [policy_revision: get_in(plan, ["preparation", "policy_revision"]) || 1] ++
+              Enum.map(settings(plan), fn
+                {"calendar_source_ids", ids} -> {:source_ids, ids}
+                {key, value} -> {String.to_existing_atom(key), value}
+              end)
           )
         end
 
@@ -228,6 +235,34 @@ defmodule SalixMeet.MeetingPlan do
     end
   end
 
+  @doc """
+  Record the named personal recipients that the provider could not find for
+  this dispatch revision (for the dashboard). A new revision starts without
+  them. Logs once when the list changes and is not empty.
+  """
+  def record_personal_unmatched(plan, emails) when is_list(emails) do
+    group_id = plan["group_id"]
+    plan_id = plan["meeting_plan_id"]
+    revision = get_in(plan, ["preparation", "dispatch_revision"])
+
+    result =
+      mutate_preparation(group_id, plan_id, revision, now_ms([]), fn preparation ->
+        if (preparation["personal_unmatched"] || []) == emails,
+          do: {:unchanged, preparation},
+          else: Map.put(preparation, "personal_unmatched", emails)
+      end)
+
+    with {:ok, _plan} <- result do
+      if emails != [] and get_in(plan, ["preparation", "personal_unmatched"]) != emails do
+        Logger.warning(
+          "meeting personal recipients not found group=#{group_id} plan=#{plan_id} count=#{length(emails)}"
+        )
+      end
+
+      :ok
+    end
+  end
+
   @doc "Revalidate a saved report against the current calendar and publication policy."
   def validate_report(plan) do
     require_current_dispatch(plan, get_in(plan, ["preparation", "dispatch_revision"]))
@@ -288,10 +323,10 @@ defmodule SalixMeet.MeetingPlan do
 
   def system_track?(_plan), do: false
 
-  defp legacy_lark_target?(opts),
+  defp legacy_lark_target?(settings),
     do:
-      get_in(opts[:publication_target] || %{}, ["provider"]) in ["feishu", "lark"] and
-        opts[:managed_calendar] != true
+      get_in(settings["publication_target"] || %{}, ["provider"]) in ["feishu", "lark"] and
+        not settings["managed_calendar"]
 
   @doc """
   Resolve the deterministic base-card action for the direct publication
@@ -422,9 +457,40 @@ defmodule SalixMeet.MeetingPlan do
   @doc "Settle the card trigger without a send; idempotent under the trigger claim."
   def settle_card(group_id, plan_id, reason, opts \\ []) do
     case checkpoint_card(group_id, plan_id, "abandoned", reason, opts) do
-      :ok -> {:settle, reason}
-      {:error, _} = error -> error
+      :ok ->
+        report_settled(group_id, plan_id, Keyword.get(opts, :kind, "card"), reason)
+        {:settle, reason}
+
+      {:error, _} = error ->
+        error
     end
+  end
+
+  # A notice the meeting no longer wants settles quietly: the channel notice
+  # is off, the plan was cancelled (`card_action/3`), or the live calendar
+  # event was cancelled (`Salix.Bindings.MeetingPersonalPublication`). A
+  # superseded notice gave way to the notice of the event's new revision. Any
+  # other reason means a notice that was due was not sent; `window_passed`
+  # means it was not sent before the meeting started.
+  @expected_settlements [:channel_notice_off, :cancelled, :calendar_event_cancelled, :superseded]
+
+  @doc false
+  def report_settled(group_id, plan_id, kind, reason) do
+    outcome =
+      cond do
+        reason in @expected_settlements -> "skipped"
+        reason == :window_passed -> "timeout"
+        true -> "dropped"
+      end
+
+    if outcome != "skipped" do
+      Logger.warning(
+        "meeting notice not sent group=#{group_id} plan=#{plan_id} kind=#{kind} reason=#{inspect(reason)}"
+      )
+    end
+
+    # Notices settle in their Schedules receiver.
+    Salix.Telemetry.emit_operation("salix_meet", "meeting_notice_settle", "schedule", outcome, 0)
   end
 
   @doc "Record the card as durably queued to the participant outbox."
@@ -509,15 +575,14 @@ defmodule SalixMeet.MeetingPlan do
     )
   end
 
-  defp provision(group_id, item, occurrence, opts) do
+  defp provision(group_id, item, occurrence, settings, opts) do
     with {:ok, group} <- read_group(group_id),
          :ok <- validate_router(group),
          {:ok, binding} <- ensure_binding(group_id, occurrence["occurrence_ref"]),
          {:ok, plan} <- ensure_plan(group, binding, occurrence["occurrence_ref"], opts),
-         {:ok, plan} <- ensure_conversation(group, plan, item, opts),
-         {:ok, plan} <- ensure_participants(group, plan, opts),
-         {:ok, desired} <- preparation_policy(group, item, occurrence, opts),
-         {:ok, plan} <- reserve_triggers(plan, desired, item, occurrence, opts),
+         {:ok, plan} <- ensure_task(group, plan, item, settings, opts),
+         {:ok, desired} <- preparation_policy(group, item, occurrence, settings, opts),
+         {:ok, plan} <- reserve_triggers(plan, desired, item, occurrence, settings, opts),
          :ok <- ensure_schedules(plan, group["router_agent_id"], now_ms(opts)),
          :ok <- delete_schedules(retired_ids(plan)),
          {:ok, plan} <- finish_schedule_reconcile(plan, "planned", now_ms(opts)) do
@@ -563,6 +628,23 @@ defmodule SalixMeet.MeetingPlan do
         end
     end
   end
+
+  # The plan's Task conversation exists only for a plan with something to run:
+  # a member's copy that does not prepare its meeting, or a meeting that is
+  # only joined, has no trigger and gets none. A plan that already has one
+  # keeps it; a plan that gains a trigger gets it on that ensure. Joining and
+  # minutes do not use it.
+  defp ensure_task(group, plan, item, settings, opts) do
+    if present?(plan["conversation_id"]) or
+         Enum.any?(@triggers, &trigger_applicable?(settings, &1)) do
+      with {:ok, plan} <- ensure_conversation(group, plan, item, opts),
+           do: ensure_participants(group, plan, opts)
+    else
+      {:ok, plan}
+    end
+  end
+
+  defp present?(id), do: is_binary(id) and id != ""
 
   defp ensure_conversation(group, plan, item, opts) do
     case plan["conversation_id"] do
@@ -656,12 +738,31 @@ defmodule SalixMeet.MeetingPlan do
     end
   end
 
-  defp preparation_policy(group, item, occurrence, opts) do
+  # The settings a plan stores, from `ensure/4`'s options or from a stored
+  # plan (string keys). A plan written before a setting existed reads its
+  # default.
+  defp settings(values) do
+    %{
+      "calendar_source_ids" => values["calendar_source_ids"],
+      "calendar_writeback" => values["calendar_writeback"] == true,
+      "managed_calendar" => values["managed_calendar"] == true,
+      "preparation_lead_minutes" => values["preparation_lead_minutes"] || 10,
+      "research_enabled" => values["research_enabled"] != false,
+      "personal_preparation" => values["personal_preparation"] != false,
+      "personal_recipients" => values["personal_recipients"],
+      "channel_notice" => values["channel_notice"] != false,
+      "publication_target" => values["publication_target"]
+    }
+  end
+
+  # The dispatch revision is computed only from the plan's settings and from
+  # `opts`' policy revision, publication budget and context revision override.
+  defp preparation_policy(group, item, occurrence, settings, opts) do
     start_ms = occurrence["start_ms"]
     budget = Keyword.get(opts, :publication_budget_ms, @publication_budget_ms)
     policy_revision = Keyword.get(opts, :policy_revision, 1)
-    feishu? = legacy_lark_target?(opts)
-    lead_minutes = Keyword.get(opts, :preparation_lead_minutes, 10)
+    feishu? = legacy_lark_target?(settings)
+    lead_minutes = settings["preparation_lead_minutes"]
 
     deadline_lead =
       cond do
@@ -684,10 +785,10 @@ defmodule SalixMeet.MeetingPlan do
         "policy_revision" => policy_revision,
         "research_owner" => if(feishu?, do: "legacy", else: "task_worker_public_v2"),
         "router_agent_id" => group["router_agent_id"],
-        "calendar_source_ids" => opts[:calendar_source_ids],
-        "calendar_writeback" => opts[:calendar_writeback] == true,
+        "calendar_source_ids" => settings["calendar_source_ids"],
+        "calendar_writeback" => settings["calendar_writeback"],
         "publication_target_fingerprint" =>
-          publication_target_fingerprint(opts[:publication_target]),
+          publication_target_fingerprint(settings["publication_target"]),
         "occurrence_ref" => occurrence["occurrence_ref"],
         "decision_at" =>
           start_ms - if(feishu?, do: @decision_lead_ms, else: deadline_lead + :timer.minutes(20)),
@@ -701,12 +802,11 @@ defmodule SalixMeet.MeetingPlan do
       }
 
       material =
-        if opts[:managed_calendar] == true do
-          Map.merge(material, %{
-            "managed_calendar" => true,
-            "research_enabled" => opts[:research_enabled] != false,
-            "personal_preparation" => opts[:personal_preparation] != false
-          })
+        if settings["managed_calendar"] do
+          Map.merge(
+            material,
+            Map.take(settings, ~w(managed_calendar research_enabled personal_preparation))
+          )
         else
           material
         end
@@ -714,15 +814,15 @@ defmodule SalixMeet.MeetingPlan do
       # Only a disabled notice enters the fingerprint, so existing plans keep
       # their dispatch revision and schedules.
       material =
-        if opts[:channel_notice] == false,
-          do: Map.put(material, "channel_notice", false),
-          else: material
+        if settings["channel_notice"],
+          do: material,
+          else: Map.put(material, "channel_notice", false)
 
       # A meeting on members' calendars is prepared for named recipients; a
       # change of recipient prepares it again.
       material =
-        if is_list(opts[:personal_recipients]),
-          do: Map.put(material, "personal_recipients", opts[:personal_recipients]),
+        if is_list(settings["personal_recipients"]),
+          do: Map.put(material, "personal_recipients", settings["personal_recipients"]),
           else: material
 
       {:ok,
@@ -756,7 +856,7 @@ defmodule SalixMeet.MeetingPlan do
     end
   end
 
-  defp reserve_triggers(plan, desired, item, occurrence, opts) do
+  defp reserve_triggers(plan, desired, item, occurrence, settings, opts) do
     update_plan(plan["group_id"], plan["meeting_plan_id"], fn current ->
       preparation = current["preparation"] || %{}
       same_revision? = preparation["dispatch_revision"] == desired["dispatch_revision"]
@@ -806,7 +906,7 @@ defmodule SalixMeet.MeetingPlan do
           |> Map.put("schedule_ids", schedule_ids)
           |> Map.merge(%{
             "research_decision" =>
-              if(opts[:research_enabled] == false, do: "not_required", else: "pending"),
+              if(settings["research_enabled"], do: "pending", else: "not_required"),
             "opened_triggers" => [],
             "deadline_status" => "pending"
           })
@@ -820,18 +920,10 @@ defmodule SalixMeet.MeetingPlan do
           |> Enum.uniq()
 
         current
+        |> Map.merge(settings)
         |> Map.merge(%{
           "status" => "provisioning",
           "calendar_item_id" => item["calendar_item_id"],
-          "calendar_source_ids" => opts[:calendar_source_ids],
-          "calendar_writeback" => opts[:calendar_writeback] == true,
-          "managed_calendar" => opts[:managed_calendar] == true,
-          "preparation_lead_minutes" => Keyword.get(opts, :preparation_lead_minutes, 10),
-          "research_enabled" => opts[:research_enabled] != false,
-          "personal_preparation" => opts[:personal_preparation] != false,
-          "personal_recipients" => opts[:personal_recipients],
-          "channel_notice" => opts[:channel_notice] != false,
-          "publication_target" => opts[:publication_target],
           "effective_occurrence" => effective_occurrence(occurrence),
           "preparation" => next,
           "retired_schedule_ids" => retired
@@ -1160,6 +1252,10 @@ defmodule SalixMeet.MeetingPlan do
         {:ok, :cancelled}
 
       plan["status"] != "planned" ->
+        {:ok, :disabled}
+
+      # A plan with no trigger has no Task conversation; nothing opens on it.
+      not present?(plan["conversation_id"]) ->
         {:ok, :disabled}
 
       preparation["dispatch_revision"] != revision ->
@@ -1502,15 +1598,7 @@ defmodule SalixMeet.MeetingPlan do
          {:ok, group} <- read_group(plan["group_id"]),
          :ok <- validate_router(group),
          {:ok, desired} <-
-           preparation_policy(group, item, occurrence,
-             calendar_source_ids: plan["calendar_source_ids"],
-             calendar_writeback: plan["calendar_writeback"] == true,
-             managed_calendar: plan["managed_calendar"] == true,
-             preparation_lead_minutes: plan["preparation_lead_minutes"] || 10,
-             research_enabled: plan["research_enabled"] != false,
-             personal_preparation: plan["personal_preparation"] != false,
-             channel_notice: plan["channel_notice"] != false,
-             publication_target: plan["publication_target"],
+           preparation_policy(group, item, occurrence, settings(plan),
              policy_revision: preparation["policy_revision"],
              publication_budget_ms: budget
            ) do

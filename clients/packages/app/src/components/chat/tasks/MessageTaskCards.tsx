@@ -1,6 +1,6 @@
 import type { ChatInlineTask } from "@comma/chat-contract";
 import type { ChatMessage } from "@comma/core/chat";
-import { useCommaMessages } from "@comma/i18n/react";
+import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { TaskSummaryCard, taskStatusBucket } from "@comma/ui/components/task-workspace";
 import { TaskArchiveMenu } from "@comma/ui/components/task-workspace/TaskArchiveMenu";
 import { cx } from "@comma/ui/components/utils";
@@ -15,7 +15,7 @@ import {
   type ReactElement,
 } from "react";
 import { useProductInboxItem } from "../../../product-inbox";
-import { taskLoopStop } from "../../tasks/taskLoopLabels";
+import { taskLoopStanding, taskLoopStop } from "../../tasks/taskLoopLabels";
 import { taskOriginKey } from "../../tasks/taskOrigin";
 import { useArchiveAction, useTaskSummary } from "../../tasks/useTaskArchive";
 import { TaskBadgeChips } from "../../tasks/useTaskBadges";
@@ -85,22 +85,31 @@ function MessageTaskCard({
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
+  const locale = useCommaLocale();
   const adapter = useInlineTaskLinkAdapter();
   const conversationId = task.conversationId!;
-  const canonical = useTaskSummary(groupId, conversationId);
-  const projected = useProductInboxItem(groupId, conversationId);
-  const archiveAction = useArchiveAction(groupId, conversationId);
+  const taskGroupId = task.groupId ?? groupId;
+  const canonical = useTaskSummary(taskGroupId, conversationId);
+  const projected = useProductInboxItem(taskGroupId, conversationId);
+  const archiveAction = useArchiveAction(taskGroupId, conversationId);
   const { catalog } = useTaskLabelsCatalogShared(groupId);
+  const loop = canonical?.loop ?? projected?.loop;
   // The live list and the canonical record outrank the message's snapshot,
   // as on the Task's inline chip.
   const summary = {
     ...taskSummary(task, undefined, projected),
     ...(canonical
-      ? { statusBucket: taskStatusBucket(canonical.status), title: canonical.title }
+      ? {
+          statusBucket: taskStatusBucket(canonical.status, {
+            loopState: loop?.state,
+          }),
+          title: canonical.title,
+        }
       : {}),
   };
   const title = summary.title || messages.chat_ref_task();
-  const running = summary.statusBucket === "in_progress";
+  const running =
+    summary.statusBucket === "in_progress" || summary.statusBucket === "loops";
   useEffect(
     () => (running ? cards.holdRunning(conversationId) : undefined),
     [cards, conversationId, running]
@@ -115,14 +124,14 @@ function MessageTaskCard({
     (id) => catalog?.labels.find((label) => label.id === id) ?? []
   );
   const origin = taskOriginKey(canonical?.origin);
-  const loop = canonical?.loop ?? projected?.loop;
   const loopStop = taskLoopStop(summary.statusBucket, loop, messages);
+  const loopStanding = taskLoopStanding(summary.statusBucket, loop, messages, locale);
   const link = renderInlineTaskLink(adapter, {
     // Named like every Task card: by its Task, apart from the inline chip's
     // "Open task" link to the same Task.
     ariaLabel: title,
     conversationId,
-    groupId,
+    groupId: taskGroupId,
     title,
     workspaceId,
   });
@@ -151,7 +160,7 @@ function MessageTaskCard({
                 }
                 interactive={interactive}
                 progress={follows ? step : undefined}
-                task={{ ...summary, loopStop, title }}
+                task={{ ...summary, loopStop, loopStanding, title }}
                 titleClassName="line-clamp-2"
                 // The placeholder giving way to the first title is no rename.
                 titleIdentity={summary.title ? conversationId : undefined}

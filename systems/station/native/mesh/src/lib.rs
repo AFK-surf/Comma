@@ -74,6 +74,8 @@ pub struct Endpoint {
     keepers: Arc<StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Connections coming that are held unanswered, not even their handshake (`hold_incoming`), and those held.
     held: Arc<StdMutex<(u32, Vec<iroh::endpoint::Incoming>)>>,
+    /// Connections whose handshakes are done, from the task that accepts them side by side (`accept`).
+    accepted: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<IrohConnection>>>>,
     /// The queues of packets through Salix, when it was bound with them.
     relay: Option<Arc<salix::Relay>>,
 }
@@ -108,6 +110,10 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
         let (transport, queues) = salix::transport(key.public());
         builder = builder.add_custom_transport(transport);
         relay = Some(queues);
+        // `salix-first`: the relay only while neither Salix nor a direct path has a round trip.
+        if options.route_policy.as_deref() != Some("relay-first") {
+            builder = builder.relay_last();
+        }
     }
     if options.lookup.unwrap_or(false) && !relays.is_empty() {
         builder = builder
@@ -120,7 +126,7 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
             .address_lookup(iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(FORMER_MDNS_SERVICE))
             .address_lookup(iroh_mainline_address_lookup::DhtAddressLookup::builder().secret_key(key));
     }
-    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), held: Arc::default(), relay })
+    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), held: Arc::default(), accepted: Arc::default(), relay })
 }
 
 #[napi(object)]
@@ -247,23 +253,45 @@ impl Endpoint {
     }
 
     /// The next connection, its handshake done; null once the endpoint is closed. One that fails its handshake is
-    /// skipped.
+    /// skipped. Handshakes go on side by side, each on its own, as still.fail's mesh does (station/native/mesh/src/lib.rs
+    /// `accept`): one that is never finished (its device gone half way, a browser closed while it dialled) holds up no
+    /// other. Taken one at a time, every connection behind it waited until it timed out, `CONNECTION_IDLE_MS`, and the
+    /// station answered no one meanwhile, not even a handshake's first packet (2026-11-12: a browser's 34 Initial packets
+    /// through Salix, none answered, for the three minutes it tried).
     #[napi]
     pub async fn accept(&self) -> Option<Connection> {
-        while let Some(incoming) = self.inner.accept().await {
-            {
-                let mut held = self.held.lock().unwrap();
-                if held.0 > 0 {
-                    held.0 -= 1;
-                    held.1.push(incoming);
-                    continue;
+        let mut accepted = self.accepted.lock().await;
+        let done = accepted.get_or_insert_with(|| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let endpoint = self.inner.clone();
+            let held = self.held.clone();
+            napi::bindgen_prelude::spawn(async move {
+                while let Some(incoming) = endpoint.accept().await {
+                    {
+                        let mut held = held.lock().unwrap();
+                        if held.0 > 0 {
+                            held.0 -= 1;
+                            held.1.push(incoming);
+                            continue;
+                        }
+                    }
+                    let tx = tx.clone();
+                    napi::bindgen_prelude::spawn(async move {
+                        // One whose handshake fails is said, where it came from and how long it took.
+                        let from = incoming.remote_addr();
+                        let started = std::time::Instant::now();
+                        match incoming.await {
+                            Ok(conn) => {
+                                let _ = tx.send(conn);
+                            }
+                            Err(error) => eprintln!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()),
+                        }
+                    });
                 }
-            }
-            if let Ok(conn) = incoming.await {
-                return Some(Connection { inner: conn });
-            }
-        }
-        None
+            });
+            rx
+        });
+        done.recv().await.map(|inner| Connection { inner })
     }
 
     /// A connection to another endpoint (a peer station; a station, from a client), offering `alpn` and, for one from

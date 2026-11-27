@@ -39,6 +39,123 @@ defmodule Salix.Bindings.IMAgentWorkspaceListTest do
     %{agent_id: agent_id}
   end
 
+  test "a trusted blob import preserves its source audience", %{agent_id: agent_id} do
+    {:ok, ref} = SalixStore.Blob.put_stream(agent_id, ["private attachment"])
+    label = ["task|" <> SalixStore.Ids.new_conversation_id()]
+
+    assert {:ok, _} =
+             SalixAgent.Workspace.put_ref(agent_id, "/imported.bin", ref,
+               create: true,
+               ifc_label: label
+             )
+
+    assert SalixAgent.AgentWorkspace.label(agent_id, "/imported.bin") == label
+  end
+
+  test "a blob import cannot lower an existing destination audience", %{agent_id: agent_id} do
+    {:ok, ref} = SalixStore.Blob.put_stream(agent_id, ["replacement"])
+
+    assert {:ok, _} =
+             SalixAgent.Workspace.write(agent_id, "/restricted.bin", "original",
+               create: true,
+               ifc_label: ["agent_private"]
+             )
+
+    assert {:ok, _} =
+             SalixAgent.Workspace.put_ref(agent_id, "/restricted.bin", ref,
+               create: true,
+               ifc_label: ["public"]
+             )
+
+    assert SalixAgent.AgentWorkspace.label(agent_id, "/restricted.bin") == ["agent_private"]
+  end
+
+  test "an unlabelled existing destination remains private on blob import", %{agent_id: agent_id} do
+    {:ok, ref} = SalixStore.Blob.put_stream(agent_id, ["replacement"])
+
+    assert {:ok, _} =
+             SalixAgent.Workspace.put_ref(agent_id, "/artifacts/report.md", ref,
+               create: true,
+               ifc_label: ["public"]
+             )
+
+    assert SalixAgent.AgentWorkspace.label(agent_id, "/artifacts/report.md") == ["agent_private"]
+  end
+
+  test "cross-agent attachment materialization preserves trusted labels, not block claims", %{
+    agent_id: sender
+  } do
+    previous = SystemsRuntime.get_env(:salix_im, :agent_workspace_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, IMAgentWorkspace)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, previous) end)
+    receiver = SalixAgent.TestSupport.new_agent_id()
+    SalixAgent.TestSupport.create_control_agent!(receiver, %{"role" => "worker"})
+    label = ["task|" <> SalixStore.Ids.new_conversation_id()]
+
+    {:ok, _} =
+      SalixAgent.Workspace.write(sender, "/source.bin", "attachment",
+        create: true,
+        ifc_label: label
+      )
+
+    {:ok, ref} = IMAgentWorkspace.file_ref(sender, "/source.bin")
+
+    message = %{
+      "actor_type" => "agent",
+      "agent_id" => sender,
+      "message_id" => SalixStore.Ids.new_message_id(),
+      "content" => [
+        %{"type" => "file", "path" => "/source.bin", "blob_ref" => ref, "ifc_label" => ["public"]}
+      ]
+    }
+
+    assert {:ok, [delivered]} =
+             SalixIM.ConversationAttachments.materialize_messages(receiver, [message])
+
+    [block] = delivered["content"]
+    assert SalixAgent.AgentWorkspace.label(receiver, block["path"]) == label
+
+    # An old immutable blob must not acquire a replacement path's public label.
+    {:ok, _} =
+      SalixAgent.Workspace.write(sender, "/source.bin", "different bytes",
+        create: true,
+        ifc_label: ["public"]
+      )
+
+    stale = Map.put(message, "message_id", SalixStore.Ids.new_message_id())
+
+    assert {:ok, [stale_delivery]} =
+             SalixIM.ConversationAttachments.materialize_messages(receiver, [stale])
+
+    [stale_block] = stale_delivery["content"]
+    assert SalixAgent.AgentWorkspace.label(receiver, stale_block["path"]) == nil
+  end
+
+  test "provider staging uses the trusted ingress audience", %{agent_id: agent_id} do
+    previous = SystemsRuntime.get_env(:salix_im, :agent_workspace_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, IMAgentWorkspace)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, previous) end)
+    {:ok, ref} = SalixStore.Blob.put_stream(agent_id, ["provider attachment"])
+
+    attachment = %{
+      "path" => "/incoming.bin",
+      "ifc_label" => ["public"],
+      "to_blob" => fn _ -> {:ok, ref} end
+    }
+
+    label = ["task|" <> SalixStore.Ids.new_conversation_id()]
+    assert {:ok, [_], []} = SalixIM.ProviderAttachments.stage(agent_id, [attachment], label)
+    assert SalixAgent.AgentWorkspace.label(agent_id, "/incoming.bin") == label
+
+    assert {:ok, [_], []} =
+             SalixIM.ProviderAttachments.stage(
+               agent_id,
+               [Map.put(attachment, "path", "/unknown.bin")]
+             )
+
+    assert SalixAgent.AgentWorkspace.label(agent_id, "/unknown.bin") == nil
+  end
+
   test "a directory answers with one level of entries", %{agent_id: agent_id} do
     assert {:ok, entries} = IMAgentWorkspace.list(agent_id, "/")
     assert Enum.any?(entries, &(&1["path"] == "/artifacts/" and &1["kind"] == "dir"))

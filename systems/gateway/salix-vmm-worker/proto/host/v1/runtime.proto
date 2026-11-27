@@ -1,0 +1,799 @@
+syntax = "proto3";
+
+package agentvmm.host.v1;
+
+import "google/protobuf/timestamp.proto";
+import "host/v1/options.proto";
+import "host/v1/resources.proto";
+import "service/v1/service.proto";
+import "trust/v1/trust.proto";
+
+option go_package = "github.com/AFK-surf/agent-vmm/api/host/v1;hostv1";
+
+// AgentRuntimeService is scoped by the Host to one authenticated environment and cannot select
+// another namespace.
+service AgentRuntimeService {
+  // GetEnvironment reads environment policy and observed runtime facts under the caller's
+  // authority.
+  rpc GetEnvironment(GetEnvironmentRequest) returns (GetEnvironmentResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // PullImage resolves an existing grant or imports an anonymous linux/arm64 registry image
+  // through the immutable archive path.
+  rpc PullImage(PullImageRequest) returns (stream PullImageResponse);
+  // ImportImage accepts one digest-bound header and either a public HTTPS source or bounded local
+  // archive chunks.
+  rpc ImportImage(stream ImportImageRequest) returns (ImportImageResponse);
+  // ListImages reads materialized image grants visible to this runtime session.
+  rpc ListImages(ListImagesRequest) returns (ListImagesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // DeleteImage deletes this environment's image grant only when no owned container still
+  // references it.
+  rpc DeleteImage(DeleteImageRequest) returns (DeleteImageResponse);
+  // CreateContainer creates an owned container configuration using authorized images, volumes, and
+  // mounts.
+  rpc CreateContainer(CreateContainerRequest) returns (CreateContainerResponse);
+  // StartContainer starts the retained workload process and returns its new instance identity.
+  rpc StartContainer(StartContainerRequest) returns (StartContainerResponse);
+  // StopContainer stops the exact owned workload process under its current container fence.
+  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+  // AcquireExecution claims an instance-bound execution right before an operation that can outlive
+  // its transport.
+  rpc AcquireExecution(AcquireExecutionRequest) returns (AcquireExecutionResponse);
+  // ReleaseExecution settles the exact execution right without substituting another process
+  // instance.
+  rpc ReleaseExecution(ReleaseExecutionRequest) returns (ReleaseExecutionResponse);
+  // ListExecutions reads execution settlement facts for the selected current container instance.
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  // QuiesceContainer closes new execution admission and waits for the selected container's
+  // accepted executions.
+  rpc QuiesceContainer(QuiesceContainerRequest) returns (QuiesceContainerResponse);
+  // WaitContainer observes the retained process's terminal result without treating request
+  // cancellation as process exit.
+  rpc WaitContainer(WaitContainerRequest) returns (WaitContainerResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // DeleteContainer deletes an owned stopped container without deleting its named volumes.
+  rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse);
+  // GetContainer reads reconciled task state and the current instance identity.
+  rpc GetContainer(GetContainerRequest) returns (GetContainerResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListContainers lists only containers owned by the authenticated runtime environment.
+  rpc ListContainers(ListContainersRequest) returns (ListContainersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Logs reads bounded container output under the caller's environment authority.
+  rpc Logs(LogsRequest) returns (stream LogsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Exec starts one instance-fenced process and exchanges explicit stdin, resize, output, and
+  // terminal frames.
+  rpc Exec(stream ExecRequest) returns (stream ExecResponse) {
+    option (method_policy).session_lock_exempt = true;
+  }
+  // SignalContainer signals the retained workload process, whose natural exit can race the
+  // request.
+  rpc SignalContainer(SignalContainerRequest) returns (SignalContainerResponse);
+  // CreateVolume creates a named private volume with optional numeric ownership and permissions.
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
+  // DeleteVolume deletes an owned unmounted volume under its generation fence.
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+  // GetVolume reads one owned volume and its environment quota context.
+  rpc GetVolume(GetVolumeRequest) returns (GetVolumeResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListVolumes lists named volumes within the authenticated environment.
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ForwardTCP forwards a bounded authorized stream to one current owned container instance and
+  // port.
+  rpc ForwardTCP(stream ForwardTCPRequest) returns (stream ForwardTCPResponse) {
+    option (method_policy).session_lock_exempt = true;
+  }
+  // BuildImage builds in a separate rootless sandbox and retains the original content-bound
+  // operation receipt.
+  rpc BuildImage(stream BuildImageRequest) returns (stream BuildImageResponse);
+  // CopyImage copies an authorized image between exact source and target allocation generations
+  // under one registration.
+  rpc CopyImage(CopyImageRequest) returns (CopyImageResponse);
+  // ObserveImageOperation reads the original image operation result and independent writer-
+  // settlement fact.
+  rpc ObserveImageOperation(ObserveImageOperationRequest) returns (ObserveImageOperationResponse);
+  // CancelImageOperation cancels the original image operation and observes writer cleanup before
+  // settlement.
+  rpc CancelImageOperation(CancelImageOperationRequest) returns (CancelImageOperationResponse);
+  // ReleaseSession closes this runtime capability while preserving allocation data and independent
+  // workload ownership.
+  rpc ReleaseSession(ReleaseSessionRequest) returns (ReleaseSessionResponse) {
+    option (method_policy).session_lock_exempt = true;
+  }
+  // StatWorkspace reads metadata beneath the owned workspace root without following an escaping
+  // path.
+  rpc StatWorkspace(StatWorkspaceRequest) returns (StatWorkspaceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListWorkspace reads a bounded directory view beneath the owned workspace root.
+  rpc ListWorkspace(ListWorkspaceRequest) returns (ListWorkspaceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ReadWorkspace streams bytes from an authorized workspace file without exposing raw Host paths.
+  rpc ReadWorkspace(ReadWorkspaceRequest) returns (stream ReadWorkspaceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // WriteWorkspace writes bounded chunks to the header-selected workspace file with the supplied
+  // prefix check.
+  rpc WriteWorkspace(stream WriteWorkspaceRequest) returns (WriteWorkspaceResponse);
+  // ArchiveWorkspace streams an archive of the authorized workspace scope.
+  rpc ArchiveWorkspace(ArchiveWorkspaceRequest) returns (stream ArchiveWorkspaceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ExtractWorkspace extracts a bounded archive beneath the owned workspace root.
+  rpc ExtractWorkspace(stream ExtractWorkspaceRequest) returns (ExtractWorkspaceResponse);
+  // CreateServiceExport authorizes a port on the current owned container and follows that
+  // container ID across later instances.
+  rpc CreateServiceExport(CreateServiceExportRequest) returns (CreateServiceExportResponse);
+  // ListServiceExports lists exports visible within the caller's authority, including retained
+  // revoked records.
+  rpc ListServiceExports(ListServiceExportsRequest) returns (ListServiceExportsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeServiceExport revokes the exact export revision and its dependent route projections.
+  rpc RevokeServiceExport(RevokeServiceExportRequest) returns (RevokeServiceExportResponse);
+  // CreateServiceImport binds a current source instance to a local export or current controller-
+  // issued capability.
+  rpc CreateServiceImport(CreateServiceImportRequest) returns (CreateServiceImportResponse);
+  // CreatePersonalServiceImport obtains destination-issued personal route authority using current
+  // mesh membership and explicit budgets.
+  rpc CreatePersonalServiceImport(CreatePersonalServiceImportRequest) returns (CreatePersonalServiceImportResponse);
+  // ListServiceImports lists imports owned by the authenticated environment.
+  rpc ListServiceImports(ListServiceImportsRequest) returns (ListServiceImportsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeServiceImport revokes one import revision and its active route projections.
+  rpc RevokeServiceImport(RevokeServiceImportRequest) returns (RevokeServiceImportResponse);
+}
+
+// ListWorkspaceRequest carries inputs for an operation that reads a bounded directory view
+// beneath the owned workspace root.
+message ListWorkspaceRequest {
+  string path = 1;
+  uint32 limit = 2;
+  string volume_id = 3;
+  string cursor = 4;
+}
+
+// ListWorkspaceResponse carries results from an operation that reads a bounded directory view
+// beneath the owned workspace root.
+message ListWorkspaceResponse {
+  repeated WorkspaceEntry entries = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+}
+
+// ReadWorkspaceRequest carries inputs for an operation that streams bytes from an authorized
+// workspace file without exposing raw Host paths.
+message ReadWorkspaceRequest {
+  string path = 1;
+  uint64 offset = 2;
+  uint64 max_bytes = 3;
+  string volume_id = 4;
+}
+
+// ReadWorkspaceResponse carries results from an operation that streams bytes from an authorized
+// workspace file without exposing raw Host paths.
+message ReadWorkspaceResponse {
+  bytes data = 1;
+  uint64 offset = 2;
+  bytes sha256 = 3;
+  bool final = 4;
+}
+
+// WriteWorkspaceRequest carries inputs for an operation that writes bounded chunks to the
+// header-selected workspace file with the supplied prefix check.
+message WriteWorkspaceRequest {
+  oneof payload {
+    WriteWorkspaceHeader header = 1;
+    bytes data = 2;
+    bool finish = 3;
+  }
+}
+
+// ArchiveWorkspaceRequest carries inputs for an operation that streams an archive of the
+// authorized workspace scope.
+message ArchiveWorkspaceRequest {
+  string path = 1;
+}
+
+// ArchiveWorkspaceResponse carries results from an operation that streams an archive of the
+// authorized workspace scope.
+message ArchiveWorkspaceResponse {
+  bytes data = 1;
+  bytes sha256 = 2;
+  bool final = 3;
+}
+
+// ExtractWorkspaceRequest carries inputs for an operation that extracts a bounded archive
+// beneath the owned workspace root.
+message ExtractWorkspaceRequest {
+  oneof payload {
+    ExtractWorkspaceHeader header = 1;
+    bytes data = 2;
+    bool finish = 3;
+  }
+}
+
+// CreateServiceExportRequest carries inputs for an operation that authorizes a port on the
+// current owned container and follows that container ID across later instances.
+message CreateServiceExportRequest {
+  string request_id = 1;
+  string container_id = 2;
+  string container_instance_id = 3;
+  uint32 port = 4;
+  agentvmm.service.v1.ServiceProtocol protocol = 5;
+}
+
+// CreatePersonalServiceImportRequest carries inputs for an operation that obtains destination-
+// issued personal route authority using current mesh membership and explicit budgets.
+message CreatePersonalServiceImportRequest {
+  string request_id = 1;
+  string mesh_id = 2;
+  string source_container_id = 3;
+  string source_container_instance_id = 4;
+  string destination_device_id = 5;
+  string destination_export_id = 6;
+  string virtual_service_name = 7;
+  agentvmm.trust.v1.RouteBudget budget = 8;
+}
+
+// ListServiceImportsRequest carries inputs for an operation that lists imports owned by the
+// authenticated environment.
+message ListServiceImportsRequest {}
+
+// ListServiceImportsResponse carries results from an operation that lists imports owned by the
+// authenticated environment.
+message ListServiceImportsResponse {
+  repeated agentvmm.service.v1.ServiceImport imports = 1;
+}
+
+// ReleaseSessionRequest carries inputs for an operation that closes this runtime capability
+// while preserving allocation data and independent workload ownership.
+message ReleaseSessionRequest {
+  string request_id = 1;
+}
+
+// CreateContainerRequest carries inputs for an operation that creates an owned container
+// configuration using authorized images, volumes, and mounts.
+message CreateContainerRequest {
+  string request_id = 1;
+  string container_id = 2;
+  string image = 3;
+  reserved 4;
+  reserved "argv";
+  repeated string env = 5;
+  optional string workdir = 6;
+  optional string user = 7;
+  ResourceLimits limits = 8;
+  repeated VolumeMount volumes = 9;
+  bool read_only_root = 10;
+  uint64 log_limit_bytes = 11;
+  StringList entrypoint_override = 12;
+  StringList command_override = 13;
+}
+
+// StopContainerRequest carries inputs for an operation that stops the exact owned workload
+// process under its current container fence.
+message StopContainerRequest {
+  string request_id = 1;
+  string container_id = 2;
+  optional uint32 timeout_seconds = 3;
+  string expected_instance_id = 4;
+  string quiesce_request_id = 5;
+}
+
+// ListExecutionsRequest carries inputs for an operation that reads execution settlement facts
+// for the selected current container instance.
+message ListExecutionsRequest {
+  string container_id = 1;
+  string expected_instance_id = 2;
+}
+
+// ListExecutionsResponse carries results from an operation that reads execution settlement facts
+// for the selected current container instance.
+message ListExecutionsResponse {
+  ExecutionListStatus status = 1;
+  string container_instance_id = 2;
+  repeated Execution executions = 3;
+  string allocation_authority = 4;
+}
+
+// QuiesceContainerRequest carries inputs for an operation that closes new execution admission
+// and waits for the selected container's accepted executions.
+message QuiesceContainerRequest {
+  string request_id = 1;
+  string container_id = 2;
+  string expected_instance_id = 3;
+  bool cancel = 4;
+  uint32 minimum_idle_seconds = 5;
+}
+
+// WaitContainerResponse carries results from an operation that observes the retained process's
+// terminal result without treating request cancellation as process exit.
+message WaitContainerResponse {
+  uint32 exit_code = 1;
+}
+
+// ListContainersRequest carries inputs for an operation that lists only containers owned by the
+// authenticated runtime environment.
+message ListContainersRequest {}
+
+// ListContainersResponse carries results from an operation that lists only containers owned by
+// the authenticated runtime environment.
+message ListContainersResponse {
+  repeated Container containers = 1;
+}
+
+// PullImageRequest carries inputs for an operation that resolves an existing grant or imports an
+// anonymous linux/arm64 registry image through the immutable archive path.
+message PullImageRequest {
+  string request_id = 1;
+  string reference = 2;
+}
+
+// PullImageResponse carries results from an operation that resolves an existing grant or imports
+// an anonymous linux/arm64 registry image through the immutable archive path.
+message PullImageResponse {
+  string status = 1;
+  optional string digest = 2;
+  uint64 logical_bytes = 3;
+  string canonical_reference = 4;
+}
+
+// ImportImageRequest starts with one immutable header. Local mode sends bounded archive chunks.
+// URL mode sends EOF after the header.
+message ImportImageRequest {
+  oneof payload {
+    ImportImageHeader header = 1;
+    bytes archive_chunk = 2;
+  }
+}
+
+// ListImagesRequest carries inputs for an operation that reads materialized image grants visible
+// to this runtime session.
+message ListImagesRequest {
+  ImageOrigin origin = 1;
+}
+
+// DeleteImageRequest carries inputs for an operation that deletes this environment's image grant
+// only when no owned container still references it.
+message DeleteImageRequest {
+  string request_id = 1;
+  string reference = 2;
+  string expected_generation_id = 3;
+  string expected_digest = 4;
+  ImageOrigin origin = 5;
+}
+
+// LogsRequest carries inputs for an operation that reads bounded container output under the
+// caller's environment authority.
+message LogsRequest {
+  string container_id = 1;
+  uint64 tail_records = 2;
+  google.protobuf.Timestamp since = 3;
+  string after_cursor = 4;
+  bool follow = 5;
+}
+
+// SignalContainerRequest carries inputs for an operation that signals the retained workload
+// process, whose natural exit can race the request.
+message SignalContainerRequest {
+  string request_id = 1;
+  string container_id = 2;
+  ProcessSignal signal = 3;
+}
+
+// ExecRequest starts with ExecStart, then sends input or resize events. close_stdin explicitly
+// ends process input.
+message ExecRequest {
+  oneof event {
+    ExecStart start = 1;
+    bytes stdin = 2;
+    bool close_stdin = 3;
+    ExecResize resize = 4;
+    ProcessSignal signal = 5;
+  }
+}
+
+// ExecResponse carries process output and terminal exit evidence. A disconnected stream does not
+// establish execution settlement.
+message ExecResponse {
+  oneof event {
+    bytes stdout = 1;
+    bytes stderr = 2;
+    uint32 exit_code = 3;
+  }
+  bool timed_out = 4;
+  bool oom_killed = 5;
+  optional uint64 memory_peak_bytes = 6;
+}
+
+// CreateVolumeRequest carries inputs for an operation that creates a named private volume with
+// optional numeric ownership and permissions.
+message CreateVolumeRequest {
+  string request_id = 1;
+  string volume_id = 2;
+  optional uint32 owner_uid = 3;
+  optional uint32 owner_gid = 4;
+  optional uint32 mode = 5;
+}
+
+// DeleteVolumeRequest carries inputs for an operation that deletes an owned unmounted volume
+// under its generation fence.
+message DeleteVolumeRequest {
+  string request_id = 1;
+  string volume_id = 2;
+}
+
+// ListVolumesRequest carries inputs for an operation that lists named volumes within the
+// authenticated environment.
+message ListVolumesRequest {}
+
+// ListVolumesResponse carries results from an operation that lists named volumes within the
+// authenticated environment.
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+}
+
+// ForwardTCPRequest carries inputs for an operation that forwards a bounded authorized stream to
+// one current owned container instance and port.
+message ForwardTCPRequest {
+  oneof event {
+    ForwardTCPHeader header = 1;
+    bytes data = 2;
+    bool close_write = 3;
+  }
+}
+
+// ForwardTCPResponse carries results from an operation that forwards a bounded authorized stream
+// to one current owned container instance and port.
+message ForwardTCPResponse {
+  oneof event {
+    bytes data = 1;
+    bool close_read = 2;
+  }
+}
+
+// BuildImageRequest carries inputs for an operation that builds in a separate rootless sandbox
+// and retains the original content-bound operation receipt.
+message BuildImageRequest {
+  oneof event {
+    BuildImageHeader header = 1;
+    BuildContextChunk context = 2;
+    BuildSecretChunk secret = 3;
+  }
+}
+
+// CopyImageRequest carries inputs for an operation that copies an authorized image between exact
+// source and target allocation generations under one registration.
+message CopyImageRequest {
+  string request_id = 1;
+  ImageSource source = 2;
+  string target_allocation_id = 4;
+  uint64 target_allocation_generation = 5;
+  string image_reference = 6;
+  string manifest_digest = 7;
+}
+
+// BuildImageResponse carries results from an operation that builds in a separate rootless
+// sandbox and retains the original content-bound operation receipt.
+message BuildImageResponse {
+  oneof event {
+    string progress = 1;
+    BuildImageResult result = 2;
+  }
+}
+
+// CreateServiceImportRequest carries inputs for an operation that binds a current source
+// instance to a local export or current controller-issued capability.
+message CreateServiceImportRequest {
+  string request_id = 1;
+  string source_container_id = 2;
+  string source_container_instance_id = 3;
+  string destination_device_id = 4;
+  string destination_export_id = 5;
+  string virtual_service_name = 6;
+  agentvmm.trust.v1.RouteCapability capability = 7;
+  uint32 destination_port = 8;
+}
+
+// RevokeServiceImportRequest carries inputs for an operation that revokes one import revision
+// and its active route projections.
+message RevokeServiceImportRequest {
+  string request_id = 1;
+  string import_id = 2;
+  uint64 expected_revision = 3;
+}
+
+// GetEnvironmentRequest carries inputs for an operation that reads environment policy and
+// observed runtime facts under the caller's authority.
+message GetEnvironmentRequest {}
+
+// ImportImageResponse carries results from an operation that accepts one digest-bound header and
+// either a public HTTPS source or bounded local archive chunks.
+message ImportImageResponse {
+  Image image = 1;
+}
+
+// DeleteImageResponse carries results from an operation that deletes this environment's image
+// grant only when no owned container still references it.
+message DeleteImageResponse {}
+
+// CreateContainerResponse carries results from an operation that creates an owned container
+// configuration using authorized images, volumes, and mounts.
+message CreateContainerResponse {
+  Container container = 1;
+}
+
+// StartContainerRequest carries inputs for an operation that starts the retained workload
+// process and returns its new instance identity.
+message StartContainerRequest {
+  string request_id = 1;
+  string container_id = 2;
+  string expected_generation_id = 3;
+}
+
+// StartContainerResponse carries results from an operation that starts the retained workload
+// process and returns its new instance identity.
+message StartContainerResponse {
+  Container container = 1;
+}
+
+// StopContainerResponse carries results from an operation that stops the exact owned workload
+// process under its current container fence.
+message StopContainerResponse {
+  Container container = 1;
+}
+
+// AcquireExecutionRequest carries inputs for an operation that claims an instance-bound
+// execution right before an operation that can outlive its transport.
+message AcquireExecutionRequest {
+  string execution_id = 1;
+  string container_id = 2;
+  string expected_instance_id = 3;
+  int64 deadline_unix_nano = 4;
+  string holder_id = 5;
+  ExecutionKind kind = 6;
+}
+
+// AcquireExecutionResponse carries results from an operation that claims an instance-bound
+// execution right before an operation that can outlive its transport.
+message AcquireExecutionResponse {
+  string execution_id = 1;
+  string container_instance_id = 2;
+  bool acquired = 3;
+}
+
+// ReleaseExecutionRequest carries inputs for an operation that settles the exact execution right
+// without substituting another process instance.
+message ReleaseExecutionRequest {
+  string execution_id = 1;
+  string container_id = 2;
+  string expected_instance_id = 3;
+  int64 deadline_unix_nano = 4;
+  string holder_id = 5;
+  ExecutionKind kind = 6;
+}
+
+// ReleaseExecutionResponse carries results from an operation that settles the exact execution
+// right without substituting another process instance.
+message ReleaseExecutionResponse {}
+
+// QuiesceContainerResponse carries results from an operation that closes new execution admission
+// and waits for the selected container's accepted executions.
+message QuiesceContainerResponse {
+  Container container = 1;
+}
+
+// WaitContainerRequest carries inputs for an operation that observes the retained process's
+// terminal result without treating request cancellation as process exit.
+message WaitContainerRequest {
+  string container_id = 1;
+  optional CreateContainerRequest expected_configuration = 2;
+}
+
+// DeleteContainerRequest carries inputs for an operation that deletes an owned stopped container
+// without deleting its named volumes.
+message DeleteContainerRequest {
+  string request_id = 1;
+  string container_id = 2;
+  string expected_generation_id = 3;
+}
+
+// DeleteContainerResponse carries results from an operation that deletes an owned stopped
+// container without deleting its named volumes.
+message DeleteContainerResponse {}
+
+// GetContainerRequest carries inputs for an operation that reads reconciled task state and the
+// current instance identity.
+message GetContainerRequest {
+  string container_id = 1;
+  optional CreateContainerRequest expected_configuration = 2;
+}
+
+// GetContainerResponse carries results from an operation that reads reconciled task state and
+// the current instance identity.
+message GetContainerResponse {
+  Container container = 1;
+}
+
+// LogsResponse carries results from an operation that reads bounded container output under the
+// caller's environment authority.
+message LogsResponse {
+  string cursor = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  LogStream stream = 3;
+  bytes data = 4;
+  bool truncated = 5;
+  uint64 dropped_records = 6;
+}
+
+// SignalContainerResponse carries results from an operation that signals the retained workload
+// process, whose natural exit can race the request.
+message SignalContainerResponse {}
+
+// CreateVolumeResponse carries results from an operation that creates a named private volume
+// with optional numeric ownership and permissions.
+message CreateVolumeResponse {
+  Volume volume = 1;
+}
+
+// DeleteVolumeResponse carries results from an operation that deletes an owned unmounted volume
+// under its generation fence.
+message DeleteVolumeResponse {}
+
+// GetVolumeRequest carries inputs for an operation that reads one owned volume and its
+// environment quota context.
+message GetVolumeRequest {
+  string volume_id = 1;
+}
+
+// GetVolumeResponse carries results from an operation that reads one owned volume and its
+// environment quota context.
+message GetVolumeResponse {
+  Volume volume = 1;
+}
+
+// CopyImageResponse carries results from an operation that copies an authorized image between
+// exact source and target allocation generations under one registration.
+message CopyImageResponse {
+  Image image = 1;
+}
+
+// ObserveImageOperationRequest carries inputs for an operation that reads the original image
+// operation result and independent writer-settlement fact.
+message ObserveImageOperationRequest {
+  string request_id = 1;
+  ImageOperationKind kind = 2;
+  string input_sha256 = 3;
+  string execution_id = 4;
+  string container_id = 5;
+  string expected_instance_id = 6;
+  ImageSource copy_source = 7;
+  string target_allocation_id = 9;
+  uint64 target_allocation_generation = 10;
+}
+
+// ObserveImageOperationResponse carries results from an operation that reads the original image
+// operation result and independent writer-settlement fact.
+message ObserveImageOperationResponse {
+  ImageOperationReceipt receipt = 1;
+}
+
+// CancelImageOperationRequest carries inputs for an operation that cancels the original image
+// operation and observes writer cleanup before settlement.
+message CancelImageOperationRequest {
+  string request_id = 1;
+  ImageOperationKind kind = 2;
+  string input_sha256 = 3;
+  string execution_id = 4;
+  string container_id = 5;
+  string expected_instance_id = 6;
+  ImageSource copy_source = 7;
+  string target_allocation_id = 9;
+  uint64 target_allocation_generation = 10;
+}
+
+// CancelImageOperationResponse carries results from an operation that cancels the original image
+// operation and observes writer cleanup before settlement.
+message CancelImageOperationResponse {
+  ImageOperationReceipt receipt = 1;
+}
+
+// ReleaseSessionResponse carries results from an operation that closes this runtime capability
+// while preserving allocation data and independent workload ownership.
+message ReleaseSessionResponse {}
+
+// StatWorkspaceRequest carries inputs for an operation that reads metadata beneath the owned
+// workspace root without following an escaping path.
+message StatWorkspaceRequest {
+  string path = 1;
+}
+
+// StatWorkspaceResponse carries results from an operation that reads metadata beneath the owned
+// workspace root without following an escaping path.
+message StatWorkspaceResponse {
+  WorkspaceEntry entry = 1;
+}
+
+// ExtractWorkspaceResponse carries results from an operation that extracts a bounded archive
+// beneath the owned workspace root.
+message ExtractWorkspaceResponse {
+  WorkspaceEntry entry = 1;
+  bytes sha256 = 2;
+}
+
+// CreateServiceExportResponse carries results from an operation that authorizes a port on the
+// current owned container and follows that container ID across later instances.
+message CreateServiceExportResponse {
+  agentvmm.service.v1.ServiceExport export = 1;
+}
+
+// ListServiceExportsRequest carries inputs for an operation that lists exports visible within
+// the caller's authority, including retained revoked records.
+message ListServiceExportsRequest {}
+
+// ListServiceExportsResponse carries results from an operation that lists exports visible within
+// the caller's authority, including retained revoked records.
+message ListServiceExportsResponse {
+  agentvmm.service.v1.ListServiceExportsResponse exports = 1;
+}
+
+// RevokeServiceExportRequest carries inputs for an operation that revokes the exact export
+// revision and its dependent route projections.
+message RevokeServiceExportRequest {
+  string request_id = 1;
+  string export_id = 2;
+  uint64 expected_revision = 3;
+}
+
+// RevokeServiceExportResponse carries results from an operation that revokes the exact export
+// revision and its dependent route projections.
+message RevokeServiceExportResponse {}
+
+// CreateServiceImportResponse carries results from an operation that binds a current source
+// instance to a local export or current controller-issued capability.
+message CreateServiceImportResponse {
+  agentvmm.service.v1.ServiceImport import = 1;
+}
+
+// CreatePersonalServiceImportResponse carries results from an operation that obtains
+// destination-issued personal route authority using current mesh membership and explicit
+// budgets.
+message CreatePersonalServiceImportResponse {
+  agentvmm.service.v1.ServiceImport import = 1;
+}
+
+// RevokeServiceImportResponse carries results from an operation that revokes one import revision
+// and its active route projections.
+message RevokeServiceImportResponse {}
+
+// GetEnvironmentResponse carries results from an operation that reads environment policy and
+// observed runtime facts under the caller's authority.
+message GetEnvironmentResponse {
+  AgentEnvironment environment = 1;
+}
+
+// ListImagesResponse carries results from an operation that reads materialized image grants
+// visible to this runtime session.
+message ListImagesResponse {
+  repeated Image images = 1;
+}
+
+// WriteWorkspaceResponse carries results from an operation that writes bounded chunks to the
+// header-selected workspace file with the supplied prefix check.
+message WriteWorkspaceResponse {
+  WorkspaceEntry entry = 1;
+  bytes sha256 = 2;
+}

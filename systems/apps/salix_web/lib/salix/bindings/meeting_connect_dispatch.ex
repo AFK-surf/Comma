@@ -30,7 +30,13 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
         case select_meeting_env(group_id) do
           {:ok, connector_run_id} ->
             with {:ok, request} <- add_llm_capability(payload, connector_run_id) do
-              Live.request(connector_run_id, "meeting_join", request)
+              case Live.request(connector_run_id, "meeting_join", request) do
+                {:ok, %{"accepted" => false, "reason_code" => "already_in_meeting"} = rejection} ->
+                  {:abandoned, {:already_in_meeting, rejection["existing_meeting_id"]}}
+
+                other ->
+                  other
+              end
             end
 
           {:error, _} = err ->
@@ -84,7 +90,9 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
   defp await_meeting_device(tenant, group, device, remaining) do
     case Registry.get_device(tenant, group, device) do
       {:ok, record} ->
-        if meeting_ready?(record), do: {:ok, record}, else: wait_meeting_device(tenant, group, device, remaining)
+        if meeting_ready?(record),
+          do: {:ok, record},
+          else: wait_meeting_device(tenant, group, device, remaining)
 
       _ ->
         wait_meeting_device(tenant, group, device, remaining)
@@ -173,6 +181,9 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
 
   defp dispatch_connected(payload, target, connector_run_id) do
     case Live.request(connector_run_id, "meeting_join", payload) do
+      {:ok, %{"accepted" => false, "reason_code" => "already_in_meeting"} = rejection} ->
+        {:abandoned, {:already_in_meeting, rejection["existing_meeting_id"]}}
+
       {:ok, %{"accepted" => false} = rejection} ->
         if SalixMeet.Outcome.normalize(rejection["reason_code"]) do
           with {:ok, _doc, _etag} <-

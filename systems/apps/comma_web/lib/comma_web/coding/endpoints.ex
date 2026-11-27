@@ -260,14 +260,35 @@ defmodule CommaWeb.Coding.Endpoints do
         case StationTasks.ask(workspace.salix_group_id, task, "task.history", params, 20_000) do
           {:ok, page} ->
             # A page carries the token use: it is kept for the Task's panel.
+            usage_part = SalixWeb.CodingSandboxes.usage_part(page)
+
             SalixWeb.CodingSandboxes.remember(
               workspace.salix_tenant_id,
               task,
-              %{"usage" => SalixWeb.CodingSandboxes.usage_part(page)},
+              %{"usage" => usage_part},
               at
             )
 
-            json(conn, 200, Map.put(page, "available", true))
+            merged_usage =
+              case SalixStore.CodingSandboxes.get_by_conversation(
+                     workspace.salix_tenant_id,
+                     task
+                   ) do
+                {:ok, workload} ->
+                  get_in(workload.spec, ["facts", "usage", "value"]) ||
+                    case usage_part do
+                      {:ok, value} -> value
+                      _ -> nil
+                    end
+
+                _ ->
+                  case usage_part do
+                    {:ok, value} -> value
+                    _ -> nil
+                  end
+              end
+
+            json(conn, 200, public_history_page(page, merged_usage))
 
           {:error, _not_reachable} ->
             json(conn, 200, %{
@@ -281,6 +302,48 @@ defmodule CommaWeb.Coding.Endpoints do
       end
     end)
   end
+
+  @doc false
+  def public_history_page(page, merged_usage) when is_map(page) do
+    entries =
+      case page["entries"] do
+        list when is_list(list) ->
+          Enum.flat_map(list, &public_history_entry/1)
+
+        _ ->
+          []
+      end
+
+    %{
+      "available" => true,
+      "start" => non_negative_int(page["start"]),
+      "total" => non_negative_int(page["total"]),
+      "entries" => entries,
+      "usage" => CommaWeb.Coding.Usage.public_usage(merged_usage)
+    }
+  end
+
+  defp non_negative_int(v) when is_integer(v) and v >= 0, do: v
+  defp non_negative_int(_), do: 0
+
+  defp public_history_entry(%{"kind" => kind, "text" => text} = entry)
+       when is_binary(kind) and is_binary(text) do
+    at = if is_binary(entry["at"]), do: entry["at"], else: nil
+
+    base = %{"at" => at, "kind" => kind, "text" => text}
+    base = if is_binary(entry["tool"]), do: Map.put(base, "tool", entry["tool"]), else: base
+    base = if is_boolean(entry["ok"]), do: Map.put(base, "ok", entry["ok"]), else: base
+    base = if is_binary(entry["callId"]), do: Map.put(base, "callId", entry["callId"]), else: base
+
+    base =
+      if is_boolean(entry["subagent"]),
+        do: Map.put(base, "subagent", entry["subagent"]),
+        else: base
+
+    [base]
+  end
+
+  defp public_history_entry(_), do: []
 
   defp count(value) when is_binary(value) do
     case Integer.parse(value) do
@@ -646,6 +709,33 @@ defmodule CommaWeb.Coding.Endpoints do
     end)
   end
 
+  @doc """
+  The Task's owner asks to see its sandbox's screen
+  (`SalixWeb.CodingSandboxes.show_screen/4`): the sandbox's station is told to
+  admit them for a few minutes, and the Device the sandbox runs as is given. A
+  client views that Device's display as a computer's, and asks again while it
+  views. Another member is `forbidden`. `sandbox_not_running` when no sandbox
+  is ready, `sandbox_has_no_screen` when its station serves none, and
+  `sandbox_unreachable` when the station could not be told.
+  """
+  def screen(conn, workspace_id, task) do
+    with_workspace(conn, workspace_id, :write, fn workspace, user ->
+      with {:ok, _conversation} <- coding_task(workspace, task) do
+        case SalixWeb.CodingSandboxes.show_screen(
+               workspace.salix_tenant_id,
+               workspace.salix_group_id,
+               task,
+               user["id"]
+             ) do
+          {:ok, device} -> json(conn, 200, %{device_id: device})
+          {:error, :forbidden} -> json(conn, 403, %{error: "forbidden"})
+          {:error, :station_unreachable} -> json(conn, 503, %{error: "sandbox_unreachable"})
+          {:error, reason} -> json(conn, 409, %{error: to_string(reason)})
+        end
+      end
+    end)
+  end
+
   # A Workspace whose sandboxes all started before its members were synced
   # gets them now. Not synced, the member finds no workspace in L4ES: the
   # link is answered still, and the next sandbox syncs again.
@@ -785,6 +875,21 @@ defmodule CommaWeb.Coding.Endpoints do
               :sandbox_not_running
             ],
        do: json(conn, 409, %{error: to_string(reason)})
+
+  defp error(conn, {:error, {:runs_on, {:billing_unavailable, decision}, _source}}) do
+    {status, body} = CommaWeb.BillingErrors.billing_response(decision)
+    json(conn, status, body)
+  end
+
+  defp error(conn, {:error, {:billing_unavailable, decision}}) do
+    {status, body} = CommaWeb.BillingErrors.billing_response(decision)
+    json(conn, status, body)
+  end
+
+  defp error(conn, {:error, {:task_model_selection_failed, message}}) do
+    {status, body} = CommaWeb.BillingErrors.task_model_selection_response(message)
+    json(conn, status, body)
+  end
 
   defp error(conn, {:error, {:runs_on, _reason, _source} = refusal}),
     do: json(conn, 409, %{error: "refused", message: SalixIM.TaskPlacement.message(refusal)})

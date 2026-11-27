@@ -9,9 +9,13 @@ defmodule SalixAgent.PlatformBalance do
   Every 5 minutes each node reads `GET /user/balance` of every enabled
   platform API key that DeepSeek serves (at most the bounded page of
   `SalixAgent.SubscriptionStore.usable_api_keys/1`) and publishes, per
-  currency, the lowest balance among them. A failed read publishes nothing:
-  the gauge keeps its last value. Other providers expose no balance to an API
-  key and are not read.
+  currency, the lowest balance among them. When one account returns multiple
+  currency wallets in `balance_infos` (for example, a funded CNY wallet
+  alongside an exhausted USD wallet), only that account's primary wallet (the
+  highest balance relative to its alert threshold) is counted so an unused
+  secondary currency does not trigger a false low-balance alert. A failed read
+  publishes nothing: the gauge keeps its last value. Other providers expose no
+  balance to an API key and are not read.
 
   Settings of `:salix_agent, :platform_balance` (`req_options`) are for tests.
   """
@@ -24,7 +28,10 @@ defmodule SalixAgent.PlatformBalance do
   alias SalixAgent.SubscriptionStore, as: Store
 
   @interval_ms 300_000
-  @currencies ~w(cny usd)
+  # Match the thresholds in `platform-model-account-low-balance.v1.json.tmpl`
+  # so multi-currency `balance_infos` pick the account's active wallet.
+  @low_thresholds %{"cny" => 1_000.0, "usd" => 140.0}
+  @currencies Map.keys(@low_thresholds)
 
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -119,10 +126,9 @@ defmodule SalixAgent.PlatformBalance do
 
     case Req.get(url, options) do
       {:ok, %{status: 200, body: %{"balance_infos" => infos}}} when is_list(infos) ->
-        for %{"currency" => currency, "total_balance" => total} <- infos,
-            code when code in @currencies <- [String.downcase(to_string(currency))],
-            {balance, ""} <- [Float.parse(to_string(total))],
-            do: {code, balance}
+        infos
+        |> parse_balances()
+        |> select_balance()
 
       _ ->
         []
@@ -130,4 +136,24 @@ defmodule SalixAgent.PlatformBalance do
   rescue
     _ -> []
   end
+
+  defp parse_balances(infos) do
+    for %{"currency" => currency, "total_balance" => total} <- infos,
+        code when code in @currencies <- [String.downcase(to_string(currency))],
+        {balance, ""} <- [total |> to_string() |> String.trim() |> Float.parse()],
+        do: {code, balance}
+  end
+
+  defp select_balance([]), do: []
+
+  defp select_balance(balances) do
+    [
+      Enum.max_by(balances, fn {code, balance} ->
+        {balance / Map.fetch!(@low_thresholds, code), currency_tie_rank(code)}
+      end)
+    ]
+  end
+
+  defp currency_tie_rank("cny"), do: 1
+  defp currency_tie_rank(_), do: 0
 end

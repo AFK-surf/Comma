@@ -18,8 +18,22 @@ defmodule SalixAnalytics.SessionHistoryIndex do
     end
   end
 
-  def search(agent, session, query, ceiling, before_seq, before_part, limit) do
-    predicate = if is_nil(query), do: "part=0", else: "position(text,{query:String})>0"
+  # terms is nil for a listing; otherwise a row must contain every term. A
+  # search reads original records only: summary facts are its episodes.
+  def search(agent, session, terms, ceiling, before_seq, before_part, limit) do
+    terms = terms || []
+
+    predicate =
+      if terms == [],
+        do: "part=0",
+        else:
+          [
+            "kind<>'fact'"
+            | terms
+              |> Enum.with_index()
+              |> Enum.map(fn {_, i} -> "position(text,{term#{i}:String})>0" end)
+          ]
+          |> Enum.join(" AND ")
 
     sql = """
     SELECT seq,part,text,kind,tool_name,label FROM #{table()} FINAL
@@ -36,9 +50,31 @@ defmodule SalixAnalytics.SessionHistoryIndex do
           ceiling: ceiling,
           before: before_seq,
           part: before_part,
-          query: query || "",
           limit: limit
-        )
+        ) ++
+        bind(terms |> Enum.with_index() |> Enum.map(fn {t, i} -> {"term#{i}", t} end))
+    )
+  end
+
+  # Compaction summary rows of one kind that contain any term, newest first.
+  def summaries(agent, session, kind, terms, ceiling, limit) do
+    predicate =
+      terms
+      |> Enum.with_index()
+      |> Enum.map_join(" OR ", fn {_, i} -> "position(text,{term#{i}:String})>0" end)
+
+    sql = """
+    SELECT seq,part,text,kind,tool_name,label FROM #{table()} FINAL
+    PREWHERE agent_id={agent:String} AND session_id={session:String}
+    WHERE seq<={ceiling:UInt64} AND tool_name={kind:String} AND (#{predicate})
+    ORDER BY seq DESC,part DESC LIMIT {limit:UInt32} FORMAT JSONEachRow
+    """
+
+    read(
+      sql,
+      params(agent, session) ++
+        bind(ceiling: ceiling, kind: kind, limit: limit) ++
+        bind(terms |> Enum.with_index() |> Enum.map(fn {t, i} -> {"term#{i}", t} end))
     )
   end
 

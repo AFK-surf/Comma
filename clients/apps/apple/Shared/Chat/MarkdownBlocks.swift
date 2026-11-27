@@ -48,7 +48,7 @@ struct MarkdownBlockView: View {
                 .background(CommaTheme.markdownTable, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .selectableMessageText()
         case let table as Markdown.Table:
-            MarkdownTableView(table: table, style: style).selectableMessageText()
+            MarkdownTableView(table: table, style: style, cornerRadius: 12).selectableMessageText()
         case is ThematicBreak:
             Rectangle().fill(CommaTheme.markdownBorder).frame(height: 0.5)
         case let html as HTMLBlock:
@@ -167,41 +167,77 @@ struct MarkdownCodeView: View {
 struct MarkdownTableView: View {
     let table: Markdown.Table
     let style: MarkdownStyle
+    /// Concentric with what holds it: a bubble's radius less the 4pt between them, or 12pt inside prose.
+    var cornerRadius: CGFloat = 16
 
+    /// As wide as its columns: a scroll view of its own only when they are wider than the bubble. The outline is on
+    /// what shows, so a scrolled table keeps its corners.
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        ViewThatFits(in: .horizontal) {
+            grid
+            ScrollView(.horizontal, showsIndicators: false) { grid }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        }
+        .background(CommaTheme.markdownSurface)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(CommaTheme.markdownBorder, lineWidth: 0.5))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var grid: some View {
         let alignments = table.columnAlignments
         let head = Array(table.head.cells)
         let rows = table.body.rows.map { Array($0.cells) }
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(Array(head.enumerated()), id: \.offset) { column, cell in
-                        cellView(cell, bold: true, alignment: alignments[safe: column] ?? nil)
-                    }
+        // Cells start at the top of their row, as on the desktop, so a short cell sits on a long one's first line.
+        return Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(Array(head.enumerated()), id: \.offset) { column, cell in
+                    cellView(cell, bold: true, alignment: alignments[safe: column] ?? nil)
                 }
-                .background(CommaTheme.markdownTable)
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    Divider().overlay(CommaTheme.markdownBorder)
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
-                            cellView(cell, bold: false, alignment: alignments[safe: column] ?? nil)
-                        }
+            }
+            .background(CommaTheme.markdownTable)
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                Divider().overlay(CommaTheme.markdownBorder)
+                GridRow {
+                    ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
+                        cellView(cell, bold: false, alignment: alignments[safe: column] ?? nil)
                     }
                 }
             }
-            .background(CommaTheme.markdownSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(CommaTheme.markdownBorder, lineWidth: 0.5))
         }
     }
 
     private func cellView(_ cell: Markdown.Table.Cell, bold: Bool, alignment: Markdown.Table.ColumnAlignment?) -> some View {
-        Text(MarkdownInline.attributed(cell, style: style))
-            .font(style.table.weight(bold ? .semibold : .regular))
-            .foregroundStyle(CommaTheme.textPrimary)
-            .multilineTextAlignment(alignment == .right ? .trailing : alignment == .center ? .center : .leading)
-            .frame(minWidth: 60, maxWidth: 220, alignment: alignment == .right ? .trailing : alignment == .center ? .center : .leading)
-            .padding(.horizontal, 12).padding(.vertical, 8)
+        TableCellLayout(alignment: alignment == .right ? .trailing : alignment == .center ? .center : .leading) {
+            Text(MarkdownInline.attributed(cell, style: style))
+                .font(style.table.weight(bold ? .semibold : .regular))
+                .foregroundStyle(CommaTheme.textPrimary)
+                .multilineTextAlignment(alignment == .right ? .trailing : alignment == .center ? .center : .leading)
+                .lineLimit(nil)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+}
+
+/// A table cell's text, as wide as its words between 60 and 220pt and as tall as they are at that width, whatever
+/// width the grid asks about: a longer cell wraps at 220pt instead of ending in an ellipsis on one line.
+private struct TableCellLayout: Layout {
+    var minWidth: CGFloat = 60
+    var maxWidth: CGFloat = 220
+    var alignment: HorizontalAlignment
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let text = subviews.first else { return .zero }
+        let natural = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? text.sizeThatFits(.unspecified).width
+        let width = min(max(natural, minWidth), maxWidth)
+        return CGSize(width: width, height: text.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let x: CGFloat = alignment == .trailing ? 1 : alignment == .center ? 0.5 : 0
+        subviews.first?.place(at: CGPoint(x: bounds.minX + bounds.width * x, y: bounds.minY), anchor: UnitPoint(x: x, y: 0),
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 

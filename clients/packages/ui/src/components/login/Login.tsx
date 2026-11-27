@@ -8,6 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type PointerEvent,
+  type ReactNode,
   type SyntheticEvent,
 } from "react";
 import { Button } from "../Button";
@@ -88,6 +89,10 @@ export type LoginEmailProps = LoginCommonProps & {
   onContinueWithApple?: () => void;
   /** A quieter action under the email form, such as trying the product first. */
   secondaryAction?: LoginSecondaryAction;
+  /** More fields of the form, under the email (a name a guest goes by); they submit with it. */
+  fields?: ReactNode;
+  /** Why the last Continue failed (the address was refused, too many tries); it shows under the button. */
+  errorMessage?: string;
 };
 
 export type LoginSecondaryAction = {
@@ -117,16 +122,26 @@ export type LoginProps = LoginEmailProps | LoginVerificationProps;
 const STAGE_EXIT_FALLBACK_MS = motionDuration.loginStageExit + 250;
 
 export const Login = (props: LoginProps) => {
-  const lastPropsRef = useRef(props);
+  const [activeMode, setActiveMode] = useState(props.mode);
   const [exitingStage, setExitingStage] = useState<LoginProps | null>(null);
+  // The step shown at mount rests: only a step that replaces another enters.
+  // An entering step starts transparent, so a first frame that must wait for
+  // the GPU (a new install compiles every pipeline it draws) would show the
+  // mark over an empty stage until the wait ends.
+  const [stageReplaced, setStageReplaced] = useState(false);
+  const committedPropsRef = useRef(props);
+
+  useLayoutEffect(() => {
+    committedPropsRef.current = props;
+  });
 
   // Snapshot the outgoing step during render so both steps share the first
   // transition frame, mirroring the commaboard Motion login cross-fade.
-  const previousProps = lastPropsRef.current;
-  if (previousProps.mode !== props.mode) {
-    setExitingStage(previousProps);
+  if (activeMode !== props.mode) {
+    setActiveMode(props.mode);
+    setExitingStage(committedPropsRef.current);
+    setStageReplaced(true);
   }
-  lastPropsRef.current = props;
 
   const exitStageRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -172,7 +187,7 @@ export const Login = (props: LoginProps) => {
         <div
           key={props.mode}
           className="login-stage login-stage-motion"
-          data-stage-state="enter"
+          data-stage-state={stageReplaced ? "enter" : "rest"}
         >
           <LoginStage {...props} />
         </div>
@@ -205,6 +220,8 @@ const EmailLogin = ({
   onContinueWithGoogle,
   onContinueWithApple,
   secondaryAction,
+  fields,
+  errorMessage,
 }: LoginEmailProps) => {
   const [uncontrolledEmail, setUncontrolledEmail] = useState(defaultEmail);
   const [hasValidationError, setHasValidationError] = useState(false);
@@ -315,6 +332,7 @@ const EmailLogin = ({
           {...(hasValidationError ? { errorMessage: copy.email.invalidError } : {})}
           onChange={handleEmailChange}
         />
+        {fields}
         <Button
           type="submit"
           className="w-full"
@@ -322,6 +340,17 @@ const EmailLogin = ({
         >
           {copy.email.continueAction}
         </Button>
+        {errorMessage && (
+          <Text
+            key={errorMessage}
+            role="alert"
+            size="textSm"
+            weight="regular"
+            className="w-full text-error-primary"
+          >
+            {errorMessage}
+          </Text>
+        )}
       </form>
 
       {secondaryAction && (

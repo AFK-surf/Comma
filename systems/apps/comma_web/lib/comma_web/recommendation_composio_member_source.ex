@@ -142,7 +142,7 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
              id,
              toolkit,
              deadline,
-             &provider_read(toolkit, &1, now)
+             &provider_read(toolkit, &1, now, source["memberTargets"] || %{})
            ),
          ^consent <- Comma.MemberSourceConsents.binding(workspace["id"], user_id, toolkit, id) do
       subject =
@@ -158,8 +158,11 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
   def read(_workspace, _user_id, _source, _now, _deadline),
     do: {:error, :member_source_unsupported}
 
-  # Read only an id from an exact, previously collected member item. The
-  # proxy is pinned to that account and Graph enforces current resource ACL.
+  @gmail_api "https://gmail.googleapis.com/gmail/v1/users/me"
+
+  # Read only an id from an exact, previously collected member item or Home
+  # MailInteraction entry. The proxy is pinned to that account and Graph
+  # enforces current resource ACL.
   def preview_outlook(workspace, account_id, provider_user_id, kind, resource_id, href)
       when kind in ~w(message event) and is_binary(resource_id) and
              byte_size(resource_id) in 1..512 do
@@ -172,10 +175,13 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
              "outlook",
              RecommendationMemberRead.deadline(),
              fn request ->
-               {path, fields} =
+               {path, fields, req_opts} =
                  if kind == "message",
-                   do: {"messages/", "id,webLink,subject,bodyPreview,from,receivedDateTime"},
-                   else: {"events/", "id,webLink,subject,bodyPreview,start,end,isCancelled"}
+                   do:
+                     {"messages/",
+                      "id,webLink,subject,bodyPreview,from,toRecipients,receivedDateTime,body,uniqueBody",
+                      [parameters: [CommaWeb.ProactiveOutlookMailSource.text_body()]]},
+                   else: {"events/", "id,webLink,subject,bodyPreview,start,end,isCancelled", []}
 
                endpoint =
                  @graph <>
@@ -183,10 +189,10 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
                    path <>
                    URI.encode(resource_id, &URI.char_unreserved?/1) <> "?$select=" <> fields
 
-               with {:ok, %{"id" => ^provider_user_id}} <-
-                      request.("GET", @graph <> "/me?$select=id", []),
-                    {:ok, %{"id" => ^resource_id, "webLink" => ^href} = data} <-
-                      request.("GET", endpoint, []),
+               with :ok <- verify_outlook_user(request, provider_user_id),
+                    {:ok, %{"id" => ^resource_id} = data} <-
+                      request.("GET", endpoint, req_opts),
+                    true <- outlook_weblink_matches?(data["webLink"], href, provider_user_id),
                     true <- kind != "event" or data["isCancelled"] != true do
                  {:ok, data}
                else
@@ -203,14 +209,81 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
 
   def preview_outlook(_, _, _, _, _, _), do: {:error, :member_source_unsupported}
 
-  defp provider_read("slack", request, now),
-    do: CommaWeb.RecommendationSlackMemberSource.read(request, now)
+  def preview_gmail(workspace, account_id, provider_user_id, message_id)
+      when is_binary(message_id) and byte_size(message_id) in 1..256 do
+    if Regex.match?(~r/^[A-Za-z0-9_-]+$/, message_id) do
+      with {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
+           {:ok, data} <-
+             with_proxy(
+               settings,
+               workspace,
+               account_id,
+               "gmail",
+               RecommendationMemberRead.deadline(),
+               fn request ->
+                 endpoint =
+                   @gmail_api <>
+                     "/messages/" <>
+                     URI.encode(message_id, &URI.char_unreserved?/1) <> "?format=full"
 
-  defp provider_read("outlook", request, now),
+                 with {:ok, %{"emailAddress" => email}}
+                      when is_binary(email) and email != "" <-
+                        request.("GET", @gmail_api <> "/profile", []),
+                      true <-
+                        is_nil(provider_user_id) or
+                          String.downcase(email) == String.downcase(provider_user_id),
+                      {:ok, %{"id" => ^message_id} = data} <- request.("GET", endpoint, []) do
+                   {:ok, data}
+                 else
+                   _ -> {:error, :member_identity_or_source_unavailable}
+                 end
+               end,
+               true
+             ) do
+        {:ok, data}
+      else
+        _ -> {:error, :member_identity_or_source_unavailable}
+      end
+    else
+      {:error, :member_source_unsupported}
+    end
+  end
+
+  def preview_gmail(_, _, _, _), do: {:error, :member_source_unsupported}
+
+  defp verify_outlook_user(_request, nil), do: :ok
+
+  defp verify_outlook_user(request, provider_user_id) when is_binary(provider_user_id) do
+    case request.("GET", @graph <> "/me?$select=id", []) do
+      {:ok, %{"id" => ^provider_user_id}} -> :ok
+      _ -> {:error, :member_identity_or_source_unavailable}
+    end
+  end
+
+  defp outlook_weblink_matches?(weblink, href, provider_user_id) when is_binary(provider_user_id),
+    do: weblink == href
+
+  defp outlook_weblink_matches?(weblink, href, nil) when is_binary(weblink) do
+    weblink == href or
+      case URI.parse(weblink) do
+        %URI{scheme: "https", host: host, userinfo: nil} ->
+          host in ~w(outlook.office.com outlook.office365.com outlook.live.com)
+
+        _ ->
+          false
+      end
+  end
+
+  defp outlook_weblink_matches?(_, _, _), do: false
+
+  defp provider_read("slack", request, now, targets),
+    do: CommaWeb.RecommendationSlackMemberSource.read(request, now, nil, targets: targets)
+
+  defp provider_read("outlook", request, now, _targets),
     do: CommaWeb.RecommendationOutlookMemberSource.read(request, now)
 
-  defp provider_read(toolkit, request, now),
-    do: CommaWeb.RecommendationGoogleMemberSource.read(toolkit, request, now)
+  defp provider_read(toolkit, request, now, targets),
+    do: CommaWeb.RecommendationGoogleMemberSource.read(toolkit, request, now, targets: targets)
 
   # Display checks local consent, not the external provider. Provider-side
   # revocation is observed during collection; Comma disconnect removes consent.

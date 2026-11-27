@@ -210,3 +210,36 @@ test("a device connection asks for the mesh's facts only when its file says so, 
       assert.equal(hub.admissions.active(), false);
     }),
   ));
+
+test("a Task's sandbox asks for no mesh facts, and hears whom Salix says to show its screen to; that one looks only", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+      const endpointId = Buffer.from(publicKey.export({ format: "jwk" }).x as string, "base64url").toString("hex");
+      const hub = new SalixRelayHub(endpointId, (message) => sign(null, message, privateKey), { taskScreen: true });
+      const salix = yield* memorySockets();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "token-sandbox", name: "sandbox", root: tempDir(), testClock: true }, salix.layer, { relay: hub });
+      const running = yield* Effect.forkChild(c.runRemoteOnce);
+      const peer = yield* Queue.take(salix.accepted);
+      yield* peer.receive;
+      yield* peer.send({ type: "connected", connector_run_id: "sandbox", relay_challenge: "nonce-sandbox" });
+      const register = yield* peer.receive;
+      assert.equal(register.method, "relay_register");
+      assert.equal(register.params.mesh, undefined, "a sandbox asked for the mesh's facts as it connected");
+      yield* peer.send({ id: register.id, type: "response", result: { ok: true } });
+      yield* settle;
+      assert.equal(hub.admissions.active(), false);
+
+      // The Task's owner asked Salix to see the screen: Salix says whom, numbered by the time it read at.
+      const told = { workspace: "wsA", grant_keys: { keys: [] }, revocations: [], owner: "u_task_owner", relay_urls: [] };
+      yield* peer.send({ id: "show", type: "request", method: "station_mesh", params: { seq: 1_794_800_000_000, mesh: told } });
+      assert.equal((yield* peer.receive).type, "response");
+      assert.equal(hub.admissions.active(), true);
+      const owner = { viewer: { sub: "u_task_owner", email: "o@example.com", name: "O", role: "member", workspace: "wsA", device: "d" }, exp: Number.MAX_SAFE_INTEGER, iat: 0, sid: "s" };
+      assert.equal(hub.admissions.mayView(owner), true);
+      assert.equal(hub.admissions.mayControl(owner), false);
+      yield* peer.close;
+      yield* Fiber.await(running);
+      yield* c.close();
+    }),
+  ));

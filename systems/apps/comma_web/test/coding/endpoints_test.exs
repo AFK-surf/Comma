@@ -126,6 +126,137 @@ defmodule CommaWeb.Coding.EndpointsTest do
              post(ctx.base <> "/sessions/cnv_missing/pull-request", ctx.viewer, %{})
   end
 
+  test "public_history_page strips internal session ledgers, session IDs, and agent_id" do
+    raw_page = %{
+      "start" => %{"session_id" => "sess_start_999"},
+      "total" => 2,
+      "session_id" => "sess_page_ext_1",
+      "entries" => [
+        ["sess_sneaky_list_999"],
+        %{"kind" => 123, "text" => "sess_bad_kind_999"},
+        %{
+          "at" => "2026-11-26T00:00:00Z",
+          "kind" => "tool_call",
+          "text" => "mix test",
+          "tool" => "shell",
+          "ok" => true,
+          "callId" => "call_1",
+          "subagent" => false,
+          "session_id" => "sess_entry_ext_2",
+          "agent_id" => "agt_entry_secret"
+        },
+        %{
+          "at" => %{"leak" => "sess_bad_at_999"},
+          "kind" => "assistant",
+          "text" => "Done.",
+          "tool" => %{"leak" => "sess_bad_tool_999"},
+          "ok" => "sess_bad_ok_999"
+        }
+      ],
+      "agent_id" => "agt_secret_123",
+      "sessions" => %{
+        "sess_sentinel_live_991" => %{"modelCalls" => 10},
+        "sess_sentinel_retired_992" => %{"modelCalls" => 4}
+      },
+      "retired_sessions" => %{
+        "sess_sentinel_retired_992" => %{"modelCalls" => 4}
+      },
+      "task_usage" => %{
+        "sessions" => %{"sess_sentinel_live_991" => %{"modelCalls" => 10}}
+      }
+    }
+
+    merged_usage = %{
+      "modelCalls" => 15,
+      "inputTokens" => 1500,
+      "cachedTokens" => 100,
+      "outputTokens" => 300,
+      "model" => "claude-opus-5",
+      "models" => %{
+        "claude-opus-5" => %{
+          "modelCalls" => 10,
+          "inputTokens" => 1000,
+          "cachedTokens" => 100,
+          "outputTokens" => 200
+        },
+        "gpt-6.2-sol" => %{
+          "modelCalls" => 5,
+          "inputTokens" => 500,
+          "cachedTokens" => 0,
+          "outputTokens" => 100
+        }
+      },
+      "partial" => true,
+      "sessions" => %{
+        "sess_sentinel_live_991" => %{"modelCalls" => 10}
+      },
+      "retired_sessions" => %{
+        "sess_sentinel_retired_992" => %{"modelCalls" => 4}
+      },
+      "by_slot" => %{
+        "lead" => %{
+          "slot" => "lead",
+          "session" => "sess_sentinel_live_991",
+          "agent_id" => "agt_secret_123",
+          "is_primary" => true,
+          "usage" => %{
+            "modelCalls" => 10,
+            "inputTokens" => 1000,
+            "cachedTokens" => 100,
+            "outputTokens" => 200,
+            "model" => "claude-opus-5"
+          }
+        },
+        "auditor" => %{
+          "slot" => "auditor",
+          "session" => "sess_sentinel_retired_992",
+          "is_primary" => false,
+          "unreadable" => true,
+          "usage" => nil
+        }
+      }
+    }
+
+    sanitized = CommaWeb.Coding.Endpoints.public_history_page(raw_page, merged_usage)
+    encoded = Jason.encode!(sanitized)
+
+    refute encoded =~ "sess_sentinel_live_991"
+    refute encoded =~ "sess_sentinel_retired_992"
+    refute encoded =~ "sess_page_ext_1"
+    refute encoded =~ "sess_entry_ext_2"
+    refute encoded =~ "sess_sneaky_list_999"
+    refute encoded =~ "sess_start_999"
+    refute encoded =~ "sess_bad_kind_999"
+    refute encoded =~ "sess_bad_at_999"
+    refute encoded =~ "sess_bad_tool_999"
+    refute encoded =~ "sess_bad_ok_999"
+    refute encoded =~ "agent_id"
+    refute encoded =~ "retired_sessions"
+    refute encoded =~ "task_usage"
+
+    assert sanitized["available"] == true
+    assert sanitized["start"] == 0
+    assert [entry, second] = sanitized["entries"]
+
+    assert entry == %{
+             "at" => "2026-11-26T00:00:00Z",
+             "kind" => "tool_call",
+             "text" => "mix test",
+             "tool" => "shell",
+             "ok" => true,
+             "callId" => "call_1",
+             "subagent" => false
+           }
+
+    assert second == %{"at" => nil, "kind" => "assistant", "text" => "Done."}
+
+    assert sanitized["usage"]["modelCalls"] == 15
+    assert sanitized["usage"]["partial"] == true
+    assert sanitized["usage"]["by_slot"]["lead"]["usage"]["modelCalls"] == 10
+    assert sanitized["usage"]["by_slot"]["auditor"]["unreadable"] == true
+    assert sanitized["usage"]["by_slot"]["auditor"]["usage"] == nil
+  end
+
   defp user! do
     {:ok, user} =
       Accounts.create_user(%{

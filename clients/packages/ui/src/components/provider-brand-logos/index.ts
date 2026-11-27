@@ -2,6 +2,7 @@ export {
   GithubProviderLogo,
   GmailProviderLogo,
   GoogleCalendarProviderLogo,
+  GoogleColabProviderLogo,
   GoogleDriveProviderLogo,
   GoogleProviderLogo,
   LinearProviderLogo,
@@ -20,6 +21,7 @@ export { TailscaleProviderLogo } from "./TailscaleProviderLogo";
 export { BlenderProviderLogo } from "./BlenderProviderLogo";
 export { LarkProviderLogo } from "./LarkProviderLogo";
 export { FeishuProviderLogo } from "./FeishuProviderLogo";
+export { FastmailProviderLogo } from "./FastmailProviderLogo";
 export { CanvaProviderLogo } from "./CanvaProviderLogo";
 export { DropboxProviderLogo } from "./DropboxProviderLogo";
 export { HubSpotProviderLogo } from "./HubSpotProviderLogo";

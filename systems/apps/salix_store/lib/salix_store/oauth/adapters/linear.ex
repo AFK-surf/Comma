@@ -149,6 +149,19 @@ defmodule SalixStore.OAuth.Adapters.Linear do
     end
   end
 
+  # Linear answers a revoked token with 401, or with a GraphQL
+  # AUTHENTICATION_ERROR. A token that expires is refreshed before it is sent.
+  @impl true
+  def token_refused?(host, status, body) do
+    Adapter.api_host?("linear", host, "api.linear.app") and
+      (status == 401 or authentication_error?(body))
+  end
+
+  defp authentication_error?(%{"errors" => errors}) when is_list(errors),
+    do: Enum.any?(errors, &match?(%{"extensions" => %{"code" => "AUTHENTICATION_ERROR"}}, &1))
+
+  defp authentication_error?(_body), do: false
+
   @impl true
   def validate_credential_value(value, scopes),
     do: Adapter.validate_access_token(value, scopes, @label)
@@ -179,10 +192,7 @@ defmodule SalixStore.OAuth.Adapters.Linear do
 
         cond do
           err != "" ->
-            msg =
-              if Adapter.blank?(parsed["error_description"]),
-                do: err,
-                else: parsed["error_description"]
+            msg = Adapter.format_token_error(err, parsed["error_description"])
 
             {:error, "linear token error: #{msg}"}
 

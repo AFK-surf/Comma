@@ -154,9 +154,11 @@ defmodule CommaWeb.ProactiveOutlookMailSource do
   defp normalize_message(row) do
     body = unique_body(row)
 
+    attachments = if(row["hasAttachments"], do: ["unread attachments"], else: [])
+
     with true <- valid_id?(row["id"]),
          {:ok, text} <- body_text(body["content"], body["contentType"]),
-         true <- text != "" and byte_size(text) <= @max_text_bytes,
+         true <- (text != "" or attachments != []) and byte_size(text) <= @max_text_bytes,
          {:ok, at, _} <-
            DateTime.from_iso8601(row["sentDateTime"] || row["receivedDateTime"] || "") do
       {:ok,
@@ -169,7 +171,7 @@ defmodule CommaWeb.ProactiveOutlookMailSource do
          "body" => text,
          "labels" => [],
          "sent_at_ms" => DateTime.to_unix(at, :millisecond),
-         "attachments" => if(row["hasAttachments"], do: ["unread attachments"], else: [])
+         "attachments" => attachments
        }}
     else
       {:error, _} = error -> error

@@ -123,6 +123,7 @@ function setup(
     taskModel?: Json;
     taskPlace?: Json;
     sandboxes?: boolean;
+    sandboxRuntimes?: string[];
     replyStyle?: string;
     routerName?: string;
   },
@@ -151,6 +152,9 @@ function setup(
             task_place: {
               place: state.taskPlace,
               ...(state.sandboxes === undefined ? {} : { sandboxes: state.sandboxes }),
+              ...(state.sandboxRuntimes
+                ? { sandbox_runtimes: state.sandboxRuntimes }
+                : {}),
             },
           }
         : {}),
@@ -509,6 +513,72 @@ describe("Settings › Model & API", () => {
     await t.time.pass(100);
     await none;
     expect(t.api.seen("POST", profilesPath)).toHaveLength(1);
+  });
+
+  it("reads again which runtimes a sandbox can run after an API key is added, turned off or removed", async () => {
+    const t = setup({
+      profiles: [],
+      taskPlace: { kind: "salix" },
+      sandboxes: true,
+      sandboxRuntimes: ["codex"],
+    });
+    t.api.on("POST", profilesPath, (request: SeenRequest) => {
+      const created = {
+        ...(request.body as Json),
+        id: "profile-anthropic",
+        disabled: false,
+        status: "active",
+        version: "v1",
+      };
+      t.state.profiles.push(created);
+      return json(201, created);
+    });
+    t.api.on("DELETE", `${profilesPath}/*`, () => {
+      t.state.profiles.length = 0;
+      return json(200, { deleted: true });
+    });
+    const shown = t.watch<ModelsValue>({ topic: "models", prefer: WS });
+    await t.time.pass(100);
+    const lent = () => shown().agents?.task_place.sandbox_runtimes;
+    expect(lent()).toEqual(["codex"]);
+
+    // The server lends sandboxes the new Anthropic key: Claude runs there now.
+    t.state.sandboxRuntimes = ["claude", "codex"];
+    const created = t.client.call("models.createProfile", {
+      workspace: WS,
+      source: "anthropic",
+      api_key: "sk-ant-1",
+    });
+    await t.time.pass(100);
+    await created;
+    expect(lent()).toEqual(["claude", "codex"]);
+
+    t.state.sandboxRuntimes = ["codex"];
+    const off = t.client.call("models.updateProfile", {
+      workspace: WS,
+      profile: "profile-anthropic",
+      disabled: true,
+    });
+    await t.time.pass(100);
+    await off;
+    expect(lent()).toEqual(["codex"]);
+
+    t.state.sandboxRuntimes = ["claude", "codex"];
+    const on = t.client.call("models.updateProfile", {
+      workspace: WS,
+      profile: "profile-anthropic",
+      disabled: false,
+    });
+    await t.time.pass(100);
+    await on;
+    t.state.sandboxRuntimes = ["codex"];
+    const removed = t.client.call("models.deleteProfile", {
+      workspace: WS,
+      profile: "profile-anthropic",
+    });
+    await t.time.pass(100);
+    await removed;
+    expect(lent()).toEqual(["codex"]);
   });
 
   it("lets a ChatGPT plan spend its credits once its quota runs out", async () => {

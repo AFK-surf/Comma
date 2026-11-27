@@ -20,6 +20,7 @@ import {
   ClaudeAiIcon,
   Filter2Icon,
   LayoutColumnIcon,
+  ListBulletsIcon,
   OpenAiIcon,
   SettingsSliderHorizontalIcon,
   SquareCursorIcon,
@@ -142,6 +143,7 @@ export function isTaskFilterSectionNarrowed(
 
 export interface TaskWorkspaceToolbarActionsProps {
   filterSections?: readonly (TaskFilterSection | TaskFilterSectionGroup)[] | undefined;
+  onPrepareView?: ((view: TaskView) => void) | undefined;
   onSelectedStatusesChange: (statuses: ReadonlySet<TaskStatusBucket>) => void;
   onSelectedWorkersChange: (workers: ReadonlySet<TaskWorker>) => void;
   onViewChange: (view: TaskView) => void;
@@ -198,6 +200,7 @@ function useDismissableNonModalPopover(
 
 export function TaskWorkspaceToolbarActions({
   filterSections = [],
+  onPrepareView,
   onSelectedStatusesChange,
   onSelectedWorkersChange,
   onViewChange,
@@ -223,25 +226,38 @@ export function TaskWorkspaceToolbarActions({
         workerFilterOptions={workerFilterOptions}
         workerCounts={workerCounts}
       />
-      <TaskViewPicker onChange={onViewChange} view={view} />
+      <TaskViewPicker
+        onChange={onViewChange}
+        onPrepareView={onPrepareView}
+        view={view}
+      />
     </div>
   );
 }
 
 function TaskViewPicker({
   onChange,
+  onPrepareView,
   view,
 }: {
   onChange: (view: TaskView) => void;
+  onPrepareView?: ((view: TaskView) => void) | undefined;
   view: TaskView;
 }) {
   const messages = useCommaMessages();
   const nextView = view === "board" ? "list" : "board";
   const [isOpen, setIsOpen] = useState(false);
   const { popoverRef, triggerRef } = useDismissableNonModalPopover(isOpen, setIsOpen);
+  const prepareFeed = () => {
+    if (view !== "feed") onPrepareView?.("feed");
+  };
+  const handleOpenChange = (open: boolean) => {
+    if (open && !isOpen) prepareFeed();
+    setIsOpen(open);
+  };
 
   return (
-    <DialogTrigger isOpen={isOpen} onOpenChange={setIsOpen}>
+    <DialogTrigger isOpen={isOpen} onOpenChange={handleOpenChange}>
       <AriaButton
         ref={triggerRef}
         aria-label={
@@ -262,15 +278,15 @@ function TaskViewPicker({
       >
         <AriaDialog
           aria-label={messages.tasks_view()}
-          className="w-[var(--spacing-11xl)] rounded-xl bg-popup-secondary p-sm shadow-xs ring-1 ring-primary ring-inset outline-none"
+          className="w-56 rounded-xl bg-popup-secondary p-sm shadow-xs ring-1 ring-primary ring-inset outline-none"
           data-slot="task-view-panel"
         >
           <Menu
             aria-label={messages.tasks_view()}
-            className="grid grid-cols-2 gap-sm"
+            className="grid grid-cols-3 gap-sm"
             disallowEmptySelection
             onAction={(key) => {
-              if (key === "board" || key === "list") {
+              if (key === "board" || key === "list" || key === "feed") {
                 onChange(key);
                 setIsOpen(false);
               }
@@ -296,6 +312,17 @@ function TaskViewPicker({
               layout="tile"
             >
               {messages.tasks_list()}
+            </MenuItem>
+            <MenuItem
+              contentClassName="[&_[data-slot=menu-item-icon]]:text-markdown-icon-primary"
+              gutter="none"
+              icon={<ListBulletsIcon />}
+              id="feed"
+              layout="tile"
+              onFocus={prepareFeed}
+              onHoverStart={prepareFeed}
+            >
+              {messages.tasks_feed()}
             </MenuItem>
           </Menu>
         </AriaDialog>

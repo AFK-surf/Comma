@@ -44,7 +44,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
     %{"token" => token} = URI.decode_query(URI.parse(url).query)
 
     conn = conn |> recycle() |> get("/auth/email/verify", %{"token" => token})
-    assert redirected_to(conn) == "/orgs/" <> org.slug
+    assert html_response(conn, 200) =~ ~s(data-next="/orgs/#{org.slug}")
 
     session_token = Plug.Conn.get_session(conn, DashAuth.session_token_key())
     assert {:ok, %{user_id: user_id}} = Sessions.fetch(session_token)
@@ -66,7 +66,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
     %{"token" => token} = URI.decode_query(URI.parse(url).query)
 
     conn = conn |> recycle() |> get("/auth/email/verify", %{"token" => token})
-    assert redirected_to(conn) == "/orgs/" <> org.slug
+    assert html_response(conn, 200) =~ ~s(data-next="/orgs/#{org.slug}")
   end
 
   test "sending shows the same neutral message whether or not anything matched", %{conn: conn} do

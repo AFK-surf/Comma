@@ -31,6 +31,18 @@ func aDuosPanelsKeepTheirMountingAxisAcrossATurn() {
     #expect(turn.displayed(observed: 2, cover: false) == 2)
 }
 
+@Test
+func aTentsCoverStandsAHalfTurnFromTheShutDevice() {
+    var turn = DeviceTurn()
+    // Shut and turned to landscape, the cover's picture stands as the device does.
+    turn.turned(1)
+    #expect(turn.displayed(observed: 1, cover: true) == 1)
+    // Partly open (a tent), SpringBoard turns the cover's UI a half turn by itself, the device as it was.
+    #expect(turn.displayed(observed: 3, cover: true, folded: true) == 3)
+    // So the same landscape on a tent takes the device a half turn round.
+    #expect((1 + 4 - DeviceTurn.offset(cover: true, folded: true)) % 4 == 3)
+}
+
 private let enumerated = """
 Device Name: primary
   UI Orientation: Landscape Left
@@ -92,6 +104,39 @@ func aPasteTheAppMayMakeIsNotRefused() {
     // CoreDevice writing the pasteboard is no app asking.
     #expect(SimulatorStreamSession.pasteAsked(String(refusedLog.split(separator: "\n")[0])) == nil)
     #expect(SimulatorStreamSession.pasteAsked("") == nil)
+}
+
+@Test
+func aViewOpenedOnATentFindsItHalfOpen() {
+    // SpringBoard's last word since the boot: the cover kept, 61.6° open.
+    let said = "CANCELLED:     .cover:pri .inner:aux | 61.6° (0.34 fold:0.00): closed [device:Ll cover:Lr]"
+    #expect(SimulatorStreamSession.hingeAngle(said) == 61.6)
+    var hinge = DeviceHinge()
+    hinge.observed(61.6)
+    hinge.panelShown(cover: true, initial: true)
+    #expect(hinge.degrees == 61.6)
+    // A sweep of its own is not undone by what SpringBoard said of the way there.
+    _ = hinge.asked(0)
+    hinge.observed(30)
+    #expect(hinge.degrees == 0)
+}
+
+@Test
+func aViewOpeningLaterLeavesAnAngleSweptSinceTheLogSaidItsOwn() {
+    // The boot's log, read as a view opens: a laptop's fold, ended at 109°, said a while ago.
+    let said = "2026-11-12 13:05:44.073 Df SpringBoard[19796:40de3e] [com.apple.SpringBoard:DisplayContentMode] COMPLETED:     .cover:aux .inner:pri | 109.4° (0.61 fold:1.00): partiallyOpen+foldAvoidance [device:Ll cover:Lr]"
+    let at = try! #require(SimulatorStreamSession.logTime(said))
+    #expect(SimulatorStreamSession.hingeAngle(said) == 109.4)
+    // Opened flat since, by a sweep from here (the same panel: SpringBoard said nothing of it).
+    var hinge = DeviceHinge()
+    let ask = hinge.asked(180)
+    hinge.settled(ask.id)
+    hinge.observed(109.4, at: at)
+    #expect(hinge.degrees == 180)
+    // Read on a device nothing here moved since: what the log said last.
+    var fresh = DeviceHinge()
+    fresh.observed(109.4, at: at)
+    #expect(fresh.degrees == 109.4)
 }
 
 @Test

@@ -61,7 +61,11 @@ defmodule SalixIM.IFCPeopleTest do
         "code" => 0,
         "data" => %{
           "items" => [
-            %{"open_department_id" => "od_sales", "name" => "Sales", "parent_department_id" => "0"}
+            %{
+              "open_department_id" => "od_sales",
+              "name" => "Sales",
+              "parent_department_id" => "0"
+            }
           ],
           "has_more" => false
         }
@@ -95,13 +99,28 @@ defmodule SalixIM.IFCPeopleTest do
     defp answer("POST", "/api/users.info", %{"user" => "U02CAT"}),
       do: %{"ok" => true, "user" => slack_user("U02CAT", "Cat Chen", "cat@acme.test")}
 
+    defp answer("POST", "/api/users.lookupByEmail", %{"email" => "cathy@guest.test"}),
+      do: %{"ok" => true, "user" => slack_guest()}
+
+    defp answer("POST", "/api/users.info", %{"user" => "U05GST"}),
+      do: %{"ok" => true, "user" => slack_guest()}
+
     defp answer("POST", "/api/users.list", _),
       do: %{
         "ok" => true,
         "members" => [
           slack_user("U02CAT", "Cat Chen", "cat@acme.test"),
           slack_user("U03DAN", "Dan Wu", "dan@acme.test"),
-          Map.put(slack_user("U04OLD", "Cat Old", "old@acme.test"), "deleted", true)
+          Map.put(slack_user("U04OLD", "Cat Old", "old@acme.test"), "deleted", true),
+          slack_guest(),
+          Map.put(slack_user("U06MLT", "Cat Multi", "multi@acme.test"), "is_restricted", true),
+          Map.put(slack_user("U07EXT", "Cat Partner", "cat@partner.test"), "is_stranger", true),
+          Map.put(slack_user("U08OTH", "Cat Other", "cat@other.test"), "team_id", "T2"),
+          Map.put(
+            slack_user("U09INV", "Cat Invited", "invited@acme.test"),
+            "is_invited_user",
+            true
+          )
         ],
         "response_metadata" => %{"next_cursor" => ""}
       }
@@ -117,9 +136,18 @@ defmodule SalixIM.IFCPeopleTest do
         "department_ids" => ["od_sales"]
       }
 
+    # A single-channel guest of the workspace.
+    defp slack_guest,
+      do:
+        Map.merge(slack_user("U05GST", "Cathy Guest", "cathy@guest.test"), %{
+          "is_restricted" => true,
+          "is_ultra_restricted" => true
+        })
+
     defp slack_user(id, name, email),
       do: %{
         "id" => id,
+        "team_id" => "T1",
         "name" => String.downcase(name),
         "profile" => %{"real_name" => name, "email" => email}
       }
@@ -268,6 +296,19 @@ defmodule SalixIM.IFCPeopleTest do
              Admin.people(ctx.tenant, ctx.group, "lark-broken", "孙宽")
   end
 
+  test "a Slack name finds only full members; a guest is found by exact email or id", ctx do
+    # Guests, Slack Connect people of another organization, people of another
+    # workspace and people still invited match "cat" too, by name or email.
+    assert {:ok, [%{"id" => "U02CAT"}]} =
+             Admin.people(ctx.tenant, ctx.group, "slack-people", "cat")
+
+    assert {:ok, [%{"id" => "U05GST"}]} =
+             Admin.people(ctx.tenant, ctx.group, "slack-people", "cathy@guest.test")
+
+    assert {:ok, [%{"id" => "U05GST"}]} =
+             Admin.people(ctx.tenant, ctx.group, "slack-people", "U05GST")
+  end
+
   test "a Slack person is found by name, email or member id", ctx do
     assert {:ok, [%{"id" => "U02CAT", "name" => "Cat Chen", "email" => "cat@acme.test"}]} =
              Admin.people(ctx.tenant, ctx.group, "slack-people", "cat")
@@ -297,6 +338,135 @@ defmodule SalixIM.IFCPeopleTest do
               "ou_ann" => %{"name" => "孙宽", "email" => "ann@acme.test"},
               "ou_bob" => %{"name" => "Bob", "email" => "bob@acme.test"}
             }} = Admin.describe_people(ctx.tenant, ctx.group, "lark-people", ["ou_ann", "ou_bob"])
+  end
+
+  # Telegram has no directory a bot may read: its people are those the bot
+  # has heard from.
+  test "a Telegram person the bot has heard from is found by name, @username or id", ctx do
+    telegram =
+      connect(ctx.tenant, ctx.group, "tg-people", %{
+        "provider" => "telegram",
+        "bot_token" => "123:abc"
+      })
+
+    :ok =
+      ProviderObservations.upsert_telegram_user(telegram, %{
+        "user_id" => "5550001",
+        "username" => "zhangwei",
+        "display_name" => "张伟"
+      })
+
+    :ok =
+      ProviderObservations.upsert_telegram_user(telegram, %{
+        "user_id" => "5550009",
+        "username" => "acme_bot",
+        "display_name" => "Acme Bot",
+        "is_bot" => true
+      })
+
+    for query <- ["张伟", "@zhangwei", "5550001"] do
+      assert {:ok, [%{"id" => "5550001", "name" => "张伟 (@zhangwei)", "email" => nil}]} =
+               Admin.people(ctx.tenant, ctx.group, "tg-people", query)
+    end
+
+    assert {:ok, []} = Admin.people(ctx.tenant, ctx.group, "tg-people", "acme_bot")
+
+    assert {:ok, %{"5550001" => %{"name" => "张伟 (@zhangwei)"}}} =
+             Admin.describe_people(ctx.tenant, ctx.group, "tg-people", ["5550001", "404"])
+  end
+
+  # The grant picker of a connect's member scope (`SalixIM.ProviderConnects.Members`)
+  # reads the same directory.
+  test "an admin marks a connect external and grants one person by name until it expires", ctx do
+    alias SalixIM.ProviderConnects
+
+    # A connect saved before the member scope existed is the organization's.
+    assert {:ok, %{"member_scope" => "organization", "member_grants" => []}} =
+             ProviderConnects.get_im_connect_public(ctx.tenant, ctx.group, "slack-people")
+
+    assert {:ok, %{"member_scope" => "external"}} =
+             ProviderConnects.set_member_scope(ctx.tenant, ctx.group, "slack-people", "external")
+
+    assert {:error, :invalid_member_scope} =
+             ProviderConnects.set_member_scope(ctx.tenant, ctx.group, "slack-people", "everyone")
+
+    assert {:ok,
+            %{
+              "people" => [%{"subject" => "U02CAT", "email" => "cat@acme.test"}],
+              "complete" => true
+            }} =
+             ProviderConnects.search_member_people(ctx.tenant, ctx.group, "slack-people", "cat")
+
+    # The provider names the person when they are granted.
+    now = SystemsClock.system_time(:millisecond)
+
+    assert {:ok, %{"member_grants" => [grant]}} =
+             ProviderConnects.put_member_grant(
+               ctx.tenant,
+               ctx.group,
+               "slack-people",
+               "U02CAT",
+               7,
+               "admin@acme.test"
+             )
+
+    assert %{"subject" => "U02CAT", "name" => "Cat Chen", "email" => "cat@acme.test"} = grant
+    assert grant["expires_at"] - now >= 7 * 86_400_000
+    assert grant["granted_by"] == "admin@acme.test"
+
+    # A second grant for the same person replaces the first.
+    assert {:ok, %{"member_grants" => [%{"subject" => "U02CAT", "expires_at" => nil}]}} =
+             ProviderConnects.put_member_grant(
+               ctx.tenant,
+               ctx.group,
+               "slack-people",
+               "U02CAT",
+               nil,
+               nil
+             )
+
+    # Someone the workspace cannot read is not granted; only 1, 7 or 30 days.
+    assert {:error, :person_not_found} =
+             ProviderConnects.put_member_grant(
+               ctx.tenant,
+               ctx.group,
+               "slack-people",
+               "U09NOPE",
+               1,
+               nil
+             )
+
+    assert {:error, :invalid_member_grant} =
+             ProviderConnects.put_member_grant(
+               ctx.tenant,
+               ctx.group,
+               "slack-people",
+               "U02CAT",
+               2,
+               nil
+             )
+
+    # An expired grant does not count, and the next write drops it.
+    key = Keys.ctl_im_connect(ctx.group, "slack-people")
+
+    {:ok, _} =
+      CasRecord.update(key, fn rec ->
+        Map.update!(rec, "member_grants", fn grants ->
+          grants ++
+            [%{"subject" => "U03DAN", "email" => "dan@acme.test", "expires_at" => now - 1}]
+        end)
+      end)
+
+    assert {:ok, %{"member_grants" => [%{"subject" => "U02CAT"}]}} =
+             ProviderConnects.get_im_connect_public(ctx.tenant, ctx.group, "slack-people")
+
+    assert {:ok, record} = CasRecord.get(key)
+    assert ProviderConnects.member_grant(record, "U03DAN") == nil
+
+    assert {:ok, %{"member_grants" => []}} =
+             ProviderConnects.delete_member_grant(ctx.tenant, ctx.group, "slack-people", "U02CAT")
+
+    assert {:ok, %{"member_grants" => []}} = CasRecord.get(key)
   end
 
   test "another Group's connect is not readable", ctx do

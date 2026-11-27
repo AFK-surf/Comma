@@ -18,7 +18,8 @@ import type { BrowserSidebarInspectedElement } from "@comma/native-bridge";
 
 /**
  * Something a person selected to ask about, staged for the next message as one tile: an element picked on a page of
- * the browser sidebar, or an area (or the whole) of a screen. Like quotes and snippets, selections are renderer-only
+ * the browser sidebar, an area (or the whole) of a screen, a passage of a document, or their own edits of a
+ * document (its whole version, which goes as the message's file and says nothing of its own). Like quotes and snippets, selections are renderer-only
  * draft state, kept per conversation for the chat session the way its draft is. At send time each one's note and what
  * the agent reads about it are folded into the message's text, and its picture goes as a file of the message.
  */
@@ -51,6 +52,30 @@ export type ChatDraftSelectionSubject =
       at: number;
       /** Files that go with it, such as the app's recent logs. */
       files?: readonly SelectionFile[] | undefined;
+    }
+  | {
+      kind: "document";
+      /** The document's file name, and how the agent finds the file: the attachment it was sent as. */
+      fileName: string;
+      reference: string;
+      /** The passage selected, as the page shows it, and where it is in the page's text. */
+      quote: string;
+      start: number;
+      end: number;
+      /** The page's text just before and after the passage, and the heading it is under: what tells it apart. */
+      before: string;
+      after: string;
+      heading?: string | undefined;
+    }
+  | {
+      kind: "document-version";
+      /** The document's file name, and the version the person's edits are of: the attachment it was sent as. */
+      fileName: string;
+      reference: string;
+      /** The person's version of the document, whole: it goes as the message's file. */
+      file: SelectionFile;
+      /** The pictures the person put in the document, which it names by their file names: they go with it. */
+      images?: readonly SelectionFile[] | undefined;
     };
 
 export type SelectionPictureType = "image/png" | "image/jpeg" | "image/webp";
@@ -65,6 +90,8 @@ export interface ComposerDraftSelections {
 const maxNoteLength = 4_000;
 const maxElementTextLength = 2_000;
 const maxHtmlLength = 4_000;
+const maxPassageLength = 4_000;
+const maxPassageNoteLength = 200;
 // With several elements each gets its share of the text and HTML one would have, and no less than this.
 const minElementShare = 400;
 const EXTENSIONS: Record<SelectionPictureType, string> = {
@@ -100,6 +127,10 @@ function pictureName(selection: ChatDraftSelection, index: number, count: number
   return count === 1 ? `${base}.${extension}` : `${base}-${index + 1}.${extension}`;
 }
 
+/** The selections a person asks about: all but their own versions of documents, which only go as files. */
+const asked = (selections: readonly ChatDraftSelection[]) =>
+  selections.filter(({ about }) => about.kind !== "document-version");
+
 /**
  * The message's text with the selections folded in: after the typed text come their notes (numbered where there are
  * several, as their pictures are), a line that names each screen by its link, and last, for the agent alone, what
@@ -107,15 +138,28 @@ function pictureName(selection: ChatDraftSelection, index: number, count: number
  */
 export function composeMessageWithSelections(
   text: string,
-  selections: readonly ChatDraftSelection[]
+  staged: readonly ChatDraftSelection[]
 ) {
-  if (selections.length === 0) return text;
+  if (staged.length === 0) return text;
+  // A person's version of a document is the message's file and says nothing of its own: the notes, and their
+  // numbers, are of the rest.
+  const versions = staged.flatMap(({ about }) =>
+    about.kind === "document-version" ? [about] : []
+  );
+  const selections = asked(staged);
   const count = selections.length;
+  // A passage of a document staged without a note is asked about as itself.
   const notes = selections.map((selection) =>
-    clipped(selection.note.trim(), maxNoteLength)
+    clipped(
+      selection.note.trim() ||
+        (selection.about.kind === "document"
+          ? `“${clipped(selection.about.quote.trim(), maxPassageNoteLength)}”`
+          : ""),
+      maxNoteLength
+    )
   );
   const said =
-    count === 1
+    count <= 1
       ? notes[0]
       : notes.map((note, index) => `${index + 1}. ${note}`).join("\n");
   const screens = new Map<string, string>();
@@ -148,7 +192,46 @@ export function composeMessageWithSelections(
           "</browser_element_context>",
           "</user-reminder>",
         ].join("\n");
-  return [text.trim(), said, [...screens.values()].join("\n"), context]
+  const passages = selections.flatMap((selection, index) =>
+    selection.about.kind === "document" ? [{ index, about: selection.about }] : []
+  );
+  // Before the elements' block: the chat shows neither, and takes each off the end of the text in turn.
+  const documents =
+    passages.length === 0 && versions.length === 0
+      ? undefined
+      : [
+          "<user-reminder>",
+          "<document_selection_context>",
+          ...passages.flatMap(({ index, about }, at) => [
+            ...(at > 0 ? [""] : []),
+            ...(count > 1 ? [`Selection ${index + 1} of ${count}`] : []),
+            `File: ${about.fileName}`,
+            `Attachment: ${about.reference}`,
+            ...(about.heading ? [`Under the heading: ${about.heading}`] : []),
+            "Selected text (as the rendered document shows it; Markdown markup is removed):",
+            clipped(about.quote, maxPassageLength),
+            ...(about.before
+              ? [`Text just before it: ${JSON.stringify(about.before)}`]
+              : []),
+            ...(about.after
+              ? [`Text just after it: ${JSON.stringify(about.after)}`]
+              : []),
+          ]),
+          ...versions.flatMap((about, at) => [
+            ...(at > 0 || passages.length > 0 ? [""] : []),
+            `File: ${about.fileName}`,
+            `Attachment: ${about.reference}`,
+            `The person edited this document. Their version is attached as ${about.fileName}. It replaces the attachment named above: work from it.`,
+            ...(about.images?.length
+              ? [
+                  `The person put pictures in the document. It names each by its file name, and they are attached: ${about.images.map((image) => image.name).join(", ")}.`,
+                ]
+              : []),
+          ]),
+          "</document_selection_context>",
+          "</user-reminder>",
+        ].join("\n");
+  return [text.trim(), said, [...screens.values()].join("\n"), documents, context]
     .filter((part) => part !== undefined && part !== "")
     .join("\n\n");
 }
@@ -209,7 +292,8 @@ function elementLines(
  * All of them: a message takes `MAX_ATTACHMENTS_PER_MESSAGE` files with its composer's own, and what stages or sends
  * selections keeps to that (`selectionsFit`), so none is left out unsaid.
  */
-export function selectionFiles(selections: readonly ChatDraftSelection[]) {
+export function selectionFiles(staged: readonly ChatDraftSelection[]) {
+  const selections = asked(staged);
   const count = selections.length;
   const pictures = selections.flatMap((selection, index) =>
     selection.picture
@@ -238,8 +322,30 @@ export function selectionFiles(selections: readonly ChatDraftSelection[]) {
         ? { ...file, name: numberedName(file.name, index + 1) }
         : file
     ),
+    // A person's version of a document, under the document's own name.
+    // With it go the pictures the person put in it, which it names by these file names.
+    ...staged.flatMap(({ about }) =>
+      about.kind === "document-version"
+        ? [{ ...about.file, name: about.fileName }, ...(about.images ?? [])]
+        : []
+    ),
   ];
 }
+
+// The selections that went with a message, by id: what tells a tile that was sent from one the person took away.
+const sent = new Set<string>();
+const maxSent = 64;
+
+/** Says these selections went with a message. */
+export function noteSelectionsSent(ids: Iterable<string>) {
+  for (const id of ids) {
+    if (sent.size >= maxSent) sent.delete(sent.values().next().value!);
+    sent.add(id);
+  }
+}
+
+/** Whether the selection went with a message (and was not taken off its composer). */
+export const selectionWasSent = (id: string) => sent.has(id);
 
 /**
  * How many of a draft's attachments go with its message as files a message counts: those uploaded or uploading (the

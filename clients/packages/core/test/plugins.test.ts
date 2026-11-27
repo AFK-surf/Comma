@@ -180,7 +180,10 @@ describe("the plugin catalog", () => {
     expect(request?.headers).toEqual(
       expect.arrayContaining([
         ["x-comma-client", "electron/macos/1.0.8"],
-        ["x-comma-client-capabilities", "device-plugins,blender-plugin"],
+        [
+          "x-comma-client-capabilities",
+          "device-plugins,blender-plugin,plugin-oauth-code",
+        ],
       ])
     );
   });
@@ -1494,9 +1497,20 @@ describe("a plugin's still.fail stations", () => {
         id: "dev_a",
         name: "Acme · desk",
         connected: true,
-        connected_at: "2026-11-08T10:00:00Z",
+        // The server sends epoch milliseconds.
+        connected_at: Date.UTC(2026, 10, 8, 10) as number | null,
+        task_models: { claude: ["claude-opus-5-5"], codex: [] },
       },
       { id: "dev_b", name: null, connected: false, connected_at: null },
+      {
+        id: "dev_c",
+        name: "Old name · mini",
+        connected: false,
+        connected_at: Date.UTC(2026, 10, 7, 22) as number | null,
+        task_models: { claude: ["claude-opus-5-5"], agy: ["gemini-4-neon"] },
+        // What the station says of its workspace now wins over the name it connected with.
+        workspace: { name: "Labs", emoji: "🦊", station: "mini", station_count: 3 },
+      },
     ];
     t.api.on("GET", stationsPath, () => json(200, { stations }));
     t.api.on("DELETE", `${stationsPath}/dev_b`, () => {
@@ -1516,9 +1530,30 @@ describe("a plugin's still.fail stations", () => {
           id: "dev_a",
           name: "Acme · desk",
           connected: true,
-          connectedAt: "2026-11-08T10:00:00Z",
+          connectedAt: "2026-11-08T10:00:00.000Z",
+          // A station from before it said its workspace: read from the name it connected with.
+          workspace: "Acme",
+          station: "desk",
+          emoji: null,
+          stationCount: null,
+          taskModels: { claude: ["claude-opus-5-5"], codex: [] },
         },
-        { id: "dev_b", name: null, connected: false, connectedAt: null },
+        {
+          id: "dev_b",
+          name: null,
+          connected: false,
+          connectedAt: null,
+          workspace: null,
+          station: null,
+        },
+        {
+          id: "dev_c",
+          workspace: "Labs",
+          emoji: "🦊",
+          station: "mini",
+          stationCount: 3,
+          taskModels: { claude: ["claude-opus-5-5"], agy: ["gemini-4-neon"] },
+        },
       ],
       error: null,
       pending: null,
@@ -1530,7 +1565,10 @@ describe("a plugin's still.fail stations", () => {
       station: "dev_b",
     });
     await t.time.pass(100);
-    expect(shown()).toMatchObject({ stations: [{ id: "dev_a" }], pending: null });
+    expect(shown()).toMatchObject({
+      stations: [{ id: "dev_a" }, { id: "dev_c" }],
+      pending: null,
+    });
 
     const reads = t.api.seen("GET", stationsPath).length;
     t.api.on(
@@ -1548,7 +1586,338 @@ describe("a plugin's still.fail stations", () => {
     // It may have gone all the same, so the stations are read again.
     await t.time.pass(100);
     expect(t.api.seen("GET", stationsPath)).toHaveLength(reads + 1);
-    expect(shown()).toMatchObject({ stations: [{ id: "dev_a" }], pending: null });
+    expect(shown()).toMatchObject({
+      stations: [{ id: "dev_a" }, { id: "dev_c" }],
+      notificationLevel: "action_needed",
+      notificationPending: false,
+      pending: null,
+    });
+
+    const notificationsPath = `${catalogPath}/stillfail/stillfail-notifications`;
+    const sentBodies: unknown[] = [];
+    t.api.on("PUT", notificationsPath, (req) => {
+      sentBodies.push(req.body);
+      const level = (req.body as { level?: string } | undefined)?.level;
+      if (!level) return json(400, { error: "invalid_stillfail_notification_level" });
+      return json(200, { stations, notification_level: level });
+    });
+
+    await t.client.call("plugin.station.notificationLevel.set", {
+      workspace: WS,
+      plugin: "stillfail",
+      level: "issues",
+    });
+    await t.time.pass(100);
+    expect(sentBodies).toEqual([{ level: "issues" }]);
+    expect(shown()).toMatchObject({
+      notificationLevel: "issues",
+      notificationPending: false,
+      error: null,
+    });
+
+    t.api.on("PUT", notificationsPath, json(503, { error: "plugins_unavailable" }));
+    await expect(
+      t.client.call("plugin.station.notificationLevel.set", {
+        workspace: WS,
+        plugin: "stillfail",
+        level: "all",
+      })
+    ).rejects.toMatchObject({ status: 503 });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({
+      notificationLevel: "issues",
+      notificationPending: false,
+      error: "notification_save_failed",
+    });
+  });
+});
+
+describe("oauth_code_paste plugins (Google Colab)", () => {
+  it("runs two-step oauth_code install, refreshes PKCE on retry, forwards mode, and parses personal_sources metadata", async () => {
+    const t = setup();
+    const colab = plugin("google-colab", {
+      name: "Google Colab",
+      brand: "google-colab",
+      category: "Compute",
+    });
+    const installPath = `${catalogPath}/google-colab/install`;
+    const sourcesPath = `${catalogPath}/google-colab/personal-sources`;
+    let installed = false;
+    t.api.on("GET", catalogPath, () => json(200, { data: [{ ...colab, installed }] }));
+    t.api.on("POST", installPath, (request) => {
+      const body = request.body as {
+        attempt_id?: string;
+        config_values?: Record<string, string>;
+        mode?: string;
+      };
+      if (body.mode === "add_account") {
+        return json(409, { error: "single_account_limit_reached" });
+      }
+      if (!body.config_values) {
+        return json(200, {
+          plugin: colab,
+          authorization: null,
+          configuration: {
+            key: "GOOGLE_COLAB_AUTH_CODE",
+            label: "Authorization code",
+            helpUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=s1",
+            format: "oauth_code",
+            attemptId: "colab_att_1",
+          },
+        });
+      }
+      if (body.attempt_id === "colab_att_1") {
+        return json(200, {
+          plugin: colab,
+          authorization: null,
+          configuration: {
+            key: "GOOGLE_COLAB_AUTH_CODE",
+            label: "Authorization code",
+            helpUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=s2",
+            format: "oauth_code",
+            attemptId: "colab_att_2",
+            error: "Authorization expired. Sign in again to get a new code.",
+          },
+        });
+      }
+      installed = true;
+      return json(200, {
+        plugin: { ...colab, installed: true },
+        authorization: null,
+      });
+    });
+    t.api.on("GET", sourcesPath, () =>
+      json(200, {
+        pluginId: "google-colab",
+        sources: [
+          {
+            bindingId: "colab_acc_1",
+            connectionId: "google-colab-oauth",
+            toolkit: "google-colab",
+            kind: "oauth_code_paste",
+            state: "ready",
+            selectedAccountId: "alice@gmail.com",
+            candidates: [],
+            metadata: {
+              ccuBalance: 2400.5,
+              consumptionRateHourly: 1.96,
+              activeVmCount: 1,
+            },
+          },
+        ],
+      })
+    );
+
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
+    const notices = t.watch<{ notices: PluginNotice[] }>({ topic: "pluginNotices" });
+    await t.time.pass(100);
+
+    // Step 1: start install -> emits configure notice with operation: "install"
+    await t.client.call("plugin.install", { workspace: WS, plugin: "google-colab" });
+    await t.time.pass(100);
+    expect(notices().notices).toMatchObject([
+      {
+        kind: "configure",
+        configuration: {
+          workspace: WS,
+          plugin: { id: "google-colab" },
+          operation: "install",
+          setup: {
+            key: "GOOGLE_COLAB_AUTH_CODE",
+            format: "oauth_code",
+            attemptId: "colab_att_1",
+          },
+        },
+      },
+    ]);
+
+    // Step 2 (expired attempt) -> emits fresh PKCE configure notice with error
+    await t.client.call("plugin.install", {
+      workspace: WS,
+      plugin: "google-colab",
+      attemptId: "colab_att_1",
+      configValues: { GOOGLE_COLAB_AUTH_CODE: "expired-code" },
+    });
+    await t.time.pass(100);
+    expect(notices().notices.at(-1)).toMatchObject({
+      kind: "configure",
+      configuration: {
+        operation: "install",
+        setup: {
+          attemptId: "colab_att_2",
+          helpUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=s2",
+          error: "Authorization expired. Sign in again to get a new code.",
+        },
+      },
+    });
+
+    // Step 2 (fresh attempt) -> completes install
+    await expect(
+      t.client.call("plugin.install", {
+        workspace: WS,
+        plugin: "google-colab",
+        attemptId: "colab_att_2",
+        configValues: {
+          GOOGLE_COLAB_AUTH_CODE: "https://localhost/?code=valid-code&state=s2",
+        },
+      })
+    ).resolves.toEqual({});
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({ status: "ready", installed: ["google-colab"] });
+    expect(t.api.seen("POST", installPath).at(-1)?.body).toEqual({
+      contract: "unified_v1",
+      attempt_id: "colab_att_2",
+      config_values: {
+        GOOGLE_COLAB_AUTH_CODE: "https://localhost/?code=valid-code&state=s2",
+      },
+    });
+
+    // mode: "add_account" is forwarded in POST .../install
+    await t.client.call("plugin.install", {
+      workspace: WS,
+      plugin: "google-colab",
+      mode: "add_account",
+    });
+    await t.time.pass(100);
+    expect(t.api.seen("POST", installPath).at(-1)?.body).toEqual({
+      contract: "unified_v1",
+      mode: "add_account",
+    });
+
+    // personal_sources parses oauth_code_paste, bindingId, and metadata
+    const sources = t.watch<PluginSourcesValue>({
+      topic: "pluginSources",
+      workspace: WS,
+      plugin: "google-colab",
+    });
+    await t.time.pass(100);
+    expect(sources().sources).toEqual([
+      {
+        bindingId: "colab_acc_1",
+        connectionId: "google-colab-oauth",
+        toolkit: "google-colab",
+        kind: "oauth_code_paste",
+        state: "ready",
+        selectedAccountId: "alice@gmail.com",
+        candidates: [],
+        metadata: {
+          ccuBalance: 2400.5,
+          consumptionRateHourly: 1.96,
+          activeVmCount: 1,
+        },
+      },
+    ]);
+  });
+
+  it("runs two-step oauth_code reauthorize forwarding connection_id, binding_id, attempt_id, and config_values", async () => {
+    const t = setup();
+    const colab = plugin("google-colab", {
+      name: "Google Colab",
+      brand: "google-colab",
+      category: "Compute",
+      installed: true,
+    });
+    const reauthPath = `${catalogPath}/google-colab/reauthorize`;
+    const sourcesPath = `${catalogPath}/google-colab/personal-sources`;
+    let sourceState: "needs_reauthorization" | "ready" = "needs_reauthorization";
+    t.api.on("GET", catalogPath, () => json(200, { data: [colab] }));
+    t.api.on("GET", sourcesPath, () =>
+      json(200, {
+        pluginId: "google-colab",
+        sources: [
+          {
+            bindingId: "colab_acc_1",
+            connectionId: "google-colab-oauth",
+            toolkit: "google-colab",
+            kind: "oauth_code_paste",
+            state: sourceState,
+            selectedAccountId: "alice@gmail.com",
+            candidates: [],
+            metadata: { ccuBalance: null, activeVmCount: 0 },
+          },
+        ],
+      })
+    );
+    t.api.on("POST", reauthPath, (request) => {
+      const body = request.body as {
+        config_values?: Record<string, string>;
+        attempt_id?: string;
+      };
+      if (!body.config_values) {
+        return json(200, {
+          plugin: colab,
+          authorization: null,
+          configuration: {
+            key: "GOOGLE_COLAB_AUTH_CODE",
+            label: "Authorization code",
+            helpUrl:
+              "https://accounts.google.com/o/oauth2/v2/auth?login_hint=alice%40gmail.com",
+            format: "oauth_code",
+            attemptId: "colab_reauth_1",
+          },
+        });
+      }
+      sourceState = "ready";
+      return json(200, { plugin: colab, authorization: null });
+    });
+
+    t.core.observeSession(signedIn());
+    const sources = t.watch<PluginSourcesValue>({
+      topic: "pluginSources",
+      workspace: WS,
+      plugin: "google-colab",
+    });
+    const notices = t.watch<{ notices: PluginNotice[] }>({ topic: "pluginNotices" });
+    await t.time.pass(100);
+    expect(sources().sources?.[0]?.state).toBe("needs_reauthorization");
+
+    // Step 1: start reauthorize with connection + bindingId
+    await t.client.call("plugin.reauthorize", {
+      workspace: WS,
+      plugin: "google-colab",
+      connection: "google-colab-oauth",
+      bindingId: "colab_acc_1",
+    });
+    await t.time.pass(100);
+    expect(t.api.seen("POST", reauthPath)[0]?.body).toEqual({
+      connection_id: "google-colab-oauth",
+      binding_id: "colab_acc_1",
+    });
+    expect(notices().notices.at(-1)).toMatchObject({
+      kind: "configure",
+      configuration: {
+        workspace: WS,
+        plugin: { id: "google-colab" },
+        operation: "reauthorize",
+        connectionId: "google-colab-oauth",
+        bindingId: "colab_acc_1",
+        setup: {
+          format: "oauth_code",
+          attemptId: "colab_reauth_1",
+        },
+      },
+    });
+
+    // Step 2: submit code -> completes reauthorize and refreshes personal_sources
+    await expect(
+      t.client.call("plugin.reauthorize", {
+        workspace: WS,
+        plugin: "google-colab",
+        connection: "google-colab-oauth",
+        bindingId: "colab_acc_1",
+        attemptId: "colab_reauth_1",
+        configValues: { GOOGLE_COLAB_AUTH_CODE: "reauth-code-123" },
+      })
+    ).resolves.toEqual({});
+    await t.time.pass(100);
+    expect(t.api.seen("POST", reauthPath).at(-1)?.body).toEqual({
+      connection_id: "google-colab-oauth",
+      binding_id: "colab_acc_1",
+      attempt_id: "colab_reauth_1",
+      config_values: { GOOGLE_COLAB_AUTH_CODE: "reauth-code-123" },
+    });
+    expect(sources().sources?.[0]?.state).toBe("ready");
   });
 });
 

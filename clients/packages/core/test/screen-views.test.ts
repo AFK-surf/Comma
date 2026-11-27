@@ -20,7 +20,7 @@ import {
   type MeshReply,
 } from "@comma/mesh";
 import { describe, expect, it } from "vitest";
-import type { ScreenViewEvent } from "../src/contract.ts";
+import type { ScreenViewEvent, StationsValue } from "../src/contract.ts";
 import {
   FakeHost,
   FakeStations,
@@ -577,6 +577,81 @@ describe("a screen's view over the mesh", () => {
     stop.abort();
   });
 
+  it("moves nothing, and asks no panel picture, for a screen whose hinge does not take any angle", async () => {
+    const { client, station, until, settled } = setup();
+    const view = screens(station);
+    await settled();
+    const { events, stop, answer } = open(client, { ...params, panel: true });
+    answer.catch(() => undefined);
+    await until(() => events.length > 0, "the view opens");
+    const id = (events[0] as { view: number }).view;
+    expect(view.asked[0]).not.toContain('"panel"');
+    await client.call("devices.sendToScreenView", { view: id, posture: "tent" });
+    await settled();
+    expect(view.said.filter((frame) => frame.kind === ScreenKind.input)).toEqual([]);
+    stop.abort();
+  });
+
+  it("turns the picture straight to its way up, then sweeps a hinge that takes any angle to the posture's own", async () => {
+    const { client, station, until, settled } = setup();
+    const view = screens(station, [{ id: "display", capabilities: { hinge: true } }]);
+    await settled();
+    const { events, stop, answer } = open(client, { ...params, panel: true });
+    answer.catch(() => undefined);
+    await until(() => events.length > 0, "the view opens");
+    const id = (events[0] as { view: number }).view;
+    const inputs = () =>
+      view.said
+        .filter((frame) => frame.kind === ScreenKind.input)
+        .map((frame) => JSON.parse(new TextDecoder().decode(frame.payload)) as unknown);
+    // Drawn turned in 3D (the page asks so), it takes its panel's own picture, its UI turning on it live as on the device.
+    expect(view.asked[0]).toContain('"panel":true');
+    view.push(
+      encodeScreenJson(ScreenKind.state, { orientation: 0, pose: "open", hinge: 180 })
+    );
+    await until(
+      () => events.some((event) => event.type === "state"),
+      "the page hears how it stands"
+    );
+
+    // A tent: the cover's picture turned to landscape (its top to the hinge) first, as the simulator takes no turn told
+    // while it changes panels, then its hinge to 60, swept as the clients move; neither waits for the station.
+    void client.call("devices.sendToScreenView", { view: id, posture: "tent" });
+    await until(() => inputs().length === 2, "the hinge and the turn go together");
+    expect(inputs()).toEqual([
+      { t: "orient", degrees: 90, screen: "cover", hinge: 60 },
+      { t: "hinge", degrees: 60, ms: 600 },
+    ]);
+    // The states on the way (the panel still open, then the cover not yet turned) send nothing more.
+    view.push(
+      encodeScreenJson(ScreenKind.state, { orientation: 0, pose: "open", hinge: 60 })
+    );
+    view.push(
+      encodeScreenJson(ScreenKind.state, { orientation: 0, pose: "closed", hinge: 60 })
+    );
+    view.push(
+      encodeScreenJson(ScreenKind.state, { orientation: 90, pose: "closed", hinge: 60 })
+    );
+    await until(
+      () =>
+        events.some(
+          (event) => event.type === "state" && event.state.orientation === 90
+        ),
+      "the page hears the tent stands landscape"
+    );
+    expect(inputs()).toHaveLength(2);
+    void client.call("devices.sendToScreenView", {
+      view: id,
+      posture: "innerPortrait",
+    });
+    await until(() => inputs().length === 4, "the next posture's hinge and turn");
+    expect(inputs().slice(2)).toEqual([
+      { t: "orient", degrees: 0, screen: "inner", hinge: 180 },
+      { t: "hinge", degrees: 180, ms: 600 },
+    ]);
+    stop.abort();
+  });
+
   it("says when the station ended the view, and why", async () => {
     const { client, station, until, settled } = setup();
     const view = screens(station);
@@ -679,6 +754,101 @@ describe("a screen's view over the mesh", () => {
     const ended = () => failed !== undefined;
     for (let s = 0; s < 8 && !ended(); s++) await host.time!.pass(1_000);
     expect(failed).toBeDefined();
+  });
+
+  it("keeps the station of an open view linked though no list names it (the sandbox of a Task of theirs), and lets it go as the view closes", async () => {
+    const sandbox = "cd".repeat(32);
+    const { client, stations, host, until, settled } = setup({ station: sandbox });
+    // No station is listed, and no computer is the person's own (the Devices list, read again every 30 s): the
+    // sandbox alone is why this device keeps a socket through Salix.
+    stations.salix = true;
+    host.api
+      .on("GET", listPath, { stations: [] })
+      .on("GET", `/v1/comma/workspaces/${WS}/devices`, { devices: [] })
+      .on("POST", `/v1/comma/workspaces/${WS}/station-relay`, {
+        ticket: "ticket.secret",
+        url: "wss://api.example.test/v1/comma/station-relay",
+      });
+    const view = screens(stations.station(sandbox, WS));
+    let shown: StationsValue | undefined;
+    client.subscribe(
+      { topic: "stations", workspace: WS },
+      (value) => (shown = value as StationsValue),
+      nothing
+    );
+    const carried = () => stations.relaySockets.filter((socket) => socket.open).length;
+    await settled();
+    expect(carried()).toBe(0);
+    const { events, stop, answer } = open(client, { ...params, control: false });
+    answer.catch(nothing);
+    await until(() => events.length > 0, "the view opens");
+    for (let s = 0; s < 70; s++) {
+      view.push(encodeScreenJson(ScreenKind.state, { alive: true }));
+      await host.time!.pass(1_000);
+    }
+    // Held still, through the reads of the lists, and none of the person's own computers.
+    expect(carried()).toBe(1);
+    expect(shown?.ownComputers ?? []).toEqual([]);
+
+    // The view closed: the station is let go at once.
+    stop.abort();
+    await settled();
+    expect(carried()).toBe(0);
+  });
+
+  it("asks a Task's sandbox for its screen as a view of it opens and each minute while it is open, and no more once it closed", async () => {
+    const sandbox = "cd".repeat(32);
+    const { client, stations, host, until, settled } = setup({ station: sandbox });
+    const path = `/v1/comma/workspaces/${WS}/coding/sessions/cnv_1/screen`;
+    host.api.on("POST", path, { device_id: DEVICE });
+    const asks = () => host.api.seen("POST", path).length;
+    const view = screens(stations.station(sandbox, WS));
+    await settled();
+
+    // A view opened by the page alone, with no press before it (a page from before): it asks for itself.
+    const { events, stop, answer } = open(client, {
+      ...params,
+      control: false,
+      task: "cnv_1",
+    });
+    answer.catch(nothing);
+    await until(() => events.length > 0, "the view opens");
+    expect(asks()).toBe(1);
+    for (let s = 0; s < 150; s++) {
+      view.push(encodeScreenJson(ScreenKind.state, { alive: true }));
+      await host.time!.pass(1_000);
+    }
+    expect(asks()).toBe(3);
+
+    stop.abort();
+    await host.time!.pass(150_000, 1_000);
+    expect(asks()).toBe(3);
+  });
+
+  it("opens no view of a Task's sandbox that the server will not show, or that would drive it", async () => {
+    const sandbox = "cd".repeat(32);
+    const { client, stations, host, settled } = setup({ station: sandbox });
+    const path = `/v1/comma/workspaces/${WS}/coding/sessions/cnv_1/screen`;
+    const view = screens(stations.station(sandbox, WS));
+    await settled();
+    const sandboxView = { ...params, control: false, task: "cnv_1" };
+
+    // Another member, or the sandbox stopped: the view fails as the ask does, and the station is asked nothing.
+    host.api.on("POST", path, () => json(403, { error: { code: "forbidden" } }));
+    await expect(open(client, sandboxView).answer).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    // The Task's sandbox is another Device than the page names.
+    host.api.on("POST", path, { device_id: "dev_other" });
+    await expect(open(client, sandboxView).answer).rejects.toMatchObject({
+      code: "unsupported",
+    });
+    // A sandbox is looked at, never driven.
+    host.api.on("POST", path, { device_id: DEVICE });
+    await expect(
+      open(client, { ...sandboxView, control: true }).answer
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    expect(view.asked).toEqual([]);
   });
 
   it("keeps the connection of a view whose network only paused, and the view on it", async () => {
@@ -900,6 +1070,47 @@ describe("a screen's view over the mesh", () => {
       station.on("GET", "/screens", () => json(200, listing));
       return view;
     };
+
+    it("give postures to a foldable whose hinge takes any angle, not to one that takes only its poses", async () => {
+      const { client, station, settled } = setup();
+      const fold = {
+        ...listing.screens[1],
+        capabilities: {
+          input: "touch",
+          buttons: ["rotate"],
+          panels: [],
+          poses: ["closed", "book", "open"],
+        },
+      };
+      const duo = {
+        ...simulator,
+        capabilities: {
+          ...simulator.capabilities,
+          poses: ["closed", "open"],
+          hinge: true,
+        },
+      };
+      screens(station);
+      station.on("GET", "/screens", () =>
+        json(200, { screens: [fold, duo], codecs: ["h264"] })
+      );
+      await settled();
+      const list = (await client.call("devices.listScreens", {
+        workspace: WS,
+        device: DEVICE,
+      })) as { screens: { id: string; postures?: { id: string }[] }[] };
+      const of = (id: string) => list.screens.find((s) => s.id === id);
+      // An Android foldable folds by its poses (book among them), drawn flat.
+      expect(of(EMULATOR)?.postures).toBeUndefined();
+      expect(of(SIMULATOR)?.postures?.map((posture) => posture.id)).toEqual([
+        "coverPortrait",
+        "coverLandscape",
+        "tent",
+        "laptop",
+        "innerLandscape",
+        "innerPortrait",
+      ]);
+    });
 
     it("are listed with what could start, a computer's own screen left out", async () => {
       const { client, station, settled } = setup();

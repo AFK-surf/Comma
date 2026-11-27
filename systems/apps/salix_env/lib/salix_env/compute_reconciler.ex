@@ -855,6 +855,18 @@ defmodule SalixEnv.ComputeReconciler do
   defp settle_claim(workload, {:ok, %{outcome: :group_reconciled}}, claim_token),
     do: release_claim(workload, claim_token)
 
+  defp settle_claim(workload, {:ok, %{outcome: :pending, image_imported: true}}, claim_token) do
+    # Import completed even if container creation/readiness needs another pass.
+    case Repo.get_by(Compute.ReconcilerClaim,
+           workload_id: workload.id,
+           generation: workload.generation,
+           claim_token: claim_token
+         ) do
+      %{last_error: %{"stage" => "image_import"}} -> retry_claim(workload, %{}, claim_token)
+      _ -> retry_claim_preserving_error(workload, claim_token)
+    end
+  end
+
   defp settle_claim(workload, {:ok, %{outcome: :pending}}, claim_token),
     do: retry_claim_preserving_error(workload, claim_token)
 
@@ -912,6 +924,36 @@ defmodule SalixEnv.ComputeReconciler do
     park_action_required(workload, Map.put(error, "kind", "action_required"), claim_token)
   end
 
+  defp settle_claim(
+         workload,
+         {:error, {:gateway_error, %{"code" => code, "stage" => "image_import"} = error}},
+         claim_token
+       ) do
+    case Repo.get_by(Compute.ReconcilerClaim,
+           workload_id: workload.id,
+           generation: workload.generation,
+           claim_token: claim_token
+         ) do
+      %Compute.ReconcilerClaim{} = claim ->
+        failures = Map.get(claim.last_error || %{}, "image_import_failures", 0) + 1
+        error = Map.put(error, "image_import_failures", failures)
+
+        if code in ~w(invalid_argument not_found permission_denied data_loss) or failures >= 5 do
+          park_action_required(workload, Map.put(error, "kind", "action_required"), claim_token)
+        else
+          retry_claim(
+            workload,
+            Map.put(error, "kind", "provider_error"),
+            claim_token,
+            min(@claim_retry_ms * Integer.pow(2, failures - 1), @max_retry_ms)
+          )
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
   # A retired Runtime template is never placed again; retrying cannot help.
   defp settle_claim(workload, {:error, :runtime_template_retired}, claim_token) do
     park_action_required(
@@ -946,7 +988,7 @@ defmodule SalixEnv.ComputeReconciler do
     retry_claim(workload, claim_error(result), claim_token)
   end
 
-  defp retry_claim(workload, error, claim_token) do
+  defp retry_claim(workload, error, claim_token, delay \\ nil) do
     now = SystemsClock.utc_now()
 
     claim =
@@ -997,7 +1039,7 @@ defmodule SalixEnv.ComputeReconciler do
         ),
         set: [
           lease_expires_at: nil,
-          next_retry_at: DateTime.add(now, retry_delay(claim), :millisecond),
+          next_retry_at: DateTime.add(now, delay || retry_delay(claim), :millisecond),
           updated_at: now
         ]
       )
@@ -1183,6 +1225,13 @@ defmodule SalixEnv.ComputeReconciler do
         )
     end
   end
+
+  defp settle_result(
+         _workload,
+         {:error, {:gateway_error, %{"code" => "import_in_progress", "stage" => "image_import"}}},
+         _claim_token
+       ),
+       do: {:ok, %{outcome: :pending}}
 
   defp settle_result(_workload, {:ok, result}, _claim_token), do: {:ok, result}
   defp settle_result(_workload, {:error, _} = error, _claim_token), do: error

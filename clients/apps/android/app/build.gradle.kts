@@ -132,6 +132,8 @@ android {
             resValue("string", "app_name", "Comma Dev")
             // A development backend has no web origin: its builds claim no shared app links.
             manifestPlaceholders["miniAppLinkHost"] = "app-dev.comma.invalid"
+            manifestPlaceholders["appUrlScheme"] = "comma-dev"
+            buildConfigField("String", "APP_URL_SCHEME", "\"comma-dev\"")
             buildConfigField("String", "BACKEND_BASE_URL", devBaseUrl.get().asBuildConfigString())
         }
         create("staging") {
@@ -139,12 +141,16 @@ android {
             applicationIdSuffix = ".staging"
             resValue("string", "app_name", "Comma Staging")
             manifestPlaceholders["miniAppLinkHost"] = "app-staging.comma.surf"
+            manifestPlaceholders["appUrlScheme"] = "comma-staging"
+            buildConfigField("String", "APP_URL_SCHEME", "\"comma-staging\"")
             buildConfigField("String", "BACKEND_BASE_URL", "\"https://salix-staging.cue.surf\"")
         }
         create("prod") {
             dimension = "environment"
             resValue("string", "app_name", "Comma")
             manifestPlaceholders["miniAppLinkHost"] = "app.comma.surf"
+            manifestPlaceholders["appUrlScheme"] = "comma"
+            buildConfigField("String", "APP_URL_SCHEME", "\"comma\"")
             buildConfigField("String", "BACKEND_BASE_URL", "\"https://salix.comma.surf\"")
         }
     }

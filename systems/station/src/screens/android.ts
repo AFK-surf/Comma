@@ -165,8 +165,11 @@ export class AndroidInput {
         return textMessages(e.text);
       case "device":
         return e.name === "volume_up" ? press(KEY_VOLUME_UP) : e.name === "volume_down" ? press(KEY_VOLUME_DOWN) : [];
-      // (a simulator's case's buttons: an Android device has no such case)
+      // (a simulator's case's buttons, and its hinge's angles: an Android device has no such case, and takes its poses)
       case "pose":
+      case "hinge":
+      case "orient":
+      case "frames":
       case "button":
         return [];
     }

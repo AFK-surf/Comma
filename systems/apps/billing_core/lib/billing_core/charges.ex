@@ -81,6 +81,7 @@ defmodule BillingCore.Charges do
           event.metered_at,
           resource_kind
         )
+        |> BillingCore.FeeControl.settle(BillingCore.FeeControl.settlement(event))
 
       {grant_credits, grant_debits, grants_after, charged_credits, grace_credits, status,
        stored_remainder} =
@@ -343,7 +344,8 @@ defmodule BillingCore.Charges do
            :group_id,
            :entrypoint,
            :actor_type,
-           :carrier
+           :carrier,
+           :settlement
          ])}
 
       [field | _] ->

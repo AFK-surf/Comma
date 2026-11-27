@@ -1,10 +1,15 @@
 // The WebSocket client as a service, so the connection to Salix can be replaced by an in-memory one in tests.
-import { Context, Effect, Layer } from "effect";
+import type { Agent } from "node:http";
+import { Context, Duration, Effect, Exit, Layer } from "effect";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import WebSocket from "ws";
+import { log } from "../ops/log.ts";
 import { readBinaryStreamFrame } from "./message.ts";
 import { AuthError, WebSocketHandshakeError } from "./status.ts";
 
 const HANDSHAKE_BODY_LIMIT = 4096;
+/** A dial through a proxy completes within this, or is given up: the direct dial has the rest of the connector's dial timeout. */
+export const PROXY_DIAL_TIMEOUT = Duration.seconds(10);
 
 /** A connected JSON WebSocket. `receive` fails once the peer closed. */
 export type JsonSocket = {
@@ -18,7 +23,13 @@ export type JsonSocket = {
   readonly close: Effect.Effect<void>;
 };
 
-export class Sockets extends Context.Service<Sockets, { dial(url: string, headers: Record<string, string>): Effect.Effect<JsonSocket, Error> }>()("station/Sockets") {}
+export class Sockets extends Context.Service<
+  Sockets,
+  {
+    /** `proxy` (an http or https URL) is tried first; when it does not reach Salix the dial is made again directly. */
+    dial(url: string, headers: Record<string, string>, proxy?: string): Effect.Effect<JsonSocket, Error>;
+  }
+>()("station/Sockets") {}
 
 const toError = (e: unknown) => (e instanceof Error ? e : new Error(String(e)));
 
@@ -84,38 +95,74 @@ export function jsonSocketOf(ws: WebSocket): JsonSocket {
   return socket;
 }
 
-/** Real sockets (the `ws` package). */
-export const liveSockets = Layer.succeed(Sockets)({
-  dial: (url, headers) =>
-    Effect.callback<JsonSocket, Error>((resume) => {
-      const ws = new WebSocket(url, { headers, maxPayload: 16 * 1024 * 1024 });
-      const opened = new Promise<void>((resolve, reject) => {
-        ws.once("open", () => resolve());
-        ws.once("error", reject);
-        // A refused credential (401, 403) is an AuthError: the app mints another on `auth_required`.
-        ws.once("unexpected-response", (_request, response) => {
-          const chunks: Buffer[] = [];
-          let size = 0;
-          const settle = () => {
-            const body = Buffer.concat(chunks).toString("utf8");
-            const status = response.statusCode ?? 0;
-            reject(status === 401 || status === 403 ? new AuthError(status, body) : new WebSocketHandshakeError(status, body));
-            ws.terminate();
-          };
-          response.on("data", (chunk: Buffer) => {
-            if (size < HANDSHAKE_BODY_LIMIT) chunks.push(chunk.subarray(0, HANDSHAKE_BODY_LIMIT - size));
-            size += chunk.length;
-          });
-          response.once("end", settle);
-          response.once("error", settle);
+/** One WebSocket to `url`: direct, or through `agent`. */
+const open = (url: string, headers: Record<string, string>, agent?: Agent) =>
+  Effect.callback<JsonSocket, Error>((resume) => {
+    const ws = new WebSocket(url, { headers, maxPayload: 16 * 1024 * 1024, ...(agent ? { agent } : {}) });
+    const opened = new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+      // A refused credential (401, 403) is an AuthError: the app mints another on `auth_required`.
+      ws.once("unexpected-response", (_request, response) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        const settle = () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          const status = response.statusCode ?? 0;
+          reject(status === 401 || status === 403 ? new AuthError(status, body) : new WebSocketHandshakeError(status, body));
+          ws.terminate();
+        };
+        response.on("data", (chunk: Buffer) => {
+          if (size < HANDSHAKE_BODY_LIMIT) chunks.push(chunk.subarray(0, HANDSHAKE_BODY_LIMIT - size));
+          size += chunk.length;
         });
+        response.once("end", settle);
+        response.once("error", settle);
       });
-      const socket = jsonSocketOf(ws);
-      opened.then(
-        () => resume(Effect.succeed(socket)),
-        (error) => resume(Effect.fail(toError(error))),
-      );
-      // A dial given up before it completed (the connector's dial timeout) closes its connection, half-open or not.
-      return Effect.sync(() => ws.terminate());
-    }),
-});
+    });
+    const socket = jsonSocketOf(ws);
+    opened.then(
+      () => resume(Effect.succeed(socket)),
+      (error) => resume(Effect.fail(toError(error))),
+    );
+    // A dial given up before it completed (the connector's dial timeout) closes its connection, half-open or not.
+    return Effect.sync(() => ws.terminate());
+  });
+
+/**
+ * Through the proxy first. Salix's own answer through the tunnel stands (a refused credential, a refused upgrade).
+ * Anything else is the proxy's failure (it is not there, it refused the tunnel, nothing came through it in time), and
+ * the dial is made again directly, as it is without a proxy: a proxy that went away never keeps the station offline.
+ */
+const openThrough = (proxy: string, url: string, headers: Record<string, string>, within: Duration.Duration) =>
+  Effect.suspend(() => {
+    // An attempt that is given up also closes its connection to the proxy. While the proxy has not answered CONNECT the
+    // request has no socket yet, so neither a request timeout nor closing the WebSocket reaches that connection.
+    const givenUp = new AbortController();
+    const agent = new HttpsProxyAgent(proxy, { signal: givenUp.signal });
+    // The proxy's answer to CONNECT: only after its 200 does a response come from Salix. A refusal of its own (a 403,
+    // a 407) comes back as the request's response, and is not Salix refusing the credential.
+    let tunneled = false;
+    agent.on("proxyConnect", (response: { statusCode?: number }) => void (tunneled = response.statusCode === 200));
+    return open(url, headers, agent).pipe(
+      Effect.timeoutOrElse({
+        duration: within,
+        orElse: () => Effect.fail(new Error(`nothing came through the proxy in ${Duration.toSeconds(within)} seconds`)),
+      }),
+      Effect.onExit((exit) => Effect.sync(() => void (Exit.isSuccess(exit) || givenUp.abort()))),
+      Effect.tap(() => Effect.sync(() => log.info("connector", "dialed Salix through the proxy", { proxy: agent.proxy.host }))),
+      Effect.catch((error: Error) => {
+        if (tunneled && (error instanceof AuthError || error instanceof WebSocketHandshakeError)) return Effect.fail(error);
+        log.warn("connector", "the proxy did not reach Salix; dialing directly", { proxy: agent.proxy.host, error: error.message });
+        return open(url, headers);
+      }),
+    );
+  });
+
+/** Real sockets (the `ws` package); `proxyDialTimeout` is a test's shorter wait for a proxy. */
+export const makeLiveSockets = (options: { proxyDialTimeout?: Duration.Duration } = {}) =>
+  Layer.succeed(Sockets)({
+    dial: (url, headers, proxy) => (proxy ? openThrough(proxy, url, headers, options.proxyDialTimeout ?? PROXY_DIAL_TIMEOUT) : open(url, headers)),
+  });
+
+export const liveSockets = makeLiveSockets();

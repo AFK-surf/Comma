@@ -234,9 +234,16 @@ export const SkillFileBrowser = ({
 
 const sourceLanguageByExtension: Record<string, string> = {
   bash: "bash",
+  cc: "cpp",
+  cjs: "javascript",
   css: "css",
+  cts: "typescript",
+  h: "c",
+  hpp: "cpp",
   html: "html",
   js: "javascript",
+  mjs: "javascript",
+  mts: "typescript",
   json: "json",
   jsx: "jsx",
   markdown: "markdown",
@@ -250,10 +257,29 @@ const sourceLanguageByExtension: Record<string, string> = {
   yml: "yaml",
 };
 
+// Shiki stalls on a minified or very large file and would mount a span per
+// token; such a file shows as plain numbered lines.
+const maxHighlightChars = 128 * 1024;
+const maxHighlightLineLength = 2000;
+
+const shouldHighlightSource = (text: string): boolean => {
+  if (text.length > maxHighlightChars) return false;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const lineEnd = text.indexOf("\n", lineStart);
+    const end = lineEnd === -1 ? text.length : lineEnd;
+    if (end - lineStart > maxHighlightLineLength) return false;
+    if (lineEnd === -1) break;
+    lineStart = lineEnd + 1;
+  }
+  return true;
+};
+
 /**
  * A text file as numbered source lines; long lines wrap under their number.
  * Colors come from the chat code block's Shiki worker; until they arrive, and
- * for unknown file types, the lines read as plain text.
+ * for unknown file types, the lines read as plain text. An ending not listed
+ * above is offered to Shiki as the language name (`py`, `rs`, `go`, `swift`).
  */
 export const SkillFileSource = ({
   isDark = false,
@@ -264,36 +290,47 @@ export const SkillFileSource = ({
   path: string;
   text: string;
 }) => {
-  const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  const language = sourceLanguageByExtension[extension] ?? "plaintext";
+  // A name with no ending (Makefile, Dockerfile) is offered whole.
+  const baseName = path.split("/").at(-1)?.toLowerCase() ?? "";
+  const dotIndex = baseName.lastIndexOf(".");
+  const extension =
+    dotIndex > 0 && dotIndex < baseName.length - 1
+      ? baseName.slice(dotIndex + 1)
+      : baseName;
+  const language =
+    (Object.hasOwn(sourceLanguageByExtension, extension)
+      ? sourceLanguageByExtension[extension]
+      : undefined) ??
+    (extension || "plaintext");
   const theme = isDark ? "vitesse-dark" : "vitesse-light";
   const [highlight, setHighlight] = useState<{
-    key: string;
+    language: string;
+    theme: string;
+    text: string;
     result: ShikiHighlightResult;
   }>();
-  const highlightKey = JSON.stringify([language, theme, text]);
 
   useEffect(() => {
+    if (!shouldHighlightSource(text)) return;
     let active = true;
     void renderCodeHighlightInWorker(text, language, theme)
       .then((result) => {
-        if (active) setHighlight({ key: highlightKey, result });
+        if (active) setHighlight({ language, theme, text, result });
       })
       // A failed highlight leaves the readable plain lines in place.
       .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [highlightKey, language, text, theme]);
+  }, [language, text, theme]);
 
-  const lines = useMemo(
-    () =>
-      highlightedCodeLines(
-        text,
-        highlight?.key === highlightKey ? highlight.result : undefined
-      ),
-    [highlight, highlightKey, text]
-  );
+  const current =
+    highlight?.language === language &&
+    highlight.theme === theme &&
+    highlight.text === text
+      ? highlight.result
+      : undefined;
+  const lines = useMemo(() => highlightedCodeLines(text, current), [current, text]);
 
   return (
     <ol
@@ -304,10 +341,13 @@ export const SkillFileSource = ({
         // Source lines have no identity beyond their position.
         // eslint-disable-next-line react/no-array-index-key
         <li className="col-span-2 grid grid-cols-subgrid" key={index}>
-          <span aria-hidden="true" className="select-none text-right text-quaternary">
-            {index + 1}
-          </span>
-          <span className="whitespace-pre-wrap break-all">
+          {/* The number is drawn, not text, so a selection or quote never holds it. */}
+          <span
+            aria-hidden="true"
+            className="select-none text-right tabular-nums text-quaternary before:content-[attr(data-line)]"
+            data-line={index + 1}
+          />
+          <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             {tokens.length > 0
               ? tokens.map((token) => (
                   <span key={token.offset} style={codeTokenStyle(token)}>

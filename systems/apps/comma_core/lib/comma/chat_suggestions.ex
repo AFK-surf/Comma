@@ -338,15 +338,58 @@ defmodule Comma.ChatSuggestions do
   """
   @spec recent_exchange([map()]) :: String.t()
   def recent_exchange(messages) when is_list(messages) do
-    messages
-    |> tail_from_user_round()
-    |> Enum.map(&transcript_line/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join("\n")
-    |> clip_end(@max_source_chars)
+    if tail_is_proactive_side_message?(messages) do
+      ""
+    else
+      messages
+      |> Enum.reject(&proactive_side_message?/1)
+      |> tail_from_user_round()
+      |> Enum.map(&transcript_line/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+      |> clip_end(@max_source_chars)
+    end
   end
 
   def recent_exchange(_messages), do: ""
+
+  @doc false
+  @spec sufficient_context?([map()]) :: boolean()
+  def sufficient_context?(messages) when is_list(messages) do
+    filtered = Enum.reject(messages, &proactive_side_message?/1)
+
+    Enum.count(filtered, &(message_role(&1) == "user")) >= @user_rounds or
+      filtered
+      |> Enum.map(&transcript_line/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+      |> String.length() >= @max_source_chars
+  end
+
+  def sufficient_context?(_messages), do: false
+
+  # Server-injected proactive notifications (e.g. still.fail cards, automated
+  # mail/routine alerts) and their mirrored answers are side-channel notices,
+  # not turns in the user's live conversation with the Router. When they sit at
+  # the tail of Home, generating follow-ups from older user turns produces stale
+  # cross-topic chips and placeholders.
+  defp tail_is_proactive_side_message?(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find(fn msg ->
+      is_map(msg) and (proactive_side_message?(msg) or message_text(msg) != "")
+    end)
+    |> proactive_side_message?()
+  end
+
+  defp proactive_side_message?(%{"metadata" => %{} = meta}) do
+    meta["proactive_automatic"] == true or
+      is_map(meta["station_task_question"]) or
+      is_map(meta["synced_to_stillfail"]) or
+      is_binary(meta["mail_source"])
+  end
+
+  defp proactive_side_message?(_message), do: false
 
   defp tail_from_user_round(messages) do
     index =

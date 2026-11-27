@@ -43,6 +43,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="${miniAppLinkHost}" android:pathPrefix="/a/" />
             </intent-filter>
+            <!-- Task deep links (`<scheme>://task?...`) of this build's environment. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${appUrlScheme}" android:host="task" />
+            </intent-filter>
         </activity>
         <!-- The restricted Mini App container. It keeps its WebView across rotation and theme changes. -->
         <activity android:name=".miniapps.MiniAppActivity" android:exported="false"

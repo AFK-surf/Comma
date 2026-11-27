@@ -22,8 +22,13 @@ type Send = (to: string, data: Buffer) => void;
 
 export class SalixRelayHub implements StationRelay {
   readonly endpointId: string;
-  /// Whom this station admits on the mesh for each connection whose Salix said so (a desktop's, device-mesh.ts).
-  readonly admissions = new DeviceMeshAdmissions();
+  /// This station is a Task's sandbox that can show its display to the Task's owner (SALIX_CONNECTOR_TASK_SCREEN, which
+  /// the coding sandbox image sets): said once, here, for the connection that hears Salix and for what the mesh
+  /// serves. Nothing runs for it until Salix says whom to show.
+  readonly taskScreen: boolean;
+  /// Whom this station admits on the mesh for each connection whose Salix said so (a desktop's, a Task's sandbox's:
+  /// device-mesh.ts).
+  readonly admissions: DeviceMeshAdmissions;
   readonly #sign: (message: Buffer) => Buffer;
   #endpoint: Endpoint | null = null;
   /// The connections carrying packets, each by the key it attached with.
@@ -31,9 +36,11 @@ export class SalixRelayHub implements StationRelay {
   /// The connection each peer was last heard on.
   readonly #heard = new Map<string, object>();
 
-  constructor(endpointId: string, sign: (message: Buffer) => Buffer) {
+  constructor(endpointId: string, sign: (message: Buffer) => Buffer, options: { taskScreen?: boolean } = {}) {
     this.endpointId = endpointId;
     this.#sign = sign;
+    this.taskScreen = options.taskScreen === true;
+    this.admissions = new DeviceMeshAdmissions({ looks: this.taskScreen });
   }
 
   sign(message: Buffer): Buffer {
@@ -96,7 +103,7 @@ export class SalixRelay extends Context.Service<SalixRelay, SalixRelayHub>()("co
     SalixRelay,
     Effect.gen(function* () {
       const key = yield* Key;
-      return new SalixRelayHub(key.id, (message) => edSign(null, message, key.private));
+      return new SalixRelayHub(key.id, (message) => edSign(null, message, key.private), { taskScreen: process.env.SALIX_CONNECTOR_TASK_SCREEN === "1" });
     }),
   );
 }

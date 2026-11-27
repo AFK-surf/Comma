@@ -1,5 +1,5 @@
 // Sign-ins a browser finishes by coming back to this computer (the desktop app's loopback listener, `DesktopPorts`):
-// a Codex or Claude subscription's OAuth (`models.signIn.loopback`), and TokenDance's key (`models.tokenDance.connect`),
+// a Codex, Claude or Gemini subscription's OAuth (`models.signIn.loopback`), and TokenDance's key (`models.tokenDance.connect`),
 // saved as one profile serving every chat model TokenDance lists. Each call opens the listener, starts the sign-in,
 // opens the system browser and waits for the browser to come back with the state it was sent; it shows that browser
 // a page (received, denied, or invalid for any other state) and brings the app to the front. Cancelled with the call,
@@ -34,7 +34,14 @@ const subscriptionCallbacks = {
     origin: "https://auth.openai.com",
   },
   claude: { port: 54545, path: "/callback", origin: "https://claude.ai" },
+  gemini: {
+    port: 51121,
+    path: "/oauth-callback",
+    origin: "https://accounts.google.com",
+  },
 } as const;
+
+type SubscriptionProvider = keyof typeof subscriptionCallbacks;
 
 const keySchema = lazySchema(() => z.object({ key: z.string().min(1).max(8192) }));
 /** The models TokenDance's gateway lists, with the protocols each speaks. */
@@ -93,8 +100,8 @@ export class LoopbackSignIns {
         run: (p) => {
           const workspace = text(p, "workspace");
           const provider = text(p, "provider");
-          if (provider !== "codex" && provider !== "claude")
-            throw CoreError.invalid("provider is codex or claude");
+          if (provider !== "codex" && provider !== "claude" && provider !== "gemini")
+            throw CoreError.invalid("provider is codex, claude or gemini");
           const account = optional(p, "account");
           const version = optional(p, "version");
           return this.#subscription(
@@ -260,7 +267,7 @@ export class LoopbackSignIns {
 
   #subscription(
     workspace: string,
-    provider: "codex" | "claude",
+    provider: SubscriptionProvider,
     renew: { account_id: string; version: string } | undefined
   ): Effect.Effect<ModelProfile, CoreError> {
     const ctx = this.#ctx;

@@ -6,6 +6,7 @@ import {
 import {
   modelMentionMatches,
   requestMentionMatches,
+  shareMentionMatches,
   slackMentionLabel,
   slackMentionMatches,
   taskMentionMatches,
@@ -98,6 +99,21 @@ export function projectMentionTokens(
         label: mention.name,
         plainText: mention.text,
         data: { kind: "request", grantId: mention.grantId },
+      }),
+    });
+  for (const mention of shareMentionMatches(text))
+    found.push({
+      start: mention.start,
+      end: mention.end,
+      token: (index) => ({
+        type: "token",
+        instanceId: `projected-${index}-${mention.userId}`,
+        menuId: MENTION_MENU_ID,
+        itemId: `share:${mention.userId}`,
+        trigger: "@",
+        label: mention.name,
+        plainText: mention.text,
+        data: { kind: "share", userId: mention.userId },
       }),
     });
   for (const mention of slackMentionMatches(text)) {

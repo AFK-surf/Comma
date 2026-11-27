@@ -6,6 +6,7 @@ import type {
   ChatLeasedAttachInput,
   ChatLeasedAttachConversationFilesInput,
   ChatLeasedAttachLocalFilesInput,
+  ChatLeasedAttachLocalPathsInput,
   ChatLeasedAttachmentIdInput,
   ChatLeasedBeginSendIntentInput,
   ChatLeasedClientRequestInput,
@@ -112,6 +113,7 @@ export interface ChatProvider {
   ): ChatCommandReceipt;
   attach(input: ChatLeasedAttachInput): ChatCommandReceipt;
   attachLocalFiles(input: ChatLeasedAttachLocalFilesInput): ChatCommandReceipt;
+  attachLocalPaths(input: ChatLeasedAttachLocalPathsInput): ChatCommandReceipt;
   attachConversationFiles(
     input: ChatLeasedAttachConversationFilesInput
   ): ChatCommandReceipt;

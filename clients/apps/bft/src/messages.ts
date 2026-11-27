@@ -4,7 +4,7 @@
  * server-rendered pages and writes it to `<meta name="bft-locale">`.
  */
 const en = {
-  productName: "Bridge for Teams",
+  productName: "Comma for Teams",
   nav: {
     label: "Organization navigation",
     overview: "Overview",
@@ -18,6 +18,7 @@ const en = {
     triageOverview: "Overview",
     triageTimeline: "Timeline",
     triageKnowledge: "Knowledge",
+    larkTriage: "Feishu / Lark triage",
     dataPolicy: "Data policy",
     health: "Health",
     runners: "Runners",
@@ -34,12 +35,13 @@ const en = {
     projectDevices: "Devices",
     projectPlugins: "Plugins",
     projectSkills: "Skills",
-    projectStillfail: "still.fail",
+    projectStillfail: "Monoid",
     projectConnections: "Connections",
     projectSettings: "Settings",
   },
   topBar: {
     orgSwitcher: "Switch organization",
+    createOrg: "+ Create new organization",
     restartOnboarding: "Restart setup",
     signOut: "Sign out",
     searchPlaceholder: "Search pages and settings",
@@ -81,7 +83,7 @@ const en = {
     runnersManage: "Manage runners",
     quickActionsTitle: "Quick actions",
     quickInvite: "Invite members",
-    quickConnectSlack: "Connect Slack",
+    quickConnectChat: "Connect a chat app",
     quickAddRunner: "Add a runner",
     quickAuditLog: "Audit log",
     onboardingTitle: "Quick setup",
@@ -274,6 +276,8 @@ const en = {
     roleLabel: "Role",
     inviteConfirm: "Invite",
     emailRequired: "Enter an email address.",
+    seatLimitAction: "Manage seats in Settings",
+    subscriptionRequiredAction: "Renew subscription in Settings",
   },
   runners: {
     title: "Runners",
@@ -382,6 +386,57 @@ const en = {
       title: "General",
       description: (orgName: string) => `Profile and CLI access for ${orgName}.`,
       orgTitle: "Organization",
+      billingTitle: "Teams subscription",
+      billingDescription:
+        "$80 per seat per month, billed quarterly. Model subscriptions and API usage are paid separately.",
+      billingSeats: (seats: number) => `${seats} licensed seats`,
+      billingMemberCount: (count: number) =>
+        `${count} ${count === 1 ? "member" : "members"}`,
+      billingExpiry: "Paid through",
+      billingExpiredOn: "Paid term ended",
+      billingExpired:
+        "Your paid term has ended. Renew the subscription to start new work.",
+      billingExpiringSoon:
+        "Your paid term is ending soon. If you renew now, the new term will start when this one ends.",
+      billingEarlyRenewal: "The new term will start when your current term ends.",
+      billingStripeSeatNote:
+        "To add seats during the current quarter, contact sales or create a separate organization (creating a new organization does not add seats to this one).",
+      billingUnmanagedNote:
+        "This organization is managed by an enterprise contract or invite code rather than self-serve billing.",
+      contactSales: "Contact sales",
+      billingUnavailable: "Subscription status is unavailable. Try again later.",
+      manageBilling: "Manage billing",
+      renewBilling: "Renew subscription",
+      renewSeats: "Seats to purchase",
+      renewStripeSeatError: (min: number) => `Enter at least ${min} seats.`,
+      renewLocalSeatError: (min: number, max: number) =>
+        `Enter between ${min} and ${max} seats.`,
+      renewQuoteExpired:
+        "This payment session has expired. Re-open this page to start payment again.",
+      renewProvider: "Payment channel",
+      renewStripe: "Stripe",
+      renewLocal: "Local payment",
+      renewShowLocal: "Pay with a local method in Latin America",
+      renewCountry: "Billing country",
+      renewChooseCountry: "Select a country",
+      renewNoCountry: "Local payment is unavailable for this seat count.",
+      renewPaymentMethod: "Payment method",
+      renewPaymentMethods: {
+        PIX: "Pix",
+        NET_BANKING: "Online banking",
+        TD: "Debit card",
+        TC: "Credit card",
+        CASH: "Cash",
+      },
+      renewFirstName: "First name",
+      renewLastName: "Last name",
+      renewEmail: "Email",
+      renewPhone: "Phone",
+      renewEcuadorPhone: "6–9 local digits, without +593 or a leading zero.",
+      renewIdType: "Document type",
+      renewIdNumber: "Document number",
+      renewCpf: "CPF number",
+      renewEstimate: (amount: string) => `Estimated quarterly total: ${amount}`,
       name: "Organization name",
       slug: "Slug",
       slugHint: "Used in URLs. Changing it changes your links.",
@@ -471,8 +526,15 @@ const en = {
         task: "Tasks of an Agent Swarm without its own default Task model run this model.",
         router: "New Routers run this model.",
       },
+      defaultUnserved: {
+        task: "No enabled account serves this model, so a Task that names no model cannot run. Choose another model, or enable an account that serves it above.",
+        router:
+          "No enabled account serves this model, so a new Router cannot run. Choose another model, or enable an account that serves it above.",
+      },
       platformDefault: (label: string | undefined) =>
         label ? `Platform default (${label})` : "Platform default",
+      platformRouter: (label: string) =>
+        `${label} · provided by the platform; set per Router in each Agent Swarm`,
       accounts: {
         title: "Organization accounts",
         description:
@@ -875,6 +937,44 @@ const en = {
     slugLabel: "Slug",
     slugHint: "A short URL-friendly identifier, unique within the organization.",
     createConfirm: "Create Agent Swarm",
+    columnSearch: "Cross-Swarm search",
+    departmentLabel: "Department",
+    unassigned: "Unassigned",
+    newDepartment: "New department",
+    editDepartment: "Edit",
+    editDepartmentFor: (name: string) => `Edit department ${name}`,
+    departmentCreateTitle: "New department",
+    departmentEditTitle: (name: string) => `Edit ${name}`,
+    departmentDialogBody:
+      "Group Agent Swarms by department and choose which conversations they can search.",
+    departmentNameLabel: "Department name",
+    departmentNamePlaceholder: "e.g. Engineering",
+    departmentNameRequired: "Enter a department name.",
+    departmentCreateConfirm: "Create department",
+    departmentSaveConfirm: "Save",
+    departmentDelete: "Delete department",
+    departmentDeleteTitle: "Delete department",
+    departmentDeleteBody: (name: string) =>
+      `Delete ${name}? Its Agent Swarms will move to Unassigned and lose this department's search permissions.`,
+    allDepartmentsLabel: "All departments",
+    allDepartmentsHint:
+      "Automatically includes all existing and future departments (excludes Unassigned)",
+    includedByAllDepartments: "Auto-included",
+    selfDepartmentLabel: "This department",
+    selfDepartmentHint: "Agent Swarms in this department can search each other",
+    ifcTargetHint: "IFC is on: only an Agent Swarm with IFC on can search it",
+    searchScopeLabel: "Searchable conversations",
+    searchFilterHint: "Filter departments or Agent Swarms",
+    searchNoMatches: "No matching department or Agent Swarm.",
+    searchNoTargets:
+      "Create another department or Agent Swarm first to grant cross-Swarm search.",
+    selectDepartmentAll: (name: string) => `Select all of ${name}`,
+    expandGroup: (name: string) => `Show Agent Swarms in ${name}`,
+    collapseGroup: (name: string) => `Hide Agent Swarms in ${name}`,
+    wholeDepartment: "Entire department",
+    selectedCount: (selected: number, total: number) => `${selected} / ${total}`,
+    extraPrefix: (summary: string) => `+ ${summary}`,
+    targetListSeparator: ", ",
   },
   swarmAgents: {
     title: "Agents",
@@ -892,6 +992,7 @@ const en = {
     detailStatus: "Status",
     detailModel: "Model",
     modelDefault: "Follows the default",
+    modelPlatformProvided: (model: string) => `${model} · provided by the platform`,
     detailCreated: "Created",
     detailRuntimeId: "Agent runtime id",
     detailPrompt: "System prompt",
@@ -923,6 +1024,8 @@ const en = {
     modelLabel: "Model",
     noModels:
       "No models are available. An org admin can enable models in organization settings.",
+    platformSwitchNote:
+      "Switching is one-way: after saving, this Router uses only your organization's own accounts, and only the platform administrator can put it back.",
     promptLabel: "System prompt",
     promptOwnerOnly: "Only organization owners can change the system prompt.",
     saveConfig: "Save configuration",
@@ -1265,10 +1368,25 @@ const en = {
     status: "Status",
     orgRuntimeId: "Organization runtime id",
     swarmRuntimeId: "Agent Swarm runtime id",
+    crossSearchTitle: "Department & Cross-Swarm search",
+    crossSearchNote:
+      "Assign a department to inherit its search scope, or grant extra departments and Agent Swarms this Agent Swarm can search. Only this Agent Swarm's supervisors, set on the Data policy page, can have the assistant search. 1:1 direct messages and sealed scopes are always excluded.",
+    departmentLabel: "Department",
+    unassigned: "Unassigned",
+    inheritedNone:
+      "Unassigned Agent Swarms do not inherit department search permissions.",
+    inheritedEmpty: (dept: string) =>
+      `${dept} has no department-level search permissions.`,
+    inheritedSummary: (dept: string, targets: string) =>
+      `Inherited from ${dept}: ${targets}`,
+    inheritedBadge: "Inherited from department",
+    extraSearchLabel: "Additional searchable scope",
     taskModelTitle: "Default Task model",
     taskModelNote: "Tasks run this model unless the Router names another.",
     taskModelLabel: "Model",
     taskModelUnavailable: "Couldn't read the default Task model. Retry shortly.",
+    taskModelUnserved:
+      "No enabled account serves this model, so a Task that names no model cannot run. Choose another model here, or enable an account that serves it in Settings > AI models.",
     taskPlaceTitle: "Default place to run Tasks",
     taskPlaceNote:
       "Tasks run here unless the Router names another place. A Task with a model only Salix runs stays in Salix.",
@@ -1366,21 +1484,22 @@ const en = {
     oauthFailed: "We couldn't connect that account. Please try again.",
     composioDisconnect:
       "Disconnect this account from the Composio connection list on Connections.",
+    signInPerPerson: "Each person signs in from the chat the first time they use it.",
   },
   swarmStillfail: {
-    title: "still.fail",
+    title: "Monoid",
     description: (swarm: string) =>
-      `Connect still.fail stations to ${swarm}: their agents take its Tasks, and their usage shows here.`,
+      `Connect Monoid stations to ${swarm}, one for each Monoid workspace: its agents take this swarm's Tasks, and its usage shows here.`,
     stations: "Stations",
     noStations:
-      "No still.fail station yet. Add one, then in still.fail add a connect, choose Comma and paste the line.",
-    noStationsMember: "An admin of this Agent Swarm can connect still.fail stations.",
+      "No Monoid station yet. Add one, then in Monoid add a connect, choose Comma and paste the line.",
+    noStationsMember: "An admin of this Agent Swarm can connect Monoid stations.",
     addStation: "Add a station",
     working: "Working",
     remove: "Remove all",
-    line: "Line for still.fail",
+    line: "Line for Monoid",
     lineHint:
-      "In still.fail, add a connect, choose Comma and paste this line. It is shown only now.",
+      "In Monoid, add a connect, choose Comma and paste this line. It is shown only now.",
     name: "Station",
     state: "Status",
     since: "Last connected",
@@ -1388,12 +1507,34 @@ const en = {
     offline: "Not connected",
     never: "Never",
     usage: (days: number) => `Usage by person, last ${days} days`,
-    noUsage: "No usage from still.fail yet.",
+    noUsage: "No usage from Monoid yet.",
     person: "Person",
     calls: "Calls",
     tokens: "Tokens",
     cost: "Cost",
     unknownPerson: "Unknown",
+    actions: "Actions",
+    disconnect: "Disconnect",
+    disconnectFor: (station: string) => `Disconnect ${station}`,
+    disconnectTitle: "Disconnect this Monoid workspace?",
+    disconnectBody: (station: string) =>
+      `${station} stops taking this Agent Swarm's Tasks, and its usage and chats are removed here. The other stations stay connected.`,
+    usageOf: "Workspace",
+    allWorkspaces: "All workspaces",
+    offlineNotice:
+      "Task status sync and replies are paused for offline workspaces and resume automatically when the station reconnects.",
+    tasks: "Tasks",
+    tasksOf: "Tasks workspace",
+    noTasks: "No recent Monoid tasks need attention.",
+    task: "Task",
+    taskState: "State",
+    waitingOn: "Waiting on",
+    updated: "Updated",
+    stateAuth: "Authorization needed",
+    stateWaitingReply: "Waiting for reply",
+    stateFailed: "Failed",
+    stateDone: "Done",
+    stateRunning: "Running",
   },
   swarmSkills: {
     title: "Skills",
@@ -1515,7 +1656,7 @@ const en = {
     },
     routeNext: {
       ready:
-        "Send a real @Bridge message in the Feishu group after the Feishu console steps pass.",
+        "Send a real @Comma message in the Feishu group after the Feishu console steps pass.",
       disabled: "Enable this Feishu connect before testing the group bot.",
       missing_router:
         "The Agent Swarm router is not ready. Retry checks shortly; if this persists, contact support.",
@@ -1562,7 +1703,7 @@ const en = {
     larkAppIdValue: (id: string) => `App ID ${id}`,
     larkRequestUrl: "Request URL",
     larkRequestUrlHint:
-      "In the Lark Developer Console, enable the Bot capability for the app. On Events & Callbacks, choose to send events to the developer's server, save this request URL, and subscribe to im.message.receive_v1 and im.chat.member.bot.added_v1.",
+      "In the Lark Developer Console, enable the Bot capability for the app. On Events & Callbacks, choose to send events to the developer's server, save this request URL, and subscribe to im.message.receive_v1, im.chat.member.bot.added_v1 and im.chat.member.bot.deleted_v1.",
     larkPublishHint:
       "Create a version of the app and publish it; events and scopes take effect with the published version. For chats with people from another organization, also turn on External Sharing in the version details. Then add the bot to a group and mention it. The bot answers in a thread; to go on there without mentioning it again, grant the app the scope to read all group messages (im:message.group_msg).",
     larkScopes: "Permission scopes",
@@ -1672,6 +1813,21 @@ const en = {
     qqMenuAdd: "Add shortcut",
     qqMenuRemove: "Remove",
     qqMenuEmpty: "No shortcuts.",
+    wecomTitle: "WeCom",
+    wecomNote:
+      "Answer in WeCom (企业微信) private chats with the bot, and in groups when someone mentions it.",
+    wecomConnects: "WeCom bots",
+    wecomEmpty: "No WeCom bots connected yet.",
+    addWecom: "Add WeCom bot",
+    wecomDialogNote:
+      "In the WeCom admin console, open 工作台 → 智能机器人, create a bot in API mode with the long connection (使用长连接), and paste its Bot ID and Secret. A super admin of the organization should create the bot: WeCom then names each person by their organization account.",
+    wecomBotId: "Bot ID",
+    wecomSecret: "Secret",
+    wecomBotIdValue: (id: string) => `Bot ID ${id}`,
+    wecomOnline: "Online",
+    wecomOffline: "Offline, reconnecting",
+    wecomSetupHint:
+      "Comma holds the bot's long connection, so there is no callback address to save. WeCom keeps one connection per bot: do not use the bot anywhere else, the console's 调试 included. Set the bot's 可见范围 to the people who will use it. The bot joins only internal groups, not groups with external contacts. In a group, it hears only messages that mention it.",
     slackTitle: "Slack",
     slackNote: "Receive app mentions and send replies in Slack.",
     slackConnects: "Slack connects",
@@ -1687,6 +1843,40 @@ const en = {
     slackAutoJoin: "Join new public channels",
     slackAutoJoinHint:
       "Off: the app joins a channel only when someone invites it. Its Slack settings stay as they are.",
+    members: "Members",
+    memberScopes: { organization: "This organization", external: "External" },
+    /** The line under Members, by the word for where the people are and the scope. */
+    memberScopeHints: {
+      workspace: {
+        organization:
+          "Members of this workspace can have the agents use this swarm's computers.",
+        external:
+          "People here can chat with the agents. Only people you add below can have them use this swarm's computers.",
+      },
+      tenant: {
+        organization:
+          "Members of this tenant can have the agents use this swarm's computers.",
+        external:
+          "People here can chat with the agents. Only people you add below can have them use this swarm's computers.",
+      },
+    },
+    /** The external line of a new connection, whose people are added after it connects. */
+    memberScopeNewExternal:
+      "People there can chat with the agents. Only people you add after connecting can have them use this swarm's computers.",
+    memberGrants: "People with access",
+    memberGrantsNone: "Nobody yet.",
+    addMemberGrant: "Add person",
+    addMemberGrantNote: "This person can have the agents use this swarm's computers.",
+    grantExpiry: "Access ends after",
+    grantExpiries: {
+      none: "No expiry",
+      "1": "1 day",
+      "7": "7 days",
+      "30": "30 days",
+    } as Record<string, string>,
+    noExpiry: "No expiry",
+    expiresOn: (date: string) => `Until ${date}`,
+    removeGrant: (person: string) => `Remove ${person}`,
     slackDialogNote:
       "Create the Slack app from its manifest, then paste the new app's credentials.",
     stepCreate: "1. Create the app",
@@ -1846,9 +2036,11 @@ const en = {
     kinds: {
       mcp_api_key: "API token",
       native_mcp_oauth: "Native MCP OAuth",
+      requester_mcp_oauth: "Sign-in per person",
       managed_oauth: "Managed OAuth",
       composio: "Composio direct API",
       im_connect: "Messaging connection",
+      oauth_code_paste: "Google OAuth",
       secret: "Kept for the whole Agent Swarm",
     } as Record<string, string>,
     states: {
@@ -1875,11 +2067,23 @@ const en = {
         "This uses the organization's OAuth app and stores the connected account in Comma. Resources that explicitly depend on this connection can use it.",
       composio:
         "Composio hosts the account connection. It enables direct API tools only and is never used as an MCP credential.",
+      oauth_code_paste:
+        "Sign in with Google, then paste the authorization code or callback URL to connect this account for the Agent Swarm.",
       secret:
         "On the next page you type the key or token. It never appears in a chat, and no one sees it again. Agents use it by its name, for anyone in this Agent Swarm.",
     } as Record<string, string>,
     disconnectBody:
       "Disconnecting removes this credential from the plugin and its dependent MCP servers. You can reconnect at any time.",
+    oauthCodeDisconnectBody:
+      "Disconnecting stops active Colab GPU VMs for this Agent Swarm. If credentials expired, reconnect with the same Google account first so active VMs can be stopped.",
+    signInWithGoogle: "Sign in with Google",
+    oauthCodeStep1: "1. Open Google sign-in and approve access.",
+    oauthCodeStep2: "2. Paste the authorization code or full redirect URL below.",
+    oauthCodePlaceholder: "Paste authorization code or redirect URL",
+    oauthCodeConnect: "Connect",
+    oauthCodeReconnect: "Reconnect",
+    cuBalance: (balance: string) => `${balance} CU`,
+    activeVms: (count: number) => (count === 1 ? "1 active VM" : `${count} active VMs`),
     dependentMcps: (names: string) => `Dependent MCP servers: ${names}`,
     reconnectNote:
       "The current credential stays active until the new authorization succeeds.",
@@ -1907,6 +2111,9 @@ const en = {
     fieldsMax: "A key holds up to 8 fields.",
     saveToken: "Save token",
     tokenHelp: "Get an X token",
+    keyHelp: "Where to get it",
+    keyNote:
+      "The service checks the key before it is saved. The saved key is never displayed again.",
     tokenNote:
       "X uses the connected OAuth account first for reads and writes within its granted scopes. This App-only Bearer Token permits public reads only and is used without OAuth. X bills the developer app that issued the selected credential. The saved token is never displayed again.",
     continue: "Continue",
@@ -1976,7 +2183,7 @@ const en = {
     refresh: "Refresh",
     noSwarmsTitle: "No Agent Swarm yet",
     noSwarmsBody:
-      "Create an Agent Swarm and connect its calendar and Slack workspace to get started.",
+      "Create an Agent Swarm and connect its calendar and a Slack, Feishu or Lark bot to get started.",
     enabled: "Team preparation enabled",
     disabled: "Team preparation is not enabled",
     summary: (calendars: number, minutes: number, series: boolean) =>
@@ -1998,6 +2205,10 @@ const en = {
       "Calendar status is incomplete or awaiting synchronization. An empty list does not confirm that there are no meetings.",
     truncated:
       "More meetings exist than this page can show. This view is limited to 20 meetings.",
+    membersTruncated:
+      "This view reads up to 25 members' calendars and lists up to 20 meetings. Some meetings are not listed.",
+    membersEmptyBody:
+      "Only calendars that members own are included. If a meeting is missing, check that its member has connected their calendar.",
     untitled: "Untitled meeting",
     statuses: {
       updating: ["Updating", "Waiting for the latest settings to be applied."],
@@ -2014,7 +2225,16 @@ const en = {
       timed_out: ["Needs attention", "Preparation did not finish within its window."],
       preparing: ["Preparing", "Reading authorized public sources."],
       scheduled: ["Scheduled", "Preparation will start before the meeting."],
+      join_only: ["Join only", "Reminders are off. Only automatic joining applies."],
     } as Record<string, [string, string]>,
+    membersReady: [
+      "Ready",
+      "Preparation is ready. Each recipient gets a DM at the reminder time.",
+    ] as [string, string],
+    recipientsTo: "To ",
+    recipientsSeparator: ", ",
+    notInSlack: "Not found in Slack",
+    recipientsTitle: "Reminder recipients",
     sharedPreparation: "Shared preparation",
     loading: "Loading",
     noReport:
@@ -2060,7 +2280,6 @@ const en = {
     linkAccess:
       "Slack checks your access when you open a link. This page does not copy content or change sharing permissions.",
     openThread: "Open Slack thread",
-    botTitle: "Slack bot",
     botGroups: {
       connected: "Slack connected",
       unconnected: "Slack not connected",
@@ -2073,7 +2292,6 @@ const en = {
     } as Record<string, string>,
     botUnnamed: "Bot name unavailable",
     workspaceUnknown: "Workspace unavailable",
-    noBots: "No Slack bot connected.",
     calendarSource: "Calendar source",
     sourceSelected: "Selected calendars",
     sourceMembers: "Every member's own calendars",
@@ -2083,11 +2301,9 @@ const en = {
       count === 1
         ? "1 member Google account connected"
         : `${count} member Google accounts connected`,
-    membersPreparation: "Send each meeting's preparation to its organizer in a DM",
+    membersPreparation: "Send a DM before each meeting to the members who have it",
     membersPreparationHint:
-      "One preparation per meeting, to its organizer, or to the member whose calendar holds it when the organizer is outside this workspace.",
-    membersUpcoming: (count: number) =>
-      `Meetings come from ${count} members' calendars. They are not listed here one by one.`,
+      "Each member whose own calendar holds the meeting gets a DM. Research runs once per meeting.",
     deliveryOrganizer: "Send join notices and minutes to the organizer in a DM",
     deliveryOrganizerHint:
       "They go to the organizer. When the organizer is not in this Slack workspace, they go to the member whose calendar has the meeting, and otherwise to the team channel.",
@@ -2162,12 +2378,11 @@ const en = {
     } as Record<string, string>,
     autojoinHint:
       "Google Meet and Feishu/Lark meetings are joined; Zoom and Microsoft Teams meetings are only prepared. A Feishu/Lark meeting needs a Feishu/Lark bot in this Agent Swarm in the same organization, and its host must turn on AI Summary and allow agents to join.",
-    needMembersAction:
-      "Turn on automatic joining or the preparation message to the organizer.",
+    needMembersAction: "Turn on automatic joining or the reminder DMs.",
     larkDeliveryOrganizerHint:
       "They go to the organizer's private chat with the bot, found by email. When the organizer is not found, they go to the member whose calendar has the meeting, and otherwise to the notice chat.",
     larkMembersPreparationHint:
-      "One preparation per meeting, to the organizer's private chat with the bot, or to the member whose calendar holds it when the organizer is not found by email.",
+      "Research runs once per meeting. Each member whose Google calendar holds it gets it in their private chat with the bot, found by email. A Feishu/Lark meeting goes to its attendees in the organization.",
     larkGoogleAttendeeDmsHint:
       "Attendees are found in Feishu/Lark by their email; the reminder goes to their private chat with the bot. This needs the app permission contact:user.id:readonly.",
     providerNames: { slack: "Slack", feishu: "Feishu", lark: "Lark" } as Record<
@@ -2210,34 +2425,68 @@ const en = {
     larkAttendeeDmsHint:
       "Attendees are the meeting's people in its calendar; the reminder goes to their private chat with the bot.",
     needChat: "Select a notice chat, or turn off the shared preparation.",
-    needDelivery: "Turn on the shared preparation or the private reminders.",
+    needChatMembers:
+      "Select a notice chat, or send join notices and minutes to the organizer in a DM.",
+    needChatJoin:
+      "Select a notice chat, or turn off the shared preparation and send join notices and minutes to the organizer in a DM.",
+    needDelivery:
+      "Turn on the shared preparation, private reminders, or automatic joining.",
+    larkHistoryChannel: (channel: string) =>
+      `Showing records from ${channel}. Private groups and other chats are not included.`,
+    larkPastDescription: "Meeting minutes and AI notes shared in the notice chat.",
+    larkOpenRecording: "Open Minutes",
+    larkCanvas: "AI notes",
+    larkOpenCanvas: "Open AI notes",
+    larkNoCanvas: "No shared AI notes link is available.",
+    larkLinkAccess:
+      "Feishu/Lark checks your access when you open a link. This page does not copy content or change sharing permissions.",
+    larkOpenThread: "Open group chat",
     larkSeriesHint:
       "A recurring selection applies to future occurrences of that series. Only meetings with a Feishu/Lark, Zoom or Microsoft Teams meeting link are listed.",
   },
   dailyBrief: {
     title: "Daily brief",
     description:
-      "A private brief for each member every workday morning, sent by an Agent Swarm's Slack bot.",
+      "A private brief for each member every workday morning, sent by an Agent Swarm's Slack, Feishu or Lark bot.",
     emptyTitle: "The daily brief is not set up",
     emptyBody:
-      "Choose the Agent Swarm and its Slack bot below, then save. Members and runs show after the first save.",
+      "Choose the Agent Swarm and its bot below, then save. Members and runs show after the first save.",
     noSwarmsBody:
-      "The daily brief is sent by an Agent Swarm's Slack bot. Create an Agent Swarm and connect Slack first.",
+      "The daily brief is sent by an Agent Swarm's Slack, Feishu or Lark bot. Create an Agent Swarm and connect one first.",
     settingsTitle: "Settings",
     enabled: "Send daily briefs",
     swarm: "Agent Swarm",
-    slackBot: "Slack bot",
-    selectBot: "Select a Slack bot",
-    noBots: "This Agent Swarm has no Slack bot. Connect one on its Connections page.",
-    botsUnavailable: "The Slack bots could not be read. Enter the connection ID.",
-    connectId: "Slack connection ID",
+    bot: "Bot",
+    selectBot: "Select a bot",
+    noBots:
+      "This Agent Swarm has no Slack, Feishu or Lark bot. Connect one on its Connections page.",
+    botsUnavailable: "The bots could not be read. Enter the connection ID.",
+    connectId: "Connection ID",
+    providerNames: { slack: "Slack", feishu: "Feishu", lark: "Lark" } as Record<
+      string,
+      string
+    >,
     teamNames: "Names in the team brief",
     teamNamesHidden: "Hidden (default)",
     teamNamesShown: "Only when it matters",
-    teamChannel: "Team brief channel",
+    teamChannel: "Team brief group",
     teamChannelHint:
-      "ID of a public channel the bot is in (starts with C). Empty: the team brief is not posted.",
-    teamChannelInvalid: "Enter a channel ID that starts with C, or leave it empty.",
+      "A public group or channel the bot is in. Feishu and Lark list internal public groups only.",
+    teamChannelNone: "Don't post a team brief",
+    teamChannelFilter: "Filter groups by name",
+    teamChannelNoMatches: "No group matches. Paste a group ID to use it.",
+    teamChannelUseId: (id: string) => `Use ID ${id}`,
+    teamChannelSavedId: (id: string) => `Saved group ${id}`,
+    teamChannelPartial: "Only some of the bot's groups are listed.",
+    teamChannelLoading: "Reading the bot's groups…",
+    teamChannelPasteHint: (provider: string): string =>
+      provider === "slack"
+        ? "The channels could not be read. Paste the ID of a public channel the bot is in (starts with C), or leave it empty."
+        : "The groups could not be read. Paste the ID of a public group the bot is in (starts with oc_), or leave it empty.",
+    teamChannelInvalid: (provider: string): string =>
+      provider === "slack"
+        ? "Enter a channel ID that starts with C, or leave it empty."
+        : "Enter a group ID that starts with oc_, or leave it empty.",
     teamPostAt: "Team brief time",
     teamPostAtHint:
       "Posted at this time on workdays, in the time zone most members are in.",
@@ -2250,18 +2499,19 @@ const en = {
     workDays: "Make-up workdays",
     workDaysHint: "Weekend days that get a brief. YYYY-MM-DD, separated by commas.",
     datesInvalid: "Write each day as YYYY-MM-DD, separated by commas.",
-    needBot: "Select an Agent Swarm and a Slack bot.",
+    needBot: "Select an Agent Swarm and a bot.",
     save: "Save",
     membersTitle: "Members",
-    membersHint: "Members are linked to their Slack users by email.",
+    membersHint: "Members are linked to their Slack, Feishu or Lark users by email.",
     sync: "Sync members",
     syncing: "Syncing…",
     synced: (count: number) =>
       count === 1 ? "1 member linked." : `${count} members linked.`,
-    unresolved: (emails: string) => `Not found in Slack: ${emails}`,
+    unresolved: (provider: string, emails: string): string =>
+      `Not found in ${provider}: ${emails}`,
     membersEmpty: "No members are linked yet. Sync members to link them.",
     columnMember: "Member",
-    columnSlack: "Slack user",
+    columnAccount: (provider: string): string => `${provider} user`,
     columnDelivery: "Delivery",
     paused: "Paused",
     todayTitle: "Today",
@@ -2314,21 +2564,22 @@ const en = {
     modes: {
       off: "Off: nothing is checked",
       audit: "Audit: decide and record, never block",
-      enforce: "Enforce: refuse what does not belong",
+      easy: "Easy: check IM access",
+      hard: "Hard: full IFC policy",
     } as Record<string, string>,
     modeNotes: {
-      off: "Nothing on this page has any effect while checking is off. Turn on Audit first: it decides and records exactly as Enforce would, without refusing anything.",
+      off: "IFC checks are off. Shared memory writers and SSH host restrictions still apply. Audit records Hard decisions without blocking.",
       audit:
-        "Decisions are being recorded and nothing is being refused. Move to Enforce when the recorded refusals look right.",
-      enforce:
-        "The assistant is refusing to carry information to people who could not already see it, and telling the person why.",
+        "Decisions are being recorded and nothing is being refused. Move to Hard when the recorded refusals look right.",
+      easy: "Share accessible IM content. Channel sharing also requires the bot to be a member. Keep supervisor access and memory writers.",
+      hard: "The assistant is refusing to carry information to people who could not already see it, and telling the person why.",
     } as Record<string, string>,
     languageLabel: "Language the assistant explains a refusal in",
     languages: { zh: "Chinese", en: "English" } as Record<string, string>,
     languageNote:
       "The assistant writes its own refusals, source notes and confirmation requests in this language, not in the language of whoever asked.",
     noConnects:
-      "No chat workspace connected. Connect Slack or Feishu to this Agent Swarm and its conversations appear here.",
+      "No chat workspace connected. Connect Slack, Feishu or Lark to this Agent Swarm and its conversations appear here.",
     connectUnavailable:
       "This workspace's settings could not be read just now. Nothing has changed.",
     truncated: "Showing the first 200 entries of each list.",
@@ -2370,6 +2621,15 @@ const en = {
       "This person may read everything in this Agent Swarm, from any conversation they ask in.",
     workspace: "Chat workspace",
     removeSupervisor: (user: string) => `Remove supervisor ${user}`,
+    memoryWriters: "Who may change memory",
+    memoryWritersHint:
+      "The assistant remembers what people ask it to, and uses it later for everyone in this Agent Swarm. Turn this on to let only the people below make it remember or change something. It tells anyone else that it cannot. While this is on, requests from the Comma App cannot change memory. This includes scheduled tasks made there.",
+    memoryRestricted: "Only these people may change memory",
+    noMemoryWriters: "Nobody is on the list, so nobody can change memory.",
+    addMemoryWriter: "Add person",
+    addMemoryWriterBody:
+      "This person may make the assistant remember or change something from the chat workspace you choose. Add them again for each other chat workspace they use.",
+    removeMemoryWriter: (user: string) => `Remove ${user}`,
     clearances: "Who is cleared for a tag",
     clearancesHint:
       "A clearance only widens what someone may read. It never changes what they may write.",
@@ -2378,13 +2638,13 @@ const en = {
     grantBody: "Clear one provider user to read one tag.",
     tag: "Tag",
     user: "Provider user id",
-    userHint: "Slack member id, for example U01ABCDEF.",
     personSearch: "Search",
     personSearchLabel: "Find a person",
     personSearchPlaceholder: "Name, email or user id",
     personSearchHint:
       "Search by name or email. If nobody is found, paste the person's email or user id: it is looked up and shown by name before you save.",
     personNoResults: "Nobody found. Try the person's email or user id.",
+    personMore: "More people match. Type more of the name or email.",
     personChoose: "Person",
     personChoosePlaceholder: "Choose a person",
     personChosen: (person: string) => `Chosen: ${person}`,
@@ -2981,6 +3241,9 @@ const en = {
     skipTitle: "Skip onboarding?",
     skipBody:
       "The dashboard opens right away. Capabilities and connections can be changed later.",
+    orgUnavailableTitle: "Organization unavailable",
+    orgUnavailableBody:
+      "You do not have access to this organization, or it no longer exists. Choose another organization to continue.",
     capabilities: {
       title: "What may your agent do for you?",
       description: "Turn any of these on or off. You can change them later.",
@@ -3053,7 +3316,8 @@ const en = {
         },
         "notifications.im_updates": {
           label: "IM updates",
-          description: "Send updates in Slack or Feishu when something needs you.",
+          description:
+            "Send updates in Slack, Feishu or Lark when something needs you.",
         },
         "memory.semantic_profile": {
           label: "Personal memory",
@@ -3164,16 +3428,107 @@ const en = {
     noOrgsTitle: "No organizations yet",
     noOrgsBody:
       "Use an invite code to create a new organization, or ask an administrator to add you to an existing one.",
+    createOrg: "Create organization",
     forbiddenTitle: "Admins only",
     forbiddenBody: "Only organization owners and admins can open this page.",
     backToOverview: "Back to overview",
+  },
+  larkTriage: {
+    overviewTitle: "Feishu / Lark triage",
+    overviewDescription:
+      "The Agent Swarm reads the group chats you choose and replies, reacts or hands off a Task only when it helps.",
+    timelineTitle: "Timeline",
+    timelineDescription:
+      "What the Agent Swarm decided for each batch of group messages. Message text opens only after an audited reveal.",
+    agent: "Agent Swarm",
+    source: "Connection",
+    providers: { feishu: "Feishu", lark: "Lark" },
+    noAgents: "This organization has no Agent Swarm yet.",
+    noSourcesTitle: "No Feishu or Lark connection",
+    noSourcesBody: "Connect a Feishu or Lark bot to this Agent Swarm first.",
+    connectBot: "Open Agent Swarms",
+    agentUnavailable:
+      "This Agent Swarm's connections could not be read. Try again in a moment.",
+    monitoringOn: "Monitoring",
+    monitoringOff: "Paused",
+    turnOn: "Turn on triage",
+    turnOff: "Pause triage",
+    confirmOn:
+      "The Agent Swarm reads new messages in this connection's watched group chats and may reply, react or create Tasks there.",
+    confirmOff:
+      "The Agent Swarm stops reading this connection's group chats. Decisions already made stay in the timeline.",
+    chatsTitle: "Watched group chats",
+    chatsHint:
+      "One group chat is watched by at most one Agent Swarm of the organization.",
+    addChats: "Add group chats",
+    chatOn: "Watched",
+    chatOff: "Paused",
+    noChatsTitle: "No group chats yet",
+    noChatsBody: "Add the group chats this Agent Swarm should watch.",
+    addChatsDescription:
+      "Search the groups the bot is in, or paste a group ID (oc_…). Add up to 20 at a time.",
+    chatPicker: "Group chat",
+    chatSearch: "Search by name or paste oc_…",
+    chatNoMatches: "No matching group chat",
+    chatLoading: "Loading group chats…",
+    chatChoose: "Choose a group chat",
+    useChatId: (id: string) => `Use group ID ${id}`,
+    chatListPartial:
+      "Only the first 300 group chats are listed. Paste a group ID for others.",
+    chatsUnavailable:
+      "The bot's group chats could not be read. Paste a group ID instead.",
+    resolving: "Looking up the group name…",
+    resolveFailed: "The bot is not in this group chat, or the ID is wrong.",
+    selected: (count: number) => `To add (${count})`,
+    remove: "Remove",
+    addSelected: "Add",
+    show: "Show",
+    chat: "Group chat",
+    kinds: {
+      all: "All",
+      reply: "Replies",
+      reaction: "Reactions",
+      silence: "Silence",
+      delegate: "Delegated tasks",
+    },
+    allChats: "All group chats",
+    emptyTitle: "No activity yet",
+    emptyBody: "Decisions appear here after the Agent Swarm reads new group messages.",
+    noMatchBody: "Nothing matches this filter.",
+    replied: "Replied in thread",
+    reacted: "Added a reaction",
+    silent: (reason: string) => `Stayed silent · ${reason}`,
+    reasons: {
+      already_handled: "already answered",
+      no_useful_addition: "nothing to add",
+      insufficient_evidence: "not enough to go on",
+      ambient_chatter: "small talk",
+    } as Record<string, string>,
+    delegated: "Delegated a task",
+    workerUnavailable: "Not delegated · no Task agent",
+    stale: "Skipped · newer messages arrived",
+    staleDisabled: "Skipped · triage was paused",
+    failed: "Not completed",
+    emoji: { THUMBSUP: "Thumbs up", OK: "OK", DONE: "Done", SMILE: "Smile" } as Record<
+      string,
+      string
+    >,
+    newest: (name: string, at: string) => `Newest from ${name} · ${at}`,
+    messageCount: (count: number) => (count === 1 ? "1 message" : `${count} messages`),
+    reveal: "Show text",
+    hide: "Hide text",
+    revealNote: "Opening the text is recorded in the audit log.",
+    botReply: "Agent Swarm reply",
+    unknownSender: "Group member",
+    more: "Load more",
+    refresh: "Refresh",
   },
 };
 
 export type Messages = typeof en;
 
 const zhHans: Messages = {
-  productName: "Bridge for Teams",
+  productName: "Comma for Teams",
   nav: {
     label: "组织导航",
     overview: "概览",
@@ -3187,6 +3542,7 @@ const zhHans: Messages = {
     triageOverview: "概览",
     triageTimeline: "时间线",
     triageKnowledge: "知识",
+    larkTriage: "飞书 / Lark 分诊",
     dataPolicy: "数据策略",
     health: "运行状况",
     runners: "Runner",
@@ -3203,12 +3559,13 @@ const zhHans: Messages = {
     projectDevices: "设备",
     projectPlugins: "插件",
     projectSkills: "技能",
-    projectStillfail: "still.fail",
+    projectStillfail: "Monoid",
     projectConnections: "连接",
     projectSettings: "设置",
   },
   topBar: {
     orgSwitcher: "切换组织",
+    createOrg: "+ 创建新组织",
     restartOnboarding: "重新开始设置",
     signOut: "退出登录",
     searchPlaceholder: "搜索页面和设置",
@@ -3250,7 +3607,7 @@ const zhHans: Messages = {
     runnersManage: "管理 Runner",
     quickActionsTitle: "快捷操作",
     quickInvite: "邀请成员",
-    quickConnectSlack: "连接 Slack",
+    quickConnectChat: "连接聊天应用",
     quickAddRunner: "添加 Runner",
     quickAuditLog: "审计日志",
     onboardingTitle: "快速上手",
@@ -3440,6 +3797,8 @@ const zhHans: Messages = {
     roleLabel: "角色",
     inviteConfirm: "邀请",
     emailRequired: "请输入邮箱地址。",
+    seatLimitAction: "前往设置查看席位与扩容",
+    subscriptionRequiredAction: "前往设置续费订阅",
   },
   runners: {
     title: "Runner",
@@ -3546,6 +3905,53 @@ const zhHans: Messages = {
       title: "常规",
       description: (orgName: string) => `${orgName} 的资料和 CLI 访问。`,
       orgTitle: "组织",
+      billingTitle: "Teams 订阅",
+      billingDescription:
+        "每席位每月 80 美元，按季度付费。模型订阅和 API 用量费用自理。",
+      billingSeats: (seats: number) => `已购 ${seats} 个席位`,
+      billingMemberCount: (count: number) => `当前成员数：${count}`,
+      billingExpiry: "当前付费期截至",
+      billingExpiredOn: "付费期结束于",
+      billingExpired: "付费期已结束。续费后可开始新工作。",
+      billingExpiringSoon:
+        "当前付费周期即将到期，手动续费后新周期将接在当前到期日之后生效。",
+      billingEarlyRenewal: "新周期将在当前付费周期结束后生效。",
+      billingStripeSeatNote:
+        "当前季度内如需增加席位，请联系销售，或新建独立组织（新建组织不会增加当前组织的席位）。",
+      billingUnmanagedNote: "当前组织由企业合同或邀请码管理，无需自助订阅续费。",
+      contactSales: "联系销售",
+      billingUnavailable: "暂时无法读取订阅状态，请稍后重试。",
+      manageBilling: "管理账单",
+      renewBilling: "续费订阅",
+      renewSeats: "购买席位数",
+      renewStripeSeatError: (min: number) => `请输入不少于 ${min} 个席位。`,
+      renewLocalSeatError: (min: number, max: number) =>
+        `请输入 ${min}–${max} 之间的席位数。`,
+      renewQuoteExpired: "当前支付会话已超过有效期，请重新进入页面发起支付。",
+      renewProvider: "支付渠道",
+      renewStripe: "Stripe",
+      renewLocal: "当地支付",
+      renewShowLocal: "使用拉美当地方式支付",
+      renewCountry: "账单国家",
+      renewChooseCountry: "选择国家",
+      renewNoCountry: "此席位数量暂不支持当地支付。",
+      renewPaymentMethod: "支付方式",
+      renewPaymentMethods: {
+        PIX: "Pix",
+        NET_BANKING: "网上银行",
+        TD: "借记卡",
+        TC: "信用卡",
+        CASH: "现金",
+      },
+      renewFirstName: "名",
+      renewLastName: "姓",
+      renewEmail: "邮箱",
+      renewPhone: "手机号码",
+      renewEcuadorPhone: "请输入 6–9 位本地数字，不含 +593 或开头的 0。",
+      renewIdType: "证件类型",
+      renewIdNumber: "证件号码",
+      renewCpf: "CPF 号码",
+      renewEstimate: (amount: string) => `预计季度总额：${amount}`,
       name: "组织名称",
       slug: "标识",
       slugHint: "用于网址。修改后原有链接会变化。",
@@ -3628,8 +4034,15 @@ const zhHans: Messages = {
         task: "没有设置默认任务模型的 Agent Swarm，其任务使用这个模型。",
         router: "新的 Router 使用这个模型。",
       },
+      defaultUnserved: {
+        task: "当前没有已启用的账户能提供这个模型，未指定模型的任务将无法运行。请改选其他模型，或在上方启用能提供它的账户。",
+        router:
+          "当前没有已启用的账户能提供这个模型，新的 Router 将无法运行。请改选其他模型，或在上方启用能提供它的账户。",
+      },
       platformDefault: (label: string | undefined) =>
         label ? `平台默认（${label}）` : "平台默认",
+      platformRouter: (label: string) =>
+        `${label} · 由平台提供；可在各 Agent Swarm 中为每个 Router 单独设置`,
       accounts: {
         title: "组织账户",
         description: "供团队 Agent 使用的订阅和提供方 API 密钥。其用量不消耗平台额度。",
@@ -4006,6 +4419,42 @@ const zhHans: Messages = {
     slugLabel: "标识",
     slugHint: "简短、适合用于网址的标识符，在组织内唯一。",
     createConfirm: "创建 Agent Swarm",
+    columnSearch: "可搜索范围",
+    departmentLabel: "所属部门",
+    unassigned: "未分配",
+    newDepartment: "新建部门",
+    editDepartment: "编辑",
+    editDepartmentFor: (name: string) => `编辑部门 ${name}`,
+    departmentCreateTitle: "新建部门",
+    departmentEditTitle: (name: string) => `编辑 ${name}`,
+    departmentDialogBody:
+      "按部门管理 Agent Swarm，并勾选该部门允许跨 Swarm 搜索的会话范围。",
+    departmentNameLabel: "部门名称",
+    departmentNamePlaceholder: "例如：研发",
+    departmentNameRequired: "请输入部门名称。",
+    departmentCreateConfirm: "创建部门",
+    departmentSaveConfirm: "保存",
+    departmentDelete: "删除部门",
+    departmentDeleteTitle: "删除部门",
+    departmentDeleteBody: (name: string) =>
+      `删除「${name}」？该部门下的 Agent Swarm 将归为未分配，并移除该部门的跨 Swarm 搜索授权。`,
+    allDepartmentsLabel: "所有部门",
+    allDepartmentsHint: "自动包含所有已有及新建部门（不含未分配）",
+    includedByAllDepartments: "已自动包含",
+    selfDepartmentLabel: "本部门",
+    selfDepartmentHint: "本部门下的 Agent Swarm 互相可搜索",
+    ifcTargetHint: "已开启 IFC：只有同样开启 IFC 的 Agent Swarm 才能搜到",
+    searchScopeLabel: "可搜索范围",
+    searchFilterHint: "筛选部门或 Agent Swarm",
+    searchNoMatches: "没有匹配的部门或 Agent Swarm。",
+    searchNoTargets: "创建其他部门或 Agent Swarm 后即可配置跨 Swarm 搜索范围。",
+    selectDepartmentAll: (name: string) => `全选 ${name}`,
+    expandGroup: (name: string) => `展开 ${name} 下的 Agent Swarm`,
+    collapseGroup: (name: string) => `收起 ${name} 下的 Agent Swarm`,
+    wholeDepartment: "全部门",
+    selectedCount: (selected: number, total: number) => `${selected} / ${total}`,
+    extraPrefix: (summary: string) => `+ ${summary}`,
+    targetListSeparator: "、",
   },
   swarmAgents: {
     title: "Agent",
@@ -4022,6 +4471,7 @@ const zhHans: Messages = {
     detailStatus: "状态",
     detailModel: "模型",
     modelDefault: "使用默认模型",
+    modelPlatformProvided: (model: string) => `${model} · 由平台提供`,
     detailCreated: "创建时间",
     detailRuntimeId: "Agent 运行时 ID",
     detailPrompt: "系统提示词",
@@ -4051,6 +4501,8 @@ const zhHans: Messages = {
     configureBody: "这个 Agent 的模型与系统提示词。",
     modelLabel: "模型",
     noModels: "没有可用的模型。组织管理员可以在组织设置中启用模型。",
+    platformSwitchNote:
+      "切换后无法自行撤回：保存后，这个 Router 只使用组织自己的账户，只有平台管理员可以把它改回来。",
     promptLabel: "系统提示词",
     promptOwnerOnly: "只有组织所有者可以修改系统提示词。",
     saveConfig: "保存配置",
@@ -4379,10 +4831,23 @@ const zhHans: Messages = {
     status: "状态",
     orgRuntimeId: "组织运行时 ID",
     swarmRuntimeId: "Agent Swarm 运行时 ID",
+    crossSearchTitle: "部门与跨 Swarm 搜索",
+    crossSearchNote:
+      "设置所属部门以继承该部门的搜索范围，或额外勾选此 Agent Swarm 可搜索的其他部门与 Agent Swarm（自动排除 1v1 私聊与受限封存会话）。只有此 Agent Swarm 的审阅人（在“数据策略”页设置）可以让助手搜索。",
+    departmentLabel: "所属部门",
+    unassigned: "未分配",
+    inheritedNone: "未分配部门的 Agent Swarm 默认与其他部门隔离。",
+    inheritedEmpty: (dept: string) => `「${dept}」当前未设置部门级搜索范围。`,
+    inheritedSummary: (dept: string, targets: string) =>
+      `继承自「${dept}」：${targets}`,
+    inheritedBadge: "由所属部门继承",
+    extraSearchLabel: "额外可搜索范围",
     taskModelTitle: "默认任务模型",
     taskModelNote: "除非 Router 指定了其他模型，任务都使用这个模型。",
     taskModelLabel: "模型",
     taskModelUnavailable: "无法读取默认任务模型，请稍后重试。",
+    taskModelUnserved:
+      "当前没有已启用的账户能提供这个模型，未指定模型的任务将无法运行。请在这里改选其他模型，或在“设置 > AI 模型”中启用能提供它的账户。",
     taskPlaceTitle: "任务的默认运行位置",
     taskPlaceNote:
       "除非 Router 指定了其他位置，任务都在这里运行。使用只能在 Salix 中运行的模型的任务留在 Salix。",
@@ -4474,20 +4939,21 @@ const zhHans: Messages = {
     setUpMessaging: "在连接中设置",
     oauthFailed: "无法连接该账号，请重试。",
     composioDisconnect: "在“连接”页面的 Composio 连接列表中断开此账号。",
+    signInPerPerson: "每个人第一次使用时在聊天里登录。",
   },
   swarmStillfail: {
-    title: "still.fail",
+    title: "Monoid",
     description: (swarm: string) =>
-      `把 still.fail 的 station 连到 ${swarm}：它的 agent 能接这里的 Task，用量也显示在这里。`,
+      `把 Monoid 的 station 连到 ${swarm}，每个 Monoid 工作区连一个：它的 agent 能接这里的 Task，用量也显示在这里。`,
     stations: "Station",
     noStations:
-      "还没有 still.fail station。点「添加 station」，再在 still.fail 里添加连接，平台选 Comma，粘贴这一行。",
-    noStationsMember: "这个 Agent Swarm 的管理员可以连接 still.fail station。",
+      "还没有 Monoid station。点「添加 station」，再在 Monoid 里添加连接，平台选 Comma，粘贴这一行。",
+    noStationsMember: "这个 Agent Swarm 的管理员可以连接 Monoid station。",
     addStation: "添加 station",
     working: "处理中",
     remove: "全部移除",
-    line: "给 still.fail 的连接行",
-    lineHint: "在 still.fail 里添加连接，平台选 Comma，粘贴这一行。只在这里显示一次。",
+    line: "给 Monoid 的连接行",
+    lineHint: "在 Monoid 里添加连接，平台选 Comma，粘贴这一行。只在这里显示一次。",
     name: "Station",
     state: "状态",
     since: "最近连接",
@@ -4495,12 +4961,33 @@ const zhHans: Messages = {
     offline: "未连接",
     never: "从未",
     usage: (days: number) => `按人的用量（最近 ${days} 天）`,
-    noUsage: "still.fail 还没有用量数据。",
+    noUsage: "Monoid 还没有用量数据。",
     person: "人",
     calls: "调用",
     tokens: "Token",
     cost: "金额",
     unknownPerson: "未知",
+    actions: "操作",
+    disconnect: "断开连接",
+    disconnectFor: (station: string) => `断开 ${station}`,
+    disconnectTitle: "断开这个 Monoid 工作区？",
+    disconnectBody: (station: string) =>
+      `${station} 不再接这个 Agent Swarm 的 Task，它在这里的用量和对话也会移除。其他 station 保持连接。`,
+    usageOf: "工作区",
+    allWorkspaces: "全部工作区",
+    offlineNotice: "离线工作区的任务状态同步与回复已暂停，station 重连后会自动恢复。",
+    tasks: "任务",
+    tasksOf: "任务工作区",
+    noTasks: "暂无需要关注的 Monoid 任务。",
+    task: "任务",
+    taskState: "状态",
+    waitingOn: "等待对象",
+    updated: "更新时间",
+    stateAuth: "需要授权",
+    stateWaitingReply: "等待回复",
+    stateFailed: "出错",
+    stateDone: "已完成",
+    stateRunning: "运行中",
   },
   swarmSkills: {
     title: "技能",
@@ -4616,7 +5103,7 @@ const zhHans: Messages = {
       unknown: "路由状态未知",
     },
     routeNext: {
-      ready: "飞书控制台的步骤通过后，在飞书群里发送一条真实的 @Bridge 消息。",
+      ready: "飞书控制台的步骤通过后，在飞书群里发送一条真实的 @Comma 消息。",
       disabled: "测试群机器人前，请先启用此飞书连接。",
       missing_router:
         "此 Agent Swarm 的路由 agent 尚未就绪。请稍后重新检查；如持续出现，请联系支持。",
@@ -4663,7 +5150,7 @@ const zhHans: Messages = {
     larkAppIdValue: (id: string) => `App ID ${id}`,
     larkRequestUrl: "请求地址",
     larkRequestUrlHint:
-      "在 Lark 开发者后台为应用开启机器人能力。在“事件与回调”页面选择将事件发送至开发者服务器，保存这个请求地址，并订阅 im.message.receive_v1 和 im.chat.member.bot.added_v1 事件。",
+      "在 Lark 开发者后台为应用开启机器人能力。在“事件与回调”页面选择将事件发送至开发者服务器，保存这个请求地址，并订阅 im.message.receive_v1、im.chat.member.bot.added_v1 和 im.chat.member.bot.deleted_v1 事件。",
     larkPublishHint:
       "创建应用版本并发布；事件和权限随已发布的版本生效。要在有组织外成员的群里使用，还要在版本详情里开启“对外共享”。然后把机器人加入群聊并 @ 它。机器人会在话题里回复；要在话题里不再 @ 就能继续对话，需要为应用开通“获取群组中所有消息”权限（im:message.group_msg）。",
     larkScopes: "权限范围",
@@ -4770,6 +5257,20 @@ const zhHans: Messages = {
     qqMenuAdd: "添加快捷项",
     qqMenuRemove: "移除",
     qqMenuEmpty: "没有快捷项。",
+    wecomTitle: "企业微信",
+    wecomNote: "和机器人单聊时回复，在群里被 @ 时也会回复。",
+    wecomConnects: "企业微信机器人",
+    wecomEmpty: "还没有连接企业微信机器人。",
+    addWecom: "添加企业微信机器人",
+    wecomDialogNote:
+      "在企业微信管理后台打开「工作台 → 智能机器人」，新建一个 API 模式、使用长连接的机器人，把它的 Bot ID 和 Secret 粘贴到这里。建议由企业的超级管理员创建机器人，这样企业微信给出的才是成员在企业里的账号。",
+    wecomBotId: "Bot ID",
+    wecomSecret: "Secret",
+    wecomBotIdValue: (id: string) => `Bot ID ${id}`,
+    wecomOnline: "在线",
+    wecomOffline: "离线，正在重连",
+    wecomSetupHint:
+      "长连接由 Comma 维持，不需要填回调地址。企业微信每个机器人同一时间只能有一条长连接：不要在别处使用这个机器人，后台的「调试」也不要用。把机器人的可见范围设成要用它的人。机器人只能加入企业内部群，不能加入有外部联系人的群；在群里，它只收得到 @ 它的消息。",
     slackTitle: "Slack",
     slackNote: "接收应用的 @ 消息，并在 Slack 中回复。",
     slackConnects: "Slack 连接",
@@ -4784,6 +5285,36 @@ const zhHans: Messages = {
     signingSecret: "Signing Secret",
     slackAutoJoin: "自动加入新建的公开频道",
     slackAutoJoinHint: "关闭后，只有被邀请时应用才会进入频道；Slack 应用的设置不用改。",
+    members: "成员",
+    memberScopes: { organization: "本组织", external: "外部" },
+    memberScopeHints: {
+      workspace: {
+        organization: "这个工作区的成员可以让 agent 使用此 Swarm 的电脑。",
+        external:
+          "这里的人可以和 agent 聊天；只有你在下面添加的人可以让 agent 使用此 Swarm 的电脑。",
+      },
+      tenant: {
+        organization: "这个租户的成员可以让 agent 使用此 Swarm 的电脑。",
+        external:
+          "这里的人可以和 agent 聊天；只有你在下面添加的人可以让 agent 使用此 Swarm 的电脑。",
+      },
+    },
+    memberScopeNewExternal:
+      "那里的人可以和 agent 聊天；连接后你添加的人才可以让 agent 使用此 Swarm 的电脑。",
+    memberGrants: "可使用电脑的人",
+    memberGrantsNone: "还没有人。",
+    addMemberGrant: "添加人员",
+    addMemberGrantNote: "这个人可以让 agent 使用此 Swarm 的电脑。",
+    grantExpiry: "有效期",
+    grantExpiries: {
+      none: "不过期",
+      "1": "1 天",
+      "7": "7 天",
+      "30": "30 天",
+    } as Record<string, string>,
+    noExpiry: "不过期",
+    expiresOn: (date: string) => `有效至 ${date}`,
+    removeGrant: (person: string) => `移除 ${person}`,
     slackDialogNote: "先用清单创建 Slack 应用，再粘贴新应用的凭据。",
     stepCreate: "1. 创建应用",
     stepCreateNote: "Slack 会打开已填好设置的页面；选择工作区并确认。",
@@ -4924,9 +5455,11 @@ const zhHans: Messages = {
     kinds: {
       mcp_api_key: "API Token",
       native_mcp_oauth: "原生 MCP OAuth",
+      requester_mcp_oauth: "按人登录",
       managed_oauth: "托管 OAuth",
       composio: "Composio 直连 API",
       im_connect: "消息连接",
+      oauth_code_paste: "Google OAuth",
       secret: "整个 Agent Swarm 共用",
     } as Record<string, string>,
     states: {
@@ -4953,11 +5486,23 @@ const zhHans: Messages = {
         "这会使用组织的 OAuth 应用，并在 Comma 中保存已连接的账号。明确依赖此连接的资源可以使用它。",
       composio:
         "账号连接由 Composio 托管。它只启用直连 API 工具，从不作为 MCP 凭据使用。",
+      oauth_code_paste:
+        "使用 Google 账号登录后，粘贴授权码或回调链接以为该 Agent Swarm 连接此账号。",
       secret:
         "下一页填写密钥或 Token。它不会出现在任何聊天中，也不会再显示给任何人。agent 按名字使用它，可为此 Agent Swarm 的任何人所用。",
     } as Record<string, string>,
     disconnectBody:
       "断开连接会从插件及其依赖的 MCP 服务器中移除此凭据。你可以随时重新连接。",
+    oauthCodeDisconnectBody:
+      "断开连接将停止该 Agent Swarm 中活跃的 Colab GPU VM。如果凭据已失效，请先使用同一 Google 账号重新连接，待活跃 VM 停止后再断开。",
+    signInWithGoogle: "使用 Google 账号登录",
+    oauthCodeStep1: "1. 打开 Google 登录页面并同意授权。",
+    oauthCodeStep2: "2. 将授权码或完整回调链接粘贴到下方。",
+    oauthCodePlaceholder: "粘贴授权码或完整回调链接",
+    oauthCodeConnect: "连接",
+    oauthCodeReconnect: "重新连接",
+    cuBalance: (balance: string) => `${balance} CU`,
+    activeVms: (count: number) => `${count} 个活跃 VM`,
     dependentMcps: (names: string) => `依赖的 MCP 服务器：${names}`,
     reconnectNote: "在新的授权成功前，当前凭据保持有效。",
     connectNote: "在你前往服务方并批准访问之前，不会建立任何连接。",
@@ -4983,6 +5528,8 @@ const zhHans: Messages = {
     fieldsMax: "一个密钥最多 8 个字段。",
     saveToken: "保存 Token",
     tokenHelp: "获取 X Token",
+    keyHelp: "获取方式",
+    keyNote: "保存前会先用这个 key 向服务验证一次。已保存的 key 不会再次显示。",
     tokenNote:
       "优先使用已连接的 X OAuth 账号，在授权范围内支持读写。仅在没有 OAuth 连接时使用此 App-only Bearer Token 读取公开数据。X 会向所用凭证对应的开发者应用计费。已保存的 Token 不会再次显示。",
     continue: "继续",
@@ -5048,7 +5595,7 @@ const zhHans: Messages = {
     swarm: "Agent Swarm",
     refresh: "刷新",
     noSwarmsTitle: "还没有 Agent Swarm",
-    noSwarmsBody: "先创建 Agent Swarm，并连接日历和 Slack 工作区。",
+    noSwarmsBody: "先创建 Agent Swarm，并连接日历和 Slack、飞书或 Lark 机器人。",
     enabled: "团队准备已启用",
     disabled: "团队准备尚未启用",
     summary: (calendars: number, minutes: number, series: boolean) =>
@@ -5068,6 +5615,9 @@ const zhHans: Messages = {
       "仅包含所选日历和会议系列。若缺少会议，请在准备设置中检查日历账号及选择范围。",
     healthIncomplete: "日历状态尚不完整或正在等待同步，列表为空不代表没有会议。",
     truncated: "还有更多会议，此页面最多显示 20 场。",
+    membersTruncated:
+      "此页面最多读取 25 位成员的日历、显示 20 场会议，部分会议未列出。",
+    membersEmptyBody: "仅包含成员自己拥有的日历。若缺少会议，请确认该成员已接入日历。",
     untitled: "未命名会议",
     statuses: {
       updating: ["更新中", "正在等待最新设置生效。"],
@@ -5078,7 +5628,16 @@ const zhHans: Messages = {
       timed_out: ["需要关注", "准备内容未能在规定时间内完成。"],
       preparing: ["准备中", "正在阅读已授权的公开资料。"],
       scheduled: ["计划", "将在会议开始前准备。"],
+      join_only: ["仅入会", "未开启会前私信，只按自动入会处理。"],
     } as Record<string, [string, string]>,
+    membersReady: ["已就绪", "准备内容已就绪，将在提醒时间私信发给每位收件人。"] as [
+      string,
+      string,
+    ],
+    recipientsTo: "发给 ",
+    recipientsSeparator: "、",
+    notInSlack: "Slack 中找不到此人",
+    recipientsTitle: "私信提醒对象",
     sharedPreparation: "团队准备内容",
     loading: "正在加载",
     noReport: "尚未保存团队准备内容。请打开日历事件查看邀请和议程。",
@@ -5110,7 +5669,6 @@ const zhHans: Messages = {
     noCanvas: "暂无共享的 Canvas 链接，可到 Slack 讨论串查看会议笔记。",
     linkAccess: "打开链接时由 Slack 检查访问权限。本页不会复制内容或更改共享权限。",
     openThread: "打开 Slack 讨论串",
-    botTitle: "Slack 机器人",
     botGroups: {
       connected: "已连接 Slack",
       unconnected: "尚未连接 Slack",
@@ -5123,18 +5681,14 @@ const zhHans: Messages = {
     } as Record<string, string>,
     botUnnamed: "机器人名称暂不可用",
     workspaceUnknown: "工作区名称暂不可用",
-    noBots: "尚未连接 Slack 机器人。",
     calendarSource: "日历来源",
     sourceSelected: "选定的日历",
     sourceMembers: "所有成员自己的日历",
     membersHint:
       "每位成员自己接入 Google 账号：让机器人发授权链接，或在 Connections 页接入。他们自己拥有的日历自动纳入，别人共享给他们的和订阅的日历不算。同一场会不论在多少人的日历里都只处理一次。",
     memberAccounts: (count: number) => `已接入 ${count} 个成员的 Google 账号`,
-    membersPreparation: "会前准备私信发给组织者",
-    membersPreparationHint:
-      "每场会只准备一份，发给组织者；组织者不在这个 Slack 里时，发给日历上有这场会的成员。",
-    membersUpcoming: (count: number) =>
-      `会议来自 ${count} 位成员的日历，这里不逐一列出。`,
+    membersPreparation: "会前私信日历上有这场会的成员",
+    membersPreparationHint: "日历上有这场会的每位成员都会收到私信。每场会只研究一次。",
     deliveryOrganizer: "入会通知和纪要私信发给组织者",
     deliveryOrganizerHint:
       "发给会议组织者。组织者不在这个 Slack 里时，发给日历上有这场会的成员；都找不到时发到团队频道。",
@@ -5204,11 +5758,11 @@ const zhHans: Messages = {
     } as Record<string, string>,
     autojoinHint:
       "会加入 Google Meet 和飞书/Lark 会议；Zoom 和 Microsoft Teams 会议只做会前准备。飞书/Lark 会议需要这个 Agent Swarm 里有同一组织的飞书/Lark 机器人，并且主持人开启「智能纪要」并允许智能伙伴入会。",
-    needMembersAction: "自动入会和发给组织者的会前准备至少开一个。",
+    needMembersAction: "自动入会和会前私信至少开一个。",
     larkDeliveryOrganizerHint:
       "按邮箱找到组织者，发到他和机器人的单聊。找不到组织者时，发给日历上有这场会的成员；都找不到时发到通知群。",
     larkMembersPreparationHint:
-      "每场会只准备一份，发到组织者和机器人的单聊；按邮箱找不到组织者时，发给日历上有这场会的成员。",
+      "每场会只研究一次。Google 日历上有这场会的每位成员，按邮箱找到后发到他和机器人的单聊；飞书/Lark 会议发给组织内的参会人。",
     larkGoogleAttendeeDmsHint:
       "按邮箱在飞书/Lark 里找到参会人，提醒发到他们和机器人的单聊。需要应用权限 contact:user.id:readonly。",
     providerNames: { slack: "Slack", feishu: "飞书", lark: "Lark" } as Record<
@@ -5247,33 +5801,64 @@ const zhHans: Messages = {
     larkAttendeeDms: "由机器人给每位参会人发私信提醒",
     larkAttendeeDmsHint: "参会人取自日程里的参与人，提醒发到他们和机器人的单聊。",
     needChat: "请选择通知群，或关闭共享的会前准备。",
-    needDelivery: "共享的会前准备和私信提醒至少开一个。",
+    needChatMembers: "请选择通知群，或开启“入会通知和纪要私信发给组织者”。",
+    needChatJoin:
+      "请选择通知群，或关闭共享的会前准备并开启“入会通知和纪要私信发给组织者”。",
+    needDelivery: "共享的会前准备、私信提醒和自动入会至少开一个。",
+    larkHistoryChannel: (channel: string) =>
+      `仅显示 ${channel} 的会议记录，不包含私密群或其他群聊。`,
+    larkPastDescription: "通知群中共享的会议妙记与智能纪要。",
+    larkOpenRecording: "打开妙记",
+    larkCanvas: "智能纪要",
+    larkOpenCanvas: "打开智能纪要",
+    larkNoCanvas: "暂无共享的智能纪要链接。",
+    larkLinkAccess:
+      "打开链接时由飞书/Lark 检查访问权限。本页不会复制内容或更改共享权限。",
+    larkOpenThread: "打开群聊",
     larkSeriesHint:
       "选择重复会议会作用于这个系列以后的每一次。只列出带飞书/Lark、Zoom 或 Microsoft Teams 会议链接的会议。",
   },
   dailyBrief: {
     title: "每日简报",
     description:
-      "每个工作日早上通过 Agent Swarm 的 Slack bot，私信给每位成员一份简报。",
+      "每个工作日早上通过 Agent Swarm 的 Slack、飞书或 Lark 机器人，私信给每位成员一份简报。",
     emptyTitle: "尚未设置每日简报",
     emptyBody:
-      "在下方选择 Agent Swarm 和它的 Slack bot 并保存。首次保存后显示成员和运行记录。",
+      "在下方选择 Agent Swarm 和它的机器人并保存。首次保存后显示成员和运行记录。",
     noSwarmsBody:
-      "每日简报由 Agent Swarm 的 Slack bot 发送。请先创建 Agent Swarm 并连接 Slack。",
+      "每日简报由 Agent Swarm 的 Slack、飞书或 Lark 机器人发送。请先创建 Agent Swarm 并连接其中一个。",
     settingsTitle: "设置",
     enabled: "发送每日简报",
     swarm: "Agent Swarm",
-    slackBot: "Slack bot",
-    selectBot: "选择 Slack bot",
-    noBots: "这个 Agent Swarm 还没有 Slack bot，请在它的连接页面添加。",
-    botsUnavailable: "无法读取 Slack bot，请填写连接 ID。",
-    connectId: "Slack 连接 ID",
+    bot: "机器人",
+    selectBot: "选择机器人",
+    noBots: "这个 Agent Swarm 还没有 Slack、飞书或 Lark 机器人，请在它的连接页面添加。",
+    botsUnavailable: "无法读取机器人，请填写连接 ID。",
+    connectId: "连接 ID",
+    providerNames: { slack: "Slack", feishu: "飞书", lark: "Lark" } as Record<
+      string,
+      string
+    >,
     teamNames: "团队简报中的人名",
     teamNamesHidden: "不点名（默认）",
     teamNamesShown: "只在重要时点名",
-    teamChannel: "团队简报发到的频道",
-    teamChannelHint: "bot 所在的公开频道 ID（C 开头）。留空则不发团队简报。",
-    teamChannelInvalid: "请填 C 开头的频道 ID，或者留空。",
+    teamChannel: "团队简报发到的群",
+    teamChannelHint: "机器人所在的公开群或频道。飞书和 Lark 只列出内部公开群。",
+    teamChannelNone: "不发送团队简报",
+    teamChannelFilter: "按群名筛选",
+    teamChannelNoMatches: "没有匹配的群。粘贴群 ID 可直接使用。",
+    teamChannelUseId: (id: string) => `使用 ID ${id}`,
+    teamChannelSavedId: (id: string) => `已保存的群 ${id}`,
+    teamChannelPartial: "只列出了机器人的部分群。",
+    teamChannelLoading: "正在读取机器人的群…",
+    teamChannelPasteHint: (provider: string): string =>
+      provider === "slack"
+        ? "无法读取频道列表。请粘贴机器人所在公开频道的 ID（C 开头），或者留空。"
+        : "无法读取群列表。请粘贴机器人所在公开群的 ID（oc_ 开头），或者留空。",
+    teamChannelInvalid: (provider: string): string =>
+      provider === "slack"
+        ? "请填 C 开头的频道 ID，或者留空。"
+        : "请填 oc_ 开头的群 ID，或者留空。",
     teamPostAt: "团队简报发送时间",
     teamPostAtHint: "每个工作日这个时间发，按多数成员所在的时区。",
     retention: "简报数据保留天数",
@@ -5284,17 +5869,21 @@ const zhHans: Messages = {
     workDays: "补班日",
     workDaysHint: "这些周末照常发简报。格式 YYYY-MM-DD，用逗号分隔。",
     datesInvalid: "日期请写成 YYYY-MM-DD，用逗号分隔。",
-    needBot: "请选择 Agent Swarm 和 Slack bot。",
+    needBot: "请选择 Agent Swarm 和机器人。",
     save: "保存",
     membersTitle: "成员",
-    membersHint: "按邮箱把成员关联到 Slack 用户。",
+    membersHint: "按邮箱把成员关联到 Slack、飞书或 Lark 用户。",
     sync: "同步成员",
     syncing: "正在同步…",
     synced: (count: number) => `已关联 ${count} 位成员。`,
-    unresolved: (emails: string) => `在 Slack 中找不到：${emails}`,
+    unresolved: (provider: string, emails: string) =>
+      provider === "飞书"
+        ? `在飞书中找不到：${emails}`
+        : `在 ${provider} 中找不到：${emails}`,
     membersEmpty: "还没有关联成员。同步成员后会显示在这里。",
     columnMember: "成员",
-    columnSlack: "Slack 用户",
+    columnAccount: (provider: string) =>
+      provider === "飞书" ? "飞书用户" : `${provider} 用户`,
     columnDelivery: "发送时间",
     paused: "已暂停",
     todayTitle: "今天",
@@ -5343,20 +5932,22 @@ const zhHans: Messages = {
     modes: {
       off: "关闭：不做任何检查",
       audit: "审计：判断并记录，从不拦截",
-      enforce: "强制：拒绝不该传递的内容",
+      easy: "Easy：检查 IM 访问范围",
+      hard: "Hard：完整 IFC 策略",
     } as Record<string, string>,
     modeNotes: {
-      off: "检查关闭时，本页的设置都不会生效。请先开启审计：它会像强制模式一样判断并记录，但不会拒绝任何内容。",
+      off: "IFC 检查已关闭；共享记忆写入白名单和 SSH 主机限制仍生效。审计模式记录 Hard 的判断，但不拦截。",
       audit:
-        "正在记录判断结果，不会拒绝任何内容。记录的拒绝结果符合预期后，再切换到强制。",
-      enforce: "助手会拒绝把信息传给原本看不到它的人，并告诉对方原因。",
+        "正在记录判断结果，不会拒绝任何内容。记录的拒绝结果符合预期后，再切换到 Hard。",
+      easy: "可分享发起用户有权访问的 IM 消息；频道还要求 bot 在群。保留 supervisor 权限和共享记忆写入白名单。",
+      hard: "助手会拒绝把信息传给原本看不到它的人，并告诉对方原因。",
     } as Record<string, string>,
     languageLabel: "助手解释拒绝原因时使用的语言",
     languages: { zh: "中文", en: "英文" } as Record<string, string>,
     languageNote:
       "助手自己撰写的拒绝说明、来源说明和确认请求都使用此语言，而不是提问者的语言。",
     noConnects:
-      "尚未连接聊天工作区。为此 Agent Swarm 连接 Slack 或飞书后，其会话会显示在这里。",
+      "尚未连接聊天工作区。为此 Agent Swarm 连接 Slack、飞书或 Lark 后，其会话会显示在这里。",
     connectUnavailable: "暂时无法读取该工作区的设置，未做任何更改。",
     truncated: "每个列表仅显示前 200 条。",
     conversations: "会话",
@@ -5395,6 +5986,15 @@ const zhHans: Messages = {
     addSupervisorBody: "此人可以在任意会话中读取这个 Agent Swarm 里的所有内容。",
     workspace: "聊天工作区",
     removeSupervisor: (user: string) => `移除审阅人 ${user}`,
+    memoryWriters: "谁可以修改记忆",
+    memoryWritersHint:
+      "助手会记住别人让它记的内容，之后对这个 Agent Swarm 的所有人使用。打开后，只有下面这些人能让它记住或修改内容，其他人让它记，它会告诉对方不能记。打开期间，从 Comma App 发起的请求（包括在那里创建的定时任务）也不能修改记忆。",
+    memoryRestricted: "只允许这些人修改记忆",
+    noMemoryWriters: "名单是空的，现在谁都不能修改记忆。",
+    addMemoryWriter: "添加人员",
+    addMemoryWriterBody:
+      "此人只能在所选的聊天工作区里让助手记住或修改内容。此人在其他聊天工作区的账号需要另外添加。",
+    removeMemoryWriter: (user: string) => `移除 ${user}`,
     clearances: "标签授权",
     clearancesHint: "授权只会扩大某人可读取的范围，不会改变其可写入的范围。",
     noClearances: "暂无授权。",
@@ -5402,13 +6002,13 @@ const zhHans: Messages = {
     grantBody: "授权一位服务商用户读取一个标签。",
     tag: "标签",
     user: "服务商用户 ID",
-    userHint: "Slack 成员 ID，例如 U01ABCDEF。",
     personSearch: "搜索",
     personSearchLabel: "查找人员",
     personSearchPlaceholder: "名字、邮箱或用户 ID",
     personSearchHint:
       "按名字或邮箱搜索。搜不到时可以贴这个人的邮箱或用户 ID，会先查出名字给你确认再保存。",
     personNoResults: "没找到。试试这个人的邮箱或用户 ID。",
+    personMore: "匹配的人更多。请输入更完整的名字或邮箱。",
     personChoose: "人员",
     personChoosePlaceholder: "选择一个人",
     personChosen: (person: string) => `已选：${person}`,
@@ -5933,6 +6533,9 @@ const zhHans: Messages = {
     skip: "跳过引导",
     skipTitle: "跳过引导？",
     skipBody: "将直接打开控制台。能力和连接之后仍可更改。",
+    orgUnavailableTitle: "无法访问该组织",
+    orgUnavailableBody:
+      "你没有该组织的访问权限，或该组织已不存在。请返回重新选择组织。",
     capabilities: {
       title: "你的 Agent 可以为你做什么？",
       description: "可随意开启或关闭，之后也能更改。",
@@ -5996,7 +6599,7 @@ const zhHans: Messages = {
         },
         "notifications.im_updates": {
           label: "IM 通知",
-          description: "有事需要你时，在 Slack 或飞书里通知你。",
+          description: "有事需要你时，在 Slack、飞书或 Lark 里通知你。",
         },
         "memory.semantic_profile": {
           label: "个人记忆",
@@ -6086,9 +6689,93 @@ const zhHans: Messages = {
     redirecting: "正在打开你的组织",
     noOrgsTitle: "暂无组织",
     noOrgsBody: "使用邀请码创建新组织，或请管理员将你加入现有组织。",
+    createOrg: "创建组织",
     forbiddenTitle: "仅限管理员",
     forbiddenBody: "只有组织的所有者和管理员可以打开此页面。",
     backToOverview: "返回概览",
+  },
+  larkTriage: {
+    overviewTitle: "飞书 / Lark 分诊",
+    overviewDescription:
+      "Agent Swarm 阅读你选定的群聊，只在有帮助时回复、添加表情或委派任务。",
+    timelineTitle: "时间线",
+    timelineDescription:
+      "Agent Swarm 对每批群消息做出的决定。消息原文需经审计后才能查看。",
+    agent: "Agent Swarm",
+    source: "连接",
+    providers: { feishu: "飞书", lark: "Lark" },
+    noAgents: "这个组织还没有 Agent Swarm。",
+    noSourcesTitle: "没有飞书或 Lark 连接",
+    noSourcesBody: "先为这个 Agent Swarm 连接飞书或 Lark 机器人。",
+    connectBot: "前往 Agent Swarms",
+    agentUnavailable: "暂时读不到这个 Agent Swarm 的连接，请稍后再试。",
+    monitoringOn: "监控中",
+    monitoringOff: "已暂停",
+    turnOn: "开启分诊",
+    turnOff: "暂停分诊",
+    confirmOn:
+      "开启后，Agent Swarm 会阅读该连接值守群聊里的新消息，并可能在群里回复、添加表情或创建任务。",
+    confirmOff:
+      "暂停后，Agent Swarm 不再阅读该连接的群聊。已做出的决定仍保留在时间线中。",
+    chatsTitle: "值守群聊",
+    chatsHint: "同一个群聊在组织内最多由一个 Agent Swarm 值守。",
+    addChats: "添加群聊",
+    chatOn: "已启用",
+    chatOff: "已暂停",
+    noChatsTitle: "还没有值守群聊",
+    noChatsBody: "添加这个 Agent Swarm 需要值守的群聊。",
+    addChatsDescription:
+      "按群名搜索机器人所在的群，或粘贴群 ID（oc_…）。一次最多添加 20 个。",
+    chatPicker: "群聊",
+    chatSearch: "搜索群名或粘贴 oc_…",
+    chatNoMatches: "没有匹配的群聊",
+    chatLoading: "正在读取群聊…",
+    chatChoose: "选择群聊",
+    useChatId: (id: string) => `使用群 ID ${id}`,
+    chatListPartial: "只列出了前 300 个群聊，其他群请粘贴群 ID。",
+    chatsUnavailable: "读不到机器人所在的群聊，请粘贴群 ID。",
+    resolving: "正在查询群名…",
+    resolveFailed: "机器人不在这个群里，或群 ID 有误。",
+    selected: (count: number) => `待添加（${count}）`,
+    remove: "移除",
+    addSelected: "添加",
+    show: "显示",
+    chat: "群聊",
+    kinds: {
+      all: "全部",
+      reply: "回复",
+      reaction: "表情回应",
+      silence: "静默",
+      delegate: "委派任务",
+    },
+    allChats: "全部群聊",
+    emptyTitle: "暂无记录",
+    emptyBody: "Agent Swarm 读到新的群消息后，决定会显示在这里。",
+    noMatchBody: "没有符合筛选条件的记录。",
+    replied: "已在话题回复",
+    reacted: "已添加表情",
+    silent: (reason: string) => `保持静默 · ${reason}`,
+    reasons: {
+      already_handled: "已有完整答复",
+      no_useful_addition: "无可补充",
+      insufficient_evidence: "信息不足",
+      ambient_chatter: "日常闲聊",
+    },
+    delegated: "已委派任务",
+    workerUnavailable: "未委派 · 没有可用的任务 Agent",
+    stale: "已跳过 · 有更新的消息",
+    staleDisabled: "已跳过 · 分诊已暂停",
+    failed: "未完成",
+    emoji: { THUMBSUP: "赞", OK: "OK", DONE: "完成", SMILE: "微笑" },
+    newest: (name: string, at: string) => `最新消息：${name} · ${at}`,
+    messageCount: (count: number) => `${count} 条消息`,
+    reveal: "显示原文",
+    hide: "收起原文",
+    revealNote: "查看原文会记录到审计日志。",
+    botReply: "Agent Swarm 的回复",
+    unknownSender: "群成员",
+    more: "加载更多",
+    refresh: "刷新",
   },
 };
 

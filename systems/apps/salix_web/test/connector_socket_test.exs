@@ -2383,7 +2383,7 @@ defmodule SalixWeb.ConnectorSocketTest do
                  EnvDispatch.process_tail(agent_id, target, "shell", %{"from_offset" => 12})
       end,
       fn ->
-        assert {:ok, %{"method" => "computer_use"}} =
+        assert {:ok, %{"method" => "computer_use", "params" => %{"session_id" => ^agent_id}}} =
                  EnvDispatch.computer_use(agent_id, target, %{"action" => "snapshot"})
       end,
       fn ->

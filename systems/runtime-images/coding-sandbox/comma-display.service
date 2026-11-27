@@ -9,6 +9,7 @@ Group=comma
 ExecStartPre=+/usr/bin/install -d -m 1777 /tmp/.X11-unix
 # A sandbox that was stopped without a shutdown keeps the old lock on its disk.
 ExecStartPre=-/usr/bin/rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+# The agents' browser is given a window of this size (browser-mcp.json): change the two together.
 ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x720x24 -nolisten tcp
 Restart=always
 RestartSec=5

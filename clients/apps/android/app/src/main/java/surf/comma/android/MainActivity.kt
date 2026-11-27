@@ -21,8 +21,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.doOnLayout
 import androidx.core.view.doOnPreDraw
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -30,6 +28,7 @@ import surf.comma.android.auth.AuthActivity
 import surf.comma.android.auth.AuthGraph
 import surf.comma.android.auth.AuthRepository
 import surf.comma.android.chat.live.AgentLocationAnswers
+import surf.comma.android.chat.live.LocationSharing
 import surf.comma.android.chat.data.ConversationSourceFactory
 import surf.comma.android.chat.live.ChatGraph
 import surf.comma.android.shell.AppShell
@@ -45,10 +44,8 @@ import surf.comma.android.chat.render.PreparedChatMessage
 import surf.comma.android.chat.render.codeSyntaxTheme
 import surf.comma.android.performance.ConversationTelemetry
 import surf.comma.android.performance.ConversationTelemetryFactory
-import surf.comma.android.settings.BLUETOOTH_PERMISSIONS
 import surf.comma.android.settings.ConfirmDialog
 import surf.comma.android.settings.devices.NearbyDevices
-import surf.comma.android.settings.devices.NearbyPermissionDialog
 import surf.comma.android.media.viewer.ImageViewerActivity
 import surf.comma.android.miniapps.MiniAppLinks
 import surf.comma.android.media.localViewerImage
@@ -76,11 +73,6 @@ class MainActivity : ComponentActivity() {
     private val navigator = ChatNavigator()
     // Nothing depends on the answer: without the permission the chat works as before.
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    private var nearby: NearbyDevices? = null
-    private var nearbyReason: NearbyPermissionDialog? = null
-    private val nearbyPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        nearby?.refresh()
-    }
     private var callScreen: CallScreen? = null
     /**
      * Asked before each new call: the microphone (without it no call starts) and, so the ongoing-call
@@ -116,7 +108,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showLiveChat(savedInstanceState: Bundle?) {
-        nearby = NearbyDevices.get(this)
+        // Scans only once Bluetooth is allowed, which Add device asks for: nothing is asked on launch.
+        NearbyDevices.get(this)
         val session = AuthGraph.get(this).also { auth = it }
         val repository = ChatGraph.conversations(this)
         val screen = LiveChatScreen(this, repository, session.state, retrySession = { session.retry() },
@@ -142,11 +135,6 @@ class MainActivity : ComponentActivity() {
         openCall(intent)
         openLink(intent)
         lifecycleScope.launch { session.start() }
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                combine(session.state, session.conversationScope) { _, _ -> }.collect { askNearbyPermission() }
-            }
-        }
         // Collected for the whole activity lifetime: it must react while the sign-in page is on top.
         lifecycleScope.launch {
             combine(session.state, session.conversationScope) { state, scope -> routeFor(state, scope != null) }
@@ -181,6 +169,9 @@ class MainActivity : ComponentActivity() {
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data ?: return
         val shell = shell ?: return
         intent.data = null
+        surf.comma.android.tasks.TaskDeepLinks.parse(url, BuildConfig.APP_URL_SCHEME)?.let {
+            return shell.openTaskLink(it)
+        }
         val api = android.net.Uri.parse(BuildConfig.BACKEND_BASE_URL)
         val store = surf.comma.android.workspace.WorkspaceGraph.get(this)
         MiniAppLinks.sharedToken(url, api)?.let { return shell.openMiniAppLink(it) }
@@ -230,15 +221,6 @@ class MainActivity : ComponentActivity() {
 
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
-    private fun askNearbyPermission() {
-        val nearby = nearby ?: return
-        if (!nearby.shouldAskPermission() || nearbyReason != null) return
-        nearby.permissionAsked()
-        nearbyReason = NearbyPermissionDialog(this,
-            onContinue = { nearbyPermission.launch(BLUETOOTH_PERMISSIONS) },
-            onDismiss = { nearbyReason = null }).also { it.show() }
-    }
-
     /** A tapped reply notification: scroll to the reply if it belongs to this account's chat. */
     private fun openReply(intent: Intent?) {
         val link = ReplyLink.from(intent) ?: return
@@ -257,15 +239,15 @@ class MainActivity : ComponentActivity() {
         shell?.setForeground(true)
         replies?.chatShown()
         auth?.let { AgentLocationAnswers.of(this).setForeground(true) }
+        auth?.let { LocationSharing.of(this).setForeground(true) }
     }
 
     override fun onResume() {
         super.onResume()
         auth?.let { navigate(navigator.onChatResumed(routeFor(it.state.value, it.conversationScope.value != null))) }
-        askNearbyPermission()
         // Asked once, back in the chat after the user first left a reply waiting.
         shell?.resumed()
-        replies?.takeIf { nearbyReason == null && it.shouldAskPermission() && auth?.conversationScope?.value != null }?.let {
+        replies?.takeIf { it.shouldAskPermission() && auth?.conversationScope?.value != null }?.let {
             it.permissionAsked()
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -276,6 +258,7 @@ class MainActivity : ComponentActivity() {
         replies?.chatHidden()
         shell?.setForeground(false)
         auth?.let { AgentLocationAnswers.of(this).setForeground(false) }
+        auth?.let { LocationSharing.of(this).setForeground(false) }
         if (live != null) navigator.onChatStopped()
         super.onStop()
     }
@@ -414,7 +397,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        nearbyReason?.dismiss()
         // The open Task's conversation lives in its own scope, outside the activity's: it ends here, not with it.
         shell?.release()
         live?.release()

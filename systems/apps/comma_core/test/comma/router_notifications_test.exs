@@ -178,7 +178,29 @@ defmodule Comma.RouterNotificationsTest do
     assert {:ok, %{"unread_count" => 1, "latest_message_id" => "provider_receipt"}} =
              snapshot(ctx)
 
-    assert {:ok, %{"unread_count" => 1}} = snapshot(ctx)
+    assert {:ok, %{"unread_count" => 1, "latest_preview" => "reply"}} =
+             RouterNotifications.delivery_snapshot(ctx.user, ctx.session, ctx.group)
+
+    long_reply = %{
+      "message_id" => "msg_long",
+      "seq" => 3,
+      "actor_type" => "agent",
+      "agent_id" => ctx.row.salix_router_agent_id,
+      "content" => [
+        %{"type" => "text", "text" => "  Hello\n  world  "},
+        %{"type" => "text", "text" => String.duplicate("a", 150)}
+      ]
+    }
+
+    Process.put(:router_messages, [inbound, sent, long_reply])
+
+    assert {:ok, %{"unread_count" => 2, "latest_preview" => preview}} =
+             RouterNotifications.delivery_snapshot(ctx.user, ctx.session, ctx.group)
+
+    assert String.length(preview) == 140
+    assert String.starts_with?(preview, "Hello world a")
+    assert String.ends_with?(preview, "…")
+    assert {:ok, %{"unread_count" => 2}} = snapshot(ctx)
   end
 
   test "restricted credentials and another account cannot read or acknowledge Router messages",

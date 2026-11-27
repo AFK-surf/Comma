@@ -626,6 +626,91 @@ defmodule Comma.StationsTest do
       SystemsRuntime.Proc.sign(:eddsa, :none, message, [station.seed, :ed25519])
       |> Base.encode16(case: :lower)
 
+  describe "external IM requester resolution" do
+    test "resolves bound iMessage, Line, and linked Slack senders for StationMembers", ctx do
+      tenant = ctx.workspace.salix_tenant_id
+      group = ctx.workspace.salix_group_id
+      owner_id = ctx.user["id"]
+
+      Repo.insert!(%Comma.Data.IMessageDMLink{
+        workspace_id: ctx.workspace.id,
+        owner_user_id: owner_id,
+        sender_handle: "+15550100",
+        chat_guid: "pho_spc_1",
+        connect_id: "imc_imsg_1",
+        transport: "photon"
+      })
+
+      imsg_connect = %{
+        "provider" => "imessage",
+        "managed_by" => "comma_product",
+        "connect_id" => "imc_imsg_1"
+      }
+
+      assert {:ok, ^owner_id} =
+               SalixStore.StationMembers.requester(tenant, group, imsg_connect, "+15550100")
+
+      assert {:error, :requester_required} =
+               SalixStore.StationMembers.requester(tenant, group, imsg_connect, "+15559999")
+
+      assert {:error, :requester_required} =
+               SalixStore.StationMembers.requester(
+                 tenant,
+                 group,
+                 Map.put(imsg_connect, "connect_id", "imc_other"),
+                 "+15550100"
+               )
+
+      Repo.insert!(%Comma.Data.LineDMLink{
+        workspace_id: ctx.workspace.id,
+        owner_user_id: owner_id,
+        line_user_id: "Uline123",
+        connect_id: "imc_line_1"
+      })
+
+      line_connect = %{
+        "provider" => "line",
+        "managed_by" => "comma_product",
+        "connect_id" => "imc_line_1"
+      }
+
+      assert {:ok, ^owner_id} =
+               SalixStore.StationMembers.requester(tenant, group, line_connect, "Uline123")
+
+      assert {:error, :requester_required} =
+               SalixStore.StationMembers.requester(tenant, group, line_connect, "UlineOther")
+
+      slack_connect = %{"provider" => "slack", "connect_id" => "imc_slack_1"}
+
+      assert {:error, :requester_required} =
+               SalixStore.StationMembers.requester(tenant, group, slack_connect, "U_SLACK_1")
+
+      {:ok, pending} = Comma.ProviderUserLinks.start("slack", "imc_slack_1", "U_SLACK_1", "Peng")
+      {:ok, _link} = Comma.ProviderUserLinks.accept(ctx.user, ctx.session, pending["token"])
+
+      assert {:ok, ^owner_id} =
+               SalixStore.StationMembers.requester(tenant, group, slack_connect, "U_SLACK_1")
+
+      # A viewer linked to Slack is not an enroller and must not resolve as a Station requester.
+      {viewer, viewer_session} = user!("viewer")
+
+      Repo.insert!(%WorkspaceMembership{
+        workspace_id: ctx.workspace.id,
+        user_id: viewer["id"],
+        role: "viewer",
+        status: "active"
+      })
+
+      {:ok, pending_v} =
+        Comma.ProviderUserLinks.start("slack", "imc_slack_1", "U_VIEWER", "Viewer")
+
+      {:ok, _} = Comma.ProviderUserLinks.accept(viewer, viewer_session, pending_v["token"])
+
+      assert {:error, :requester_required} =
+               SalixStore.StationMembers.requester(tenant, group, slack_connect, "U_VIEWER")
+    end
+  end
+
   defp enroll(station, token) do
     Stations.enroll(%{
       "token" => token,

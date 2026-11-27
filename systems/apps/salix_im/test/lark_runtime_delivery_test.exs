@@ -30,7 +30,11 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
     def start_link(_opts),
       do: Agent.start_link(fn -> %{requests: [], messages: %{}, reply: nil} end, name: __MODULE__)
 
-    @doc "The chat each message is in: `%{message_id => chat_id}`."
+    @doc """
+    The chat each message is in: `%{message_id => chat_id}`, or
+    `%{message_id => %{"chat_id" => ..., "thread_id" => ..., "root_id" => ...}}`
+    for a message of a thread.
+    """
     def messages(messages), do: Agent.update(__MODULE__, &%{&1 | messages: messages})
 
     @doc "What Lark answers to a reply: `fun.(request)` gives `{status, body}`."
@@ -85,6 +89,9 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
 
     defp answer(:get_message, %{message_id: id}, state) do
       case state.messages do
+        %{^id => %{} = message} ->
+          {200, ok(%{"items" => [Map.put(message, "message_id", id)]})}
+
         %{^id => chat_id} ->
           {200, ok(%{"items" => [%{"message_id" => id, "chat_id" => chat_id}]})}
 
@@ -98,12 +105,22 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
     defp answer(:reply, %{message_id: id, params: params}, state) do
       sent = %{
         "message_id" => "om_reply_" <> id,
-        "chat_id" => Map.get(state.messages, id, "oc_task"),
+        "chat_id" =>
+          case Map.get(state.messages, id, "oc_task") do
+            %{"chat_id" => chat_id} -> chat_id
+            chat_id -> chat_id
+          end,
         "msg_type" => params["msg_type"]
       }
 
+      thread_id =
+        case Map.get(state.messages, id) do
+          %{"thread_id" => thread_id} -> thread_id
+          _other -> "omt_" <> id
+        end
+
       {200,
-       ok(if(params["reply_in_thread"], do: Map.put(sent, "thread_id", "omt_" <> id), else: sent))}
+       ok(if(params["reply_in_thread"], do: Map.put(sent, "thread_id", thread_id), else: sent))}
     end
 
     defp answer(:message, %{params: params}, _state),
@@ -216,6 +233,80 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
   defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp eventually(fun), do: settle_until(fun)
+
+  # One person's group message of the thread `omt_team`, as Lark sends it.
+  defp thread_event(message_id, text, opts \\ []) do
+    %{
+      "schema" => "2.0",
+      "header" => %{
+        "event_id" => "evt_" <> message_id,
+        "event_type" => "im.message.receive_v1",
+        "token" => @token,
+        "tenant_key" => "tenant_key_1"
+      },
+      "event" => %{
+        "sender" => %{"sender_id" => %{"open_id" => "ou_person"}, "sender_type" => "user"},
+        "message" => %{
+          "message_id" => message_id,
+          "root_id" => "om_root",
+          "chat_id" => "oc_team",
+          "chat_type" => "group",
+          "thread_id" => "omt_team",
+          "message_type" => "text",
+          "mentions" => Keyword.get(opts, :mentions, []),
+          "content" => Jason.encode!(%{"text" => text})
+        }
+      }
+    }
+  end
+
+  defp deliver_event(ctx, envelope),
+    do:
+      SalixIM.ProviderHTTP.handle_lark_request(ctx.app_id, envelope, [], Jason.encode!(envelope))
+
+  defp task_messages(ctx, conversation_id, source_id) do
+    {:ok, messages} =
+      Conversations.list_group_conversation_messages(ctx.group_id, conversation_id, limit: 50)
+
+    Enum.filter(messages, &(&1["source_message_id"] == source_id))
+  end
+
+  defp router_inputs(ctx, source_id) do
+    {:ok, conversation} = SalixIM.RouterConversationInput.ensure(ctx.group_id)
+
+    {:ok, messages} =
+      Conversations.list_group_conversation_messages(
+        ctx.group_id,
+        conversation["conversation_id"],
+        limit: 50
+      )
+
+    Enum.filter(
+      messages,
+      &(get_in(&1, ["agent_input", :trusted_origin, "source_message_id"]) == source_id)
+    )
+  end
+
+  # The Router of a second Group of the same tenant.
+  defp other_group_router!(tenant) do
+    group_id = Ids.new_group_id(tenant)
+
+    router =
+      SalixAgent.TestSupport.create_control_agent!(Ids.new_agent_id(group_id), %{
+        "tenant_id" => tenant,
+        "group_id" => group_id,
+        "name" => "Other Router",
+        "role" => "router"
+      })
+
+    {:ok, _group} =
+      SalixStore.CasRecord.update(
+        SalixStore.Keys.ctl_group(group_id),
+        &Map.put(&1, "router_agent_id", router["agent_id"])
+      )
+
+    router["agent_id"]
+  end
 
   defp card_participant!(group_id, conversation_id) do
     assert {:ok, %{"participants" => participants}} =
@@ -742,6 +833,136 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
                )
 
       refute Map.has_key?(answer, "status")
+    end
+  end
+
+  describe "a thread handed to a Task" do
+    test "its messages enter the Task, and the Task answers in the thread", ctx do
+      {conversation_id, worker_id} =
+        create_slack_task!(ctx.tenant, ctx.group_id, ctx.router_id, "Own the Lark thread")
+
+      # The runtime's reply answers the thread's root, which Lark reads to
+      # check its chat before the send.
+      API.messages(%{
+        "om_root" => %{"chat_id" => "oc_team", "thread_id" => "omt_team"},
+        "om_source" => %{
+          "chat_id" => "oc_team",
+          "thread_id" => "omt_team",
+          "root_id" => "om_root"
+        }
+      })
+
+      params = %{
+        "conversation_id" => conversation_id,
+        "chat_id" => "oc_team",
+        "thread_id" => "omt_team",
+        "message_id" => "om_source"
+      }
+
+      assert {:ok, %{"binding_status" => "created", "participant_id" => participant_id}} =
+               call(ctx.router_id, "lark", "lark.bind_thread_to_task", ctx.connect_id, params)
+
+      assert {:ok, %{"binding_status" => "exists", "participant_id" => ^participant_id}} =
+               call(ctx.router_id, "lark", "lark.bind_thread_to_task", ctx.connect_id, params)
+
+      # A person goes on in the thread without a mention: the Task gets it,
+      # the Router does not.
+      follow = thread_event("om_follow", "the numbers are in the sheet")
+      assert {:ok, %{"status" => "queued"}} = deliver_event(ctx, follow)
+
+      source_id = "im_provider:lark:#{ctx.connect_id}:om_follow"
+      assert [message] = task_messages(ctx, conversation_id, source_id)
+      assert message["participant_id"] == participant_id
+      assert message["actor_type"] == "provider_user"
+      assert message["user_id"] == "ou_person"
+      assert router_inputs(ctx, source_id) == []
+
+      # Lark delivers it again: it is still one message of the Task.
+      assert {:ok, %{"status" => "duplicate"}} = deliver_event(ctx, follow)
+      assert [_message] = task_messages(ctx, conversation_id, source_id)
+
+      # A control command in the thread is still the Router funnel's.
+      previous = SystemsRuntime.get_env(:salix_im, :control_command_execution)
+      SystemsRuntime.put_env(:salix_im, :control_command_execution, :sync)
+      on_exit(fn -> restore(:salix_im, :control_command_execution, previous) end)
+
+      command =
+        thread_event("om_command", "@_user_1 <salix-command>help</salix-command>",
+          mentions: [%{"key" => "@_user_1", "id" => %{"open_id" => "ou_bot"}, "name" => "Bridge"}]
+        )
+
+      assert {:ok, %{"status" => "command"}} = deliver_event(ctx, command)
+
+      assert task_messages(ctx, conversation_id, "im_provider:lark:#{ctx.connect_id}:om_command") ==
+               []
+
+      # The Task's visible reply answers the thread's root, in the thread.
+      assert {:ok, %{"inserted" => true}} =
+               ConversationServer.append_group_conversation_agent_message(
+                 ctx.group_id,
+                 conversation_id,
+                 worker_id,
+                 %{"content" => "Read the sheet.", "client_request_id" => "lark-thread-reply"}
+               )
+
+      assert eventually(fn ->
+               Enum.any?(API.requests(:reply), fn reply ->
+                 reply.message_id == "om_root" and reply.params["reply_in_thread"] == true and
+                   reply.params["content"] =~ "Read the sheet."
+               end)
+             end)
+
+      # The person's own message is not sent back to the thread.
+      refute Enum.any?(
+               API.requests(:reply),
+               &(&1.params["content"] =~ "numbers are in the sheet")
+             )
+    end
+
+    test "only the Task's Router binds, at the thread's real address, to one Task", ctx do
+      {conversation_id, _worker_id} =
+        create_slack_task!(ctx.tenant, ctx.group_id, ctx.router_id, "First Task")
+
+      {other_id, _other_worker} =
+        create_slack_task!(ctx.tenant, ctx.group_id, ctx.router_id, "Second Task")
+
+      API.messages(%{
+        "om_source" => %{"chat_id" => "oc_team", "thread_id" => "omt_team"},
+        "om_elsewhere" => %{"chat_id" => "oc_team", "thread_id" => "omt_other"}
+      })
+
+      params = %{
+        "conversation_id" => conversation_id,
+        "chat_id" => "oc_team",
+        "thread_id" => "omt_team",
+        "message_id" => "om_source"
+      }
+
+      bind = fn agent_id, params ->
+        call(agent_id, "lark", "lark.bind_thread_to_task", ctx.connect_id, params)
+      end
+
+      assert {:error, "message_id is not a message of thread_id"} =
+               bind.(ctx.router_id, %{params | "message_id" => "om_elsewhere"})
+
+      assert {:error, "message_id does not belong to chat_id"} =
+               bind.(ctx.router_id, %{params | "chat_id" => "oc_other"})
+
+      {:ok, worker} =
+        create_control_agent(
+          %{"name" => "Binding worker", "group_id" => ctx.group_id, "role" => "worker"},
+          ctx.tenant
+        )
+
+      assert {:error, "operation is not available to this agent role"} =
+               bind.(worker["agent_id"], params)
+
+      assert {:error, "connect not found"} = bind.(other_group_router!(ctx.tenant), params)
+
+      assert {:ok, %{"binding_status" => "created"}} = bind.(ctx.router_id, params)
+
+      assert {:error, "this Lark thread is already bound to another Task"} =
+               bind.(ctx.router_id, %{params | "conversation_id" => other_id})
     end
   end
 

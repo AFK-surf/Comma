@@ -10,7 +10,7 @@ def columnFields : List String :=
 def contextFields : List String :=
   ["summary_sequence", "compacted_through", "summary", "provider_compaction", "compaction_failure",
    "system_prompt", "miniskills", "compact_results", "platform", "billing_context", "task_origin",
-   "source_agent_id", "source_session_id", "source_schedule_id"]
+   "source_agent_id", "source_session_id", "source_schedule_id", "compacted_provider_states"]
 
 def controlFields : List String :=
   ["status", "activity_status", "activity_status_updated_at", "activity_revision", "last_ack_message_id",
@@ -131,9 +131,15 @@ def archiveAdds (before after : Term) (all : Bool) : KernelM Term := do
   if all then return list current
   return list ((afterShared previous current).filter (fun entry => !previous.contains entry))
 
+/-- Keep the provider states that compacted history adopted (stored with the
+context), so an archive advance or a reload does not lose them. -/
+def withCompactedStates (state : Term) : KernelM Term := do
+  write state [("compacted_provider_states", ← Lifecycle.compactedProviderStates state)]
+
 /-- Rebuild the provider projection from committed assistant boundaries and keep
 only live input identities as a positive cache. -/
 def committedView (state : Term) : KernelM Term := do
+  let state ← withCompactedStates state
   let queue := wrap ((← field state "input_queue").default (list []))
   let keys ← queue.foldlM (fun keys item => do
     return keys ++ (← Lifecycle.queueDedupeKeys item)) []
@@ -144,6 +150,7 @@ def committedView (state : Term) : KernelM Term := do
 
 /-- This projection grants no authority to delete hot records or publish archives. -/
 def project (before after : Term) (all : Bool) (dedupeAdd : List Term) : KernelM Term := do
+  let after ← withCompactedStates after
   let beforeControl ← control before
   let afterControl ← control after
   let context := selected after contextFields

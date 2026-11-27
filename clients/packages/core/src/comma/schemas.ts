@@ -54,8 +54,10 @@ export const pluginCredentialSetupSchema = lazySchema(() =>
       key: z.string(),
       label: z.string(),
       helpUrl: z.url(),
-      format: z.literal("show").optional(),
+      format: z.enum(["show", "oauth_code"]).optional(),
       value: z.string().max(4096).optional(),
+      attemptId: z.string().optional(),
+      error: z.string().optional(),
     })
     .strip()
 );
@@ -139,6 +141,14 @@ export const mcpServersSchema = lazySchema(() =>
     .strip()
 );
 
+/** The owner's proactive notification level for connected still.fail chats. */
+export const stillfailNotificationLevelSchema = z.enum([
+  "off",
+  "action_needed",
+  "issues",
+  "all",
+]);
+
 /** The still.fail stations a plugin connected (`/stillfail-stations`), as the server says them. */
 export const pluginStationsSchema = lazySchema(() =>
   z
@@ -149,10 +159,24 @@ export const pluginStationsSchema = lazySchema(() =>
             id: z.string(),
             name: z.string().nullable().optional(),
             connected: z.boolean(),
-            connected_at: z.string().nullable().optional(),
+            // Epoch milliseconds, as `SalixEnv.StillfailDevices` keeps them; an ISO time also reads.
+            connected_at: z.union([z.number(), z.string()]).nullable().optional(),
+            task_models: z.record(z.string(), z.array(z.string())).optional(),
+            // Its still.fail workspace as the station last said it; none from a station from before.
+            workspace: z
+              .object({
+                name: z.string(),
+                emoji: z.string().nullable().optional(),
+                station: z.string().nullable().optional(),
+                station_count: z.number().nullable().optional(),
+              })
+              .strip()
+              .nullable()
+              .optional(),
           })
           .strip()
       ),
+      notification_level: stillfailNotificationLevelSchema.optional(),
     })
     .strip()
 );
@@ -179,9 +203,16 @@ export const pluginPersonalSourcesSchema = lazySchema(() =>
     pluginId: z.string(),
     sources: z.array(
       z.object({
+        bindingId: z.string().optional(),
         connectionId: z.string(),
         toolkit: z.string(),
-        kind: z.enum(["composio", "managed_oauth", "native_mcp_oauth", "im_connect"]),
+        kind: z.enum([
+          "composio",
+          "managed_oauth",
+          "native_mcp_oauth",
+          "im_connect",
+          "oauth_code_paste",
+        ]),
         state: z.enum([
           "ready",
           "needs_confirmation",
@@ -193,6 +224,14 @@ export const pluginPersonalSourcesSchema = lazySchema(() =>
         mcpIds: z.array(z.string()).optional(),
         /** The scopes a member's own Lark or Feishu bot lacks; Reconnect scans again to update the app. */
         missingScopes: z.array(z.string()).optional(),
+        metadata: z
+          .object({
+            ccuBalance: z.number().nullable().optional(),
+            consumptionRateHourly: z.number().nullable().optional(),
+            activeVmCount: z.number().optional(),
+          })
+          .strip()
+          .optional(),
       })
     ),
   })
@@ -283,6 +322,8 @@ export const taskConversationSchema = lazySchema(() =>
       requested_by: z.string().max(256).optional(),
       /** The sender's User id, to tell apart two senders with one name. */
       requested_by_id: z.string().max(256).optional(),
+      /** A Task together: the User ids of the people it was started with. */
+      together: z.array(z.string().max(256)).max(8).optional(),
       /** Their avatar: a `sender-avatar` file of this request at this revision. */
       requested_by_avatar: z
         .object({
@@ -307,6 +348,118 @@ export const taskConversationSchema = lazySchema(() =>
 );
 
 export type TaskConversation = z.output<typeof taskConversationSchema>;
+
+const taskFeedMilestoneSchema = lazySchema(() =>
+  z
+    .object({
+      title: z.string().min(1).max(2_048),
+      at: z.number().finite().nullable().optional(),
+      message_id: z.string().min(1).max(256).nullable().optional(),
+    })
+    .strip()
+);
+
+const taskFeedMediaSchema = lazySchema(() =>
+  z
+    .object({
+      attachment_id: z.string().min(1).max(256),
+      mime_type: z.string().max(256).nullable().optional(),
+      width: z.number().int().positive().nullable().optional(),
+      height: z.number().int().positive().nullable().optional(),
+      filename: z.string().max(1_024).nullable().optional(),
+    })
+    .strip()
+);
+
+const taskFeedFileSchema = lazySchema(() =>
+  z
+    .object({
+      name: z.string().min(1).max(1_024),
+      mime_type: z.string().max(256).nullable().optional(),
+    })
+    .strip()
+);
+
+/**
+ * A Task Feed entry as the server sends it. Unknown extra fields are stripped, unknown `trigger_kind` falls back to
+ * `"unknown"`, and individual malformed milestones/media/files are dropped rather than failing the entry.
+ */
+export const taskFeedEntrySchema = lazySchema(() =>
+  z
+    .object({
+      id: z.string().min(1).max(256),
+      conversation_id: z.string().min(1).max(256),
+      group_id: z.string().min(1).max(256),
+      cluster_key: z.string().min(1).max(256),
+      trigger_kind: z
+        .enum(["brief", "follow_up", "loop_run", "run", "unknown"])
+        .catch("unknown"),
+      trigger_text: z.string().max(4_096).nullable().optional(),
+      task_title: z.string().max(2_048),
+      task_status: z.string().min(1).max(256),
+      task_updated_at: z.number().finite(),
+      review_version: z.number().int().nonnegative().nullable().optional(),
+      origin: z.string().max(256).nullable().optional(),
+      is_loop: z.boolean().default(false),
+      loop_kind: z.string().max(128).nullable().optional(),
+      occurred_at: z.number().finite(),
+      milestones: z
+        .array(z.unknown())
+        .default([])
+        .transform((items) =>
+          items.flatMap((item) => {
+            const parsed = taskFeedMilestoneSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          })
+        ),
+      milestone_count: z.number().int().nonnegative().default(0),
+      outcome_message_id: z.string().min(1).max(256).nullable().optional(),
+      outcome_text: z.string().max(16_384).nullable().optional(),
+      media: z
+        .array(z.unknown())
+        .default([])
+        .transform((items) =>
+          items.flatMap((item) => {
+            const parsed = taskFeedMediaSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          })
+        ),
+      files: z
+        .array(z.unknown())
+        .default([])
+        .transform((items) =>
+          items.flatMap((item) => {
+            const parsed = taskFeedFileSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          })
+        ),
+      pull_request: taskPullRequestSchema,
+    })
+    .strip()
+);
+
+export type RawTaskFeedEntry = z.output<typeof taskFeedEntrySchema>;
+
+/** `GET /v1/comma/groups/:group_id/task-feed`: a page of Task Feed entries; malformed single entries are skipped. */
+export const taskFeedPageSchema = lazySchema(() =>
+  z
+    .object({
+      entries: z
+        .array(z.unknown())
+        .max(200)
+        .transform((items) =>
+          items.flatMap((item) => {
+            const parsed = taskFeedEntrySchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          })
+        ),
+      has_more: z.boolean().default(false),
+      next_cursor: z.string().max(2_048).nullable().optional(),
+    })
+    .strip()
+);
+
+export type RawTaskFeedPage = z.output<typeof taskFeedPageSchema>;
 
 export function taskPageSchema<T extends z.ZodType>(item: T) {
   return z
@@ -341,6 +494,8 @@ export const taskSummarySchema = lazySchema(() =>
       run_started_at: z.number().int().positive().optional(),
       status: z.string().min(1).max(256),
       title: z.string().max(2_048),
+      /** A shared task: the User ids of the people it was started with. */
+      together: z.array(z.string().max(256)).max(8).optional(),
       updated_at: z.number().finite().optional(),
     })
     .strip()
@@ -356,6 +511,47 @@ export const taskShareSchema = lazySchema(() =>
       message_count: z.number().int().nonnegative(),
       artifact_count: z.number().int().nonnegative(),
       has_newer_messages: z.boolean(),
+    })
+    .strip()
+);
+
+/** The owner's view of a document's public link: the version it shows is a Message's attachment. */
+export const documentShareSchema = lazySchema(() =>
+  z
+    .object({
+      url: z.string().url(),
+      file_name: z.string().min(1).max(1_024),
+      message_id: z.string().min(1).max(256),
+      index: z.number().int().nonnegative(),
+      created_at: z.number(),
+      shared_at: z.number(),
+    })
+    .strip()
+);
+
+/** A page of a Group's active document links, most recently shared first. */
+export const documentSharePageSchema = lazySchema(() =>
+  z
+    .object({
+      data: z
+        .array(
+          z
+            .object({
+              url: z.string().url(),
+              file_name: z.string().min(1).max(1_024),
+              conversation: z
+                .object({
+                  id: z.string().min(1).max(256),
+                  title: z.string().max(2_048),
+                })
+                .strip(),
+              shared_at: z.number(),
+            })
+            .strip()
+        )
+        .max(50),
+      has_more: z.boolean(),
+      next_cursor: z.string().max(256).nullable(),
     })
     .strip()
 );
@@ -411,6 +607,11 @@ export const stationTasksSchema = lazySchema(() =>
           model: z.string().nullable(),
           /** The Group's label ids a person set on the station; none from a server before labels. */
           labels: z.array(z.string().max(128)).max(20).default([]),
+          /**
+           * A still.fail station's chat: its page in still.fail, where it opens (a client cannot open it on its station).
+           * Null for any other station's Task; none from a server before it.
+           */
+          url: z.string().startsWith("https://").max(500).nullable().default(null),
           rev: z.number().int().nullable(),
         })
       )
@@ -458,6 +659,7 @@ export const billingPlanSchema = lazySchema(() =>
       grant_credits: z.number().int().positive(),
       grant_period: z.string().nullable().optional(),
       billing_period: z.string().nullable().optional(),
+      apple_product_id: z.string().nullable().optional(),
     })
     .strip()
 );
@@ -492,6 +694,7 @@ export const billingSummarySchema = lazySchema(() =>
           package_version: z.string(),
           status: z.enum(["active", "trialing", "past_due", "unpaid", "paused"]),
           source_id: z.string(),
+          provider: z.string().optional(),
           plan: billingPlanSchema.nullable().optional(),
           source_metadata: z
             .object({
@@ -533,6 +736,22 @@ export const billingSummarySchema = lazySchema(() =>
 
 export const billingSessionSchema = lazySchema(() =>
   z.object({ id: z.string(), provider: z.literal("stripe"), url: z.url() }).strip()
+);
+
+/** A store purchase started for a workspace (`billing/store/intent`). */
+export const storeIntentSchema = lazySchema(() =>
+  z
+    .object({
+      provider: z.enum(["apple", "google"]),
+      product_id: z.string().min(1),
+      account_token: z.string().min(1),
+    })
+    .strip()
+);
+
+/** A store transaction the server read from the store (`billing/store/transactions`). */
+export const storeRecordSchema = lazySchema(() =>
+  z.object({ recorded: z.boolean() }).strip()
 );
 
 export const billingChangePreviewSchema = lazySchema(() =>
@@ -1553,6 +1772,11 @@ export const taskPlaceSchema = lazySchema(() =>
     sandboxes: z.boolean().optional().catch(undefined),
     cloud_vm_retired: z.boolean().optional().catch(undefined),
     cloud_vm_station: z.string().min(1).max(256).optional().catch(undefined),
+    sandbox_runtimes: z
+      .array(z.string().min(1).max(64))
+      .max(16)
+      .optional()
+      .catch(undefined),
   })
 );
 
@@ -1844,7 +2068,7 @@ const driveFilePreviewSchema = lazySchema(() =>
   })
 );
 
-// Outlook mail and events: only an exact, currently collected member item.
+// Outlook mail and events: only an exact, currently collected member item or Home reminder.
 const outlookPreviewSchema = lazySchema(() =>
   z.object({
     excerpt: z.string(),
@@ -1852,19 +2076,81 @@ const outlookPreviewSchema = lazySchema(() =>
     sender: z.string().nullable(),
     startsAt: z.number().nullable(),
     title: z.string().min(1),
+    receivedAt: z.number().nullable().optional(),
+    recipients: z.string().nullable().optional(),
+    body: z.string().nullable().optional(),
+  })
+);
+
+const gmailMessagePreviewSchema = lazySchema(() =>
+  z.object({
+    kind: z.literal("gmail_message"),
+    href: z.string().min(1),
+    title: z.string().min(1),
+    sender: z.string().nullable(),
+    recipients: z.string().nullable().optional(),
+    receivedAt: z.number().nullable().optional(),
+    excerpt: z.string(),
+    body: z.string().nullable().optional(),
+  })
+);
+
+const stillfailChatMessageCardSchema = lazySchema(() =>
+  z.object({
+    type: z.string().min(1),
+    choice: z.string().nullable(),
+    closed: z.boolean(),
+    options: z.array(z.string()).max(6),
+  })
+);
+
+const stillfailChatMessageSchema = lazySchema(() =>
+  z.object({
+    seq: z.number().int().nonnegative(),
+    authorKind: z.enum(["agent", "person"]),
+    author: z.string().nullable(),
+    text: z.string(),
+    createdAt: z.number().nullable(),
+    card: stillfailChatMessageCardSchema.nullable(),
+  })
+);
+
+const stillfailChatPreviewSchema = lazySchema(() =>
+  z.object({
+    kind: z.literal("stillfail_chat"),
+    href: z.string().min(1),
+    ref: z.string().min(1),
+    title: z.string().min(1),
+    stationName: z.string().nullable(),
+    status: z.enum(["need", "running", "done", "failed"]),
+    note: z.string().nullable(),
+    updatedAt: z.number().nullable(),
+    offline: z.boolean(),
+    messages: z.array(stillfailChatMessageSchema).max(32),
   })
 );
 
 export const linkPreviewSchema = lazySchema(() =>
   z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("web_page"),
+      href: z.string().min(1),
+      title: z.string().min(1),
+      description: z.string().nullable(),
+      siteName: z.string(),
+      image: z.string().nullable(),
+      icon: z.string().nullable(),
+    }),
     outlookPreviewSchema.extend({ kind: z.literal("outlook_message") }),
     outlookPreviewSchema.extend({ kind: z.literal("outlook_event") }),
+    gmailMessagePreviewSchema,
     pullRequestPreviewSchema,
     linearIssuePreviewSchema,
     notionPagePreviewSchema,
     calendarEventPreviewSchema,
     slackMessagePreviewSchema,
     driveFilePreviewSchema,
+    stillfailChatPreviewSchema,
   ])
 );
 

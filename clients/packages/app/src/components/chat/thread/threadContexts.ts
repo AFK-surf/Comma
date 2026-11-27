@@ -1,7 +1,7 @@
 import { createContext } from "react";
 import type { ConversationFileSource } from "../../../runtime-files/fileSources";
 import type { UserAvatarProps } from "../../UserAvatar";
-import type { ChatMessage } from "@comma/core/chat";
+import type { ChatMessage, ChatWorkerSession } from "@comma/core/chat";
 
 export type ThreadFileSource = {
   groupId: string;
@@ -28,6 +28,17 @@ export const ThreadDefaultActorRoleContext =
   createContext<ChatMessage["actorRole"]>(undefined);
 /** In a Task: the maker of the model its Worker runs, whose mark stands for the Worker's messages. */
 export const ThreadWorkerVendorContext = createContext<string | undefined>(undefined);
+/** What a Task's Worker is called over its messages where it is not "Worker": in a Task together, Comma. */
+export const ThreadWorkerNameContext = createContext<string | undefined>(undefined);
+export type ThreadWorkerSessionIdentity = Pick<
+  ChatWorkerSession,
+  "participantId" | "slot" | "label" | "isPrimary" | "runtime" | "model"
+>;
+
+/** Active worker sessions on a multi-session Task, for per-message participantId attribution. */
+export const ThreadWorkerSessionsContext = createContext<
+  readonly ThreadWorkerSessionIdentity[] | undefined
+>(undefined);
 export const ThreadUserAvatarContext = createContext<ThreadUserAvatar | undefined>(
   undefined
 );

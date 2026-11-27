@@ -36,7 +36,7 @@ defmodule Salix.App do
     SystemsRuntime.put_env(
       :salix_web,
       :vm_authorization_mod,
-      SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.BillingCore
+      SalixWeb.VMAuthorization.BillingCore
     )
 
     SystemsRuntime.put_env(
@@ -131,6 +131,12 @@ defmodule Salix.App do
       :salix_agent,
       :daily_brief_mod,
       :"Elixir.BridgeForTeams.DailyBrief.ChatSettings"
+    )
+
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :group_conversation_search_mod,
+      SalixIM.GroupConversationSearch
     )
 
     SystemsRuntime.put_env(

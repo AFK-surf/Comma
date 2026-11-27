@@ -3,12 +3,17 @@ import { useTaskSummaries } from "../../tasks/useTaskArchive";
 import { useTopicSelect, type ProductInboxListResult } from "@comma/core-client";
 import {
   taskStatusBucket,
+  type TaskLoopStanding,
   type TaskLoopStop,
   type TaskStatusBucket,
 } from "@comma/ui/components/task-workspace";
-import { useCommaMessages } from "@comma/i18n/react";
+import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { useEffect, useMemo, useRef } from "react";
-import { taskLoopStop } from "../../tasks/taskLoopLabels";
+import {
+  taskLoopStanding,
+  taskLoopStop,
+  taskLoopZoneClock,
+} from "../../tasks/taskLoopLabels";
 import {
   taskReviewNeedsAttention,
   useTaskReviewSeenMarksOf,
@@ -36,6 +41,8 @@ export type ChatCreatedTask = {
   requestTurnKey?: string | undefined;
   /** Why the Task does not run while in progress: its Loop stopped. */
   loopStop: TaskLoopStop | undefined;
+  /** Standing trigger or setup state while an active/pending Loop waits between runs. */
+  loopStanding?: TaskLoopStanding | undefined;
   statusBucket: TaskStatusBucket;
   /** The Task waits for its person (`escalated`), e.g. on a question its Worker asked. */
   needsInput: boolean;
@@ -133,19 +140,24 @@ export function useChatCreatedTasks({
   // and says which facts are newer: the list's or the summary's.
   const summaries = useTaskSummaries(groupId, createdIds);
   const commaMessages = useCommaMessages();
+  const locale = useCommaLocale();
 
   const previousRef = useRef(NO_TASKS);
   const visible = useMemo(() => {
     if (createdRefs.length === 0) return NO_TASKS;
     const previous = previousRef.current;
     let previousById: Map<string, ChatCreatedTask> | undefined;
+    const loopClock = taskLoopZoneClock();
     const next: ChatCreatedTask[] = [];
     for (const ref of createdRefs) {
       const projected = projectedTasks.get(ref.conversationId);
       const known = summaries.get(ref.conversationId);
       if (!known && !projected) continue;
       const status = known?.status ?? projected!.status;
-      const statusBucket = taskStatusBucket(status);
+      const loop = known?.loop ?? projected?.loop;
+      const statusBucket = taskStatusBucket(status, {
+        loopState: loop?.state,
+      });
       // A done, cancelled or archived Task leaves the panel by itself: nothing
       // is left to follow or review. A failure stays until it is acknowledged.
       if (
@@ -156,10 +168,13 @@ export function useChatCreatedTasks({
         continue;
       }
       const needsInput = status === "escalated";
-      const loopStop = taskLoopStop(
+      const loopStop = taskLoopStop(statusBucket, loop, commaMessages);
+      const loopStanding = taskLoopStanding(
         statusBucket,
-        known?.loop ?? projected?.loop,
-        commaMessages
+        loop,
+        commaMessages,
+        locale,
+        loopClock
       );
       const updatedAt = projected?.updatedAt ?? ref.updatedAt ?? 0;
       const version = Math.max(
@@ -167,9 +182,10 @@ export function useChatCreatedTasks({
         projected?.runStartedAt ?? 0
       );
       // Settled and acknowledged at this run or a later one via "Reveal in
-      // Chat" or "Dismiss": stays cleared. A running task always docks.
+      // Chat" or "Dismiss": stays cleared. A running or standing Loop task always docks.
       if (
         statusBucket !== "in_progress" &&
+        statusBucket !== "loops" &&
         (dismissed.get(ref.conversationId) ?? -1) >= version
       ) {
         continue;
@@ -201,6 +217,10 @@ export function useChatCreatedTasks({
           before.needsAttention === needsAttention &&
           before.loopStop?.text === loopStop?.text &&
           before.loopStop?.failed === loopStop?.failed &&
+          before.loopStanding?.kind === loopStanding?.kind &&
+          before.loopStanding?.text === loopStanding?.text &&
+          before.loopStanding?.title === loopStanding?.title &&
+          before.loopStanding?.nextRunText === loopStanding?.nextRunText &&
           before.requestTurnKey === ref.requestTurnKey &&
           before.statusBucket === statusBucket &&
           before.needsInput === needsInput &&
@@ -214,6 +234,7 @@ export function useChatCreatedTasks({
               messageId: ref.messageId,
               needsAttention,
               loopStop,
+              ...(loopStanding === undefined ? {} : { loopStanding }),
               requestTurnKey: ref.requestTurnKey,
               statusBucket,
               needsInput,
@@ -231,6 +252,7 @@ export function useChatCreatedTasks({
     commaMessages,
     createdRefs,
     dismissed,
+    locale,
     projectedTasks,
     seenReviewMarks,
     summaries,

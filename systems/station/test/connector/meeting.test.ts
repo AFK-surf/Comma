@@ -443,6 +443,38 @@ test("TestMeetingJoinProceedsOnDefinitelyNoneAnswer", async () => {
   await run(c.close());
 });
 
+test("TestMeetingJoinRefusesReusedSessionForDifferentMeeting", async () => {
+  const c = makeConnector({ meetUrl: "http://meetnative.test" }, meetnative((_m, path) => {
+    if (path === "/v1/meetings/status") return { status: 200, body: { meeting_id: "m1", active: false } };
+    if (path === "/v1/meetings/join") {
+      return { status: 200, body: { accepted: true, session: "mtg-cal-existing", reused: true } };
+    }
+    return { status: 404 };
+  }));
+  const out = await run(c.meetingJoin(joinParams()));
+  assert.deepEqual(out, {
+    accepted: false,
+    reason_code: "already_in_meeting",
+    existing_meeting_id: "mtg-cal-existing",
+  });
+  assert.equal(c.meeting.session("m1"), "", "another meeting's session must not be bound to m1");
+  await run(c.close());
+});
+
+test("TestMeetingJoinAcceptsReusedSessionForSameMeeting", async () => {
+  const c = makeConnector({ meetUrl: "http://meetnative.test" }, meetnative((_m, path) => {
+    if (path === "/v1/meetings/status") return { status: 200, body: { meeting_id: "m1", active: false } };
+    if (path === "/v1/meetings/join") {
+      return { status: 200, body: { accepted: true, session: "m1", reused: true } };
+    }
+    return { status: 404 };
+  }));
+  const out = await run(c.meetingJoin(joinParams()));
+  assert.equal(out.accepted, true);
+  assert.equal(c.meeting.session("m1"), "m1");
+  await run(c.close());
+});
+
 test("TestMeetingSessionStatusAttestsIdempotentJoinOnlyWithRuntime", async () => {
   // Unconfigured: no runtime, no attestation.
   const out = await run(makeConnector({}).meetingSessionStatus({ meeting_id: "m1" }));

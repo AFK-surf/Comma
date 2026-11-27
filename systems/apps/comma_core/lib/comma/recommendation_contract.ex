@@ -5,7 +5,7 @@ defmodule Comma.RecommendationContract do
   @catalog_version 1
   @max_payload_bytes 65_536
   @max_cards 6
-  @max_items_per_card 4
+  @max_items_per_card 7
   @max_total_items 18
   @max_summary_parts 24
   @max_summary_characters 1_200

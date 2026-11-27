@@ -15,14 +15,6 @@ end
 
 config :salix_web, station_relay_stopped: System.get_env("COMMA_STATION_RELAY_STOPPED") == "true"
 
-agent_vmm_gateway = %{
-  url_template: System.get_env("SALIX_AGENT_VMM_GATEWAY_URL_TEMPLATE"),
-  control_secret: System.get_env("SALIX_AGENT_VMM_GATEWAY_CONTROL_SECRET"),
-  ca_file: System.get_env("SALIX_AGENT_VMM_GATEWAY_CA_FILE"),
-  cert_file: System.get_env("SALIX_AGENT_VMM_GATEWAY_CERT_FILE"),
-  key_file: System.get_env("SALIX_AGENT_VMM_GATEWAY_KEY_FILE")
-}
-
 compute_runtime_base_url = System.get_env("SALIX_COMPUTE_RUNTIME_BASE_URL")
 compute_workload_credential_secret = System.get_env("SALIX_COMPUTE_WORKLOAD_CREDENTIAL_SECRET")
 
@@ -84,31 +76,6 @@ end
 config :salix_agent,
        :cloud_vm_retired,
        System.get_env("SALIX_CLOUD_VM_RETIRED") in ["1", "true"]
-
-if Enum.any?(agent_vmm_gateway, fn {_key, value} -> is_binary(value) and value != "" end) do
-  Enum.each(agent_vmm_gateway, fn {key, value} ->
-    if not (is_binary(value) and value != "") do
-      raise "incomplete Agent VMM gateway configuration: #{key} is required"
-    end
-  end)
-
-  if byte_size(agent_vmm_gateway.control_secret) < 32 do
-    raise "Agent VMM gateway control_secret must contain at least 32 bytes"
-  end
-
-  config :salix_web,
-    agent_vmm_gateway_control_secret: agent_vmm_gateway.control_secret
-
-  config :salix_store,
-    agent_vmm_gateway_url_template: agent_vmm_gateway.url_template,
-    agent_vmm_gateway_tls: [
-      verify: :verify_peer,
-      cacertfile: String.to_charlist(agent_vmm_gateway.ca_file),
-      certfile: String.to_charlist(agent_vmm_gateway.cert_file),
-      keyfile: String.to_charlist(agent_vmm_gateway.key_file),
-      versions: [:"tlsv1.3"]
-    ]
-end
 
 # Subsystem selection (one image, per-pod choice): COMMA_SUBSYSTEMS is a
 # comma-separated list of subsystem names (e.g. "salix"). Unset/empty = run
@@ -553,6 +520,16 @@ default_comma_web_cookie_origin =
       SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin)
   end
 
+# The URL scheme the environment's desktop and mobile apps register
+# (clients/packages/config `urlScheme`), for the Task deep links stations are
+# given (CommaWeb.TaskLinkPort).
+comma_app_url_scheme =
+  case comma_environment do
+    environment when environment in ["production", "prod"] -> "comma"
+    "staging" -> "comma-staging"
+    _local_or_test -> SystemsRuntime.fetch_env!(:comma_web, :app_url_scheme)
+  end
+
 default_comma_admin_cookie_origin =
   case comma_environment do
     environment when environment in ["production", "prod"] ->
@@ -650,7 +627,8 @@ end
 config :comma_web,
   allowed_origins: comma_allowed_origins,
   web_cookie_origin: comma_web_cookie_origin,
-  admin_cookie_origin: comma_admin_cookie_origin
+  admin_cookie_origin: comma_admin_cookie_origin,
+  app_url_scheme: comma_app_url_scheme
 
 # Station device tools travel over each station's presence socket by default.
 # COMMA_STATION_TOOLS_TRANSPORT=gateway switches them to the gateway below.
@@ -1042,6 +1020,19 @@ config :comma_core, :analytics,
     SalixStore.ConfigJson.get(salix_config, ~w(comma analytics excluded_user_ids))
     |> List.wrap()
     |> Enum.filter(&is_binary/1)
+
+# Comma for Teams signup funnel events go to the same product analytics project,
+# from nodes that serve the Teams dashboard. Release jobs send nothing.
+config :bridge_for_teams_core, :cft_analytics,
+  api_key:
+    if(:bridge_for_teams in enabled and System.get_env("COMMA_RELEASE_JOB") != "1",
+      do: SalixStore.ConfigJson.string(salix_config, ~w(comma analytics api_key))
+    ),
+  host: SalixStore.ConfigJson.string(salix_config, ~w(comma analytics host)),
+  environment: comma_environment,
+  internal_email_domains:
+    SalixStore.ConfigJson.get(salix_config, ~w(comma analytics internal_email_domains)) ||
+      ~w(cue.surf comma.surf)
 
 comma_apple_client_id =
   SalixStore.ConfigJson.string(salix_config, ~w(comma apple_auth client_id)) ||
@@ -1509,6 +1500,13 @@ if is_binary(billing_database_url) do
     portal_configuration_id:
       SalixStore.ConfigJson.string(salix_config, ~w(billing stripe portal_configuration_id))
 
+  # App Store Server API key (In-App Purchase key).
+  config :billing_apple,
+    issuer_id: SalixStore.ConfigJson.string(salix_config, ~w(billing apple issuer_id)),
+    key_id: SalixStore.ConfigJson.string(salix_config, ~w(billing apple key_id)),
+    private_key: SalixStore.ConfigJson.string(salix_config, ~w(billing apple private_key)),
+    bundle_id: SalixStore.ConfigJson.string(salix_config, ~w(billing apple bundle_id))
+
   if SalixStore.ConfigJson.boolean(salix_config, ~w(billing stripe force_http1)) == true do
     config :stripity_stripe,
       hackney_opts: [protocols: [:http1]]
@@ -1517,6 +1515,29 @@ if is_binary(billing_database_url) do
   config :billing_core, BillingCore.Repo,
     url: billing_database_url,
     pool_size: SalixStore.ConfigJson.integer(salix_config, ~w(billing database pool_size)) || 10
+end
+
+# The node's Agent VMM worker (SalixStore.AgentVMM.Worker): the public
+# `agent-vmm/rpc/1` listener that Agent VMM Hosts connect to. A release job
+# holds no Host connection.
+if :salix in enabled and not release_job? and
+     System.get_env("SALIX_AGENT_VMM_GATEWAY_ENABLED") == "true" do
+  required = fn name ->
+    case System.get_env(name) do
+      value when is_binary(value) and value != "" -> value
+      _ -> raise "#{name} is required when SALIX_AGENT_VMM_GATEWAY_ENABLED is true"
+    end
+  end
+
+  config :salix_store,
+    agent_vmm_worker: [
+      # Salix records this id with each Host connection and session. A node
+      # finds the worker that holds a session by it, so it is unique per node.
+      instance_id: System.get_env("SALIX_AGENT_VMM_INSTANCE_ID") || required.("POD_NAME"),
+      remote_listen: System.get_env("SALIX_AGENT_VMM_REMOTE_LISTEN") || "0.0.0.0:7443",
+      tls_cert_file: required.("SALIX_AGENT_VMM_TLS_CERT_FILE"),
+      tls_key_file: required.("SALIX_AGENT_VMM_TLS_KEY_FILE")
+    ]
 end
 
 # ====================== Salix subsystem ======================
@@ -2042,6 +2063,11 @@ if :bridge_for_teams in enabled and config_env() != :test do
     config app, [{key, value}]
   end
 
+  for {app, key, value} <- SalixStore.ConfigJson.m2square_env(salix_config),
+      app == :bridge_for_teams_core do
+    config app, [{key, value}]
+  end
+
   # Public base URL (OIDC redirect URIs and the dashboard endpoint URL used by
   # Phoenix origin checks). Prefer the dashboard key; keep the old web key as a
   # compatibility fallback for existing config secrets.
@@ -2133,6 +2159,10 @@ if :bridge_for_teams in enabled and config_env() != :test do
       )
 
   config :bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint, dash_config
+
+  if is_binary(dash_secret) do
+    config :bridge_for_teams_core, quote_signing_secret: dash_secret
+  end
 
   if slug =
        SalixStore.ConfigJson.string(

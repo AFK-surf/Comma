@@ -35,10 +35,11 @@ The target tool parameters are:
 }
 ```
 
-The tool waits for a host-app response. A phone with the app open and location allowed answers without asking the person; otherwise they see a card. On success it returns structured location fields, with `read_at` for when the position was read. On failure it returns a structured error.
+The tool waits for a host-app response. A phone or computer with the app open answers without asking while the person shares their location; otherwise they see a card, where they can share once or always. On success it returns structured location fields, with `read_at` for when the position was read. On failure it returns a structured error.
 
 ## Rules
 
+- A person who shares their location in the app sends it with each message, as `client_location` in the `Inbound message source:` block. Use it first. Call `location.request` only when the newest message has none, or its `read_at` is too old for the answer.
 - Call `location.request` only when the answer needs precise coordinates. For a city-level answer, such as the weather, ask the user for the city in a text reply.
 - `location.request` is not available in Comma Telegram. Ask for the city in a text reply there.
 - Do not ask the user to paste coordinates unless `location.request` is unavailable or fails.

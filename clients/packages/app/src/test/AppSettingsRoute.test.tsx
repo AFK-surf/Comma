@@ -15,6 +15,7 @@ import {
   type NativeStateBridge,
 } from "@comma/native-bridge";
 import { advance, flush } from "@comma/test-utils/fake-clock";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import { createScriptedCore, resolvedWorkspace } from "@comma/test-utils/scripted-core";
 import {
@@ -168,6 +169,34 @@ describe("AppSettingsRoute", () => {
     vi.unstubAllGlobals();
     initializeCommaI18n(["en"]);
     localStorage.clear();
+  });
+
+  it("gates People in Debug settings and hides it from Default home view while off", async () => {
+    renderSettings();
+    const homeViewTrigger = () => setting("app.default-home-view").getByRole("button");
+    await user.click(homeViewTrigger());
+    expect(dropdownOptions().queryByRole("option", { name: "People" })).toBeNull();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Debug" }));
+    const toggle = setting("debug.people.enabled").getByRole("switch");
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(readStoredClientSettings().peopleEnabled).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "General" }));
+    await user.click(homeViewTrigger());
+    await user.click(dropdownOptions().getByRole("option", { name: "People" }));
+    expect(readStoredClientSettings().defaultHomeView).toBe("people");
+    expect(homeViewTrigger()).toHaveTextContent("People");
+
+    await user.click(screen.getByRole("button", { name: "Debug" }));
+    await user.click(setting("debug.people.enabled").getByRole("switch"));
+    expect(readStoredClientSettings().peopleEnabled).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "General" }));
+    expect(homeViewTrigger()).toHaveTextContent("Home (default)");
   });
 
   it("saves the default home view and restores it when Settings reopens", async () => {
@@ -366,7 +395,7 @@ describe("AppSettingsRoute", () => {
       // rather than its default General category.
       await flush();
       expect(
-        screen.getByRole("heading", { level: 2, name: "Daily schedule" })
+        screen.getByRole("heading", { level: 2, name: "Daily briefing" })
       ).toBeInTheDocument();
     } finally {
       window.location.hash = previousHash;
@@ -411,7 +440,7 @@ describe("AppSettingsRoute", () => {
     });
 
     renderSettings(undefined, undefined, core);
-    await user.click(screen.getByRole("button", { name: "Routines" }));
+    await user.click(screen.getByRole("button", { name: "Briefing" }));
     await flush();
     // Settings asks the core for the briefing of the workspace the app works in.
     expect(asked.map(({ workspace }) => workspace)).toEqual(["ws-2"]);
@@ -1227,6 +1256,131 @@ describe("AppSettingsRoute", () => {
     ]);
   });
 
+  it("turns Share location on only once the system lets Comma read the location", async () => {
+    let answer: "allow" | "deny" = "deny";
+    stubProperty(navigator, "geolocation", {
+      value: {
+        getCurrentPosition: (
+          ok: (position: GeolocationPosition) => void,
+          fail: (error: GeolocationPositionError) => void
+        ) =>
+          answer === "allow"
+            ? ok({
+                coords: { latitude: 35.6812, longitude: 139.7671, accuracy: 30 },
+                timestamp: 1_794_000_000_000,
+              } as GeolocationPosition)
+            : fail({ code: 1, PERMISSION_DENIED: 1 } as GeolocationPositionError),
+        watchPosition: () => 1,
+        clearWatch: () => undefined,
+      },
+    });
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "locationSharing" ? { enabled: false } : undefined,
+    });
+    renderSettings(undefined, undefined, core);
+    await flush();
+    await user.click(screen.getByRole("button", { name: "Privacy" }));
+    await flush();
+
+    const toggle = setting("location.share").getByRole("switch", {
+      name: /Share location/,
+    });
+    await user.click(toggle);
+    await flush();
+    expect(core.sentTo("locationSharing.set")).toEqual([]);
+    setting("location.share").getByText(/Location is off for Comma/);
+
+    answer = "allow";
+    await user.click(toggle);
+    await flush();
+    expect(core.sentTo("locationSharing.set")).toEqual([{ enabled: true }]);
+    expect(core.sentTo("locationSharing.report")).toEqual([
+      {
+        position: {
+          latitude: 35.6812,
+          longitude: 139.7671,
+          accuracy: 30,
+          readAt: 1_794_000_000_000,
+        },
+      },
+    ]);
+  });
+
+  it("offers the Permissions page's System Settings button for Share location while macOS refuses Comma", async () => {
+    const requestLocationAuthorization = vi.fn(async () => "denied" as const);
+    installNativeBridgeMock({
+      platform: "electron",
+      os: "macos",
+      appPreferences: {
+        requestLocationAuthorization,
+        state: createNativeStateBridgeMock(() =>
+          appPreferencesSchema.parse({
+            launchAtLogin: false,
+            showInDock: true,
+            showInMenuBar: true,
+            systemLocationStatus: "denied",
+          })
+        ),
+      },
+    });
+    stubProperty(navigator, "geolocation", {
+      value: {
+        getCurrentPosition: vi.fn(),
+        watchPosition: () => 1,
+        clearWatch: () => undefined,
+      },
+    });
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "locationSharing" ? { enabled: false } : undefined,
+    });
+    renderSettings(undefined, undefined, core);
+    await flush();
+    await user.click(screen.getByRole("button", { name: "Privacy" }));
+    await flush();
+
+    // No switch that reads as on while nothing can be sent: the one action
+    // that can change it, as on the Permissions page.
+    const row = setting("location.share");
+    expect(row.queryByRole("switch")).toBeNull();
+    await user.click(row.getByRole("button", { name: "Open System Settings" }));
+    await flush();
+    expect(requestLocationAuthorization).toHaveBeenCalledOnce();
+    // The person asked for it: on, waiting for macOS.
+    expect(core.sentTo("locationSharing.set")).toEqual([{ enabled: true }]);
+  });
+
+  it("says so on the row when a permission's window did not open", async () => {
+    installNativeBridgeMock({
+      platform: "electron",
+      os: "macos",
+      appPreferences: {
+        requestMicrophoneAuthorization: vi.fn(async () => "unknown" as const),
+        state: createNativeStateBridgeMock(() =>
+          appPreferencesSchema.parse({
+            launchAtLogin: false,
+            showInDock: true,
+            showInMenuBar: true,
+            systemMicrophoneStatus: "notDetermined",
+          })
+        ),
+      },
+    });
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: /^Permissions$/ }));
+    await flush();
+    await user.click(
+      setting("permissions.microphone").getByRole("button", { name: "Allow" })
+    );
+    await flush();
+    await waitFor(() =>
+      setting("permissions.microphone").getByText(
+        "Couldn’t open the permission window. Try again."
+      )
+    );
+  });
+
   it("edits the Router's system prompt beside the reply style, and resets it", async () => {
     let held = { content: "", hash: "h0" };
     const core = createScriptedCore({
@@ -1322,6 +1476,38 @@ describe("AppSettingsRoute", () => {
     expect(readStoredClientSettings().onboardingCompletedUserIds).toEqual([
       "usr_other",
     ]);
+  });
+
+  it("keeps the privacy switches on a Privacy page of their own, which search and a link find", async () => {
+    renderSettings();
+    expect(
+      screen.queryByRole("switch", { name: "Send usage analytics and error reports" })
+    ).toBeNull();
+    const settingsSearch = screen.getByRole("searchbox", { name: "Search settings" });
+    await user.click(settingsSearch);
+    await user.paste("遥测");
+    expect(
+      document.querySelector('[data-slot="settings-search-results"]')
+    ).toHaveTextContent("Send usage analytics and error reports");
+    await user.clear(settingsSearch);
+    window.location.hash = "#/settings?category=privacy";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await flush();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Privacy" })
+    ).toBeInTheDocument();
+  });
+
+  it("sends usage analytics by default and stores the switch on this device, for guests too", async () => {
+    renderSettings({ ...defaultAuth(), isGuest: true, userId: "usr_guest" });
+    await user.click(screen.getByRole("button", { name: "Privacy" }));
+    const analytics = screen.getByRole("switch", {
+      name: "Send usage analytics and error reports",
+    });
+    expect(analytics).toBeChecked();
+    await user.click(analytics);
+    await flush();
+    expect(readStoredClientSettings().usageAnalyticsEnabled).toBe(false);
   });
 
   it("offers a guest no onboarding to replay", () => {
@@ -1463,43 +1649,120 @@ describe("AppSettingsRoute", () => {
     expect(readStoredClientSettings().openCommaShortcut).toEqual(openCommaShortcut);
   });
 
-  it("shows no Computer use where the app has no helper to grant (outside macOS)", async () => {
+  it("shows no Permissions where the app has nothing to grant (outside macOS)", async () => {
     renderSettings();
 
     expect(
-      screen.queryByRole("button", { name: "Computer use" })
+      screen.queryByRole("button", { name: /^Permissions$/ })
     ).not.toBeInTheDocument();
   });
 
-  it("reads computer permissions and refreshes after managing access", async () => {
+  it("lists every macOS permission with macOS's answer and the one action that changes it", async () => {
     const getPermissions = vi.fn().mockResolvedValue({
       ok: true,
-      permissions: { accessibility: false, screenRecording: false },
+      permissions: { accessibility: false, screenRecording: true },
     });
     const openPermissionFlow = vi.fn().mockResolvedValue({ ok: true });
+    const requestNotificationAuthorization = vi.fn(async () => "available" as const);
+    const requestLocationAuthorization = vi.fn(async () => "denied" as const);
+    const requestMicrophoneAuthorization = vi.fn(async () => "authorized" as const);
     installNativeBridgeMock({
       platform: "electron",
       os: "macos",
+      appPreferences: {
+        requestLocationAuthorization,
+        requestMicrophoneAuthorization,
+        requestNotificationAuthorization,
+        state: createNativeStateBridgeMock(() =>
+          appPreferencesSchema.parse({
+            launchAtLogin: false,
+            showInDock: true,
+            showInMenuBar: true,
+            systemLocationStatus: "denied",
+            systemMicrophoneStatus: "authorized",
+            systemNotificationsStatus: "undetermined",
+          })
+        ),
+      },
       computerUse: { getPermissions, openPermissionFlow },
     });
     renderSettings();
     expect(getPermissions).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Computer use" }));
+    await user.click(screen.getByRole("button", { name: /^Permissions$/ }));
     await flush();
-    expect(screen.getAllByText("Not granted")).toHaveLength(2);
-    getPermissions.mockResolvedValue({
-      ok: true,
-      permissions: { accessibility: true, screenRecording: true },
-    });
-    await user.click(screen.getByRole("button", { name: "Manage permissions" }));
-    await waitFor(() => expect(screen.getAllByText("Granted")).toHaveLength(2));
+
+    // Granted: the status alone, nothing to press.
+    setting("permissions.microphone").getByText("Allowed");
+    expect(setting("permissions.microphone").queryByRole("button")).toBeNull();
+    // Not asked yet: macOS's own prompt, and the button alone says so.
+    expect(setting("permissions.notifications").queryByText("Not allowed")).toBeNull();
+    await user.click(
+      setting("permissions.notifications").getByRole("button", { name: "Allow" })
+    );
+    expect(requestNotificationAuthorization).toHaveBeenCalledOnce();
+    // Refused before: only System Settings can turn it on again.
+    await user.click(
+      setting("permissions.location").getByRole("button", {
+        name: "Open System Settings",
+      })
+    );
+    expect(requestLocationAuthorization).toHaveBeenCalledOnce();
+    // The helper's two grants are one row, not granted until both are, and
+    // its one action opens the helper's window.
+    expect(
+      document.querySelector('[data-setting-id="permissions.accessibility"]')
+    ).toBeNull();
+    expect(setting("permissions.computerUse").queryByText("Allowed")).toBeNull();
+    await user.click(
+      setting("permissions.computerUse").getByRole("button", { name: "Allow" })
+    );
     expect(openPermissionFlow).toHaveBeenCalledOnce();
-    getPermissions.mockResolvedValue({ ok: false, error: "Helper unavailable" });
-    await user.click(screen.getByRole("button", { name: "Refresh status" }));
+    expect(requestMicrophoneAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("offers nothing to press for a permission macOS could not be asked about", async () => {
+    installNativeBridgeMock({
+      platform: "electron",
+      os: "macos",
+      appPreferences: {
+        state: createNativeStateBridgeMock(() =>
+          appPreferencesSchema.parse({
+            launchAtLogin: false,
+            showInDock: true,
+            showInMenuBar: true,
+            systemNotificationsStatus: "unknown",
+          })
+        ),
+      },
+    });
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: /^Permissions$/ }));
     await flush();
-    screen.getByText("Helper unavailable");
-    expect(screen.getAllByText("Not checked")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Refresh status" })).toBeEnabled();
+    // The Notifications page's switch treats `unknown` as usable, so this
+    // row does not send the user to System Settings either.
+    const row = setting("permissions.notifications");
+    row.getByText(/read this permission/);
+    expect(row.queryByRole("button")).toBeNull();
+    expect(row.queryByText("Allowed")).toBeNull();
+  });
+
+  it("says where to go when the Computer Use grants cannot be read", async () => {
+    installNativeBridgeMock({
+      platform: "electron",
+      os: "macos",
+      computerUse: {
+        getPermissions: vi
+          .fn()
+          .mockResolvedValue({ ok: false, error: "Helper unavailable" }),
+      },
+    });
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: /^Permissions$/ }));
+    await flush();
+    const row = setting("permissions.computerUse");
+    row.getByText(/Couldn’t read these permissions/);
+    expect(row.queryByRole("button")).toBeNull();
+    expect(row.queryByText("Not allowed")).toBeNull();
   });
 
   it("coalesces permission checks and refreshes on return only while the category is open", async () => {
@@ -1519,8 +1782,10 @@ describe("AppSettingsRoute", () => {
       computerUse: { getPermissions },
     });
     renderSettings();
-    await user.click(screen.getByRole("button", { name: "Computer use" }));
-    expect(screen.getByRole("button", { name: "Refresh status" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /^Permissions$/ }));
+    expect(
+      setting("permissions.computerUse").getByRole("button", { name: "Allow" })
+    ).toBeDisabled();
     act(() => {
       window.dispatchEvent(new Event("focus"));
       window.dispatchEvent(new Event("focus"));
@@ -1539,7 +1804,7 @@ describe("AppSettingsRoute", () => {
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
     });
-    expect(screen.getAllByText("Granted")).toHaveLength(2);
+    setting("permissions.computerUse").getByText("Allowed");
     expect(getPermissions).toHaveBeenCalledTimes(2);
     await user.click(screen.getByRole("button", { name: "General" }));
     act(() => {
@@ -1881,9 +2146,18 @@ describe("AppSettingsRoute", () => {
     expect(showInNotch).not.toBeChecked();
     await flush();
     expect(screen.queryByRole("slider", { name: "Notch width" })).toBeNull();
+    const computerUseNotch = screen.getByRole("switch", {
+      name: "Computer Use in notch",
+    });
+    expect(computerUseNotch).toBeChecked();
+    await user.click(computerUseNotch);
+    await flush();
+    expect(computerUseNotch).not.toBeChecked();
+
     expect(update.mock.calls.map(([patch]) => patch)).toEqual([
       { notchSideWidth: 164 },
       { showInNotch: false },
+      { showComputerUseInNotch: false },
     ]);
   });
 
@@ -1986,61 +2260,7 @@ describe("AppSettingsRoute", () => {
     ]);
   });
 
-  it("lets the user turn system notifications on and opens System Settings when the OS denies Comma", async () => {
-    const preferences = appPreferencesSchema.parse({
-      launchAtLogin: false,
-      showInDock: true,
-      showInMenuBar: true,
-      systemNotificationsStatus: "denied",
-    });
-    const openNotificationSettings = vi.fn(async () => ({ opened: true }));
-    installNativeBridgeMock({
-      appPreferences: {
-        openNotificationSettings,
-        state: createNativeStateBridgeMock(() => preferences),
-        update: vi.fn(),
-      },
-      os: "macos",
-      platform: "electron",
-    });
-    renderSettings();
-    await user.click(screen.getByRole("button", { name: "Notifications" }));
-
-    const system = screen.getByRole("switch", { name: "System notifications" });
-    await flush();
-    expect(
-      screen.getByText(
-        "Notifications for Comma are turned off in System Settings. Allow them there to turn this on."
-      )
-    ).toBeInTheDocument();
-    // Stored as on, but the OS has the final say: nothing can be delivered,
-    // so the switch shows off until the user turns it on and allows Comma.
-    expect(system).toBeEnabled();
-    expect(system).not.toBeChecked();
-    expect(
-      screen.getByRole("switch", { name: "Router message notifications" })
-    ).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Notification sound" })).toBeDisabled();
-
-    await user.click(system);
-    await flush();
-    const dialog = screen.getByRole("dialog", {
-      name: "Allow notifications in System Settings",
-    });
-    expect(system).toBeChecked();
-    expect(
-      screen.getByText(
-        "Notifications for Comma are turned off in System Settings. Open System Settings, then allow notifications for Comma."
-      )
-    ).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Open System Settings" }));
-    expect(openNotificationSettings).toHaveBeenCalledOnce();
-    expect(dialog).not.toBeInTheDocument();
-    expect(system).not.toBeChecked();
-  });
-
-  it("keeps the on choice when turning system notifications on while the OS denies Comma", async () => {
+  it("offers the Permissions page's System Settings button when the OS denies Comma, keeping the on choice", async () => {
     let preferences = appPreferencesSchema.parse({
       launchAtLogin: false,
       showInDock: true,
@@ -2056,8 +2276,10 @@ describe("AppSettingsRoute", () => {
       });
       return preferences;
     });
+    const openNotificationSettings = vi.fn(async () => ({ opened: true }));
     installNativeBridgeMock({
       appPreferences: {
+        openNotificationSettings,
         state: createNativeStateBridgeMock(() => preferences),
         update,
       },
@@ -2066,15 +2288,20 @@ describe("AppSettingsRoute", () => {
     });
     renderSettings();
     await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await flush();
 
-    const system = screen.getByRole("switch", { name: "System notifications" });
+    // Only macOS can allow Comma again, so the row has no switch, only the
+    // same action as Settings › Permissions; the Router rows wait for it.
+    const row = setting("notifications.system");
+    expect(row.queryByRole("switch")).toBeNull();
+    expect(
+      screen.getByRole("switch", { name: "Router message notifications" })
+    ).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Notification sound" })).toBeDisabled();
+
+    await user.click(row.getByRole("button", { name: "Open System Settings" }));
     await flush();
-    expect(system).toBeEnabled();
-    await user.click(system);
-    await flush();
-    screen.getByRole("dialog", {
-      name: "Allow notifications in System Settings",
-    });
+    expect(openNotificationSettings).toHaveBeenCalledOnce();
     expect(update.mock.calls.map(([patch]) => patch)).toEqual([
       { systemNotifications: true },
     ]);
@@ -2122,9 +2349,6 @@ describe("AppSettingsRoute", () => {
     await user.click(system);
     await flush();
     expect(system).not.toBeChecked();
-    expect(
-      screen.queryByRole("dialog", { name: "Allow notifications in System Settings" })
-    ).toBeNull();
     expect(update.mock.calls.map(([patch]) => patch)).toEqual([
       { systemNotifications: false },
     ]);

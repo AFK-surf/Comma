@@ -5,6 +5,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -21,6 +22,7 @@ import { DataPolicyPage } from "./DataPolicyPage";
 import { FlashNotice } from "./flash";
 import { HealthPage } from "./HealthPage";
 import { IntegrationsPage } from "./IntegrationsPage";
+import { LarkTriagePage } from "./LarkTriagePage";
 import { MeetingsPage } from "./MeetingsPage";
 import { MembersPage } from "./MembersPage";
 import { messages } from "./messages";
@@ -47,7 +49,11 @@ import {
   type SettingsPage as SettingsPageName,
 } from "./router";
 import { signOut } from "./session";
-import { SettingsGeneralPage } from "./SettingsGeneralPage";
+import {
+  captureTeamsPaymentSession,
+  SettingsGeneralPage,
+  type TeamsPaymentSession,
+} from "./SettingsGeneralPage";
 import { SettingsModelsPage } from "./SettingsModelsPage";
 import { SettingsSsoPage } from "./SettingsSsoPage";
 import { EditableData, SettingsPage } from "./settingsForm";
@@ -139,6 +145,16 @@ function OrgPage({ route }: { route: OrgPageRoute }) {
           {(context) =>
             adminPage(context, "daily_brief", route.org, (ready) => (
               <DailyBriefPage org={route.org} swarms={ready.projects} />
+            ))
+          }
+        </OrgRoute>
+      );
+    case "org-lark-triage":
+      return (
+        <OrgRoute key={route.view} title={messages.nav.larkTriage}>
+          {(context) =>
+            adminPage(context, "triage", route.org, () => (
+              <LarkTriagePage org={route.org} view={route.view} />
             ))
           }
         </OrgRoute>
@@ -371,9 +387,17 @@ function RootRedirect({ pathname }: { pathname: string }) {
         <FlashNotice pathname={pathname} />
         <h2>{messages.states.noOrgsTitle}</h2>
         <p>{messages.states.noOrgsBody}</p>
-        <button className="bft-btn" onClick={() => signOut()} type="button">
-          {messages.topBar.signOut}
-        </button>
+        <div className="bft-state-actions">
+          <a
+            className="bft-btn bft-btn-primary"
+            href="/signup/teams?mode=new&from=dashboard"
+          >
+            {messages.states.createOrg}
+          </a>
+          <button className="bft-btn" onClick={() => signOut()} type="button">
+            {messages.topBar.signOut}
+          </button>
+        </div>
       </div>
     );
   }
@@ -655,9 +679,10 @@ function SwarmPage({
           resourceKey="swarm-connections"
           title={(data) => `${messages.swarmConnections.title} · ${data.project.name}`}
         >
-          {(connections, retry) => (
+          {(connections, retry, retryAndWait) => (
             <SwarmConnectionsPage
               first={connections}
+              onReread={retryAndWait}
               onRetry={retry}
               org={org}
               project={project}
@@ -712,12 +737,17 @@ function SwarmRoute<T>({
   resourceKey: string;
   load: (api: BftApi, signal: AbortSignal) => Promise<T>;
   title: (data: T) => string;
-  children: (resource: Resource<T>, retry: () => void) => ReactNode;
+  children: (
+    resource: Resource<T>,
+    retry: () => void,
+    retryAndWait: () => Promise<void>
+  ) => ReactNode;
 }) {
   const api = useApi();
   const { context } = useOrgShell();
-  const [data, retry] = useResource(`${resourceKey}:${org}:${project}`, (signal) =>
-    load(api, signal)
+  const [data, retry, , retryAndWait] = useResource(
+    `${resourceKey}:${org}:${project}`,
+    (signal) => load(api, signal)
   );
   usePageTitle(data.state === "ready" ? title(data.data) : undefined);
 
@@ -731,7 +761,7 @@ function SwarmRoute<T>({
       {isNotFound(data) ? (
         <ProjectNotFound org={org} />
       ) : (
-        children(unauthenticated ? { state: "loading" } : data, retry)
+        children(unauthenticated ? { state: "loading" } : data, retry, retryAndWait)
       )}
     </PageArea>
   );
@@ -847,6 +877,7 @@ function OrgMembers({ org }: { org: string }) {
       <MembersPage
         members={unauthenticated ? { state: "loading" } : members}
         onRetry={retryMembers}
+        org={org}
         orgName={ready?.org.name}
         writes={{
           invite: (invite) => api.inviteMember(org, invite),
@@ -916,29 +947,7 @@ function OrgSettings({
   const t = messages.settings;
   switch (page) {
     case "general":
-      return (
-        <SettingsRoute
-          description={(orgName) => t.general.description(orgName)}
-          load={(api, signal) => api.settingsGeneral(org, signal)}
-          org={org}
-          page={page}
-          title={t.general.title}
-        >
-          {(data) => (
-            <SettingsGeneralPage
-              data={data}
-              onSaved={(general) => {
-                // The shell re-reads the context after every write; a new
-                // slug is a new address.
-                const slug = general.organization.slug;
-                if (slug !== org)
-                  navigate(orgHref(slug, settingsPaths.general), { replace: true });
-              }}
-              org={org}
-            />
-          )}
-        </SettingsRoute>
-      );
+      return <GeneralSettingsRoute key={org} org={org} page={page} />;
     case "models":
       return (
         <SettingsRoute
@@ -976,6 +985,98 @@ function OrgSettings({
         </SettingsRoute>
       );
   }
+}
+
+interface RenamedGeneralPaymentHandoff {
+  targetSlug: string;
+  session: TeamsPaymentSession;
+  expired: boolean;
+}
+
+let pendingRenamedGeneralPayment: RenamedGeneralPaymentHandoff | undefined;
+
+function GeneralSettingsRoute({ org, page }: { org: string; page: "general" }) {
+  const t = messages.settings.general;
+  const handoff =
+    pendingRenamedGeneralPayment?.targetSlug === org
+      ? pendingRenamedGeneralPayment
+      : undefined;
+  const initialSession: TeamsPaymentSession = handoff
+    ? handoff.session
+    : { status: "loading" };
+  const initialExpired = handoff?.expired ?? false;
+  const captured = useRef(initialSession.status === "ready");
+  const latestPaymentRef = useRef<{
+    session: TeamsPaymentSession;
+    expired: boolean;
+  }>({
+    session: initialSession,
+    expired: initialExpired,
+  });
+  const [paymentSession, setPaymentSession] =
+    useState<TeamsPaymentSession>(initialSession);
+  const [paymentQuoteExpired, setPaymentQuoteExpired] = useState(initialExpired);
+
+  const markPaymentQuoteExpired = useCallback(() => {
+    latestPaymentRef.current.expired = true;
+    setPaymentQuoteExpired(true);
+  }, []);
+
+  useEffect(() => {
+    if (pendingRenamedGeneralPayment?.targetSlug === org) {
+      pendingRenamedGeneralPayment = undefined;
+    }
+  }, [org]);
+
+  return (
+    <SettingsRoute
+      description={t.description}
+      load={async (api, signal) => {
+        const general = await api.settingsGeneral(org, signal);
+        // The resource aborts its request when this route unmounts or retries.
+        if (!signal.aborted && !captured.current) {
+          captured.current = true;
+          const nextSession = captureTeamsPaymentSession(general.billing);
+          latestPaymentRef.current.session = nextSession;
+          setPaymentSession(nextSession);
+        }
+        return general;
+      }}
+      org={org}
+      page={page}
+      title={t.title}
+    >
+      {(data) => (
+        <SettingsGeneralPage
+          data={data}
+          onPaymentQuoteExpired={markPaymentQuoteExpired}
+          onSaved={(general) => {
+            // The shell re-reads the context after every write; a new
+            // slug is a new address. Preserve the active payment session
+            // and expiry state across the slug-rename remount.
+            const slug = general.organization.slug;
+            if (slug !== org) {
+              const current = latestPaymentRef.current;
+              const expiredNow =
+                current.expired ||
+                (current.session.status === "ready" &&
+                  current.session.deadlineMs !== undefined &&
+                  performance.now() >= current.session.deadlineMs);
+              pendingRenamedGeneralPayment = {
+                targetSlug: slug,
+                session: current.session,
+                expired: expiredNow,
+              };
+              navigate(orgHref(slug, settingsPaths.general), { replace: true });
+            }
+          }}
+          org={org}
+          paymentQuoteExpired={paymentQuoteExpired}
+          paymentSession={paymentSession}
+        />
+      )}
+    </SettingsRoute>
+  );
 }
 
 /** One Settings page; members get the forbidden state. */

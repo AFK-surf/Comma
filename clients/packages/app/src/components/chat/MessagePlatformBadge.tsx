@@ -13,6 +13,7 @@ import {
   type ProviderBrandLogoProps,
 } from "@comma/ui/components/provider-brand-logos";
 import type { ComponentType, CSSProperties } from "react";
+import raycastActivityLogo from "./assets/raycast-activity.svg";
 import signalActivityLogo from "./assets/signal-activity.svg";
 import telegramActivityLogo from "./assets/telegram-activity.svg";
 import wechatActivityLogo from "./assets/wechat-activity.svg";
@@ -57,12 +58,20 @@ const platforms: Record<
     Logo: IMessageProviderMark,
   },
   discord: { name: "Discord", color: "#5865f2" },
+  // Words written in the Raycast extension. Raycast is the one way into Comma that is not a chat platform and still
+  // takes its own bubble and round mark: its red, with the bubble's white words on it, as Raycast shows its mark.
+  raycast: {
+    name: "Raycast",
+    color: "#ff6363",
+    Logo: activityLogo(raycastActivityLogo),
+  },
 };
 
 // Comma's own apps. They name where the user typed, not an external chat
-// platform, so they mark the message but keep the default bubble.
+// platform, so they mark the message but keep the default bubble. Raycast is
+// the exception: it is presented as a platform (`platforms`).
 const clientSources: Record<
-  NonNullable<ChatMessage["clientSource"]>,
+  Exclude<NonNullable<ChatMessage["clientSource"]>, "raycast">,
   { name: string; Logo: typeof GlobeIcon }
 > = {
   iphone: { name: "iPhone", Logo: PhoneDynamicIslandIcon },
@@ -92,6 +101,16 @@ export function otherClientSource(
   source: ChatMessage["clientSource"]
 ): ChatMessage["clientSource"] {
   return source && source !== thisClientSource() ? source : undefined;
+}
+
+/** What a person's message takes its bubble colour from: its chat platform, or Raycast. */
+export function messageBubblePlatform(
+  message: Pick<ChatMessage, "clientSource" | "platformSource">
+): string | undefined {
+  return (
+    message.platformSource ??
+    (message.clientSource === "raycast" ? "raycast" : undefined)
+  );
 }
 
 export function getMessagePlatformBubbleStyle(

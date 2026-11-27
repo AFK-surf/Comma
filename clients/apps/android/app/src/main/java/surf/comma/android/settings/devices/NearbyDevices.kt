@@ -68,13 +68,6 @@ internal class NearbyDevices private constructor(private val app: Application) :
         }
     }
 
-    fun shouldAskPermission(): Boolean = auth.state.value is AuthState.Connected &&
-        auth.conversationScope.value != null && !SettingsGraph.addDeviceOpen.value &&
-        !scanGranted() && !preferences.getBoolean("permission.asked", false) &&
-        !app.getSharedPreferences("settings.permissions", Context.MODE_PRIVATE).getBoolean("bluetooth.asked", false)
-
-    fun permissionAsked() { preferences.edit().putBoolean("permission.asked", true).apply() }
-
     fun refresh() {
         val connected = auth.state.value as? AuthState.Connected
         val scope = auth.conversationScope.value

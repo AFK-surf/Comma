@@ -40,7 +40,7 @@ import { type Connect, type HubConfig, runtimeNamed } from "./config.ts";
 import { INTERNAL_CONNECT, type InternalChat, nextTsAt } from "./internal.ts";
 import { TASK_CONNECT, TASK_SURFACE } from "../tasks/names.ts";
 import type { Coding } from "../tasks/coding.ts";
-import { codingInstructions, salixToolsInstructions } from "../agents/instructions.ts";
+import { browserInstructions, codingInstructions, salixToolsInstructions } from "../agents/instructions.ts";
 import { ChainTail, LiveHub, type TranscriptUsage } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
 import { agentHomePaths } from "./agent-home.ts";
@@ -130,6 +130,7 @@ export class Hub {
   /// Each session's transcript as `history` read it last (the next read takes only what was written since).
   private readonly histories = new Map<string, ChainTail>();
   readonly actors = new Map<string, SessionActor>();
+  private readonly browsingListeners = new Set<() => void>();
   /// When each idle process is next looked at for eviction.
   private deadlines = new Map<string, Fiber.Fiber<void>>();
   /// Fibers of the hub's own (title waits, archive reviews): interrupted at shutdown.
@@ -195,16 +196,29 @@ export class Hub {
 
   /// Session `key`'s execution history: its transcript as timeline entries, oldest first, and the tokens its model
   /// calls used. Each read takes only what was written since the last; none before its first turn.
-  history(key: string): { entries: TimelineEntry[]; usage: TranscriptUsage } {
+  history(key: string): {
+    entries: TimelineEntry[];
+    usage: TranscriptUsage;
+    byModel?: Record<string, { modelCalls: number; inputTokens: number; cachedTokens: number; outputTokens: number }>;
+    partial?: boolean;
+  } {
     const found = this.transcripts(key);
-    if (found === null) return { entries: [], usage: { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, model: null } };
+    if (found === null) {
+      const hasRun = Boolean(this.store.getSession(key)?.runtimeSessionId);
+      return {
+        entries: [],
+        usage: { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, model: null },
+        byModel: {},
+        ...(hasRun ? { partial: true } : {}),
+      };
+    }
     let chain = this.histories.get(key);
     if (!chain) {
       chain = new ChainTail(found.paths);
       this.histories.set(key, chain);
     } else chain.extend(found.paths);
     chain.read();
-    return { entries: chain.entries, usage: chain.usage };
+    return { entries: chain.entries, usage: chain.usage, byModel: chain.byModel, ...(chain.partial ? { partial: true } : {}) };
   }
 
   /// Now, by its clock.
@@ -654,6 +668,20 @@ export class Hub {
   /// Where a session stands, for the host of a Task it takes part in (SessionActor.status). A read: no actor is made
   /// for it. One no actor has held since the station started is idle, for how long unknown; with messages pending
   /// (its connect offline, so `recover` did not take it up), it is idle with those pending: held, not worked on.
+  /// Whether a session's runtime is using a browser on this machine's display now: it called a browser tool
+  /// (agents/browser-mcp.ts) in the turn under way and has not closed the browser since. A machine whose display is
+  /// looked at says so while it does (connector/connector.ts `screen_active`).
+  browsing(): boolean {
+    for (const actor of this.actors.values()) if (actor.browsing) return true;
+    return false;
+  }
+
+  /// Calls `changed` when `browsing` may have changed, until the function it gives is called.
+  onBrowsing(changed: () => void): () => void {
+    this.browsingListeners.add(changed);
+    return () => this.browsingListeners.delete(changed);
+  }
+
   sessionStatus(key: string): SessionStatus {
     const actor = this.actors.get(key);
     if (actor) return actor.status();
@@ -845,6 +873,9 @@ export class Hub {
   private sessionDeps(): SessionDeps {
     return {
       store: this.store,
+      browserChanged: () => {
+        for (const changed of this.browsingListeners) changed();
+      },
       chat: (connect) => this.chatOf(connect),
       driver: (runtime) => this.sessionDriver(runtime),
       runOn: (key) => this.accounts.runOn(key),
@@ -857,6 +888,7 @@ export class Hub {
         const parts = [
           checkout ? codingInstructions(checkout.owner, checkout.name, checkout.branch, checkout.pull_request) : null,
           this.tasks?.salixHost?.(key) ? salixToolsInstructions : null,
+          this.drivers.get(this.store.getSession(key)?.runtime ?? "")?.browser?.() ? browserInstructions : null,
         ].filter((p): p is string => p !== null);
         return parts.length === 0 ? null : parts.join("\n\n");
       },

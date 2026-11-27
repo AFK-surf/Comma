@@ -13,9 +13,12 @@ import {
 import { DeviceScreenPanel } from "../DeviceScreenPanel";
 import { openMeshScreenStream } from "../meshScreenStream";
 import type { ScreenStreamSource } from "../ScreenStreamStage";
+import { useDeviceScreenSource } from "../useDeviceScreenSource";
 
 vi.mock("../meshScreenStream", () => ({ openMeshScreenStream: vi.fn() }));
-vi.mock("../useDeviceScreenSource", () => ({ useDeviceScreenSource: () => source }));
+vi.mock("../useDeviceScreenSource", () => ({
+  useDeviceScreenSource: vi.fn(() => source),
+}));
 
 const source: ScreenStreamSource = {
   key: "workspace\ndevice\ndisplay",
@@ -60,6 +63,40 @@ it("keeps the chosen one of Watch and Control looking chosen while the pointer i
   // The pointer on Control: it still does.
   await userEvent.hover(control);
   expect(await background(control)).toBe(chosen);
+});
+
+it("only looks at the screen of a Task's sandbox: no Watch or Control to choose, and its views are the Task's", async () => {
+  vi.mocked(openMeshScreenStream).mockImplementation((peer) => {
+    queueMicrotask(() => peer.onState("live"));
+    return { send: () => undefined, close: () => undefined };
+  });
+  const sandbox = {
+    workspaceId: "workspace",
+    device: "dev-sbx-cnv_1",
+    apps: [],
+    target: "display" as const,
+    task: "cnv_1",
+  };
+  const view = render(
+    createScriptedCore({ values: () => undefined }).wrap(
+      <ChatSidebarProvider>
+        <div style={{ display: "flex", width: 640, height: 360 }}>
+          <DeviceScreenPanel active page={{ ...sandbox, id: screenPageId(sandbox) }} />
+        </div>
+      </ChatSidebarProvider>
+    )
+  );
+  await expect.element(view.getByTestId("remote-screen-panel")).toBeVisible();
+  expect(view.queryByRole("button", { name: "Control" })).toBeNull();
+  expect(view.queryByRole("button", { name: "Watch" })).toBeNull();
+  // Each view the page opens says whose sandbox it is, so the core asks the sandbox to show its screen.
+  expect(vi.mocked(useDeviceScreenSource)).toHaveBeenLastCalledWith(
+    "workspace",
+    "dev-sbx-cnv_1",
+    [],
+    undefined,
+    "cnv_1"
+  );
 });
 
 it("keeps Watch and every other control of the toolbar in a panel as narrow as the sidebar goes", async () => {

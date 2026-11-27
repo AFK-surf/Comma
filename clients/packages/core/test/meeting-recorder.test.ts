@@ -3,6 +3,7 @@
 // (testing/meeting.ts) and a Task API that follows the server's meeting plan.
 import { CoreClient } from "@comma/core-kernel/client";
 import { utf8 } from "@comma/core-kernel";
+import * as messages from "@comma/i18n/messages";
 import { describe, expect, it } from "vitest";
 import type { MeetingRecorderValue } from "../src/contract.ts";
 import type { MeetingPresenceMeeting } from "../src/host.ts";
@@ -552,6 +553,26 @@ describe("the meeting Task lane", () => {
     ).toHaveLength(1);
   });
 
+  it("surfaces localized billing copy without leaking server prose when prepare returns 402", async () => {
+    const host = new FakeHost();
+    const t = setup({ host, initial: [] });
+    await t.settle();
+    host.api.on("POST", groups, () =>
+      json(402, {
+        error: "billing_unavailable",
+        reason: "insufficient_credits",
+        message: "secret detail",
+      })
+    );
+    t.present([meeting]);
+    await t.settle();
+    expect(t.state().taskSync).toMatchObject({
+      status: "error",
+      error: messages.meeting_submission_insufficient_credits({}, { locale: "en" }),
+    });
+    expect(t.state().taskSync?.error).not.toContain("secret detail");
+  });
+
   it("keeps the journal across a restart, asks about continuity and reuses the original Task", async () => {
     const t = setup();
     await t.settle();
@@ -831,6 +852,37 @@ describe("the meeting Task lane", () => {
     expect(await renames({ status: "archived" })).toEqual([]);
     // A title the server refuses still leaves every output saved.
     expect(await renames({}, 409)).toEqual([{ title: "Q4 roadmap review" }]);
+  });
+
+  it("keeps waiting for the outputs when a read of the Task fails on the network", async () => {
+    const t = setup();
+    await t.settle();
+    await t.act("start");
+    const conversation = "/v1/comma/groups/group/conversations/task-0";
+    t.host.api.on("GET", conversation, offline());
+    await t.act("stop");
+    await t.settle(1_000);
+    expect(t.state().saved).not.toHaveProperty("archive");
+    t.host.api.on("GET", conversation, {
+      status: "ready_for_review",
+      messages: [
+        {
+          message_id: "result",
+          actor_type: "agent",
+          content: ["transcript.txt", "transcript.json", "summary.md"].map((ext) => ({
+            type: "file",
+            file_name: `meeting.${ext}`,
+          })),
+        },
+      ],
+    });
+    t.host.api.on("GET", `${conversation}/messages/result/attachments/*`, {
+      status: 200,
+      headers: [],
+      body: utf8("output"),
+    });
+    await t.settle(10_000);
+    expect(t.state().saved).toMatchObject({ archive: "done" });
   });
 
   it("keeps a failed Drive write retryable without claiming the archive", async () => {

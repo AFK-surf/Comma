@@ -409,7 +409,6 @@ for (const scenario of [
             for (const animation of wave) animation.currentTime = time;
           };
           const glyphs = Array.from(overlay.children) as HTMLElement[];
-          const rest = parseFloat(getComputedStyle(editor).fontWeight);
           const paint = document.createElement("canvas").getContext("2d")!;
           const rgba = (color: string) => {
             paint.clearRect(0, 0, 1, 1);
@@ -425,14 +424,12 @@ for (const scenario of [
               const [r, g, b] = rgba(style.color);
               return {
                 tint: Math.hypot(r! - ink[0]!, g! - ink[1]!, b! - ink[2]!),
-                weight: parseFloat(style.fontWeight),
                 size: style.scale === "none" ? 1 : parseFloat(style.scale),
                 left: box.left,
                 right: box.right,
               };
             });
-          // On its first frame the copy covers the editable text exactly, at
-          // the editor's weight and size.
+          // On its first frame the copy covers the editable text exactly at rest.
           seek(0);
           const range = document.createRange();
           range.setStart(editor.firstChild!, 0);
@@ -444,31 +441,21 @@ for (const scenario of [
             x: Math.abs(copy.left - original.left),
             y: Math.abs(copy.top - original.top),
             fill: getComputedStyle(editor).webkitTextFillColor,
-            atRest: first.every(
-              (glyph) => glyph.weight === rest && glyph.size === 1 && glyph.tint <= 2
-            ),
+            atRest: first.every((glyph) => glyph.size === 1 && glyph.tint <= 2),
           };
-          const em = parseFloat(getComputedStyle(editor).fontSize);
-          const centers = first.map((glyph) => (glyph.left + glyph.right) / 2);
           const duration = Math.max(
             ...wave.map((animation) =>
               Number(animation.effect!.getComputedTiming().endTime)
             )
           );
-          // One heavy, enlarged, lifted, blue crest travels across the text. The text
-          // ahead of it and behind it is at rest, with no lighter band. The
-          // line reflows around the crest: neighbors keep their spacing.
-          const moments = [0.35, 0.5, 0.65].map((progress) => {
+          // A spring scale crest advances left to right while reflow keeps
+          // neighbor spacing steady, followed by a phase-lagged brand glow and
+          // a gentle undershoot before returning to rest.
+          const moments = [0.16, 0.26, 0.36].map((progress) => {
             seek(progress * duration);
             const glyphsNow = frame();
-            const weights = glyphsNow.map((glyph) => glyph.weight);
             const sizes = glyphsNow.map((glyph) => glyph.size);
             const crest = sizes.indexOf(Math.max(...sizes));
-            const distance = (index: number) =>
-              (centers[index]! - centers[crest]!) / em;
-            const ahead = glyphsNow.filter(
-              (_, index) => distance(index) >= 5 && distance(index) <= 8
-            );
             const spacing = glyphsNow
               .slice(1)
               .map((glyph, index) =>
@@ -480,35 +467,29 @@ for (const scenario of [
               );
             return {
               crest,
-              // Weight moves in steps of 50, so it may trail the size by one.
-              crestHeaviest: weights[crest]! >= Math.max(...weights) - 50,
-              crestTint: glyphsNow[crest]!.tint,
-              crestBluest:
-                glyphsNow[crest]!.tint ===
-                Math.max(...glyphsNow.map((glyph) => glyph.tint)),
-              tintedFraction:
-                glyphsNow.filter((glyph) => glyph.tint > 2).length / glyphs.length,
-              crestGain: weights[crest]! - rest,
               crestSize: sizes[crest]!,
-              // The crest raises its glyph (em above the baseline).
-              crestLift:
-                -new DOMMatrix(getComputedStyle(glyphs[crest]!).transform).m42 / em,
-              heavyFraction:
-                weights.filter((weight) => weight > rest).length / glyphs.length,
-              aheadAtRest: ahead.every(
-                (glyph) => glyph.weight === rest && glyph.size === 1 && glyph.tint <= 2
-              ),
-              behindAtRest: glyphsNow
-                .filter((_, index) => distance(index) <= -5)
-                .every(
-                  (glyph) =>
-                    glyph.weight === rest && glyph.size === 1 && glyph.tint <= 2
-                ),
               spacingDrift: Math.max(...spacing),
             };
           });
+          // Mid-wave: the phase-lagged brand glow peaks behind the leading
+          // scale crest, and glyphs behind the crest undershoot below 1.
+          seek(0.45 * duration);
+          const midWave = frame();
+          const peakTint = Math.max(...midWave.map((glyph) => glyph.tint));
+          const minBounceScale = Math.min(...midWave.map((glyph) => glyph.size));
+          // End frame returns every glyph cleanly to rest.
+          seek(duration);
+          const last = frame();
+          const endsAtRest = last.every((glyph) => glyph.size === 1 && glyph.tint <= 2);
           for (const animation of wave) animation.play();
-          return { alignment, moments, glyphCount: glyphs.length };
+          return {
+            alignment,
+            moments,
+            peakTint,
+            minBounceScale,
+            endsAtRest,
+            glyphCount: glyphs.length,
+          };
         });
         expect(sample.alignment.x).toBeLessThan(1);
         expect(sample.alignment.y).toBeLessThanOrEqual(4);
@@ -520,17 +501,12 @@ for (const scenario of [
         expect(crests[2]).toBeGreaterThan(crests[1]!);
         expect(crests[2]).toBeLessThan(sample.glyphCount - 1);
         for (const moment of sample.moments) {
-          expect(moment.crestHeaviest).toBe(true);
-          expect(moment.crestBluest).toBe(true);
-          expect(moment.crestTint).toBeGreaterThan(150);
-          // On a short recommendation the crest may cover most of the line.
-          expect(moment.crestGain).toBeGreaterThan(200);
-          expect(moment.crestSize).toBeGreaterThan(1.12);
-          expect(moment.crestLift).toBeGreaterThan(0.2);
-          expect(moment.aheadAtRest).toBe(true);
-          expect(moment.behindAtRest).toBe(true);
+          expect(moment.crestSize).toBeGreaterThan(1.15);
           expect(moment.spacingDrift).toBeLessThan(0.35);
         }
+        expect(sample.peakTint).toBeGreaterThan(150);
+        expect(sample.minBounceScale).toBeLessThan(0.985);
+        expect(sample.endsAtRest).toBe(true);
         await expect(visual).toHaveCount(0);
       } else {
         await expect(page.locator(".comma-suggestion-acceptance")).toHaveCount(0);

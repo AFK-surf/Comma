@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@comma/test-utils/render";
 import { describe, expect, it, vi } from "vitest";
 import { ChatPanelFile, type ChatPanelFileOpenInAction } from "../ChatPanelMedia";
 import { ChatPanelFileOpenInMenu } from "../ChatPanelFileOpenInMenu";
+import { ChatPanelPreviewCard } from "../ChatPanelPreviewCard";
 
 const application = { id: "preview", name: "Preview", isDefault: true };
 const createAction = (): ChatPanelFileOpenInAction => ({
@@ -178,5 +179,29 @@ describe("Open in menu", () => {
       )
     );
     expect(action.openApplication).not.toHaveBeenCalled();
+  });
+});
+
+describe("preview card", () => {
+  it("opens from a press anywhere on it and from the word of its one button, whose chevron opens Open in instead", async () => {
+    const user = userEvent.setup();
+    const open = vi.fn();
+    const action = createAction();
+    render(
+      <ChatPanelPreviewCard onOpen={open} openIn={action} subtitle="MD" title="plan.md">
+        <p>Top of the page</p>
+      </ChatPanelPreviewCard>
+    );
+    await user.click(screen.getByText("plan.md"));
+    expect(open).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByText("MD"));
+    expect(open).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "Open plan.md" }));
+    expect(open).toHaveBeenCalledTimes(3);
+
+    await user.click(screen.getByRole("button", { name: "Open in" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Preview" }));
+    await waitFor(() => expect(action.openApplication).toHaveBeenCalledOnce());
+    expect(open).toHaveBeenCalledTimes(3);
   });
 });

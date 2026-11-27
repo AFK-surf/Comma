@@ -113,6 +113,143 @@ defmodule SalixAgent.ToolPolicyTest do
     refute descriptions =~ ~r/\bthe owner\b/i
   end
 
+  test "help tool summary lists every hidden discovery namespace" do
+    entry = Tools.find_entry("help")
+    desc = Tools.entry_description(entry)
+
+    for ns <- ToolDisclosure.discovery_namespaces() do
+      assert String.contains?(desc, ns),
+             "Expected help tool description to mention discovery namespace #{inspect(ns)}"
+    end
+  end
+
+  test "sandbox Router prompt does not tell the Router to copy local files to a retired Cloud VM" do
+    ctx =
+      SalixAgent.TestSupport.with_plugin_projection(%{
+        agent_id: "policy-agent",
+        cloud_vm_retired: true
+      })
+
+    disclosure =
+      "router"
+      |> ToolDisclosure.materialize(:internal, ctx)
+      |> Map.put("cloud_vm_retired", true)
+
+    prompt = ToolPolicy.session_prompt("router", %{}, nil, :internal, disclosure)
+
+    refute prompt =~ "or must run on the Cloud VM or in a sandbox."
+    assert prompt =~ "or must run in a sandbox."
+  end
+
+  test "meeting role omits tool disclosure, turn rules, and web/shopping guidance" do
+    ctx = SalixAgent.TestSupport.with_plugin_projection(%{agent_id: "meeting-agent"})
+    disclosure = ToolDisclosure.materialize("meeting", :internal, ctx)
+
+    assert disclosure["tools"] == []
+    assert ToolPolicy.specs_for("meeting") == []
+
+    prompt =
+      ToolPolicy.compose_session_prompt(
+        "meeting",
+        %{"system_prompt" => "Summarize the meeting."},
+        "meeting-agent",
+        :internal,
+        disclosure,
+        "Available skills:\n- example"
+      )
+
+    assert prompt =~ "Summarize the meeting."
+    refute prompt =~ "## Tool Disclosure"
+    refute prompt =~ "## Turn rules"
+    refute prompt =~ "## Compatibility and purchase checks"
+    refute prompt =~ "## Sites that refuse cloud machines"
+    refute prompt =~ "Available skills:"
+  end
+
+  test "guest Router omits task, station, Slack, and desktop-browser sections" do
+    ctx =
+      SalixAgent.TestSupport.with_plugin_projection(%{
+        agent_id: "guest-agent",
+        guest_policy: :restricted
+      })
+
+    disclosure =
+      "router"
+      |> ToolDisclosure.materialize(:internal, ctx)
+      |> Map.put("guest_policy", "restricted")
+
+    prompt = ToolPolicy.session_prompt("router", %{}, nil, :internal, disclosure)
+
+    assert prompt =~ "This workspace is a guest trial."
+    assert prompt =~ "## History and memory"
+    assert prompt =~ "search this session's history"
+    assert prompt =~ "im_api.internal.read_conversation"
+    assert prompt =~ "## Compatibility and purchase checks"
+    assert prompt =~ "## Tool Disclosure"
+    refute prompt =~ "skill.create, then edit /.runtime/skills/"
+    refute prompt =~ "## What you do yourself and what goes to a Task"
+    refute prompt =~ "## Task execution"
+    refute prompt =~ "## Worker results"
+    refute prompt =~ "## Task requests"
+    refute prompt =~ "## Multi-agent collaboration"
+    refute prompt =~ "## Slack"
+    refute prompt =~ "## Sites that refuse cloud machines"
+    refute prompt =~ "station.list lists the workspace's Stations"
+  end
+
+  test "triage Worker uses slim triage base and omits irrelevant worker sections" do
+    ctx =
+      SalixAgent.TestSupport.with_plugin_projection(%{
+        agent_id: "triage-worker",
+        cloud_vm_retired: true,
+        triage_investigation: true
+      })
+
+    disclosure =
+      "worker"
+      |> ToolDisclosure.materialize(:internal, ctx)
+      |> Map.put("cloud_vm_retired", true)
+
+    prompt =
+      ToolPolicy.compose_session_prompt(
+        "worker",
+        %{},
+        "triage-worker",
+        :internal,
+        disclosure,
+        "Available skills:\n- agent-migration: migrate"
+      )
+
+    assert prompt =~ "You are a Triage Worker agent"
+    assert prompt =~ "## Triage investigation protocol"
+    assert prompt =~ "## Public voice for Triage replies"
+    assert prompt =~ "## Information flow"
+    refute prompt =~ "create a sandbox Task for it"
+    refute prompt =~ "record it with a milestone block"
+    refute prompt =~ "## Evidence and investigation"
+    refute prompt =~ "## Multi-agent collaboration"
+    refute prompt =~ "## Answers for people"
+    refute prompt =~ "## Compatibility and purchase checks"
+    refute prompt =~ "## Sites that refuse cloud machines"
+    refute prompt =~ "Available skills:"
+  end
+
+  test "router prompt starts read-only lookup tasks immediately and tries before reporting blocked sites" do
+    prompt = session_prompt("router", %{})
+
+    assert prompt =~ "For read-only research, fact-checking, or lookup Tasks"
+    assert prompt =~ "do not pause to ask where or how to run"
+
+    assert prompt =~
+             "forward the user's actual request and any attachment into a Task immediately"
+
+    assert prompt =~
+             "Never skip a lookup or stop early on the assumption that a site will block cloud machines"
+
+    assert prompt =~
+             "retry the site directly in the Comma in-app browser on that computer without asking first"
+  end
+
   defp callable_names(role) do
     ctx = SalixAgent.TestSupport.with_plugin_projection(%{agent_id: "policy-agent"})
     disclosure = ToolDisclosure.materialize(role, :internal, ctx)

@@ -1,0 +1,16 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": true,
+    "launchOptions": {
+      "executablePath": "/usr/bin/chromium",
+      "headless": false,
+      "chromiumSandbox": true,
+      "args": ["--window-position=0,0", "--window-size=1280,720"]
+    },
+    "contextOptions": {
+      "viewport": null
+    }
+  },
+  "outputDir": "/tmp/playwright-mcp"
+}

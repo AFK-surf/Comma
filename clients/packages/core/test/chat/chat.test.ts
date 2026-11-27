@@ -268,6 +268,9 @@ describe("a conversation kept on the device", () => {
     const hold = host.api.hold("POST", `${base}/messages`);
     await first.time.pass(1_500);
     const sent = host.api.seen("POST", `${base}/messages`);
+    expect(new URLSearchParams(sent[0]!.path.split("?")[1]).get("message_limit")).toBe(
+      "24"
+    );
     const requestId = (sent[0]!.body as { client_request_id: string })
       .client_request_id;
     first.client.close();
@@ -301,6 +304,9 @@ describe("a conversation kept on the device", () => {
     // The device stops (no orderly close) well within the second a draft waits to be written.
     await first.time.pass(10);
     const sent = host.api.seen("POST", `${base}/messages`);
+    expect(new URLSearchParams(sent[0]!.path.split("?")[1]).get("message_limit")).toBe(
+      "24"
+    );
     const requestId = (sent[0]!.body as { client_request_id: string })
       .client_request_id;
     first.client.close();
@@ -334,6 +340,9 @@ describe("a conversation kept on the device", () => {
     void first.act("send", { text: "Kept the old way" }).catch(() => undefined);
     await first.time.pass(10);
     const sent = host.api.seen("POST", `${base}/messages`);
+    expect(new URLSearchParams(sent[0]!.path.split("?")[1]).get("message_limit")).toBe(
+      "24"
+    );
     const requestId = (sent[0]!.body as { client_request_id: string })
       .client_request_id;
     // The device holds what an earlier version wrote: the unsent message inside the conversation's doc.
@@ -710,6 +719,47 @@ describe("a workspace image", () => {
       encodeURIComponent(path)
     );
   });
+
+  it("reads a collaborative task image through the collaboration files route", async () => {
+    const host = new FakeHost();
+    const source = Uint8Array.of(137, 80, 78, 71);
+    const preview = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
+    const { Effect } = await import("effect");
+    host.renderImagePreview = (input) =>
+      Effect.sync(() => {
+        expect(input).toEqual({ bytes: source, mediaType: "image/png" });
+        return preview;
+      });
+    host.api.on("GET", "/v1/comma/collaborations/grp_1/cnv1_collab/files", {
+      status: 200,
+      headers: [["content-type", "image/png"]],
+      body: source,
+    });
+    const t = setup(host);
+    t.core.observeSession(signedIn());
+    const uploadedPath = `/task/cnv1_collab/uploads/${"q".repeat(22)}-image.png`;
+    const uploadedRead = t.client.call("chat.readGroupImage", {
+      conversationId: "cnv1_collab",
+      groupId: "grp_1",
+      path: uploadedPath,
+      source: "group-file",
+    });
+    const workerPath = "/task/charts/plot.png";
+    const workerRead = t.client.call("chat.readGroupImage", {
+      conversationId: "cnv1_collab",
+      groupId: "grp_1",
+      path: workerPath,
+      source: "group-file",
+    });
+    await t.time.pass(100);
+    expect(new Uint8Array((await uploadedRead) as Uint8Array)).toEqual(preview);
+    expect(new Uint8Array((await workerRead) as Uint8Array)).toEqual(preview);
+    const seen = t.api.seen("GET", "/v1/comma/collaborations/grp_1/cnv1_collab/files");
+    expect(seen).toHaveLength(2);
+    expect(seen[0]!.path).toContain(encodeURIComponent(uploadedPath));
+    expect(seen[1]!.path).toContain(encodeURIComponent(workerPath));
+    expect(t.api.seen("GET", "/v1/comma/groups/grp_1/files")).toHaveLength(0);
+  });
 });
 
 describe("a task's conversation", () => {
@@ -967,6 +1017,24 @@ describe("the workspace's chat", () => {
     ]);
   });
 
+  it("waits for a file on a slow uplink longer than for a small request", async () => {
+    const t = resolving();
+    const path = `/uploads/${"f".repeat(22)}-photo.png`;
+    const size = 2_000_000;
+    t.api.on("POST", "/v1/comma/groups/grp_1/files", { path, name: "photo.png", size });
+    // A phone sends 2 MB in 40 s: the server answers only once it has the whole file.
+    const answer = t.api.hold("POST", "/v1/comma/groups/grp_1/files");
+    const uploaded = t.client.call("chat.uploadTaskFile", {
+      workspaceId: "wsp_1",
+      name: "photo.png",
+      bytes: new Uint8Array(size),
+    });
+    await t.time.pass(40_000);
+    answer();
+    await t.time.pass(500);
+    await expect(uploaded).resolves.toEqual({ name: "photo.png", path, size });
+  });
+
   it("fails a cloud Task the server refused with why, in its words", async () => {
     const t = resolving();
     makingTasks(t.api, "no plan serves claude-opus-5-5");
@@ -985,6 +1053,94 @@ describe("the workspace's chat", () => {
     expect(await refused).toMatchObject({
       code: "refused",
       message: "no plan serves claude-opus-5-5",
+    });
+  });
+
+  it("starts a Task on a Monoid workspace with workspace default or runtime model, and preserves machine_offline", async () => {
+    const t = resolving();
+    makingTasks(t.api);
+    const defaultTask = t.client.call("chat.startTask", {
+      workspaceId: "wsp_1",
+      key: "task-monoid-1",
+      stillfail: { deviceId: "dev_monoid_1" },
+      text: "check deploy",
+    });
+    await t.time.pass(500);
+    await expect(defaultTask).resolves.toEqual({
+      groupId: "grp_1",
+      conversationId: "cnv_task_1",
+    });
+
+    const runtimeTask = t.client.call("chat.startTask", {
+      workspaceId: "wsp_1",
+      key: "task-monoid-2",
+      stillfail: {
+        deviceId: "dev_monoid_1",
+        provider: "claude",
+        model: "claude-opus-5-5",
+      },
+      text: "fix tests",
+    });
+    await t.time.pass(500);
+    await expect(runtimeTask).resolves.toEqual({
+      groupId: "grp_1",
+      conversationId: "cnv_task_2",
+    });
+
+    expect(
+      t.api
+        .seen("POST", "/v1/comma/workspaces/wsp_1/tasks")
+        .map((request) => request.body)
+    ).toEqual([
+      {
+        client_request_id: "task-monoid-1",
+        text: "check deploy",
+        runs_on: { kind: "station", device_id: "dev_monoid_1" },
+      },
+      {
+        client_request_id: "task-monoid-2",
+        text: "fix tests",
+        runs_on: { kind: "station", device_id: "dev_monoid_1" },
+        model: { kind: "runtime", provider: "claude", model: "claude-opus-5-5" },
+      },
+    ]);
+
+    // Cloud model and stillfail cannot both be passed.
+    await expect(
+      t.client.call("chat.startTask", {
+        workspaceId: "wsp_1",
+        key: "task-monoid-3",
+        model: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+        stillfail: { deviceId: "dev_monoid_1" },
+        text: "invalid",
+      })
+    ).rejects.toMatchObject({
+      code: "invalid_params",
+      message: "stillfail and cloud model cannot both be set",
+    });
+
+    // Server 409 machine_offline keeps its code and message.
+    t.api.on("POST", "/v1/comma/workspaces/wsp_1/tasks", () =>
+      json(409, {
+        error: "machine_offline",
+        message: "That Monoid workspace is offline.",
+      })
+    );
+    const offlineError = t.client
+      .call("chat.startTask", {
+        workspaceId: "wsp_1",
+        key: "task-monoid-4",
+        stillfail: { deviceId: "dev_monoid_off" },
+        text: "hello",
+      })
+      .then(
+        () => undefined,
+        (failure: unknown) => failure
+      );
+    await t.time.pass(500);
+    expect(await offlineError).toMatchObject({
+      code: "machine_offline",
+      message: "That Monoid workspace is offline.",
     });
   });
 
@@ -1276,6 +1432,65 @@ describe("a draft the app suggests", () => {
     await prefill("Connect another device");
     await t.time.pass(100);
     expect(shownDraft()).toBe("Mine\n\nConnect another device");
+  });
+
+  it("marks the message sent from a draft Raycast filled, until that draft is sent or emptied", async () => {
+    const t = setup();
+    t.api.on("GET", base, conversation([]));
+    t.api.on("POST", `${base}/messages`, (request) => {
+      const body = request.body as { client_request_id: string };
+      return json(
+        200,
+        conversation([message("m_sent", "user", "sent", body.client_request_id)])
+      );
+    });
+    t.core.observeSession(signedIn());
+    t.show();
+    await t.time.pass(100);
+    const sent = () =>
+      t.api
+        .seen("POST", `${base}/messages`)
+        .map(
+          (r) => (r.body as { client_entry?: string; message: { text: string } }) ?? {}
+        )
+        .map((body) => [body.message.text, body.client_entry]);
+    const sources = () =>
+      (
+        t.shown() as
+          | { messages: { clientSource?: string; source: string }[] }
+          | undefined
+      )?.messages
+        .filter((m) => m.source === "pending")
+        .map((m) => m.clientSource);
+
+    // Written in Raycast, edited here, then sent: the message is still Raycast's, and shows so before the server
+    // answers.
+    await t.act("setDraft", { draft: "Book a table", entry: "raycast" });
+    await t.act("setDraft", { draft: "Book a table for two" });
+    const hold = t.api.hold("POST", `${base}/messages`);
+    void t.act("send", { text: "Book a table for two" }).catch(() => undefined);
+    await t.time.pass(100);
+    expect(sources()).toEqual(["raycast"]);
+    hold();
+    await t.time.pass(1_500);
+
+    // The next draft was written here.
+    await t.act("setDraft", { draft: "And a taxi" });
+    await t.act("send", { text: "And a taxi" });
+    await t.time.pass(1_500);
+
+    // A Raycast draft the person emptied leaves no mark on what they write next.
+    await t.act("setDraft", { draft: "Never mind", entry: "raycast" });
+    await t.act("setDraft", { draft: "" });
+    await t.act("setDraft", { draft: "Thanks" });
+    await t.act("send", { text: "Thanks" });
+    await t.time.pass(1_500);
+
+    expect(sent()).toEqual([
+      ["Book a table for two", "raycast"],
+      ["And a taxi", undefined],
+      ["Thanks", undefined],
+    ]);
   });
 
   it("fails when the conversation is not ready within 10 seconds", async () => {

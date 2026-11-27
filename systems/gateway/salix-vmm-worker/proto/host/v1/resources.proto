@@ -1,0 +1,698 @@
+syntax = "proto3";
+
+package agentvmm.host.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
+
+option go_package = "github.com/AFK-surf/agent-vmm/api/host/v1;hostv1";
+
+enum WorkspaceEntryKind {
+  WORKSPACE_ENTRY_KIND_UNSPECIFIED = 0;
+  WORKSPACE_ENTRY_KIND_FILE = 1;
+  WORKSPACE_ENTRY_KIND_DIRECTORY = 2;
+}
+
+// WorkspaceEntry describes one path relative to an authorized workspace root.
+message WorkspaceEntry {
+  string path = 1;
+  WorkspaceEntryKind kind = 2;
+  uint64 size = 3;
+  uint32 mode = 4;
+  int64 modified_unix_nanos = 5;
+  bytes sha256 = 6;
+}
+
+// WriteWorkspaceHeader binds a write request to its target, offset, prefix digest, and owned
+// volume.
+message WriteWorkspaceHeader {
+  string request_id = 1;
+  string path = 2;
+  uint64 offset = 3;
+  bytes expected_prefix_sha256 = 4;
+  uint32 mode = 5;
+  string volume_id = 6;
+}
+
+// ExtractWorkspaceHeader binds an archive extraction request to its owned destination.
+message ExtractWorkspaceHeader {
+  string request_id = 1;
+  string path = 2;
+}
+
+// VM reports VM lifecycle state and boot identity, not individual application readiness.
+message VM {
+  VMState state = 1;
+  string boot_id = 2;
+  string error = 3;
+}
+
+// VMMutationFence captures the observed whole-VM authority before an explicit start or stop.
+message VMMutationFence {
+  VMState state = 1;
+  string boot_id = 2;
+  // observed_workloads is bounded evidence, not an exhaustive authorization
+  // list. The whole-VM acknowledgement includes workloads added after this
+  // observation and workloads that are not individually enumerable.
+  repeated ResourceReference observed_workloads = 3;
+  bool whole_vm_impact_acknowledged = 4;
+}
+
+enum EgressMode {
+  EGRESS_MODE_UNSPECIFIED = 0;
+  EGRESS_MODE_DENY_ALL = 1;
+  EGRESS_MODE_PUBLIC_INTERNET = 2;
+}
+
+// ResourceLimits grants PID and writable disk limits. CPU and memory remain shared within Guest
+// capacity.
+message ResourceLimits {
+  reserved 1, 2;
+  reserved "cpu_millis", "memory_bytes";
+  optional uint32 pids = 3;
+  optional uint64 disk_bytes = 4;
+}
+
+enum EnvironmentOwnerKind {
+  ENVIRONMENT_OWNER_KIND_UNSPECIFIED = 0;
+  ENVIRONMENT_OWNER_KIND_LOCAL = 1;
+  ENVIRONMENT_OWNER_KIND_REMOTE_REGISTRATION = 2;
+}
+
+// EnvironmentOwner binds an environment to local ownership or an exact remote registration and
+// allocation.
+message EnvironmentOwner {
+  EnvironmentOwnerKind kind = 1;
+  string registration_id = 2;
+  string allocation_id = 3;
+}
+
+enum EnvironmentOrigin {
+  ENVIRONMENT_ORIGIN_UNSPECIFIED = 0;
+  ENVIRONMENT_ORIGIN_LOCAL = 1;
+  ENVIRONMENT_ORIGIN_REMOTE = 2;
+}
+
+// AgentEnvironment combines durable environment policy with explicitly fresh or unavailable
+// runtime inventory.
+message AgentEnvironment {
+  string id = 1;
+  string display_name = 2;
+  string namespace_id = 3;
+  ResourceLimits limits = 4;
+  EgressMode egress_mode = 5;
+  HealthStatus health = 6;
+  Usage usage = 7;
+  repeated Container containers = 8;
+  repeated Volume volumes = 9;
+  uint64 policy_revision = 10;
+  EnvironmentOwner owner = 11;
+  EnvironmentOrigin origin = 12;
+  InventoryState inventory_state = 13;
+  string inventory_message = 14;
+  google.protobuf.Timestamp inventory_observed_at = 15;
+}
+
+enum InventoryState {
+  INVENTORY_STATE_UNSPECIFIED = 0;
+  INVENTORY_STATE_AVAILABLE = 1;
+  INVENTORY_STATE_VM_STOPPED = 2;
+  INVENTORY_STATE_UNAVAILABLE = 3;
+  INVENTORY_STATE_STALE = 4;
+}
+
+enum IntegrationScope {
+  INTEGRATION_SCOPE_UNSPECIFIED = 0;
+  INTEGRATION_SCOPE_USER = 1;
+  INTEGRATION_SCOPE_WORKSPACE = 2;
+  INTEGRATION_SCOPE_MANUAL = 3;
+}
+
+enum IntegrationDesiredState {
+  INTEGRATION_DESIRED_STATE_UNSPECIFIED = 0;
+  INTEGRATION_DESIRED_STATE_ALLOWED = 1;
+  INTEGRATION_DESIRED_STATE_REMOVED = 2;
+}
+
+enum IntegrationConfigState {
+  INTEGRATION_CONFIG_STATE_UNSPECIFIED = 0;
+  INTEGRATION_CONFIG_STATE_PENDING = 1;
+  INTEGRATION_CONFIG_STATE_READY = 2;
+  INTEGRATION_CONFIG_STATE_NEEDS_RESTART = 3;
+  INTEGRATION_CONFIG_STATE_CONFLICT = 4;
+  INTEGRATION_CONFIG_STATE_ERROR = 5;
+  INTEGRATION_CONFIG_STATE_REMOVING = 6;
+  INTEGRATION_CONFIG_STATE_REMOVED = 7;
+  INTEGRATION_CONFIG_STATE_CONFIGURING = 8;
+}
+
+// AgentIntegration records local client configuration intent independently of a runtime session's
+// lifetime.
+message AgentIntegration {
+  string id = 1;
+  string adapter_id = 2;
+  string display_name = 3;
+  IntegrationScope scope = 4;
+  string config_target = 5;
+  string environment_id = 6;
+  IntegrationDesiredState desired_state = 7;
+  IntegrationConfigState config_state = 8;
+  string config_fingerprint = 9;
+  uint64 revision = 10;
+  string last_error_code = 11;
+  string last_error_message = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  google.protobuf.Timestamp last_verified_at = 15;
+}
+
+enum AgentSessionOrigin {
+  reserved "AGENT_SESSION_ORIGIN_REMOTE_LEASE";
+  AGENT_SESSION_ORIGIN_UNSPECIFIED = 0;
+  AGENT_SESSION_ORIGIN_LOCAL_INTEGRATION = 1;
+  AGENT_SESSION_ORIGIN_REMOTE_ALLOCATION = 2;
+}
+
+enum AgentSessionState {
+  AGENT_SESSION_STATE_UNSPECIFIED = 0;
+  AGENT_SESSION_STATE_LISTENING = 1;
+  AGENT_SESSION_STATE_CONNECTED = 2;
+  AGENT_SESSION_STATE_REVOKED = 3;
+  AGENT_SESSION_STATE_EXPIRED = 4;
+  AGENT_SESSION_STATE_CLOSED = 5;
+}
+
+// AgentSession reports a revocable environment-scoped runtime capability rather than workload
+// lifetime.
+message AgentSession {
+  string id = 1;
+  string integration_id = 2;
+  string environment_id = 3;
+  AgentSessionOrigin origin = 4;
+  AgentSessionState state = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  google.protobuf.Timestamp connected_at = 8;
+  google.protobuf.Timestamp last_activity_at = 9;
+  uint32 active_connection_count = 10;
+  string terminal_reason = 11;
+}
+
+enum ContainerState {
+  CONTAINER_STATE_UNSPECIFIED = 0;
+  CONTAINER_STATE_CREATED = 1;
+  CONTAINER_STATE_RUNNING = 2;
+  CONTAINER_STATE_STOPPED = 3;
+  CONTAINER_STATE_UNKNOWN = 4;
+}
+
+// VolumeMount selects an owned volume or approved Host share without accepting a raw Host path.
+message VolumeMount {
+  oneof source {
+    string owned_volume = 1;
+    string host_share = 4;
+  }
+  string destination = 2;
+  bool read_only = 3;
+}
+
+// Container combines durable configuration with reconciled process state and current instance
+// fences.
+message Container {
+  string id = 1;
+  string image = 2;
+  ContainerState state = 3;
+  optional uint32 exit_code = 4;
+  repeated VolumeMount volumes = 5;
+  Usage usage = 6;
+  repeated string argv = 7;
+  repeated string environment_keys = 8;
+  optional string workdir = 9;
+  optional string user = 10;
+  string instance_id = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp started_at = 13;
+  google.protobuf.Timestamp finished_at = 14;
+  string generation_id = 15;
+  optional bool desired_running = 16;
+  optional bool configuration_matches = 17;
+  // Guest instance recorded by the most recent successful Start request.
+  // Retained after stop; this does not prove that the instance is running.
+  string start_request_instance_id = 18;
+}
+
+// StringList preserves the distinction between an omitted command override and an explicitly empty
+// argument list.
+message StringList {
+  repeated string values = 1;
+}
+
+enum ExecutionKind {
+  EXECUTION_KIND_UNSPECIFIED = 0;
+  EXECUTION_KIND_MAIN_EXECUTION = 1;
+  EXECUTION_KIND_AUTH_OPERATION = 2;
+  EXECUTION_KIND_MIGRATION_EXPORT = 3;
+  EXECUTION_KIND_MIGRATION_IMPORT = 4;
+  EXECUTION_KIND_EXEC = 5;
+  EXECUTION_KIND_PROCESS = 6;
+  EXECUTION_KIND_BUILD = 7;
+}
+
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_ACTIVE = 1;
+  EXECUTION_STATE_UNKNOWN = 2;
+}
+
+enum ExecutionListStatus {
+  EXECUTION_LIST_STATUS_UNSPECIFIED = 0;
+  EXECUTION_LIST_STATUS_RECOVERING = 1;
+  EXECUTION_LIST_STATUS_NOT_FOUND = 2;
+  EXECUTION_LIST_STATUS_STALE = 3;
+  EXECUTION_LIST_STATUS_STOPPED = 4;
+  EXECUTION_LIST_STATUS_EMPTY = 5;
+  EXECUTION_LIST_STATUS_PRESENT = 6;
+}
+
+// Execution identifies one instance-bound accepted execution whose settlement can outlive its
+// caller connection.
+message Execution {
+  string execution_id = 1;
+  string container_instance_id = 2;
+  ExecutionKind kind = 3;
+  ExecutionState state = 4;
+  int64 acquired_unix_nano = 5;
+  int64 deadline_unix_nano = 6;
+  string owner = 7;
+}
+
+// ImportImageHeader commits the immutable archive identity before URL download or local chunk
+// upload.
+message ImportImageHeader {
+  string request_id = 1;
+  string image_reference = 2;
+  bytes archive_sha256 = 3;
+  string manifest_digest = 4;
+  string platform = 5;
+  uint64 archive_size = 6;
+  // Non-empty: public HTTPS download, followed by EOF.
+  // Empty: archive_chunk messages followed by EOF, with exact size and SHA256.
+  // Chunks are non-empty and at most 3 MiB. Archives are at most 8 GiB.
+  string archive_url = 7;
+}
+
+// ImageOperationReceipt keeps the business result separate from proof that all operation writers
+// settled.
+message ImageOperationReceipt {
+  string request_id = 1;
+  string input_sha256 = 2;
+  ImageOperationKind kind = 3;
+  ImageOperationState state = 4;
+  bool writer_settled = 5;
+  string execution_id = 6;
+  string container_id = 7;
+  string expected_instance_id = 8;
+  string image_reference = 9;
+  string manifest_digest = 10;
+  google.rpc.Status status = 11;
+  string runtime_instance_id = 13;
+}
+
+// Image describes a logical image grant and any content-bound build or copy receipt.
+message Image {
+  string reference = 1;
+  string digest = 2;
+  uint64 logical_bytes = 3;
+  repeated string platforms = 4;
+  repeated string used_by_container_ids = 5;
+  string generation_id = 6;
+  ImageOperationReceipt build_receipt = 7;
+  ImageOperationReceipt copy_receipt = 8;
+}
+
+enum ImageOrigin {
+  // Zero selects the caller's current allocation.
+  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+  IMAGE_ORIGIN_CURRENT_ALLOCATION = 0;
+  IMAGE_ORIGIN_CONTROLLER_RETAINED = 1;
+}
+
+enum LogStream {
+  LOG_STREAM_UNSPECIFIED = 0;
+  LOG_STREAM_STDOUT = 1;
+  LOG_STREAM_STDERR = 2;
+}
+
+enum ProcessSignal {
+  PROCESS_SIGNAL_UNSPECIFIED = 0;
+  PROCESS_SIGNAL_TERM = 1;
+  PROCESS_SIGNAL_KILL = 2;
+  PROCESS_SIGNAL_INT = 3;
+}
+
+// ExecStart binds process arguments and execution identity to the expected container instance.
+message ExecStart {
+  string request_id = 1;
+  string container_id = 2;
+  repeated string argv = 3;
+  repeated string env = 4;
+  optional string workdir = 5;
+  optional string user = 6;
+  bool tty = 7;
+  uint32 rows = 8;
+  uint32 columns = 9;
+  string expected_instance_id = 10;
+  string execution_id = 11;
+  ExecutionKind execution_kind = 12;
+  int64 execution_deadline_unix_nano = 13;
+  uint64 timeout_ms = 14;
+}
+
+// ExecResize changes the terminal dimensions of an already accepted PTY execution.
+message ExecResize {
+  uint32 rows = 1;
+  uint32 columns = 2;
+}
+
+// Volume reports an owned named volume and the environment disk limit that contains it.
+message Volume {
+  string id = 1;
+  Usage usage = 2;
+  uint64 limit_bytes = 3;
+  repeated string mounted_by = 4;
+}
+
+// ForwardTCPHeader selects the exact current container instance and TCP port before stream data.
+message ForwardTCPHeader {
+  string container_id = 1;
+  uint32 port = 2;
+  string container_instance_id = 3;
+}
+
+enum BuildNetworkMode {
+  BUILD_NETWORK_MODE_UNSPECIFIED = 0;
+  BUILD_NETWORK_MODE_NONE = 1;
+  BUILD_NETWORK_MODE_NAMESPACE_EGRESS = 2;
+}
+
+// BuildArgument supplies a Dockerfile argument. Secret values belong in BuildSecret instead.
+message BuildArgument {
+  string name = 1;
+  string value = 2;
+}
+
+// BuildSecret names a secret whose bytes arrive through the separate bounded secret stream.
+message BuildSecret {
+  string id = 1;
+}
+
+// BuildInputFingerprint records the content and build options that determine idempotent build
+// identity.
+message BuildInputFingerprint {
+  string dockerfile_path = 3;
+  string image = 4;
+  optional string target = 5;
+  repeated BuildArgument build_args = 6;
+  BuildNetworkMode network_mode = 7;
+  repeated BuildSecret secrets = 8;
+  string base_image_reference = 9;
+  string base_manifest_digest = 10;
+  string context_sha256 = 11;
+}
+
+// BuildImageHeader binds one build to its request, source context, base image, and execution
+// fence.
+message BuildImageHeader {
+  string request_id = 1;
+  string dockerfile_path = 2;
+  string image = 3;
+  optional string target = 4;
+  repeated BuildArgument build_args = 5;
+  BuildNetworkMode network_mode = 6;
+  repeated BuildSecret secrets = 7;
+  string container_id = 8;
+  string expected_instance_id = 9;
+  string execution_id = 10;
+  int64 execution_deadline_unix_nano = 11;
+  string base_image_reference = 12;
+  string base_manifest_digest = 13;
+  string context_sha256 = 14;
+}
+
+// BuildContextChunk carries context bytes and an explicit final marker before build execution.
+message BuildContextChunk {
+  bytes data = 1;
+  bool final = 2;
+}
+
+// BuildSecretChunk carries one named secret with an explicit final marker.
+message BuildSecretChunk {
+  string id = 1;
+  bytes data = 2;
+  bool final = 3;
+}
+
+// AllocationImageSource selects an image source by allocation identity and generation.
+message AllocationImageSource {
+  string allocation_id = 1;
+  uint64 allocation_generation = 2;
+}
+
+// RetainedImageSource selects retained controller image content through its original build
+// request.
+message RetainedImageSource {
+  string build_request_id = 1;
+}
+
+// ImageSource selects either a current allocation source or authorized retained build content.
+message ImageSource {
+  oneof source {
+    AllocationImageSource allocation = 1;
+    RetainedImageSource retained = 2;
+  }
+}
+
+// BuildImageResult commits the resulting image reference and manifest digest after
+// materialization.
+message BuildImageResult {
+  string image = 1;
+  string digest = 2;
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_HEALTHY = 1;
+  HEALTH_STATE_DEGRADED = 2;
+  HEALTH_STATE_UNAVAILABLE = 3;
+}
+
+// ComponentHealth reports one component observation with its reason and observation time.
+message ComponentHealth {
+  string component = 1;
+  HealthState state = 2;
+  string reason = 3;
+  google.protobuf.Timestamp observed_at = 4;
+}
+
+// HealthStatus combines component observations without treating missing facts as healthy.
+message HealthStatus {
+  HealthState state = 1;
+  repeated ComponentHealth components = 2;
+}
+
+// Usage reports sampled actual usage and explicit stale or unavailable state.
+message Usage {
+  uint64 cpu_nanos = 1;
+  uint64 memory_bytes = 2;
+  uint32 pids = 3;
+  uint64 read_bytes = 4;
+  uint64 write_bytes = 5;
+  uint64 disk_bytes = 6;
+  google.protobuf.Timestamp sampled_at = 7;
+  bool stale = 8;
+  uint64 network_rx_bytes = 9;
+  uint64 network_tx_bytes = 10;
+  string unavailable_reason = 11;
+}
+
+// DiskAccounting keeps physical usage, commitments, and independent import and reserve accounting
+// distinguishable.
+message DiskAccounting {
+  optional uint64 used_bytes = 1;
+  optional uint64 committed_bytes = 2;
+  optional uint64 capacity_bytes = 3;
+  optional uint64 import_reservation_bytes = 4;
+  optional uint64 system_reserve_bytes = 5;
+  optional uint64 metadata_reserve_bytes = 6;
+  optional uint64 image_runtime_bytes = 7;
+  optional uint64 build_cache_bytes = 8;
+  optional uint64 private_bytes = 9;
+  optional uint64 other_bytes = 10;
+  google.protobuf.Timestamp breakdown_sampled_at = 11;
+}
+
+// LayerResources reports sampled resource facts for one implementation layer and preserves
+// unavailable observations.
+message LayerResources {
+  optional uint64 memory_bytes = 1;
+  optional uint32 pids = 2;
+  optional uint32 open_fds = 3;
+  DiskAccounting disk = 4;
+  string unavailable_reason = 5;
+  google.protobuf.Timestamp sampled_at = 6;
+}
+
+// ResourceReference identifies an owned object and its generation for impact or error reporting.
+message ResourceReference {
+  string kind = 1;
+  string environment_id = 2;
+  string resource_id = 3;
+  uint64 generation = 4;
+  string generation_id = 5;
+}
+
+// ContainerIDList selects an explicit container set rather than all containers.
+message ContainerIDList {
+  repeated string ids = 1;
+}
+
+// ContainerSelector selects all current containers or one explicit set for an internal network
+// projection.
+message ContainerSelector {
+  oneof selection {
+    bool all_containers = 1;
+    ContainerIDList container_ids = 2;
+  }
+}
+
+// NetworkLink describes the Guest policy projection retained beneath service authorization. It has
+// no public mutation RPC.
+message NetworkLink {
+  string id = 1;
+  string source_environment_id = 2;
+  string destination_environment_id = 3;
+  ContainerSelector source = 4;
+  ContainerSelector destination = 5;
+  repeated uint32 tcp_ports = 6;
+  string dns_alias = 7;
+}
+
+enum CleanupKind {
+  CLEANUP_KIND_UNSPECIFIED = 0;
+  CLEANUP_KIND_RESET = 1;
+  CLEANUP_KIND_DISCARD = 2;
+}
+
+// CleanupImpact states the exact resource effect and whether it blocks or irreversibly changes
+// cleanup.
+message CleanupImpact {
+  ResourceReference resource = 1;
+  string effect = 2;
+  bool irreversible = 3;
+  bool blocker = 4;
+}
+
+// CleanupPlan binds one environment's reset or discard impacts to a current revision.
+message CleanupPlan {
+  string environment_id = 1;
+  CleanupKind kind = 2;
+  uint64 revision = 3;
+  repeated CleanupImpact impacts = 4;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_STATE_RUNNING = 1;
+  OPERATION_STATE_SUCCEEDED = 2;
+  OPERATION_STATE_FAILED = 3;
+  OPERATION_STATE_INTERRUPTED = 4;
+}
+
+// OperationError records a safe machine reason, message, and affected resource for a stored
+// operation.
+message OperationError {
+  string reason = 1;
+  string message = 2;
+  ResourceReference resource = 3;
+}
+
+// Operation retains accepted request identity and observed progress through a terminal or
+// interrupted result.
+message Operation {
+  string id = 1;
+  string kind = 2;
+  ResourceReference resource = 3;
+  OperationState state = 4;
+  string stage = 5;
+  string request_id = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  OperationError error = 9;
+  string output_path = 10;
+}
+
+// SupportBundleItem declares diagnostic sensitivity and default inclusion before export approval.
+message SupportBundleItem {
+  string name = 1;
+  string description = 2;
+  bool sensitive = 3;
+  bool included_by_default = 4;
+}
+
+enum LocalDisposalTargetKind {
+  LOCAL_DISPOSAL_TARGET_KIND_UNSPECIFIED = 0;
+  LOCAL_DISPOSAL_TARGET_KIND_ENVIRONMENT = 1;
+  LOCAL_DISPOSAL_TARGET_KIND_REGISTRATION = 2;
+}
+
+// LocalDisposalPlan freezes one operator-selected local environment or complete registration
+// disposal scope.
+message LocalDisposalPlan {
+  LocalDisposalTargetKind target_kind = 1;
+  string target_id = 2;
+  uint64 revision = 3;
+  string namespace_id = 4;
+  string display_name = 5;
+  uint64 environment_count = 6;
+  bool activity_unknown = 7;
+}
+
+// LocalEnvironmentSummary reports bounded local owner facts while preserving partial or unknown
+// disk observations.
+message LocalEnvironmentSummary {
+  string id = 1;
+  string origin = 2;
+  string state = 3;
+  google.protobuf.Timestamp state_observed_at = 4;
+  optional uint64 private_disk_bytes = 5;
+  google.protobuf.Timestamp sampled_at = 6;
+  bool partial = 7;
+  string registration_id = 8;
+  string allocation_id = 9;
+  uint64 allocation_generation = 10;
+  uint64 revision = 11;
+}
+
+enum ImageOperationKind {
+  IMAGE_OPERATION_KIND_UNSPECIFIED = 0;
+  IMAGE_OPERATION_KIND_BUILD = 1;
+  IMAGE_OPERATION_KIND_COPY = 2;
+}
+
+enum ImageOperationState {
+  IMAGE_OPERATION_STATE_UNSPECIFIED = 0;
+  IMAGE_OPERATION_STATE_RUNNING = 1;
+  IMAGE_OPERATION_STATE_SUCCEEDED = 2;
+  IMAGE_OPERATION_STATE_FAILED = 3;
+  IMAGE_OPERATION_STATE_STOPPED = 4;
+  IMAGE_OPERATION_STATE_UNKNOWN = 5;
+}
+
+enum VMState {
+  VM_STATE_UNSPECIFIED = 0;
+  VM_STATE_STOPPED = 1;
+  VM_STATE_STARTING = 2;
+  VM_STATE_RUNNING = 3;
+  VM_STATE_STOPPING = 4;
+  VM_STATE_FAILED = 5;
+}

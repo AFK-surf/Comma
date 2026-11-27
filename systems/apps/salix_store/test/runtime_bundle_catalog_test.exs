@@ -18,7 +18,7 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
       assert template.image["platform"] == "linux/arm64"
 
       assert template.image["archiveUrl"] ==
-               "https://comma-release.afk.surf/runtime-bundles/sha256/#{template.image["archiveSha256"]}.oci.tar"
+               "https://comma-release.afk.surf/runtime-bundles/sha256/#{template.image["archiveSha256"]}.erofs.zst"
     end
   end
 
@@ -48,7 +48,7 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
                "47721ddbed08259663f848ff30b14ca2f844ba8fcc7fb03f8f3074e64a76d4c5",
              "archive_size" => 8,
              "archive_url" =>
-               "https://comma-release.afk.surf/runtime-bundles/sha256/47721ddbed08259663f848ff30b14ca2f844ba8fcc7fb03f8f3074e64a76d4c5.oci.tar"
+               "https://comma-release.afk.surf/runtime-bundles/sha256/47721ddbed08259663f848ff30b14ca2f844ba8fcc7fb03f8f3074e64a76d4c5.erofs.zst"
            }
 
     assert materialized.spec["egress_mode"] == "public_internet"
@@ -122,6 +122,20 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
     assert {:ok, image} = RuntimeBundleCatalog.image_for_workload(workload)
     assert image["manifestDigest"] == workload.runtime_revision
     assert image["reference"] == workload.spec["runtime_artifact"]["reference"]
+
+    legacy_oci =
+      put_in(
+        workload,
+        [:spec, "runtime_artifact", "archive_url"],
+        String.replace_suffix(
+          workload.spec["runtime_artifact"]["archive_url"],
+          ".erofs.zst",
+          ".oci.tar"
+        )
+      )
+
+    assert {:ok, legacy_image} = RuntimeBundleCatalog.image_for_workload(legacy_oci)
+    assert String.ends_with?(legacy_image["archiveUrl"], ".oci.tar")
 
     legacy = %{workload | spec: Map.delete(workload.spec, "runtime_artifact")}
 

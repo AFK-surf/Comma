@@ -71,6 +71,27 @@ defmodule SalixAgent.FileBackend do
     end
   end
 
+  @doc "Like `stream/2`, preserving `nil` size when Drive does not report `Content-Length`."
+  @spec stream_with_optional_size(ctx(), String.t()) ::
+          {:ok, Enumerable.t(), non_neg_integer() | nil} | {:error, :not_found} | {:error, term()}
+  def stream_with_optional_size(ctx, path) do
+    ctx = normalize_ctx(ctx)
+
+    cond do
+      SkillProjection.matches?(path) ->
+        SkillProjection.stream(ctx, path)
+
+      RuntimeFiles.matches?(path) ->
+        with {:ok, body} <- RuntimeFiles.read(ctx, path), do: {:ok, [body], byte_size(body)}
+
+      DriveMount.matches?(path) ->
+        DriveMount.stream_with_optional_size(ctx, path)
+
+      true ->
+        AgentWorkspace.stream(ctx_agent_id(ctx), path)
+    end
+  end
+
   @doc """
   List visible file paths. The Drive mount contributes only when `prefix`
   names it (`/drive/...`): a whole-tree listing does not sweep the Drive.
@@ -131,8 +152,9 @@ defmodule SalixAgent.FileBackend do
   end
 
   @doc "Prepare a streaming write event for the correct backend."
-  @spec prepare_write_stream(ctx(), String.t(), Enumerable.t()) :: {:ok, map()} | {:error, term()}
-  def prepare_write_stream(ctx, path, stream) do
+  @spec prepare_write_stream(ctx(), String.t(), Enumerable.t(), keyword()) ::
+          {:ok, map() | nil} | {:error, term()}
+  def prepare_write_stream(ctx, path, stream, opts \\ []) do
     ctx = normalize_ctx(ctx)
 
     cond do
@@ -146,10 +168,10 @@ defmodule SalixAgent.FileBackend do
         {:error, "#{RuntimeFiles.prefix()} is read-only"}
 
       DriveMount.matches?(path) ->
-        DriveMount.prepare_write_stream(ctx, path, stream)
+        DriveMount.prepare_write_stream(ctx, path, stream, opts)
 
       true ->
-        StorageAuthorization.prepare_write_stream(ctx_agent_id(ctx), path, stream, ctx)
+        StorageAuthorization.prepare_write_stream(ctx_agent_id(ctx), path, stream, ctx, opts)
     end
   end
 
@@ -185,7 +207,7 @@ defmodule SalixAgent.FileBackend do
     cond do
       normal_path?(from) and normal_path?(to) ->
         with {:ok, meta} <- AgentWorkspace.stat(ctx_agent_id(ctx), from) do
-          {:ok, [AgentWorkspace.prepare_copy(from, to)], meta[:size] || meta["size"]}
+          {:ok, [AgentWorkspace.prepare_copy(from, to)], meta[:size] || meta["size"] || 0}
         end
 
       true ->

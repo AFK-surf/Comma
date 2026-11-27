@@ -1,20 +1,23 @@
 import { memo, type Key, type RefObject } from "react";
 import { definedProps } from "../utils";
-import { Menu, MenuItem, MenuPopover } from "./Menu";
+import { Menu, MenuItem, MenuPopover, MenuSeparator } from "./Menu";
 import type { MenuPointerOffsets } from "./pointerPosition";
 import { menuCompactClasses } from "./styles";
 
-export type CopyContextMenuAction = "copy" | "reply";
+export type CopyContextMenuAction = "copy" | "forward" | "reply";
 
 export interface CopyContextMenuLabels {
   ariaLabel: string;
   copy: string;
+  /** Offers Forward (share selected text as image) below Copy when present. */
+  forward?: string | undefined;
   /** Offers Reply above Copy when present. */
   reply?: string | undefined;
 }
 
 export interface CopyContextMenuDisabledActions {
   copy?: boolean;
+  forward?: boolean;
   reply?: boolean;
 }
 
@@ -71,6 +74,15 @@ export const CopyContextMenu = memo(function CopyContextMenu({
         <MenuItem id="copy" {...definedProps({ isDisabled: disabledActions?.copy })}>
           {labels.copy}
         </MenuItem>
+        {labels.forward ? <MenuSeparator /> : null}
+        {labels.forward ? (
+          <MenuItem
+            id="forward"
+            {...definedProps({ isDisabled: disabledActions?.forward })}
+          >
+            {labels.forward}
+          </MenuItem>
+        ) : null}
       </Menu>
     </MenuPopover>
   );

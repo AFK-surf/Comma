@@ -32,8 +32,12 @@ sealed interface MediaSource {
     }
 }
 
+private val GROUP_UPLOAD_PATH = Regex("/uploads/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+")
+private val TASK_UPLOAD_PATH = Regex("/task/[A-Za-z0-9_-]+/uploads/[A-Za-z0-9_-]+-[A-Za-z0-9._-]+")
+
 fun validUploadedPath(path: String): Boolean = path.length <= 4096 &&
-    Regex("/uploads/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+").matches(path)
+    (GROUP_UPLOAD_PATH.matches(path) || TASK_UPLOAD_PATH.matches(path)) &&
+    !path.split("/").contains("..")
 
 fun validUploadedImagePath(path: String): Boolean = validUploadedPath(path) &&
     Regex(".+\\.(png|jpe?g|gif|webp)", RegexOption.IGNORE_CASE).matches(path)

@@ -32,6 +32,7 @@ extension PhoneAppDelegate {
         lastAccountID = session?.user.id
         synchronize()
         synchronizeBadge()
+        settleStorePurchases()
     }
 
     func workspaceChanged() {
@@ -83,6 +84,7 @@ extension PhoneAppDelegate {
                 scheduleActivityConfiguration(store)
                 await activityConfigurationTask?.value
                 await activity.settleRegistrations()
+                await liveStatusActivity.settleRegistrations()
             }
             guard store.isCurrent(boundary) else { completionHandler(.noData); return }
             if application.applicationState == .background { store.suspend() }

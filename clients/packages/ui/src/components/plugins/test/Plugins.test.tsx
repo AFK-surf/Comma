@@ -8,7 +8,17 @@ import {
   type PluginCategory,
   type PluginDefinition,
 } from "../Plugins";
+import { SkillFileSource } from "../SkillFileBrowser";
 import { stubProperty } from "@comma/test-utils/stub-property";
+
+const highlightInWorker = vi.hoisted(() =>
+  vi.fn<(text: string, language: string, theme: string) => Promise<never>>(
+    () => new Promise(() => {})
+  )
+);
+vi.mock("../../markdown-stream/shikiHighlightWorkerClient", () => ({
+  renderCodeHighlightInWorker: highlightInWorker,
+}));
 
 const notionPlugin: PluginDefinition = {
   id: "notion",
@@ -1334,5 +1344,28 @@ describe("Plugins", () => {
     expect(
       screen.getByRole("button", { name: "在聊天中试用 Linear" })
     ).toHaveTextContent("在聊天中试用");
+  });
+});
+
+describe("SkillFileSource", () => {
+  it("draws line numbers outside the text and names the language from the file name", () => {
+    const view = render(
+      <SkillFileSource path="scripts/Makefile" text={"all:\n\tmake"} />
+    );
+    const lines = screen.getAllByRole("listitem");
+    expect(lines[1]!.querySelector("[data-line]")).toHaveAttribute("data-line", "2");
+    expect(view.container).toHaveTextContent(/^all:\s*make$/);
+    expect(highlightInWorker).toHaveBeenLastCalledWith(
+      "all:\n\tmake",
+      "makefile",
+      "vitesse-light"
+    );
+
+    view.rerender(<SkillFileSource path="foo.constructor" text="x" />);
+    expect(highlightInWorker).toHaveBeenLastCalledWith(
+      "x",
+      "constructor",
+      "vitesse-light"
+    );
   });
 });

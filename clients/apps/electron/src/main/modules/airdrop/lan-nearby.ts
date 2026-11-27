@@ -35,9 +35,37 @@ export interface LanNearbyPlatform {
     port: number;
   }): { stop(): void };
   browse(found: (service: LanService) => void): { stop(): void };
-  /** POSTs `body` to the service; resolves with the HTTP status, rejects when unreachable. */
+  /**
+   * POSTs `body` to the service; resolves with the HTTP status. Rejects with
+   * `LanUnreachableError` when no address of the service took a connection
+   * (nothing was sent), with another error when the exchange failed after one did.
+   */
   post(service: LanService, body: unknown, signal: AbortSignal): Promise<number>;
 }
+
+/** No address of a receiver took a connection, so the invite never left this computer. */
+export class LanUnreachableError extends Error {
+  /** Each address tried, in order, with why it failed (an errno code, `timeout` or `aborted`). */
+  readonly tried: readonly { address: string; code: string }[];
+
+  constructor(tried: readonly { address: string; code: string }[]) {
+    super(
+      `No address connected: ${
+        tried.map(({ address, code }) => `${address} ${code}`).join(", ") ||
+        "none to try"
+      }`
+    );
+    this.name = "LanUnreachableError";
+    this.tried = tried;
+  }
+}
+
+/**
+ * How an invite sent over the local network ended: `accepted` by the person
+ * there, `declined` (an answer other than yes, or no answer in time), or
+ * `unreachable`: their computer could not be reached, so they never saw it.
+ */
+export type LanSendResult = "accepted" | "declined" | "unreachable";
 
 const inviteBodySchema = z
   .object({
@@ -70,6 +98,7 @@ export class LanNearby {
   readonly #platform: LanNearbyPlatform;
   readonly #clock: MainClock;
   readonly #onInvite: (invite: LanInvite, signal: AbortSignal) => Promise<boolean>;
+  readonly #log: { warn(message: string): void } | undefined;
   /** This receiver's id, so a browse leaves it out. */
   readonly id = randomUUID();
   #running:
@@ -84,9 +113,11 @@ export class LanNearby {
 
   constructor(options: {
     clock?: MainClock;
+    log?: { warn(message: string): void } | undefined;
     onInvite: (invite: LanInvite, signal: AbortSignal) => Promise<boolean>;
     platform: LanNearbyPlatform;
   }) {
+    this.#log = options.log;
     this.#platform = options.platform;
     this.#clock = options.clock ?? realMainClock;
     this.#onInvite = options.onInvite;
@@ -156,8 +187,17 @@ export class LanNearby {
     );
   }
 
-  /** Sends an invite link; true once the person there accepted it. */
-  async send(service: LanService, url: string, senderName: string): Promise<boolean> {
+  /**
+   * Sends an invite link and tells how it ended (`LanSendResult`). Rejects when
+   * the exchange failed after their computer took the connection (other than
+   * by running out of time): the invite may have reached them, so it is
+   * neither unreachable nor sent again.
+   */
+  async send(
+    service: LanService,
+    url: string,
+    senderName: string
+  ): Promise<LanSendResult> {
     const controller = new AbortController();
     // A little past the receiver's own wait, so its answer comes first.
     const cancel = this.#clock.setTimer(ANSWER_MS + 5_000, () => controller.abort());
@@ -167,7 +207,17 @@ export class LanNearby {
         { version: 1, url, senderName },
         controller.signal
       );
-      return status === 200;
+      return status === 200 ? "accepted" : "declined";
+    } catch (error) {
+      // Their computer took the invite and gave no answer in time.
+      if (!(error instanceof LanUnreachableError) && controller.signal.aborted)
+        return "declined";
+      if (!(error instanceof LanUnreachableError)) throw error;
+      // Addresses and errno codes only: never the invite link.
+      this.#log?.warn(
+        `Nearby invite could not reach the receiver on port ${service.port}: ${error.message}`
+      );
+      return "unreachable";
     } finally {
       cancel();
     }

@@ -138,6 +138,16 @@ enum FixtureData {
         return #"{"message_id":"message\#(index)","kind":"message","actor_type":"agent","content":[{"type":"text","text":"History message \#(index). This is a reply in the Home conversation."}\#(reference)]}"#
     }
 
+    /// With `--platform-messages`, a person's messages that came in from chat platforms, then one typed in Comma, each
+    /// last in the router chat.
+    static let platformMessages: [String] = ([("wechat", "From WeChat"), ("telegram", "From Telegram"), ("signal", "From Signal"),
+                                             ("slack", "From Slack"), ("imessage", "From iMessage"), (nil, "Typed in Comma")] as [(String?, String)])
+        .enumerated().map { index, message in
+            let content = #"[{"type":"text","text":"\#(message.1)"}]"#
+            let platform = message.0.map { #","platform_message":{"provider":"\#($0)","role":"user","content":\#(content)}"# } ?? ""
+            return #"{"message_id":"platform\#(index)","kind":"message","actor_type":"user","content":\#(content)\#(platform)}"#
+        }
+
     /// A Task's messages as JSON, oldest first: review0 holds a Worker's history long enough to scroll, then with
     /// `--task-question` the Worker's question in the words of a card a member reported, two of whose choices'
     /// descriptions run to a second line on a phone; the others none.
@@ -194,6 +204,27 @@ enum FixtureData {
         let quoted = String(decoding: try! JSONEncoder().encode(text), as: UTF8.self)
         let sequence = seq.map { #","seq":\#($0)"# } ?? ""
         return #"{"message_id":"sent-\#(requestID)","kind":"message","actor_type":"user","user_id":"u","client_request_id":"\#(requestID)"\#(sequence),"content":[{"type":"text","text":\#(quoted)}]}"#
+    }
+
+    /// The briefing as only its Slack card, whose three rows each name a source item the member can dismiss, without
+    /// the rows whose source link is in `dismissed`. A card left without rows is left out, as the server leaves it.
+    static func clearableRecommendations(without dismissed: Set<String>, generation: Int) -> String {
+        guard var envelope = try? JSONSerialization.jsonObject(with: Data(recommendations.utf8)) as? [String: Any],
+              var snapshot = envelope["snapshot"] as? [String: Any],
+              var card = (snapshot["cards"] as? [[String: Any]])?.first else { return recommendations }
+        let rows = (card["items"] as? [[String: Any]] ?? []).filter { row in
+            !(row["parts"] as? [[String: Any]] ?? []).contains { part in
+                ((part["link"] as? [String: Any])?["href"] as? String).map(dismissed.contains) == true
+            }
+        }
+        card["items"] = rows
+        snapshot["cards"] = rows.isEmpty ? [] : [card]
+        // A prompt no row refers to is left out too: the client core refuses a briefing with one.
+        let left = String(decoding: (try? JSONSerialization.data(withJSONObject: rows)) ?? Data(), as: UTF8.self)
+        snapshot["prompts"] = (snapshot["prompts"] as? [String: Any] ?? [:]).filter { left.contains("\"promptId\":\"\($0.key)\"") }
+        snapshot["generation"] = generation
+        envelope["snapshot"] = snapshot
+        return String(decoding: (try? JSONSerialization.data(withJSONObject: envelope)) ?? Data(), as: UTF8.self)
     }
 
     static let recommendations = #"""

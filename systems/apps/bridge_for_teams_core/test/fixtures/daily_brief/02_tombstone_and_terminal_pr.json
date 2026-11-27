@@ -1,0 +1,48 @@
+{
+  "name": "tombstone_and_terminal_pr",
+  "window_after": "2026-11-18T01:00:00Z",
+  "now": "2026-11-19T01:00:00Z",
+  "member": {
+    "slack_user_id": "UPENG1",
+    "name": "Peng Xiao",
+    "timezone": "Asia/Shanghai",
+    "aliases": [{"kind": "name", "term": "Peng Xiao"}],
+    "focus_channels": ["C_DEV"]
+  },
+  "channels": {
+    "C_DEV": "eng-dev"
+  },
+  "messages": [
+    {
+      "channel_id": "C_DEV",
+      "ts": "1795020000.000100",
+      "actor_kind": "user",
+      "actor_id": "UALICE",
+      "text": "<@UPENG1> 请确认 <https://github.com/AFK-surf/monoid/pull/7196|#7196> 和 #4612"
+    }
+  ],
+  "direct_messages": [],
+  "followups": [
+    {
+      "kind": "watch",
+      "what": "#5286 名片等 Photon 项目 ID",
+      "owner": "other",
+      "status": "open",
+      "evidence": ""
+    }
+  ],
+  "closed": [
+    {"what": "定 #4612 默认橙色", "status": "done", "on": "2026-11-11"}
+  ],
+  "issues": {
+    "7196": "https://github.com/AFK-surf/monoid/pull/7196"
+  },
+  "issue_states": {
+    "AFK-surf/monoid#7196": "merged"
+  },
+  "expect": {
+    "mine_open_contains": ["#5286"],
+    "mine_open_excludes": ["#4612", "#7196"],
+    "text_contains": ["#5286"]
+  }
+}

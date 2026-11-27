@@ -12,6 +12,7 @@ defmodule SalixIFC.Atom do
   Shapes:
 
       :public                     everyone, including the open internet
+      :unclassified_non_im        a non-IM read whose Hard audience was not resolved
       :agent_private              only the agent runtime; no human reader
       {:space, connect}           the provider tenant behind one connect:
                                   a Slack workspace, a Feishu tenant, …
@@ -30,6 +31,7 @@ defmodule SalixIFC.Atom do
   @type connect :: binary
   @type t ::
           :public
+          | :unclassified_non_im
           | :agent_private
           | {:space, connect}
           | {:scope, connect, binary}
@@ -38,7 +40,16 @@ defmodule SalixIFC.Atom do
           | {:group, binary}
           | {:task, binary}
 
-  @type kind :: :public | :agent_private | :space | :scope | :tag | :conversation | :group | :task
+  @type kind ::
+          :public
+          | :agent_private
+          | :unclassified_non_im
+          | :space
+          | :scope
+          | :tag
+          | :conversation
+          | :group
+          | :task
 
   def valid?(value), do: SalixIFC.Native.call(:atom_valid, {value})
   def kind(value), do: SalixIFC.Native.call(:atom_kind, {value})

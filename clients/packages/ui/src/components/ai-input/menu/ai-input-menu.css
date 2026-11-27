@@ -36,6 +36,7 @@
   transform: scale(var(--motion-scale-menu-exit));
   pointer-events: none;
   transition-duration: var(--motion-duration-menu-exit);
+  transition-timing-function: var(--motion-easing-sharp-in);
 }
 
 @media (prefers-reduced-motion: reduce) {

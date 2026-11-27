@@ -93,23 +93,30 @@ export async function approveAirDropForChat(options: {
         await intake.refresh();
         assertCurrent();
         await intake.attach(
-          picked.items.map((item) =>
+          // AirDrop imports name no file by its path (no `localPathMode`): each uploads or is kept as a snapshot.
+          picked.items.flatMap((item): Parameters<typeof intake.attach>[0] =>
             item.kind === "upload"
-              ? {
-                  kind: "upload" as const,
-                  bytes: new Uint8Array(item.bytes),
-                  name: item.name,
-                  size: item.size,
-                }
-              : {
-                  kind: "local_file" as const,
-                  file: {
-                    localFileRef: item.file.localFileRef,
-                    mediaType: item.file.mediaType,
-                    name: item.file.name,
-                    size: item.file.size,
+              ? [
+                  {
+                    kind: "upload" as const,
+                    bytes: new Uint8Array(item.bytes),
+                    name: item.name,
+                    size: item.size,
                   },
-                }
+                ]
+              : item.kind === "local_file"
+                ? [
+                    {
+                      kind: "local_file" as const,
+                      file: {
+                        localFileRef: item.file.localFileRef,
+                        mediaType: item.file.mediaType,
+                        name: item.file.name,
+                        size: item.file.size,
+                      },
+                    },
+                  ]
+                : []
           )
         );
         finish({

@@ -15,9 +15,11 @@ defmodule Salix.Bindings.LarkCalendarSource do
   (`anchor_time`), later reads carry Lark's `sync_token`. A recurring event
   is stored as its master with the exceptions as overrides; an exception's id
   is `{uid}_{original_time}`, so its original start is the suffix. The
-  event's meeting link is its `vchat.meeting_url`: a Feishu/Lark video
-  meeting, or a third-party meeting (Zoom, Microsoft Teams) set on the event.
-  A recognized link other than a Google Meet qualifies the item
+  event's meeting link is its `vchat.meeting_url` (a Feishu/Lark video
+  meeting, or a third-party meeting such as Zoom or Microsoft Teams set on the
+  event), or otherwise the first recognized non-Google-Meet link in its
+  location (`location.name`, `location.address`) or `description`. A
+  recognized link other than a Google Meet qualifies the item
   (`SalixCalendar.OccurrenceQualification`); a Google Meet there is left out,
   since the bot joins only a Meet that Google Calendar itself attached.
 
@@ -28,6 +30,7 @@ defmodule Salix.Bindings.LarkCalendarSource do
   @behaviour SalixCalendar.SourceAdapter
 
   alias Salix.Control.Groups
+  alias SalixCalendar.RRule
   alias SalixIM.Ports.{FeishuUserAccounts, LarkUserAccounts}
   alias SalixIM.Provider.Feishu.API, as: FeishuAPI
   alias SalixIM.Provider.Lark.API, as: LarkAPI
@@ -43,7 +46,6 @@ defmodule Salix.Bindings.LarkCalendarSource do
   @max_attendee_pages 10
   @upcoming_window_seconds 14 * 24 * 60 * 60
   @sync_token_expired 190_008
-  @rrule_keys ~w(FREQ INTERVAL BYDAY WKST UNTIL)
 
   @doc "The adapter key of a platform's calendar source."
   def adapter_for("feishu"), do: "feishu_calendar"
@@ -53,7 +55,7 @@ defmodule Salix.Bindings.LarkCalendarSource do
   def adapter?(adapter), do: Map.has_key?(@adapters, adapter)
 
   @impl true
-  def adapter_contract_id, do: "lark_calendar.events.v5"
+  def adapter_contract_id, do: "lark_calendar.events.v6"
 
   @impl true
   def capabilities do
@@ -532,108 +534,19 @@ defmodule Salix.Bindings.LarkCalendarSource do
        if(rest > 0, do: "#{rest}S", else: "")}
   end
 
-  # Lark writes the RRULE body without its `RRULE:` prefix. The calendar
-  # domain generates DAILY and WEEKLY series (`SalixCalendar.Recurrence`);
-  # anything else is stored without rules and never qualifies.
+  # Lark writes the RRULE body without its `RRULE:` prefix. `RRule` names
+  # the rules the calendar domain generates; anything else is stored without
+  # rules and never qualifies.
   defp recurrence(value, _timing) when value in [nil, ""], do: {:ok, []}
 
   defp recurrence(value, timing) when is_binary(value) do
-    parts =
-      value
-      |> String.replace_prefix("RRULE:", "")
-      |> String.split(";", trim: true)
-      |> Map.new(fn part ->
-        case String.split(part, "=", parts: 2) do
-          [key, rule] -> {String.upcase(key), rule}
-          [key] -> {String.upcase(key), ""}
-        end
-      end)
-
-    with true <- Map.keys(parts) -- @rrule_keys == [],
-         frequency when frequency in ["DAILY", "WEEKLY"] <- parts["FREQ"],
-         {:ok, interval} <- positive_integer(parts["INTERVAL"] || "1"),
-         {:ok, first_day} <- week_start(parts["WKST"], frequency),
-         {:ok, by_day} <- by_day(parts["BYDAY"]),
-         {:ok, until} <- until(parts["UNTIL"], timing) do
-      {:ok,
-       [
-         %{
-           "@type" => "RecurrenceRule",
-           "frequency" => String.downcase(frequency),
-           "interval" => interval
-         }
-         |> put_optional("byDay", if(by_day == [], do: nil, else: by_day))
-         |> put_optional("firstDayOfWeek", first_day)
-         |> put_optional("until", until)
-       ]}
-    else
-      _ -> {:error, :unsupported_lark_recurrence}
+    case RRule.parse(value, timing.start_ms, timing.time_zone) do
+      {:ok, rule} -> {:ok, [rule]}
+      {:error, _} -> {:error, :unsupported_lark_recurrence}
     end
   end
 
   defp recurrence(_value, _timing), do: {:error, :unsupported_lark_recurrence}
-
-  # UNTIL is the last start the series may have, inclusive: an RFC 5545 UTC
-  # date-time, a floating date-time or a date. The calendar domain compares
-  # it as a local date-time in the series' zone.
-  defp until(nil, _timing), do: {:ok, nil}
-
-  defp until(value, timing) do
-    cond do
-      Regex.match?(~r/^\d{8}T\d{6}Z$/, value) ->
-        with {:ok, naive} <- basic_naive(value),
-             {:ok, utc} <- DateTime.from_naive(naive, "Etc/UTC"),
-             {:ok, local} <- DateTime.shift_zone(utc, timing.time_zone) do
-          {:ok, local |> DateTime.to_naive() |> NaiveDateTime.to_iso8601()}
-        else
-          _ -> {:error, :unsupported_lark_recurrence}
-        end
-
-      Regex.match?(~r/^\d{8}T\d{6}$/, value) ->
-        with {:ok, naive} <- basic_naive(value), do: {:ok, NaiveDateTime.to_iso8601(naive)}
-
-      Regex.match?(~r/^\d{8}$/, value) ->
-        with {:ok, naive} <- basic_naive(value <> "T235959"),
-             do: {:ok, NaiveDateTime.to_iso8601(naive)}
-
-      true ->
-        {:error, :unsupported_lark_recurrence}
-    end
-  end
-
-  defp basic_naive(
-         <<y::binary-4, m::binary-2, d::binary-2, "T", h::binary-2, mi::binary-2, s::binary-2,
-           _rest::binary>>
-       ) do
-    case NaiveDateTime.from_iso8601("#{y}-#{m}-#{d}T#{h}:#{mi}:#{s}") do
-      {:ok, naive} -> {:ok, naive}
-      _ -> {:error, :unsupported_lark_recurrence}
-    end
-  end
-
-  defp week_start(nil, _frequency), do: {:ok, nil}
-
-  defp week_start(day, "WEEKLY") when day in ~w(MO TU WE TH FR SA SU),
-    do: {:ok, String.downcase(day)}
-
-  defp week_start(_day, _frequency), do: {:error, :unsupported_lark_recurrence}
-
-  defp by_day(nil), do: {:ok, []}
-
-  defp by_day(value) do
-    tokens = String.split(value, ",", trim: true)
-
-    if tokens != [] and Enum.all?(tokens, &(&1 in ~w(MO TU WE TH FR SA SU))),
-      do: {:ok, Enum.map(tokens, &%{"@type" => "NDay", "day" => String.downcase(&1)})},
-      else: {:error, :unsupported_lark_recurrence}
-  end
-
-  defp positive_integer(value) do
-    case Integer.parse(value) do
-      {number, ""} when number > 0 -> {:ok, number}
-      _ -> {:error, :unsupported_lark_recurrence}
-    end
-  end
 
   defp identity_current(event, item, occurrence, default_time_zone) do
     expected_start = occurrence["start_ms"]
@@ -800,10 +713,18 @@ defmodule Salix.Bindings.LarkCalendarSource do
     case SalixCalendar.OccurrenceQualification.canonical_meeting_url(
            get_in(event, ["vchat", "meeting_url"])
          ) do
-      {:google_meet, _url} -> nil
+      {:google_meet, _url} -> text_meeting_url(event)
       {_provider, url} -> url
-      nil -> nil
+      nil -> text_meeting_url(event)
     end
+  end
+
+  defp text_meeting_url(event) do
+    location = if is_map(event["location"]), do: event["location"], else: %{}
+
+    SalixCalendar.OccurrenceQualification.text_meeting_url(location["name"]) ||
+      SalixCalendar.OccurrenceQualification.text_meeting_url(location["address"]) ||
+      SalixCalendar.OccurrenceQualification.text_meeting_url(event["description"])
   end
 
   defp conference_reason(meeting_url) do

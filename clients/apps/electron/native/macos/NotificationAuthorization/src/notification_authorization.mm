@@ -1,5 +1,7 @@
 #include <node_api.h>
 
+#import <AppKit/AppKit.h>
+#import <CoreLocation/CoreLocation.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
@@ -161,7 +163,143 @@ napi_value SetBadgeCount(napi_env env, napi_callback_info info) {
   return promise;
 }
 
+const char *LocationStatusName(CLAuthorizationStatus status) {
+  switch (status) {
+    case kCLAuthorizationStatusNotDetermined:
+      return "notDetermined";
+    case kCLAuthorizationStatusRestricted:
+      return "restricted";
+    case kCLAuthorizationStatusDenied:
+      return "denied";
+    default:
+      // Always and When In Use (the same value on macOS) both let Chromium read
+      // the position.
+      return "authorized";
+  }
+}
+
+}  // namespace
+
+// Holds one location authorization query until macOS has answered it. The
+// manager reports its status once right after it is made and again after each
+// change; the query settles on the first status that is decided, or at once
+// when it only reads.
+@interface CommaLocationAuthorizationQuery : NSObject <CLLocationManagerDelegate>
+- (instancetype)initWithSettle:(napi_threadsafe_function)settle request:(BOOL)request;
+@end
+
+namespace {
+// The queries macOS has not answered yet: a manager without an owner stops
+// reporting.
+NSMutableSet<CommaLocationAuthorizationQuery *> *PendingLocationQueries() {
+  static NSMutableSet<CommaLocationAuthorizationQuery *> *queries = [NSMutableSet set];
+  return queries;
+}
+}  // namespace
+
+@implementation CommaLocationAuthorizationQuery {
+  CLLocationManager *_manager;
+  napi_threadsafe_function _settle;
+  BOOL _request;
+  BOOL _asked;
+}
+
+- (instancetype)initWithSettle:(napi_threadsafe_function)settle request:(BOOL)request {
+  if ((self = [super init])) {
+    _settle = settle;
+    _request = request;
+    [PendingLocationQueries() addObject:self];
+    // Made on the main thread, whose run loop delivers the delegate's calls.
+    _manager = [[CLLocationManager alloc] init];
+    _manager.delegate = self;
+  }
+  return self;
+}
+
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
+  const CLAuthorizationStatus status = manager.authorizationStatus;
+  // The system prompt; its answer comes back through this method. macOS shows
+  // it only while it has not asked about Comma, and only to an app in use: in
+  // the background the request does nothing and no answer would ever come, so
+  // the query settles undecided instead.
+  if (status == kCLAuthorizationStatusNotDetermined && _request && !_asked &&
+      [NSRunningApplication currentApplication].active) {
+    _asked = YES;
+    [manager requestWhenInUseAuthorization];
+    return;
+  }
+  if (status == kCLAuthorizationStatusNotDetermined && _asked) return;
+  [self finish:LocationStatusName(status)];
+}
+
+- (void)finish:(const char *)status {
+  if (_settle == nullptr) return;
+  Settle(_settle, status);
+  _settle = nullptr;
+  _manager.delegate = nil;
+  [PendingLocationQueries() removeObject:self];
+}
+@end
+
+namespace {
+
+// Location authorization is tracked per bundle, like notifications, so this
+// too must run in Comma's own process: Chromium reads the position as Comma.
+// "servicesOff" means Location Services is off for the whole Mac.
+napi_value LocationQuery(napi_env env, BOOL request) {
+  napi_threadsafe_function settle = nullptr;
+  napi_value promise = BeginQuery(env, &settle);
+  if ([[NSBundle mainBundle] bundleIdentifier] == nil) {
+    Settle(settle, "unavailable");
+    return promise;
+  }
+  // macOS ignores the request of a bundle that does not say why it asks, and
+  // never answers it: such a build only reads the status.
+  if (request &&
+      [[NSBundle mainBundle] objectForInfoDictionaryKey:@"NSLocationWhenInUseUsageDescription"] ==
+          nil) {
+    request = NO;
+  }
+  // Apple warns that this class query may block the thread that asks.
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (![CLLocationManager locationServicesEnabled]) {
+      Settle(settle, "servicesOff");
+      return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      @try {
+        (void)[[CommaLocationAuthorizationQuery alloc] initWithSettle:settle request:request];
+      } @catch (NSException *) {
+        Settle(settle, "unavailable");
+      }
+    });
+  });
+  return promise;
+}
+
+napi_value LocationAuthorizationStatus(napi_env env, napi_callback_info) {
+  return LocationQuery(env, NO);
+}
+
+// Shows the system prompt while macOS has not asked about Comma and resolves
+// with the status the answer leaves behind; a decided status answers at once.
+napi_value RequestLocationAuthorization(napi_env env, napi_callback_info) {
+  return LocationQuery(env, YES);
+}
+
 napi_value Init(napi_env env, napi_value exports) {
+  napi_value location_status_function = nullptr;
+  napi_create_function(env, "locationAuthorizationStatus", NAPI_AUTO_LENGTH,
+                       LocationAuthorizationStatus, nullptr, &location_status_function);
+  napi_set_named_property(env, exports, "locationAuthorizationStatus",
+                          location_status_function);
+
+  napi_value location_request_function = nullptr;
+  napi_create_function(env, "requestLocationAuthorization", NAPI_AUTO_LENGTH,
+                       RequestLocationAuthorization, nullptr, &location_request_function);
+  napi_set_named_property(env, exports, "requestLocationAuthorization",
+                          location_request_function);
+
   napi_value status_function = nullptr;
   napi_create_function(env, "authorizationStatus", NAPI_AUTO_LENGTH, AuthorizationStatus,
                        nullptr, &status_function);

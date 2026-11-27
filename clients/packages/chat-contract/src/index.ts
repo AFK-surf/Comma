@@ -15,10 +15,9 @@ export const chatAttachmentDownloadMaxBytes = chatAttachmentUploadMaxBytes;
 export const chatAttachmentDownloadMaxFileNameBytes = 1_024 as const;
 /**
  * Transport bound for Main-rendered chat image previews. Previews ship at
- * source resolution — the render is a sanitizing decode/encode pass, not a
- * thumbnail step — so this bound must hold a full-resolution PNG re-encode
- * of a typical retina screenshot; Main steps the scale down only when even
- * that overflows.
+ * source resolution, not as thumbnails: a source within this bound and the
+ * preview dimensions ships as-is, and Main re-encodes, stepping the scale
+ * down, only one that is not.
  */
 export const chatImagePreviewMaxBytes = 8_388_608 as const;
 
@@ -79,6 +78,63 @@ export const chatBoundWorkerSchema = lazySchema(() =>
   })
 );
 
+const chatParticipantIssueDetailSchema = lazySchema(() =>
+  z.object({
+    source: z.string().min(1).optional(),
+    profileId: z.string().min(1).optional(),
+    profileName: z.string().min(1).optional(),
+    resetAt: z.number().positive().optional(),
+    credits: z.literal(true).optional(),
+    trigger: z.enum(["background", "voice_call"]).optional(),
+  })
+);
+
+export const chatWorkerSessionSchema = lazySchema(() =>
+  z.object({
+    participantId: z.string().min(1),
+    actorId: z.string().optional(),
+    /** Stable mention handle (`@slot`, e.g. `lead`, `reviewer`). */
+    slot: z.string().min(1),
+    /** Public display name for the session (never carries internal `role_instructions`). */
+    label: z.string().min(1),
+    model: z.string().optional(),
+    runtime: z.string().optional(),
+    isPrimary: z.boolean(),
+    subscribed: z.boolean().optional(),
+    state: z.enum(["active", "waiting", "error", "stopped"]),
+    status: z.string(),
+    updatedAt: z.number().optional(),
+    issue: z.string().min(1).optional(),
+    issueDetail: chatParticipantIssueDetailSchema.optional(),
+  })
+);
+export type ChatWorkerSession = z.infer<typeof chatWorkerSessionSchema>;
+
+const chatLeafUsageSchema = lazySchema(() =>
+  z.object({
+    modelCalls: z.number(),
+    inputTokens: z.number(),
+    cachedTokens: z.number(),
+    outputTokens: z.number(),
+    model: z.string().nullable(),
+  })
+);
+
+const chatSlotUsageSchema = lazySchema(() =>
+  z.object({
+    slot: z.string().optional(),
+    isPrimary: z.boolean().optional(),
+    unreadable: z.boolean().optional(),
+    partial: z.boolean().optional(),
+    model: z.string().nullable().optional(),
+    usage: chatLeafUsageSchema.nullable().optional(),
+    modelCalls: z.number().optional(),
+    inputTokens: z.number().optional(),
+    cachedTokens: z.number().optional(),
+    outputTokens: z.number().optional(),
+  })
+);
+
 /**
  * What a coding Task's sandbox and GitHub answered last, as the server keeps it from the end of the Worker's last turn
  * or a surface's last read: the Task's panel shows it until its own reads answer. A part is there once it was read.
@@ -93,6 +149,9 @@ export const chatCodingFactsSchema = lazySchema(() =>
         cachedTokens: z.number(),
         outputTokens: z.number(),
         model: z.string().nullable(),
+        models: z.array(z.string()).optional(),
+        partial: z.boolean().optional(),
+        bySlot: z.record(z.string(), chatSlotUsageSchema).optional(),
       })
       .nullable()
       .optional(),
@@ -140,7 +199,11 @@ export const chatTaskRunSchema = lazySchema(() =>
       /**
        * A sandbox Task's own cloud sandbox: where it stands and, for a coding Task, its repository and session branch
        * (a Task without a repository has no `repo`). `taskModels` lists, by runtime, the models its station runs, which a
-       * Task without a repository may switch to; absent while the sandbox is not connected.
+       * Task without a repository may switch to; absent while the sandbox is not connected. `screenOwner`: the
+       * sandbox's station can show its display, and this is the user it shows it to (the Task's owner), who alone is
+       * offered it; absent while the sandbox is not connected. `screenDevice`: the Device the sandbox runs as, whose display
+       * is viewed. `screenActive`: something is on that display now (a Session is using its browser on it in the turn
+       * under way), so the owner's conversation shows the screen while `screenActive` stands.
        */
       z.object({
         kind: z.literal("sandbox"),
@@ -154,6 +217,9 @@ export const chatTaskRunSchema = lazySchema(() =>
           .optional(),
         state: z.string(),
         reason: z.string().optional(),
+        screenOwner: z.string().optional(),
+        screenDevice: z.string().optional(),
+        screenActive: z.boolean().optional(),
         taskModels: z.record(z.string(), z.array(z.string())).optional(),
       }),
     ]),
@@ -238,14 +304,7 @@ export const chatParticipantStatusSchema = lazySchema(() =>
     issue: z.string().min(1).optional(),
     // What a member can fix after a funding stop: the provider source and their
     // own Profile, or when their own subscription resets (Unix seconds).
-    issueDetail: z
-      .object({
-        source: z.string().min(1).optional(),
-        profileId: z.string().min(1).optional(),
-        profileName: z.string().min(1).optional(),
-        resetAt: z.number().positive().optional(),
-      })
-      .optional(),
+    issueDetail: chatParticipantIssueDetailSchema.optional(),
     participantId: z.string().min(1),
     name: z.string().optional(),
     state: z.enum(["active", "error", "stopped"]),
@@ -258,6 +317,7 @@ export const chatConversationRefSchema = lazySchema(() =>
   z.object({
     activityStatus: z.string().optional(),
     conversationId: z.string(),
+    groupId: z.string().optional(),
     kind: z.string().optional(),
     status: z.string().optional(),
     title: z.string().optional(),
@@ -293,6 +353,8 @@ export const chatAttachmentSchema = lazySchema(() =>
     /** Pixel size, when the block declares one: a list reserves the right shape before the image loads. */
     height: z.number().int().min(1).optional(),
     localFileRef: z.string().optional(),
+    /** A file the message names by its path on the sender's computer (that path): there is nothing here to open. */
+    localPath: z.string().min(1).max(4096).optional(),
     mimeType: z.string().optional(),
     size: z.number().optional(),
     title: z.string().optional(),
@@ -336,10 +398,11 @@ export const chatInlineTaskSchema = lazySchema(() =>
   z.object({
     activityStatus: z.string().optional(),
     conversationId: z.string().optional(),
+    groupId: z.string().optional(),
     status: z.string().optional(),
     /** The section `status` folds into on every client (`taskStatusBucket` in `@comma/i18n`). */
     statusBucket: z
-      .enum(["in_progress", "needs_review", "done", "cancelled", "archived"])
+      .enum(["in_progress", "needs_review", "done", "cancelled", "loops", "archived"])
       .optional(),
     title: z.string().optional(),
     unavailable: z.boolean(),
@@ -421,6 +484,7 @@ export const chatMessagePartSchema = lazySchema(() =>
       uiRef: z.string().min(1).max(100),
       contentId: z.string().min(1),
       originTaskId: z.string().optional(),
+      title: z.string().min(1).max(200).optional(),
       summary: z.string().max(4000),
       version: z.number().int(),
       conversationId: z.string(),
@@ -459,9 +523,11 @@ export const chatMessagePartSchema = lazySchema(() =>
       /** The Agent message that asks; the answer replies to it. */
       messageId: z.string(),
       prompt: z.string().min(1),
-      choices: z.array(chatQuestionChoiceSchema).min(2).max(6),
+      choices: z.array(chatQuestionChoiceSchema).min(1).max(6),
       multiSelect: z.boolean(),
       allowOther: z.boolean(),
+      skipBehavior: z.enum(["decide", "dismiss"]).optional(),
+      independent: z.boolean().optional(),
       state: chatQuestionStateSchema,
       task: z.never().optional(),
       text: z.never().optional(),
@@ -488,8 +554,14 @@ export const chatUserMessageDisplaySchema = lazySchema(() =>
     texts: z
       .array(z.object({ source: z.string().optional(), text: z.string() }))
       .optional(),
-    /** Workspace files the message's attachment list names. */
-    files: z.array(z.object({ name: z.string(), path: z.string() })),
+    /** Files the message's attachment lists name: workspace files, and (`local`) files on the sender's computer by path. */
+    files: z.array(
+      z.object({
+        name: z.string(),
+        path: z.string(),
+        local: z.literal(true).optional(),
+      })
+    ),
     /** The body is this command, shown as `/command`. */
     command: z.string().optional(),
   })
@@ -556,7 +628,14 @@ export const chatMessageSchema = lazySchema(() =>
       actorRole: z.enum(["router", "worker"]).optional(),
       /** Who wrote the canonical message. A system message is a notice, not a reply. */
       actorType: z.enum(["user", "agent", "system"]).optional(),
+      /** The Participant row that authored this message (distinguishes worker sessions on multi-session Tasks). */
+      participantId: z.string().min(1).optional(),
       attachments: z.array(chatAttachmentSchema),
+      /**
+       * In a Task together, the name the server gives a writer with no account to look them up by: a guest who joined
+       * by an email link, or anyone on a guest's own page. Never an email address.
+       */
+      authorName: z.string().optional(),
       blocksKey: z.string().optional(),
       /**
        * The instructions a Task works from: the brief that opens it (`task_command`, or an older Task's request id
@@ -566,7 +645,16 @@ export const chatMessageSchema = lazySchema(() =>
       clientRequestId: z.string().optional(),
       // The Comma app a user sent this message from, for display only.
       clientSource: z
-        .enum(["iphone", "watch", "android", "mac", "windows", "linux", "web"])
+        .enum([
+          "iphone",
+          "watch",
+          "android",
+          "mac",
+          "windows",
+          "linux",
+          "web",
+          "raycast",
+        ])
         .optional(),
       createdAt: z.number().optional(),
       createdBy: z.string().optional(),
@@ -597,6 +685,10 @@ export const chatMessageSchema = lazySchema(() =>
       messageType: z.string().optional(),
       /** A `task_run_blocked` message: why the Task's model could not start, as its station said. */
       runBlockedError: z.string().optional(),
+      /** In a Task together, a line for its people: this member left it or was taken out. No Agent reads it. */
+      memberChange: z
+        .object({ status: z.enum(["left", "removed"]), userId: z.string() })
+        .optional(),
       /**
        * An agent's message as the core parsed it (`@comma/core/markdown`'s tree): text as itself, any other node
        * `[kind, attributes, children?]`, a Task chip or card `["comma-inline", { key }]` naming its part. Every client
@@ -620,6 +712,12 @@ export const chatMessageSchema = lazySchema(() =>
        * (`metadata.task_request`). The Task's Activity starts a group at it.
        */
       routerRequest: z.literal(true).optional().meta({ "x-comma-native-omit": true }),
+      /**
+       * A station's Worker's message that ends its turn: its result, or what it needs of a person. The server marks
+       * it with what the Worker's Session declared (`metadata.declared`). What shows that Worker at work, such as
+       * its sandbox's screen, ends with it.
+       */
+      endsTurn: z.literal(true).optional().meta({ "x-comma-native-omit": true }),
       replyToMessageId: z.string().optional(),
       threadRootMessageId: z.string().optional(),
       parts: z.array(chatMessagePartSchema).optional(),
@@ -664,6 +762,8 @@ export const chatDraftAttachmentSchema = lazySchema(() =>
     error: z.string().optional(),
     id: z.string(),
     isImage: z.boolean(),
+    /** A file the message names by its path on this computer (that path): nothing of it uploads. */
+    localPath: z.string().min(1).max(4096).optional(),
     name: z.string(),
     path: z.string().optional(),
     size: z.number(),
@@ -757,6 +857,7 @@ export const conversationProjectionSchema = lazySchema(() =>
     pending: z.array(chatPendingSendSchema),
     participantStatus: chatParticipantStatusSchema.optional(),
     participantStatuses: z.array(chatParticipantStatusSchema).max(2).optional(),
+    workerSessions: z.array(chatWorkerSessionSchema).max(6).optional(),
     boundWorker: chatBoundWorkerSchema.optional(),
     taskRun: chatTaskRunSchema.optional(),
     /** What this Task cannot take from here (a station-hosted one: archiving, pinning, a share link, another run). */
@@ -890,6 +991,13 @@ export const chatLeasedSetTaskRunInputSchema = lazySchema(() =>
 
 export const chatReleaseInputSchema = chatRetainInputSchema;
 
+/**
+ * Where a person wrote a draft's words when it was not this app: the Raycast extension put them in the draft through
+ * a link. The message sent from that draft reports it (`client_entry`), for display only.
+ */
+export const chatDraftEntrySchema = lazySchema(() => z.enum(["raycast"]));
+export type ChatDraftEntry = z.infer<typeof chatDraftEntrySchema>;
+
 export const chatSetDraftInputSchema = lazySchema(() =>
   chatTargetSchema.extend({
     draft: z.string(),
@@ -983,6 +1091,34 @@ export const chatLocalFileSchema = lazySchema(() =>
 export const chatAttachLocalFilesInputSchema = lazySchema(() =>
   chatTargetSchema.extend({
     files: z.array(chatLocalFileSchema).min(1).max(50),
+    surfaceId: z.string().min(1),
+  })
+);
+
+/**
+ * How a desktop pick takes the files that are not images, for the conversation it is for: `none` uploads them all;
+ * `routed` names archives, files over the upload bound and files of a type the server does not take by their path on
+ * this computer; `all_non_images` names every one by its path (a Task this computer's station runs).
+ */
+export const chatLocalPathModeSchema = lazySchema(() =>
+  z.enum(["none", "routed", "all_non_images"])
+);
+export type ChatLocalPathMode = z.output<typeof chatLocalPathModeSchema>;
+
+/** A file on this computer a message names by its path: nothing of it uploads. */
+export const chatLocalPathFileSchema = lazySchema(() =>
+  z
+    .object({
+      name: z.string().min(1).max(255),
+      path: z.string().min(1).max(4096),
+      size: z.number().int().nonnegative(),
+    })
+    .strict()
+);
+
+export const chatAttachLocalPathsInputSchema = lazySchema(() =>
+  chatTargetSchema.extend({
+    files: z.array(chatLocalPathFileSchema).min(1).max(50),
     surfaceId: z.string().min(1),
   })
 );
@@ -1102,6 +1238,10 @@ export const chatLeasedAttachLocalFilesInputSchema = lazySchema(() =>
   chatAttachLocalFilesInputSchema.extend(chatLeaseSchema.shape)
 );
 
+export const chatLeasedAttachLocalPathsInputSchema = lazySchema(() =>
+  chatAttachLocalPathsInputSchema.extend(chatLeaseSchema.shape)
+);
+
 export const chatLeasedPickAttachmentsInputSchema = lazySchema(() =>
   chatPickAttachmentsInputSchema.extend(chatLeaseSchema.shape)
 );
@@ -1150,16 +1290,24 @@ export const chatWorkspaceSkillsInputSchema = lazySchema(() =>
   })
 );
 
+const chatUploadedGroupImagePathPattern =
+  /^\/uploads\/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp)$/i;
+const chatTaskImagePathPattern =
+  /^\/task\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.(?:png|jpe?g|gif|webp)$/i;
+
 export const chatReadUploadedGroupImageInputSchema = lazySchema(() =>
   z
     .object({
+      conversationId: z.string().min(1).max(160).optional(),
       groupId: z.string().min(1).max(160),
       path: z
         .string()
         .min(1)
         .max(1024)
-        .regex(
-          /^\/uploads\/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp)$/i
+        .refine(
+          (value) =>
+            chatUploadedGroupImagePathPattern.test(value) ||
+            (chatTaskImagePathPattern.test(value) && !value.split("/").includes(".."))
         ),
       source: z.literal("group-file"),
     })
@@ -1393,6 +1541,10 @@ export type ChatLeasedClientRequestInput = z.infer<
 export type ChatLeasedAttachInput = z.infer<typeof chatLeasedAttachInputSchema>;
 export type ChatLeasedAttachLocalFilesInput = z.infer<
   typeof chatLeasedAttachLocalFilesInputSchema
+>;
+export type ChatLocalPathFile = z.infer<typeof chatLocalPathFileSchema>;
+export type ChatLeasedAttachLocalPathsInput = z.infer<
+  typeof chatLeasedAttachLocalPathsInputSchema
 >;
 export type ChatConversationFile = z.infer<typeof chatConversationFileSchema>;
 export type ChatLeasedAttachConversationFilesInput = z.infer<

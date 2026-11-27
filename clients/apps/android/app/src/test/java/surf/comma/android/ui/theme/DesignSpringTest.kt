@@ -146,6 +146,29 @@ class DesignSpringTest {
         assertEquals(1f, harness.value.current, 0f)
     }
 
+    @Test fun switchingTheSpringOfARunningAnimationKeepsItsPositionAndVelocity() {
+        val kept = Harness(0f)
+        val switched = Harness(0f)
+        for (harness in listOf(kept, switched)) {
+            harness.controller.animateTo(100f)
+            harness.frame()
+            harness.frame(40)
+        }
+        val position = switched.value.current
+        val velocity = switched.velocity
+        switched.controller.use(DesignMotion.springShake)
+        switched.frame(0)
+        assertEquals(position, switched.value.current, 0.001f)
+        assertEquals(velocity, switched.velocity, 0.001f)
+        // From here it moves on the new spring.
+        kept.frame(0)
+        kept.frame(16)
+        switched.frame(16)
+        assertTrue(switched.value.current != kept.value.current)
+        switched.settle()
+        assertEquals(100f, switched.value.current, 0f)
+    }
+
     private class Value(var current: Float)
 
     private class Harness(

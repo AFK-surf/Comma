@@ -50,6 +50,15 @@ defmodule SalixWeb.StationHostedTasksTest do
 
         "task.say" ->
           {:ok, %{"seq" => 3}}
+
+        "task.read_file" ->
+          {:ok,
+           %{
+             "name" => params["file"],
+             "size" => 4,
+             "offset" => params["offset"],
+             "data" => Base.encode64("PNG!")
+           }}
       end
     end
   end
@@ -297,6 +306,186 @@ defmodule SalixWeb.StationHostedTasksTest do
              router_call(context.router, "internal.read_conversation", %{
                "conversation_id" => "station:#{String.duplicate("cd", 32)}:7"
              })
+  end
+
+  test "a Worker reads the Group's station-hosted Tasks, one device's, by their words, and writes in none",
+       context do
+    {:ok, worker} =
+      SalixAgent.Control.create(
+        %{"group_id" => context.view.group_id, "name" => "Worker", "role" => "worker"},
+        context.view.tenant_id
+      )
+
+    worker = worker["agent_id"]
+
+    assert {:ok, %{"tasks" => [%{"task_id" => ref, "title" => "Fix the build"}]}} =
+             router_call(worker, "internal.station_task.list", %{
+               "device_id" => context.view.device_id,
+               "query" => "the BUILD"
+             })
+
+    assert ref == context.ref
+
+    assert {:ok, %{"tasks" => []}} =
+             router_call(worker, "internal.station_task.list", %{"query" => "report"})
+
+    assert {:ok, %{"tasks" => []}} =
+             router_call(worker, "internal.station_task.list", %{"device_id" => "device-other"})
+
+    assert {:ok, %{"by" => "station", "rows" => []}} =
+             router_call(worker, "internal.usage.query", %{
+               "from" => "2026-11-01",
+               "to" => "2026-11-30",
+               "by" => "station",
+               "device_id" => context.view.device_id
+             })
+
+    run_id = connect!(context.view)
+
+    assert {:ok, %{"through_seq" => 2}} =
+             router_call(worker, "internal.read_conversation", %{"conversation_id" => ref})
+
+    assert_received {:asked, ^run_id, "task.read", %{"task" => "EMBER/1792.000100"}}
+
+    assert {:error, "only the Router writes in a Task a station hosts"} =
+             router_call(worker, "internal.send_message", %{
+               "conversation_id" => ref,
+               "content" => "done?",
+               "request_id" => "req-w"
+             })
+
+    refute_received {:asked, _, "task.say", _}
+  end
+
+  test "say/7 forwards normalized requester_email and omits invalid or missing emails", context do
+    run_id = connect!(context.view)
+    scope = %{tenant_id: context.view.tenant_id, group_id: context.view.group_id}
+
+    assert {:ok, %{"seq" => 3}} =
+             SalixWeb.StationHostedTasks.say(
+               scope,
+               context.station_id,
+               "7",
+               "Proceed",
+               "k-opt",
+               "Router",
+               %{"requester_email" => "  Alice.Doe@Example.COM "}
+             )
+
+    assert_received {:asked, ^run_id, "task.say",
+                     %{
+                       "key" => "k-opt",
+                       "requester_email" => "alice.doe@example.com"
+                     }}
+
+    assert {:ok, %{"seq" => 3}} =
+             SalixWeb.StationHostedTasks.say(
+               Map.put(scope, :requester_email, "  Bob@Example.ORG "),
+               context.station_id,
+               "7",
+               "Scope fallback",
+               "k-scope",
+               "Router",
+               %{}
+             )
+
+    assert_received {:asked, ^run_id, "task.say",
+                     %{
+                       "key" => "k-scope",
+                       "requester_email" => "bob@example.org"
+                     }}
+
+    for {key, bad_email} <- [
+          {"k-nil", nil},
+          {"k-blank", "   "},
+          {"k-no-at", "not-an-email"},
+          {"k-colon", "alice:bob@example.com"},
+          {"k-too-long", String.duplicate("a", 190) <> "@example.com"}
+        ] do
+      assert {:ok, %{"seq" => 3}} =
+               SalixWeb.StationHostedTasks.say(
+                 scope,
+                 context.station_id,
+                 "7",
+                 "Invalid",
+                 key,
+                 "Router",
+                 %{"requester_email" => bad_email}
+               )
+
+      assert_received {:asked, ^run_id, "task.say", params}
+      assert params["key"] == key
+      refute Map.has_key?(params, "requester_email")
+    end
+  end
+
+  test "say/7 maps the default workspace name to Comma unless requester is custom", context do
+    tenant_id = context.view.tenant_id
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Default workspace"}, tenant_id)
+    group_id = group["group_id"]
+
+    station_id =
+      Base.encode16(<<SystemsRuntime.Proc.unique_integer([:positive])::256>>, case: :lower)
+
+    device_id = "device-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    {:ok, _station, nil} = Stations.admit(tenant_id, group_id, station_id)
+    {:ok, station} = Stations.active_station(station_id)
+
+    {:ok, _held} =
+      StationTaskIndex.apply_page(station, device_id, %{
+        "epoch" => "e1",
+        "reset" => true,
+        "through" => 1,
+        "rows" => [
+          %{
+            "thread" => "7",
+            "rev" => 1,
+            "task" => "EMBER/1792.000100",
+            "title" => "Fix the build",
+            "status" => "in_progress",
+            "created_at" => 1_000,
+            "last_activity_at" => 2_000
+          }
+        ]
+      })
+
+    run_id = connect!(%{tenant_id: tenant_id, group_id: group_id, device_id: device_id})
+    scope = %{tenant_id: tenant_id, group_id: group_id}
+
+    assert {:ok, %{"seq" => 3}} =
+             SalixWeb.StationHostedTasks.say(scope, station_id, "7", "Proceed", "k-def", "Router")
+
+    assert_received {:asked, ^run_id, "task.say",
+                     %{"key" => "k-def", "requester_name" => "Comma"}}
+
+    assert {:ok, %{"seq" => 3}} =
+             SalixWeb.StationHostedTasks.say(
+               scope,
+               station_id,
+               "7",
+               "Proceed",
+               "k-custom",
+               "Ops Router"
+             )
+
+    assert_received {:asked, ^run_id, "task.say",
+                     %{"key" => "k-custom", "requester_name" => "Ops Router"}}
+  end
+
+  test "read_file/6 requests task.read_file with seq, file, and offset", context do
+    run_id = connect!(context.view)
+    scope = %{tenant_id: context.view.tenant_id, group_id: context.view.group_id}
+
+    assert {:ok, %{"name" => "shot.png", "size" => 4, "offset" => 2, "data" => "UE5HIQ=="}} =
+             SalixWeb.StationHostedTasks.read_file(scope, context.station_id, "7", 19, "shot.png", 2)
+
+    assert_received {:asked, ^run_id, "task.read_file",
+                     %{
+                       "task" => "EMBER/1792.000100",
+                       "seq" => 19,
+                       "file" => "shot.png",
+                       "offset" => 2
+                     }}
   end
 
   defp connect!(view) do

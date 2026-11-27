@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   handleNotchTaskOpen,
   notchStepFeedTasks,
+  toNotchLoopTaskItems,
   toNotchTaskItems,
   withWorkerSteps,
 } from "../NotchTaskSync";
@@ -86,6 +87,24 @@ describe("toNotchTaskItems", () => {
     expect(notchStepFeedTasks(tasks).map((item) => item.id)).toEqual(["b", "c"]);
   });
 
+  it("never lists a Loop, and follows an active Loop's Worker after the running Tasks for the Task cards", () => {
+    const all = [
+      task("one-shot", "in_progress", 10),
+      { ...task("loop-active", "loops", 30), loop: loop("active") },
+      { ...task("loop-paused", "loops", 40), loop: loop("paused") },
+      { ...task("loop-pending", "loops", 50), loop: loop("pending") },
+    ];
+    const running = toNotchTaskItems(all, "In progress");
+    const loops = toNotchLoopTaskItems(all, "In progress");
+
+    expect(running.map((item) => item.id)).toEqual(["one-shot"]);
+    expect(loops.map((item) => item.id)).toEqual(["loop-active"]);
+    expect(notchStepFeedTasks(running, loops).map((item) => item.id)).toEqual([
+      "one-shot",
+      "loop-active",
+    ]);
+  });
+
   it("closes the Notch, focuses Comma, and opens the selected task chat", () => {
     const close = vi.fn();
     const focusMainWindow = vi.fn();
@@ -129,6 +148,10 @@ describe("toNotchTaskItems", () => {
     expect(actions.navigate).not.toHaveBeenCalled();
   });
 });
+
+function loop(state: "active" | "paused" | "pending") {
+  return { state, startedAt: 1, wakeCount: 1 };
+}
 
 function task(
   id: string,

@@ -86,6 +86,126 @@ defmodule Comma.MemberSourceItemsTest do
     refute waits?.(%{"outcome" => "quiet", "due_at" => clock + 60_000})
   end
 
+  test "a full 1,200-byte record context keeps its scope, attachments and stable fingerprint" do
+    {profile, _workspace} = profile_fixture!()
+    now = ~U[2026-11-25 04:18:00.000000Z]
+
+    full_text = "body: " <> String.duplicate("a", 1_194)
+    assert byte_size(full_text) == 1_200
+
+    item =
+      mail("invite", "Apple Developer invite")
+      |> Map.put("context", %{
+        "scope" => "record_excerpt",
+        "text" => full_text,
+        "truncated" => true,
+        "attachments" => "unread"
+      })
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record(profile, %{"ca-mail" => [item]}, ["ca-mail"], now)
+
+    refute MemberSourceItems.pending?(profile.id)
+
+    [stored] = Repo.all(items(profile.id))
+    assert stored.baseline == true
+    assert stored.context["scope"] == "record_excerpt"
+    assert stored.context["attachments"] == "unread"
+    assert stored.context["text"] == full_text
+
+    # Re-recording the same item alongside an unrelated new arrival keeps the
+    # baseline item unchanged and leaves only the new arrival pending.
+    later = DateTime.add(now, 900)
+
+    assert {:ok, %{new: 1, changed: 0}} =
+             record(
+               profile,
+               %{"ca-mail" => [item, mail("newer", "New mail")]},
+               ["ca-mail"],
+               later
+             )
+
+    assert [%{item_key: "newer"}] = MemberSourceItems.pending(profile.id, 24)
+    assert Repo.get!(MemberSourceItem, stored.id).baseline == true
+  end
+
+  test "pre-v2 fingerprints rebase silently once without clearing baseline or attention" do
+    {profile, _workspace} = profile_fixture!()
+    now = ~U[2026-11-25 04:18:00.000000Z]
+
+    base = mail("base", "Old baseline mail")
+    quiet = mail("quiet", "Settled quiet mail")
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record(profile, %{"ca-mail" => [base]}, ["ca-mail"], now)
+
+    assert {:ok, %{new: 1, changed: 0}} =
+             record(profile, %{"ca-mail" => [base, quiet]}, ["ca-mail"], DateTime.add(now, 60))
+
+    [quiet_row] = MemberSourceItems.pending(profile.id, 24)
+    :ok = MemberSourceItems.settle([quiet_row], %{"outcome" => "quiet"})
+    [base_row] = Repo.all(from(i in items(profile.id), where: i.item_key == "base"))
+
+    # Simulate legacy unprefixed fingerprints from before the per-item context fix.
+    legacy_fp = String.duplicate("a", 64)
+    Repo.update_all(items(profile.id), set: [fingerprint: legacy_fp])
+
+    # Re-collecting with expanded context rebases silently: changed == 0,
+    # baseline and attention remain intact, and fingerprints upgrade to `v2:` <= 64 chars.
+    expanded_base =
+      Map.put(base, "context", %{
+        "scope" => "record_excerpt",
+        "text" => "body: expanded base",
+        "truncated" => false
+      })
+
+    expanded_quiet =
+      Map.put(quiet, "context", %{
+        "scope" => "record_excerpt",
+        "text" => "body: expanded quiet",
+        "truncated" => false
+      })
+
+    later = DateTime.add(now, 900)
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record(profile, %{"ca-mail" => [expanded_base, expanded_quiet]}, ["ca-mail"], later)
+
+    refute MemberSourceItems.pending?(profile.id)
+
+    rebased_base = Repo.get!(MemberSourceItem, base_row.id)
+    rebased_quiet = Repo.get!(MemberSourceItem, quiet_row.id)
+
+    assert String.starts_with?(rebased_base.fingerprint, "v2:")
+    assert byte_size(rebased_base.fingerprint) <= 64
+    assert rebased_base.baseline == true
+    assert rebased_base.changed_at == base_row.changed_at
+    assert rebased_base.context["text"] == "body: expanded base"
+
+    assert String.starts_with?(rebased_quiet.fingerprint, "v2:")
+    assert rebased_quiet.attention == %{"outcome" => "quiet"}
+    assert rebased_quiet.changed_at == quiet_row.changed_at
+    assert rebased_quiet.context["text"] == "body: expanded quiet"
+
+    # Once on `v2:`, a genuine edit triggers `changed: 1` as usual.
+    edited_quiet =
+      Map.put(expanded_quiet, "context", %{
+        "scope" => "record_excerpt",
+        "text" => "body: urgent follow-up",
+        "truncated" => false
+      })
+
+    assert {:ok, %{new: 0, changed: 1}} =
+             record(
+               profile,
+               %{"ca-mail" => [expanded_base, edited_quiet]},
+               ["ca-mail"],
+               DateTime.add(later, 900)
+             )
+
+    assert [%{item_key: "quiet"}] = MemberSourceItems.pending(profile.id, 24)
+  end
+
   test "a new quote keeps the item's version and outcome" do
     {profile, _workspace} = profile_fixture!()
     now = ~U[2026-09-24 08:00:00.000000Z]
@@ -290,6 +410,19 @@ defmodule Comma.MemberSourceItemsTest do
     assert [%{status: "resolved", summary: "Replied to Milo"}] =
              Enum.filter(list.(), &(&1.id == milo))
 
+    # Stale or equal-timestamp evidence cannot resurrect an uncorrected resolved thread.
+    stale_open =
+      Map.put(
+        thread.("slack:C1/3.0", "open", "Stale open replay"),
+        "evidence_at",
+        DateTime.add(now, 30)
+      )
+
+    assert {:ok, _} = put.([stale_open], [])
+
+    assert [%{status: "resolved", summary: "Replied to Milo"}] =
+             Enum.filter(list.(), &(&1.id == milo))
+
     # A source the member no longer collects, or a read the current account
     # check rejects, records nothing.
     assert {:error, :member_source_changed} =
@@ -368,6 +501,283 @@ defmodule Comma.MemberSourceItemsTest do
     rest = Enum.map(second, & &1.id) -- Enum.map(first, & &1.id)
     assert length(rest) == 2
     assert Enum.take(Enum.map(second, & &1.id), 2) == rest
+  end
+
+  test "a retryable item keeps a bounded recovery window across rolling source pages and survives the 400-item pool sweep" do
+    {profile, _workspace} = profile_fixture!()
+    now = ~U[2026-11-20 02:00:00.000000Z]
+
+    gh_item = fn key, text ->
+      %{
+        "item_key" => key,
+        "toolkit" => "github",
+        "app" => "GitHub",
+        "url" => "https://github.com/AFK-surf/still.fail/actions/runs/" <> key,
+        "title" => "CI run " <> key,
+        "excerpt" => text,
+        "prompt_context" => text,
+        "relationship" => "failed_in_your_repo",
+        "facts" => %{},
+        "provider_ids" => %{},
+        "fingerprint" => :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
+      }
+    end
+
+    record_gh = fn items, at ->
+      Repo.get!(RecommendationProfile, profile.id)
+      |> Ecto.Changeset.change(sources: [%{"connectionId" => "ca-gh", "enabled" => true}])
+      |> Repo.update!()
+
+      MemberSourceItems.record(
+        profile.id,
+        %{collected: %{"ca-gh" => %{"toolkit" => "github", "app" => "GitHub", "items" => items}}},
+        ["ca-gh"],
+        at
+      )
+    end
+
+    {:ok, _} = record_gh.([], now)
+
+    {:ok, %{new: 1}} =
+      record_gh.([gh_item.("1001", "Gate failed on main")], DateTime.add(now, 60))
+
+    [run_1] = MemberSourceItems.pending(profile.id, 24)
+
+    # First judgment timed out (`attempts: 0, failures: 1`), then 3 newer CI runs
+    # push `1001` out of the per-repo `current_keys` window.
+    :ok =
+      MemberSourceItems.settle([run_1], %{
+        "outcome" => "retry",
+        "attempts" => 0,
+        "failures" => 1
+      })
+
+    newer = for k <- ~w(1002 1003 1004), do: gh_item.(k, "Failure " <> k)
+    {:ok, %{new: 3}} = record_gh.(newer, DateTime.add(now, 960))
+
+    pending_keys = MemberSourceItems.pending(profile.id, 24) |> Enum.map(& &1.item_key)
+    assert "1001" in pending_keys
+    assert {:ok, :recovered} = MemberSourceItems.while_pending(run_1, fn -> {:ok, :recovered} end)
+
+    # Settle the newer 3 items and flood 405 passive settled notifications so the
+    # source exceeds the 400-item retention bound: active `retry` row `1001` stays.
+    newer_rows =
+      MemberSourceItems.pending(profile.id, 24) |> Enum.reject(&(&1.item_key == "1001"))
+
+    :ok = MemberSourceItems.settle(newer_rows, %{"outcome" => "quiet"})
+
+    flood = for n <- 1..405, do: gh_item.("noise-#{n}", "Subscribed notification #{n}")
+    {:ok, _} = record_gh.(flood, DateTime.add(now, 1_800))
+
+    flood_rows =
+      Repo.all(
+        from(i in MemberSourceItem,
+          where: i.profile_id == ^profile.id and i.source_id == "ca-gh" and is_nil(i.attention)
+        )
+      )
+
+    :ok = MemberSourceItems.settle(flood_rows, %{"outcome" => "quiet"})
+    {:ok, _} = record_gh.([gh_item.("noise-406", "One more")], DateTime.add(now, 2_400))
+
+    total_count =
+      Repo.one!(
+        from(i in MemberSourceItem,
+          where: i.profile_id == ^profile.id and i.source_id == "ca-gh",
+          select: count(i.id)
+        )
+      )
+
+    assert total_count == 400
+    assert Repo.get(MemberSourceItem, run_1.id) != nil
+    assert "1001" in Enum.map(MemberSourceItems.pending(profile.id, 24), & &1.item_key)
+
+    # Off-window recovery stops once failures reach 3 or the 48-hour grace elapses.
+    :ok =
+      MemberSourceItems.settle([run_1], %{
+        "outcome" => "retry",
+        "attempts" => 0,
+        "failures" => 3
+      })
+
+    refute "1001" in Enum.map(MemberSourceItems.pending(profile.id, 24), & &1.item_key)
+
+    :ok =
+      MemberSourceItems.settle([run_1], %{
+        "outcome" => "retry",
+        "attempts" => 0,
+        "failures" => 1
+      })
+
+    {:ok, _} = record_gh.([gh_item.("noise-406", "One more")], DateTime.add(now, 49 * 3_600))
+    refute "1001" in Enum.map(MemberSourceItems.pending(profile.id, 24), & &1.item_key)
+
+    # Non-truncated mailbox reads still withdraw answered mail immediately, while
+    # a truncated mailbox read keeps a retryable mail item eligible.
+    {:ok, _} = record(profile, %{"ca-mail" => []}, ["ca-mail"], now)
+
+    {:ok, _} =
+      record(profile, %{"ca-mail" => [mail("m1", "Urgent")]}, ["ca-mail"], DateTime.add(now, 60))
+
+    [m1] = MemberSourceItems.pending(profile.id, 24)
+
+    :ok =
+      MemberSourceItems.settle([m1], %{"outcome" => "retry", "attempts" => 0, "failures" => 1})
+
+    {:ok, _} =
+      MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            "ca-mail" => %{
+              "toolkit" => "gmail",
+              "app" => "Gmail",
+              "bound" => %{"truncated" => false},
+              "items" => []
+            }
+          }
+        },
+        ["ca-mail"],
+        DateTime.add(now, 120)
+      )
+
+    assert MemberSourceItems.pending(profile.id, 24) == []
+
+    {:ok, _} =
+      MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            "ca-mail" => %{
+              "toolkit" => "gmail",
+              "app" => "Gmail",
+              "bound" => %{"truncated" => true},
+              "items" => []
+            }
+          }
+        },
+        ["ca-mail"],
+        DateTime.add(now, 180)
+      )
+
+    assert [%{id: id}] = MemberSourceItems.pending(profile.id, 24)
+    assert id == m1.id
+  end
+
+  test "the 400-item sweep keeps first only the items that can still wait for a consumer" do
+    {profile, _workspace} = profile_fixture!()
+    start = ~U[2026-11-20 02:00:00.000000Z]
+    at = DateTime.add(start, 50 * 3_600)
+    clock = SystemsClock.system_time(:millisecond)
+    cap = MemberSourceItems.rechecks()
+    recent = DateTime.add(at, -3_600)
+    stale = DateTime.add(at, -49 * 3_600)
+
+    {:ok, _} = collect(profile, "ca-gh", "github", [], nil, start)
+
+    put_rows!(profile, "ca-gh", "github", start, [
+      # Off-window retries whose recovery window has closed.
+      {"retry-exhausted", %{"outcome" => "retry", "attempts" => 0, "failures" => 3}, recent},
+      {"retry-stale", %{"outcome" => "retry", "attempts" => 0, "failures" => 1}, stale},
+      # A deferred matter after its last recheck, with no due time.
+      {"deferred-spent", %{"outcome" => "deferred", "next_at" => clock, "rechecks" => cap},
+       recent},
+      # Items a later check can still wake.
+      {"retry-live", %{"outcome" => "retry", "attempts" => 0, "failures" => 1}, recent},
+      {"quiet-due", %{"outcome" => "quiet", "due_at" => clock + 3_600_000}, recent},
+      {"deferred-due",
+       %{"outcome" => "deferred", "next_at" => clock, "rechecks" => cap, "due_at" => clock},
+       recent}
+    ])
+
+    {:ok, %{new: 1}} = collect(profile, "ca-gh", "github", [run("new")], nil, at)
+
+    assert source_count(profile, "ca-gh") == 400
+
+    assert kept_special_keys(profile, "ca-gh") ==
+             ~w(deferred-due new quiet-due retry-live)
+
+    # A non-truncated mailbox read reflects the live inbox, so an off-window
+    # mail retry has no recovery window to keep. A truncated read keeps it.
+    for {truncated, kept} <- [{false, ~w(new)}, {true, ~w(new retry-live)}] do
+      bound = %{"truncated" => truncated}
+      {:ok, _} = collect(profile, "ca-mail", "gmail", [], bound, start)
+
+      put_rows!(profile, "ca-mail", "gmail", start, [
+        {"retry-live", %{"outcome" => "retry", "attempts" => 0, "failures" => 1}, recent}
+      ])
+
+      {:ok, _} = collect(profile, "ca-mail", "gmail", [mail("new", "New")], bound, at)
+
+      assert source_count(profile, "ca-mail") == 400
+      assert kept_special_keys(profile, "ca-mail") == kept
+      MemberSourceItems.reset(profile.id)
+    end
+  end
+
+  # Settled rows of one source: the given special rows, seen first, and 400
+  # quiet notifications seen later, so the specials go first in a plain sweep.
+  defp put_rows!(profile, source_id, toolkit, start, specials) do
+    noise =
+      for n <- 1..400 do
+        {"noise-#{n}", %{"outcome" => "quiet"}, DateTime.add(start, 3_600 + n)}
+      end
+
+    rows =
+      for {{key, attention, changed_at}, index} <- Enum.with_index(specials ++ noise) do
+        seen = if index < length(specials), do: start, else: changed_at
+
+        %{
+          id: SystemsRuntime.Proc.uuid(),
+          profile_id: profile.id,
+          source_id: source_id,
+          toolkit: toolkit,
+          item_key: key,
+          url: "https://example.test/" <> key,
+          fingerprint: key,
+          baseline: false,
+          attention: attention,
+          facts: %{},
+          provider_ids: %{},
+          first_seen_at: start,
+          last_seen_at: seen,
+          changed_at: changed_at
+        }
+      end
+
+    Repo.insert_all(MemberSourceItem, rows)
+  end
+
+  defp collect(profile, source_id, toolkit, items, bound, at) do
+    Repo.get!(RecommendationProfile, profile.id)
+    |> Ecto.Changeset.change(sources: [%{"connectionId" => source_id, "enabled" => true}])
+    |> Repo.update!()
+
+    source = %{"toolkit" => toolkit, "app" => toolkit, "bound" => bound, "items" => items}
+    MemberSourceItems.record(profile.id, %{collected: %{source_id => source}}, [source_id], at)
+  end
+
+  defp source_count(profile, source_id),
+    do: Repo.one!(from(i in items(profile.id), where: i.source_id == ^source_id, select: count()))
+
+  defp kept_special_keys(profile, source_id) do
+    from(i in items(profile.id),
+      where: i.source_id == ^source_id and not like(i.item_key, "noise-%"),
+      select: i.item_key,
+      order_by: i.item_key
+    )
+    |> Repo.all()
+  end
+
+  defp run(key) do
+    %{
+      "item_key" => key,
+      "toolkit" => "github",
+      "app" => "GitHub",
+      "url" => "https://github.com/AFK-surf/still.fail/actions/runs/" <> key,
+      "title" => "CI run " <> key,
+      "excerpt" => key,
+      "fingerprint" => key
+    }
   end
 
   defp record(profile, sources, enabled, at \\ SystemsClock.utc_now()) do

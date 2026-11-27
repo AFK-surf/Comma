@@ -34,6 +34,12 @@ import UIKit
         }
         let exhausted = PhoneUsageModel(store: harness.store, workspace: workspace)
         try await capture("08-usage-exhausted", view: PhoneUsageView(model: exhausted)) { exhausted.status == "ready" }
+        harness.core.serve("billing") { _ in PhoneRoutineUsageFixtures.storeBilling() }
+        let store = PhoneUsageModel(store: harness.store, workspace: workspace)
+        try await capture("09-usage-app-store", view: PhoneUsageView(model: store), height: 2000) { !store.creditPacks.isEmpty }
+        harness.core.serve("billing") { _ in PhoneRoutineUsageFixtures.storeBilling(provider: "stripe") }
+        let web = PhoneUsageModel(store: harness.store, workspace: workspace)
+        try await capture("10-usage-web-subscription", view: PhoneUsageView(model: web), height: 2000) { web.managedElsewhere }
     }
 
     func testDuoColumnsAndChatAcceptanceScreenshots() async throws {
@@ -115,7 +121,7 @@ import UIKit
     }
 
     private func assertColumns(_ root: UIViewController, window: UIWindow, detailTitle: String = String(localized: "Usage")) throws {
-        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? ShellTabBarController }.first)
+        let bar = try XCTUnwrap(controllers(root).compactMap { $0 as? any ShellBar }.first)
         let tabs = try XCTUnwrap(bar.parent)
         let page = try XCTUnwrap(tabs.children.first { $0 !== bar && !$0.view.isHidden })
         let scrolls = views(page.view).compactMap { $0 as? UIScrollView }
@@ -153,11 +159,13 @@ import UIKit
         }
     }
 
+    /// `height`: a taller window than the screen, for a page whose rows run past it.
     private func capture<V: View>(_ name: String, view: V, dark: Bool = false, textSize: DynamicTypeSize = .large,
-                                  ready condition: @escaping @MainActor () -> Bool) async throws {
+                                  height: CGFloat? = nil, ready condition: @escaping @MainActor () -> Bool) async throws {
         let scene = try scene()
         let original = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
+        if let height { window.frame = CGRect(x: 0, y: 0, width: scene.coordinateSpace.bounds.width, height: height) }
         window.overrideUserInterfaceStyle = dark ? .dark : .light
         window.rootViewController = UIHostingController(rootView: NavigationStack { view }
             .environment(\.colorScheme, dark ? .dark : .light).environment(\.dynamicTypeSize, textSize))

@@ -2,21 +2,16 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
   use SystemsClock.Case, async: false
 
   import Ecto.Query
-  import Plug.Conn
-  import Plug.Test
 
-  alias SalixStore.{AgentVMM, Compute, PersonalMeshProto, Repo}
+  alias SalixStore.{AgentVMM, AgentVMMGatewayControl, Compute, PersonalMeshProto, Repo}
 
   @p256_order 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
-  @secret String.duplicate("control-", 4)
   @token String.duplicate("enroll-", 4)
   @connection_epoch "9223372036854775808"
 
   setup do
-    previous = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
     previous_signer = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
-    SystemsRuntime.put_env(:salix_web, :agent_vmm_gateway_control_secret, @secret)
     {_receipt_public, receipt_private} = keypair()
 
     SystemsRuntime.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
@@ -66,7 +61,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
       })
 
     on_exit(fn ->
-      put_or_delete_env(:salix_web, :agent_vmm_gateway_control_secret, previous)
       put_or_delete_env(:salix_store, :personal_mesh_registry_receipt_signer, previous_signer)
     end)
 
@@ -234,17 +228,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     )
 
     assert inactive_error.("12") == {403, "registration_inactive"}
-  end
-
-  test "workload auth requires both secret and an explicit gateway identity" do
-    conn =
-      conn(:post, "/v1/compute/authenticate", Jason.encode!(%{}))
-      |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", @secret)
-      |> SalixWeb.Router.call(SalixWeb.Router.init([]))
-
-    assert conn.status == 401
-    assert Jason.decode!(conn.resp_body) == %{"error" => "unauthorized"}
   end
 
   test "registration authentication reports a transient database fault as unavailable" do
@@ -1358,12 +1341,31 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     assert endpoint_projection["observations"] == [observation]
   end
 
+  @control_operations %{
+    "/v1/compute/authenticate" => :authenticate,
+    "/v1/compute/connections/observe" => :observe_hello,
+    "/v1/compute/connections/observation" => :settle_observation,
+    "/v1/compute/commands/claim" => :claim_command,
+    "/v1/compute/commands/commit" => :commit_result,
+    "/v1/compute/connections/disconnected" => :disconnected,
+    "/v1/compute/sessions/ready" => :observe_session,
+    "/v1/compute/registry/create" => :registry_create,
+    "/v1/compute/registry/join" => :registry_join,
+    "/v1/compute/registry/revoke" => :registry_revoke,
+    "/v1/compute/registry/snapshot" => :registry_snapshot,
+    "/v1/compute/registry/endpoint" => :registry_endpoint,
+    "/v1/compute/registry/endpoints" => :registry_endpoints
+  }
+
   defp request(path, body) do
-    conn(:post, path, Jason.encode!(body))
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("authorization", @secret)
-    |> put_req_header("x-agent-vmm-gateway-instance", "gateway-a")
-    |> SalixWeb.Router.call(SalixWeb.Router.init([]))
+    operation = Map.fetch!(@control_operations, path)
+
+    {status, response} = AgentVMMGatewayControl.call("gateway-a", operation, body)
+
+    %{
+      status: status,
+      resp_body: if(is_nil(response), do: "", else: Jason.encode!(response))
+    }
   end
 
   defp claim_command!(epoch \\ @connection_epoch) do

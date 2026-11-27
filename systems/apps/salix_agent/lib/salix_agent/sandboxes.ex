@@ -88,6 +88,44 @@ defmodule SalixAgent.Sandboxes do
   end
 
   @doc """
+  The runtimes the station of a new sandbox in the workspace of `tenant_id`
+  can run, sorted: those of the accounts lent to it
+  (`SalixAgent.SubscriptionStore.station_accounts/1`, `account_runtime/1`),
+  and Codex when the platform's `worker` model is configured for it
+  (`SalixAgent.PlatformModels.station_tier/0`). With `account_id`, a Task
+  that selected one account: only that account's runtime, and the platform's.
+
+  The Router and Worker prompts offer these runtimes for sandbox Tasks
+  (`SalixAgent.ToolPolicy`), and placement refuses any other for a new sandbox
+  (`SalixIM.TaskPlacement`).
+  """
+  @spec runtimes(String.t(), String.t() | nil) :: {:ok, [String.t()]} | {:error, term()}
+  def runtimes(tenant_id, account_id \\ nil) when is_binary(tenant_id) do
+    with {:ok, accounts} <- SalixAgent.SubscriptionStore.station_accounts(tenant_id) do
+      platform =
+        if match?({:ok, _}, SalixAgent.PlatformModels.station_tier()), do: ["codex"], else: []
+
+      {:ok,
+       accounts
+       |> selected(account_id)
+       |> Enum.map(&account_runtime/1)
+       |> Enum.concat(platform)
+       |> Enum.uniq()
+       |> Enum.sort()}
+    end
+  end
+
+  # A Task that selected one account is lent only that one
+  # (`SalixWeb.StationProfiles`), even when it is not among them.
+  defp selected(accounts, id) when is_binary(id), do: Enum.filter(accounts, &(&1["id"] == id))
+  defp selected(accounts, _none), do: accounts
+
+  @doc "The runtime a lent account runs: a subscription's source; an Anthropic API key's, Claude."
+  @spec account_runtime(map()) :: String.t()
+  def account_runtime(%{"credential" => "subscription", "source" => source}), do: source
+  def account_runtime(_api_key), do: "claude"
+
+  @doc """
   The answers for Group `group_id` in one map, for a product that asks over
   RPC: the three above, and `cloud_vm_available`, whether the Group can have
   a Cloud VM (`SalixAgent.CloudVM.available?/2`).

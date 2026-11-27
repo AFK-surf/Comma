@@ -7,6 +7,7 @@ metadata:
   color: cyan
   visibility: visible
   placeholder: Name a reference style or describe the UI to design
+prompt_summary: "Design and build polished web UIs, landing pages, or prototypes (choose a reference when named or when no style is specified)."
 ---
 
 # UI Designer

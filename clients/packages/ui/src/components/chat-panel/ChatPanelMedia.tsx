@@ -341,7 +341,6 @@ export const ChatPanelImage = ({
             <ChatPanelMediaDownloadControl
               buttonClassName="chat-panel-image-action"
               controller={downloadController}
-              feedbackPlacement="below"
               icon={<DownloadIcon className="size-2xl" />}
               kind="image"
             />

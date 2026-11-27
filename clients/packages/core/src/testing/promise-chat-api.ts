@@ -64,7 +64,7 @@ export interface PromiseChatApi {
   fetchGroupFile(
     groupId: string,
     path: string,
-    options?: { signal?: AbortSignal }
+    options?: { signal?: AbortSignal; taskId?: string }
   ): Promise<Blob>;
   fetchAgentBlob(
     groupId: string,

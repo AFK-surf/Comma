@@ -64,10 +64,23 @@ defmodule SalixAgent.DriveMount do
   @spec stream(map(), String.t()) ::
           {:ok, Enumerable.t(), non_neg_integer()} | {:error, term()}
   def stream(ctx, path) do
+    with {:ok, stream, size} <- stream_with_optional_size(ctx, path) do
+      {:ok, stream, size || 0}
+    end
+  end
+
+  @doc """
+  Stream a Drive file while preserving `nil` size when the Drive backend did
+  not report `Content-Length` (used by callers that need exact byte counts
+  such as `SalixAgent.Colab.Transfer`).
+  """
+  @spec stream_with_optional_size(map(), String.t()) ::
+          {:ok, Enumerable.t(), non_neg_integer() | nil} | {:error, term()}
+  def stream_with_optional_size(ctx, path) do
     with {:ok, rel} <- file_path(path) do
       case Drive.stream(ctx, rel) do
         {:ok, stream, size} when is_integer(size) -> {:ok, stream, size}
-        {:ok, stream, nil} -> {:ok, stream, 0}
+        {:ok, stream, nil} -> {:ok, stream, nil}
         {:error, _} = error -> refusal(error)
       end
     end
@@ -144,14 +157,26 @@ defmodule SalixAgent.DriveMount do
   @doc """
   Publishes a stream at `path`. The Drive needs the size before the first
   byte, so the stream is spooled to a bounded temporary file first.
+  Supports `if_none_match: true` for atomic conditional creation.
   """
-  @spec prepare_write_stream(map(), String.t(), Enumerable.t()) ::
+  @spec prepare_write_stream(map(), String.t(), Enumerable.t(), keyword()) ::
           {:ok, nil} | {:error, term()}
-  def prepare_write_stream(ctx, path, stream) do
+  def prepare_write_stream(ctx, path, stream, opts \\ []) do
     with {:ok, rel} <- file_path(path),
          :ok <- authorize(ctx, path, "drive_write") do
       spool(stream, fn spooled, size ->
-        with {:ok, _result} <- refusal(Drive.write(ctx, rel, spooled, size)), do: {:ok, nil}
+        case Drive.write(ctx, rel, spooled, size, opts) do
+          {:ok, _result} ->
+            {:ok, nil}
+
+          {:error, :precondition} when opts != [] ->
+            if Keyword.get(opts, :if_none_match) == true,
+              do: {:error, :destination_exists},
+              else: refusal({:error, :precondition})
+
+          error ->
+            refusal(error)
+        end
       end)
     end
   end

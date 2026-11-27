@@ -1,0 +1,32 @@
+#!/bin/sh
+# Run once as the sandbox login user. This creates an AVD without starting it.
+set -eu
+. /usr/local/lib/comma-android-env
+if [ "$(id -u)" = 0 ]; then
+    echo "Run this command as the sandbox login user." >&2
+    exit 1
+fi
+name=api30-phone
+config="$ANDROID_AVD_HOME/$name.avd/config.ini"
+if [ -f "$config" ]; then
+    printf '%s\n' "AVD $name already exists."
+    exit 0
+fi
+mkdir -p "$ANDROID_AVD_HOME"
+printf 'no\n' | avdmanager create avd --name "$name" \
+    --package 'system-images;android-30;google_apis;x86_64' --path "$ANDROID_AVD_HOME/$name.avd"
+python3 - "$config" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+settings = {
+    "hw.ramSize": "2048", "hw.cpu.ncore": "2",
+    "hw.lcd.width": "720", "hw.lcd.height": "1280", "hw.lcd.density": "320",
+    "hw.gpu.enabled": "yes", "hw.gpu.mode": "swiftshader", "hw.keyboard": "yes",
+    "showDeviceFrame": "no", "fastboot.forceColdBoot": "yes",
+    "snapshot.present": "no", "disk.dataPartition.size": "4G",
+}
+lines = [line for line in path.read_text().splitlines() if line.partition("=")[0].strip() not in settings]
+path.write_text("\n".join(lines + [f"{key}={value}" for key, value in settings.items()]) + "\n")
+PY
+printf '%s\n' "Created AVD $name. Start it through the Station screen controls."

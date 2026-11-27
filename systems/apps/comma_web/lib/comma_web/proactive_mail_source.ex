@@ -165,7 +165,8 @@ defmodule CommaWeb.ProactiveMailSource do
 
     with {:ok, parts} <- parts(payload, 0),
          {:ok, text} <- body_text(parts),
-         true <- text != "" and byte_size(text) <= @max_text_bytes,
+         attachments = parts |> Enum.map(& &1["filename"]) |> Enum.reject(&(&1 in [nil, ""])),
+         true <- (text != "" or attachments != []) and byte_size(text) <= @max_text_bytes,
          true <- valid_id?(message["id"]) and is_list(message["labelIds"]),
          {at, ""} <- Integer.parse(to_string(message["internalDate"] || "")) do
       {:ok,
@@ -178,7 +179,7 @@ defmodule CommaWeb.ProactiveMailSource do
          "body" => text,
          "labels" => message["labelIds"],
          "sent_at_ms" => at,
-         "attachments" => parts |> Enum.map(& &1["filename"]) |> Enum.reject(&(&1 in [nil, ""]))
+         "attachments" => attachments
        }}
     else
       {:error, _} = error -> error
@@ -223,22 +224,45 @@ defmodule CommaWeb.ProactiveMailSource do
     end
   end
 
-  # The decoded inline bodies: the text/plain parts, else the text/html parts.
+  # The decoded inline bodies: non-empty text/plain parts, else text/html parts.
   defp bodies(parts) do
     inline = Enum.filter(parts, &(&1["filename"] in [nil, ""]))
     plain = Enum.filter(inline, &(&1["mimeType"] == "text/plain"))
+    html = Enum.filter(inline, &(&1["mimeType"] == "text/html"))
 
-    selected =
-      if plain == [], do: Enum.filter(inline, &(&1["mimeType"] == "text/html")), else: plain
+    with {:ok, plain_bodies} <- decode_body_parts(plain) do
+      if plain_bodies != [] or html == [] do
+        {:ok, plain_bodies}
+      else
+        decode_body_parts(html)
+      end
+    end
+  end
 
+  defp decode_body_parts(selected) do
     Enum.reduce_while(selected, {:ok, []}, fn part, {:ok, bodies} ->
-      case Base.url_decode64(get_in(part, ["body", "data"]) || "", padding: false) do
-        {:ok, data} when data != "" ->
-          if String.valid?(data),
-            do: {:cont, {:ok, [{part["mimeType"], data} | bodies]}},
-            else: {:halt, {:error, :mail_body_encoding_unavailable}}
+      encoded = get_in(part, ["body", "data"])
+      size = get_in(part, ["body", "size"])
 
-        _ ->
+      cond do
+        encoded in [nil, ""] and size in [nil, 0] ->
+          {:cont, {:ok, bodies}}
+
+        is_binary(encoded) ->
+          case Base.url_decode64(encoded, padding: false) do
+            {:ok, ""} when size in [nil, 0] ->
+              {:cont, {:ok, bodies}}
+
+            {:ok, data} when data != "" ->
+              if String.valid?(data),
+                do: {:cont, {:ok, [{part["mimeType"], data} | bodies]}},
+                else: {:halt, {:error, :mail_body_encoding_unavailable}}
+
+            _ ->
+              {:halt, {:error, :mail_body_unavailable_or_too_large}}
+          end
+
+        true ->
           {:halt, {:error, :mail_body_unavailable_or_too_large}}
       end
     end)

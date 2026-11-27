@@ -8,6 +8,7 @@ const BUCKETS: VisibleTaskStatusBucket[] = [
   "needs_review",
   "done",
   "cancelled",
+  "loops",
 ];
 
 describe("status indicator ↔ task status binding", () => {

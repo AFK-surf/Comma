@@ -18,12 +18,21 @@ defmodule Comma.Stations.Members do
   @read_only ~w(viewer)
 
   @impl true
-  def requester(
-        _tenant,
-        group,
-        %{"provider" => "telegram", "managed_by" => "comma_product", "connect_id" => connect},
-        subject
-      ) do
+  def requester(tenant, group, connect, subject) do
+    resolve_requester(tenant, group, connect, subject)
+  rescue
+    # Umbrella suites for other products (such as BridgeForTeams.DataCase) leave
+    # Comma.Repo in manual sandbox mode without ownership while Comma.Stations.Members
+    # stays registered in SalixStore.StationMembers.
+    DBConnection.OwnershipError -> :none
+  end
+
+  defp resolve_requester(
+         _tenant,
+         group,
+         %{"provider" => "telegram", "managed_by" => "comma_product", "connect_id" => connect},
+         subject
+       ) do
     case Comma.TelegramLinks.resolve_sender(subject) do
       {:ok,
        %{link: %{connect_id: ^connect}, user: user, workspace: %{"default_group_id" => ^group}}} ->
@@ -34,18 +43,50 @@ defmodule Comma.Stations.Members do
     end
   end
 
-  def requester(
-        _tenant,
-        group,
-        %{
-          "provider" => "wechat",
-          "managed_by" => "comma_product",
-          "connect_id" => connect,
-          "wechat_id" => subject,
-          "owner_user_id" => owner
-        },
-        subject
-      ) do
+  defp resolve_requester(
+         _tenant,
+         group,
+         %{"provider" => "imessage", "managed_by" => "comma_product", "connect_id" => connect},
+         subject
+       ) do
+    case Comma.IMessageLinks.resolve_sender(subject) do
+      {:ok,
+       %{link: %{connect_id: ^connect}, user: user, workspace: %{"default_group_id" => ^group}}} ->
+        {:ok, user["id"]}
+
+      _ ->
+        :none
+    end
+  end
+
+  defp resolve_requester(
+         _tenant,
+         group,
+         %{"provider" => "line", "managed_by" => "comma_product", "connect_id" => connect},
+         subject
+       ) do
+    case Comma.LineLinks.resolve_sender(subject) do
+      {:ok,
+       %{link: %{connect_id: ^connect}, user: user, workspace: %{"default_group_id" => ^group}}} ->
+        {:ok, user["id"]}
+
+      _ ->
+        :none
+    end
+  end
+
+  defp resolve_requester(
+         _tenant,
+         group,
+         %{
+           "provider" => "wechat",
+           "managed_by" => "comma_product",
+           "connect_id" => connect,
+           "wechat_id" => subject,
+           "owner_user_id" => owner
+         },
+         subject
+       ) do
     with {:ok, workspace} <- Comma.Workspaces.authorize_group(%{"id" => owner}, %{}, group),
          {:ok, %{current: ^connect}} <- Comma.WeChatLinks.references(workspace["id"]) do
       {:ok, owner}
@@ -54,7 +95,14 @@ defmodule Comma.Stations.Members do
     end
   end
 
-  def requester(_, _, _, _), do: :none
+  defp resolve_requester(_tenant, _group, %{"managed_by" => "comma_product"}, _subject), do: :none
+
+  defp resolve_requester(_tenant, _group, %{"connect_id" => connect}, subject)
+       when is_binary(connect) and connect != "" and is_binary(subject) and subject != "" do
+    Comma.ProviderUserLinks.resolve(connect, subject)
+  end
+
+  defp resolve_requester(_, _, _, _), do: :none
 
   @impl true
   def role(tenant_id, group_id, user_id) do

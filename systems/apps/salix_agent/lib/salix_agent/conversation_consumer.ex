@@ -156,6 +156,10 @@ defmodule SalixAgent.ConversationConsumer do
       {:error, :saturated} ->
         result
 
+      # The source cannot give this input yet: its frontier stays, and the next drain asks again.
+      {:error, {:source_unready, _}} ->
+        result
+
       {:error, _, false} ->
         reject(adapter, agent, binding, message, result, owner, runtime, fields)
 
@@ -188,6 +192,7 @@ defmodule SalixAgent.ConversationConsumer do
   defp admission_outcome({:error, {:stale_revision, _}}), do: :stale_revision
   defp admission_outcome({:error, :source_busy}), do: :source_busy
   defp admission_outcome({:error, :saturated}), do: :saturated
+  defp admission_outcome({:error, {:source_unready, _}}), do: :source_unready
   defp admission_outcome({:error, :conversation_source_retired}), do: :retired
   defp admission_outcome({:error, {:agent_owner_remote, _}}), do: :remote
   defp admission_outcome(_), do: :error

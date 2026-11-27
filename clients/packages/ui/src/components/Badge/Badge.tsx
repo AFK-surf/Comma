@@ -22,7 +22,7 @@ export const Badge = ({
 }: BadgeProps) => (
   <span
     className={cx(
-      "inline-flex items-center gap-1 font-medium",
+      "inline-flex items-center gap-1 whitespace-nowrap font-medium",
       typeClasses[type](color),
       sizeClasses[size],
       className

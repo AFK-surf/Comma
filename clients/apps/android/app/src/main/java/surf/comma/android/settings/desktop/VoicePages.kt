@@ -9,7 +9,6 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import androidx.core.view.isVisible
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -28,6 +27,7 @@ import surf.comma.android.settings.SettingsSwitch
 import surf.comma.android.settings.color
 import surf.comma.android.settings.dp
 import surf.comma.android.ui.ActionMenu
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.kit.CommaSheet
 import surf.comma.android.voice.CallController
 import java.util.Calendar
@@ -241,8 +241,8 @@ internal class VoicePickerSheet(private val ctx: SettingsContext, private val mo
         }
         val preview = model.preview?.takeIf { it.voice == option.id }
         val play = FrameLayout(activity).apply {
-            if (preview is VoicePreview.Loading) addView(ProgressBar(activity).apply {
-                indeterminateTintList = ColorStateList.valueOf(activity.color(R.color.token_text_secondary))
+            if (preview is VoicePreview.Loading) addView(ActivityIndicator(activity).apply {
+                color = activity.color(R.color.token_text_secondary)
             }, FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
             else addView(ImageView(activity).apply {
                 setImageResource(if (preview is VoicePreview.Playing) R.drawable.ic_media_pause else R.drawable.ic_media_play)

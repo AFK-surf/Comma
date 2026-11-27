@@ -141,7 +141,10 @@ defmodule SalixMCP.Gateway do
     case Store.get_binding(tenant_id, group_id, binding_id) do
       {:ok, binding} ->
         _ = Connection.stop(binding)
-        Store.delete_binding(tenant_id, group_id, binding_id)
+
+        # The personal sign-ins made for this binding go with it.
+        with :ok <- Credentials.binding_deleted(binding),
+             do: Store.delete_binding(tenant_id, group_id, binding_id)
 
       {:error, :not_found} ->
         :ok
@@ -182,6 +185,7 @@ defmodule SalixMCP.Gateway do
          :ok <- enabled(binding),
          :ok <- require_connection_callable(tenant_id, group_id, binding_id, connection) do
       redactions = Config.redaction_values(definition, binding)
+      opts_map = Map.new(opts)
 
       case Connection.request(
              binding,
@@ -195,7 +199,10 @@ defmodule SalixMCP.Gateway do
              opts
            ) do
         {:ok, result} ->
-          {:ok, normalize_tool_result(result, redactions)}
+          {:ok,
+           result
+           |> normalize_tool_result(redactions)
+           |> credential_failure(definition)}
 
         {:error, {:mcp_error, error}} ->
           {:ok, mcp_tool_error(error, redactions)}
@@ -207,10 +214,16 @@ defmodule SalixMCP.Gateway do
         {:error, :mcp_tool_not_allowed} = error ->
           error
 
+        # A call made as one person that the server refuses is that person's
+        # sign-in, not the binding's: the binding stays as it is.
+        {:error, {:http_error, 401, _headers, _body}} when is_map_key(opts_map, :auth_headers) ->
+          {:error, :requester_unauthorized}
+
         {:error, reason} ->
           status = status_for_error(reason)
           payload = error_payload(reason, redactions)
           maybe_mark_remote_oauth_reauthorization_required(reason, binding)
+          maybe_mark_oauth_refs_refused(reason, binding)
           _ = put_error(tenant_id, group_id, binding_id, status, payload, redactions)
           {:ok, unavailable(status, unavailable_reason(payload))}
       end
@@ -426,6 +439,31 @@ defmodule SalixMCP.Gateway do
     end
   end
 
+  # A server that answers a dead key inside a successful result
+  # (`SalixMCP.HostedServices.credential_failure/1`): the call failed.
+  @doc false
+  # A server that answers a dead key inside a successful result
+  # (`SalixMCP.HostedServices.credential_failure/1`): the call failed. Only the
+  # server's own error object counts, a result that is exactly that JSON
+  # object with one of the declared `errcode`s; text in the data is data.
+  def credential_failure(%{"status" => "completed"} = normalized, definition) do
+    with %{"errcodes" => errcodes, "message" => message} <-
+           SalixMCP.HostedServices.credential_failure(definition["mcp_id"]),
+         content when is_binary(content) <- normalized["content"],
+         {:ok, %{"errcode" => errcode}} <- Jason.decode(content),
+         true <- errcode in errcodes do
+      %{
+        "status" => "error",
+        "error_class" => "credential_invalid",
+        "content" => Jason.encode!(%{"error" => "credential_invalid", "message" => message})
+      }
+    else
+      _ -> normalized
+    end
+  end
+
+  def credential_failure(normalized, _definition), do: normalized
+
   defp normalize_tool_result(result, redactions) when is_map(result) do
     cond do
       result["isError"] == true ->
@@ -562,6 +600,20 @@ defmodule SalixMCP.Gateway do
 
     :ok
   end
+
+  # A managed OAuth token the server refuses on a tool call (401, or an
+  # invalid_token challenge) marks its connection for reauthorization.
+  # Discovery is left alone: a server can refuse it until its own sign-in.
+  defp maybe_mark_oauth_refs_refused(reason, binding) do
+    if RemoteOAuth.reauthorization_challenge?(reason) or unauthorized?(reason),
+      do: Credentials.oauth_refs_refused(binding)
+
+    :ok
+  end
+
+  defp unauthorized?({:http_error, 401}), do: true
+  defp unauthorized?({:http_error, 401, _headers, _body}), do: true
+  defp unauthorized?(_reason), do: false
 
   defp status_for_error(reason) do
     cond do

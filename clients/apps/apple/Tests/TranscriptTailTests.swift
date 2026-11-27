@@ -37,4 +37,18 @@ final class TranscriptTailTests: XCTestCase {
         // A reader pulling past the end is left to the scroll view's own bounce.
         XCTAssertFalse(tail(-300, content: 132_846).pastEnd(readerScrolling: true))
     }
+
+    /// The jump to the latest message shows a screen above the end and stays until the reader is back near it, and
+    /// shows whenever the newest rows are not laid out.
+    func testTheJumpToLatestShowsAScreenAwayFromTheEnd() {
+        let content: CGFloat = 102_372
+        XCTAssertFalse(tail(-94, content: content).awayFromEnd(shown: false, following: true, windowLive: true))
+        XCTAssertFalse(tail(400, content: content).awayFromEnd(shown: false, following: false, windowLive: true))
+        XCTAssertTrue(tail(700, content: content).awayFromEnd(shown: false, following: false, windowLive: true))
+        // Coming back down, it stays until the end is within reach.
+        XCTAssertTrue(tail(400, content: content).awayFromEnd(shown: true, following: false, windowLive: true))
+        XCTAssertFalse(tail(30, content: content).awayFromEnd(shown: true, following: false, windowLive: true))
+        // Rows below the window are not laid out: the end is further than the content shows.
+        XCTAssertTrue(tail(-94, content: content).awayFromEnd(shown: false, following: false, windowLive: false))
+    }
 }

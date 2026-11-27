@@ -57,6 +57,16 @@ const summarySchema = z
   })
   .strip();
 
+/** A link to one document: the page shows the file, and has no Task around it. */
+const documentSummarySchema = z
+  .object({
+    kind: z.literal("document"),
+    file_name: z.string().min(1),
+    size: z.number().int().nonnegative().nullable().optional(),
+    shared_at: z.number().nullable(),
+  })
+  .strip();
+
 const pageSchema = z
   .object({
     messages: z.array(messageSchema),
@@ -69,6 +79,7 @@ export type PublicShareBlock = z.output<typeof blockSchema>;
 export type PublicShareMessage = z.output<typeof messageSchema>;
 export type PublicShareSummary = z.output<typeof summarySchema>;
 export type PublicSharePage = z.output<typeof pageSchema>;
+export type PublicDocumentSummary = z.output<typeof documentSummarySchema>;
 
 export type PublicShareFailure = "not_found" | "rate_limited" | "unavailable";
 
@@ -107,8 +118,17 @@ export function createPublicShareClient(
   }
 
   return {
-    async summary(signal?: AbortSignal): Promise<PublicShareSummary> {
-      return summarySchema.parse(await (await get("", signal)).json());
+    /** What the link shares: a Task, or one document. */
+    async summary(
+      signal?: AbortSignal
+    ): Promise<PublicShareSummary | PublicDocumentSummary> {
+      const body: unknown = await (await get("", signal)).json();
+      const document = documentSummarySchema.safeParse(body);
+      return document.success ? document.data : summarySchema.parse(body);
+    },
+    /** The document a document link shares. */
+    async document(signal?: AbortSignal): Promise<Blob> {
+      return (await get("/document", signal)).blob();
     },
     async messages(afterSeq: number, signal?: AbortSignal): Promise<PublicSharePage> {
       const response = await get(`/messages?after_seq=${afterSeq}&limit=100`, signal);

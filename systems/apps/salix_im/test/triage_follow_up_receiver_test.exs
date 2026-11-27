@@ -190,6 +190,51 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     assert {:error, :not_found} = Schedules.get(schedule_id)
   end
 
+  test "an expired follow-up older than 7 days with a prior wakeup stops without admitting a recheck",
+       %{authority: authority} do
+    trigger_ts = "1788093250.000001"
+    due_ms = 1_788_096_500_000
+
+    %{entry_id: entry_id, schedule_id: schedule_id} =
+      seed_follow_up!(authority, trigger_ts, due_ms)
+
+    Repo.query!(
+      """
+      UPDATE triage_context_entries
+      SET inserted_at = to_timestamp($2::double precision / 1000.0) - interval '8 days',
+          payload = payload || jsonb_build_object('last_wakeup_scheduled_for_ms', $3::bigint)
+      WHERE entry_id = $1
+      """,
+      [entry_id, due_ms, due_ms - 43_200_000]
+    )
+
+    SystemsRuntime.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
+
+    assert {:ok, %{fired: [^schedule_id], failed: []}} = Schedules.run_once(now: due_ms)
+    assert {:error, :not_found} = Schedules.get(schedule_id)
+    assert %{rows: [[0]]} = Repo.query!("SELECT count(*) FROM schedules")
+
+    assert {:ok,
+            [
+              %{
+                entry_id: ^entry_id,
+                state: :stopped,
+                resolved_at: nil,
+                next_check_at: nil,
+                payload: payload
+              }
+            ]} = TriageProductRuntime.list_context("project-follow-up")
+
+    assert payload["resolved_reason"] == "follow_up_expired"
+
+    assert {:ok, page} = SalixIM.ProviderReceipts.list_slack_triage_page(:all, nil, 25)
+
+    refute Enum.any?(page.receipts, fn receipt ->
+             get_in(receipt, ["triage_event", "source_mode"]) == "scheduled_recheck" and
+               get_in(receipt, ["triage_event", "message_ts"]) == trigger_ts
+           end)
+  end
+
   defp seed_follow_up!(authority, trigger_ts, due_ms, opts \\ []) do
     entry_id = "triage-follow-up-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     schedule_id = Ids.new_schedule_id()

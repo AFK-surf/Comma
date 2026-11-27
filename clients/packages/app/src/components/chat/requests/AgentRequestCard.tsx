@@ -10,6 +10,10 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import { InputField } from "@comma/ui/components/input";
 import {
+  normalizeProviderBrandName,
+  resolveProviderBrandLogo,
+} from "@comma/ui/components/provider-brand-logos";
+import {
   ArrowUpRightIcon,
   ClockIcon,
   CopyIcon,
@@ -26,6 +30,7 @@ import { uiClock } from "@comma/ui/clock";
 import { memo, useEffect, useId, useState } from "react";
 import { openNativePlatformExternalUrl } from "../../../nativePlatformActions";
 import { location as devicePosition } from "../../apps/miniAppDevices";
+import { authorizeSystemLocation } from "../../location/locationSharing";
 import { PluginBrandArtwork } from "../../plugins/PluginBrandArtwork";
 import { usePluginInstall } from "../../plugins/pluginInstall";
 import { PluginScanDialog } from "../../plugins/PluginScanDialog";
@@ -33,6 +38,7 @@ import {
   AgentCard,
   AgentCardFoot,
   AgentCardHead,
+  AgentCardMorphProvider,
   AgentReceipt,
 } from "../agent-card/AgentCard";
 
@@ -93,6 +99,25 @@ function requestTitle(
   });
 }
 
+/** Localized title of any pending AgentRequest, shared between the card and the composer dock. */
+export function agentRequestTitle(
+  request: AgentRequest,
+  messages: ReturnType<typeof useCommaMessages>
+): string {
+  switch (request.type) {
+    case "oauth_authorization":
+      return requestTitle(request, messages);
+    case "location":
+      return messages.agent_request_location_title();
+    case "computer_use_start":
+      return messages.agent_request_phone_title({
+        phone: request.phone.title || request.phone.target,
+      });
+    case "plugin_install":
+      return messages.agent_request_plugin_title({ name: request.plugin.name });
+  }
+}
+
 /** The brands of the command-line tools people log in to most; others show a plain mark. */
 const CLI_BRANDS: Record<string, string> = {
   gh: "github",
@@ -102,7 +127,15 @@ const CLI_BRANDS: Record<string, string> = {
 
 function requestMark(request: AgentOAuthRequest) {
   const { provider, alias } = request.oauth;
-  if (provider === "secret") return <SignInKeyIcon />;
+  // A secret is named for its service (didi): its alias picks the logo when there is one.
+  if (provider === "secret") {
+    const brand = normalizeProviderBrandName(alias);
+    return resolveProviderBrandLogo(brand) ? (
+      <PluginBrandArtwork brand={brand} name={alias} />
+    ) : (
+      <SignInKeyIcon />
+    );
+  }
   if (provider === "cli") {
     const brand = CLI_BRANDS[alias];
     return brand ? <PluginBrandArtwork brand={brand} name={alias} /> : <GlobeIcon />;
@@ -181,12 +214,20 @@ function RequestInputCard({
   const titleId = useId();
   const [value, setValue] = useState("");
   const [clientId, setClientId] = useState("");
+  const fields = input.kind === "secret" ? (input.fields ?? []) : [];
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const fieldValue = (name: string) => fieldValues[name] ?? "";
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<"forbidden" | "other" | null>(null);
   const isApp = input.kind === "app";
   const isPaste = input.kind === "paste";
   const [sent, setSent] = useState(false);
-  const ready = value.trim() !== "" && (!isApp || clientId.trim() !== "");
+  const ready =
+    fields.length > 0
+      ? fields.every(
+          (field) => field.optional || fieldValue(field.name).trim() !== ""
+        ) && fields.some((field) => fieldValue(field.name).trim() !== "")
+      : value.trim() !== "" && (!isApp || clientId.trim() !== "");
   const send = () => {
     if (!ready || busy) return;
     setBusy(true);
@@ -195,12 +236,20 @@ function RequestInputCard({
       group: groupId,
       conversation: conversationId,
       request: request.id,
-      values: isApp
-        ? { client_id: clientId.trim(), client_secret: value.trim() }
-        : { value },
+      values:
+        fields.length > 0
+          ? {
+              fields: Object.fromEntries(
+                fields.map((field) => [field.name, fieldValue(field.name)])
+              ),
+            }
+          : isApp
+            ? { client_id: clientId.trim(), client_secret: value.trim() }
+            : { value },
     })
       .then(() => {
         setValue("");
+        setFieldValues({});
         if (isPaste) setSent(true);
       })
       .catch((error: unknown) =>
@@ -244,7 +293,44 @@ function RequestInputCard({
             value={clientId}
           />
         ) : null}
-        {isPaste ? (
+        {fields.map((field) =>
+          field.secret ? (
+            <SecretField
+              disabled={busy}
+              key={field.name}
+              label={field.label}
+              onChange={(next) =>
+                setFieldValues((all) => ({ ...all, [field.name]: next }))
+              }
+              onEnter={send}
+              value={fieldValue(field.name)}
+              {...(field.optional
+                ? { placeholder: messages.agent_request_optional() }
+                : {})}
+            />
+          ) : (
+            <InputField
+              aria-label={field.label}
+              autoComplete="off"
+              className="w-full"
+              disabled={busy}
+              fieldSize="sm"
+              key={field.name}
+              label={field.label}
+              onChange={(event) =>
+                setFieldValues((all) => ({ ...all, [field.name]: event.target.value }))
+              }
+              onKeyDown={(event) => {
+                if (event.key === "Enter") send();
+              }}
+              value={fieldValue(field.name)}
+              {...(field.optional
+                ? { placeholder: messages.agent_request_optional() }
+                : {})}
+            />
+          )
+        )}
+        {fields.length > 0 ? null : isPaste ? (
           <InputField
             aria-label={messages.agent_request_login_code()}
             autoComplete="off"
@@ -376,30 +462,34 @@ export const AgentRequestCard = memo(function AgentRequestCard({
   groupId: string;
   conversationId: string;
 }) {
-  return request.type === "location" ? (
-    <LocationRequestCard
-      conversationId={conversationId}
-      groupId={groupId}
-      request={request}
-    />
-  ) : request.type === "plugin_install" ? (
-    <PluginRequestCard
-      conversationId={conversationId}
-      groupId={groupId}
-      request={request}
-    />
-  ) : request.type === "computer_use_start" ? (
-    <PhoneRequestCard
-      conversationId={conversationId}
-      groupId={groupId}
-      request={request}
-    />
-  ) : (
-    <AccountRequestCard
-      conversationId={conversationId}
-      groupId={groupId}
-      request={request}
-    />
+  return (
+    <AgentCardMorphProvider>
+      {request.type === "location" ? (
+        <LocationRequestCard
+          conversationId={conversationId}
+          groupId={groupId}
+          request={request}
+        />
+      ) : request.type === "plugin_install" ? (
+        <PluginRequestCard
+          conversationId={conversationId}
+          groupId={groupId}
+          request={request}
+        />
+      ) : request.type === "computer_use_start" ? (
+        <PhoneRequestCard
+          conversationId={conversationId}
+          groupId={groupId}
+          request={request}
+        />
+      ) : (
+        <AccountRequestCard
+          conversationId={conversationId}
+          groupId={groupId}
+          request={request}
+        />
+      )}
+    </AgentCardMorphProvider>
   );
 });
 
@@ -477,26 +567,42 @@ function LocationRequestCard({
   }
 
   const where = { group: groupId, conversation: conversationId, request: request.id };
-  const share = () => {
+  // "Always" also turns on Settings › Share location: later messages carry the position without a card.
+  const share = (always: boolean) => {
     setBusy("locating");
     setNote(null);
-    void devicePosition()
+    void authorizeSystemLocation()
+      .then((system) =>
+        system === "denied"
+          ? ({ ok: false, code: "denied", message: "" } as const)
+          : devicePosition()
+      )
       .then((position) => {
         if (!position.ok) {
           setNote(position.code === "denied" ? "denied" : "unavailable");
           return;
         }
-        const { latitude, longitude, accuracy } = position.value as {
+        const { latitude, longitude, accuracy, at } = position.value as {
           latitude: number;
           longitude: number;
           accuracy: number;
+          at: string;
         };
         return call("agentRequests.shareLocation", {
           ...where,
           latitude,
           longitude,
           accuracy,
-        }).catch(() => setNote("failed"));
+        })
+          .then(async () => {
+            if (!always) return;
+            await call("locationSharing.set", { enabled: true });
+            // The next message carries this reading before the window's follow reports one.
+            await call("locationSharing.report", {
+              position: { latitude, longitude, accuracy, readAt: Date.parse(at) },
+            });
+          })
+          .catch(() => setNote("failed"));
       })
       .finally(() => setBusy(null));
   };
@@ -532,7 +638,7 @@ function LocationRequestCard({
         actions={
           <>
             <Button
-              hierarchy="secondary-gray"
+              hierarchy="tertiary-gray"
               isDisabled={busy !== null}
               onPress={decline}
               size="xs"
@@ -540,12 +646,20 @@ function LocationRequestCard({
               {messages.agent_request_decline()}
             </Button>
             <Button
-              hierarchy="primary"
+              hierarchy="secondary-gray"
               isDisabled={busy !== null}
-              onPress={share}
+              onPress={() => share(false)}
               size="xs"
             >
-              {messages.agent_request_location_share()}
+              {messages.agent_request_location_share_once()}
+            </Button>
+            <Button
+              hierarchy="primary"
+              isDisabled={busy !== null}
+              onPress={() => share(true)}
+              size="xs"
+            >
+              {messages.agent_request_location_share_always()}
             </Button>
           </>
         }

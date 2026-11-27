@@ -1,6 +1,6 @@
 /* ChoiceList: one bordered row per option, the whole row its native input's label.
    A picked row only turns gray; the radio or box carries the brand color.
-   Selection, hover and focus change instantly: no transitions. */
+   Pressing an option gives subtle tactile travel and spring recoil. */
 .comma-choice-list {
   display: flex;
   flex-direction: column;
@@ -10,7 +10,7 @@
 .comma-choice-list-option {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   column-gap: var(--spacing-lg);
   padding: var(--spacing-lg);
@@ -21,10 +21,36 @@
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
   cursor: pointer;
+  scale: 1;
+  transition:
+    background-color var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
+    box-shadow var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
+    scale var(--motion-duration-press-recoil) var(--motion-easing-press-recoil);
+}
+
+.comma-choice-list-option:has(.comma-choice-list-key) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.comma-choice-list-option:has(.comma-choice-list-input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.comma-choice-list-option:not(.comma-choice-list-row):not(
+    :has(.comma-choice-list-input:disabled)
+  ):active {
+  scale: 0.99;
+  transition-duration:
+    var(--motion-duration-press-travel), var(--motion-duration-press-travel),
+    var(--motion-duration-press-travel);
+  transition-timing-function:
+    var(--motion-easing-press-travel), var(--motion-easing-press-travel),
+    var(--motion-easing-press-travel);
 }
 
 @media (hover: hover) {
-  .comma-choice-list-option:hover {
+  .comma-choice-list-option:not(:has(.comma-choice-list-input:disabled)):hover {
     background: var(--color-bg-secondary);
   }
 }
@@ -67,7 +93,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--spacing-xxs) var(--spacing-md);
+  gap: var(--spacing-xxs) var(--spacing-sm);
   font-weight: var(--font-weight-medium);
   overflow-wrap: anywhere;
 }
@@ -90,16 +116,31 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: 1;
-  visibility: hidden;
+  opacity: 0;
+  scale: 0.92;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
+    scale var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out);
 }
 
 .comma-choice-list[data-shortcuts="on"] .comma-choice-list-key {
-  visibility: visible;
+  opacity: 1;
+  scale: 1;
 }
 
 @media (hover: hover) {
   .comma-choice-list-option:hover .comma-choice-list-key {
-    visibility: visible;
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-choice-list-option,
+  .comma-choice-list-key {
+    scale: 1 !important;
+    transition: none !important;
   }
 }
 

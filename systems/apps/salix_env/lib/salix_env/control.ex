@@ -1117,6 +1117,17 @@ defmodule SalixEnv.Control do
        when connector_run_id in [nil, ""],
        do: []
 
+  # A still.fail station takes Tasks and answers for its chats, nothing else
+  # (still.fail `station/src/comma/surface.ts`): it runs no command and
+  # serves no file, so it has no command environment.
+  defp command_environments(
+         %{"device_kind" => "stillfail"},
+         _device_id,
+         _connector_run_id,
+         _generation
+       ),
+       do: []
+
   # A token-scope-limited connector must never surface as a command
   # environment. Full-token Comma desktop connectors are handled below by their
   # separately generation-fenced, Connector-reported current scope.

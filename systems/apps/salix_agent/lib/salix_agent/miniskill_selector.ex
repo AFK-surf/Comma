@@ -141,10 +141,14 @@ defmodule SalixAgent.MiniskillSelector do
   defp selection_text(input) do
     skills =
       Enum.map(input["skills"], fn skill ->
-        "Selected miniskill: #{skill["skill_id"]}\nName: #{skill["name"]}\nDescription: #{skill["description"]}"
+        "Selected miniskill: #{skill["skill_id"]}\nName: #{skill["name"]}\nDescription: #{skill["description"]}\nLocation: /.runtime/skills/#{skill["skill_id"]}/SKILL.md"
       end)
 
-    Enum.join(["Miniskills for message #{input["source_message_id"]}:" | skills], "\n\n")
+    header =
+      "Miniskills for message #{input["source_message_id"]}. Before you act on that message, " <>
+        "read the SKILL.md of each selected miniskill at its location and follow it:"
+
+    Enum.join([header | skills], "\n\n")
   end
 
   def select(inputs, projection, ctx, deadline) do

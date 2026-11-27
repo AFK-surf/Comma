@@ -81,7 +81,7 @@ defmodule SalixWeb.CloudVMTest do
   end
 
   defmodule VMAuthorizationFake do
-    @behaviour SalixWeb.ComputeProviders.Cloudflare.VMAuthorization
+    @behaviour SalixWeb.VMAuthorization
 
     @impl true
     def authorize_vm(attrs) do
@@ -766,7 +766,14 @@ defmodule SalixWeb.CloudVMTest do
            )
 
     # A connected projection does not finish readiness while the owner wakes.
-    update_vm_record(group_id(), &Map.put(&1, "status", "waking"))
+    # The cancelled exec may have held the selection for its own 5 s budget
+    # before it was killed; the exec below must expire with only its own hold.
+    now = SystemsClock.system_time(:millisecond)
+
+    update_vm_record(
+      group_id(),
+      &(&1 |> Map.put("status", "waking") |> Map.put("runtime_selection_until", now))
+    )
 
     assert {:ok, %{"status" => "connected"}, _} =
              SalixEnv.Control.get_command_environment(
@@ -2846,7 +2853,7 @@ defmodule SalixWeb.CloudVMTest do
                SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent)
 
       assert {:error, %{"reason" => "insufficient_credits"}} =
-               CloudVM.RuntimeLifecycle.wake(group["group_id"])
+               SalixWeb.GroupStationLifecycle.wake(group["group_id"])
 
       command =
         SystemsRuntime.Task.async(fn ->
@@ -4136,10 +4143,10 @@ defmodule SalixWeb.CloudVMTest do
     }
 
     assert {:skip, :active_operations} =
-             SalixWeb.ComputeProviders.Cloudflare.idle_eligible(rec, now: 10, force: true)
+             SalixWeb.GroupStationLifecycle.idle_eligible(rec, now: 10, force: true)
 
     assert :ok =
-             SalixWeb.ComputeProviders.Cloudflare.idle_eligible(rec,
+             SalixWeb.GroupStationLifecycle.idle_eligible(rec,
                now: 10,
                force: true,
                abandon_operations: true

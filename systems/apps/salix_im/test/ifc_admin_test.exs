@@ -56,7 +56,7 @@ defmodule SalixIM.IFCAdminTest do
   describe "the overview" do
     test "reports the Group's own mode", %{tenant: tenant} do
       group = group(tenant, %{"mode" => "enforce"})
-      assert {:ok, %{"mode" => "enforce"}} = Admin.overview(tenant, group)
+      assert {:ok, %{"mode" => "hard"}} = Admin.overview(tenant, group)
     end
   end
 

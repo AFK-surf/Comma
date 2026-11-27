@@ -180,6 +180,7 @@ test("Router Task work names the Task, shows its Worker's steps and opens the Ta
   let historyHeld: Promise<void> | undefined;
   const stub = await startChatSmokeStub({
     externalActivityProvider: "wechat",
+    taskStatus: "active",
     sessionHistory: async (url) => {
       if (url.pathname.includes(workerPath)) await historyHeld;
       return {

@@ -8,6 +8,7 @@ export type SettingsCategoryIcon =
   | "apps"
   | "labels"
   | "general"
+  | "privacy"
   | "notifications"
   | "recommendations"
   | "channels"
@@ -21,7 +22,7 @@ export type SettingsCategoryIcon =
   | "usage-billing"
   | "devices"
   | "tailscale"
-  | "computer-use"
+  | "permissions"
   | "models-api-keys"
   | "debug"
   | "about";

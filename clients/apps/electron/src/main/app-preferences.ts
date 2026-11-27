@@ -14,9 +14,14 @@ import {
   type KeepAwakeWhenLidClosedStatus,
   type GlobalShortcutBinding,
   type SystemNotificationsStatus,
+  type SystemPermissionStatus,
 } from "@comma/native-bridge";
 import { realMainClock, type MainClock } from "./clock";
 import type { LaunchAtLoginReadback } from "./launch-at-login";
+import {
+  systemPermissionStatus,
+  type SystemPermissionAuthorizer,
+} from "./system-permission-authorization";
 
 /**
  * Reading the login item is a synchronous query to macOS on Main's thread
@@ -54,6 +59,10 @@ export interface AppPreferencesPlatform {
    * prompts only while it has not asked the user about Comma yet.
    */
   authorizeSystemNotifications(): Promise<boolean> | boolean;
+  /** macOS: Comma's location authorization (`system-permission-authorization.ts`). */
+  locationAuthorization?: SystemPermissionAuthorizer;
+  /** macOS: Comma's microphone authorization, read and asked the same way. */
+  microphoneAuthorization?: SystemPermissionAuthorizer;
   getLaunchAtLogin(): LaunchAtLoginReadback;
   getSystemNotificationsStatus():
     | Promise<SystemNotificationsStatus>
@@ -126,12 +135,15 @@ export class AppPreferencesService {
       await writePreferences(filePath, persisted).catch(() => undefined);
     }
     const preferences: AppPreferences = {
-      ...withKeepAwakeWhenLidClosedStatusReadback(
-        withSystemNotificationsStatusReadback(
-          withLaunchAtLoginReadback(persisted, platform.getLaunchAtLogin()),
-          await platform.getSystemNotificationsStatus()
+      ...withSystemPermissionsReadback(
+        withKeepAwakeWhenLidClosedStatusReadback(
+          withSystemNotificationsStatusReadback(
+            withLaunchAtLoginReadback(persisted, platform.getLaunchAtLogin()),
+            await platform.getSystemNotificationsStatus()
+          ),
+          platform.getKeepAwakeWhenLidClosedStatus?.()
         ),
-        platform.getKeepAwakeWhenLidClosedStatus?.()
+        await readSystemPermissions(platform)
       ),
       // What this process starts with; Settings compares the saved choice to it.
       ...(persisted.clientSettings
@@ -221,6 +233,27 @@ export class AppPreferencesService {
         await this.#platform.getSystemNotificationsStatus()
       )
     );
+  }
+
+  /**
+   * Reads whether macOS lets Comma use location and the microphone and
+   * publishes a change. Like notifications, these are granted in System
+   * Settings, outside Comma: a renderer state read (window focus) re-reads
+   * them. Never persisted.
+   */
+  async refreshSystemPermissions() {
+    return this.#enqueue(async () => {
+      const previous = this.#preferences;
+      const next = withSystemPermissionsReadback(
+        previous,
+        await readSystemPermissions(this.#platform)
+      );
+      if (samePreferenceValues(next, previous)) return this.state();
+      this.#preferences = withNextRevision(next, previous);
+      const snapshot = this.state();
+      this.#onStateChanged(snapshot);
+      return snapshot;
+    });
   }
 
   /**
@@ -675,6 +708,7 @@ async function writePreferences(filePath: string, preferences: AppPreferences) {
     showInAirDrop: preferences.showInAirDrop,
     showInDock: preferences.showInDock,
     showInMenuBar: preferences.showInMenuBar,
+    showComputerUseInNotch: preferences.showComputerUseInNotch,
     showInNotch: preferences.showInNotch,
     sideChatEnabled: false,
     systemNotifications: preferences.systemNotifications,
@@ -705,9 +739,12 @@ function samePreferenceValues(left: AppPreferences, right: AppPreferences) {
     left.showInAirDrop === right.showInAirDrop &&
     left.showInDock === right.showInDock &&
     left.showInMenuBar === right.showInMenuBar &&
+    left.showComputerUseInNotch === right.showComputerUseInNotch &&
     left.showInNotch === right.showInNotch &&
     left.systemNotifications === right.systemNotifications &&
-    left.systemNotificationsStatus === right.systemNotificationsStatus
+    left.systemNotificationsStatus === right.systemNotificationsStatus &&
+    left.systemLocationStatus === right.systemLocationStatus &&
+    left.systemMicrophoneStatus === right.systemMicrophoneStatus
   );
 }
 
@@ -768,6 +805,40 @@ function withSystemNotificationsStatusReadback(
     ...preferences,
     systemNotificationsStatus: status,
   });
+}
+
+interface SystemPermissionsReadback {
+  systemLocationStatus?: SystemPermissionStatus;
+  systemMicrophoneStatus?: SystemPermissionStatus;
+}
+
+async function readSystemPermissionStatus(
+  authorizer: SystemPermissionAuthorizer | undefined
+) {
+  return authorizer
+    ? systemPermissionStatus(await authorizer.status().catch(() => undefined))
+    : undefined;
+}
+
+/** A resource with no authorizer on this platform has no status at all. */
+async function readSystemPermissions(
+  platform: AppPreferencesPlatform
+): Promise<SystemPermissionsReadback> {
+  const [location, microphone] = await Promise.all([
+    readSystemPermissionStatus(platform.locationAuthorization),
+    readSystemPermissionStatus(platform.microphoneAuthorization),
+  ]);
+  return {
+    ...(location ? { systemLocationStatus: location } : {}),
+    ...(microphone ? { systemMicrophoneStatus: microphone } : {}),
+  };
+}
+
+function withSystemPermissionsReadback(
+  preferences: AppPreferences,
+  readback: SystemPermissionsReadback
+) {
+  return appPreferencesSchema.parse({ ...preferences, ...readback });
 }
 
 /** An unknown status (no readback on this platform) leaves the last one. */

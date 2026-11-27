@@ -58,7 +58,7 @@ defmodule SalixAgent.TaskAgent do
     with true <- Ids.valid_group_id_for_tenant?(group_id, tenant_id),
          {:ok, %{"tenant_id" => ^tenant_id} = group} <- CasRecord.get(Keys.ctl_group(group_id)) do
       case of_group(group) do
-        nil -> first(tenant_id, group_id, opts[:adopt])
+        nil -> first(tenant_id, group_id, group, opts[:adopt])
         id -> {:ok, id}
       end
     else
@@ -83,16 +83,16 @@ defmodule SalixAgent.TaskAgent do
   # record is readable; the Group's lock makes the others wait for it. Nodes
   # that do not share the lock still converge on the one id, and a loser's
   # `:unavailable` is retryable.
-  defp first(tenant_id, group_id, nil) do
+  defp first(tenant_id, group_id, group, nil) do
     with :ok <- not_guest(tenant_id) do
       SystemsRuntime.Proc.global_trans({{__MODULE__, group_id}, SystemsRuntime.Proc.self()}, fn ->
-        with {:ok, id} <- create(tenant_id, group_id),
+        with {:ok, id} <- create(tenant_id, group_id, group),
              do: put_new(tenant_id, group_id, id)
       end)
     end
   end
 
-  defp first(tenant_id, group_id, adopt) when is_function(adopt, 0) do
+  defp first(tenant_id, group_id, _group, adopt) when is_function(adopt, 0) do
     with :ok <- not_guest(tenant_id),
          {:ok, id} <- adopt.(),
          do: adopt(tenant_id, group_id, id)
@@ -105,16 +105,24 @@ defmodule SalixAgent.TaskAgent do
   end
 
   # A preallocated create of the fixed id answers the stored Agent when it
-  # exists.
-  defp create(tenant_id, group_id) do
-    attrs = %{
-      "group_id" => group_id,
-      "role" => "worker",
-      "name" => "Task agent",
-      "management_purpose" => "Run this Group's Tasks",
-      "management_creation_audit" => %{"kind" => "task_agent"},
-      "runtime_config" => %{"kind" => "internal"}
-    }
+  # exists. A Collaborative Task Group (`purpose: "collaboration"`) gets an
+  # immutable sandbox-restricted Task agent so sandbox callbacks cannot reach
+  # host skills, plugins, or workspace tools.
+  defp create(tenant_id, group_id, group) do
+    attrs =
+      %{
+        "group_id" => group_id,
+        "role" => "worker",
+        "name" => "Task agent",
+        "management_purpose" => "Run this Group's Tasks",
+        "management_creation_audit" => %{"kind" => "task_agent"},
+        "runtime_config" => %{"kind" => "internal"}
+      }
+      |> then(fn map ->
+        if group["purpose"] == "collaboration",
+          do: Map.put(map, "purpose", SalixAgent.CollaborationPolicy.sandbox_purpose()),
+          else: map
+      end)
 
     with {:ok, %{"agent_id" => id}} <-
            Control.create_owned_preallocated(attrs, tenant_id, id(group_id)),

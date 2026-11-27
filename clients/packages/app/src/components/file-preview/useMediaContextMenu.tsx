@@ -43,6 +43,8 @@ export type MediaMenuSource = {
   parts?: ResolveFileBytes | undefined;
   /** The message attachment this is, which Add to Context attaches by reference instead of its bytes. */
   attachment?: ConversationFileSource | undefined;
+  /** The picture Copy Image puts on the clipboard, when it is not the file itself (a TIFF's decoded PNG). */
+  copyImage?: ResolveFileBytes | undefined;
   video?: HTMLVideoElement;
 };
 export type OpenMediaMenu = (
@@ -161,7 +163,11 @@ export function useMediaContextMenu(
 
     try {
       if (action === "copy-frame" || (action === "copy" && !source.video)) {
-        const blob = source.video ? await source.copyFrame?.() : await resolve();
+        const blob = source.video
+          ? await source.copyFrame?.()
+          : source.copyImage
+            ? await source.copyImage(signal)
+            : await resolve();
         if (!blob) return;
         signal.throwIfAborted();
         await copyImageBlob(blob);

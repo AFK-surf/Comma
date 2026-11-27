@@ -35,6 +35,17 @@ import {
   type ScreenStreamCapabilities,
 } from "./screenDevice";
 import { ScreenDeviceButtons, ScreenDeviceFrame } from "./ScreenDeviceFrame";
+import { ScreenDuoFrame } from "./ScreenDuoFrame";
+import type { DuoStageHandle } from "./devices/DuoStage";
+import {
+  duoModelFollows,
+  duoModelTurn,
+  DUO_HINGE_REACHED,
+  duoPostureShown,
+  duoScreenOf,
+  type DuoChoice,
+  type DuoPostureId,
+} from "./devices/duoScreens";
 import {
   deviceMods,
   goesAsKey,
@@ -122,6 +133,7 @@ export function ScreenStreamStage({
   onShape,
   onControlRefused,
   onStats,
+  onLinkTone,
   onAudio,
   onAgent,
   quality,
@@ -160,6 +172,8 @@ export function ScreenStreamStage({
   onControlRefused?: ((why: string) => void) | undefined;
   /** How to read the stream's statistics while it is held (undefined once it is let go): for the stats panel. */
   onStats?: ((read: (() => ScreenStreamStats) | undefined) => void) | undefined;
+  /** The held stream's link is weak or bad, as that changes (undefined: well, not known, or let go): for the bars. */
+  onLinkTone?: ((tone: HeldScreenStreamView["linkTone"]) => void) | undefined;
   /** Whether the computer's sound comes on the stream, as that changes: for the bar's mute switch. */
   onAudio?: ((audio: boolean) => void) | undefined;
   /** Whether an agent's lease on the device lasts, each time its station says (nothing until it has). */
@@ -175,6 +189,16 @@ export function ScreenStreamStage({
 }) {
   const messages = useCommaMessages();
   const video = useRef<HTMLVideoElement>(null);
+  /** The stream's picture now: a <video> that mounts later (the 3D stage's) takes it at once. */
+  const mediaNow = useRef<MediaStream | null>(null);
+  // (also as state: what listens to the picture listens to the <video> shown now, not one a 3D stage replaced)
+  const [videoShown, setVideoShown] = useState<HTMLVideoElement | null>(null);
+  const attachVideo = useCallback((element: HTMLVideoElement | null) => {
+    video.current = element;
+    setVideoShown(element);
+    if (element && mediaNow.current && element.srcObject !== mediaNow.current)
+      element.srcObject = mediaNow.current;
+  }, []);
   // The last frame of the stream before this one, shown until this one plays.
   const still = useRef<HTMLCanvasElement>(null);
   const peer = useRef<HeldScreenStream | null>(null);
@@ -226,6 +250,7 @@ export function ScreenStreamStage({
     onFailure,
     onControlRefused,
     onStats,
+    onLinkTone,
     onAudio,
     onAgent,
   });
@@ -237,6 +262,7 @@ export function ScreenStreamStage({
     onFailure,
     onControlRefused,
     onStats,
+    onLinkTone,
     onAudio,
     onAgent,
   };
@@ -303,8 +329,54 @@ export function ScreenStreamStage({
   const shape = capabilities?.shapes
     ? screenDeviceShape(capabilities.shapes, stood.ratio)
     : undefined;
+  // A device that folds (an iPhone Duo) is a 3D model in one of its postures (ScreenDuoFrame): the one chosen here, else
+  // the one its fold and picture say. Where this page has no WebGL, it is drawn flat as other devices are.
+  const [flat, setFlat] = useState(false);
+  const postures =
+    !flat && capabilities?.postures?.length ? capabilities.postures : undefined;
+  const [chosen, setChosen] = useState<DuoChoice>();
+  // (its panel's own picture, drawn on the model as the panel has it: the UI's turn plays on it live)
+  const panelPicture = postures !== undefined && deviceState?.panel === true;
+  const posture = postures
+    ? duoPostureShown(
+        postures,
+        chosen,
+        deviceState?.pose,
+        panelPicture ? deviceState?.orientation : stood.turn,
+        deviceState?.hinge
+      )
+    : undefined;
+  const duoScreen = duoScreenOf(deviceState?.pose) ?? posture?.screen ?? "cover";
+  // Drawn flat (no WebGL here), its picture comes turned upright again, as a flat device's does.
+  const flatPanel = flat && deviceState?.panel === true;
+  useEffect(() => {
+    if (flatPanel) peer.current?.send({ t: "frames", panel: false });
+  }, [flatPanel]);
+  const duo = useRef<DuoStageHandle>(null);
+  /** A drag that turns the 3D device a little: its pointer, and where it was last. */
+  const tilting = useRef<{ id: number; x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (
+      chosen &&
+      !chosen.reached &&
+      posture?.id === chosen.id &&
+      duoScreenOf(deviceState?.pose) === posture.screen &&
+      // (and its hinge there, where its station says it: a sweep on its way is not there)
+      (deviceState?.hinge === undefined ||
+        Math.abs(deviceState.hinge - posture.opening) <= DUO_HINGE_REACHED)
+    )
+      setChosen({ ...chosen, reached: true });
+  }, [chosen, deviceState?.pose, deviceState?.hinge, posture]);
+  const choosePosture = (id: DuoPostureId) => {
+    setChosen({ id, reached: false, from: duoScreen });
+    peer.current?.setPosture(id);
+  };
   // A simulator's case as Xcode has it, once its pictures have come: drawn instead of the plain body.
-  const cased = useScreenCase(capabilities?.chrome, stood.ratio, stood.turn);
+  const cased = useScreenCase(
+    postures ? undefined : capabilities?.chrome,
+    stood.ratio,
+    stood.turn
+  );
   // What a device's picture is asked at: its long side in this screen's pixels. It only grows while the stage stays.
   const [side, setSide] = useState<number | undefined>(undefined);
   // The panel it shows now: a foldable's cover is taller than its inner screen, and asks more once it shows.
@@ -328,7 +400,12 @@ export function ScreenStreamStage({
   }, [longest]);
   const { handlers: touchHandlers, cancel: cancelTouch } = useScreenTouchInput({
     enabled: control && device,
-    point: (event) => (video.current?.videoWidth ? point(event) : undefined),
+    point: (event) =>
+      postures
+        ? duo.current?.pick(event.clientX, event.clientY)
+        : video.current?.videoWidth
+          ? point(event)
+          : undefined,
     send: (input) => peer.current?.send(input),
   });
   const detail = screenFailureDetail(failure, messages);
@@ -366,8 +443,10 @@ export function ScreenStreamStage({
         clipboard,
         audio,
         agent: leased,
+        linkTone,
       }) => {
         clipTypes.current = clipboard ?? [];
+        calls.current.onLinkTone?.(linkTone);
         calls.current.onAudio?.(audio === true);
         setAgent(leased === true);
         if (leased !== undefined) calls.current.onAgent?.(leased);
@@ -378,7 +457,11 @@ export function ScreenStreamStage({
         setDeviceState(stands);
         if (next === "connecting" && lastState === "live") keepLastFrame(picture, kept);
         lastState = next;
-        if (picture && picture.srcObject !== media) picture.srcObject = media;
+        // (to the <video> shown now: a device's stage that turns 3D once its postures are known shows another)
+        mediaNow.current = media ?? null;
+        const shownPicture = video.current;
+        if (shownPicture && shownPicture.srcObject !== media)
+          shownPicture.srcObject = media;
         setFailure(next === "failed" ? why : undefined);
         calls.current.onState(next);
         calls.current.onTarget?.(showing);
@@ -403,6 +486,7 @@ export function ScreenStreamStage({
       clipTypes.current = [];
       calls.current.onAudio?.(false);
       calls.current.onStats?.(undefined);
+      calls.current.onLinkTone?.(undefined);
       frame.drop();
       letGo(held.send);
       cancelTouch(held.send);
@@ -454,7 +538,7 @@ export function ScreenStreamStage({
 
   // The picture's size arrives with its first frame and changes as the app's windows do.
   useEffect(() => {
-    const element = video.current;
+    const element = videoShown;
     if (!element) return undefined;
     const measure = () => {
       if (!(element.videoWidth > 0 && element.videoHeight > 0)) return;
@@ -487,7 +571,7 @@ export function ScreenStreamStage({
       fitted.disconnect();
       cancelFrame();
     };
-  }, [device, drawPointer, placeKeys]);
+  }, [device, drawPointer, placeKeys, videoShown]);
 
   const point = (event: ReactPointerEvent | WheelEvent) => {
     const element = video.current!;
@@ -552,7 +636,13 @@ export function ScreenStreamStage({
       ));
   // What the case has a button for is pressed there, not beside it.
   const actions = screenDeviceActions(capabilities, control, deviceState?.pose).filter(
-    (action) => !cased || !screenCaseCovers(cased.layout.buttons, action)
+    (action) =>
+      (!cased || !screenCaseCovers(cased.layout.buttons, action)) &&
+      // (a device with postures folds by them)
+      !(
+        postures &&
+        (action === "fold" || action === "half_fold" || action === "unfold")
+      )
   );
   // A button of the case, by its HID usage, as it goes down and comes up: only while the view drives, and let go of as
   // anything held is (a switch to Watch, the keys' focus lost, the stream changed).
@@ -761,7 +851,7 @@ export function ScreenStreamStage({
               onLostPointerCapture: () => letGo(peer.current?.send, true),
               onPointerUp: press("up"),
             })}
-        ref={video}
+        ref={attachVideo}
       />
       <textarea
         aria-label={messages.remote_screen_keys()}
@@ -813,7 +903,94 @@ export function ScreenStreamStage({
           }
         : {})}
     >
-      {device ? (
+      {device && postures && posture ? (
+        <ScreenDuoFrame
+          buttons={
+            <ScreenDeviceButtons
+              actions={actions}
+              macos={macos}
+              onAction={act}
+              placement="bottom"
+              postures={
+                control
+                  ? { list: postures, shown: posture.id, onChoose: choosePosture }
+                  : undefined
+              }
+              trailing={mode}
+            />
+          }
+          handle={duo}
+          onUnavailable={() => setFlat(true)}
+          handlers={{
+            // A press off the screen that shows, or while the view only watches, turns the device a little instead.
+            onPointerDown: (event) => {
+              keys.current?.focus({ preventScroll: true });
+              event.preventDefault();
+              const onScreen =
+                duo.current?.pick(event.clientX, event.clientY) !== undefined;
+              if (!control && onScreen) heardInWatch();
+              if (!control || !onScreen) {
+                tilting.current = {
+                  id: event.pointerId,
+                  x: event.clientX,
+                  y: event.clientY,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+                return;
+              }
+              // (as a press on a device's picture does: the keys take its shortcuts, control or not)
+              touchHandlers.onPointerDown(event);
+            },
+            onPointerMove: (event) => {
+              const was = tilting.current;
+              if (was?.id === event.pointerId) {
+                duo.current?.tilt(event.clientX - was.x, event.clientY - was.y);
+                tilting.current = { id: was.id, x: event.clientX, y: event.clientY };
+                return;
+              }
+              touchHandlers.onPointerMove(event);
+            },
+            onPointerUp: (event) => {
+              if (tilting.current?.id === event.pointerId) tilting.current = null;
+              else touchHandlers.onPointerUp(event);
+            },
+            onPointerCancel: (event) => {
+              if (tilting.current?.id === event.pointerId) tilting.current = null;
+              else touchHandlers.onPointerCancel(event);
+            },
+            onLostPointerCapture: (event) => {
+              if (tilting.current?.id === event.pointerId) tilting.current = null;
+              else touchHandlers.onLostPointerCapture(event);
+            },
+          }}
+          modelTurn={duoModelTurn(
+            posture,
+            panelPicture
+              ? deviceState?.orientation
+              : pictureRatio === undefined
+                ? undefined
+                : stood.turn,
+            duoModelFollows(panelPicture, posture, chosen)
+          )}
+          onWheel={(event) => {
+            if (!control) return;
+            const at = duo.current?.pick(event.clientX, event.clientY);
+            if (!at) return;
+            event.preventDefault();
+            frame.wheel({
+              t: "wheel",
+              ...at,
+              ...wheelPixels(event, (event.currentTarget as HTMLElement).clientHeight),
+            });
+          }}
+          pictureTurn={panelPicture ? 0 : stood.turn}
+          posture={posture}
+          screen={duoScreen}
+          video={video}
+        >
+          {picture}
+        </ScreenDuoFrame>
+      ) : device ? (
         <ScreenDeviceFrame
           agent={agent}
           animated={animated}

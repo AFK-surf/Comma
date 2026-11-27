@@ -10,6 +10,8 @@ import { route } from "./api.ts";
 import { taskFilesPageSchema } from "./comma/schemas.ts";
 import type { TaskFilesValue } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
+import { isTaskTogether } from "./collaborations.ts";
+import { z } from "zod";
 
 const PAGE = 200;
 
@@ -37,6 +39,63 @@ export function listTaskFiles(
           status: "ready",
           files: page.data,
           nextCursor: page.next_cursor,
+        })
+      )
+    );
+}
+
+const taskFolderSchema = z
+  .object({
+    files: z.array(
+      z
+        .object({
+          path: z.string(),
+          name: z.string(),
+          size: z.number(),
+          uploaded: z.boolean(),
+        })
+        .strip()
+    ),
+  })
+  .strip();
+
+const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+
+/**
+ * A Task together's files: what its people and its Worker put in its own folder, newest upload first, read by its host
+ * or a member through the Task's own route. At most 400.
+ */
+export function listTaskFolder(
+  ctx: Ctx,
+  account: Account,
+  group: string,
+  conversation: string
+): Effect.Effect<TaskFilesValue, CoreError> {
+  return ctx.api
+    .request(
+      account,
+      "GET",
+      route`/v1/comma/collaborations/${group}/${conversation}/files`,
+      taskFolderSchema
+    )
+    .pipe(
+      Effect.map(
+        ({ files }): TaskFilesValue => ({
+          status: "ready",
+          files: files.map((file) => ({
+            conversation_id: conversation,
+            task_title: "",
+            message_id: "",
+            seq: 0,
+            index: 0,
+            type: IMAGE.test(file.name) ? "image" : "file",
+            file_name: file.name,
+            mime_type: null,
+            size: file.size,
+            created_at: 0,
+            path: file.path,
+          })),
+          nextCursor: null,
         })
       )
     );
@@ -73,10 +132,12 @@ export function registerTaskFiles(
           });
         return ctx.session.account().pipe(
           Effect.flatMap((account) =>
-            listTaskFiles(ctx, account, group, {
-              ...(conversation ? { conversation } : {}),
-              ...(cursor ? { cursor } : {}),
-            })
+            conversation && isTaskTogether(ctx, conversation)
+              ? listTaskFolder(ctx, account, group, conversation)
+              : listTaskFiles(ctx, account, group, {
+                  ...(conversation ? { conversation } : {}),
+                  ...(cursor ? { cursor } : {}),
+                })
           ),
           Effect.catch((error: CoreError) =>
             Effect.succeed<TaskFilesValue>({

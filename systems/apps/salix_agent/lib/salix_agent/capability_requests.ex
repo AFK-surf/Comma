@@ -497,6 +497,71 @@ defmodule SalixAgent.CapabilityRequests do
   end
 
   @doc """
+  A person's sign-in to a service that runs as them ended (an `mcp.*` call
+  raised the request with the sign-in link it posted them,
+  `SalixAgent.Tools.MCP`): `:signed_in` returns that they are signed in and
+  the Agent calls the tool again; `:expired` and `:denied` end the call with
+  the reason. A request already ended keeps its ending.
+  """
+  @spec end_sign_in(String.t(), String.t(), String.t(), :signed_in | :expired | :denied) ::
+          {:ok, map()} | {:error, term()}
+  def end_sign_in(group_id, request_id, tenant_id, outcome)
+      when outcome in [:signed_in, :expired, :denied] do
+    {status, response, result} = sign_in_ending(outcome)
+
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "account_link"),
+         {:ok, settled} <-
+           update_record_checked(request, fn current ->
+             cond do
+               terminal?(current) -> {:ok, reconcile_terminal_result(current)}
+               true -> {:ok, terminal_record(current, status, response, result)}
+             end
+           end) do
+      if settled != request, do: notify(settled)
+      deliver_logged(settled)
+      {:ok, settled}
+    end
+  end
+
+  defp sign_in_ending(:signed_in) do
+    response = %{"status" => "signed_in"}
+
+    {"completed", response,
+     completed_result(
+       Map.put(
+         response,
+         "message",
+         "the requester signed in; call the same tool again to do what they asked, without asking them again"
+       )
+     )}
+  end
+
+  defp sign_in_ending(:expired) do
+    response = %{"status" => "expired"}
+
+    {"expired", response,
+     failed_result(
+       "sign_in_expired",
+       "the sign-in link expired before the requester used it; call the tool again for a new link only if they still want it",
+       response,
+       "The sign-in link expired."
+     )}
+  end
+
+  defp sign_in_ending(:denied) do
+    response = %{"status" => "denied"}
+
+    {"failed", response,
+     failed_result(
+       "sign_in_denied",
+       "the requester did not allow the sign-in; do not ask again unless they ask for it",
+       response,
+       "The sign-in was not allowed."
+     )}
+  end
+
+  @doc """
   The Group's Workspace connected a chat channel (`channel.link` raised the
   request and posted the user what to scan, open or send): every call waiting
   for that provider returns `linked` with `details`, and the Agent tells the
@@ -616,16 +681,7 @@ defmodule SalixAgent.CapabilityRequests do
   """
   @spec complete_plugin_install(String.t(), String.t(), String.t()) :: :ok
   def complete_plugin_install(group_id, tenant_id, plugin_id) when is_binary(plugin_id) do
-    response = %{"status" => "installed", "plugin_id" => plugin_id}
-
-    result =
-      completed_result(
-        Map.put(
-          response,
-          "message",
-          "the user installed the plugin; go on with what they asked without asking again"
-        )
-      )
+    {response, result} = plugin_installed_settlement(plugin_id)
 
     case each_pending(group_id, tenant_id, "plugin_install", fn request ->
            if plugin_install_id(request) == plugin_id do
@@ -640,6 +696,98 @@ defmodule SalixAgent.CapabilityRequests do
     end
 
     :ok
+  end
+
+  @doc """
+  DB-only settlement for pending `plugin_install` requests matching `plugin_id`.
+  Performs no `notify/1` or `deliver_logged/1` side effects so callers inside a
+  `SalixStore.Repo` transaction can commit first and then call
+  `deliver_settled_plugin_installs/1` after the transaction commits.
+  """
+  @spec complete_plugin_install_in_tx(String.t(), String.t(), String.t()) ::
+          {:ok, [{map(), boolean()}]} | {:error, term()}
+  def complete_plugin_install_in_tx(group_id, tenant_id, plugin_id) when is_binary(plugin_id) do
+    {response, result} = plugin_installed_settlement(plugin_id)
+
+    collect_pending_strict(group_id, tenant_id, "plugin_install", fn request ->
+      if plugin_install_id(request) == plugin_id do
+        with {:ok, settled, changed?} <- complete_in_tx(request, response, result) do
+          {:ok, [{settled, changed?}]}
+        end
+      else
+        {:ok, []}
+      end
+    end)
+  end
+
+  defp plugin_installed_settlement(plugin_id) do
+    response = %{"status" => "installed", "plugin_id" => plugin_id}
+
+    result =
+      completed_result(
+        Map.put(
+          response,
+          "message",
+          "The user installed the plugin and it is now enabled in this Workspace. " <>
+            "If they only asked to install or connect it, confirm directly without re-checking " <>
+            "plugin definitions or connections; otherwise continue their request without asking again."
+        )
+      )
+
+    {response, result}
+  end
+
+  @doc """
+  Deliver post-commit notifications and async tool results for requests settled
+  by `complete_plugin_install_in_tx/3`.
+  """
+  @spec deliver_settled_plugin_installs([{map(), boolean()} | map()]) :: :ok
+  def deliver_settled_plugin_installs(settled_requests) when is_list(settled_requests) do
+    Enum.each(settled_requests, fn
+      {settled, changed?} when is_map(settled) and is_boolean(changed?) ->
+        if changed?, do: notify(settled)
+        deliver_logged(settled)
+
+      settled when is_map(settled) ->
+        notify(settled)
+        deliver_logged(settled)
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Strict variant of `complete_plugin_install/3` that propagates any read or
+  settlement error (`{:error, reason}`) instead of swallowing it into `:ok`.
+  Used by generation-fenced post-commit plugin convergence.
+  """
+  @spec complete_plugin_install_strict(String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def complete_plugin_install_strict(group_id, tenant_id, plugin_id) when is_binary(plugin_id) do
+    with {:ok, settled} <- complete_plugin_install_in_tx(group_id, tenant_id, plugin_id) do
+      deliver_settled_plugin_installs(settled)
+      :ok
+    end
+  end
+
+  defp collect_pending_strict(group_id, tenant_id, type, fun, cursor \\ nil, acc \\ []) do
+    case PG.pending_of_type(group_id, tenant_id, type, now(), cursor, @pending_page) do
+      {:ok, %{items: items, next: next}} ->
+        with {:ok, page_acc} <-
+               Enum.reduce_while(items, {:ok, acc}, fn item, {:ok, inner_acc} ->
+                 case fun.(item) do
+                   {:ok, entries} -> {:cont, {:ok, Enum.reverse(entries, inner_acc)}}
+                   {:error, reason} -> {:halt, {:error, reason}}
+                 end
+               end) do
+          if next,
+            do: collect_pending_strict(group_id, tenant_id, type, fun, next, page_acc),
+            else: {:ok, Enum.reverse(page_acc)}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @doc "A person declines a plugin install request: the Agent's waiting call returns that they declined."
@@ -1102,6 +1250,12 @@ defmodule SalixAgent.CapabilityRequests do
     end)
   end
 
+  defp complete_in_tx(request, response_payload, result) do
+    transition_in_tx(request, fn current ->
+      terminal_record(current, "completed", response_payload, result)
+    end)
+  end
+
   defp cancel(request, reason) do
     transition(request, fn current ->
       result =
@@ -1123,27 +1277,31 @@ defmodule SalixAgent.CapabilityRequests do
 
   # Persist the winning result before delivery; repeated delivery replays it.
   defp transition(request, pending_fun) do
-    result =
-      update_record(
-        request,
-        fn current ->
-          current = ensure_request_deadline(current)
-
-          cond do
-            terminal?(current) -> reconcile_terminal_result(current)
-            expired?(current) -> expired_record(current)
-            true -> pending_fun.(current)
-          end
-        end
-      )
-
-    case result do
-      {:ok, settled} ->
-        if settled != request, do: notify(settled)
+    case transition_in_tx(request, pending_fun) do
+      {:ok, settled, changed?} ->
+        if changed?, do: notify(settled)
         {:ok, settled}
 
       error ->
         error
+    end
+  end
+
+  defp transition_in_tx(request, pending_fun) do
+    case update_record(
+           request,
+           fn current ->
+             current = ensure_request_deadline(current)
+
+             cond do
+               terminal?(current) -> reconcile_terminal_result(current)
+               expired?(current) -> expired_record(current)
+               true -> pending_fun.(current)
+             end
+           end
+         ) do
+      {:ok, settled} -> {:ok, settled, settled != request}
+      error -> error
     end
   end
 

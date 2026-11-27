@@ -107,7 +107,8 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
 
     assert {:ok, _} = BridgeForTeams.Projects.archive_project(project)
     SalixStore.S3.Fake.set_fault({:fail, 503, :delete, identity_key})
-    assert {:ok, 0} = Reconciler.drain_once()
+    assert {:ok, 1} = Reconciler.drain_once()
+    assert row("retire_group_colab").status == "done"
     assert row("delete_group_im_connects").status == "pending"
     assert {:ok, %{"deleted_at" => deleted_at}} = SalixStore.CasRecord.get(key)
     assert is_integer(deleted_at)
@@ -237,7 +238,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
             }} = Salix.Control.Groups.get(group_id)
   end
 
-  test "drains update_group, applies the swarm owner email list to the group" do
+  test "drains an update_group queued with the retired owner email list" do
     tenant_id = SalixStore.Ids.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
 
@@ -248,14 +249,13 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
       Reconciler.enqueue("project", group_id, "update_group", %{
         "group_id" => group_id,
         "tenant_id" => tenant_id,
-        "attrs" => %{"owner_emails" => ["owner-a@example.com", "owner-b@example.com"]}
+        "attrs" => %{"owner_emails" => ["owner-a@example.com"]}
       })
 
     assert {:ok, 1} = Reconciler.drain_once()
     assert row("update_group").status == "done"
-
-    assert {:ok, %{"owner_emails" => ["owner-a@example.com", "owner-b@example.com"]}} =
-             Salix.Control.Groups.get(group_id)
+    assert {:ok, group} = Salix.Control.Groups.get(group_id)
+    refute Map.has_key?(group, "owner_emails")
   end
 
   test "transient error (:unavailable) keeps the row pending and bumps attempts" do
@@ -505,6 +505,30 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
 
   defmodule GiantTransientErrorClient do
     def create_tenant(_attrs), do: {:error, {:transient, String.duplicate("y", 1_000)}}
+  end
+
+  defmodule UnsupportedColabClient do
+  end
+
+  test "retire_group_colab stays pending when client does not implement retire_group_colab/2" do
+    org = org_fixture()
+    project = project_fixture(org)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, UnsupportedColabClient)
+    on_exit(fn -> restore_env(:bridge_for_teams_core, :salix_client, prev) end)
+
+    {:ok, _} =
+      Reconciler.enqueue("project", project.id, "retire_group_colab", %{
+        "tenant_id" => org.salix_tenant_id,
+        "group_id" => project.salix_group_id
+      })
+
+    assert {:ok, 0} = Reconciler.drain_once()
+
+    deferred = row("retire_group_colab")
+    assert deferred.status == "pending"
+    assert deferred.attempts == 1
+    assert deferred.last_error =~ "unsupported"
   end
 
   test "clamps an oversized hard-failure reason instead of aborting the drain" do

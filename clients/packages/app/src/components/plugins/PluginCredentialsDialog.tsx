@@ -2,7 +2,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Plugin as CommaPlugin } from "@comma/core-client";
 import {
   nativePlatformClipboard,
@@ -12,6 +12,7 @@ import {
 export function PluginCredentialsDialog({
   plugin,
   configuration,
+  operation,
   pending,
   error,
   onClose,
@@ -19,6 +20,7 @@ export function PluginCredentialsDialog({
 }: {
   plugin: CommaPlugin;
   configuration: NonNullable<CommaPlugin["credentialSetup"]>;
+  operation?: "install" | "reauthorize";
   pending: boolean;
   error?: string;
   onClose(): void;
@@ -27,6 +29,12 @@ export function PluginCredentialsDialog({
   const messages = useCommaMessages();
   const [value, setValue] = useState("");
   const [copied, setCopied] = useState(false);
+
+  // When a fresh PKCE attempt replaces helpUrl / attemptId in place, clear the stale code input.
+  useEffect(() => {
+    setValue("");
+  }, [configuration.attemptId, configuration.helpUrl]);
+
   if (configuration.format === "show")
     return (
       <Dialog
@@ -70,6 +78,96 @@ export function PluginCredentialsDialog({
         </div>
       </Dialog>
     );
+
+  if (configuration.format === "oauth_code") {
+    const isReconnect = operation === "reauthorize";
+    const trimmed = value.trim();
+    const valid = trimmed.length > 0 && trimmed.length <= 4096;
+    const inlineError = error ?? configuration.error;
+    const submitOAuthCode = () => {
+      if (valid && !pending) onSubmit({ [configuration.key]: trimmed });
+    };
+
+    return (
+      <Dialog
+        isOpen
+        isDismissable={!pending}
+        onOpenChange={(open) => {
+          if (!open && !pending) onClose();
+        }}
+        title={
+          isReconnect
+            ? messages.plugins_oauth_code_reconnect_title({ name: plugin.name })
+            : messages.plugins_oauth_code_title({ name: plugin.name })
+        }
+        description={
+          isReconnect
+            ? messages.plugins_oauth_code_reconnect_description({ name: plugin.name })
+            : messages.plugins_oauth_code_description({ name: plugin.name })
+        }
+        actions={[
+          {
+            label: messages.plugins_personal_source_cancel(),
+            hierarchy: "secondary-gray",
+            disabled: pending,
+            onPress: onClose,
+          },
+          {
+            label: pending
+              ? isReconnect
+                ? messages.plugins_oauth_code_reconnecting()
+                : messages.plugins_credentials_connecting()
+              : isReconnect
+                ? messages.plugins_oauth_code_reconnect()
+                : messages.plugins_credentials_connect(),
+            hierarchy: "primary",
+            disabled: pending || !valid,
+            onPress: submitOAuthCode,
+          },
+        ]}
+      >
+        <div className="flex w-full flex-col gap-md" aria-busy={pending}>
+          <div className="flex flex-col gap-sm">
+            <p className="m-0 text-sm text-secondary">
+              {messages.plugins_oauth_code_step_1()}
+            </p>
+            <Button
+              className="w-fit"
+              hierarchy="secondary-gray"
+              isDisabled={pending}
+              onPress={() => void openNativePlatformExternalUrl(configuration.helpUrl)}
+            >
+              {messages.plugins_oauth_code_sign_in_google()}
+            </Button>
+            <p className="m-0 text-xs text-quaternary">
+              {messages.plugins_oauth_code_consent_hint()}
+            </p>
+          </div>
+          <div className="flex flex-col gap-sm">
+            <p className="m-0 text-sm text-secondary">
+              {messages.plugins_oauth_code_step_2()}
+            </p>
+            <InputField
+              autoComplete="off"
+              className="w-full ph-no-capture"
+              disabled={pending}
+              label={configuration.label}
+              maxLength={4096}
+              placeholder={messages.plugins_oauth_code_placeholder()}
+              type="text"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+          </div>
+          {inlineError ? (
+            <p className="m-0 text-sm text-error-primary" role="alert">
+              {inlineError}
+            </p>
+          ) : null}
+        </div>
+      </Dialog>
+    );
+  }
   const trimmed = value.trim();
   const valid = trimmed.length > 0 && trimmed.length <= 4096 && !/\s/.test(trimmed);
   const submit = () => {

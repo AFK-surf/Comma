@@ -28,6 +28,14 @@ Xcode development installs still need APNs sandbox credentials.
 Debug and distribution installs replace each other because they share the same bundle ID.
 Override `COMMA_PHONE_BUNDLE_ID`, `COMMA_API_BASE_URL`, `COMMA_APP_NAME`, and `COMMA_PUSH_ENVIRONMENT` for another signed flavor.
 Use `production` for a distribution push entitlement.
+
+TestFlight and development builds have a hidden backend switch. Tap Settings > Version seven times (or the Comma mark on the login screen seven times) to show the Server switch.
+Select Production or Staging. The app removes this device's push registration on the current backend, ends its Live Activities, and closes.
+The next launch uses the selected backend.
+Only `salix.comma.surf` and `salix-staging.comma.surf` are permitted.
+Each backend keeps its own session. A backend other than the built backend keeps its core data, downloads, and notification preferences in separate local stores.
+App Store builds do not show the switch and ignore a selection kept from a TestFlight build.
+An Apple Watch follows the iPhone's backend, after the watch app opens again.
 Apple login and APNs require the matching server configuration in [Identity and security](../../../docs/identity-security.md#native-apple-credentials).
 
 Google login uses the existing client-core Google attempt, completion, account linking, and credential custody.
@@ -64,6 +72,32 @@ swift test --package-path clients/packages/apple-core
 In a wide window, main Chat uses the same trailing content column as Home. The existing Routines sidebar stays visible and interactive on the left.
 Opening and closing Chat keeps that sidebar's scroll position. Narrow windows use the full Chat width.
 Opening Chat from a Settings detail shows Routines beside Chat; closing it restores the Settings columns.
+
+## Touches in a screen capture
+
+While the screen is captured, the app shows a dot under each finger. A capture is a screen recording, AirPlay or wired mirroring, or a computer that reads the screen over USB.
+The dots are above all the app's content and take no touches. No dot shows without a capture.
+The system keyboard is not part of the app, so touches on it have no dot.
+The Simulator's recordings are not captures to the app. Launch a Debug build with `--show-touches` to see the dots there.
+
+## Device screens
+
+Settings › My devices › Simulators and devices lists the iOS Simulators and Android devices that a computer's station runs.
+A device opens on its own page over the mesh, as on the desktop (`clients/packages/mesh/README.md`, "Views of a screen").
+The core gives a view's frames to the app's screen sink, with no JSON (`devices.openScreenView`'s `sink`).
+`AVSampleBufferDisplayLayer` decodes the H.264 or H.265 frames and the app acknowledges each frame that it shows.
+A finger on the picture is the device's finger while the page drives it. Watch and Control follow an agent's lease.
+The page keeps the workspace's stations linked. The mesh moves to a direct path on the same network by itself.
+The page shows the current path. The view ends when the app leaves the foreground and opens again when it returns.
+The page covers the whole screen. Its Liquid Glass toolbar is under the stage in portrait and on the left in a wide layout.
+An iPhone Duo with `postures` shows as a SceneKit model (`Resources/Devices`, rigged by `iphone-duo.rig.json`).
+VideoToolbox decodes its frames into Metal textures on the screen that is on.
+The posture menu sends `posture`, and the core sends the fold and the turns. The model moves to the posture in 0.6 s.
+A touch finds its point on the model's screen and sends the same pointer input as the flat picture.
+In Debug, `-DeviceScreenPreview <posture id>` (or `plain`) shows the page with a test pattern and no station.
+Another device is drawn flat, as on the desktop: an iOS Simulator in Xcode's case (`devices.screenDeviceChrome`),
+and a device without one in a plain body round its screen, its corners its panel's (`DeviceFrame.swift`).
+The case's buttons are only drawn. The debug, log, and clipboard tools are not on iOS.
 
 ## Chat media
 
@@ -352,6 +386,23 @@ asc metadata validate --dir clients/apps/apple/AppStore/metadata
 asc metadata push --app 6817786267 --version 1.0.3 --dir clients/apps/apple/AppStore/metadata --dry-run
 ```
 
+## In-app purchases
+
+The Usage page sells plans and credit packs through StoreKit 2 (`iOS/Billing/StoreKitPurchases.swift`).
+The server records each transaction before the app finishes it.
+The contract is in [Store purchases](../../../docs/architecture/DOMAIN_CONCEPTS.md#store-purchases).
+
+- Each App Store product id is the Comma plan key, for example `comma_value_v1`.
+  Put all subscriptions in one subscription group. Give each tier its own level, with the monthly and annual products of a tier on the same level.
+- The page shows only the products that the server lists (`apple_product_id`) and that the App Store sells.
+- A subscription bought on the web stays on the web. The page shows no plans for it.
+- The app settles unfinished transactions at launch, at sign-in, and when StoreKit sends an update.
+
+The `Comma` scheme runs with `Configuration/Comma.storekit`, a local copy of the products.
+Its prices are for local tests only. The App Store Connect prices are the real prices.
+A purchase in the simulator with this file makes a local transaction that the App Store Server API cannot read, so the server does not record it.
+To test the full path, run a build against staging with a sandbox account.
+
 ## iPhone account and Task management
 
 These screens use the same client core calls and topics as the desktop client. Limits and timings are in the core and the Swift models.
@@ -411,12 +462,11 @@ Each form keeps its creation key across retries. Repository and history pages lo
 
 Settings > Drive and System Files lists the existing Core projection. System Files includes Router memory, instructions, and read-only skills.
 The composer plus menu opens the same files for the current conversation. Preview uses Quick Look. Save and share use the native share sheet.
-Drive selects one space and shows its immediate folders and files, with folders first.
-The native navigation bar groups the space filter and new memory file action. Duo places this group in its side bar.
-New memory files require the System Files space. The Drive availability note appears only for an empty, unfiltered directory.
-The breadcrumb returns to any parent. Switching spaces returns to that space's root.
-Search keeps matching files under their folders within the selected space.
-The search field stays in the file list, above the breadcrumb.
+Drive selects one space and shows its immediate folders (with item counts) and files, with folders first.
+When multiple spaces exist, horizontal space pills switch spaces at the root; when one space exists, its name titles the section.
+Opening a folder pushes a native `NavigationStack` folder page titled after that folder, using the system back button and edge swipe-back instead of desktop breadcrumbs.
+The native navigation bar shows the new memory file action only in the System Files space (in Duo's side bar where applicable). The Drive availability note appears only for an empty, unfiltered root directory.
+The in-page search field filters files under the current directory and lists matching files directly with their relative folder path subtitle.
 The phone indexes each catalog update once. Folder navigation uses that index and adds no requests or polling.
 Search filters the selected space's bounded, loaded Core catalog.
 Each directory renders at most 100 rows per page. Files load no extra metadata until opened.
@@ -467,8 +517,11 @@ Run PhoneMigrationTests, PhoneDesktopFeatureCoreTests, MiniAppRuntimeTests, and 
 - Worker history opens no event stream, so the open Task keeps the limit of two foreground streams.
 - Routines show on Home as platform cards, one per connected app. Tapping a pre-task stages its prompt as a tile in the
   router composer. Holding the tile offers "Show in Text Field". The member sends it, and the tile goes as an attached text
-  (`chatView.send` `attachedTexts`). A new briefing is an explicit request from a card's menu.
-  Provider marks are vector assets in `Resources/Assets.xcassets/ProviderLogos`.
+  (`chatView.send` `attachedTexts`). A new briefing is an explicit request from a card's menu or the routine sheet's refresh.
+  The routine sheet shows the number of cards left on the line of its refresh. It does not show the briefing's summary.
+  When the member clears the last card, the sheet shows a cleared line until a refresh publishes cards.
+  Provider marks are vector assets in `Resources/Assets.xcassets/ProviderLogos`, exported from the desktop logos with
+  `pnpm --dir clients/packages/ui export:provider-marks <key>` (it writes the Android marks too).
 - An @ mention reads `@Title` in the field and is sent and saved as the desktop's `[Title](comma:task/<id>)`.
   A skill inserts `/<skill_id>`, and the send carries `skills: [{location}]`, at most 10.
   `per-message` miniskills are not listed. A command reads `/command` in the field and is sent and saved as
@@ -478,3 +531,17 @@ Run PhoneMigrationTests, PhoneDesktopFeatureCoreTests, MiniAppRuntimeTests, and 
   The request follows two seconds later, in the foreground only, and the next request waits 120 days.
   The count stays on the iPhone and applies to every account. Apple decides if the sheet shows, and TestFlight builds never show it.
   Run `ReviewPromptTests` for the count and the interval.
+
+## Performance recording
+
+Development and TestFlight builds (`BackendEnvironment.switchAvailable`) offer Settings › Diagnostics › Performance recording.
+App Store builds hide the section and ignore a toggle kept from a TestFlight build.
+Recording writes a local log on the device to `Documents/perf/perf-YYYYMMDD[-N].log`.
+Recording is off by default and starts no timers, run-loop observers, or monitors while off.
+When on, a 5 s sample writes process CPU, thermal state, memory footprint, battery level and state, Low Power Mode, busiest threads, power counters (`TASK_POWER_INFO_V2`), main-runloop turns and hitches, Hermes core task timings, bridge message summaries, and the active page.
+When one thread stays at or above 80% CPU across two consecutive ticks, the sampler records arm64 stack frames for that thread.
+Thermal, Low Power Mode, battery, lifecycle, memory-warning, and network-path changes also write event lines.
+Files rotate at 5 MiB and keep at most three files.
+Logs stay on the device and are never uploaded. Share recording exports the retained files as `comma-perf.log` through the native share sheet.
+Pass `-CommaPerfProbe` or `COMMA_PERF_PROBE=1` to write 5 s CPU, thermal, and thread summaries to the system log (`surf.comma.ios` / `perf`) without changing the saved toggle or writing files.
+Run `PerformanceRecordTests` for recording persistence, log rotation, export ordering, and counter summaries.

@@ -25,12 +25,12 @@ defmodule CommaWeb.StationDeviceMeshTest do
     @moduledoc "A desktop station's Connector: it tells the test what Salix says and answers it."
     use WebSockex
 
-    def start(token, test_pid) do
+    def start(token, test_pid, headers \\ []) do
       ws = String.replace(SalixWeb.Application.base_url(), "http://", "ws://")
       query = URI.encode_query(%{"name" => "mac", "os" => "darwin"})
 
       WebSockex.start(ws <> "/v1/connect?" <> query, __MODULE__, test_pid,
-        extra_headers: [{"authorization", "Bearer " <> token}]
+        extra_headers: [{"authorization", "Bearer " <> token} | headers]
       )
     end
 
@@ -143,7 +143,36 @@ defmodule CommaWeb.StationDeviceMeshTest do
         %{"meta" => %{"owner_user_id" => owner}}
       )
 
-    {:ok, pid} = Connector.start(credential["token"], SystemsRuntime.Proc.self())
+    prove(credential["token"], extra)
+  end
+
+  # The sandbox of a coding Task that `requester` asked for connects as its Workload, and proves its key with `extra`.
+  # It runs and has its Task already, so its run is the Workload's current one.
+  defp sandbox_connects_and_proves(workspace, requester, extra, conversation \\ nil) do
+    {:ok, workload} =
+      SalixStore.CodingSandboxes.create(%{
+        tenant_id: workspace.salix_tenant_id,
+        group_id: workspace.salix_group_id,
+        conversation_id: conversation || "screen-" <> SystemsRuntime.Proc.uuid(),
+        workspace: "comma:" <> workspace.salix_group_id,
+        repo: %{"owner" => "acme", "name" => "api"},
+        requester: requester
+      })
+
+    {:ok, workload} =
+      SalixStore.CodingSandboxes.update(workload.id, fn w ->
+        {:ok, Map.merge(w.spec, %{"state" => "ready", "invited" => true})}
+      end)
+
+    {:ok, token} =
+      SalixStore.Compute.WorkloadCredential.issue_connect(workload.id, workload.generation)
+
+    Process.put(:sandbox_workload, workload.id)
+    prove(token, extra, [{"x-salix-credential-kind", "workload"}])
+  end
+
+  defp prove(token, extra, headers \\ []) do
+    {:ok, pid} = Connector.start(token, SystemsRuntime.Proc.self(), headers)
     Process.put(:device_mesh_connector, pid)
 
     on_exit(fn ->
@@ -459,6 +488,185 @@ defmodule CommaWeb.StationDeviceMeshTest do
     Revocations.revoke([scope], "sid", "first") |> Events.publish()
     settle_receive({:reading, 2, _})
     settle_receive({:gone, _})
+    refute_received {:asked, "station_mesh", _}
+  end
+
+  test "a Task's open streams are told when its sandbox's station says something new of itself, once for each change",
+       ctx do
+    tenant = ctx.workspace.salix_tenant_id
+    group = ctx.workspace.salix_group_id
+    assert sandbox_connects_and_proves(ctx.workspace, ctx.user["id"], %{}) == %{"ok" => true}
+    settle()
+    {:ok, workload} = SalixStore.CodingSandboxes.get(Process.get(:sandbox_workload))
+    task = workload.spec["conversation_id"]
+    :ok = SalixWeb.CodingSandboxes.subscribe_station(tenant, task, SystemsRuntime.Proc.self())
+    connector = Process.get(:device_mesh_connector)
+
+    says = fn capabilities ->
+      WebSockex.cast(
+        connector,
+        {:send, %{"type" => "metadata", "capabilities" => capabilities}}
+      )
+
+      settle()
+    end
+
+    device = fn ->
+      {:ok, device} = SalixEnv.Registry.get_device(tenant, group, workload.spec["device_id"])
+      device
+    end
+
+    # It serves its display: told once, after it is kept.
+    says.(%{"screen_view" => true})
+    settle_receive({:coding_sandbox_said, ^task})
+    assert SalixWeb.CodingSandboxes.serves_screen?(device.())
+    refute SalixWeb.CodingSandboxes.screen_active?(device.())
+
+    # Said again with nothing new of it (its system information): no one is told.
+    says.(%{"screen_view" => true, "tasks" => 2})
+    refute_received {:coding_sandbox_said, _}
+
+    # A Session's browser opened on the display, then its runtime's process went.
+    says.(%{"screen_view" => true, "screen_active" => true})
+    settle_receive({:coding_sandbox_said, ^task})
+    assert SalixWeb.CodingSandboxes.screen_active?(device.())
+
+    says.(%{"screen_view" => true})
+    settle_receive({:coding_sandbox_said, ^task})
+    refute SalixWeb.CodingSandboxes.screen_active?(device.())
+  end
+
+  test "what a sandbox's station said and Salix did not keep is still new when it says it again",
+       ctx do
+    tenant = ctx.workspace.salix_tenant_id
+    assert sandbox_connects_and_proves(ctx.workspace, ctx.user["id"], %{}) == %{"ok" => true}
+    settle()
+    {:ok, workload} = SalixStore.CodingSandboxes.get(Process.get(:sandbox_workload))
+    task = workload.spec["conversation_id"]
+    :ok = SalixWeb.CodingSandboxes.subscribe_station(tenant, task, SystemsRuntime.Proc.self())
+    connector = Process.get(:device_mesh_connector)
+
+    says = fn ->
+      WebSockex.cast(
+        connector,
+        {:send, %{"type" => "metadata", "capabilities" => %{"screen_view" => true}}}
+      )
+
+      settle()
+    end
+
+    # The first write keeps nothing (the run's record is not there); the next is kept.
+    writes = :counters.new(1, [])
+    previous = SystemsRuntime.get_env(:salix_web, :connector_control_executor)
+
+    SystemsRuntime.put_env(:salix_web, :connector_control_executor, fn
+      %{kind: :metadata} ->
+        :counters.add(writes, 1, 1)
+        if :counters.get(writes, 1) == 1, do: {:error, :not_found}, else: :ok
+
+      _heartbeat ->
+        :ok
+    end)
+
+    on_exit(fn -> SystemsRuntime.put_env(:salix_web, :connector_control_executor, previous) end)
+
+    says.()
+    refute_received {:coding_sandbox_said, _}
+    says.()
+    settle_receive({:coding_sandbox_said, ^task})
+  end
+
+  test "the person whose message the Router made a sandbox Task from may see its screen, though the Task names no owner",
+       ctx do
+    tenant = ctx.workspace.salix_tenant_id
+    group = ctx.workspace.salix_group_id
+    owner = ctx.user["id"]
+
+    # The server writes who asked as it makes the Task, where no other create may
+    # (`SalixIM.SourceRefProtection`): this test makes it as that server does.
+    contracts = SystemsRuntime.get_env(:salix_im, :protected_source_ref_contracts)
+
+    on_exit(fn ->
+      SystemsRuntime.put_env(:salix_im, :protected_source_ref_contracts, contracts)
+    end)
+
+    SystemsRuntime.put_env(:salix_im, :protected_source_ref_contracts, [])
+
+    {:ok, %{"conversation_id" => task}} =
+      SalixIM.ConversationServer.create_group_conversation(group, %{
+        "kind" => "agent_task",
+        "title" => "Look at a page",
+        "source_refs" => %{"ifc_requester" => "comma_user|" <> owner}
+      })
+
+    SystemsRuntime.put_env(:salix_im, :protected_source_ref_contracts, contracts)
+
+    assert sandbox_connects_and_proves(ctx.workspace, nil, %{}, task) == %{"ok" => true}
+    settle()
+    {:ok, workload} = SalixStore.CodingSandboxes.get(Process.get(:sandbox_workload))
+
+    {:ok, _} =
+      SalixEnv.Registry.update_meta(workload.spec["connector_run_id"], fn meta ->
+        Map.put(meta, "capabilities", %{"screen_view" => true})
+      end)
+
+    show = &SalixWeb.CodingSandboxes.show_screen(tenant, group, task, &1)
+    {:ok, other} = Accounts.create_user(%{"email" => email("other")})
+    member!(ctx.workspace, other, "member")
+    assert show.(other["id"]) == {:error, :forbidden}
+    refute_received {:asked, "station_mesh", _}
+
+    assert show.(owner) == {:ok, workload.spec["device_id"]}
+    settle_receive({:asked, "station_mesh", %{"mesh" => %{"owner" => ^owner}}})
+  end
+
+  test "a sandbox's station is told whom to show its screen only when the Task's owner asks, and nothing is kept for it",
+       ctx do
+    tenant = ctx.workspace.salix_tenant_id
+    group = ctx.workspace.salix_group_id
+    owner = ctx.user["id"]
+
+    # It may ask as a device's station does: a Workload's is told nothing.
+    assert sandbox_connects_and_proves(ctx.workspace, owner, %{"mesh" => true}) == %{"ok" => true}
+    settle()
+    {:ok, workload} = SalixStore.CodingSandboxes.get(Process.get(:sandbox_workload))
+    task = workload.spec["conversation_id"]
+    show = &SalixWeb.CodingSandboxes.show_screen(tenant, group, task, &1)
+
+    # A station that has not said it serves a screen (an image from before).
+    assert show.(owner) == {:error, :sandbox_has_no_screen}
+
+    {:ok, _} =
+      SalixEnv.Registry.update_meta(workload.spec["connector_run_id"], fn meta ->
+        Map.put(meta, "capabilities", %{"screen_view" => true})
+      end)
+
+    # Another member, and an owner who lost the role, are refused, and the station hears nothing.
+    {:ok, other} = Accounts.create_user(%{"email" => email("other")})
+    member!(ctx.workspace, other, "member")
+    assert show.(other["id"]) == {:error, :forbidden}
+    refute_received {:asked, "station_mesh", _}
+
+    assert show.(owner) == {:ok, workload.spec["device_id"]}
+    settle_receive({:asked, "station_mesh", %{"seq" => seq, "mesh" => mesh}})
+    assert mesh["owner"] == owner
+    assert mesh["workspace"] == group
+    assert [%{"kty" => "OKP"} | _] = mesh["grant_keys"]["keys"]
+    assert seq > 0
+
+    # No check follows: the station hears again only when the owner asks again.
+    a_minute_passes()
+    settle()
+    refute_received {:asked, "station_mesh", _}
+
+    Repo.update_all(
+      from(m in WorkspaceMembership,
+        where: m.workspace_id == ^ctx.workspace.id and m.user_id == ^owner
+      ),
+      set: [role: "viewer"]
+    )
+
+    assert show.(owner) == {:error, :forbidden}
     refute_received {:asked, "station_mesh", _}
   end
 

@@ -61,9 +61,11 @@ struct MarkdownBubbles: View {
                     }
                 case .table(let table):
                     ChatBubbleSurface(fill: CommaTheme.markdownTable, tail: tail && last ? .leading : .none, radius: radius) {
-                        MarkdownTableView(table: table, style: style).padding(4)
+                        MarkdownTableView(table: table, style: style, cornerRadius: radius - 4).padding(4)
                             .selectableMessageText()
                     }
+                case .screen(let link):
+                    ScreenLinkCard(link: link)
                 }
             }
         }
@@ -139,7 +141,7 @@ struct MarkdownBlockView: View {
                 .background(CommaTheme.markdownTable, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .selectableMessageText()
         case .table(let table):
-            MarkdownTableView(table: table, style: style).selectableMessageText()
+            MarkdownTableView(table: table, style: style, cornerRadius: 12).selectableMessageText()
         case .divider:
             Rectangle().fill(CommaTheme.markdownBorder).frame(height: 0.5)
         }
@@ -252,36 +254,42 @@ struct MarkdownCodeView: View {
 struct MarkdownTableView: View {
     let table: MarkdownTable
     let style: MarkdownStyle
+    /// Concentric with what holds it: a bubble's radius less the 4pt between them, or 12pt inside prose.
+    var cornerRadius: CGFloat = 16
 
     /// As wide as its columns: a scroll view of its own only when they are wider than the bubble, so the bubble
-    /// around it ends where the table does.
+    /// around it ends where the table does. The outline is on what shows, so a scrolled table keeps its corners.
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         ViewThatFits(in: .horizontal) {
             grid
             ScrollView(.horizontal, showsIndicators: false) { grid }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         }
+        .background(CommaTheme.markdownSurface)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(CommaTheme.markdownBorder, lineWidth: 0.5))
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var grid: some View {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(Array(table.head.enumerated()), id: \.offset) { column, cell in
-                        cellView(cell, bold: true, alignment: alignment(column))
-                    }
+        // Cells start at the top of their row, as on the desktop, so a short cell sits on a long one's first line.
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(Array(table.head.enumerated()), id: \.offset) { column, cell in
+                    cellView(cell, bold: true, alignment: alignment(column))
                 }
-                .background(CommaTheme.markdownTable)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
-                    Divider().overlay(CommaTheme.markdownBorder)
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
-                            cellView(cell, bold: false, alignment: alignment(column))
-                        }
+            }
+            .background(CommaTheme.markdownTable)
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                Divider().overlay(CommaTheme.markdownBorder)
+                GridRow {
+                    ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
+                        cellView(cell, bold: false, alignment: alignment(column))
                     }
                 }
             }
-            .background(CommaTheme.markdownSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(CommaTheme.markdownBorder, lineWidth: 0.5))
+        }
     }
 
     private func alignment(_ column: Int) -> MarkdownTable.Alignment {
@@ -289,12 +297,35 @@ struct MarkdownTableView: View {
     }
 
     private func cellView(_ cell: AttributedString, bold: Bool, alignment: MarkdownTable.Alignment) -> some View {
-        Text(cell)
-            .font(style.table.weight(bold ? .semibold : .regular))
-            .foregroundStyle(CommaTheme.textPrimary)
-            .multilineTextAlignment(alignment == .trailing ? .trailing : alignment == .center ? .center : .leading)
-            .frame(minWidth: 60, maxWidth: 220, alignment: alignment == .trailing ? .trailing : alignment == .center ? .center : .leading)
-            .padding(.horizontal, 12).padding(.vertical, 8)
+        TableCellLayout(alignment: alignment == .trailing ? .trailing : alignment == .center ? .center : .leading) {
+            Text(cell)
+                .font(style.table.weight(bold ? .semibold : .regular))
+                .foregroundStyle(CommaTheme.textPrimary)
+                .multilineTextAlignment(alignment == .trailing ? .trailing : alignment == .center ? .center : .leading)
+                .lineLimit(nil)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+}
+
+/// A table cell's text, as wide as its words between 60 and 220pt and as tall as they are at that width, whatever
+/// width the grid asks about: a longer cell wraps at 220pt instead of ending in an ellipsis on one line.
+private struct TableCellLayout: Layout {
+    var minWidth: CGFloat = 60
+    var maxWidth: CGFloat = 220
+    var alignment: HorizontalAlignment
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let text = subviews.first else { return .zero }
+        let natural = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? text.sizeThatFits(.unspecified).width
+        let width = min(max(natural, minWidth), maxWidth)
+        return CGSize(width: width, height: text.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let x: CGFloat = alignment == .trailing ? 1 : alignment == .center ? 0.5 : 0
+        subviews.first?.place(at: CGPoint(x: bounds.minX + bounds.width * x, y: bounds.minY), anchor: UnitPoint(x: x, y: 0),
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 

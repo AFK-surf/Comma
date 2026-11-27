@@ -139,7 +139,10 @@ defmodule BridgeForTeamsWeb.DashboardAPIOnboardingWizardTest do
       %{conn: conn, org: org} = log_in_fresh_owner(conn)
 
       assert redirected_to(get(conn, ~p"/")) == "/onboarding"
-      assert conn |> get(~p"/orgs/#{org.slug}/settings") |> redirected_to() == "/onboarding"
+
+      assert conn |> get(~p"/orgs/#{org.slug}/settings") |> redirected_to() ==
+               "/onboarding?" <> URI.encode_query(%{"org" => org.slug})
+
       assert redirected_to(get(conn, "/onboarding/tasks")) == "/onboarding"
     end
   end
@@ -250,7 +253,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIOnboardingWizardTest do
   end
 
   describe "the integrations step" do
-
     test "a plain member works on their own new swarm, never someone else's", %{conn: conn} do
       %{org: org} = org_with_owner_fixture()
       foreign = bare_project_fixture(org)

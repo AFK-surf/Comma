@@ -26,13 +26,43 @@ defmodule CommaWeb.TaskRequestReceipts do
   """
   def task_status_changed(%{"agent_group_id" => group, "conversation_id" => task} = snapshot)
       when is_binary(group) and is_binary(task) do
-    case TaskRequests.for_task(group, task) do
+    case TaskRequests.for_task_or_request(group, task, snapshot["task_request_id"]) do
       nil -> :ok
       _request -> enqueue(group, task, snapshot)
     end
   end
 
   def task_status_changed(_snapshot), do: :ok
+
+  @doc """
+  Queues one idempotent status backfill per accepted request whose Task has not
+  yet recorded a `task_status` (for example, requests accepted before receipts
+  existed). Never wakes the owner's Router.
+  """
+  def backfill_missing(requests) when is_list(requests) do
+    ids =
+      for %{"id" => id, "status" => "accepted", "task_status" => nil} <- requests,
+          is_binary(id),
+          do: id
+
+    for {group, task} <- TaskRequests.task_refs_for_backfill(ids) do
+      _ = enqueue_backfill(group, task)
+    end
+
+    :ok
+  end
+
+  defp enqueue_backfill(group, task) do
+    %{"group_id" => group, "task_id" => task, "backfill" => true}
+    |> new(
+      unique: [
+        period: :infinity,
+        fields: [:worker, :args],
+        states: [:available, :scheduled, :executing, :retryable, :completed]
+      ]
+    )
+    |> then(&Oban.insert(Comma.Oban, &1))
+  end
 
   defp enqueue(group, task, snapshot) do
     args = %{
@@ -102,16 +132,34 @@ defmodule CommaWeb.TaskRequestReceipts do
     end
   end
 
+  def perform(%Oban.Job{
+        args: %{"group_id" => group, "task_id" => task_id, "backfill" => true}
+      }) do
+    with %{} = request <- TaskRequests.for_task(group, task_id),
+         {:ok, %{"kind" => "agent_task", "status" => _status} = task} <-
+           Conversations.get_group_conversation_record(group, task_id),
+         {:ok, _recorded, _previous} <- TaskRequests.backfill_task(request, task) do
+      :ok
+    else
+      nil -> :ok
+      {:error, :not_found} -> :ok
+      {:ok, _other_kind} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
   def perform(%Oban.Job{args: %{"group_id" => group, "task_id" => task_id}, attempt: attempt}) do
     with %{} = request <- TaskRequests.for_task(group, task_id),
          {:ok, %{"kind" => "agent_task", "status" => status} = task} <-
            Conversations.get_group_conversation_record(group, task_id),
          {:ok, recorded, previous} <- TaskRequests.record_task(request, task) do
       # A retry finds the status already kept: it asks again, as the same input
-      # (its source id), until the Router has it.
-      if TaskRequests.result_status?(status) and (status != previous or attempt > 1),
-        do: ask_owner_router(recorded, task),
-        else: :ok
+      # (its source id), until the Router has it. Once reported, nothing more
+      # can go out.
+      if is_nil(recorded.reported_at) and TaskRequests.result_status?(status) and
+           (status != previous or attempt > 1),
+         do: ask_owner_router(recorded, task),
+         else: :ok
     else
       nil -> :ok
       {:error, :not_found} -> :ok
@@ -165,8 +213,9 @@ defmodule CommaWeb.TaskRequestReceipts do
     who = TaskRequests.recipient_name(request) || "The person you asked"
 
     context =
-      "#{who} has a result for the Task request the person sent: \"#{request.content}\". " <>
-        "Their Task is #{request.task_status}. The person reads its reply with the request in their Inbox." <>
+      "#{who} has a result for the Task request the person sent (request #{request.id}): \"#{request.content}\". " <>
+        "That request ran in the recipient's workspace and is #{request.task_status}; it is not a Task of this workspace. " <>
+        "The person reads its reply with the request in their Inbox." <>
         "\n\nThis is context only, not a request."
 
     SalixIM.ModelMentionTask.tell_router(

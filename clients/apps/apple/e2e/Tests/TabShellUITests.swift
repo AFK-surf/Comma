@@ -13,8 +13,7 @@ import UIKit
             XCUIDevice.shared.orientation = orientation
             let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--card-polish", "--hide-metrics"]
                 + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
-            let apps = app.buttons["tab-apps"]
-            XCTAssertTrue(apps.waitForExistence(timeout: 15)); apps.tap()
+            openApps(app)
             let card = app.buttons["mini-app-reading"]
             let run = app.buttons["mini-app-run-reading"]
             XCTAssertTrue(card.waitForExistence(timeout: 10))
@@ -49,7 +48,7 @@ import UIKit
             XCUIDevice.shared.orientation = orientation
             let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--app-detail", "--hide-metrics"]
                 + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
-            XCTAssertTrue(app.buttons["tab-apps"].waitForExistence(timeout: 15)); app.buttons["tab-apps"].tap()
+            openApps(app)
             let card = app.buttons["mini-app-reading"]
             XCTAssertTrue(card.waitForExistence(timeout: 10))
             miniAppScreenshot(app, "Apps with version artwork " + orientationName(orientation))
@@ -57,9 +56,9 @@ import UIKit
             let mainRun = app.buttons["mini-app-detail-primary-run"]
             XCTAssertTrue(mainRun.waitForExistence(timeout: 10), app.debugDescription)
             XCTAssertTrue(app.frame.contains(mainRun.frame))
-            let appsTab = app.buttons["tab-apps"].frame
-            if appsTab.minX > app.frame.midX, appsTab.minY < app.frame.maxY - 100 {
-                XCTAssertLessThan(mainRun.frame.maxX, appsTab.minX, "Detail actions stay clear of the Duo system rail")
+            let rail = app.buttons["tab-home"].frame
+            if rail.minX > app.frame.midX, rail.minY < app.frame.maxY - 100 {
+                XCTAssertLessThan(mainRun.frame.maxX, rail.minX, "Detail actions stay clear of the Duo system rail")
             }
             XCTAssertTrue(app.staticTexts["Preview"].exists, "API screenshot metadata reaches the native details page")
             miniAppScreenshot(app, "App detail hero " + orientationName(orientation))
@@ -98,7 +97,7 @@ import UIKit
             XCUIDevice.shared.orientation = orientation
             let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--photo-picker", "--hide-metrics"]
                 + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
-            XCTAssertTrue(app.buttons["tab-apps"].waitForExistence(timeout: 15)); app.buttons["tab-apps"].tap()
+            openApps(app)
             app.buttons["mini-app-run-reading"].tap()
             let consent = app.alerts["Run this app?"]
             XCTAssertTrue(consent.waitForExistence(timeout: 10)); consent.buttons["Run"].tap()
@@ -150,8 +149,7 @@ import UIKit
             XCUIDevice.shared.orientation = orientation
             let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--chrome-mode", "--hide-metrics"]
                 + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
-            XCTAssertTrue(app.buttons["tab-apps"].waitForExistence(timeout: 15))
-            app.buttons["tab-apps"].tap()
+            openApps(app)
             let run = app.buttons["mini-app-run-reading"]
             XCTAssertTrue(run.waitForExistence(timeout: 10)); run.tap()
             let consent = app.alerts["Run this app?"]
@@ -212,8 +210,7 @@ import UIKit
             XCUIDevice.shared.orientation = orientation
             let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--hide-metrics"]
                 + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
-            let apps = app.buttons["tab-apps"]
-            XCTAssertTrue(apps.waitForExistence(timeout: 15)); apps.tap()
+            openApps(app)
             XCTAssertEqual(app.frame.width > app.frame.height, orientation != .portrait)
             let run = app.buttons["mini-app-run-reading"]
             XCTAssertTrue(run.waitForExistence(timeout: 10))
@@ -277,6 +274,48 @@ import UIKit
         XCUIDevice.shared.orientation = .portrait
     }
 
+    /// An applied filter shows its count beside the Inbox's filter glyph and the button keeps its place, also in Duo's
+    /// vertical bar, where the count once let the system stretch the button's Glass over the page.
+    func testInboxFilterButtonStaysInPlaceWithAFilterApplied() throws {
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--hide-metrics"]
+                + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
+            let inbox = app.buttons["tab-inbox"]
+            XCTAssertTrue(inbox.waitForExistence(timeout: 15)); inbox.tap()
+            XCTAssertTrue(app.element("inbox-review0").waitForExistence(timeout: 10))
+            let filters = app.buttons["openInboxFilters"]
+            XCTAssertTrue(filters.waitUntilHittable())
+            let plain = filters.frame
+            screenScreenshot("Inbox no filter " + orientationName(orientation))
+            filters.tap()
+            let unread = app.buttons["inboxUnreadOnly"]
+            XCTAssertTrue(unread.waitForExistence(timeout: 5), app.debugDescription); unread.tap()
+            // The sheet closes when pulled down from its top row.
+            unread.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1)))
+            XCTAssertTrue(unread.waitUntilGone(), app.debugDescription)
+            XCTAssertTrue(filters.waitUntilHittable())
+            Thread.sleep(forTimeInterval: 0.5)
+            screenScreenshot("Inbox unread only " + orientationName(orientation))
+            XCTAssertEqual(filters.value as? String, "1 applied")
+            // The count widens the button by a digit and leaves it in its bar.
+            let applied = filters.frame
+            XCTAssertEqual(applied.height, plain.height, accuracy: 1, "\(plain) -> \(applied)")
+            XCTAssertLessThan(applied.width, plain.width + 30, "\(plain) -> \(applied)")
+            XCTAssertLessThan(abs(applied.midY - plain.midY), 30, "\(plain) -> \(applied)")
+            XCTAssertLessThan(abs(applied.midX - plain.midX), 30, "\(plain) -> \(applied)")
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    /// The whole screen: Duo's compositor crops an app's own landscape screenshot.
+    private func screenScreenshot(_ name: String) {
+        let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screen.name = name; screen.lifetime = .keepAlways
+        add(screen)
+    }
+
     /// Apps without apps reads as the Inbox does: the same inline page title and the app's one empty state,
     /// with no search field over nothing to search.
     func testEmptyAppsUsesThePageTitleAndEmptyState() throws {
@@ -285,7 +324,7 @@ import UIKit
         XCTAssertTrue(inbox.waitForExistence(timeout: 15)); inbox.tap()
         XCTAssertTrue(app.element("inbox-review0").waitForExistence(timeout: 10))
         let inboxBar = app.navigationBars.firstMatch.frame
-        app.buttons["tab-apps"].tap()
+        openApps(app)
         let empty = app.element("miniAppsEmpty")
         XCTAssertTrue(empty.waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertTrue(app.staticTexts["No apps yet"].exists)
@@ -294,9 +333,38 @@ import UIKit
                        "Apps uses the inline page title, as the Inbox does")
         app.buttons["tab-inbox"].tap()
         XCTAssertTrue(app.element("inbox-review0").waitForExistence(timeout: 10))
-        app.buttons["tab-apps"].tap()
-        XCTAssertTrue(empty.waitForExistence(timeout: 10))
+        if #available(iOS 26.0, *) {
+            app.openTab("tab-apps")
+            XCTAssertTrue(empty.waitForExistence(timeout: 10), "The menu leads back to Apps")
+        } else {
+            app.buttons["tab-settings"].tap()
+            XCTAssertTrue(empty.waitForExistence(timeout: 10), "Settings keeps Apps open")
+        }
         miniAppScreenshot(app, "Apps empty")
+    }
+
+    /// New app, as on the desktop, leaves the start of a request in the router chat's composer with the keyboard up
+    /// for the member to finish; nothing is sent.
+    func testNewAppStartsARequestInTheRouterComposer() throws {
+        let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--mini-app-empty", "--hide-metrics"])
+        openApps(app)
+        let newApp = app.buttons["miniAppsNew"]
+        XCTAssertTrue(newApp.waitUntilHittable(), "New app takes a tap over the empty state")
+        newApp.tap()
+        let composer = app.routerComposer
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        let filled = expectation(for: NSPredicate(format: "value BEGINSWITH %@", "Build a Comma app that"), evaluatedWith: composer)
+        wait(for: [filled], timeout: 5)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "The keyboard comes up to finish the request")
+        miniAppScreenshot(app, "New app in the router composer")
+    }
+
+    /// Apps is a page in the bar's menu; before iOS 26 it is Settings › Comma › Apps.
+    private func openApps(_ app: XCUIApplication) {
+        if #available(iOS 26.0, *) { app.openTab("tab-apps"); return }
+        app.openTab("tab-settings")
+        let apps = app.buttons["openApps"]
+        XCTAssertTrue(apps.waitForExistence(timeout: 10)); apps.tap()
     }
 
     private func orientationName(_ orientation: UIDeviceOrientation) -> String {
@@ -307,6 +375,240 @@ import UIKit
         PerfSignal.captureMiniApp.post()
         Thread.sleep(forTimeInterval: 0.3)
         keepScreenshot(app, name)
+    }
+
+    /// The tab a dragged lens leaves stays drawn. Its glyph is cut to the lifted lens while it is selected, and once
+    /// kept that cut after the selection moved on, so the glyph was gone.
+    func testATabTheLensLeavesKeepsItsGlyph() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("The system's bar draws its own glyphs before iOS 26") }
+        let app = XCUIApplication.fixture(light: true)
+        let home = app.buttons["tab-home"], people = app.buttons["tab-people"]
+        XCTAssertTrue(home.waitUntilHittable(timeout: 15))
+        let centre = CGVector(dx: 0.5, dy: 0.5)
+        home.coordinate(withNormalizedOffset: centre)
+            .press(forDuration: 0.4, thenDragTo: people.coordinate(withNormalizedOffset: centre))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: people)], timeout: 5)
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertGreaterThan(try darkPixels(home.screenshot()), 150, "Home's glyph is drawn in its slot")
+    }
+
+    /// Tapping an unselected tab switches cleanly, tapping More opens the overflow menu, and dragging the lifted lens
+    /// onto More and up into a row selects that overflow page in one continuous gesture.
+    func testTabBarTapSwitchAndDragIntoOverflowMenu() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("The overflow glass menu requires iOS 26") }
+        let app = XCUIApplication.fixture(light: true)
+        let home = app.buttons["tab-home"], inbox = app.buttons["tab-inbox"], people = app.buttons["tab-people"]
+        let more = app.buttons["tab-more"]
+        XCTAssertTrue(home.waitUntilHittable(timeout: 15))
+
+        people.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: people)], timeout: 5)
+        inbox.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: inbox)], timeout: 5)
+        home.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: home)], timeout: 5)
+
+        // Tap More -> pick Settings from overflow menu -> verify Settings opens and More is selected.
+        more.tap()
+        let settingsRow = app.buttons["tab-settings"]
+        XCTAssertTrue(settingsRow.waitUntilHittable(timeout: 5))
+        settingsRow.tap()
+        XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(more.isSelected)
+
+        // Return to Inbox, then drag the lifted lens from Inbox onto More and dwell so the overflow menu opens
+        // mid-drag while the finger is still down (cancelling native bar tracking with no stuck lens or peeking platter).
+        inbox.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: inbox)], timeout: 5)
+        let centre = CGVector(dx: 0.5, dy: 0.5)
+        inbox.coordinate(withNormalizedOffset: centre)
+            .press(forDuration: 0.15, thenDragTo: more.coordinate(withNormalizedOffset: centre),
+                   withVelocity: .default, thenHoldForDuration: 0.8)
+        let driveRow = app.buttons["tab-drive"]
+        XCTAssertTrue(driveRow.waitUntilHittable(timeout: 5), "Dwelling on More during a drag must open the overflow menu")
+        driveRow.tap()
+        XCTAssertTrue(more.waitUntilHittable(timeout: 5))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: more)], timeout: 5)
+
+        // Return to Home, then verify glyphs on Home, Inbox, and People all remain drawn after tap & drag switching.
+        home.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: home)], timeout: 5)
+        Thread.sleep(forTimeInterval: 0.6)
+        for slot in [home, inbox, people] {
+            XCTAssertGreaterThan(try darkPixels(slot.screenshot()), 120, "\(slot.identifier) glyph must remain drawn")
+        }
+    }
+
+    /// Verifies tap-open AND mid-drag dwell-open of the overflow menu in landscape (compact 44pt bar on iPhone,
+    /// vertical side rail on Duo) as well as Dark Mode, confirming `tab-more` accessibility and clean handoff.
+    func testTabBarOverflowMenuInLandscapeAndDarkMode() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("The overflow glass menu requires iOS 26") }
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        // 1. Landscape (Light): compact 44pt bar on iPhone / vertical rail on Duo.
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscapeApp = XCUIApplication.fixture(light: true)
+        let lHome = landscapeApp.buttons["tab-home"]
+        let lInbox = landscapeApp.buttons["tab-inbox"]
+        let lMore = landscapeApp.buttons["tab-more"]
+        XCTAssertTrue(lHome.waitUntilHittable(timeout: 15))
+        XCTAssertTrue(landscapeApp.frame.width > landscapeApp.frame.height)
+
+        lInbox.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: lInbox)], timeout: 5)
+        lMore.tap()
+        let lSettings = landscapeApp.buttons["tab-settings"]
+        XCTAssertTrue(lSettings.waitUntilHittable(timeout: 5))
+        lSettings.tap()
+        XCTAssertTrue(lMore.waitUntilHittable(timeout: 5))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: lMore)], timeout: 5)
+
+        lInbox.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: lInbox)], timeout: 5)
+        let centre = CGVector(dx: 0.5, dy: 0.5)
+        lInbox.coordinate(withNormalizedOffset: centre)
+            .press(forDuration: 0.15, thenDragTo: lMore.coordinate(withNormalizedOffset: centre),
+                   withVelocity: .default, thenHoldForDuration: 0.8)
+        let lDrive = landscapeApp.buttons["tab-drive"]
+        XCTAssertTrue(lDrive.waitUntilHittable(timeout: 5), "Landscape drag-dwell onto More must open overflow menu")
+        lDrive.tap()
+        XCTAssertTrue(lMore.waitUntilHittable(timeout: 5))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: lMore)], timeout: 5)
+        lHome.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: lHome)], timeout: 5)
+
+        // 2. Portrait (Dark Mode): verify zero AX loss on `tab-more` and clean drag-dwell handoff.
+        XCUIDevice.shared.orientation = .portrait
+        let darkApp = XCUIApplication.fixture(light: false, arguments: ["-AppleInterfaceStyle", "Dark"])
+        let dHome = darkApp.buttons["tab-home"]
+        let dInbox = darkApp.buttons["tab-inbox"]
+        let dMore = darkApp.buttons["tab-more"]
+        XCTAssertTrue(dHome.waitUntilHittable(timeout: 15))
+
+        dMore.tap()
+        let dSettings = darkApp.buttons["tab-settings"]
+        XCTAssertTrue(dSettings.waitUntilHittable(timeout: 5))
+        dSettings.tap()
+        XCTAssertTrue(darkApp.staticTexts["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(dMore.isSelected)
+
+        dInbox.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: dInbox)], timeout: 5)
+        dInbox.coordinate(withNormalizedOffset: centre)
+            .press(forDuration: 0.15, thenDragTo: dMore.coordinate(withNormalizedOffset: centre),
+                   withVelocity: .default, thenHoldForDuration: 0.8)
+        let dDrive = darkApp.buttons["tab-drive"]
+        XCTAssertTrue(dDrive.waitUntilHittable(timeout: 5), "Dark mode drag-dwell onto More must open overflow menu")
+        dDrive.tap()
+        XCTAssertTrue(dMore.waitUntilHittable(timeout: 5))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: dMore)], timeout: 5)
+        dHome.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: dHome)], timeout: 5)
+    }
+
+    /// Regression test: dragging onto `More` and opening the overflow menu via dwell, immediate lift (`case .ended`),
+    /// or edge-slop lift (`shouldSelectTab`), then dismissing without picking must never leave the selected tab icon
+    /// stuck at UIKit's `1.16×` lifted-lens magnification (and subsequent native drags must continue working cleanly).
+    func testRepeatedDragIntoOverflowMenuAndDismissKeepsSelectedIconSize() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("The overflow glass menu requires iOS 26") }
+        let app = XCUIApplication.fixture(light: true)
+        let home = app.buttons["tab-home"]
+        let inbox = app.buttons["tab-inbox"]
+        let more = app.buttons["tab-more"]
+        XCTAssertTrue(home.waitUntilHittable(timeout: 15))
+        Thread.sleep(forTimeInterval: 0.4)
+        let base = try darkPixelExtent(home.screenshot())
+        XCTAssertGreaterThan(base.width, 20, "Baseline Home glyph visible: \(base)")
+        XCTAssertGreaterThan(base.height, 20, "Baseline Home glyph visible: \(base)")
+
+        let c = CGVector(dx: 0.5, dy: 0.5)
+        let dismiss = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+
+        func assertRestingSize(_ label: String) throws {
+            let after = try darkPixelExtent(home.screenshot())
+            XCTAssertLessThanOrEqual(abs(after.width - base.width), 3,
+                                     "\(label): Home icon width must stay at 1.0× resting size (base=\(base), after=\(after))")
+            XCTAssertLessThanOrEqual(abs(after.height - base.height), 3,
+                                     "\(label): Home icon height must stay at 1.0× resting size (base=\(base), after=\(after))")
+        }
+
+        // Trigger 1: Drag Home -> More and dwell (armMenuDwell) -> dismiss without picking.
+        home.coordinate(withNormalizedOffset: c)
+            .press(forDuration: 0.2, thenDragTo: more.coordinate(withNormalizedOffset: c), withVelocity: .default, thenHoldForDuration: 0.6)
+        XCTAssertTrue(app.buttons["tab-settings"].waitUntilHittable(timeout: 5), "Dwell on More opens menu")
+        dismiss.tap()
+        XCTAssertTrue(home.waitUntilHittable(timeout: 5))
+        Thread.sleep(forTimeInterval: 0.7)
+        try assertRestingSize("Trigger 1 (dwell)")
+
+        // Trigger 2: Drag Home -> More and lift immediately (previously stranded SelectedContentView/_UITabButton at 1.16×!).
+        for round in 1...2 {
+            home.coordinate(withNormalizedOffset: c)
+                .press(forDuration: 0.15, thenDragTo: more.coordinate(withNormalizedOffset: c), withVelocity: .default, thenHoldForDuration: 0.0)
+            XCTAssertTrue(app.buttons["tab-settings"].waitUntilHittable(timeout: 5), "Lift on More round \(round) opens menu")
+            dismiss.tap()
+            XCTAssertTrue(home.waitUntilHittable(timeout: 5))
+            Thread.sleep(forTimeInterval: 0.7)
+            try assertRestingSize("Trigger 2 lift round \(round)")
+        }
+
+        // Trigger 3: Start slightly outside platter edge left of Home -> drag onto More -> lift -> dismiss.
+        let outsideHome = home.coordinate(withNormalizedOffset: CGVector(dx: -0.05, dy: 0.5))
+        outsideHome.press(forDuration: 0.15, thenDragTo: more.coordinate(withNormalizedOffset: c), withVelocity: .default, thenHoldForDuration: 0.0)
+        if app.buttons["tab-settings"].waitUntilHittable(timeout: 3) {
+            dismiss.tap()
+            XCTAssertTrue(home.waitUntilHittable(timeout: 5))
+            Thread.sleep(forTimeInterval: 0.7)
+        }
+        try assertRestingSize("Trigger 3 (edge-slop lift)")
+
+        // Trigger 4: Subsequent native tab drag (Home -> Inbox -> Home) still works and settles at 1.0×.
+        home.coordinate(withNormalizedOffset: c)
+            .press(forDuration: 0.15, thenDragTo: inbox.coordinate(withNormalizedOffset: c))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: inbox)], timeout: 5)
+        inbox.coordinate(withNormalizedOffset: c)
+            .press(forDuration: 0.15, thenDragTo: home.coordinate(withNormalizedOffset: c))
+        wait(for: [expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: home)], timeout: 5)
+        Thread.sleep(forTimeInterval: 0.7)
+        try assertRestingSize("Trigger 4 (subsequent native drag)")
+    }
+
+    private func darkPixelExtent(_ screenshot: XCUIScreenshot) throws -> (width: Int, height: Int, count: Int) {
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        try rgba.withUnsafeMutableBytes { bytes in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        var minX = w, maxX = -1, minY = h, maxY = -1, count = 0
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = (y * w + x) * 4
+                if Int(rgba[i]) + Int(rgba[i + 1]) + Int(rgba[i + 2]) < 240 {
+                    count += 1
+                    if x < minX { minX = x }; if x > maxX { maxX = x }
+                    if y < minY { minY = y }; if y > maxY { maxY = y }
+                }
+            }
+        }
+        guard count > 0 else { return (0, 0, 0) }
+        return (maxX - minX + 1, maxY - minY + 1, count)
+    }
+
+    /// How many of a screenshot's pixels are near black, as a glyph's are on the light bar.
+    private func darkPixels(_ screenshot: XCUIScreenshot) throws -> Int {
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        var rgba = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        try rgba.withUnsafeMutableBytes { bytes in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return stride(from: 0, to: rgba.count, by: 4).count { Int(rgba[$0]) + Int(rgba[$0 + 1]) + Int(rgba[$0 + 2]) < 240 }
     }
 
     func testTabsKeepTheirStateWithoutReloading() throws {
@@ -321,7 +623,7 @@ import UIKit
         inbox.tap()
         XCTAssertTrue(app.element("inbox-review0").waitForExistence(timeout: 5))
         XCTAssertTrue(inbox.isSelected)
-        app.buttons["tab-settings"].tap()
+        app.openTab("tab-settings")
         XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 5))
         app.buttons["tab-home"].tap()
         XCTAssertTrue(app.element("task-task0").waitUntilHittable())
@@ -331,6 +633,9 @@ import UIKit
 
     func testRouterChatOpensOverTheTabsAndKeepsItsDraft() throws {
         let app = XCUIApplication.fixture()
+        let home = app.buttons["tab-home"]
+        XCTAssertTrue(home.waitUntilHittable(timeout: 10))
+        let barBottom = home.frame.maxY
         let composer = app.openRouterChat()
         XCTAssertFalse(app.buttons["tab-home"].isHittable, "The router chat covers the tabs")
         composer.tap()
@@ -339,6 +644,7 @@ import UIKit
         app.buttons["closeRouterChat"].tap()
         XCTAssertTrue(composer.waitUntilGone(), "Closing folds the chat back into its button")
         XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertEqual(home.frame.maxY, barBottom, accuracy: 1, "The tab bar returns to the bottom with the keyboard")
         XCTAssertEqual(app.openRouterChat().value as? String, "Router draft")
         // A downward drag on the header closes it too.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08))
@@ -465,6 +771,37 @@ import UIKit
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "The composer takes focus")
     }
 
+    /// The routine counts what is left beside its refresh. The member clears its cards one by one: the count follows,
+    /// the cleared line takes the cards' place, and a refresh brings cards back.
+    func testClearingTheRoutineShowsItClearedUntilARefresh() throws {
+        let app = XCUIApplication.fixture(arguments: ["--routines-clear"])
+        let open = app.element("openRoutine")
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        open.tap()
+        let status = app.element("routineStatus"), refresh = app.element("refreshRoutines")
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(status.label, "3 things need you")
+        // The refresh sits on the status line, at its trailing end.
+        XCTAssertEqual(refresh.frame.midY, status.frame.midY, accuracy: 1)
+        XCTAssertGreaterThan(refresh.frame.minX, status.frame.minX)
+        XCTAssertFalse(app.element("routinesCleared").exists)
+        for (row, left) in [("item-0", "2 things need you"), ("item-1", "1 thing needs you"), ("item-2", "All cleared")] {
+            app.element("pretask-dismiss-" + row).tap()
+            let confirm = app.buttons["Don’t remind me"].firstMatch
+            XCTAssertTrue(confirm.waitForExistence(timeout: 3))
+            confirm.tap()
+            XCTAssertTrue(app.element("pretask-" + row).waitUntilGone(), "The dismissed card leaves")
+            wait(for: [expectation(for: NSPredicate(format: "label == %@", left), evaluatedWith: status)], timeout: 5)
+        }
+        let cleared = app.element("routinesCleared")
+        XCTAssertTrue(cleared.waitForExistence(timeout: 3))
+        XCTAssertEqual(cleared.label, "Congrats, routines cleared")
+        refresh.tap()
+        XCTAssertTrue(app.element("pretask-item-0").waitForExistence(timeout: 5), "A refresh brings cards back")
+        XCTAssertTrue(cleared.waitUntilGone())
+        XCTAssertEqual(status.label, "3 things need you")
+    }
+
     /// A minimized Task keeps the status switcher over its bar, and another Task opened then takes over the dock,
     /// raised, with its own title.
     func testAnotherTaskTakesOverAMinimizedDock() throws {
@@ -485,5 +822,48 @@ import UIKit
         XCTAssertTrue(app.buttons["Done"].waitUntilUnhittable(), "The raised sheet covers the switcher")
         close.tap()
         XCTAssertTrue(close.waitUntilGone())
+    }
+
+    /// A diagonal rightward swipe starting near a message bubble's edge must not simultaneously recognize
+    /// reply-swipe and router-close; the bubble keeps the reply gesture, and a subsequent leading-edge swipe
+    /// closes the router chat cleanly with no lingering keyboard over Home.
+    func testDiagonalSwipeExitNearMessageDoesNotRaiseKeyboardOrReply() throws {
+        let app = XCUIApplication.fixture(light: true, arguments: ["--hide-metrics"])
+        let home = app.buttons["tab-home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 10))
+        let barBottom = home.frame.maxY
+
+        let composer = app.openRouterChat()
+        let predicate = NSPredicate(format: "label BEGINSWITH %@", "History message ")
+        let bubble = try XCTUnwrap(app.staticTexts.matching(predicate).allElementsBoundByIndex.first { el in
+            el.exists && el.isHittable && el.frame.midY >= 140 && el.frame.midY <= app.frame.height - 200
+        }, "Expected a visible assistant message bubble")
+        let startY = bubble.frame.minY - 9
+        let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 40, dy: startY))
+        let end = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 360, dy: startY - 80))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        // ReplySwipe wins exclusively: the reply thread opens inside the still-open router chat.
+        XCTAssertTrue(app.element("replyThread").waitForExistence(timeout: 3),
+                      "Diagonal swipe starting inside a message bubble must open its reply thread")
+        XCTAssertTrue(composer.isHittable, "Router chat must remain open when reply swipe claims the gesture")
+        XCTAssertFalse(home.isHittable, "Home tab bar must stay covered while the router chat is open")
+        _ = app.keyboards.firstMatch.waitForExistence(timeout: 3)
+        _ = keepScreenshot(app, "After diagonal swipe on bubble")
+
+        // From the leading edge, a diagonal rightward swipe closes the router chat and dismisses the keyboard.
+        let edgeStart = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 10, dy: 400))
+        let edgeEnd = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 360, dy: 320))
+        edgeStart.press(forDuration: 0.05, thenDragTo: edgeEnd)
+
+        XCTAssertTrue(composer.waitUntilGone(), "Leading-edge swipe must close the router chat")
+        XCTAssertTrue(home.waitUntilHittable(), "Home tab bar must be reachable after closing")
+        XCTAssertEqual(home.frame.maxY, barBottom, accuracy: 1, "Tab bar must stay at its resting height")
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        _ = keepScreenshot(app, "After left-edge swipe exit to Home")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Closing the router chat must not raise the keyboard over Home")
+
+        _ = app.openRouterChat()
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Reopening the router chat must not show the keyboard")
     }
 }

@@ -6,6 +6,8 @@ metadata:
   icon: play.tv.fill
   color: pink
   placeholder: Upload a file to convert
+roles: worker
+prompt_summary: "Convert between document, image, audio, and video file formats."
 ---
 
 # File Format Conversion

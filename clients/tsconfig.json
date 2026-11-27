@@ -43,6 +43,9 @@
       "path": "./apps/electron"
     },
     {
+      "path": "./apps/raycast/tsconfig.lib.json"
+    },
+    {
       "path": "./apps/web"
     },
     {

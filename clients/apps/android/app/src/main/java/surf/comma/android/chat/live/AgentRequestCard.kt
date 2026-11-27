@@ -31,6 +31,7 @@ import surf.comma.android.conversation.AgentRequest
 import surf.comma.android.conversation.AgentRequestInput
 import surf.comma.android.conversation.AgentRequestOutcome
 import surf.comma.android.conversation.AgentRequestStatus
+import surf.comma.android.routines.ProviderMarks
 import surf.comma.android.settings.SettingsDialog
 import surf.comma.android.settings.color
 import surf.comma.android.settings.dp
@@ -54,9 +55,16 @@ private val PROVIDER_NAMES = mapOf(
 private const val SECRET_PROVIDER = "secret"
 private const val CLI_PROVIDER = "cli"
 
+/** Whose logo a request shows: a secret is named for its service (didi), so its alias picks the logo. */
+internal fun markKey(request: AgentRequest): String? = when {
+    request.plugin != null -> request.plugin.brand ?: request.plugin.id
+    request.provider == SECRET_PROVIDER -> request.alias
+    else -> request.provider
+}
+
 /** Whether the card's main button asks for what the person fills in, not for a page to open. */
 private fun AgentRequest.fills(): Boolean =
-    input != null && input.kind != AgentRequestInput.Kind.DEVICE && input.kind != AgentRequestInput.Kind.OPEN
+    plugin == null && input != null && input.kind != AgentRequestInput.Kind.DEVICE && input.kind != AgentRequestInput.Kind.OPEN
 
 internal fun providerName(provider: String): String =
     PROVIDER_NAMES[provider] ?: provider.replaceFirstChar { it.uppercaseChar() }
@@ -73,7 +81,7 @@ internal fun agentRequestShown(request: AgentRequest, now: Long): AgentRequestSh
     AgentRequestStatus.PENDING ->
         if (request.expiresAt != null && now >= request.expiresAt) AgentRequestShown.EXPIRED else AgentRequestShown.OPEN
     AgentRequestStatus.COMPLETED -> when (request.outcome) {
-        AgentRequestOutcome.CONNECTED, AgentRequestOutcome.SHARED -> AgentRequestShown.CONNECTED
+        AgentRequestOutcome.CONNECTED, AgentRequestOutcome.SHARED, AgentRequestOutcome.INSTALLED -> AgentRequestShown.CONNECTED
         AgentRequestOutcome.DECLINED -> AgentRequestShown.DECLINED
         null -> AgentRequestShown.FAILED
     }
@@ -99,8 +107,18 @@ internal interface AgentRequestCardHost {
     /** Asks the person for what [request] needs, then sends it; [done] says on the main thread whether it was taken. */
     fun fill(request: AgentRequest, done: (Boolean) -> Unit)
 
-    /** Asks the system for this device's position once, then sends it; [done] says on the main thread how it went. */
-    fun shareLocation(requestId: String, done: (AgentLocationAnswer) -> Unit)
+    /**
+     * Asks the system for this device's position once, then sends it; [done] says on the main thread how it went.
+     * [always] also turns on Settings › Share location once it was taken, so later messages carry the position.
+     */
+    fun shareLocation(requestId: String, always: Boolean, done: (AgentLocationAnswer) -> Unit)
+
+    /**
+     * Adds [request]'s plugin as the Plugins page does: its browser authorization, or the form its install asks for
+     * (a Google sign-in's code). [done] says on the main thread whether it could start; the server ends the request
+     * once the plugin is installed.
+     */
+    fun installPlugin(request: AgentRequest, done: (Boolean) -> Unit) = done(false)
 
     /** Whether this phone is answering location request [requestId] by itself now: the card only says so. */
     fun answeringLocation(requestId: String): Boolean = false
@@ -113,10 +131,16 @@ internal interface AgentRequestCardHost {
 internal class AgentRequestFillDialog(
     activity: Activity,
     request: AgentRequest,
-    onSave: (Map<String, String>) -> Unit,
+    onSave: (Map<String, Any>) -> Unit,
 ) : SettingsDialog(activity, keyboard = true) {
     init {
         val strings = AgentRequestStrings(activity)
+        val fields = request.input?.fields.orEmpty()
+        if (fields.isNotEmpty()) fillFields(activity, request, fields, strings, onSave) else fillOne(activity, request, strings, onSave)
+    }
+
+    /** One value, an app's id and secret, or a login's code. */
+    private fun fillOne(activity: Activity, request: AgentRequest, strings: AgentRequestStrings, onSave: (Map<String, Any>) -> Unit) {
         val input = request.input
         val isApp = input?.kind == AgentRequestInput.Kind.APP
         val isPaste = input?.kind == AgentRequestInput.Kind.PASTE
@@ -174,13 +198,54 @@ internal class AgentRequestFillDialog(
         card.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(20) })
     }
 
+    /** A secret with fields: one box per value, by its label; an optional one says it may stay empty. */
+    private fun fillFields(
+        activity: Activity,
+        request: AgentRequest,
+        fields: List<AgentRequestInput.Field>,
+        strings: AgentRequestStrings,
+        onSave: (Map<String, Any>) -> Unit,
+    ) {
+        card.addView(title(strings.title(request)))
+        card.addView(message(activity.getString(R.string.chat_request_fill_hint)),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(6) })
+        val boxes = fields.map { field ->
+            val hint = if (field.optional) activity.getString(R.string.chat_request_optional_field, field.label) else field.label
+            field to field(activity, hint, field.secret).also {
+                card.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(12) })
+            }
+        }
+        request.input?.helpUrl?.let { url ->
+            card.addView(activity.text(Level.SMALL, R.color.token_label_brand).apply {
+                text = activity.getString(R.string.chat_request_value_help)
+                setOnClickListener {
+                    runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                }
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(10) })
+        }
+        val row = buttons(activity.getString(R.string.chat_request_save), false) {
+            onSave(mapOf("fields" to boxes.associate { (field, box) -> field.name to box.text.toString() }))
+        }
+        val save = row.findViewById<TextView>(R.id.settings_dialog_confirm)
+        fun validate() {
+            val ready = boxes.all { (field, box) -> field.optional || box.text.isNotBlank() } &&
+                boxes.any { (_, box) -> box.text.isNotBlank() }
+            save.isEnabled = ready
+            save.alpha = if (ready) 1f else 0.4f
+        }
+        boxes.forEach { (_, box) -> box.doAfterTextChanged { validate() } }
+        validate()
+        card.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(20) })
+    }
+
     private fun field(activity: Activity, hint: String, secret: Boolean) = EditText(activity).apply {
-        DesignTypography.applyTo(this, Level.REGULAR)
         setTextColor(activity.color(R.color.token_text_primary))
         setHintTextColor(activity.color(R.color.token_text_placeholder))
         this.hint = hint
         inputType = InputType.TYPE_CLASS_TEXT or
             (if (secret) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+        // After the input type: a password type sets a monospace typeface of its own.
+        DesignTypography.applyTo(this, Level.REGULAR)
         imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
         isSingleLine = true
         background = roundRect(activity.color(R.color.token_bg_quaternary), activity.dp(10).toFloat())
@@ -203,17 +268,22 @@ internal class AgentRequestStrings(private val context: Context) {
     val expired: String = context.getString(R.string.chat_request_expired)
     val cancelled: String = context.getString(R.string.chat_request_cancelled)
     val failed: String = context.getString(R.string.chat_request_failed)
-    val shareLocation: String = context.getString(R.string.chat_request_location_share)
+    val shareOnce: String = context.getString(R.string.chat_request_location_share_once)
+    val shareAlways: String = context.getString(R.string.chat_request_location_share_always)
     val locating: String = context.getString(R.string.chat_request_location_locating)
     val locationDenied: String = context.getString(R.string.chat_request_location_denied)
     val locationUnavailable: String = context.getString(R.string.chat_request_location_unavailable)
     val locationFailed: String = context.getString(R.string.chat_request_location_failed)
+    val addPlugin: String = context.getString(R.string.chat_request_plugin_add)
+    val addingPlugin: String = context.getString(R.string.chat_request_plugin_adding)
+    val addFailed: String = context.getString(R.string.chat_request_plugin_add_failed)
 
     /** What a secret is called: the Agent's words for it. */
     fun name(request: AgentRequest): String = request.label ?: request.alias ?: providerName(request.provider)
 
     fun title(request: AgentRequest): String =
-        if (request.isLocation) context.getString(R.string.chat_request_location_title)
+        if (request.plugin != null) context.getString(R.string.chat_request_plugin_title, request.plugin.name)
+        else if (request.isLocation) context.getString(R.string.chat_request_location_title)
         else if (request.provider == CLI_PROVIDER) context.getString(R.string.chat_request_login_title, request.alias.orEmpty())
         else if (request.provider == SECRET_PROVIDER) context.getString(R.string.chat_request_fill_title, name(request))
         else context.getString(R.string.chat_request_connect_title, providerName(request.provider))
@@ -221,13 +291,15 @@ internal class AgentRequestStrings(private val context: Context) {
     /** The receipt's line: how the request ended, and a note after it. */
     fun outcome(request: AgentRequest, shown: AgentRequestShown): String = when (shown) {
         AgentRequestShown.CONNECTED ->
-            if (request.isLocation) context.getString(R.string.chat_request_location_shared)
+            if (request.plugin != null) context.getString(R.string.chat_request_plugin_added, request.plugin.name)
+            else if (request.isLocation) context.getString(R.string.chat_request_location_shared)
             else if (request.provider == SECRET_PROVIDER) context.getString(R.string.chat_request_saved)
             else if (request.provider == CLI_PROVIDER) context.getString(R.string.chat_request_logged_in)
             else context.getString(R.string.chat_request_connected, providerName(request.provider)) +
                 (request.account?.let { " · $it" } ?: "")
         AgentRequestShown.DECLINED ->
-            if (request.isLocation) context.getString(R.string.chat_request_location_declined)
+            if (request.plugin != null) context.getString(R.string.chat_request_plugin_declined, request.plugin.name)
+            else if (request.isLocation) context.getString(R.string.chat_request_location_declined)
             else context.getString(R.string.chat_request_declined, providerName(request.provider))
         AgentRequestShown.EXPIRED -> expired
         AgentRequestShown.CANCELLED -> cancelled
@@ -261,7 +333,7 @@ internal class AgentRequestCardLayout(
         val column = width - headPad * 2 - mark - indicatorGap
         var text = prompt.height(strings.title(request), column)
         if (request.reason.isNotBlank()) text += headGap + description.height(request.reason, column)
-        headPad + max(mark, text) + footTop + buttonH + footInset + dp(SHADOW_ROOM_DP)
+        headPad + max(mark, text) + footTop + buttonH + footInset
     }
 
     fun receiptHeight(request: AgentRequest, shown: AgentRequestShown, width: Int): Int = with(style) {
@@ -269,7 +341,7 @@ internal class AgentRequestCardLayout(
         val answer = receiptStyle(shown)
         val text = receiptPrompt.height(strings.title(request), column) + receiptLineGap +
             answer.height(strings.outcome(request, shown), column)
-        receiptPadV * 2 + max(receiptIconTop(answer) + receiptIcon, text) + dp(SHADOW_ROOM_DP)
+        receiptPadV * 2 + max(receiptIconTop(answer) + receiptIcon, text)
     }
 
     private fun receiptStyle(shown: AgentRequestShown) =
@@ -279,17 +351,6 @@ internal class AgentRequestCardLayout(
 /** The account's mark tile, and the mark in it. */
 private const val MARK_DP = 40f
 private const val MARK_GLYPH_DP = 22f
-/** The shadow xs colour (gray 900, #101828). */
-private const val SHADOW_XS = 0xFF101828.toInt()
-/** Below the card, the room its shadow xs (0 1 2) takes. */
-private const val SHADOW_ROOM_DP = 2f
-
-/** The design's shadow xs (0 1 2, gray 900 at 5%), drawn by the outline's elevation. */
-private fun View.shadowXs() {
-    elevation = resources.displayMetrics.density
-    outlineAmbientShadowColor = SHADOW_XS
-    outlineSpotShadowColor = SHADOW_XS
-}
 
 internal class AgentRequestCardRenderer(override val viewType: Int) : ChatCardRenderer {
     override val kind = LiveRowKinds.AGENT_REQUEST
@@ -321,16 +382,15 @@ internal class AgentRequestCardView(
     var hostOf: () -> AgentRequestCardHost? = { null }
 
     // ---- The open card ----
-    /** The account's mark, on a bordered, lightly shadowed tile beside the title. */
+    /** The account's mark, on a bordered tile beside the title. */
     private val markGlyph = ImageView(context)
     private val mark = FrameLayout(context).apply {
-        // A 1dp border and the design's shadow xs (0 1 2, the dark gray at 5%), drawn by the outline's elevation.
+        // A 1dp border.
         background = GradientDrawable().apply {
             cornerRadius = style.dp(10f).toFloat()
             setColor(style.bgPrimary)
             setStroke(style.dp(1f), style.border)
         }
-        shadowXs()
         addView(markGlyph, LayoutParams(style.dp(MARK_GLYPH_DP), style.dp(MARK_GLYPH_DP), Gravity.CENTER))
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
@@ -339,6 +399,9 @@ internal class AgentRequestCardView(
     private val note = text(style.note, style.textSecondary).apply { setPadding(style.noteSide, 0, style.noteSide, 0) }
     val decline = context.filledButton(strings.decline, R.color.token_bg_quaternary, R.color.token_text_primary)
     val authorize = context.filledButton(strings.authorize, R.color.token_bg_brand_solid, null)
+    /** A location request's "only this time"; its main button always shares. */
+    val shareOnce = context.filledButton(strings.shareOnce, R.color.token_bg_quaternary, R.color.token_text_primary)
+    private val declineFill = decline.background
     private val form = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         background = GradientDrawable().apply {
@@ -346,7 +409,6 @@ internal class AgentRequestCardView(
             setColor(style.cardFill)
             setStroke(style.hairline, style.border)
         }
-        shadowXs()
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.TOP
@@ -363,6 +425,7 @@ internal class AgentRequestCardView(
             orientation = LinearLayout.HORIZONTAL
             setPadding(style.footInset, style.footTop, style.footInset, style.footInset)
             addView(decline, LinearLayout.LayoutParams(0, style.buttonH, 1f))
+            addView(shareOnce, LinearLayout.LayoutParams(0, style.buttonH, 1f).apply { marginStart = style.buttonGap })
             addView(authorize, LinearLayout.LayoutParams(0, style.buttonH, 2f).apply { marginStart = style.buttonGap })
         })
     }
@@ -379,7 +442,6 @@ internal class AgentRequestCardView(
         gravity = Gravity.TOP
         setPadding(style.receiptPadStart, style.receiptPadV, style.receiptPadEnd, style.receiptPadV)
         background = style.rowBackground(style.cardFill, style.receiptRadius, style.borderSecondary)
-        shadowXs()
         addView(receiptIcon, LinearLayout.LayoutParams(style.receiptIcon, style.receiptIcon))
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -393,6 +455,9 @@ internal class AgentRequestCardView(
     private var declining = false
     private var declineFailed = false
     private var fillFailed = false
+    /** The plugin's install is under way from this card, or it could not start. */
+    private var installing = false
+    private var installFailed = false
     private var locating = false
     private var locationNote: String? = null
     // Not View.postDelayed, which holds its callbacks until the view is attached.
@@ -405,21 +470,18 @@ internal class AgentRequestCardView(
         addView(receipt)
         form.visibility = GONE
         receipt.visibility = GONE
+        shareOnce.setOnClickListener { shareLocation(always = false) }
         authorize.setOnClickListener {
             val current = request ?: return@setOnClickListener
             val host = hostOf() ?: return@setOnClickListener
-            if (current.isLocation) {
-                if (locating) return@setOnClickListener
-                locating = true
-                locationNote = null
-                host.shareLocation(current.id) { answer ->
-                    locating = false
-                    locationNote = when (answer) {
-                        AgentLocationAnswer.TAKEN -> null
-                        AgentLocationAnswer.DENIED -> strings.locationDenied
-                        AgentLocationAnswer.UNAVAILABLE -> strings.locationUnavailable
-                        AgentLocationAnswer.FAILED -> strings.locationFailed
-                    }
+            if (current.isLocation) return@setOnClickListener shareLocation(always = true)
+            if (current.plugin != null) {
+                if (installing) return@setOnClickListener
+                installing = true
+                installFailed = false
+                host.installPlugin(current) { started ->
+                    installing = false
+                    installFailed = !started
                     if (request?.id == current.id) render()
                 }
                 render()
@@ -458,6 +520,25 @@ internal class AgentRequestCardView(
         }
     }
 
+    private fun shareLocation(always: Boolean) {
+        val current = request ?: return
+        val host = hostOf() ?: return
+        if (locating) return
+        locating = true
+        locationNote = null
+        host.shareLocation(current.id, always) { answer ->
+            locating = false
+            locationNote = when (answer) {
+                AgentLocationAnswer.TAKEN -> null
+                AgentLocationAnswer.DENIED -> strings.locationDenied
+                AgentLocationAnswer.UNAVAILABLE -> strings.locationUnavailable
+                AgentLocationAnswer.FAILED -> strings.locationFailed
+            }
+            if (request?.id == current.id) render()
+        }
+        render()
+    }
+
     fun bind(item: PreparedChatMessage) {
         this.item = item
         show(decodeAgentRequest(item.message.cardPayload))
@@ -470,6 +551,8 @@ internal class AgentRequestCardView(
             declining = false
             declineFailed = false
             fillFailed = false
+            installing = false
+            installFailed = false
             locating = false
             locationNote = null
         }
@@ -497,9 +580,12 @@ internal class AgentRequestCardView(
         if (current.isLocation) {
             markGlyph.setImageResource(R.drawable.ic_action_location)
             markGlyph.setColorFilter(style.textPrimary)
+        } else if (current.provider == SECRET_PROVIDER && !ProviderMarks.hasArtwork(current.alias)) {
+            markGlyph.setImageResource(R.drawable.ic_chat_request_key)
+            markGlyph.setColorFilter(style.textPrimary)
         } else {
             markGlyph.clearColorFilter()
-            markGlyph.setImageDrawable(surf.comma.android.routines.ProviderMarks.drawable(context, current.provider))
+            markGlyph.setImageDrawable(ProviderMarks.drawable(context, markKey(current)))
         }
         reason.text = current.reason
         reason.isVisible = current.reason.isNotBlank()
@@ -507,6 +593,8 @@ internal class AgentRequestCardView(
         val status = when {
             declineFailed -> strings.declineFailed
             fillFailed -> strings.fillFailed
+            installFailed -> strings.addFailed
+            installing -> strings.addingPlugin
             locating || answering -> strings.locating
             locationNote != null -> locationNote
             current.input?.code != null -> current.input.code
@@ -519,7 +607,8 @@ internal class AgentRequestCardView(
         // The deadline closes the card into its receipt.
         current.expiresAt?.let { clock.postDelayed(tick, it - at) }
         authorize.text = when {
-            current.isLocation -> strings.shareLocation
+            current.plugin != null -> strings.addPlugin
+            current.isLocation -> strings.shareAlways
             current.fills() -> strings.fill
             opened -> strings.reopen
             current.input?.code != null -> strings.copyAndOpen
@@ -528,8 +617,22 @@ internal class AgentRequestCardView(
             else -> strings.authorize
         }
         authorize.isEnabled = host != null &&
-            (if (current.isLocation) !locating && !answering else current.fills() || current.authorizationUrl != null)
+            (if (current.isLocation) !locating && !answering
+            else if (current.plugin != null) !installing
+            else current.fills() || current.authorizationUrl != null)
         authorize.alpha = if (authorize.isEnabled) 1f else DISABLED_ALPHA
+        shareOnce.isVisible = current.isLocation
+        shareOnce.isEnabled = authorize.isEnabled
+        shareOnce.alpha = authorize.alpha
+        // A location card's decline has no fill, beside its two ways to share.
+        decline.background = if (current.isLocation) null else declineFill
+        val mainWeight = if (current.isLocation) 1.4f else 2f
+        (authorize.layoutParams as LinearLayout.LayoutParams).let {
+            if (it.weight != mainWeight) {
+                it.weight = mainWeight
+                authorize.layoutParams = it
+            }
+        }
         decline.isEnabled = host != null && !declining
         decline.alpha = if (decline.isEnabled) 1f else DISABLED_ALPHA
         receipt.visibility = GONE
@@ -602,8 +705,7 @@ internal class AgentRequestCardView(
         }
         content.measure(MeasureSpec.makeMeasureSpec((width - side * 2).coerceAtLeast(0), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
-        // Room under the card for its shadow, which the row would otherwise cut off.
-        setMeasuredDimension(width, top + content.measuredHeight + style.dp(SHADOW_ROOM_DP))
+        setMeasuredDimension(width, top + content.measuredHeight)
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {

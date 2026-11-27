@@ -8,16 +8,23 @@
 // Bounds: one read per shown workspace in flight, sent again only when the stream says the Tasks changed (conditional:
 // the answer is 304 when nothing did); a failed read is tried again after 1, 2, 4… up to 15 s while shown. The server
 // answers at most 500 Tasks.
-import { CoreError, topicKey, type Topic, type Value } from "@comma/core-kernel";
+import {
+  CoreError,
+  LastMade,
+  topicKey,
+  type Topic,
+  type Value,
+} from "@comma/core-kernel";
 import { Effect, Result } from "effect";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
 import { stationTasksSchema } from "./comma/schemas.ts";
-import type {
-  ProductInboxItem,
-  StationTask,
-  StationTasksValue,
-  TaskAction,
+import {
+  TOPIC_SPECS,
+  type ProductInboxItem,
+  type StationTask,
+  type StationTasksValue,
+  type TaskAction,
 } from "./contract.ts";
 import { Live, type Ctx } from "./ctx.ts";
 import type { Stations } from "./stations/index.ts";
@@ -89,6 +96,11 @@ export class StationTasks {
   #accountKey: string | null = null;
   /** Told whenever what is shown of the station-hosted Tasks changed. */
   readonly #listeners: (() => void)[] = [];
+  readonly #keptListeners: (() => void)[] = [];
+  /** Each shown list's value as last made: a Task that did not change stays the object it was. */
+  readonly #made = new LastMade<string, StationTasksValue>(
+    TOPIC_SPECS.stationTasks ?? null
+  );
 
   constructor(ctx: Ctx, workspaces: Workspaces, stations: Stations) {
     this.#ctx = ctx;
@@ -97,8 +109,13 @@ export class StationTasks {
     this.#live = new Live(ctx.runner);
     ctx.kernel.source("stationTasks", {
       start: (topic) => this.#live.run(topic, this.#keep(topic)),
-      stop: (topic) => this.#live.stop(topic),
-      compute: (topic): Value => ({ ok: this.#value(topic) }),
+      stop: (topic) => {
+        this.#live.stop(topic);
+        this.#made.delete(topicKey(topic));
+      },
+      compute: (topic): Value => ({
+        ok: this.#made.of(topicKey(topic), this.#value(topic)),
+      }),
     });
     // A list shown before the workspaces were known is read once they are.
     workspaces.onChange(() => this.#keepShown());
@@ -161,6 +178,7 @@ export class StationTasks {
     if (!account) return;
     account.patchStationTask(station, thread, change);
     this.#shownChanged();
+    this.#kept();
   }
 
   /** A station-hosted Task as the device keeps it, with what this device knows of its machine; null when not kept. */
@@ -185,6 +203,20 @@ export class StationTasks {
   /** What its stations' chats ask changed (`asking`): the lists and pages that show their Tasks compute again. */
   askingChanged(): void {
     this.#shownChanged();
+  }
+
+  /** The stations that host a Task of `workspace` not yet done, cancelled or archived, as the device keeps them. */
+  openHosts(workspace: string): ReadonlySet<string> {
+    return new Set(this.#ctx.session.current()?.stationTaskHosts(workspace) ?? []);
+  }
+
+  /** Told whenever the Tasks this device keeps changed (a read gave them, a change made here). */
+  onKept(listener: () => void): void {
+    this.#keptListeners.push(listener);
+  }
+
+  #kept(): void {
+    for (const listener of this.#keptListeners) listener();
   }
 
   /** A workspace's archived station-hosted Tasks, as the device keeps them. */
@@ -235,6 +267,8 @@ export class StationTasks {
         // The version its status is set at, as a Salix Task's: its station takes any.
         archiveVersion: task.lastActivityAt ?? task.createdAt ?? 1,
         unsupported: HOSTED_UNSUPPORTED,
+        // A still.fail chat opens at its page in still.fail, not on its station.
+        ...(task.url ? { url: task.url } : {}),
         host: {
           station: task.station,
           thread: task.thread,
@@ -314,6 +348,7 @@ export class StationTasks {
         );
         if (answer.etag) read.etag = answer.etag;
         else delete read.etag;
+        this.#kept();
       }
       read.live = true;
       read.failed = false;
@@ -421,8 +456,9 @@ export class StationTasks {
       const machine = named.get(task.station);
       return {
         ...task,
-        // A Task kept before labels has none.
+        // A Task kept before labels has none, and one kept before links has no link.
         labels: task.labels ?? [],
+        url: task.url ?? null,
         machine: machine ? { name: machine.name, online: machine.online } : null,
       };
     });
@@ -441,6 +477,7 @@ function fromRow(t: {
   runtime: string | null;
   model: string | null;
   labels: string[];
+  url: string | null;
 }): Omit<StationTask, "machine"> {
   return {
     id: hostedId(t.station_id, t.thread),
@@ -455,5 +492,6 @@ function fromRow(t: {
     runtime: t.runtime,
     model: t.model,
     labels: t.labels,
+    url: t.url,
   };
 }

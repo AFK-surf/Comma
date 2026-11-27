@@ -99,6 +99,26 @@ defmodule SalixIM.IFCTest do
       end
     end
 
+    test "a tap on a Feishu or Lark bot's menu is the person's private chat with the bot" do
+      for provider <- ["feishu", "lark"] do
+        metadata = %{
+          "provider" => provider,
+          "connect_id" => @connect,
+          "chat_type" => "p2p",
+          "sender_open_id" => "ou_menu",
+          "source_actor_type" => "provider_user"
+        }
+
+        # The tap names no chat, as the private chat's own message does.
+        tap = Ingress.provider_block(group(), metadata, nil)
+        message = Ingress.provider_block(group(), Map.put(metadata, "chat_id", "oc_p2p"), nil)
+
+        # Without the fix the tap had no audience and arrived unlabelled.
+        assert %{"label" => [_ | _] = label} = tap
+        assert label == message["label"]
+      end
+    end
+
     test "IFC treats sealed member identities equally regardless of transport actor or bot flags" do
       for metadata <- [
             %{},
@@ -618,6 +638,103 @@ defmodule SalixIM.IFCTest do
                })
 
       assert sealed_atom in reply["policy"]["sealed_atoms"]
+    end
+  end
+
+  describe "live_activity destination resolution" do
+    test "resolves to group audience, allows group-sourced data, and blocks unauthorized DM data under enforce" do
+      previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+
+      if SystemsRuntime.Proc.whereis(S3.Fake),
+        do: S3.Fake.reset(),
+        else: start_supervised!(S3.Fake)
+
+      on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
+
+      tenant = Ids.new_tenant_id()
+      group_id = Ids.new_group_id(tenant)
+
+      {:ok, _} =
+        S3.put(
+          Keys.ctl_group(group_id),
+          Jason.encode!(%{
+            "group_id" => group_id,
+            "tenant_id" => tenant,
+            "router_conversation_id" => Ids.new_conversation_id(),
+            "ifc" => %{"mode" => "enforce"}
+          })
+        )
+
+      group_atom = "group|#{group_id}"
+      dm_atom = "scope|#{@connect}|@U_A"
+      requester = "provider_user|#{@connect}|U_A"
+
+      assert {:ok, reply} =
+               SalixIM.IFC.Facts.resolve(%{
+                 "tenant_id" => tenant,
+                 "group_id" => group_id,
+                 "requester" => requester,
+                 "atoms" => [group_atom, dm_atom],
+                 "destination" => %{"kind" => "live_activity", "group_id" => group_id},
+                 "now" => SystemsClock.system_time(:millisecond)
+               })
+
+      assert reply["destination"] == %{"label" => [group_atom], "writers" => "any"}
+
+      alias SalixIFC.{Activation, Effect, Facts, Item, Label}
+
+      {:ok, decoded_requester} = SalixIFC.Codec.decode_principal(requester)
+      dest_label = Label.new([{:group, group_id}])
+
+      activation = %Activation{
+        requester: decoded_requester,
+        source_scope: dest_label,
+        consumed_refs: MapSet.new(["src:q-1"])
+      }
+
+      facts = Facts.new(placements: %{decoded_requester => %{@connect => :internal}})
+
+      group_item = %Item{
+        ref: "src:q-1",
+        label: dest_label,
+        integrity: :command,
+        principal: decoded_requester
+      }
+
+      connector_item = %Item{ref: "src:t-1", label: dest_label, integrity: :data}
+
+      dm_item = %Item{
+        ref: "src:t-dm",
+        label: Label.new([{:scope, @connect, "@U_A"}]),
+        integrity: :data
+      }
+
+      assert {:allow, _} =
+               SalixIFC.decide(
+                 %Effect{
+                   destination: dest_label,
+                   writers: :any,
+                   request: "src:q-1",
+                   sources: ["src:q-1", "src:t-1"]
+                 },
+                 activation,
+                 [group_item, connector_item],
+                 facts
+               )
+
+      assert {:deny, _} =
+               SalixIFC.decide(
+                 %Effect{
+                   destination: dest_label,
+                   writers: :any,
+                   request: "src:q-1",
+                   sources: ["src:q-1", "src:t-dm"]
+                 },
+                 activation,
+                 [group_item, dm_item],
+                 facts
+               )
     end
   end
 end

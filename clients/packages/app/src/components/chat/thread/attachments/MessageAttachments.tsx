@@ -1,19 +1,15 @@
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import {
-  ChatPanelFile,
-  ChatPanelImage,
-  ChatPanelImageGroup,
-} from "@comma/ui/components/chat-panel";
+import { ChatPanelFile, ChatPanelImageGroup } from "@comma/ui/components/chat-panel";
 import { useContext, useState } from "react";
 import type {
   ChatAttachment,
   ChatImagePreviewRef,
   LocalFilePreview,
 } from "@comma/core/chat";
-import { copyImageBlob } from "../../../../runtime-files/imageClipboard";
 import { MessageInlineVideo } from "../inline/MessageInlineVideo";
 import { ThreadFileSourceContext } from "../threadContexts";
 import { AttachmentPill } from "./AttachmentPill";
+import { AttachmentPreviewCard, opensAsPreviewCard } from "./AttachmentPreviewCard";
 import { attachmentLabel, formatAttachmentSize } from "./attachmentLabels";
 import { ChatImageGroupPlaceholder } from "./images/ChatImageGroupPlaceholder";
 import { useImageGroupReveal } from "./images/useImageGroupReveal";
@@ -74,7 +70,7 @@ export function MessageAttachments({
     sourceContext,
     targets,
   });
-  const { groupedImages, groupedPreviews, handlePreviewImageError } = images;
+  const { groupedImages, handlePreviewImageError } = images;
   const { imageGroupSettled, placeholderImageCount, unavailableImageAttachments } =
     useImageGroupReveal({ attachments, images, showImages, targets });
   const nonImageAttachments =
@@ -109,26 +105,17 @@ export function MessageAttachments({
       {imageGroupActivated && imageGroupSettled ? (
         groupedImages.length > 0 ? (
           inlineMediaSection ? (
-            // An agent's image keeps the ratio it was produced at: the frame
-            // only bounds how large it may paint, so the whole picture stays
-            // visible instead of a cropped fixed-ratio card.
             <div className="comma-chat-inline-images">
-              {groupedPreviews.map(({ image, key, read }) => (
-                <ChatPanelImage
-                  alt={image.alt}
-                  className="comma-chat-inline-image"
-                  // The desktop renderer may not write the clipboard itself.
-                  onCopy={async () => copyImageBlob(await read())}
-                  {...(image.onContextMenu
-                    ? { onContextMenu: image.onContextMenu }
-                    : {})}
-                  key={key}
-                  src={image.src}
-                />
-              ))}
+              <ChatPanelImageGroup
+                align="start"
+                defaultExpanded={imageGroupExpanded}
+                images={groupedImages}
+                onExpandedChange={setImageGroupExpanded}
+              />
             </div>
           ) : (
             <ChatPanelImageGroup
+              align="end"
               defaultExpanded={imageGroupExpanded}
               images={groupedImages}
               onExpandedChange={setImageGroupExpanded}
@@ -137,6 +124,7 @@ export function MessageAttachments({
         ) : null
       ) : placeholderImageCount > 0 ? (
         <ChatImageGroupPlaceholder
+          align={inlineMediaSection ? "start" : "end"}
           count={placeholderImageCount}
           expanded={imageGroupExpanded}
         />
@@ -164,17 +152,29 @@ export function MessageAttachments({
         <div className="comma-chat-file-card-column">
           {fileAttachments.map(({ attachment, position }) => {
             const label = attachmentLabel(attachment, messagesApi);
+            const actions = fileActions.get(position);
+            const testId = `chat-attachment-file-${messageId}-${position}`;
+            // A file the sidebar opens as a page shows its picture and Open; any other is a row.
+            if (actions?.onPreview && opensAsPreviewCard(label, attachment.mimeType))
+              return (
+                <AttachmentPreviewCard
+                  fileName={label}
+                  key={`${attachment.blockType}:${label}:${position}`}
+                  mimeType={attachment.mimeType}
+                  onOpen={actions.onPreview}
+                  openIn={actions.openIn}
+                  size={attachment.size}
+                  source={fileSources.get(position)}
+                  testId={testId}
+                />
+              );
             return (
               <ChatPanelFile
                 fileName={label}
-                {...(fileActions.get(position)?.onPreview
-                  ? { onPreview: fileActions.get(position)!.onPreview! }
-                  : {})}
-                {...(fileActions.get(position)?.openIn
-                  ? { openIn: fileActions.get(position)!.openIn! }
-                  : {})}
+                {...(actions?.onPreview ? { onPreview: actions.onPreview } : {})}
+                {...(actions?.openIn ? { openIn: actions.openIn } : {})}
                 key={`${attachment.blockType}:${label}:${position}`}
-                testId={`chat-attachment-file-${messageId}-${position}`}
+                testId={testId}
                 {...(attachment.mimeType ? { mimeType: attachment.mimeType } : {})}
                 {...(attachment.size === undefined
                   ? {}
@@ -192,7 +192,9 @@ export function MessageAttachments({
               <AttachmentPill
                 key={`${attachment.blockType}:${label}:${position}`}
                 label={label}
+                localPath={attachment.localPath}
                 messageId={messageId}
+                onPreview={fileActions.get(position)?.onPreview}
                 position={position}
                 size={formatAttachmentSize(attachment.size, locale)}
               />

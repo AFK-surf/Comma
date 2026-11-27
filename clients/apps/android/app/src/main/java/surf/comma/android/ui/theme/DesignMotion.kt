@@ -53,6 +53,18 @@ object DesignMotion {
     val springEnter = SpringToken(200f, 0.80f)
     /** The call page folding into its card at the top and back, one progress for every part. */
     val springCall = SpringToken(500f, 0.85f)
+    /** The router chat coming out of its circle: one spring for every part of the shape. */
+    val zoomOpen = SpringToken(357f, 1.00f)
+    /** The router chat going back into its circle from a button, back or another program close. */
+    val zoomClose = SpringToken(339f, 0.92f)
+    /** A pull or back gesture let go short of closing: the chat goes back to its full size. */
+    val zoomSpringBack = SpringToken(576f, 0.96f)
+    /** A pull or back gesture let go to close: the shape's centre flies back to the circle. */
+    val zoomReleaseMove = SpringToken(182f, 0.81f)
+    /** A pull or back gesture let go to close: the shape's scale. */
+    val zoomReleaseScale = SpringToken(210f, 0.80f)
+    /** A pull or back gesture let go to close: its proportions, corners and crossfade. */
+    val zoomReleaseShape = SpringToken(240f, 0.99f)
     // Provisional values awaiting device tuning.
     val springScale = SpringToken(600f, 0.70f)
     val springRotation = SpringToken(400f, 0.80f)

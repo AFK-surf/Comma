@@ -83,6 +83,9 @@ export interface AgentDriver {
   /// no turn runs there now: its next turn should not use it, so its owner lets it go and opens it again (`resume`)
   /// first. A driver without it never says so.
   stale?(session: AgentSession, profile: Profile): boolean;
+  /// Whether the sessions it opens are given the browser tools (browser-mcp.ts): the agent is told of them only
+  /// then. A driver without it gives none.
+  browser?(): boolean;
   /// Ends every process this driver started.
   shutdown(): Promise<void>;
   /// Lets go of every process without ending them (handover).

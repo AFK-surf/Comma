@@ -66,29 +66,47 @@ struct MessageExtras: View {
 
 // MARK: - Sent files
 
-/// The desktop's list of workspace files under a member's message (`parseAttachmentsBlock`): a header after a blank
-/// line, then one `- name (workspace file: /path)` line per file. A message of files alone reads "I've attached some
-/// files:", which the chips replace.
+/// The desktop's lists of files under a member's message (`parseAttachmentsBlock`): last the workspace files, a header
+/// after a blank line, then one `- name (workspace file: /path)` line per file; before it, or alone, the files named by
+/// their path on the sender's computer, one `- name (local path: /path)` line each. A message of files alone reads
+/// "I've attached some files:", which the chips replace.
 enum AttachedFiles {
-    private static let header = "\n\nAttached files in your workspace:\n"
+    private static let workspaceHeader = "\n\nAttached files in your workspace:\n"
+    private static let localHeader = "\n\nAttached local files on the sender's computer:\n"
     private static let onlyText = "I've attached some files:"
 
-    /// The message's own text and the names of the files listed under it; the whole text and no names when the
-    /// list is missing or any line of it is not a file, as on the desktop.
+    /// The message's own text and the names of the files listed under it, the local files first; the whole text and
+    /// no names when no list is there or a line of one is not a file, as on the desktop.
     static func split(_ text: String) -> (body: String, names: [String]) {
-        guard let start = text.range(of: header, options: .backwards) else { return (text, []) }
+        // A regex is not Sendable, so it is no static; the literals are checked when the app compiles.
+        let workspaceLine = #/- (.+?) \(workspace file: (/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)\)/#
+        let localLine = #/- (.+?) \(local path: ((?:/|[A-Za-z]:[\\/]|\\\\)[^\r\n]+)\)/#
+        let workspace = trailing(text, header: workspaceHeader) { row in
+            row.wholeMatch(of: workspaceLine).map { String($0.1) }
+        }
+        let local = trailing(workspace?.body ?? text, header: localHeader) { row in
+            row.wholeMatch(of: localLine).map { String($0.1) }
+        }
+        guard let body = local?.body ?? workspace?.body else { return (text, []) }
+        let names = (local?.names ?? []) + (workspace?.names ?? [])
+        return (body.trimmingCharacters(in: .whitespacesAndNewlines) == onlyText ? "" : body, names)
+    }
+
+    /// The list under `header` that ends `text`, each line's file name read by `name`; nil when there is none or a line
+    /// names no file.
+    private static func trailing(
+        _ text: String, header: String, name: (Substring) -> String?
+    ) -> (body: String, names: [String])? {
+        guard let start = text.range(of: header, options: .backwards) else { return nil }
         var list = text[start.upperBound...]
         while list.last?.isWhitespace == true { list = list.dropLast() }
-        // A regex is not Sendable, so it is no static; the literal is checked when the app compiles.
-        let line = #/- (.+?) \(workspace file: (/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)\)/#
         var names: [String] = []
         for row in list.split(separator: "\n", omittingEmptySubsequences: false) {
-            guard let match = row.wholeMatch(of: line) else { return (text, []) }
-            names.append(String(match.1))
+            guard let found = name(row) else { return nil }
+            names.append(found)
         }
-        guard !names.isEmpty else { return (text, []) }
-        let body = String(text[..<start.lowerBound])
-        return (body.trimmingCharacters(in: .whitespacesAndNewlines) == onlyText ? "" : body, names)
+        guard !names.isEmpty else { return nil }
+        return (String(text[..<start.lowerBound]), names)
     }
 }
 

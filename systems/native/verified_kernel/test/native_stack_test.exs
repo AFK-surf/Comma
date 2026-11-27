@@ -214,4 +214,58 @@ defmodule SalixVerifiedKernel.NativeStackTest do
     assert Session.get(session, :async_result_refs) == %{ref => 1}
     assert Session.get(session, :queue_ack_id) == 0
   end
+
+  test "handoff_window and handoff compaction_prepare stay stackless over a wide transcript" do
+    original = Session.new("agent", "session") |> Session.export()
+
+    settled =
+      for id <- 1..4_000 do
+        role = if rem(id, 2) == 1, do: "user", else: "assistant"
+        %{id: id, seq: id, role: role, content: "msg-#{id}"}
+      end
+
+    session =
+      Session.open(%{
+        original
+        | messages: settled,
+          last_seq: 4_000,
+          next_message_id: 4_001,
+          last_ack_message_id: 4_000
+      })
+
+    win =
+      Session.query(session, :handoff_window, %{
+        covered: 0,
+        max_bytes: 262_144,
+        window_tokens: 128_000,
+        ratio: 0.85
+      })
+
+    assert win.through == 3_998
+    assert is_binary(win.prefix_digest) and byte_size(win.prefix_digest) == 64
+
+    facts = %{
+      "threshold" => 100,
+      "context_tokens" => 128_000,
+      "config" => %{
+        "protocol" => "openai",
+        "model" => "gpt-test",
+        "context_tokens" => 128_000,
+        "handoff" => %{
+          "summary" => "- Wide summary",
+          "covered_message_id" => win.through,
+          "base_summary_sequence" => 0,
+          "base_compacted_through" => 0,
+          "prefix_digest" => win.prefix_digest
+        }
+      }
+    }
+
+    assert {:summarize, plan} =
+             Session.query(session, :compaction_prepare, {:maybe_compact, facts})
+
+    assert plan["last_id"] == 3_998
+    assert length(plan["live"]) == 3_998
+    assert plan["handoff"] == "<compacted-context>\n- Wide summary\n</compacted-context>"
+  end
 end

@@ -8,8 +8,9 @@ defmodule SalixMeet.CalendarEnrollmentCache do
   # normalization contract (`adapter_contract_id/0`): resolution then
   # ensures and bootstraps the new contract's source, so stored events are
   # normalized again without anyone saving settings again. Version 7 adds the
-  # bots that join Feishu/Lark meetings (`lark_join`).
-  @version 7
+  # bots that join Feishu/Lark meetings (`lark_join`); version 8 reads series
+  # with UNTIL, COUNT, monthly and yearly rules again.
+  @version 8
   @source_activation_proof %{"status" => "ready", "version" => 1}
   @write_attempts 3
 

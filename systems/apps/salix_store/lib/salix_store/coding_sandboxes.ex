@@ -124,6 +124,7 @@ defmodule SalixStore.CodingSandboxes do
               # What its station is invited with once it connects.
               "agent_id" => Map.get(attrs, :agent_id),
               "start" => Map.get(attrs, :start),
+              "starts" => Map.get(attrs, :starts),
               "state" => "starting",
               "state_at" => DateTime.to_iso8601(now),
               "next_check_at" => DateTime.to_iso8601(now),

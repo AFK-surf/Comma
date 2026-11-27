@@ -51,7 +51,13 @@ export function loadStatusIndicatorElement(): Promise<void> {
   return ensureStatusIndicatorElement().then(() => undefined);
 }
 
-export const statusIds = ["in-progress", "needs-review", "done", "cancel"] as const;
+export const statusIds = [
+  "in-progress",
+  "needs-review",
+  "done",
+  "cancel",
+  "loops",
+] as const;
 
 export type StatusId = (typeof statusIds)[number];
 
@@ -107,6 +113,10 @@ const BUCKET_PRESENTATION: Record<TaskStatusBucket, { color: string; icon: strin
   in_progress: {
     color: "var(--color-markdown-icon-primary)",
     icon: iconistsMarkup.inProgress,
+  },
+  loops: {
+    color: "var(--color-markdown-icon-primary)",
+    icon: iconistsMarkup.loops,
   },
   needs_review: {
     color: "var(--color-yellow-500)",

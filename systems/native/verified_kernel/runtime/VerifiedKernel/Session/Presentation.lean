@@ -75,13 +75,14 @@ def failedTransition (attempts : Term) : KernelM Term := do
   let budget ← repairBudget
   return .tuple [if ← atMost budget next then a "exhausted" else a "required", next]
 
-/-- The guidance answer to a model call of `get_runtime_message`, the name the
-runtime uses to show its own messages. No tool ran, so it is not a tool
+/-- The guidance answer to a model call of `get_runtime_message` or a held
+same-thread follow-up (`queued_followup`). No tool ran, so it is not a tool
 failure: it neither opens repair nor uses a repair attempt. The runaway guard
 still counts its round as non-settling. -/
 def runtimeMessageCall (result : Term) : KernelM Bool := do
-  return result.isMap && (← stringValue result "status") == b "guidance" &&
-    (← stringValue result "name") == b VerifiedKernel.Provider.Messages.runtimeToolName
+  if !result.isMap || (← stringValue result "status") != b "guidance" then return false
+  if (← stringValue result "name") == b VerifiedKernel.Provider.Messages.runtimeToolName then return true
+  return (← stringValue result "guidance_reason") == b "queued_followup"
 
 def acceptable (result : Term) : KernelM Bool := do
   if ← pendingResult result then return false

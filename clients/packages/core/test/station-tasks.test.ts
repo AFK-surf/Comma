@@ -88,6 +88,7 @@ describe("the Tasks a workspace's stations host", () => {
           runtime: "codex",
           model: "gpt-5.5",
           labels: ["lbl_ship"],
+          url: null,
           machine: null,
         },
       ],
@@ -184,6 +185,31 @@ describe("the Tasks a workspace's stations host", () => {
       status: "completed",
       statusBucket: "done",
     });
+  });
+
+  it("say a still.fail chat's page in still.fail, where its item opens, whatever its thread", async () => {
+    const t = setup();
+    t.answer(() =>
+      json(200, {
+        tasks: [
+          row("12@st_b", {
+            station_id: "stillfail-dev_sf",
+            device_id: "dev_sf",
+            last_activity_at: 20,
+            url: "https://still.fail/c/12",
+          }),
+          row("7"),
+        ],
+      })
+    );
+    const list = t.watch({ topic: "tasks", workspace: "wsp", hosted: "1" });
+    await t.time.pass(100);
+    type Items = { items: { id: string; source: string; url?: string }[] };
+    const items = (list.value() as unknown as Items).items;
+    expect(items.map((item) => [item.id, item.source, item.url])).toEqual([
+      ["station:stillfail-dev_sf:12@st_b", "station.chat", "https://still.fail/c/12"],
+      [`station:${"a".repeat(64)}:7`, "station.chat", undefined],
+    ]);
   });
 
   it("stops reading them for a task list once it is no longer shown", async () => {

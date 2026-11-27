@@ -2,7 +2,7 @@
 // The two hubs' requests go to each other directly, as the station transport would carry them.
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { threadAddress } from "../src/agents/instructions.ts";
 import { Unreachable } from "../src/jobs/remote.ts";
@@ -166,7 +166,12 @@ test("a put given again writes nothing twice and hands nothing twice", async () 
   const keyB = await s.tasksA.invite(s.chat.id, "B", { requester: "ann@example.com", runtime: "claude" });
   await settle();
   const put = s.asked.find(([, , r]) => r.method === "task.put")![2];
-  assert.deepEqual(await s.tasksB.handle("A", put), { through: put.through });
+  assert.deepEqual(await s.tasksB.handle("A", put), {
+    through: put.through,
+    present_slots: [{ slot: "lead", session: keyB }],
+    committed_slots: [{ slot: "lead", session: keyB }],
+    confirmed_claims: [],
+  });
   await settle();
   assert.equal(s.b.said(threadOf(s.b, keyB).id).filter((m) => m.text === "build the release").length, 1);
   assert.equal(times(s.b, keyB, "build the release"), 1);
@@ -556,7 +561,7 @@ test("a Task kept on Salix: invited and given over Salix's own connection, answe
   assert.ok(heard(b, session, "build it"));
   const thread = b.store.sessionThreads(session)[0]!.thread;
   await b.call(session, "chat_post", { to: threadAddress(thread.channel, thread.threadTs), text: "built" });
-  assert.deepEqual(asked.at(-1), { method: "task.post", task: "cnv_1", session, text: "built", key: (asked.at(-1) as Json).key, declared: null });
+  assert.deepEqual(asked.at(-1), { method: "task.post", task: "cnv_1", session, text: "built", key: (asked.at(-1) as Json).key, declared: null, answered_through_seq: 1 });
   // Gone: a post fails, and the Session is told; connected again, it says hello.
   tasks.attachHost("salix", null);
   await assert.rejects(b.call(session, "chat_post", { to: threadAddress(thread.channel, thread.threadTs), text: "lost?" }), /not connected/);
@@ -953,8 +958,8 @@ test("a file sent in a Task reaches the Session of another station with its Mess
   const [file] = said[1]!.attachments;
   assert.equal(file!.name, "demo.mp4");
   assert.ok(readFileSync(file!.path).equals(bytes), "the whole file, once");
-  assert.ok(file!.path.startsWith(join(s.b.session(keyB).workspace, "uploads")));
-  assert.ok(heard(s.b, keyB, file!.path), "the Session is told where it is");
+  assert.ok(file!.path.includes("/task-files/"));
+  assert.ok(heard(s.b, keyB, join(s.b.session(keyB).workspace, "uploads", basename(file!.path))), "the Session is told where it is");
   assert.equal(times(s.b, keyB, "keep the resolution"), 1);
   const parts = s.asked.filter(([from, , r]) => from === "B" && r.method === "task.file").map(([, , r]) => r.offset);
   assert.deepEqual([...new Set(parts)], [0, FILE_PART, FILE_PART * 2], "each part asked from what B had");
@@ -998,7 +1003,9 @@ for (const invalid of [
     assert.deepEqual(offsets, [0, 3]);
     assert.deepEqual(b.said(thread.id), [], "the Message and its follow-up wait for valid file data");
     assert.ok(!heard(b, session, "Read these notes."));
-    const part = join(b.session(session).workspace, "uploads", `.part-task-${thread.id}-1-0`);
+    // Partial downloads are staged once in the thread-level read-only cache
+    // (<data>/task-files/<thread>/.part-task-...) before per-session copies (DESIGN.md §5.2.4).
+    const part = join(b.hub.config().dataDir, "task-files", String(thread.id), `.part-task-${thread.id}-1-0`);
     assert.deepEqual(readFileSync(part), bytes.subarray(0, 3), "the invalid chunk never reaches disk");
 
     broken = false;
@@ -1010,7 +1017,8 @@ for (const invalid of [
     const [file] = said[0]!.attachments;
     assert.equal(file!.size, bytes.length);
     assert.deepEqual(readFileSync(file!.path), bytes);
-    assert.ok(heard(b, session, file!.path));
+    const localCopy = join(b.session(session).workspace, "uploads", basename(file!.path));
+    assert.ok(heard(b, session, localCopy));
     assert.equal(times(b, session, "Then summarize them."), 1);
   });
 }
@@ -1031,26 +1039,27 @@ for (const cached of ["partial", "complete"] as const) {
     });
     const { session } = await tasks.handle("salix", { method: "task.invite", task: "cnv_1", start: { requester: "ann@example.com", runtime: "claude" } });
     const thread = threadOf(b, session);
-    const dir = join(b.session(session).workspace, "uploads");
-    mkdirSync(dir, { recursive: true });
-    const path = join(dir, "task-1-0-notes.txt");
-    writeFileSync(cached === "complete" ? path : join(dir, `.part-task-${thread.id}-1-0`), cached === "complete" ? bytes.subarray(0, 3) : Buffer.alloc(bytes.length + 1));
+    const cacheDir = join(b.hub.config().dataDir, "task-files", String(thread.id));
+    mkdirSync(cacheDir, { recursive: true });
+    const cachePath = join(cacheDir, "task-1-0-notes.txt");
+    const sessionCopy = join(b.session(session).workspace, "uploads", "task-1-0-notes.txt");
+    writeFileSync(cached === "complete" ? cachePath : join(cacheDir, `.part-task-${thread.id}-1-0`), cached === "complete" ? bytes.subarray(0, 3) : Buffer.alloc(bytes.length + 1));
     const message = { seq: 1, id: "msg_1", author: { kind: "person", id: "ann" }, text: "Read these notes.", files: [{ index: 0, name: "notes.txt", size: bytes.length }] };
     await tasks.handle("salix", { method: "task.put", task: "cnv_1", messages: [message], through: 1 });
     await settle();
     assert.deepEqual(offsets, [0], "a cached file with the wrong size is fetched again");
-    assert.deepEqual(readFileSync(path), bytes);
-    assert.deepEqual(b.said(thread.id)[0]!.attachments, [{ name: "notes.txt", path, size: bytes.length }]);
-    assert.ok(heard(b, session, path));
+    assert.deepEqual(readFileSync(sessionCopy), bytes);
+    assert.deepEqual(b.said(thread.id)[0]!.attachments, [{ name: "notes.txt", path: cachePath, size: bytes.length }]);
+    assert.ok(heard(b, session, sessionCopy));
 
     if (cached === "complete") {
       // A crash after delivery can leave the arrival queued. Do not replace the runtime's later edits.
       b.store.db.prepare("INSERT INTO task_arrivals (thread, seq, message) VALUES (?, ?, ?)").run(thread.id, message.seq, JSON.stringify(message));
-      writeFileSync(path, "edited by the runtime");
+      writeFileSync(sessionCopy, "edited by the runtime");
       tasks.connected();
       await settle();
       assert.deepEqual(offsets, [0]);
-      assert.equal(readFileSync(path, "utf8"), "edited by the runtime");
+      assert.equal(readFileSync(sessionCopy, "utf8"), "edited by the runtime");
       assert.equal(b.said(thread.id).length, 1);
     }
   });
@@ -1132,7 +1141,8 @@ test("a person's image and file reach the runtime from a Salix Task before it he
   assert.equal(attachments.length, 2);
   for (const [index, file] of attachments.entries()) {
     assert.ok(readFileSync(file.path).equals(files[index]!.bytes));
-    assert.ok(heard(b, session, file.path));
+    const localCopy = join(b.session(session).workspace, "uploads", basename(file.path));
+    assert.ok(heard(b, session, localCopy));
   }
   assert.deepEqual(
     asked.filter((r) => r.method === "task.file").map((r) => [r.task, r.session, r.seq, r.id, r.index, r.offset]),

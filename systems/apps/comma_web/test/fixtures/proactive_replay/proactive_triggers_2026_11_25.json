@@ -1,0 +1,166 @@
+{
+  "name": "proactive_triggers_2026_11_25",
+  "description": "Evaluates Phase 3 time-driven and external-world proactive triggers: pre-meeting smart briefs with cross-source context, low-frequency public web entity mention radar, and negative controls (solo focus block, routine lunch with no context, and unrelated homonym web hit).",
+  "now": "2026-11-25T05:40:00Z",
+  "pending_since": "2026-11-25T00:00:00Z",
+  "locale": "zh-CN",
+  "timezone": "Asia/Shanghai",
+  "owner": {
+    "user": "U0OWNER001",
+    "team": "T0TEAM0001",
+    "handle": "kai",
+    "mail": "kai@example.com"
+  },
+  "user_md": "<!-- comma:portrait -->\n- 关于你 · 职责: 维护 3D 勋章制作应用 Medalsmith（将涂鸦、照片或 SVG 生成金属和珐琅质感 3D 勋章） · 2026-11-24 · watch: term:Medalsmith\n- 关于你 · 进行中: 推进 Comma iOS 1.0.4 Usage 页订阅与积分包上线测试 · 2026-11-24 · watch: term:Comma\n<!-- /comma:portrait -->\n",
+  "memory": [
+    {
+      "path": "/memory/semantic/people.md",
+      "text": "Lena Wu (lena@acme.example) — Acme 设计总监，正在评估 Medalsmith 联名徽章合作，最关注 SVG 导入后的金属浮雕厚度与透明底 2048px 导出清晰度。"
+    }
+  ],
+  "pool_items": [
+    {
+      "app": "Outlook",
+      "toolkit": "outlook",
+      "title": "Re: 下午 Medalsmith × Acme 同步议题",
+      "url": "https://outlook.office.com/mail/inbox/id/lena_pre_meeting",
+      "excerpt": "发件人 Lena Wu (lena@acme.example)：下午 2 点会前麻烦确认两件事：1. SVG 导出是否支持 2048px 透明底 PNG？2. 批量生成 50 枚联名勋章的商用授权报价大概多少？",
+      "relationship": "your_recent_inbox_and_upcoming_events"
+    },
+    {
+      "app": "GitHub",
+      "toolkit": "github",
+      "title": "feat(billing): gate TestFlight sandbox credit fulfillment to cue.surf and comma.surf workspace owners",
+      "url": "https://github.com/AFK-surf/Cue/pull/5590",
+      "excerpt": "Comma 1.0.4 billing sandbox review: Alex Chen left an open question on PR #5590 asking whether staging smoke-test bot accounts should also be allowlisted alongside cue.surf and comma.surf.",
+      "relationship": "authored_by_you"
+    }
+  ],
+  "calendar": [
+    {
+      "id": "evt_acme_sync",
+      "summary": "Medalsmith × Acme 联名徽章方案同步",
+      "htmlLink": "https://calendar.google.com/event/evt_acme_sync",
+      "start": {"dateTime": "2026-11-25T06:00:00Z"},
+      "end": {"dateTime": "2026-11-25T06:45:00Z"},
+      "status": "confirmed",
+      "attendees": ["Lena Wu <lena@acme.example>"],
+      "attendeeCount": 1,
+      "description": "讨论 Medalsmith 联名徽章交付规格与授权方案。"
+    },
+    {
+      "id": "evt_billing_review",
+      "summary": "Comma 1.0.4 Billing & Sandbox Review",
+      "htmlLink": "https://calendar.google.com/event/evt_billing_review",
+      "start": {"dateTime": "2026-11-25T06:05:00Z"},
+      "end": {"dateTime": "2026-11-25T06:35:00Z"},
+      "status": "confirmed",
+      "attendees": ["Alex Chen <alex@example.com>"],
+      "attendeeCount": 1,
+      "description": "Review TestFlight sandbox credit fulfillment rules before 1.0.4 release."
+    },
+    {
+      "id": "evt_solo_focus",
+      "summary": "深度工作：写代码",
+      "htmlLink": "https://calendar.google.com/event/evt_solo_focus",
+      "start": {"dateTime": "2026-11-25T05:55:00Z"},
+      "end": {"dateTime": "2026-11-25T07:00:00Z"},
+      "status": "confirmed",
+      "attendees": [],
+      "attendeeCount": 0,
+      "description": "Focus block"
+    },
+    {
+      "id": "evt_team_lunch",
+      "summary": "周五团队午餐",
+      "htmlLink": "https://calendar.google.com/event/evt_team_lunch",
+      "start": {"dateTime": "2026-11-25T06:00:00Z"},
+      "end": {"dateTime": "2026-11-25T07:00:00Z"},
+      "status": "confirmed",
+      "attendees": ["Ben <ben@example.com>"],
+      "attendeeCount": 1,
+      "description": "楼下新开的日料店聚餐。"
+    }
+  ],
+  "web_radar": [
+    {
+      "term": "Medalsmith",
+      "url": "https://indiehacker.example/posts/medalsmith-3d-enamel-badges",
+      "title": "周末发现一款宝藏独立应用 Medalsmith：把涂鸦秒变金属珐琅 3D 勋章",
+      "text": "本周在设计圈刷屏的独立工具 Medalsmith，能把涂鸦、照片和 SVG 直接渲染出金属拉丝与珐琅反光质感的 3D 勋章，评论区不少设计师在催安卓版和自定义材质包。"
+    },
+    {
+      "term": "Medalsmith",
+      "url": "https://rpgwiki.example/npc/medalsmith-vendor",
+      "title": "Elden Quest Wiki: Medalsmith NPC Location & Crafting Recipes",
+      "text": "The Medalsmith NPC vendor stands near the Iron Forge in Act 2 and trades 50 gold coins for bronze dungeon tokens and sword upgrades."
+    }
+  ],
+  "home": [],
+  "labels": {
+    "evt_acme_sync": "https://calendar.google.com/event/evt_acme_sync",
+    "evt_billing_review": "https://calendar.google.com/event/evt_billing_review",
+    "evt_solo_focus": "https://calendar.google.com/event/evt_solo_focus",
+    "evt_team_lunch": "https://calendar.google.com/event/evt_team_lunch",
+    "radar_medalsmith_post": "https://indiehacker.example/posts/medalsmith-3d-enamel-badges",
+    "radar_rpg_homonym": "https://rpgwiki.example/npc/medalsmith-vendor"
+  },
+  "scenarios": [
+    {
+      "name": "meeting_prep_external_with_context",
+      "only_calendar": ["evt_acme_sync"],
+      "only_web_radar": [],
+      "expect": {
+        "routed_any": ["evt_acme_sync"],
+        "decision_any": ["signal"],
+        "message_contains_any": ["2048", "授权", "报价"]
+      }
+    },
+    {
+      "name": "meeting_prep_engineering_with_open_pr",
+      "only_calendar": ["evt_billing_review"],
+      "only_web_radar": [],
+      "expect": {
+        "routed_any": ["evt_billing_review"],
+        "decision_any": ["signal"],
+        "message_contains_any": ["5590", "smoke", "白名单", "allowlist"]
+      }
+    },
+    {
+      "name": "web_radar_own_product_featured",
+      "only_calendar": [],
+      "only_web_radar": ["radar_medalsmith_post"],
+      "expect": {
+        "routed_any": ["radar_medalsmith_post"],
+        "decision_any": ["signal"],
+        "message_contains_any": ["安卓", "材质", "Medalsmith"]
+      }
+    },
+    {
+      "name": "negative_control_meeting_prep_solo_focus_block",
+      "only_calendar": ["evt_solo_focus"],
+      "only_web_radar": [],
+      "expect": {
+        "not_routed": ["evt_solo_focus"]
+      }
+    },
+    {
+      "name": "negative_control_meeting_prep_routine_no_context",
+      "only_calendar": ["evt_team_lunch"],
+      "only_web_radar": [],
+      "expect": {
+        "not_routed": ["evt_team_lunch"],
+        "decision_any": ["briefing"]
+      }
+    },
+    {
+      "name": "negative_control_web_radar_unrelated_homonym",
+      "only_calendar": [],
+      "only_web_radar": ["radar_rpg_homonym"],
+      "expect": {
+        "not_routed": ["radar_rpg_homonym"],
+        "decision_any": ["briefing"]
+      }
+    }
+  ]
+}

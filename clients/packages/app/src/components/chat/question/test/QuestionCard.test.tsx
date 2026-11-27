@@ -113,4 +113,56 @@ describe("QuestionCard", () => {
       "Answered in the chat"
     );
   });
+
+  it("renders Dismiss instead of Skip when skipBehavior is dismiss", async () => {
+    const actions = renderCard(question({ skipBehavior: "dismiss" }));
+
+    const dismissButton = screen.getByRole("button", { name: "Dismiss" });
+    expect(screen.queryByRole("button", { name: "Skip" })).toBeNull();
+
+    await userEvent.click(dismissButton);
+    expect(actions.answer).toHaveBeenCalledWith({
+      questionMessageId: "msg_question",
+      choiceIds: [],
+      skipped: true,
+    });
+
+    const { rerender } = render(
+      <QuestionCard
+        live
+        part={question({ skipBehavior: "dismiss", state: { status: "skipped" } })}
+      />
+    );
+    expect(screen.getByRole("region", { name: /How should/ })).toHaveTextContent(
+      "Dismissed"
+    );
+    expect(screen.getByRole("region", { name: /How should/ })).not.toHaveTextContent(
+      "The agent decides"
+    );
+    rerender(<QuestionCard live part={question({ state: { status: "skipped" } })} />);
+    expect(screen.getByRole("region", { name: /How should/ })).toHaveTextContent(
+      "Skipped. The agent decides."
+    );
+  });
+
+  it("renders and submits a single-choice independent card without inventing a second option", async () => {
+    const actions = renderCard(
+      question({
+        choices: [{ id: "c1", label: "Deploy now", recommended: true }],
+        skipBehavior: "dismiss",
+        independent: true,
+      })
+    );
+
+    const radios = screen.getAllByRole("radio");
+    // 1 choice + 1 "Other" radio
+    expect(radios).toHaveLength(2);
+    expect(screen.getByRole("radio", { name: /Deploy now/ })).toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: /Send/ }));
+    expect(actions.answer).toHaveBeenCalledWith({
+      questionMessageId: "msg_question",
+      choiceIds: ["c1"],
+    });
+  });
 });

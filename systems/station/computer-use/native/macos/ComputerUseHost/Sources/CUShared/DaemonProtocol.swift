@@ -20,67 +20,35 @@ public struct DaemonResponse: Codable {
     }
 }
 
-public enum ModeKind: String, Codable, Sendable, CaseIterable {
-    case foreground
+public enum ModeKind: String, Codable, Sendable {
     case background
 }
 
-public struct SessionControl: Codable, Sendable {
-    public enum Op: String, Codable, Sendable { case start, stop }
+public struct SessionControl: Codable, Sendable, Equatable {
+    public enum Op: String, Codable, Sendable {
+        case start
+        case stop
+    }
 
     public var op: Op
     public var mode: ModeKind?
-    public var foreground: ForegroundStartArgs?
     public var background: BackgroundStartArgs?
+    public var sessionId: String?
 
     public init(
         op: Op,
         mode: ModeKind? = nil,
-        foreground: ForegroundStartArgs? = nil,
-        background: BackgroundStartArgs? = nil
+        background: BackgroundStartArgs? = nil,
+        sessionId: String? = nil
     ) {
         self.op = op
         self.mode = mode
-        self.foreground = foreground
         self.background = background
+        self.sessionId = sessionId
     }
 }
 
-public struct ForegroundStartArgs: Codable, Sendable {
-    public var apps: [String]
-    public var display: Int?
-    /// Optional observer bridge config. `nil` disables observer summaries.
-    public var observer: ObserverStartArgs?
 
-    public init(
-        apps: [String] = [],
-        display: Int? = nil,
-        observer: ObserverStartArgs? = nil
-    ) {
-        self.apps = apps
-        self.display = display
-        self.observer = observer
-    }
-}
-
-public struct ObserverStartArgs: Codable, Sendable {
-    /// Filesystem path to a UNIX-domain socket where the host accepts observer
-    /// summary requests. The daemon connects to this socket per-round and
-    /// delegates summary work to the host.
-    public var bridgeSocketPath: String?
-    public var captureIntervalMs: Int?
-    public var finalSummaryTimeoutMs: Int?
-
-    public init(
-        bridgeSocketPath: String? = nil,
-        captureIntervalMs: Int? = nil,
-        finalSummaryTimeoutMs: Int? = nil
-    ) {
-        self.bridgeSocketPath = bridgeSocketPath
-        self.captureIntervalMs = captureIntervalMs
-        self.finalSummaryTimeoutMs = finalSummaryTimeoutMs
-    }
-}
 
 /// Framed JSON exchanged between the daemon's `ObserverBridgeBackend`
 /// and the host's observer bridge server. One request per socket
@@ -167,8 +135,20 @@ public struct ObserverBridgeResponse: Codable, Sendable {
     }
 }
 
-public struct BackgroundStartArgs: Codable, Sendable {
-    public init() {}
+public struct BackgroundStartArgs: Codable, Sendable, Equatable {
+    public var apps: [String]
+    public var title: String?
+    public var virtualDesktop: Bool?
+
+    public init(
+        apps: [String] = [],
+        title: String? = nil,
+        virtualDesktop: Bool? = nil
+    ) {
+        self.apps = apps
+        self.title = title
+        self.virtualDesktop = virtualDesktop
+    }
 }
 
 public enum DaemonPaths {

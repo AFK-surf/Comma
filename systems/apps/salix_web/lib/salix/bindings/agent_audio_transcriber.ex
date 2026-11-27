@@ -4,10 +4,10 @@ defmodule Salix.Bindings.AgentAudioTranscriber do
   @behaviour SalixAgent.AudioTranscriber
 
   alias Salix.Bindings.MeetingGlossary
-  alias SalixAgent.FileBackend
-  alias SalixLlm.Transcribe
+  alias SalixAgent.{DriveMount, FileBackend}
+  alias SalixLlm.{AudioChunker, Transcribe}
 
-  @max_audio_bytes 30 * 1024 * 1024
+  @max_audio_bytes AudioChunker.max_audio_bytes()
 
   @impl true
   def transcribe(agent_id, path) do
@@ -170,9 +170,15 @@ defmodule Salix.Bindings.AgentAudioTranscriber do
 
   defp validate_path(path) do
     cond do
-      not String.starts_with?(path, "/") -> {:error, :audio_path_not_absolute}
-      not FileBackend.normal_path?(path) -> {:error, :audio_path_not_visible}
-      true -> :ok
+      not String.starts_with?(path, "/") ->
+        {:error, :audio_path_not_absolute}
+
+      # A Drive file is read in place: copying a long recording first is slow.
+      not (FileBackend.normal_path?(path) or DriveMount.matches?(path)) ->
+        {:error, :audio_path_not_visible}
+
+      true ->
+        :ok
     end
   end
 

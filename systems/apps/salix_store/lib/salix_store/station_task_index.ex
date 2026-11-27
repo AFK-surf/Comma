@@ -18,7 +18,9 @@ defmodule SalixStore.StationTaskIndex do
   A still.fail station connected through its Comma connect sends its
   workspace's chats the same way; what Salix holds of them is on its
   `SalixStore.StillfailStations` record. Its rows also say what a chat asks
-  of whom (`attention`, `waits_for`, `note`, `url`; `apply_page/3`).
+  of whom (`attention`, `waits_for`, `note`, `url`; `apply_page/3`) and
+  whether Comma's Router wrote in the chat (`router`). Members' clients list
+  only those chats of it (`list_for_members/1`).
 
   A station holds at most 10,000 rows here. Removing a station, or moving
   it to another Group, deletes its rows (`delete_station/1`, called inside the
@@ -39,6 +41,7 @@ defmodule SalixStore.StationTaskIndex do
   @max_labels 20
   @attentions ~w(need done failed)
   @max_waits_for 8
+  @max_participants 32
   @max_email 200
   @max_note 300
   @max_url 500
@@ -71,8 +74,10 @@ defmodule SalixStore.StationTaskIndex do
       field(:labels, {:array, :string})
       field(:attention, :string)
       field(:waits_for, {:array, :string}, default: [])
+      field(:participants, {:array, :string}, default: [])
       field(:note, :string)
       field(:url, :string)
+      field(:router, :boolean, default: false)
       field(:rev, :integer)
 
       timestamps()
@@ -97,6 +102,8 @@ defmodule SalixStore.StationTaskIndex do
     do: %{"epoch" => station.index_epoch, "through" => station.index_through || 0}
 
   @max_list 500
+  @list_fields ~w(station_id device_id thread task title status created_by created_at
+                  last_activity_at runtime model labels attention waits_for participants note url router rev)a
 
   @doc """
   The Group's station-hosted Tasks as their stations last sent them, the
@@ -104,32 +111,127 @@ defmodule SalixStore.StationTaskIndex do
   active stations, each a map of the row's fields.
   """
   def list_group(group_id, limit \\ @max_list) when is_binary(group_id) and is_integer(limit) do
-    from(r in active(),
+    group_id
+    |> group_rows(limit)
+    |> select([r], map(r, ^@list_fields))
+    |> Repo.all()
+  end
+
+  @doc """
+  The Group's station-hosted Tasks its members' clients list, as
+  `list_group/2` (at most #{@max_list}): every row of a Comma station, and of
+  a still.fail station (one of `SalixStore.StillfailStations`) only the chats
+  Comma's Router wrote in (`router`) that name their page in still.fail
+  (`url`), the one way a client opens them. Only a still.fail station's rows
+  keep `url`.
+  """
+  def list_for_members(group_id) when is_binary(group_id) do
+    group_id
+    |> group_rows(@max_list)
+    |> where([r, s, f], is_nil(f.id) or (r.router == true and not is_nil(r.url)))
+    |> select([r, s, f], {map(r, ^@list_fields), not is_nil(f.id)})
+    |> Repo.all()
+    |> Enum.map(fn {row, stillfail?} -> if stillfail?, do: row, else: %{row | url: nil} end)
+  end
+
+  @doc """
+  Member-scoped version of `list_for_members/1`. Comma station rows are
+  unchanged (`url: nil`). For still.fail stations, returns rows with a valid
+  `url` where `router == true`, or where `created_by`, `waits_for`, or
+  `participants` matches the member's email (plus any `device_id`-bound owner
+  email when `device_emails` is supplied for the workspace owner).
+  """
+  def list_for_members(group_id, member_scope)
+      when is_binary(group_id) and is_map(member_scope) do
+    member_email = normalize_scope_email(member_scope[:email] || member_scope["email"])
+
+    device_emails =
+      normalize_device_emails(member_scope[:device_emails] || member_scope["device_emails"])
+
+    all_emails =
+      ([member_email] ++ Map.values(device_emails))
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    query =
+      group_id
+      |> group_rows(@max_list)
+      |> filter_member_stillfail_rows(all_emails)
+      |> select([r, s, f], {map(r, ^@list_fields), not is_nil(f.id)})
+
+    query
+    |> Repo.all()
+    |> Enum.flat_map(fn
+      {row, false} ->
+        [%{row | url: nil}]
+
+      {row, true} ->
+        emails = member_emails_for_device(member_email, device_emails, row.device_id)
+
+        if stillfail_visible_to_member?(row, emails),
+          do: [row],
+          else: []
+    end)
+  end
+
+  defp filter_member_stillfail_rows(query, []) do
+    where(query, [r, s, f], is_nil(f.id) or (r.router == true and not is_nil(r.url)))
+  end
+
+  defp filter_member_stillfail_rows(query, all_emails) do
+    where(
+      query,
+      [r, s, f],
+      is_nil(f.id) or
+        (not is_nil(r.url) and
+           (r.router == true or
+              fragment("lower(btrim(?)) = ANY(?)", r.created_by, ^all_emails) or
+              fragment("? && ?", r.waits_for, ^all_emails) or
+              fragment("? && ?", r.participants, ^all_emails)))
+    )
+  end
+
+  defp stillfail_visible_to_member?(row, emails) do
+    row.router == true or
+      (is_binary(row.created_by) and normalize_scope_email(row.created_by) in emails) or
+      Enum.any?(row.waits_for || [], &(normalize_scope_email(&1) in emails)) or
+      Enum.any?(row.participants || [], &(normalize_scope_email(&1) in emails))
+  end
+
+  defp member_emails_for_device(member_email, device_emails, device_id) do
+    bound = if is_binary(device_id), do: Map.get(device_emails, device_id), else: nil
+
+    [member_email, bound]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_scope_email(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "" -> nil
+      email -> email
+    end
+  end
+
+  defp normalize_scope_email(_value), do: nil
+
+  defp normalize_device_emails(map) when is_map(map) do
+    for {device_id, email} <- map,
+        is_binary(device_id),
+        norm = normalize_scope_email(email),
+        is_binary(norm),
+        into: %{},
+        do: {device_id, norm}
+  end
+
+  defp normalize_device_emails(_other), do: %{}
+
+  defp group_rows(group_id, limit) do
+    from([r, s, f] in active(),
       where: r.group_id == ^group_id,
       order_by: [desc: r.last_activity_at, asc: r.station_id, asc: r.thread],
-      limit: ^min(max(limit, 1), @max_list),
-      select:
-        map(r, [
-          :station_id,
-          :device_id,
-          :thread,
-          :task,
-          :title,
-          :status,
-          :created_by,
-          :created_at,
-          :last_activity_at,
-          :runtime,
-          :model,
-          :labels,
-          :attention,
-          :waits_for,
-          :note,
-          :url,
-          :rev
-        ])
+      limit: ^min(max(limit, 1), @max_list)
     )
-    |> Repo.all()
   end
 
   @doc """
@@ -137,7 +239,9 @@ defmodule SalixStore.StationTaskIndex do
   still.fail stations only when `opts[:source]` is `"stillfail"`: those active
   since `opts[:since]` (unix ms), created by `opts[:created_by]`, with status
   `opts[:status]`, with attention `opts[:attention]`, waiting for the email
-  `opts[:waits_for]` (any case), at most `opts[:limit]` (at most #{@max_list}), after
+  `opts[:waits_for]` (any case), of the Device `opts[:device_id]` (one still.fail
+  workspace), whose title or note holds `opts[:query]` (any case), at most
+  `opts[:limit]` (at most #{@max_list}), after
   `opts[:after]`, the `{last_activity_at, station_id, thread}` of the previous
   page's last row. `{rows, more?}`.
   """
@@ -164,8 +268,10 @@ defmodule SalixStore.StationTaskIndex do
             :labels,
             :attention,
             :waits_for,
+            :participants,
             :note,
-            :url
+            :url,
+            :router
           ])
       )
       |> page_filter(opts)
@@ -194,6 +300,13 @@ defmodule SalixStore.StationTaskIndex do
       {:waits_for, who}, q when is_binary(who) ->
         where(q, [r], ^String.downcase(who) in r.waits_for)
 
+      {:device_id, device}, q when is_binary(device) ->
+        where(q, [r], r.device_id == ^device)
+
+      {:query, words}, q when is_binary(words) ->
+        pattern = "%" <> like_escape(words) <> "%"
+        where(q, [r], ilike(r.title, ^pattern) or ilike(r.note, ^pattern))
+
       {:after, {at, station, thread}}, q ->
         where(
           q,
@@ -207,6 +320,8 @@ defmodule SalixStore.StationTaskIndex do
         q
     end)
   end
+
+  defp like_escape(text), do: String.replace(text, ["\\", "%", "_"], &("\\" <> &1))
 
   @doc "One row of the Group's index, of an active station, else nil."
   def get(group_id, station_id, thread)
@@ -237,8 +352,10 @@ defmodule SalixStore.StationTaskIndex do
   the result; `failed`: its last turn failed; absent when it asks nothing),
   `"waits_for"` (the emails of the people it concerns now, at most
   #{@max_waits_for}, kept lowercase), `"note"` (the agent's own line, at most
-  #{@max_note} characters are kept) and `"url"` (`https://`, the chat in
-  still.fail). Stations from before send none of them.
+  #{@max_note} characters are kept), `"url"` (`https://`, the chat in
+  still.fail) and `"router"` (`true` when Comma's Router wrote a message in
+  the chat; anything else reads false). Stations from before send none of
+  them.
 
   Answers `{:ok, held}` with what Salix holds afterwards (`held/1`), also
   when the page was not applied. Errors: `:invalid_page`, `:page_too_large`,
@@ -360,8 +477,10 @@ defmodule SalixStore.StationTaskIndex do
                 labels: fragment("EXCLUDED.labels"),
                 attention: fragment("EXCLUDED.attention"),
                 waits_for: fragment("EXCLUDED.waits_for"),
+                participants: fragment("EXCLUDED.participants"),
                 note: fragment("EXCLUDED.note"),
                 url: fragment("EXCLUDED.url"),
+                router: fragment("EXCLUDED.router"),
                 rev: fragment("EXCLUDED.rev"),
                 updated_at: fragment("EXCLUDED.updated_at")
               ]
@@ -479,6 +598,7 @@ defmodule SalixStore.StationTaskIndex do
          {:ok, labels} <- labels(row["labels"]),
          {:ok, attention} <- attention(row["attention"]),
          {:ok, waits_for} <- waits_for(row["waits_for"]),
+         {:ok, participants} <- participants(row["participants"]),
          {:ok, note} <- note(row["note"]),
          {:ok, url} <- url(row["url"]) do
       {:ok,
@@ -497,8 +617,11 @@ defmodule SalixStore.StationTaskIndex do
          labels: labels,
          attention: attention,
          waits_for: waits_for,
+         participants: participants,
          note: note,
-         url: url
+         url: url,
+         # Anything but `true`, a station from before included, is false.
+         router: row["router"] == true
        }}
     else
       _ -> :error
@@ -524,12 +647,38 @@ defmodule SalixStore.StationTaskIndex do
   defp waits_for(nil), do: {:ok, []}
 
   defp waits_for(people) when is_list(people) and length(people) <= @max_waits_for do
-    if Enum.all?(people, &(is_binary(&1) and &1 != "" and byte_size(&1) <= @max_email)),
-      do: {:ok, people |> Enum.map(&String.downcase/1) |> Enum.uniq()},
-      else: :error
+    if Enum.all?(
+         people,
+         &(is_binary(&1) and String.trim(&1) != "" and byte_size(&1) <= @max_email)
+       ),
+       do: {:ok, people |> Enum.map(&(&1 |> String.trim() |> String.downcase())) |> Enum.uniq()},
+       else: :error
   end
 
   defp waits_for(_people), do: :error
+
+  defp participants(nil), do: {:ok, []}
+
+  defp participants(people) when is_list(people) and length(people) <= @max_participants do
+    normalized =
+      Enum.reduce_while(people, [], fn person, acc ->
+        with true <- is_binary(person),
+             email = person |> String.trim() |> String.downcase(),
+             true <- byte_size(email) in 1..@max_email,
+             true <- Regex.match?(~r/^[^\s@]+@[^\s@]+$/, email) do
+          {:cont, [email | acc]}
+        else
+          _ -> {:halt, :error}
+        end
+      end)
+
+    case normalized do
+      :error -> :error
+      list -> {:ok, list |> Enum.reverse() |> Enum.uniq()}
+    end
+  end
+
+  defp participants(_people), do: :error
 
   # The agent's own line: kept, cut to its bound as a title is.
   defp note(nil), do: {:ok, nil}

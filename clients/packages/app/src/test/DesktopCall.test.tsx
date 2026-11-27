@@ -3,6 +3,7 @@ import { defaultCommaClientSettings } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { uiClock } from "@comma/ui/clock";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import { fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
@@ -331,4 +332,64 @@ it("starts each run of speech a little ahead, so frames that come late still pla
   expect(underruns).toEqual([290]);
 
   audio.stop();
+});
+
+it("shows a billing toast once for lastEnd, dismisses it in core, and does not re-toast on remount", async () => {
+  installNativeBridgeMock({ platform: "electron" });
+  toast.dismissAll();
+  let current: VoiceCallValue = {
+    available: true,
+    phase: "idle",
+    workspace: null,
+    muted: false,
+    connectedAt: null,
+    lastEnd: { id: 7, phase: "calling", reason: "billing_unavailable" },
+  };
+  const dismissed: number[] = [];
+  const core = createScriptedCore({
+    values: (topic): VoiceCallValue | undefined =>
+      topic.topic === "voiceCall" ? current : undefined,
+    calls: (name, params) => {
+      if (name === "voiceCall.dismissEnd") {
+        const id = (params as { id: number }).id;
+        dismissed.push(id);
+        if (current.lastEnd?.id === id) {
+          current = { ...current, lastEnd: null };
+          core.changed("voiceCall");
+        }
+      }
+      return null;
+    },
+  });
+
+  const first = render(
+    core.wrap(
+      <CommaWebClientSettingsProvider
+        initialSettings={{ ...defaultCommaClientSettings, voiceLabsEnabled: true }}
+      >
+        <Toaster />
+        <DesktopCallAudio />
+      </CommaWebClientSettingsProvider>
+    )
+  );
+  await waitFor(() => expect(dismissed).toEqual([7]));
+  expect(await screen.findByText(/Unable to start voice call:/i)).toBeInTheDocument();
+
+  toast.dismissAll();
+  first.unmount();
+
+  const second = render(
+    core.wrap(
+      <CommaWebClientSettingsProvider
+        initialSettings={{ ...defaultCommaClientSettings, voiceLabsEnabled: true }}
+      >
+        <Toaster />
+        <DesktopCallAudio />
+      </CommaWebClientSettingsProvider>
+    )
+  );
+  await waitFor(() => expect(dismissed).toEqual([7]));
+  expect(screen.queryByText(/Unable to start voice call:/i)).toBeNull();
+  toast.dismissAll();
+  second.unmount();
 });

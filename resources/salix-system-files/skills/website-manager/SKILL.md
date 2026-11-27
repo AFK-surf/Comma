@@ -3,6 +3,7 @@ name: website-manager
 description: Create, publish, inspect, modify, or roll back websites, webpages, HTML pages, web demos, and multi-file sites in the agent VFS. Also use for `/.salix/websites`, `_api.json`, `/_api/` endpoints, or when telling the user about a published website.
 metadata:
   displayName: Website Manager
+prompt_summary: "Publish, update, or tell the user about published websites, webpages, HTML pages, and web demos (preserving canonical site_name and publisher URL)."
 ---
 
 # Websites

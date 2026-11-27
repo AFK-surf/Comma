@@ -175,6 +175,232 @@ defmodule SalixAgent.CompactionLlmTest do
                Compaction.context(handle(session))
     end
 
+    test "keeps a redacted copy of the summary as a searchable Session fact", %{owned: owned} do
+      Mock.script([
+        {:final,
+         "<compaction-summary>\nTelethon login on the Mac; api_hash: 71a2ecececde0efe98b4e151d22c8cc8, token ghp_abcdefghijklmnopqrstuvwx.\n</compaction-summary>"}
+      ])
+
+      {:ok, owned, %{"status" => "compacted"}} =
+        Compaction.compact(
+          runtime_context(owned, "ses1_0000000000000001001"),
+          "ses1_0000000000000001001"
+        )
+
+      session = read_session!(owned.agent_id, "ses1_0000000000000001001")
+      assert session.summary =~ "71a2ecececde0efe98b4e151d22c8cc8"
+
+      assert [
+               %{
+                 "kind" => "compaction_summary",
+                 "seq" => seq,
+                 "event" => %{
+                   "summary" => summary,
+                   "compacted_through" => 2,
+                   "summary_sequence" => 1
+                 }
+               }
+             ] = Enum.filter(session.events, &(&1["kind"] == "compaction_summary"))
+
+      assert summary ==
+               "Telethon login on the Mac; api_hash: [redacted], token [redacted]."
+
+      assert SalixAgent.SessionHistory.Document.text(%{
+               kind: "fact",
+               seq: seq,
+               data: hd(Enum.filter(session.events, &(&1["kind"] == "compaction_summary")))
+             }) == summary
+    end
+
+    test "a summary commit rebuilt over a newer session revision keeps its summary fact", %{
+      owned: owned
+    } do
+      session_id = "ses1_0000000000000001001"
+      context = runtime_context(owned, session_id)
+
+      {:ok, owner} =
+        InternalSessionFleet.ensure_started(owned.agent_id, session_id, process_on_init: false)
+
+      assert {:prepared, prepared} = prepare_compaction(context, :compact)
+
+      # A new input lands while the summary is being written.
+      assert {:ok, _} =
+               InternalSessionStore.prepare_commit(owned.agent_id, session_id, [
+                 %{
+                   "type" => "delivery",
+                   "from_queue" => true,
+                   "session_id" => session_id,
+                   "message_id" => 3,
+                   "content" => "also add the Q3 numbers"
+                 }
+               ])
+
+      parent = SystemsRuntime.Proc.self()
+
+      :sys.replace_state(
+        owner,
+        fn state ->
+          result =
+            commit_prepared(
+              prepared,
+              {:ok,
+               {:summary,
+                "<compacted-context>Report written; password: hunter2hunter2.</compacted-context>"}}
+            )
+
+          SystemsRuntime.Proc.send(parent, {:rebuilt_compaction_result, result})
+          state
+        end,
+        :infinity
+      )
+
+      assert_received {:rebuilt_compaction_result, result}
+      refute match?({:error, _}, result)
+
+      session = read_session!(owned.agent_id, session_id)
+      assert session.summary =~ "Report written"
+      assert Enum.any?(session.messages, &((&1[:id] || &1["id"]) == 3))
+
+      assert [%{"event" => %{"summary" => "Report written; password: [redacted]."}}] =
+               Enum.filter(session.events, &(&1["kind"] == "compaction_summary"))
+    end
+
+    test "a summary fact carries the join of the labels it summarizes", %{owned: owned} do
+      session_id = "ses1_0000000000000001101"
+      c1 = ["scope|w1|C1"]
+      c2 = ["scope|w1|C2"]
+
+      labelled = fn id, label ->
+        [
+          %{
+            "type" => "delivery",
+            "from_queue" => true,
+            "session_id" => session_id,
+            "message_id" => id,
+            "content" => "question #{id}",
+            "source_message_id" => "source-#{id}",
+            "trusted_origin" => %{"provider" => "internal", "ifc" => %{"label" => label}}
+          },
+          %{
+            "type" => "assistant",
+            "session_id" => session_id,
+            "message_id" => id + 1,
+            "content" => "answer #{id + 1}",
+            "ifc" => %{"label" => label}
+          },
+          ack_event(session_id, id + 1)
+        ]
+      end
+
+      commit_session!(
+        owned.agent_id,
+        session_id,
+        [%{"type" => "session_created", "session_id" => session_id}] ++ labelled.(1, c1)
+      )
+
+      labels = fn ->
+        read_session!(owned.agent_id, session_id).events
+        |> Enum.filter(&(&1["kind"] == "compaction_summary"))
+        |> Enum.map(&get_in(&1, ["event", "label"]))
+      end
+
+      Mock.script([{:final, "<compaction-summary>first channel work</compaction-summary>"}])
+
+      {:ok, _owned, %{"status" => "compacted"}} =
+        Compaction.compact(runtime_context(owned, session_id), session_id)
+
+      assert labels.() == [c1]
+
+      # The compaction left a Session actor with its own revision: writing
+      # past it stops it, so the next compaction reads the new messages.
+      write = fn events ->
+        commit_session!(owned.agent_id, session_id, events)
+        :ok = SalixAgent.Fleet.stop_local_session_actors(owned.agent_id)
+      end
+
+      next_id = fn -> read_session!(owned.agent_id, session_id).next_message_id end
+      write.(labelled.(next_id.(), c2))
+      Mock.script([{:final, "<compaction-summary>second channel work</compaction-summary>"}])
+
+      {:ok, _owned, %{"status" => "compacted"}} =
+        Compaction.compact(runtime_context(owned, session_id), session_id)
+
+      joined = SalixAgent.IFC.FileLabels.join_encoded(c1, c2)
+      assert labels.() == [c1, joined]
+      refute "agent_private" in joined
+
+      # A compaction that wrote no fact (here a recovery summary) replaced the
+      # summary in context: the next fact cannot inherit an older fact's label.
+      recovered = next_id.()
+      write.(labelled.(recovered, c1))
+      current = read_session!(owned.agent_id, session_id)
+
+      write.([
+        %{
+          "type" => "compaction",
+          "session_id" => session_id,
+          "summary" =>
+            "<compacted-context>System recovery summary: earlier work</compacted-context>",
+          "compacted_through" => recovered + 1,
+          "compacted_seq" => InternalSession.covered_seq(handle(current), recovered + 1),
+          "summary_sequence" => current.summary_sequence + 1
+        }
+      ])
+
+      write.(labelled.(next_id.(), c1))
+      Mock.script([{:final, "<compaction-summary>third channel work</compaction-summary>"}])
+
+      {:ok, _owned, %{"status" => "compacted"}} =
+        Compaction.compact(runtime_context(owned, session_id), session_id)
+
+      assert [^c1, ^joined, third] = labels.()
+      assert "agent_private" in third
+
+      # A summary with an unlabelled message in it fails closed.
+      session = read_session!(owned.agent_id, "ses1_0000000000000001001")
+      assert session.events |> Enum.filter(&(&1["kind"] == "compaction_summary")) == []
+      Mock.script([{:final, "<compaction-summary>unlabelled work</compaction-summary>"}])
+
+      {:ok, _owned, %{"status" => "compacted"}} =
+        Compaction.compact(
+          runtime_context(owned, "ses1_0000000000000001001"),
+          "ses1_0000000000000001001"
+        )
+
+      assert [%{"event" => %{"label" => ["agent_private"]}}] =
+               read_session!(owned.agent_id, "ses1_0000000000000001001").events
+               |> Enum.filter(&(&1["kind"] == "compaction_summary"))
+    end
+
+    test "summary redaction removes credential values and keeps prose and paths" do
+      alias SalixAgent.SessionHistory.Episodes
+
+      redacted = [
+        {"api_hash: 71a2ecececde0efe98b4e151d22c8cc8", "api_hash: [redacted]"},
+        {"token = abcdefghij0123456789", "token = [redacted]"},
+        {~s(password: "hunter2hunter2"), ~s(password: "[redacted]")},
+        {"use ghp_abcdefghijklmnopqrstuvwx now", "use [redacted] now"},
+        {"key AKIAABCDEFGHIJKLMNOP and ASIAABCDEFGHIJKLMNOP", "key [redacted] and [redacted]"},
+        {"bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawq ok", "bot [redacted] ok"},
+        {"-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY----- kept",
+         "[redacted] kept"},
+        {"cut -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg", "cut [redacted]"}
+      ]
+
+      for {input, output} <- redacted, do: assert(Episodes.redact(input) == output)
+
+      kept = [
+        "token validation failed",
+        "secret rotation is weekly",
+        "API key configuration lives in settings",
+        "token `systems/apps/foo.ex`",
+        "private_key: ~/.ssh/id_ed25519",
+        "session_string: /data/tg.session"
+      ]
+
+      for text <- kept, do: assert(Episodes.redact(text) == text)
+    end
+
     @tag :fresh_input_compaction
     test "automatic compaction keeps unread recommendation facts exact across storage reload", %{
       owned: owned
@@ -485,6 +711,45 @@ defmodule SalixAgent.CompactionLlmTest do
       assert opt(opts, "entrypoint") == "compaction"
       assert opt(opts, "actor_type") == "system"
       assert opts |> opt("billing_context") |> opt("billing_account_id") == "ba-compact"
+    end
+
+    test "the summary call keeps the session reasoning effort", %{owned: owned} do
+      defmodule EffortCapturingCompactionLLM do
+        @behaviour SalixAgent.LLM
+
+        @impl true
+        def complete(_messages, _tools, opts) do
+          SystemsRuntime.Proc.send(:compaction_effort_test_runner, {:compaction_opts, opts})
+          {:final, "<compaction-summary>captured</compaction-summary>"}
+        end
+
+        @impl true
+        def complete(_messages, _tools), do: complete([], [], [])
+      end
+
+      Process.register(SystemsRuntime.Proc.self(), :compaction_effort_test_runner)
+      SystemsRuntime.put_env(:salix_agent, :llm, EffortCapturingCompactionLLM)
+
+      on_exit(fn ->
+        if SystemsRuntime.Proc.whereis(:compaction_effort_test_runner) ==
+             SystemsRuntime.Proc.self(),
+           do: Process.unregister(:compaction_effort_test_runner)
+      end)
+
+      assert {:ok, _owned, %{"status" => "compacted"}} =
+               Compaction.compact(
+                 runtime_context(owned, "ses1_0000000000000001001"),
+                 "ses1_0000000000000001001",
+                 llm_opts: %{
+                   "model" => "gpt-6-luna",
+                   "reasoning_effort" => "max",
+                   "reasoning" => %{"effort" => "max"}
+                 }
+               )
+
+      assert_received {:compaction_opts, opts}
+      assert opt(opts, "reasoning_effort") == "max"
+      assert opts |> opt("reasoning") |> opt("effort") == "max"
     end
 
     test "a tag-less response soft-fails: logged, session untouched", %{owned: owned} do

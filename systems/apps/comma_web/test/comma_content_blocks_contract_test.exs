@@ -92,7 +92,15 @@ defmodule CommaWeb.CommaMessageResourceTest do
     detail = user_req(session["token"], :get, url) |> expect_status(200)
     message = Enum.find(detail.body["messages"], &(&1["message_id"] == message_id))
 
-    assert [%{"type" => "dynamic_ui", "ui_ref" => ^ui_ref, "blob_ref" => ref, "version" => 2}] =
+    assert [
+             %{
+               "type" => "dynamic_ui",
+               "ui_ref" => ^ui_ref,
+               "blob_ref" => ref,
+               "version" => 2,
+               "title" => "Sources"
+             }
+           ] =
              message["content"]
 
     assert ref["uuid"] == hd(content)["blob_ref"]["uuid"]

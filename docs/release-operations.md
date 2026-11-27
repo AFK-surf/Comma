@@ -3,7 +3,6 @@
 ## Authority and artifacts
 
 Use `Comma Deployment` to stage mainline artifacts and promote staging-proven releases.
-It rolls the VMM Gateway before Salix. See [Gateway release](../k8s/salix-vmm-gateway/README.md#release).
 Merge approval is separate from deployment approval. Unmerged artifacts and recovery snapshots are ineligible for promotion.
 Check deployed revisions before claiming a live fix.
 
@@ -259,7 +258,7 @@ Helm owns stable workload references and non-secret checksums, not Secret payloa
 Gateway operations owns TLS inputs and the stable Gateway reference. Comma release materializes the selected TLS candidate.
 Never put payloads in Helm values or history, rendered manifests, release state, logs, ConfigMaps, or chart artifacts.
 
-VMM gateway secrets have their own owner under `k8s/salix-vmm-gateway/`.
+VMM server TLS and compute runtime secrets are synced by `k8s/comma/sync-vmm-secrets.py` with issuers under `k8s/comma/vmm-issuers/`.
 Release tooling pins Helm and archive checksums. Do not install `latest`.
 
 ## Completion evidence

@@ -293,7 +293,8 @@ private def assistantEvent (state spec facts id calls providerMeta : Term) : Ker
   let phase ← Presentation.policy (.tuple [a "event_phase", RoundQuery.textKey spec "vphase"])
   let llmError := metaField traceMeta "llm_error"
   let base := compact [(b "type", b "assistant"), (b "session_id", ← field state "session_id"),
-    (b "message_id", id), (b "content", RoundQuery.textKey spec "content"),
+    (b "message_id", id), (b "ifc_view_label", RoundQuery.textKey facts "ifc_view_label"),
+    (b "content", RoundQuery.textKey spec "content"),
     (b "tool_calls", list ((wrap calls).map normalizeCall)),
     (b "model", orElse (metaField traceMeta "model") (RoundQuery.textKey facts "model")),
     (b "input_tokens", usage.get (b "prompt_tokens")), (b "output_tokens", usage.get (b "completion_tokens")),
@@ -592,7 +593,7 @@ def roundRequest (state config : Term) : KernelM Term := do
   match ← roundView state with
   | .tuple [.atom "ok", view] =>
     let request ← Request.dispatch state (.tuple [key "delta", key "protocol", key "cfg",
-      orElse (key "tools") (list []), orElse (key "mode") (b "complete")]) prefetched
+      orElse (key "tools") (list []), orElse (key "mode") (b "complete")]) prefetched (key "ifc_projection")
     let phase := orElse (view.get (b "phase")) (a "clean")
     let facts := base (view.get (b "source_ids")) (view.get (b "id_snapshot"))
       (orElse (view.get (b "guard")) phase) phase

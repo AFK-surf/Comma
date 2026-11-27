@@ -1,7 +1,22 @@
 defmodule BridgeForTeamsWeb.DashboardAPIDailyBriefTest do
   use BridgeForTeamsWeb.DashboardCase, async: false
 
-  alias BridgeForTeams.{DailyBrief, Memberships}
+  import Ecto.Query
+
+  alias BridgeForTeams.{DailyBrief, Memberships, Repo}
+
+  defmodule FakeSalix do
+    def daily_brief_channels(request) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:channels, request})
+
+      {:ok,
+       %{
+         complete?: true,
+         channels: [%{id: "oc_sales", name: "销售"}, %{id: "oc_all", name: "全员"}],
+         gaps: %{}
+       }}
+    end
+  end
 
   setup do
     %{org: org, user: owner} = org_with_owner_fixture()
@@ -91,6 +106,172 @@ defmodule BridgeForTeamsWeb.DashboardAPIDailyBriefTest do
 
     assert json_response(send.(ctx.owner, foreign.id), 404)
     assert json_response(send.(ctx.owner, "not-a-uuid"), 404)
+  end
+
+  test "an owner picks a Feishu bot and its group by name; members are Feishu's", ctx do
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, FakeSalix)
+    on_exit(fn -> SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous) end)
+
+    Repo.update_all(from(o in BridgeForTeams.Schema.Organization, where: o.id == ^ctx.org.id),
+      set: [salix_tenant_id: "ten-web"]
+    )
+
+    Repo.update_all(from(p in BridgeForTeams.Schema.Project, where: p.id == ^ctx.project.id),
+      set: [salix_group_id: "grp-web"]
+    )
+
+    channels =
+      build_conn()
+      |> log_in_user(ctx.owner)
+      |> get("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief/channels", %{
+        "project_id" => ctx.project.id,
+        "provider" => "feishu",
+        "connect_id" => "cnx_feishu"
+      })
+      |> json_response(200)
+      |> Map.fetch!("data")
+
+    assert channels == %{
+             "channels" => [
+               %{"id" => "oc_all", "name" => "全员"},
+               %{"id" => "oc_sales", "name" => "销售"}
+             ],
+             "complete" => true
+           }
+
+    assert_received {:channels,
+                     %{provider: "feishu", connect_id: "cnx_feishu", group_id: "grp-web"}}
+
+    saved =
+      build_conn()
+      |> log_in_user(ctx.owner)
+      |> put("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief/settings", %{
+        "project_id" => ctx.project.id,
+        "provider" => "feishu",
+        "connect_id" => "cnx_feishu",
+        "team_channel_id" => "oc_sales",
+        "enabled" => true
+      })
+      |> json_response(200)
+      |> Map.fetch!("data")
+
+    assert %{"provider" => "feishu", "connect_id" => "cnx_feishu", "slack_connect_id" => nil} =
+             saved
+
+    # A Slack channel is not a Feishu group.
+    conn =
+      build_conn()
+      |> log_in_user(ctx.owner)
+      |> put("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief/settings", %{
+        "team_channel_id" => "CTEAM1"
+      })
+
+    assert %{"fields" => ["team_channel_id"]} = json_response(conn, 422)["error"]["details"]
+
+    {:ok, _slack} =
+      DailyBrief.put_member(%{
+        org_id: ctx.org.id,
+        user_id: ctx.member.id,
+        slack_workspace_id: "T1",
+        slack_user_id: "UMEMBER1"
+      })
+
+    {:ok, feishu} =
+      DailyBrief.put_member(%{
+        org_id: ctx.org.id,
+        user_id: ctx.member.id,
+        provider: "feishu",
+        app_id: "cli_app",
+        open_id: "ou_member"
+      })
+
+    overview =
+      build_conn()
+      |> log_in_user(ctx.owner)
+      |> get("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief")
+      |> json_response(200)
+      |> Map.fetch!("data")
+
+    assert [%{"id" => id, "provider" => "feishu", "provider_user_id" => "ou_member"}] =
+             overview["members"]
+
+    assert id == feishu.id
+    assert overview["settings"]["team_channel_id"] == "oc_sales"
+  end
+
+  test "each Swarm's page shows its own settings; an owner moves a member's brief", ctx do
+    second = bare_project_fixture(ctx.org)
+
+    for {project, connect} <- [{ctx.project, "imc_one"}, {second, "imc_two"}] do
+      build_conn()
+      |> log_in_user(ctx.owner)
+      |> put("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief/settings", %{
+        "project_id" => project.id,
+        "slack_connect_id" => connect,
+        "enabled" => true
+      })
+      |> json_response(200)
+    end
+
+    {:ok, brief_member} =
+      DailyBrief.put_member(%{
+        org_id: ctx.org.id,
+        user_id: ctx.member.id,
+        slack_workspace_id: "T1",
+        slack_user_id: "UMEMBER1",
+        project_id: ctx.project.id
+      })
+
+    overview = fn query ->
+      build_conn()
+      |> log_in_user(ctx.owner)
+      |> get("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief", query)
+      |> json_response(200)
+      |> Map.fetch!("data")
+    end
+
+    # The first Swarm sent the member's brief.
+    Repo.insert!(%BridgeForTeams.Schema.DailyBriefRun{
+      org_id: ctx.org.id,
+      project_id: ctx.project.id,
+      member_id: brief_member.id,
+      kind: "personal_brief",
+      status: "completed",
+      window_after: SystemsClock.utc_now() |> DateTime.add(-86_400),
+      window_before: SystemsClock.utc_now()
+    })
+
+    assert overview.(%{})["settings"]["slack_connect_id"] == "imc_one"
+    two = overview.(%{"project_id" => second.id})
+    # Its last brief shows on every Swarm's page.
+    assert [%{"last_brief_at" => last}] = two["members"]
+    assert last
+    assert two["settings"]["slack_connect_id"] == "imc_two"
+
+    assert Enum.map(two["configured_projects"], & &1["project_id"]) == [
+             ctx.project.id,
+             second.id
+           ]
+
+    assert [%{"id" => id, "project_id" => project_id}] = two["members"]
+    assert {id, project_id} == {brief_member.id, ctx.project.id}
+
+    move = fn user, project_id ->
+      build_conn()
+      |> log_in_user(user)
+      |> put("/dashboard/api/v1/orgs/#{ctx.org.slug}/daily-brief/members/#{id}", %{
+        "project_id" => project_id
+      })
+    end
+
+    assert %{"project_id" => moved} = json_response(move.(ctx.owner, second.id), 200)["data"]
+    assert moved == second.id
+    assert move.(ctx.member, ctx.project.id).status in [403, 404]
+
+    # A Swarm without settings cannot send it.
+    third = bare_project_fixture(ctx.org)
+    assert json_response(move.(ctx.owner, third.id), 422)
   end
 
   test "a project from another organization is refused", ctx do

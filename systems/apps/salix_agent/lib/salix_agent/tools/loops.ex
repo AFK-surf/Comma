@@ -225,6 +225,7 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def build(args, ctx) do
+    SalixAgent.CollaborationPolicy.host_command!(ctx)
     source = arg(args, "source")
     if source == "", do: raise("'source' is required")
 
@@ -267,6 +268,7 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def create(args, ctx) do
+    SalixAgent.CollaborationPolicy.host_command!(ctx)
     path = arg(args, "path")
 
     attrs = %{
@@ -378,6 +380,8 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def pause(args, ctx) do
+    SalixAgent.CollaborationPolicy.host_command!(ctx)
+
     result =
       case arg(args, "until_device_id") do
         "" -> Loops.pause(scope!(ctx), loop_id!(args))
@@ -393,6 +397,8 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def resume(args, ctx) do
+    SalixAgent.CollaborationPolicy.host_command!(ctx)
+
     case Loops.resume(scope!(ctx), loop_id!(args)) do
       {:ok, loop} ->
         Jason.encode!(loop)
@@ -419,6 +425,7 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def delete(args, ctx) do
+    SalixAgent.CollaborationPolicy.host_command!(ctx)
     loop_id = loop_id!(args)
 
     case Loops.delete(scope!(ctx), loop_id) do

@@ -31,8 +31,23 @@ defmodule SalixWeb.StationTaskIndex do
     :pg.join(@pg, {:station_tasks, group_id}, subscriber)
   end
 
-  @doc "The Group's station-hosted Tasks (`SalixStore.StationTaskIndex.list_group/2`)."
-  def list(group_id), do: StationTaskIndex.list_group(group_id)
+  @doc """
+  Sends `subscriber` `{:station_tasks_invalidated, group_id}` each time any
+  Group's station Task index changes, until `subscriber` exits.
+  """
+  def subscribe_all(subscriber) when is_pid(subscriber) do
+    :pg.join(@pg, :station_tasks_all, subscriber)
+  end
+
+  @doc """
+  The Group's station-hosted Tasks its members' clients list
+  (`SalixStore.StationTaskIndex.list_for_members/1`, or `/2` with member
+  scoping).
+  """
+  def list(group_id), do: StationTaskIndex.list_for_members(group_id)
+
+  def list(group_id, member_scope) when is_map(member_scope),
+    do: StationTaskIndex.list_for_members(group_id, member_scope)
 
   @doc "The station id a relay registration proved, else nil."
   def station_id(%{endpoint: key}) when is_binary(key), do: Base.encode16(key, case: :lower)
@@ -114,9 +129,29 @@ defmodule SalixWeb.StationTaskIndex do
     end
   end
 
+  @doc """
+  Notifies subscribers and the station task index observer that a Group's
+  station-hosted Task visibility or identity metadata changed.
+  """
+  def notify_changed(group_id) when is_binary(group_id), do: invalidated(group_id)
+  def notify_changed(_group_id), do: :ok
+
   defp invalidated(group_id) do
-    for pid <- :pg.get_members(@pg, {:station_tasks, group_id}),
+    pids =
+      (:pg.get_members(@pg, {:station_tasks, group_id}) ++
+         :pg.get_members(@pg, :station_tasks_all))
+      |> Enum.uniq()
+
+    for pid <- pids,
         do: SystemsRuntime.Proc.send(pid, {:station_tasks_invalidated, group_id})
+
+    if obs = SystemsRuntime.get_env(:salix_web, :station_task_index_observer) do
+      try do
+        _ = obs.station_tasks_changed(group_id)
+      rescue
+        _ -> :ok
+      end
+    end
 
     :ok
   end

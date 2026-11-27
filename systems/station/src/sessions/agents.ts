@@ -520,6 +520,7 @@ export const AgentsLive = (control: Control, managed: boolean) =>
           if (handing) return;
           handing = true;
           await time.close();
+          await tasks.end();
           await sharing?.close();
           unlistenRule();
           notifier.close();

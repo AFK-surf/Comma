@@ -12,7 +12,7 @@ struct AttachmentCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: surface == .menu ? 34 : 44, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: surface == .menu ? 38 : 44, style: .continuous)
         let menu = surface == .menu
         Color.clear
             .overlay { content }

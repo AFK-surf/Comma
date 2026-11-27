@@ -5,6 +5,7 @@ import { taskRequestInviteToken } from "../src/task-requests.ts";
 import {
   FakeHost,
   inProcessOpener,
+  json,
   offline,
   signedIn,
   startTestCore,
@@ -95,6 +96,29 @@ describe("Settings › Task requests", () => {
     expect(t.shown()?.incoming).toEqual([]);
   });
 
+  it("keeps an answered request on its sender's page, out of the waiting list", async () => {
+    const t = setup();
+    const answered = {
+      ...pending,
+      id: "trq_0",
+      title: "Book the venue",
+      status: "accepted",
+      task: { group_id: "g", id: "t0" },
+    };
+    // The server lists only waiting requests unless asked for every status.
+    t.api.on("GET", "/v1/comma/workspaces/wsp/task-requests", (request) =>
+      json(200, {
+        data: request.path.includes("status=all") ? [pending, answered] : [pending],
+      })
+    );
+    await t.time.pass(100);
+    expect(t.shown()?.incoming).toEqual([expect.objectContaining({ id: "trq_1" })]);
+    expect(t.shown()?.received).toEqual([
+      expect.objectContaining({ id: "trq_1", status: "pending" }),
+      expect.objectContaining({ id: "trq_0", status: "accepted" }),
+    ]);
+  });
+
   it("reads the requests again when the owner's task stream says one came", async () => {
     const t = setup();
     const events = "/v1/comma/groups/g/conversations/events";
@@ -165,6 +189,28 @@ describe("Settings › Task requests", () => {
       repo: { owner: "acme", name: "api", base_ref: "main" },
       model: { kind: "runtime", provider: "codex" },
       account_id: "p1",
+    });
+  });
+
+  it("accepts into Comma's cloud with the workspace's Task model when no catalog model is named", async () => {
+    const t = setup();
+    await t.time.pass(100);
+    const path = "/v1/comma/workspaces/wsp/task-requests/trq_1/accept";
+    t.api.on("POST", path, {
+      ...pending,
+      status: "accepted",
+      task: { group_id: "g", id: "t3" },
+    });
+    await t.client.call("taskRequests.accept", {
+      workspace: "wsp",
+      request: "trq_1",
+      content: "Summarize Q3",
+      run: { kind: "cloud" },
+    });
+    expect(t.api.seen("POST", path)[0]?.body).toEqual({
+      to: "task",
+      content: "Summarize Q3",
+      runs_on: { kind: "salix" },
     });
   });
 
@@ -307,6 +353,59 @@ describe("Settings › Task requests", () => {
     ).toBe(token);
   });
 
+  it("reads again once a new account's Workspace is ready, without a reload", async () => {
+    const t = setup();
+    // Signed in before the Workspace made at sign-in is there: the page has no workspace to invite from.
+    t.api.on("GET", "/v1/comma/workspaces", { data: [] });
+    await t.time.pass(100);
+    expect(t.shown()).toMatchObject({ workspace: null });
+
+    // The Workspace is ready and another surface reads the list: the page reads its lists for it.
+    t.api.on("GET", "/v1/comma/workspaces", { data: [workspace] });
+    t.client.subscribe(
+      { topic: "workspace" },
+      () => undefined,
+      () => undefined
+    );
+    await t.time.pass(100);
+    expect(t.shown()).toMatchObject({ workspace: "wsp", grants: [] });
+  });
+
+  it("hides a decided sent request on the server and resolves one-way grant avatars", async () => {
+    const t = setup();
+    t.api.on("GET", "/v1/comma/workspaces/wsp/task-request-grants", [
+      {
+        id: "trg_oneway",
+        status: "active",
+        mode: "review",
+        daily_limit: 20,
+        pending_limit: 10,
+        grantee: {
+          id: "u3",
+          name: "Grantee",
+          email: "g@example.com",
+          avatar_id: "avt_3",
+        },
+        created_at: 10,
+      },
+    ]);
+    await t.time.pass(100);
+    expect(t.shown()?.people?.find((p) => p.id === "u3")?.avatar).toEqual({
+      source: "grant-avatar",
+      workspace: "wsp",
+      grant: "trg_oneway",
+      revision: "avt_3",
+    });
+
+    t.api.on("DELETE", "/v1/comma/sent-task-requests/trq_done", { hidden: true });
+    await expect(
+      t.client.call("taskRequests.hide", { request: "trq_done" })
+    ).resolves.toBeNull();
+    expect(t.api.seen("DELETE", "/v1/comma/sent-task-requests/trq_done")).toHaveLength(
+      1
+    );
+  });
+
   it("keeps the lists it had and says a read failed", async () => {
     const t = setup();
     await t.time.pass(100);
@@ -318,5 +417,44 @@ describe("Settings › Task requests", () => {
       sent: [],
       error: true,
     });
+  });
+
+  it("enforces the 1000 UTF-8 byte limit on decline reasons", async () => {
+    const t = setup();
+    await t.time.pass(100);
+    const overLimit = "中".repeat(334);
+    await expect(
+      t.client.call("taskRequests.decline", {
+        workspace: "wsp",
+        request: "trq_1",
+        reason: overLimit,
+      })
+    ).rejects.toThrow(/reason is invalid/);
+    expect(
+      t.api.seen("POST", "/v1/comma/workspaces/wsp/task-requests/trq_1/decline")
+    ).toHaveLength(0);
+
+    const atLimit = "中".repeat(333);
+    t.api.on("POST", "/v1/comma/workspaces/wsp/task-requests/trq_1/decline", {
+      id: "trq_1",
+      sender: { id: "u2", name: "Sender", email: "sender@example.com" },
+      title: "Summarize Q3",
+      content: "Summarize Q3 from the sheet",
+      status: "declined",
+      decline_reason: atLimit,
+      task: null,
+      created_at: 1,
+      expires_at: 2,
+    });
+    await expect(
+      t.client.call("taskRequests.decline", {
+        workspace: "wsp",
+        request: "trq_1",
+        reason: atLimit,
+      })
+    ).resolves.toBeNull();
+    expect(
+      t.api.seen("POST", "/v1/comma/workspaces/wsp/task-requests/trq_1/decline")
+    ).toHaveLength(1);
   });
 });

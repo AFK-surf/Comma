@@ -1,5 +1,7 @@
 import XCTest
 import AVFAudio
+import SwiftUI
+import UIKit
 import CommaCore
 @testable import Comma
 
@@ -177,7 +179,9 @@ import CommaCore
         cloud.text = "Summarize the release"
         let cloudTask = await cloud.start(); XCTAssertEqual(cloudTask, "cloud-task")
         let sent = try XCTUnwrap(h.core.calls("chat.startTask").first)
-        XCTAssertEqual((sent["model"] as? [String: String])?["id"], "gpt-5.5")
+        // The Workspace runs Tasks on Comma's built-in model: listed first, it starts the Task with no model.
+        XCTAssertEqual(cloud.cloudModels.map(\.name), ["Comma built-in", "GPT-5.5"])
+        XCTAssertNil(sent["model"])
         XCTAssertEqual(sent["workspaceId"] as? String, "w1")
         XCTAssertTrue(h.core.calls("coding.start").isEmpty)
 
@@ -192,6 +196,22 @@ import CommaCore
         let sandboxTask = await sandbox.start(); XCTAssertEqual(sandboxTask, "code-1")
         XCTAssertNil(h.core.calls("coding.start").last?["repo"])
         XCTAssertEqual(h.core.calls("coding.start").last?["accountId"] as? String, "profile-1")
+    }
+
+    func testSandboxOffersNoRuntimeWithoutAnAccountItCanRunOn() async throws {
+        let h = try StoreHarness(); PhoneMigrationFixtures.configure(h.core)
+        h.core.serve("models") { _ in
+            var agents = PhoneFeatureFixtures.agents
+            agents["task_place"] = ["place": ["kind": "salix"], "sandboxes": true, "sandbox_runtimes": ["codex"]]
+            return ["workspace": "w1", "catalog": PhoneFeatureFixtures.catalog, "presets": [], "profiles": [], "models": [], "agents": agents, "error": false]
+        }
+        await h.start()
+        let m = PhoneNewTaskModel(store: h.store, workspace: try XCTUnwrap(h.store.workspace))
+        let models = Task { await m.models.follow() }; defer { models.cancel() }
+        try await ready { m.models.loaded }
+        m.environmentID = "plain_sandbox"
+        // Claude Code has no subscription, and nothing Salix lends the sandbox runs it.
+        XCTAssertEqual(m.runs.map(\.runtime), ["codex"])
     }
 
     func testStationEnvironmentKeepsChoiceAndBlocksCreationAfterItGoesOffline() async throws {
@@ -253,7 +273,7 @@ import CommaCore
         XCTAssertEqual(m.commits.count, 1)
     }
 
-    func testDriveNavigatesSpaceFoldersAndBreadcrumbsWithoutReadingFiles() async throws {
+    func testDriveNavigatesSpaceFoldersAndSearchWithoutReadingFiles() async throws {
         let h = try StoreHarness(); PhoneMigrationFixtures.configure(h.core)
         h.core.serve("drive") { _ in PhoneMigrationFixtures.driveHierarchy }
         await h.start()
@@ -261,33 +281,66 @@ import CommaCore
         let follow = Task { await m.follow() }; defer { follow.cancel() }
         try await ready { m.feed.loaded }
         XCTAssertEqual(m.selectedSpaceID, "projects")
-        XCTAssertEqual(m.entries.map(\.name), ["Design", "Design-archive", "readme.md"])
+        XCTAssertEqual(m.entries(in: "projects", path: []).map(\.name), ["Design", "Design-archive", "readme.md"])
+        XCTAssertEqual(m.entryCount(in: "projects", path: ["Design"]), 2)
         m.openFolder("Design")
         XCTAssertEqual(m.folderPath, ["Design"])
-        XCTAssertEqual(m.entries.map(\.name), ["2026", "brief.md"])
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design"]).map(\.name), ["2026", "brief.md"])
         m.openFolder("2026")
-        XCTAssertEqual(m.entries.map(\.name), ["roadmap.md"])
-        m.navigate(to: 1)
+        XCTAssertEqual(m.folderPath, ["Design", "2026"])
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design", "2026"]).map(\.name), ["roadmap.md"])
+        m.popFolder(toDepth: 1)
         XCTAssertEqual(m.folderPath, ["Design"])
-        XCTAssertEqual(m.entries.map(\.name), ["2026", "brief.md"])
-        m.navigate(to: 0)
+        m.popFolder(toDepth: 0)
         XCTAssertTrue(m.folderPath.isEmpty)
-        m.query = "roadmap"
-        XCTAssertEqual(m.entries.map(\.name), ["Design"], "Search preserves the matching file's hierarchy")
-        m.openFolder("Design"); m.openFolder("2026")
-        XCTAssertEqual(m.entries.map(\.name), ["roadmap.md"])
+
+        let rootSearch = m.searchFiles(in: "projects", under: [], query: "roadmap")
+        XCTAssertEqual(rootSearch.results.map(\.file.name), ["roadmap.md"], "Search returns matching files directly")
+        XCTAssertEqual(rootSearch.results.map(\.relativeFolder), ["Design / 2026"])
+        let rootAncestorSearch = m.searchFiles(in: "projects", under: [], query: "Design")
+        XCTAssertEqual(rootAncestorSearch.results.map(\.file.name), ["brief.md", "old.md", "roadmap.md"])
+        let folderSearch = m.searchFiles(in: "projects", under: ["Design"], query: "roadmap")
+        XCTAssertEqual(folderSearch.results.map(\.relativeFolder), ["2026"])
+        let ancestorInSubfolder = m.searchFiles(in: "projects", under: ["Design"], query: "Design")
+        XCTAssertTrue(ancestorInSubfolder.results.isEmpty, "Subfolder search must not match ancestor folder names")
+        let relativeSubfolderSearch = m.searchFiles(in: "projects", under: ["Design"], query: "2026")
+        XCTAssertEqual(relativeSubfolderSearch.results.map(\.file.name), ["roadmap.md"])
+        let directFileSearch = m.searchFiles(in: "projects", under: ["Design"], query: "brief")
+        XCTAssertEqual(directFileSearch.results.map(\.file.name), ["brief.md"])
+        XCTAssertEqual(directFileSearch.results.map(\.relativeFolder), [""])
+
+        // Catalog updates invalidate the search cache.
+        var updated = PhoneMigrationFixtures.driveHierarchy
+        var files = try XCTUnwrap(updated["files"] as? [[String: Any]])
+        files.append(["id": "roadmap-2", "spaceId": "projects", "name": "roadmap-q2.md", "folderPath": "Design/2026", "sizeBytes": 64])
+        updated["files"] = files
+        h.core.publish("drive", updated)
+        try await ready { m.searchFiles(in: "projects", under: ["Design"], query: "roadmap").total == 2 }
+
+        // Initial memory path prefills only server-writable memory directories and falls back to /memory/scoped/ from top-level memory/.
+        XCTAssertEqual(PhoneDriveModel.initialMemoryPath(for: []), "/memory/scoped/")
+        XCTAssertEqual(PhoneDriveModel.initialMemoryPath(for: ["memory"]), "/memory/scoped/")
+        XCTAssertEqual(PhoneDriveModel.initialMemoryPath(for: ["memory", "scoped"]), "/memory/scoped/")
+        XCTAssertEqual(PhoneDriveModel.initialMemoryPath(for: ["memory", "episodes"]), "/memory/episodes/")
+        XCTAssertEqual(PhoneDriveModel.initialMemoryPath(for: ["memory", "team"]), "/memory/scoped/")
+        XCTAssertEqual(PhoneDriveModel.initialMemoryPath(for: ["Skills"]), "/memory/scoped/")
+        let prefilled = PhoneDriveDocument(scope: m.scope, initialPath: PhoneDriveModel.initialMemoryPath(for: ["memory", "episodes"]))
+        XCTAssertEqual(prefilled.path, "/memory/episodes/")
+
         m.selectSpace("comma-system-files")
-        XCTAssertTrue(m.query.isEmpty); XCTAssertTrue(m.folderPath.isEmpty)
         XCTAssertEqual(m.selectedSpace?.name, String(localized: "System Files"))
-        XCTAssertEqual(m.entries.map(\.name), ["memory", "Instructions.md"])
-        m.openFolder("memory"); m.openFolder("scoped")
-        XCTAssertEqual(m.entries.map(\.name), ["project.md"], "Another Group's files never enter the directory index")
+        XCTAssertTrue(m.folderPath.isEmpty)
+        XCTAssertEqual(m.entries(in: "comma-system-files", path: []).map(\.name), ["memory", "Instructions.md"])
+        XCTAssertEqual(m.entries(in: "comma-system-files", path: ["memory", "scoped"]).map(\.name), ["project.md"],
+                       "Another Group's files never enter the directory index")
         XCTAssertEqual(h.core.topics("drive").count, 1)
         XCTAssertTrue(h.core.calls("drive.read").isEmpty)
         XCTAssertTrue(h.core.calls("systemFiles.read").isEmpty)
         h.store.workspace = Workspace(id: "other", groupID: "other-group", name: "Other")
-        m.navigate(to: 0)
-        XCTAssertEqual(m.folderPath, ["memory", "scoped"], "A retired browser cannot continue navigation")
+        m.selectSpace("projects")
+        XCTAssertEqual(m.selectedSpaceID, "comma-system-files", "A retired browser cannot switch spaces")
+        m.openFolder("memory")
+        XCTAssertTrue(m.folderPath.isEmpty, "A retired browser cannot continue navigation")
     }
 
     func testDriveBoundsFolderPagesAndReconcilesRemovedFoldersAndSpaces() async throws {
@@ -300,26 +353,90 @@ import CommaCore
         var catalog = PhoneMigrationFixtures.driveHierarchy
         catalog["files"] = (0..<205).map { ["id": "f\($0)", "name": "File \($0).md", "spaceId": "projects", "folderPath": "Design/2026", "sizeBytes": 1] as [String: Any] }
         h.core.publish("drive", catalog)
-        try await ready { m.entries.map(\.name) == ["Design"] }
+        try await ready { m.entries(in: "projects", path: []).map(\.name) == ["Design"] }
         m.openFolder("Design"); m.openFolder("2026")
-        XCTAssertEqual(m.entries.count, 100); XCTAssertEqual(m.pageCount, 3)
-        XCTAssertEqual(m.entries.first?.name, "File 0.md")
-        m.movePage(by: 2)
-        XCTAssertEqual(m.entries.count, 5); XCTAssertEqual(m.entries.first?.name, "File 200.md")
-        m.navigate(to: 0)
-        XCTAssertEqual(m.page, 0); XCTAssertEqual(m.entries.map(\.name), ["Design"])
-        m.openFolder("Design"); m.openFolder("2026")
+        XCTAssertEqual(m.folderPath, ["Design", "2026"])
+        XCTAssertEqual(m.pageCount(in: "projects", path: ["Design", "2026"]), 3)
+        XCTAssertEqual(PhoneDriveModel.clampedPage(2, pageCount: 3), 2)
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design", "2026"], page: 0).count, 100)
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design", "2026"], page: 0).first?.name, "File 0.md")
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design", "2026"], page: 2).count, 5)
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design", "2026"], page: 2).first?.name, "File 200.md")
+        XCTAssertTrue(m.directoryExists(in: "projects", path: ["Design", "2026"]))
+
+        // Shrinking the directory clamps an out-of-range page into the new page count.
+        catalog["files"] = (0..<150).map { ["id": "f\($0)", "name": "File \($0).md", "spaceId": "projects", "folderPath": "Design/2026", "sizeBytes": 1] as [String: Any] }
+        h.core.publish("drive", catalog)
+        try await ready { m.pageCount(in: "projects", path: ["Design", "2026"]) == 2 }
+        XCTAssertEqual(PhoneDriveModel.clampedPage(2, pageCount: m.pageCount(in: "projects", path: ["Design", "2026"])), 1)
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design", "2026"], page: 2).count, 50)
+
         catalog["files"] = [["id": "kept", "name": "kept.md", "spaceId": "projects", "folderPath": "Design", "sizeBytes": 1]]
         h.core.publish("drive", catalog)
         try await ready { m.folderPath == ["Design"] }
-        XCTAssertEqual(m.entries.map(\.name), ["kept.md"], "A removed folder returns to its nearest surviving parent")
+        XCTAssertFalse(m.directoryExists(in: "projects", path: ["Design", "2026"]))
+        XCTAssertTrue(m.directoryExists(in: "projects", path: ["Design"]))
+        XCTAssertEqual(m.entries(in: "projects", path: ["Design"]).map(\.name), ["kept.md"], "A removed folder returns to its nearest surviving parent")
         m.selectSpace("empty")
-        XCTAssertTrue(m.entries.isEmpty); XCTAssertEqual(m.pageCount, 1)
+        XCTAssertTrue(m.folderPath.isEmpty)
+        XCTAssertTrue(m.entries(in: "empty", path: []).isEmpty)
+        XCTAssertEqual(m.pageCount(in: "empty", path: []), 1)
         catalog["spaces"] = [["id": "comma-system-files", "name": ""]]
         catalog["files"] = [PhoneMigrationFixtures.driveFile]
         h.core.publish("drive", catalog)
         try await ready { m.selectedSpaceID == "comma-system-files" }
-        XCTAssertTrue(m.folderPath.isEmpty); XCTAssertEqual(m.entries.map(\.name), ["memory"])
+        XCTAssertTrue(m.folderPath.isEmpty)
+        XCTAssertEqual(m.entries(in: "comma-system-files", path: []).map(\.name), ["memory"])
+    }
+
+    func testDriveSubscriptionSurvivesFolderNavigationAndReceivesLiveUpdates() async throws {
+        let h = try StoreHarness(); PhoneMigrationFixtures.configure(h.core)
+        h.core.serve("drive") { _ in PhoneMigrationFixtures.driveHierarchy }
+        h.core.on("drive.refresh") { _ in NSNull() }
+        await h.start()
+        let m = PhoneDriveModel(store: h.store, workspace: try XCTUnwrap(h.store.workspace))
+        defer { m.stopFollowing() }
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let original = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: NavigationStack { PhoneDriveView(model: m) }.environment(AppNavigation(tab: .settings)))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
+
+        try await ready { m.feed.loaded }
+        XCTAssertEqual(h.core.topics("drive").count, 1)
+
+        // Push into a subfolder so the root PhoneDriveView is covered by PhoneDriveFolderView.
+        m.openFolder("Design")
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(m.folderPath, ["Design"])
+        XCTAssertEqual(h.core.topics("drive").count, 1, "Folder navigation must not open a second Drive subscription")
+
+        // Live catalog updates and pull-to-refresh must still reach the model while inside the pushed folder.
+        var catalog = PhoneMigrationFixtures.driveHierarchy
+        var files = try XCTUnwrap(catalog["files"] as? [[String: Any]])
+        files.append(["id": "live-1", "spaceId": "projects", "name": "live-update.md", "folderPath": "Design", "sizeBytes": 32])
+        catalog["files"] = files
+        h.core.publish("drive", catalog)
+        try await ready { m.entries(in: "projects", path: ["Design"]).map(\.name).contains("live-update.md") }
+
+        await m.refresh()
+        XCTAssertEqual(h.core.calls("drive.refresh").count, 1)
+        files.append(["id": "live-2", "spaceId": "projects", "name": "after-refresh.md", "folderPath": "Design", "sizeBytes": 48])
+        catalog["files"] = files
+        h.core.publish("drive", catalog)
+        try await ready { m.entries(in: "projects", path: ["Design"]).map(\.name).contains("after-refresh.md") }
+
+        // Push deeper, then delete both ancestor and leaf at once: the stack unwinds cleanly to root without re-subscribing.
+        m.openFolder("2026")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(m.folderPath, ["Design", "2026"])
+        catalog["files"] = [["id": "root", "spaceId": "projects", "name": "readme.md", "folderPath": "", "sizeBytes": 128]]
+        h.core.publish("drive", catalog)
+        try await ready { m.folderPath.isEmpty }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(h.core.topics("drive").count, 1, "Returning to the Drive root must not re-subscribe")
     }
 
     func testMemorySaveNamesTheReadVersionAndPreservesUnsavedTextOnConflict() async throws {
@@ -429,6 +546,44 @@ import CommaCore
         try await ready { !h.core.calls("dynamicUiState.save").isEmpty }
         XCTAssertEqual(h.core.calls("dynamicUiState.save").last?["kind"] as? String, "state")
     }
+
+    func testIMessageConnectAsksForTheAccountOnlyWhenTheLineNeedsItAndComposesTheCode() async throws {
+        let h = try StoreHarness(); PhoneMigrationFixtures.configure(h.core); await h.start()
+        h.core.serve("imessage") { _ in ["state": ["connection_active": false, "pending_claim": NSNull(), "link": NSNull()], "busy": false, "error": false] }
+        h.core.on("imessage.start") { params in
+            guard params["handle"] != nil else { throw CoreError(code: "imessage_handle_required", message: "Enter your account.") }
+            return NSNull()
+        }
+        let model = PhoneChannelModel(store: h.store, workspace: try XCTUnwrap(h.store.workspace), channel: .imessage)
+        let follow = Task { await model.feed.follow() }; defer { follow.cancel() }
+        try await ready { model.feed.loaded }
+
+        // Connect first asks for a code with no account; a shared line refuses, and the page asks for the account.
+        _ = await model.connect()
+        XCTAssertNil(h.core.calls("imessage.start").first?["handle"])
+        XCTAssertTrue(model.needsHandle)
+        XCTAssertFalse(model.composeWhenReady)
+        XCTAssertNil(model.scope.error, "The refusal asks for input; it is not an error")
+
+        model.input = " +12025550123 "
+        _ = await model.connect()
+        XCTAssertEqual(h.core.calls("imessage.start").last?["handle"] as? String, "+12025550123")
+        XCTAssertFalse(model.needsHandle)
+        XCTAssertTrue(model.composeWhenReady, "Messages opens when the code arrives")
+
+        h.core.publish("imessage", ["state": ["connection_active": false, "link": NSNull(), "pending_claim": [
+            "code": "ab12 cd", "expires_at": 9_999_999_999, "transport": "photon",
+            "sender_handle": "+12025550123", "line_handle": "+14155550100"]], "busy": false, "error": false])
+        try await ready { model.imessageAttempt != nil }
+        XCTAssertEqual(model.imessageComposeURL?.absoluteString, "sms:+14155550100&body=ab12%20cd")
+    }
+
+    func testIMessageHandlesReadAsPeopleWriteThem() {
+        XCTAssertEqual(IMessageHandle.display("+12025550123"), "+1 (202) 555-0123")
+        XCTAssertEqual(IMessageHandle.display("+447700900123"), "+447700900123", "Other countries stay as given")
+        XCTAssertEqual(IMessageHandle.display("alex@example.com"), "alex@example.com")
+    }
+
     private func ready(_ condition: @escaping @MainActor () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }

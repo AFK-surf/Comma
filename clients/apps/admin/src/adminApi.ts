@@ -38,6 +38,7 @@ export interface AdminSessionFilters {
     | "android"
     | "ios"
     | "watch"
+    | "raycast"
     | "api"
     | "ssh";
   sort: "last_seen_at" | "created_at";

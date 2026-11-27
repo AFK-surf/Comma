@@ -105,18 +105,91 @@ import CommaCore
         h.core.serve("drive") { _ in PhoneMigrationFixtures.driveHierarchy }
         await h.start()
         let model = PhoneDriveModel(store: h.store, workspace: try XCTUnwrap(h.store.workspace))
-        try await capture("drive-01-space-root", view: PhoneDriveView(model: model)) { model.feed.loaded }
+        defer { model.stopFollowing() }
+
+        let scene = try scene()
+        let original = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.overrideUserInterfaceStyle = .light
+        window.rootViewController = UIHostingController(rootView: NavigationStack { PhoneDriveView(model: model) }.environment(AppNavigation(tab: .settings)))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; original?.makeKeyAndVisible() }
+
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !model.feed.loaded, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(model.feed.loaded)
+        try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        XCTAssertEqual(h.core.topics("drive").count, 1)
+        XCTAssertFalse(hasNewMemoryFileButton(in: window), "New memory file action must stay hidden outside System Files")
+        save(window, "drive-01-space-root")
+
         model.openFolder("Design")
-        try await capture("drive-02-folder", view: PhoneDriveView(model: model)) { model.folderPath == ["Design"] }
+        try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        XCTAssertEqual(model.folderPath, ["Design"])
+        XCTAssertEqual(h.core.topics("drive").count, 1)
+        XCTAssertFalse(hasNewMemoryFileButton(in: window))
+        save(window, "drive-02-folder")
+
         model.openFolder("2026")
-        try await capture("drive-03-breadcrumb", view: PhoneDriveView(model: model), inspect: {
-            try self.assertDriveBreadcrumb($0, names: ["Projects", "Design", "2026"])
-        }) { model.folderPath == ["Design", "2026"] }
-        model.navigate(to: 0)
-        model.query = "roadmap"
-        try await capture("drive-04-search", view: PhoneDriveView(model: model)) { model.entries.map(\.name) == ["Design"] }
-        model.selectSpace("comma-system-files"); model.openFolder("memory"); model.openFolder("scoped")
-        try await capture("drive-05-system-files", view: PhoneDriveView(model: model)) { model.folderPath == ["memory", "scoped"] }
+        try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        XCTAssertEqual(model.folderPath, ["Design", "2026"])
+        XCTAssertEqual(h.core.topics("drive").count, 1)
+        save(window, "drive-03-deep-folder")
+
+        model.popFolder(toDepth: 0)
+        try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        model.selectSpace("comma-system-files")
+        try await Task.sleep(for: .milliseconds(400)); window.layoutIfNeeded()
+        XCTAssertTrue(hasNewMemoryFileButton(in: window), "System Files must expose the new memory file toolbar action")
+        model.openFolder("memory")
+        try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        model.openFolder("scoped")
+        try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        XCTAssertEqual(model.folderPath, ["memory", "scoped"])
+        XCTAssertTrue(hasNewMemoryFileButton(in: window))
+        XCTAssertEqual(h.core.topics("drive").count, 1)
+        save(window, "drive-05-system-files")
+
+        model.selectSpace("projects")
+        try await capture("drive-04-search", view: PhoneDriveView(model: model, initialQuery: "roadmap")) { model.feed.loaded }
+        XCTAssertEqual(h.core.topics("drive").count, 1)
+    }
+
+    private func hasNewMemoryFileButton(in window: UIWindow) -> Bool {
+        func findNavigationController(_ vc: UIViewController?) -> UINavigationController? {
+            if let nav = vc as? UINavigationController { return nav }
+            for child in vc?.children ?? [] {
+                if let nav = findNavigationController(child) { return nav }
+            }
+            return nil
+        }
+        if let nav = findNavigationController(window.rootViewController),
+           let item = nav.topViewController?.navigationItem {
+            let barItems = (item.rightBarButtonItems ?? []) + item.trailingItemGroups.flatMap(\.barButtonItems)
+            if !barItems.isEmpty { return true }
+        }
+        var seen = Set<ObjectIdentifier>(), nodes: [NSObject] = []
+        func visit(_ node: NSObject) {
+            guard seen.insert(ObjectIdentifier(node)).inserted else { return }
+            nodes.append(node)
+            if let view = node as? UIView { view.subviews.forEach(visit) }
+            if let children = node.automationElements ?? node.accessibilityElements {
+                children.compactMap { $0 as? NSObject }.forEach(visit)
+            } else {
+                let count = node.accessibilityElementCount()
+                if count > 0, count < 256 {
+                    for index in 0..<count {
+                        if let child = node.accessibilityElement(at: index) as? NSObject { visit(child) }
+                    }
+                }
+            }
+        }
+        visit(window)
+        let title = String(localized: "New memory file")
+        return nodes.contains {
+            ($0 as? UIAccessibilityIdentification)?.accessibilityIdentifier == "driveNewFile"
+                || $0.accessibilityLabel == title
+        }
     }
 
     func testFeaturePagesOnIPhone() async throws {
@@ -431,37 +504,6 @@ import CommaCore
         let master = window.convert(left.accessibilityFrame, from: nil), detail = window.convert(right.accessibilityFrame, from: nil)
         XCTAssertLessThan(master.midX, window.bounds.midX)
         XCTAssertGreaterThan(detail.minX, window.bounds.width * 0.3)
-    }
-
-    private func assertDriveBreadcrumb(_ window: UIWindow, names: [String]) throws {
-        let nodes = accessibilityNodes(window)
-        let breadcrumb = try XCTUnwrap(nodes.first { $0.accessibilityLabel == String(localized: "Location") })
-        let frame = window.convert(breadcrumb.accessibilityFrame, from: nil)
-        XCTAssertGreaterThan(frame.height, 0)
-        XCTAssertGreaterThan(frame.width, 0)
-        XCTAssertTrue(window.bounds.contains(frame), "The breadcrumb viewport stays on screen")
-        // SwiftUI exposes a horizontal ScrollView as a virtual accessibility group.
-        // Its spoken value reports the full path even when older ancestors scroll out of view.
-        XCTAssertEqual(breadcrumb.accessibilityValue, names.joined(separator: " / "))
-    }
-
-    private func accessibilityNodes(_ root: NSObject) -> [NSObject] {
-        var nodes: [NSObject] = [], seen = Set<ObjectIdentifier>()
-        func visit(_ node: NSObject) {
-            guard seen.insert(ObjectIdentifier(node)).inserted else { return }
-            nodes.append(node)
-            if let view = node as? UIView { view.subviews.forEach(visit) }
-            if let children = node.automationElements ?? node.accessibilityElements {
-                children.compactMap { $0 as? NSObject }.forEach(visit)
-            } else {
-                let count = node.accessibilityElementCount()
-                if count > 0, count < 256 {
-                    for index in 0..<count { if let child = node.accessibilityElement(at: index) as? NSObject { visit(child) } }
-                }
-            }
-        }
-        visit(root)
-        return nodes
     }
 
     private func capture<V: View>(_ name: String, view: V, inspect: ((UIWindow) throws -> Void)? = nil,

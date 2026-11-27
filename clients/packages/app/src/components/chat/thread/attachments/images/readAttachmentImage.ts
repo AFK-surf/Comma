@@ -1,6 +1,6 @@
 import type { CallFn } from "@comma/core-client";
 import type { ChatAttachment } from "@comma/core/chat";
-import { isGroupImagePreviewPath } from "@comma/core/chat";
+import { isGroupImagePreviewPath, isTaskFilePath } from "@comma/core/chat";
 import { readFileBlob } from "../../../../../runtime-files/fileSources";
 import type { ThreadFileSource } from "../../threadContexts";
 
@@ -49,7 +49,14 @@ export async function readAttachmentImage(
     if (attachment.workspacePath && isGroupImagePreviewPath(attachment.workspacePath))
       return readFileBlob(
         call,
-        { source: "group-file", group, path: attachment.workspacePath },
+        {
+          source: "group-file",
+          group,
+          path: attachment.workspacePath,
+          ...(isTaskFilePath(attachment.workspacePath)
+            ? { task: sourceContext.conversationId }
+            : {}),
+        },
         signal
       );
   }

@@ -6,32 +6,82 @@ defmodule BridgeForTeams.DailyBrief.People do
   back to an actor ref and a member.
 
   A member's label is their first name alias; anyone else's is the name
-  Slack shows for them, or else the id part of their ref. Labels are unique
+  Slack, Feishu, or Lark shows for them, or else the id part of their ref. Labels are unique
   within the pass.
   """
 
   alias BridgeForTeams.Schema.DailyBriefMember
   alias BridgeForTeams.DailyBrief.ActorRef
 
-  defstruct by_ref: %{}, by_label: %{}
+  defstruct by_ref: %{}, by_label: %{}, unmentionable: MapSet.new()
 
   @type t :: %__MODULE__{
           by_ref: %{ActorRef.t() => String.t()},
-          by_label: %{String.t() => {ActorRef.t(), Ecto.UUID.t() | nil}}
+          by_label: %{String.t() => {ActorRef.t(), Ecto.UUID.t() | nil}},
+          unmentionable: MapSet.t(ActorRef.t())
         }
 
-  @doc "A table of the members, then of `refs` in order; `names` are known names by ref."
-  @spec build([DailyBriefMember.t()], [ActorRef.t() | nil], %{ActorRef.t() => String.t()}) :: t()
-  def build(members, refs, names \\ %{}) do
+  @doc """
+  A table of the members, then of `refs` in order; `names` are known names by
+  ref. A member's label maps back to their ref in `app_id`, the Feishu or Lark
+  app whose bot sends the brief (their own ref without one). Their open ids
+  in other apps (messages read through another Swarm's bot) carry the same
+  label. `unmentionable` names external refs that cannot be `@`-mentioned in
+  `app_id`; a Feishu or Lark member without an open id in `app_id` is marked
+  unmentionable automatically.
+  """
+  @spec build(
+          [DailyBriefMember.t()],
+          [ActorRef.t() | nil],
+          %{ActorRef.t() => String.t()},
+          String.t() | nil,
+          Enumerable.t()
+        ) :: t()
+  def build(members, refs, names \\ %{}, app_id \\ nil, unmentionable \\ []) do
     table =
       Enum.reduce(members, %__MODULE__{}, fn member, table ->
-        add(table, ActorRef.slack(member.slack_user_id), member_name(member), member.id)
+        primary = ActorRef.member_ref(member, app_id)
+        table = add(table, primary, member_name(member), member.id)
+
+        table =
+          if is_binary(app_id) and Map.get(member, :provider) in ["feishu", "lark"] and
+               is_nil(ActorRef.member_actor_id(member, app_id)) and is_binary(primary) do
+            %{table | unmentionable: MapSet.put(table.unmentionable, primary)}
+          else
+            table
+          end
+
+        case label(table, primary) do
+          nil ->
+            table
+
+          label ->
+            member
+            |> ActorRef.member_all_refs()
+            |> Enum.reduce(table, fn ref, table ->
+              %{table | by_ref: Map.put_new(table.by_ref, ref, label)}
+            end)
+        end
       end)
 
-    refs
-    |> Enum.reject(&is_nil/1)
-    |> Enum.reduce(table, fn ref, table -> add(table, ref, name(names, ref), nil) end)
+    table =
+      refs
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reduce(table, fn ref, table -> add(table, ref, name(names, ref), nil) end)
+
+    extra_unmentionable = MapSet.new(unmentionable)
+
+    if MapSet.size(extra_unmentionable) == 0 do
+      table
+    else
+      %{table | unmentionable: MapSet.union(table.unmentionable, extra_unmentionable)}
+    end
   end
+
+  @doc "Whether `ref` may be written as a native `@`-mention in the sending app."
+  @spec mentionable?(t(), ActorRef.t() | nil) :: boolean()
+  def mentionable?(%__MODULE__{unmentionable: unmentionable}, ref),
+    do: not MapSet.member?(unmentionable, ref)
 
   @doc "The label of a ref in the table, or `nil`."
   @spec label(t(), ActorRef.t() | nil) :: String.t() | nil
@@ -48,8 +98,20 @@ defmodule BridgeForTeams.DailyBrief.People do
   # A model that echoes a source's own mention still names someone in the table.
   def resolve(%__MODULE__{by_ref: by_ref} = table, "<@" <> _ = mention) do
     case Regex.run(~r/^<@([UW][A-Z0-9]{2,32})(?:\|[^>]*)?>$/, String.trim(mention)) do
-      [_, id] -> resolve(table, Map.get(by_ref, ActorRef.slack(id), ""))
-      nil -> {nil, nil}
+      [_, id] ->
+        resolve(table, Map.get(by_ref, ActorRef.slack(id), ""))
+
+      nil ->
+        case Regex.run(~r/^<@(ou_[A-Za-z0-9_-]{2,64})>$/, String.trim(mention)) do
+          [_, id] ->
+            label =
+              Map.get(by_ref, ActorRef.feishu(id)) || Map.get(by_ref, ActorRef.lark(id)) || ""
+
+            resolve(table, label)
+
+          nil ->
+            {nil, nil}
+        end
     end
   end
 
@@ -93,11 +155,11 @@ defmodule BridgeForTeams.DailyBrief.People do
 
     case names do
       [name | _] -> name
-      [] -> member.slack_user_id
+      [] -> ActorRef.member_actor_id(member)
     end
   end
 
-  defp member_name(member), do: member.slack_user_id
+  defp member_name(member), do: ActorRef.member_actor_id(member)
 
   defp name(names, ref) do
     case clean(Map.get(names, ref) || "") do

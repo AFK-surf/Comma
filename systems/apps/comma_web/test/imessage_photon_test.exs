@@ -70,8 +70,13 @@ defmodule CommaWeb.IMessagePhotonTest do
     defp respond(conn, "GET", "/messages") do
       notify({:photon_list, conn.query_params})
 
+      items =
+        if conn.query_params["direction"] == "sent",
+          do: setting(:photon_test_sent, []),
+          else: setting(:photon_test_received, [])
+
       case setting(:photon_test_list_status, 200) do
-        200 -> json(conn, 200, %{"items" => setting(:photon_test_received, [])})
+        200 -> json(conn, 200, %{"items" => items})
         status -> json(conn, status, %{"code" => "UPSTREAM_FAILURE"})
       end
     end
@@ -115,16 +120,19 @@ defmodule CommaWeb.IMessagePhotonTest do
               do: parent,
               else: plain
 
+          # One answer for each request, in order. Later requests are accepted.
+          [next | rest] ->
+            SystemsRuntime.put_env(:comma_web, :photon_test_send_response, rest)
+            next
+
+          [] ->
+            nil
+
           response ->
             response
         end
 
       case response do
-        :reject_caption ->
-          if get_in(Jason.decode!(conn.assigns.request_body), ["content", "type"]) == "text",
-            do: json(conn, 403, %{"code" => "SENDER_NOT_SENDABLE"}),
-            else: json(conn, 202, %{"id" => "pho_msg_sent", "status" => "dispatched"})
-
         {status, body} ->
           json(conn, status, body)
 
@@ -251,6 +259,7 @@ defmodule CommaWeb.IMessagePhotonTest do
             {:salix_im, :agent_workspace_mod},
             {:comma_web, :photon_test_pid},
             {:comma_web, :photon_test_received},
+            {:comma_web, :photon_test_sent},
             {:comma_web, :photon_test_assignments},
             {:comma_web, :photon_test_mode},
             {:comma_web, :photon_test_resources},
@@ -301,7 +310,8 @@ defmodule CommaWeb.IMessagePhotonTest do
   end
 
   test "phone attempt -> reply from that phone binds -> Router -> bound-space reply -> disconnect",
-       %{workspace: workspace, session: session} do
+       %{workspace: workspace, session: session, user: user} do
+    %{analytics_worker: analytics} = Comma.AnalyticsTestSupport.setup_collector()
     path = path(workspace)
     assert api(session, :post, path <> "/connect", %{"handle" => "not a phone"}).status == 400
 
@@ -338,7 +348,11 @@ defmodule CommaWeb.IMessagePhotonTest do
              "content" => %{"type" => "text", "format" => "plain", "text" => text}
            } = Jason.decode!(confirmation)
 
-    assert text =~ "connected"
+    assert text ==
+             """
+             iMessage is connected to Comma.
+             Text Comma here like a teammate. Send text or images, and Comma can reply with images, videos and files.\
+             """
 
     state = api(session, :get, path) |> json(200)
     assert state["connection_active"]
@@ -352,6 +366,22 @@ defmodule CommaWeb.IMessagePhotonTest do
     assert inspect(payload) =~ "hello Comma"
     assert opts[:source_message_id] =~ "m4"
     assert payload.trusted_origin["provider_context"]["chat_id"] == @space
+
+    # The binding and the bound person's message are observed; the unbound
+    # sender's messages and the connection code are not.
+    events = Comma.AnalyticsTestSupport.collect(analytics)
+
+    assert [connected] = Enum.filter(events, &(&1["event"] == "comma_integration_connected"))
+    assert connected["distinct_id"] == user["id"]
+    assert connected["properties"]["integration"] == "imessage"
+    assert connected["properties"]["workspace_id"] == workspace["id"]
+
+    assert [received] = Enum.filter(events, &(&1["event"] == "comma_channel_message_received"))
+    assert received["distinct_id"] == user["id"]
+    assert received["properties"]["integration"] == "imessage"
+    assert received["properties"]["workspace_id"] == workspace["id"]
+    refute Jason.encode!(events) =~ "hello Comma"
+    refute Jason.encode!(events) =~ @alice
 
     connect_id = state["link"]["connection_id"]
 
@@ -525,6 +555,125 @@ defmodule CommaWeb.IMessagePhotonTest do
     assert [_] = drain_sends()
   end
 
+  test "after a connect, the Agent gets the latest Messages sent with no binding, once", %{
+    workspace: workspace,
+    session: session
+  } do
+    now = SystemsClock.utc_now()
+    at = fn seconds -> now |> DateTime.add(seconds, :second) |> DateTime.to_iso8601() end
+
+    text = fn id, handle, body, seconds ->
+      received(id, handle, %{"type" => "text", "format" => "plain", "text" => body}, at.(seconds))
+    end
+
+    assert :ok = IMessageIntegration.handle_event(event("u1", @alice, "hello?"))
+    assert [_guidance] = drain_sends()
+    assert :ok = IMessageIntegration.handle_event(event("u2", @alice, "bridgebot status"))
+
+    unbound = for n <- 1..6, do: text.("u-#{n}", @alice, "question #{n}", n * 60)
+
+    attempt =
+      api(session, :post, path(workspace) <> "/connect", %{"handle" => @alice}) |> json(201)
+
+    flush_requests()
+    code = text.("u-code", @alice, attempt["code"], 600)
+
+    # Photon lists a Space newest first.
+    SystemsRuntime.put_env(
+      :comma_web,
+      :photon_test_received,
+      [
+        text.("u-after", @alice, "sent after the code", 660),
+        code,
+        text.("u-other", "+15550199", "someone else", 590),
+        text.("u-command", @alice, "bridgebot status", 580)
+        | Enum.reverse(unbound)
+      ] ++ [text.("u-old", @alice, "before the guidance", -3_600)]
+    )
+
+    {:ok, code_event} = PhotonIMessage.to_event(code)
+    assert :ok = IMessageIntegration.handle_event(code_event)
+
+    assert_received {:photon_list,
+                     %{"spaceId" => @space, "perspectiveUserId" => @agent_user} = query}
+
+    refute Map.has_key?(query, "createdSince")
+    assert [welcome] = drain_sends()
+    assert Jason.decode!(welcome)["content"]["text"] =~ "iMessage is connected"
+
+    settle_receive({:router_input, router, payload, opts})
+    assert router == workspace["router_agent_id"]
+    input = inspect(payload)
+
+    for n <- 2..6, do: assert(input =~ "question #{n}")
+
+    for hidden <- ["question 1", "bridgebot", "someone else", "after the code", "before the"],
+        do: refute(input =~ hidden)
+
+    assert opts[:source_message_id] =~ "burst:"
+    settle_refute_receive({:router_input, _, _, _})
+
+    # A sender that already had a binding gets nothing replayed on a new connect.
+    attempt =
+      api(session, :post, path(workspace) <> "/connect", %{"handle" => @alice}) |> json(201)
+
+    flush_requests()
+    code = text.("u-code-2", @alice, attempt["code"], 700)
+    SystemsRuntime.put_env(:comma_web, :photon_test_received, [code | Enum.reverse(unbound)])
+    {:ok, code_event} = PhotonIMessage.to_event(code)
+    assert :ok = IMessageIntegration.handle_event(code_event)
+    assert [_welcome] = drain_sends()
+    refute_received {:photon_list, %{"spaceId" => _}}
+    settle_refute_receive({:router_input, _, _, _})
+  end
+
+  test "group spaces with two participantIds are ignored without replies or quota use", %{
+    workspace: workspace,
+    user: user
+  } do
+    agent = bind(workspace, user)
+    stranger = "+15550177"
+    group_space = "pho_spc_0000000000000000000000group"
+
+    for {id, handle} <- [{"grp-bound", @alice}, {"grp-unbound", stranger}] do
+      msg =
+        received(id, handle, %{"type" => "text", "format" => "plain", "text" => "hi group"}, nil)
+        |> put_in(["space", "id"], group_space)
+        |> put_in(["space", "kind"], "group")
+
+      assert {:ok, %{"message" => %{"is_group" => true}} = group_event} =
+               PhotonIMessage.to_event(msg)
+
+      assert :ok = IMessageIntegration.handle_event(group_event)
+    end
+
+    assert [] = drain_sends()
+    settle_refute_receive({:router_input, ^agent, _, _})
+
+    # Ignoring the group message must not consume the unbound sender's daily guidance quota.
+    assert :ok = IMessageIntegration.handle_event(event("dm-after-grp", stranger, "hello"))
+    assert [guidance] = drain_sends()
+    assert Jason.decode!(guidance)["content"]["text"] =~ "Connect iMessage"
+
+    # Unrecognized non-direct kinds also fail closed as group; missing kind falls back to count.
+    unknown_kind =
+      received(
+        "grp-unknown",
+        @alice,
+        %{"type" => "text", "format" => "plain", "text" => "hi"},
+        nil
+      )
+      |> put_in(["space", "kind"], "channel")
+
+    assert {:ok, %{"message" => %{"is_group" => true}}} = PhotonIMessage.to_event(unknown_kind)
+
+    missing_kind =
+      received("dm-nokind", @alice, %{"type" => "text", "format" => "plain", "text" => "hi"}, nil)
+      |> update_in(["space"], &Map.delete(&1, "kind"))
+
+    assert {:ok, %{"message" => %{"is_group" => false}}} = PhotonIMessage.to_event(missing_kind)
+  end
+
   test "NUL characters in a pasted code do not stop the receiver", %{
     workspace: workspace,
     user: user
@@ -556,13 +705,57 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     flush_requests()
 
-    for id <- ["w1", "w2"] do
-      assert :ok = IMessageIntegration.handle_event(event(id, @alice, attempt["code"]))
+    for {id, text} <- [
+          {"w1", attempt["code"]},
+          {"w2", attempt["code"]},
+          {"w3", "bridgebot connect " <> attempt["code"]}
+        ] do
+      assert :ok = IMessageIntegration.handle_event(event(id, @alice, text))
       assert [reply] = drain_sends()
       assert Jason.decode!(reply)["content"]["text"] =~ "different iMessage account"
     end
 
     assert is_nil(IMessageLinks.get_link(workspace["id"]))
+  end
+
+  test "a binding that fails after its code is taken says so every time and logs why", %{
+    workspace: workspace,
+    user: user
+  } do
+    Comma.Repo.query!("UPDATE comma_workspaces SET salix_group_id = $1 WHERE id = $2", [
+      "grp1_0_0",
+      workspace["id"]
+    ])
+
+    for id <- ["f1", "f2"] do
+      {:ok, attempt} =
+        IMessageIntegration.start_connect(user, %{}, workspace["id"], %{"handle" => @alice})
+
+      flush_requests()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok =
+                   IMessageIntegration.handle_event(
+                     event(id, @alice, "bridgebot connect " <> attempt["code"])
+                   )
+        end)
+
+      assert log =~ "imessage_connect_failed transport=photon stage=link reason="
+      refute log =~ @alice
+      assert [reply] = drain_sends()
+      assert Jason.decode!(reply)["content"]["text"] =~ "Could not connect iMessage"
+    end
+
+    assert is_nil(IMessageLinks.get_link(workspace["id"]))
+  end
+
+  test "a handle takes its country code after + or 00, with common separators" do
+    for typed <- ["+1 (555) 010-0", "001 555 0100", "\uFF0B1\u00A0555\u2011010.0"],
+        do: assert(PhotonIMessage.normalize_handle(typed) == @alice)
+
+    for typed <- ["5550100", "0 555 0100", "+0 555 0100"],
+        do: assert(is_nil(PhotonIMessage.normalize_handle(typed)))
   end
 
   test "disconnecting gives the sender a new guidance reply", %{
@@ -745,7 +938,7 @@ defmodule CommaWeb.IMessagePhotonTest do
     assert {:ok, "test image bytes"} = SalixStore.Blob.get(agent, ref)
     settle_receive({:router_input, ^agent, _payload, _})
 
-    params = %{"chat_id" => @space, "path" => "/result.png", "caption" => "result"}
+    params = %{"chat_id" => @space, "path" => "/result.png", "caption" => "ignored"}
 
     assert {:ok, _} =
              SalixIM.Provider.call_api(agent, "imessage", "imessage.send_image", %{
@@ -755,12 +948,14 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     settle_receive({:photon, "POST", "/attachments", upload, _})
     assert upload =~ "result image bytes" and upload =~ ~s("filename":"result.png")
-    drain_sends()
 
-    for {response, code} <- [
-          {{403, %{"code" => "SHARED_LINE_INBOUND_REQUIRED"}}, "imessage_send_rejected"},
-          {{502, %{"code" => "UPSTREAM_FAILURE"}}, "imessage_delivery_unknown"},
-          {{202, %{}}, "imessage_delivery_unknown"}
+    assert [_welcome, %{"content" => %{"type" => "attachment", "attachmentId" => "att-out"}}] =
+             Enum.map(drain_sends(), &Jason.decode!/1)
+
+    for {response, code, requests} <- [
+          {{403, %{"code" => "SHARED_LINE_INBOUND_REQUIRED"}}, "imessage_send_rejected", 1},
+          {{502, %{"code" => "UPSTREAM_FAILURE"}}, "imessage_delivery_unknown", 3},
+          {{202, %{}}, "imessage_delivery_unknown", 1}
         ] do
       SystemsRuntime.put_env(:comma_web, :photon_test_send_response, response)
 
@@ -770,8 +965,111 @@ defmodule CommaWeb.IMessagePhotonTest do
                  "params" => %{"chat_id" => @space, "text" => "hello"}
                })
 
-      assert [_one_attempt] = drain_sends()
+      assert length(drain_sends()) == requests
     end
+  end
+
+  test "an unanswered send is repeated with its idempotency key", %{
+    workspace: workspace,
+    user: user
+  } do
+    agent = bind(workspace, user)
+    connect_id = IMessageLinks.get_link(workspace["id"]).connect_id
+
+    for unanswered <- [
+          {502, %{"code" => "UPSTREAM_FAILURE"}},
+          {409, %{"code" => "IDEMPOTENCY_REQUEST_IN_PROGRESS"}}
+        ] do
+      SystemsRuntime.put_env(:comma_web, :photon_test_send_response, [unanswered])
+
+      assert {:ok, %{"message_id" => "pho_msg_sent"}} =
+               imessage_call(agent, connect_id, "imessage.send_message", %{"text" => "hello"})
+
+      settle_receive({:photon, "POST", "/messages", first, [key]})
+      settle_receive({:photon, "POST", "/messages", ^first, [^key]})
+      assert [] = drain_sends()
+    end
+
+    # Photon never says whether it took the send: the outcome stays unknown.
+    SystemsRuntime.put_env(
+      :comma_web,
+      :photon_test_send_response,
+      {409, %{"code" => "IDEMPOTENCY_REQUEST_IN_PROGRESS"}}
+    )
+
+    assert {:error, %{"code" => "imessage_delivery_unknown", "delivery_status" => "unknown"}} =
+             imessage_call(agent, connect_id, "imessage.send_message", %{"text" => "hello"})
+
+    assert [_, _, _] = drain_sends()
+  end
+
+  test "a text with an unknown outcome is sent again only when Photon does not have it", %{
+    workspace: workspace,
+    user: user
+  } do
+    agent = bind(workspace, user)
+    connect_id = IMessageLinks.get_link(workspace["id"]).connect_id
+    unanswered = {502, %{"code" => "UPSTREAM_FAILURE"}}
+    SystemsRuntime.put_env(:comma_web, :photon_test_send_response, unanswered)
+
+    assert {:error, %{"code" => "imessage_delivery_unknown", "resend_token" => token}} =
+             imessage_call(agent, connect_id, "imessage.send_message", %{"text" => "hello"})
+
+    settle_receive({:photon, "POST", "/messages", body, [key]})
+    drain_sends()
+    resend = %{"text" => "hello", "resend_token" => token}
+
+    # Photon has the text: nothing is sent.
+    SystemsRuntime.put_env(:comma_web, :photon_test_send_response, [])
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_sent, [
+      %{
+        "id" => "pho_msg_first",
+        "status" => "dispatched",
+        "space" => %{"id" => @space},
+        "sentBy" => %{"id" => @agent_user},
+        "content" => %{"type" => "text", "format" => "plain", "text" => "hello"}
+      }
+    ])
+
+    assert {:ok, %{"message_id" => "pho_msg_first", "resend" => "already_sent"}} =
+             imessage_call(agent, connect_id, "imessage.send_message", resend)
+
+    assert [] = drain_sends()
+
+    # Photon does not have it: one request with the key and body of the first send.
+    SystemsRuntime.put_env(:comma_web, :photon_test_sent, [])
+
+    assert {:ok, %{"message_id" => "pho_msg_sent"}} =
+             imessage_call(agent, connect_id, "imessage.send_message", resend)
+
+    settle_receive({:photon, "POST", "/messages", ^body, [^key]})
+    assert [] = drain_sends()
+
+    # Another text with the token: Photon refuses the key, and the text goes as a new send.
+    SystemsRuntime.put_env(:comma_web, :photon_test_send_response, [
+      {422, %{"code" => "IDEMPOTENCY_KEY_REUSED"}}
+    ])
+
+    assert {:ok, %{"message_id" => "pho_msg_sent", "resend" => "sent_as_new_text"}} =
+             imessage_call(agent, connect_id, "imessage.send_message", %{
+               "text" => "another text",
+               "resend_token" => token
+             })
+
+    settle_receive({:photon, "POST", "/messages", _refused, [^key]})
+    settle_receive({:photon, "POST", "/messages", sent_as_new, [new_key]})
+    assert new_key != key
+    assert %{"content" => %{"text" => "another text"}} = Jason.decode!(sent_as_new)
+    assert [] = drain_sends()
+
+    assert {:error, %{"code" => "imessage_resend_token_invalid", "delivery_status" => "not_sent"}} =
+             imessage_call(agent, connect_id, "imessage.send_message", %{
+               "text" => "hello",
+               "resend_token" => "not-a-token"
+             })
+
+    assert [] = drain_sends()
   end
 
   test "a refused inline reply sends one ordinary message and reports the downgrade", %{
@@ -813,9 +1111,12 @@ defmodule CommaWeb.IMessagePhotonTest do
     assert Enum.map(manual["apis"], & &1["name"]) ==
              ["imessage.send_message", "imessage.send_image", "imessage.send_file"]
 
-    for api <- manual["apis"], do: assert(Map.has_key?(api["parameters"], "reply_to_message_id"))
+    for api <- manual["apis"] do
+      assert Map.has_key?(api["parameters"], "reply_to_message_id")
+      refute Map.has_key?(api["parameters"], "caption")
+    end
 
-    # An uncertain ordinary send must not be tried again after the refused reply.
+    # An uncertain ordinary send is repeated only with its own key, then stays unknown.
     SystemsRuntime.put_env(:comma_web, :photon_test_send_response, %{
       with_parent: replies_unsupported(),
       without_parent: {502, %{"code" => "UPSTREAM_FAILURE"}}
@@ -823,11 +1124,11 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     assert {:error, %{"code" => "imessage_delivery_unknown", "retryable" => false}} =
              imessage_call(agent, connect_id, "imessage.send_message", %{
-               "text" => "One attempt only.",
+               "text" => "One Message at most.",
                "reply_to_message_id" => "pho_msg_mine"
              })
 
-    assert [_, _] = drain_sends()
+    assert [_refused_reply, _, _, _] = drain_sends()
   end
 
   test "unsupported reactions and other reply failures send nothing else", %{
@@ -875,10 +1176,10 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     assert [] = drain_sends()
 
-    for {response, code} <- [
+    for {response, code, requests} <- [
           {{409, %{"code" => "SPACE_NOT_SENDABLE", "detail" => "Space is not active"}},
-           "imessage_send_rejected"},
-          {{502, %{"code" => "UPSTREAM_FAILURE"}}, "imessage_delivery_unknown"}
+           "imessage_send_rejected", 1},
+          {{502, %{"code" => "UPSTREAM_FAILURE"}}, "imessage_delivery_unknown", 3}
         ] do
       SystemsRuntime.put_env(:comma_web, :photon_test_send_response, response)
 
@@ -888,35 +1189,8 @@ defmodule CommaWeb.IMessagePhotonTest do
                  "reply_to_message_id" => "pho_msg_mine"
                })
 
-      assert [_] = drain_sends()
+      assert length(drain_sends()) == requests
     end
-  end
-
-  test "an accepted image with a refused caption must not be sent again", %{
-    workspace: workspace,
-    user: user
-  } do
-    agent = bind(workspace, user)
-    connect_id = IMessageLinks.get_link(workspace["id"]).connect_id
-
-    SystemsRuntime.put_env(:comma_web, :photon_test_send_response, %{
-      with_parent: replies_unsupported(),
-      without_parent: :reject_caption
-    })
-
-    assert {:error, %{"code" => "imessage_delivery_unknown", "retryable" => false}} =
-             imessage_call(agent, connect_id, "imessage.send_image", %{
-               "path" => "/result.png",
-               "caption" => "result",
-               "reply_to_message_id" => "pho_msg_mine"
-             })
-
-    assert [rejected_image, accepted_image, rejected_caption] =
-             Enum.map(drain_sends(), &Jason.decode!/1)
-
-    assert rejected_image["parentMessageId"] == "pho_msg_mine"
-    assert accepted_image == Map.delete(rejected_image, "parentMessageId")
-    assert rejected_caption["content"]["type"] == "text"
   end
 
   defp replies_unsupported do
@@ -1051,6 +1325,20 @@ defmodule CommaWeb.IMessagePhotonTest do
     assert inspect(payload) =~ "/imessage/attachments/"
     assert opts[:source_message_id] =~ "burst:"
 
+    # Home shows the image from the Router's copy of it.
+    group = workspace["default_group_id"]
+    {:ok, chat} = SalixIM.RouterConversationInput.ensure(group)
+
+    {:ok, messages} =
+      SalixIM.Conversations.list_group_conversation_messages(group, chat["conversation_id"])
+
+    assert [%{"platform_message" => %{"agent_id" => ^agent, "content" => content}}] =
+             Enum.filter(messages, &is_map(&1["platform_message"]))
+
+    assert [%{"type" => "text", "text" => "这是啥"}, %{"type" => "image"} = image] = content
+    assert image["mime_type"] == "image/png"
+    assert {:ok, "test image bytes"} = SalixStore.Blob.get(agent, image["blob_ref"])
+
     # Both Messages are checkpointed: the next pass delivers nothing.
     assert :ok = IMessagePhotonRuntime.run_once()
     settle_refute_receive({:router_input, _, _, _})
@@ -1084,8 +1372,7 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     assert {:ok, %{"message_id" => "pho_msg_sent"}} =
              imessage_call(agent, connect_id, "imessage.send_file", %{
-               "path" => "/clip.mp4",
-               "caption" => "Here is the clip."
+               "path" => "/clip.mp4"
              })
 
     settle_receive({:photon, "POST", "/attachments", upload, _})
@@ -1100,9 +1387,8 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     assert file == "content-type: video/mp4\r\n\r\nvideo bytes\r\n"
 
-    assert [attachment, caption] = Enum.map(drain_sends(), &Jason.decode!/1)
+    assert [attachment] = Enum.map(drain_sends(), &Jason.decode!/1)
     assert attachment["content"] == %{"type" => "attachment", "attachmentId" => "att-out"}
-    assert caption["content"]["text"] == "Here is the clip."
 
     # The workspace size refuses the file before any byte is read or sent.
     flush_requests()

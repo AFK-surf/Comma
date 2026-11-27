@@ -6,7 +6,9 @@ import {
   isInteractiveChatMessageTarget,
   resolveChatMessageArticleFromEventTarget,
   resolveChatMessageCopyText,
+  resolveChatMessageSelectionShare,
   resolveChatMessageText,
+  resolveShareSourceTitle,
   selectedTextInRoot,
 } from "../chatMessageContextMenu";
 
@@ -110,5 +112,82 @@ describe("chatMessageContextMenu", () => {
         text: "Streaming…",
       })
     ).toBe("Streaming…");
+  });
+
+  it("extracts selected text with inline and paragraph surrounding context", () => {
+    const article = document.createElement("article");
+    article.className = "comma-chat-message-assistant";
+    article.dataset.slot = "chat-assistant-output";
+    const p1 = document.createElement("p");
+    p1.textContent = "OpenAI 或 Anthropic 可能已经在内部做出了题。";
+    const p2 = document.createElement("p");
+    p2.textContent = "但现在的问题是，激励完全不同。";
+    const actions = document.createElement("div");
+    actions.className = "comma-chat-message-actions";
+    actions.textContent = "Copy";
+    article.append(p1, p2, actions);
+    document.body.appendChild(article);
+
+    const range = document.createRange();
+    range.setStart(p1.firstChild!, 13); // "ropic 可能..."
+    range.setEnd(p2.firstChild!, 10); // "但现在的问题是，激励"
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const payload = resolveChatMessageSelectionShare(article);
+    expect(payload).not.toBeNull();
+    expect(payload?.beforeContext).toBe("OpenAI 或 Anth");
+    expect(payload?.beforeJoin).toBe("inline");
+    expect(payload?.selectedText).toBe(
+      "ropic 可能已经在内部做出了题。\n\n但现在的问题是，激励"
+    );
+    expect(payload?.afterContext).toBe("完全不同。");
+    expect(payload?.afterJoin).toBe("inline");
+    expect(payload?.authorRole).toBe("assistant");
+
+    selection?.removeAllRanges();
+    expect(resolveChatMessageSelectionShare(article)).toBeNull();
+    document.body.removeChild(article);
+  });
+
+  it("resolves the latest Task title and omits titles for Router chats on share cards", () => {
+    expect(
+      resolveShareSourceTitle(
+        { kind: "agent_task", title: "Old task title", updated_at: 100 },
+        { kind: "agent_task", title: "Renamed task title", updated_at: 200 }
+      )
+    ).toBe("Renamed task title");
+
+    expect(
+      resolveShareSourceTitle(
+        { kind: "agent_task", title: "Fresh conversation title", updated_at: 300 },
+        { kind: "agent_task", title: "Stale summary title", updated_at: 200 }
+      )
+    ).toBe("Fresh conversation title");
+
+    expect(
+      resolveShareSourceTitle(
+        { kind: "user_chat", title: "Comma", updated_at: 100 },
+        { kind: "agent_task", title: "Unrelated task", updated_at: 500 }
+      )
+    ).toBe("");
+
+    expect(
+      resolveShareSourceTitle(
+        { kind: "user_chat", title: "Bridge chat", updated_at: 100 },
+        null
+      )
+    ).toBe("");
+
+    expect(
+      resolveShareSourceTitle(null, {
+        kind: "agent_task",
+        title: "Cold summary task title",
+        updated_at: 150,
+      })
+    ).toBe("Cold summary task title");
+
+    expect(resolveShareSourceTitle(null, null)).toBe("");
   });
 });

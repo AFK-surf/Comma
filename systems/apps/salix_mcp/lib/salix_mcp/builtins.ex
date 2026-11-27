@@ -627,6 +627,6 @@ defmodule SalixMCP.Builtins do
         "trust" => %{"source" => "system_builtin"},
         "created_by" => "system"
       }
-    ] ++ SalixMCP.ChinaServices.mcp_definitions()
+    ] ++ SalixMCP.HostedServices.mcp_definitions()
   end
 end

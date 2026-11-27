@@ -172,7 +172,7 @@ defmodule SalixAgent.ToolTelemetry do
          ) do
       value
       when value in ~w(not_callable not_disclosed invalid_params envelope_misuse unauthorized_target queued_person
-                   unanswered_person) ->
+                   unanswered_person queued_followup) ->
         value
 
       _ ->

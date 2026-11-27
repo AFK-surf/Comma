@@ -56,7 +56,10 @@ defmodule CommaWeb.StationsTest do
   end
 
   defmodule FakePlatform do
-    @moduledoc "The Feishu and Lark open platforms: answers by path, and the requests it got."
+    @moduledoc """
+    The Feishu and Lark open platforms and Slack's Web API: answers by path
+    (Slack's `users.info` by path and user), and the requests it got.
+    """
     use Agent
     import Plug.Conn
 
@@ -73,8 +76,18 @@ defmodule CommaWeb.StationsTest do
     def call(conn, _opts) do
       Agent.update(__MODULE__, &%{&1 | requests: [conn.request_path | &1.requests]})
 
+      path =
+        case conn.request_path do
+          "/api/users.info" ->
+            {:ok, body, _conn} = read_body(conn)
+            "/api/users.info?" <> (URI.decode_query(body)["user"] || "")
+
+          path ->
+            path
+        end
+
       {status, body} =
-        Agent.get(__MODULE__, &Map.get(&1.routes, conn.request_path)) ||
+        Agent.get(__MODULE__, &Map.get(&1.routes, path)) ||
           {404, %{"code" => 1_770_002, "msg" => "not found"}}
 
       conn
@@ -481,6 +494,49 @@ defmodule CommaWeb.StationsTest do
     refute_received {:gateway, _, _, _}
   end
 
+  test "anyone who asked sees the Group's still.fail stations, member or not", f do
+    SystemsRuntime.put_env(:salix_agent, :stations, Stations)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :stations) end)
+    SystemsRuntime.put_env(:comma_web, :station_directory, CommaWeb.Stations.GroupDirectory)
+
+    {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "still.fail readers"})
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Readers"}, tenant["tenant_id"])
+
+    # A Slack user of another organization, linked to no member.
+    outsider =
+      put_in(
+        %{ctx(f, f.owner) | tenant_id: tenant["tenant_id"], group_id: group["group_id"]},
+        [:trusted_origin, "principal_ref"],
+        %{"connect_id" => "con_slack", "subject_id" => "U_OUTSIDE"}
+      )
+
+    assert {:ok, []} = Stations.stillfail_stations(outsider)
+    refute Stations.offered?(outsider)
+
+    assert {:ok, _line} =
+             SalixEnv.StillfailDevices.connect_line(group["group_id"], tenant["tenant_id"])
+
+    assert {:ok, [%{"id" => device}]} = Stations.stillfail_stations(outsider)
+
+    # A Group with still.fail stations and no roster offers station.list:
+    # it is how an agent finds them.
+    assert Stations.offered?(outsider)
+
+    # The roster stays a member's: station.list gives the still.fail stations
+    # and says why the roster is not there, and nothing reaches a station.
+    assert %{
+             "stations" => [],
+             "stations_unavailable" => _why,
+             "stillfail_stations" => [%{"device_id" => ^device}],
+             "stillfail_note" => _how
+           } = Jason.decode!(SalixAgent.Tools.Stations.list(%{}, outsider))
+
+    assert Stations.call(outsider, @station, "fs.list", %{"path" => "/"}) ==
+             {:error, :requester_required}
+
+    refute_received {:gateway, _, _, _}
+  end
+
   test "a Slack user is the member their Provider User Link names", f do
     stub_gateway(&Req.Test.json(&1, %{"ok" => true, "result" => %{"entries" => []}}))
 
@@ -523,13 +579,14 @@ defmodule CommaWeb.StationsTest do
   # A Project's chat app, its stations' Group and the open platform that
   # answers for the app. The Group's products are Comma's alone until
   # `members!/1`.
-  defp chat_app!(provider) do
+  defp chat_app!(provider, fields \\ %{}) do
     previous =
       for {app, key} <- [
             {:salix_store, :station_members},
             {:salix_store, :s3_backend},
             {:salix_im, :feishu_api_base_url},
-            {:salix_im, :lark_api_base_url}
+            {:salix_im, :lark_api_base_url},
+            {:salix_im, :slack_api_base_url}
           ],
           do: {app, key, SystemsRuntime.get_env(app, key)}
 
@@ -545,6 +602,7 @@ defmodule CommaWeb.StationsTest do
     {:ok, {_, port}} = ThousandIsland.listener_info(bandit)
     SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
     SystemsRuntime.put_env(:salix_im, :lark_api_base_url, "http://127.0.0.1:#{port}/open-apis")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
     reset_platform_caches()
     members!([Comma.Stations.Members])
 
@@ -569,15 +627,19 @@ defmodule CommaWeb.StationsTest do
     connect = Ids.new_connect_id()
 
     {:ok, _} =
-      SalixStore.CasRecord.create(SalixStore.Keys.ctl_im_connect(group, connect), %{
-        "tenant_id" => tenant,
-        "group_id" => group,
-        "connect_id" => connect,
-        "provider" => provider,
-        "status" => "connected",
-        "app_id" => "cli_project",
-        "app_secret" => "secret"
-      })
+      SalixStore.CasRecord.create(
+        SalixStore.Keys.ctl_im_connect(group, connect),
+        %{
+          "tenant_id" => tenant,
+          "group_id" => group,
+          "connect_id" => connect,
+          "provider" => provider,
+          "status" => "connected",
+          "app_id" => "cli_project",
+          "app_secret" => "secret"
+        }
+        |> Map.merge(fields)
+      )
 
     %{tenant: tenant, group: group, connect: connect, provider: provider}
   end
@@ -708,5 +770,153 @@ defmodule CommaWeb.StationsTest do
     assert_received {:gateway, _, _, body}
     assert body["context"]["user_email"] == "ann@acme.test"
     assert body["context"]["user_id"] == "lark:#{app.connect}:ou_ann"
+  end
+
+  defp slack_user(id, fields) do
+    FakePlatform.route("/api/users.info?" <> id, %{
+      "ok" => true,
+      "user" =>
+        Map.merge(%{"id" => id, "team_id" => "T_ACME", "name" => String.downcase(id)}, fields)
+    })
+  end
+
+  # A connect saved before the member scope existed is the organization's,
+  # Slack's included: its workspace's full members are the Project's people.
+  test "a Slack workspace member uses the Project's stations as their email; others are refused",
+       f do
+    app = chat_app!("slack", %{"bot_token" => "xoxb-project", "workspace_id" => "T_ACME"})
+    members!([Comma.Stations.Members, AppMembers])
+    stub_gateway(&Req.Test.json(&1, %{"ok" => true, "result" => %{"stdout" => "ann"}}))
+
+    slack_user("U_ANN", %{"profile" => %{"real_name" => "Ann", "email" => "ann@acme.test"}})
+
+    assert {:ok, %{email: "ann@acme.test", role: "user"}} =
+             Stations.member(sender(f, app, "U_ANN"))
+
+    assert {:ok, %{"stdout" => "ann"}} =
+             Stations.call(sender(f, app, "U_ANN"), @station, "exec", %{"command" => "id"})
+
+    assert_received {:gateway, _, _, body}
+    assert body["context"]["user_email"] == "ann@acme.test"
+    assert body["context"]["user_id"] == "slack:#{app.connect}:U_ANN"
+
+    # A guest, someone of another workspace (Slack Connect) and an unknown id
+    # are not the organization's people.
+    slack_user("U_GUEST", %{"is_restricted" => true, "profile" => %{"email" => "g@acme.test"}})
+
+    slack_user("U_OTHER", %{"team_id" => "T_PARTNER", "profile" => %{"email" => "o@partner.test"}})
+
+    FakePlatform.route("/api/users.info?U_NOBODY", %{"ok" => false, "error" => "user_not_found"})
+
+    for subject <- ["U_GUEST", "U_OTHER", "U_NOBODY"] do
+      assert Stations.call(sender(f, app, subject), @station, "exec", %{"command" => "id"}) ==
+               {:error, {:requester_refused, :not_available}}
+    end
+
+    # A member without an email cannot be matched to a person.
+    slack_user("U_BO", %{"profile" => %{"real_name" => "Bo"}})
+
+    assert Stations.call(sender(f, app, "U_BO"), @station, "exec", %{"command" => "id"}) ==
+             {:error, {:requester_refused, :no_email}}
+
+    refute_received {:gateway, _, _, _}
+  end
+
+  test "an external connect admits only people granted by name, until the grant expires", f do
+    app = chat_app!("feishu", %{"member_scope" => "external"})
+    members!([Comma.Stations.Members, AppMembers])
+    stub_gateway(&Req.Test.json(&1, %{"ok" => true, "result" => %{"stdout" => "ann"}}))
+    # The tenant's own app would take Ann: the scope, not the app, decides.
+    visible([%{"user_id" => "ou_ann", "in_white_list" => true}])
+
+    assert Stations.call(sender(f, app, "ou_ann"), @station, "exec", %{"command" => "id"}) ==
+             {:error, {:requester_refused, :not_granted}}
+
+    assert FakePlatform.requests() == []
+
+    grant = fn grants ->
+      {:ok, _} =
+        SalixStore.CasRecord.update(
+          SalixStore.Keys.ctl_im_connect(app.group, app.connect),
+          &Map.put(&1, "member_grants", grants)
+        )
+    end
+
+    grant.([
+      %{
+        "subject" => "ou_ann",
+        "name" => "Ann",
+        "email" => "ann@partner.test",
+        "expires_at" => nil
+      }
+    ])
+
+    assert {:ok, %{"stdout" => "ann"}} =
+             Stations.call(sender(f, app, "ou_ann"), @station, "exec", %{"command" => "id"})
+
+    assert_received {:gateway, _, _, body}
+    assert body["context"]["user_email"] == "ann@partner.test"
+    assert body["context"]["user_id"] == "feishu:#{app.connect}:ou_ann"
+
+    # An expired grant does not count; a grant without an email cannot act.
+    grant.([%{"subject" => "ou_ann", "email" => "ann@partner.test", "expires_at" => 1}])
+
+    assert Stations.call(sender(f, app, "ou_ann"), @station, "exec", %{"command" => "id"}) ==
+             {:error, {:requester_refused, :not_granted}}
+
+    grant.([%{"subject" => "ou_ann", "name" => "Ann", "email" => nil, "expires_at" => nil}])
+
+    assert Stations.call(sender(f, app, "ou_ann"), @station, "exec", %{"command" => "id"}) ==
+             {:error, {:requester_refused, :no_email}}
+
+    assert FakePlatform.requests() == []
+  end
+
+  test "a bound iMessage owner resolves through ProactiveDelivery.principal_owner", f do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: SalixStore.S3.Fake.reset(),
+      else: start_supervised!(SalixStore.S3.Fake)
+
+    prior_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+
+    on_exit(fn ->
+      if is_nil(prior_s3),
+        do: SystemsRuntime.delete_env(:salix_store, :s3_backend),
+        else: SystemsRuntime.put_env(:salix_store, :s3_backend, prior_s3)
+    end)
+
+    group = f.workspace.salix_group_id
+    owner_id = f.owner["id"]
+    connect_id = Ids.new_connect_id()
+
+    {:ok, _} =
+      SalixStore.CasRecord.create(
+        SalixStore.Keys.ctl_im_connect(group, connect_id),
+        %{
+          "connect_id" => connect_id,
+          "group_id" => group,
+          "provider" => "imessage",
+          "managed_by" => "comma_product",
+          "status" => "connected",
+          "managed_peer_id" => "+15550100",
+          "managed_chat_id" => "pho_spc_owner"
+        }
+      )
+
+    Comma.Repo.insert!(%Comma.Data.IMessageDMLink{
+      workspace_id: f.workspace.id,
+      owner_user_id: owner_id,
+      sender_handle: "+15550100",
+      chat_guid: "pho_spc_owner",
+      connect_id: connect_id,
+      transport: "photon"
+    })
+
+    assert {:ok, ^owner_id} =
+             CommaWeb.ProactiveDelivery.principal_owner(group, connect_id, "+15550100")
+
+    assert {:error, :imessage_not_linked} =
+             CommaWeb.ProactiveDelivery.principal_owner(group, connect_id, "+15559999")
   end
 end

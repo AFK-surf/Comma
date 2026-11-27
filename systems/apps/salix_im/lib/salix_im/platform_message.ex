@@ -52,16 +52,100 @@ defmodule SalixIM.PlatformMessage do
   def inbound(input) do
     origin = value(input, :trusted_origin) || %{}
     attachments = value(input, :trusted_attachment_refs) || []
+    media = value(input, :platform_media) || %{}
+    images = Map.new(List.wrap(media["images"]), &{&1["path"], &1})
 
     if origin["provider"] in @providers and origin["source_actor_type"] == "provider_user" and
          (is_binary(origin["source_text"]) or attachments != []) do
       content =
         text_blocks(origin["source_text"]) ++
-          Enum.flat_map(attachments, &attachment_block/1)
+          Enum.flat_map(attachments, &inbound_attachment_block(&1, images))
 
-      presentation(origin["provider"], "user", content)
+      presentation = presentation(origin["provider"], "user", content)
+      agent_id = media["agent_id"]
+
+      # The client reads a bound image through the Agent that owns its blob.
+      if is_map(presentation) and is_binary(agent_id) and
+           Enum.any?(content, &Map.has_key?(&1, "blob_ref")),
+         do: Map.put(presentation, "agent_id", agent_id),
+         else: presentation
     end
   end
+
+  # Images a person sent, as Home shows them: a browser shows PNG, JPEG, GIF
+  # and WebP as they are. Other image types (HEIC from an iPhone) get a JPEG
+  # preview. An image that cannot be shown keeps its name-only card.
+  @shown_image_mimes ~w(image/png image/jpeg image/gif image/webp)
+  @converted_image_mimes ~w(image/heic image/heif image/bmp image/x-ms-bmp image/tiff image/avif)
+
+  @doc """
+  The images of staged provider attachments that Home can show, bound to the
+  blob of the Agent they were staged for. Runs before the input is appended,
+  so reading a Conversation never reads a workspace or converts an image.
+  """
+  def inbound_media(agent_id, staged) when is_binary(agent_id) and is_list(staged) do
+    images = Enum.flat_map(staged, &shown_image(agent_id, &1))
+    if images == [], do: nil, else: %{"agent_id" => agent_id, "images" => images}
+  end
+
+  def inbound_media(_agent_id, _staged), do: nil
+
+  defp shown_image(agent_id, %{"path" => path, "blob_ref" => %{} = ref} = attachment)
+       when is_binary(path) do
+    ref = Map.new(ref, fn {key, value} -> {to_string(key), value} end)
+    name = attachment["file_name"] || Path.basename(path)
+
+    case SalixIM.AttachmentMedia.native_image_mime(attachment["mime"], name) do
+      {:ok, mime} when mime in @shown_image_mimes ->
+        [%{"path" => path, "blob_ref" => ref, "size" => ref["size"], "mime_type" => mime}]
+
+      {:ok, mime} when mime in @converted_image_mimes ->
+        with {:ok, body} <- SalixStore.Blob.get(agent_id, ref),
+             {:ok, jpeg, "image/jpeg"} <- SalixMedia.ImageInput.prepare(body, mime),
+             {:ok, preview} <- SalixStore.Blob.put(agent_id, jpeg) do
+          preview = Map.new(preview, fn {key, value} -> {to_string(key), value} end)
+
+          [
+            %{
+              "path" => path,
+              "blob_ref" => preview,
+              "size" => byte_size(jpeg),
+              "mime_type" => "image/jpeg",
+              "file_name" => Path.rootname(Path.basename(name)) <> ".jpg"
+            }
+          ]
+        else
+          _unconverted -> []
+        end
+
+      _other ->
+        []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp shown_image(_agent_id, _attachment), do: []
+
+  defp inbound_attachment_block(
+         %{"type" => "image", "file_ref" => %{"path" => path}} = block,
+         images
+       )
+       when is_map_key(images, path) do
+    image = images[path]
+
+    [
+      %{
+        "type" => "image",
+        "file_name" => image["file_name"] || Path.basename(block["file_name"] || path),
+        "mime_type" => image["mime_type"],
+        "blob_ref" => image["blob_ref"],
+        "size" => image["size"]
+      }
+    ]
+  end
+
+  defp inbound_attachment_block(block, _images), do: attachment_block(block)
 
   @upload_key :salix_im_platform_message_upload
 
@@ -225,51 +309,207 @@ defmodule SalixIM.PlatformMessage do
   defp content_text(_content), do: nil
 
   # Capture current ingress provenance before leaving the provider caller.
-  # The Conversation owner resolves it against its committed input Message.
-  # A WeChat reply always answers its source. An iMessage send answers its source
-  # only when it replied inline to that Message; only the source maps to a Comma
-  # Message here, so a reply to an older Message presents without a relationship.
-  defp reply_source(scope, %{"provider" => "wechat"} = connect, _params, _sent),
-    do: source_reply(scope, connect)
-
-  defp reply_source(scope, %{"provider" => "imessage"} = connect, params, sent) do
-    target = params["reply_to_message_id"]
-    origin = SalixIM.Provider.current_tool_context()["trusted_origin"]
-
-    with true <- is_binary(target) and target != "",
-         false <- is_map(sent) and Map.has_key?(sent, "reply_fallback"),
-         %{"provider_context" => %{"message_id" => ^target}} <- origin do
-      source_reply(scope, connect)
-    else
-      _ -> nil
-    end
+  # The Conversation owner resolves it against its committed Messages so a
+  # chain of parent IDs converges onto one `thread_root_message_id`.
+  defp reply_source(scope, %{"provider" => "wechat"} = connect, params, sent) do
+    scope
+    |> source_reply(connect)
+    |> put_sent_identity(connect, params, sent)
   end
 
-  defp reply_source(_scope, _connect, _params, _sent), do: nil
+  defp reply_source(scope, %{"provider" => provider} = connect, params, sent)
+       when provider in @providers do
+    target =
+      case params["reply_to_message_id"] do
+        value when is_binary(value) and value != "" -> value
+        value when is_integer(value) -> Integer.to_string(value)
+        _ -> nil
+      end
 
-  defp source_reply(scope, %{"provider" => provider, "connect_id" => connect_id}) do
+    reply =
+      with true <- is_binary(target),
+           false <- is_map(sent) and Map.has_key?(sent, "reply_fallback") do
+        case origin_reply(scope, connect, target) do
+          %{} = matched ->
+            matched
+
+          nil ->
+            %{
+              "connect_id" => connect["connect_id"],
+              "reply_to_provider_message_id" => target
+            }
+        end
+      else
+        _ ->
+          if is_nil(target) or (is_map(sent) and Map.has_key?(sent, "reply_fallback")) do
+            case source_reply(scope, connect) do
+              %{"source_message_id" => source, "session_id" => session} = current ->
+                current
+                |> Map.delete("source_message_id")
+                |> Map.put("thread_source_message_id", source)
+                |> Map.put("session_id", session)
+
+              _ ->
+                nil
+            end
+          end
+      end
+
+    put_sent_identity(reply, connect, params, sent)
+  end
+
+  defp reply_source(_scope, connect, params, sent),
+    do: put_sent_identity(nil, connect, params, sent)
+
+  defp origin_reply(scope, %{"provider" => provider, "connect_id" => connect_id}, target)
+       when is_binary(provider) and provider != "" and
+              is_binary(connect_id) and connect_id != "" do
     context = SalixIM.Provider.current_tool_context()
-    source = context["source_message_id"]
     session = context["session_id"]
+    allowed = List.wrap(context["source_message_ids"])
 
-    with true <- is_binary(source) and source != "" and is_binary(session) and session != "",
-         true <- source in List.wrap(context["source_message_ids"]),
-         %{
-           "provider" => ^provider,
-           "source_actor_type" => "provider_user",
-           "source_message_id" => ^source,
-           "agent_group_id" => group_id,
-           "provider_context" => %{"connect_id" => ^connect_id}
-         } <- context["trusted_origin"],
-         true <- group_id == scope.group_id do
-      %{"source_message_id" => source, "session_id" => session, "connect_id" => connect_id}
+    origins =
+      (List.wrap(context["trusted_origins"]) ++ List.wrap(context["trusted_origin"]))
+      |> Enum.filter(&is_map/1)
+      |> Enum.uniq()
+
+    with true <- is_binary(session) and session != "",
+         %{"source_message_id" => source} = origin
+         when is_binary(source) and source != "" <-
+           Enum.find(origins, fn origin ->
+             pctx = origin["provider_context"] || %{}
+
+             origin["provider"] == provider and
+               origin["source_actor_type"] == "provider_user" and
+               origin["agent_group_id"] == scope.group_id and
+               origin["source_message_id"] in allowed and
+               pctx["connect_id"] == connect_id and
+               (to_string(pctx["message_id"] || "") == target or
+                  target in Enum.map(List.wrap(pctx["source_message_ids"]), &to_string/1))
+           end) do
+      pctx = origin["provider_context"] || %{}
+
+      %{
+        "source_message_id" => source,
+        "session_id" => session,
+        "connect_id" => connect_id,
+        "reply_to_provider_message_id" => target
+      }
+      |> maybe_put("stream_key", origin_stream_key(pctx))
     else
       _ -> nil
     end
   end
+
+  defp origin_reply(_scope, _connect, _target), do: nil
+
+  defp put_sent_identity(reply, connect, params, sent) do
+    connect_id = if is_map(connect), do: connect["connect_id"]
+    sent_id = sent_message_id(sent)
+    stream = (is_map(reply) && reply["stream_key"]) || fallback_stream_key(connect, params)
+
+    extra =
+      %{}
+      |> maybe_put("connect_id", connect_id)
+      |> maybe_put("provider_message_id", sent_id)
+      |> maybe_put("stream_key", stream)
+
+    cond do
+      is_map(reply) and map_size(extra) > 0 -> Map.merge(extra, reply)
+      is_map(reply) -> reply
+      map_size(extra) > 0 -> extra
+      true -> nil
+    end
+  end
+
+  @stream_keys ~w(thread_ts message_thread_id root_message_id channel_id chat_id wechat_id
+    from_user_id sender_open_id user_id sender_id)
+
+  defp origin_stream_key(pctx) when is_map(pctx) do
+    Enum.find_value(@stream_keys, fn key ->
+      val = pctx[key]
+      if is_binary(val) and val != "", do: val
+    end)
+  end
+
+  defp origin_stream_key(_), do: nil
+
+  defp fallback_stream_key(connect, params) do
+    pctx =
+      case SalixIM.Provider.current_tool_context() do
+        %{"trusted_origin" => %{"provider_context" => %{} = ctx}} -> ctx
+        _ -> %{}
+      end
+
+    origin_stream_key(pctx) ||
+      if(is_map(params), do: origin_stream_key(params)) ||
+      if(is_map(connect), do: origin_stream_key(connect))
+  end
+
+  defp sent_message_id(sent) when is_map(sent) do
+    candidate =
+      sent["message_id"] || sent["ts"] || sent["timestamp"] || sent["client_id"] ||
+        get_in(sent, ["message", "message_id"])
+
+    cond do
+      is_binary(candidate) and candidate != "" -> candidate
+      is_integer(candidate) -> Integer.to_string(candidate)
+      true -> nil
+    end
+  end
+
+  defp sent_message_id(_sent), do: nil
+
+  defp maybe_put(map, key, value) when is_binary(value) and value != "",
+    do: Map.put(map, key, value)
+
+  defp maybe_put(map, _key, _value), do: map
+
+  defp source_reply(scope, %{"provider" => provider, "connect_id" => connect_id})
+       when is_binary(provider) and provider != "" and
+              is_binary(connect_id) and connect_id != "" do
+    context = SalixIM.Provider.current_tool_context()
+    session = context["session_id"]
+    allowed = List.wrap(context["source_message_ids"])
+    batched = Enum.reverse(List.wrap(context["trusted_origins"]))
+
+    origins =
+      (List.wrap(context["trusted_origin"]) ++ batched)
+      |> Enum.filter(&is_map/1)
+      |> Enum.uniq()
+
+    with true <- is_binary(session) and session != "",
+         %{"source_message_id" => source} = origin
+         when is_binary(source) and source != "" <-
+           Enum.find(origins, fn origin ->
+             pctx = origin["provider_context"] || %{}
+
+             origin["provider"] == provider and
+               origin["source_actor_type"] == "provider_user" and
+               origin["agent_group_id"] == scope.group_id and
+               origin["source_message_id"] in allowed and
+               pctx["connect_id"] == connect_id
+           end) do
+      pctx = origin["provider_context"] || %{}
+
+      %{
+        "source_message_id" => source,
+        "session_id" => session,
+        "connect_id" => connect_id
+      }
+      |> maybe_put("stream_key", origin_stream_key(pctx))
+    else
+      _ -> nil
+    end
+  end
+
+  defp source_reply(_scope, _connect), do: nil
 
   defp outbound(provider, api, params, sent) do
-    text = params["text"] || params["caption"] || params["initial_comment"]
+    text =
+      if provider == "imessage",
+        do: params["text"],
+        else: params["text"] || params["caption"] || params["initial_comment"]
 
     text =
       if provider == "wechat" and is_binary(text) do

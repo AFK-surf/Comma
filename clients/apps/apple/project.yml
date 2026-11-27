@@ -111,14 +111,16 @@ targets:
         NSSupportsLiveActivities: true
         NSBluetoothAlwaysUsageDescription: Comma uses Bluetooth to find your device and set it up. It is only used while you add a device.
         NSCameraUsageDescription: Take photos for your chats, profile, or a mini app you choose. You confirm each photo before sharing it with a mini app.
-        NSLocationWhenInUseUsageDescription: Lets an Agent read your location while you use Comma, when it needs to know where you are.
+        # The map apps a chat link may open in directly (`MapAppLink`); `canOpenURL` answers only for listed schemes.
+        LSApplicationQueriesSchemes: [iosamap]
+        NSLocationWhenInUseUsageDescription: Lets an Agent read your location while you use Comma, when it needs to know where you are, and with each message you send while Share location is on.
         NSPhotoLibraryUsageDescription: Show your recent photos so you can send them in your chat.
         NSMicrophoneUsageDescription: Talk with Comma in a voice call, or dictate a message.
         NSLocalNetworkUsageDescription: Comma connects straight to your computers on this network when it can.
         # audio: a voice call keeps its microphone and connection while the app is in the background.
         UIBackgroundModes: [audio, remote-notification]
         CFBundleURLTypes:
-          - CFBundleURLSchemes: [comma-ios-dev, comma]
+          - CFBundleURLSchemes: [comma-ios-dev, comma-staging, comma]
     entitlements:
       path: iOS/Comma.entitlements
       properties:
@@ -145,8 +147,10 @@ targets:
       - path: LiveActivity
         excludes: ["*.plist"]
       - path: Shared/TaskActivityAttributes.swift
+      - path: Shared/LiveStatusAttributes.swift
       - path: Shared/CallActivity.swift
       - path: Shared/Design/CommaTheme.swift
+      - path: Shared/Design/LiveStatusViews.swift
       - path: Shared/Design/TaskBucketStyle.swift
       - path: Resources/Assets.xcassets
       - path: Resources/Localizable.xcstrings
@@ -174,8 +178,17 @@ targets:
       - path: Watch
         excludes: ["*.plist"]
       - path: Shared
-        excludes: [TaskActivityAttributes.swift, CallActivity.swift, "Bluetooth/**"]
+        excludes:
+          [
+            TaskActivityAttributes.swift,
+            LiveStatusAttributes.swift,
+            Design/LiveStatusViews.swift,
+            CallActivity.swift,
+            "Bluetooth/**",
+          ]
       - path: Resources
+        # The phone's 3D device models.
+        excludes: ["Devices/**"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).watch
@@ -194,7 +207,8 @@ targets:
         COMMA_API_BASE_URL: $(COMMA_API_BASE_URL)
         CFBundleURLTypes:
           - CFBundleURLSchemes: [comma]
-        WKSupportsLiveActivityLaunchAttributeTypes: [TaskActivityAttributes]
+        WKSupportsLiveActivityLaunchAttributeTypes:
+          [TaskActivityAttributes, LiveStatusAttributes]
     dependencies:
       - package: CommaCore
       - package: Markdown
@@ -253,6 +267,8 @@ schemes:
       targets: [CommaTests]
     run:
       config: Debug
+      # Local App Store products for purchases run from Xcode. TestFlight and App Store builds do not use it.
+      storeKitConfiguration: Configuration/Comma.storekit
   CommaWatch:
     build:
       targets:

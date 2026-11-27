@@ -172,8 +172,7 @@ defmodule SalixIM.Provider.WeChat do
              %{"msg" => msg, "base_info" => wechat_base_info()},
              token
            ) do
-      remember_sent(connect, response, msg)
-      {:ok, client_id}
+      {:ok, remember_sent(connect, response, msg)}
     end
   end
 
@@ -181,7 +180,7 @@ defmodule SalixIM.Provider.WeChat do
     id = SalixIM.WeChatMessages.message_id(response)
     id = if id == "", do: msg["client_id"], else: id
     _ = SalixIM.WeChatMessages.remember(connect, Map.put(msg, "message_id", id))
-    :ok
+    id
   end
 
   defp wechat_send_image(base_url, token, to_user_id, context_token, caption, data, connect),
@@ -328,8 +327,7 @@ defmodule SalixIM.Provider.WeChat do
                    token
                  ) do
               {:ok, response} ->
-                remember_sent(connect, response, msg)
-                {:cont, {:ok, client_id}}
+                {:cont, {:ok, remember_sent(connect, response, msg)}}
 
               {:error, reason} ->
                 {:halt, {:error, reason}}

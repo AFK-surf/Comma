@@ -139,6 +139,9 @@ describe("Electron security guards", () => {
       })
     ).toBe(false);
     expect(check("midi", app)).toBe(false);
+    // Settings reads the page's geolocation permission to say when sharing is blocked.
+    expect(check("geolocation", app)).toBe(true);
+    expect(check("geolocation", { ...app, isMainFrame: false })).toBe(false);
     expect(answer("display-capture", app)).toBe(false);
     expect(answer("geolocation", app)).toBe(true);
     expect(answer("geolocation", { ...app, isMainFrame: false })).toBe(false);

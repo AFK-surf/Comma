@@ -181,6 +181,11 @@ class Side implements MeshConnection {
     this.#stops = stops;
   }
 
+  /** Whether it went (closed by either side, or lost). */
+  get isClosed(): boolean {
+    return this.#closed !== null;
+  }
+
   async nextVia(last: MeshVia | null): Promise<ViaChange> {
     while (!this.#closed && this.#via === last)
       await new Promise<void>((wake) => this.#onVia.push(wake));
@@ -317,6 +322,12 @@ export class MemoryMesh {
     this.#connections.push(mine);
     target.incoming.push(theirs);
     return mine;
+  }
+
+  /** How many connections dialed to the endpoint `to` are open now. */
+  openTo(to: string): number {
+    return this.#connections.filter((side) => side.remoteId === to && !side.isClosed)
+      .length;
   }
 
   /** Every open connection goes, or each to the endpoint `to`, as when the network does (no close code). */

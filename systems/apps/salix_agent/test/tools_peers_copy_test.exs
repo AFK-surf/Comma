@@ -227,6 +227,53 @@ defmodule SalixAgent.ToolsPeersCopyTest do
     assert blob_count() == before_blobs
   end
 
+  defmodule RestrictedMemoryGroupContext do
+    @moduledoc false
+    @behaviour SalixAgent.GroupContext
+
+    @impl true
+    def list(_tenant_id), do: []
+
+    @impl true
+    def get(group_id, tenant_id),
+      do:
+        {:ok,
+         %{
+           "group_id" => group_id,
+           "tenant_id" => tenant_id,
+           "memory_writers" => %{"restricted" => true, "writers" => []}
+         }}
+  end
+
+  # A peer copy commits outside the call's events, so it is checked itself.
+  test "a copy into a peer's memory is refused when the sender may not change memory", %{
+    tenant: tenant,
+    group: group,
+    caller: caller,
+    peer: peer,
+    ctx: ctx
+  } do
+    SystemsRuntime.put_env(:salix_agent, :group_context_mod, RestrictedMemoryGroupContext)
+    seed_file!(caller["agent_id"], "/out/note.md", "injected")
+    seed_file!(peer["agent_id"], "/memory/semantic/people.md", "- boss")
+    ctx = Map.merge(ctx, %{tenant_id: tenant, group_id: group})
+
+    assert_raise RuntimeError, ~r/only by the people an administrator named/, fn ->
+      Peers.copy(
+        %{
+          "src_environment" => "vfs",
+          "src_path" => "/out/note.md",
+          "dst_environment" => "vfs",
+          "dst_path" => "/memory/semantic/people.md",
+          "dst_agent_id" => peer["agent_id"]
+        },
+        ctx
+      )
+    end
+
+    assert {:ok, "- boss"} = AgentWorkspace.read(peer["agent_id"], "/memory/semantic/people.md")
+  end
+
   # ---- Default behavior unchanged (same-agent VFS -> VFS) ----
 
   # ---- Case B: peer VFS -> remote env (chunked stream) ----

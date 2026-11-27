@@ -43,7 +43,7 @@ describe("billing return deep links", () => {
     ).toMatchObject({ status: "cancel" });
     expect(billingSettingsRoute).toBe("/settings?category=usage-billing");
     expect(billingSettingsRouteForReturn("success")).toBe(
-      "/settings?category=usage-billing&billing-return=success"
+      "/settings?category=usage-billing&from=billing_return&billing-return=success"
     );
   });
 });

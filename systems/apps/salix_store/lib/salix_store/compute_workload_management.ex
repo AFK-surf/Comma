@@ -79,7 +79,11 @@ defmodule SalixStore.ComputeWorkloadManagement do
 
   # Host-side failures that a new Host connection can clear. Other parked
   # errors need a person to look first.
-  @healable_codes ~w(provider_command_failed provider_command_outcome_unknown)
+  @healable_codes ~w(image_import_failed provider_command_failed provider_command_outcome_unknown)
+
+  # An import that stopped on one of these rejected the image itself. A new
+  # Host receives the same image, so a person must replace it first.
+  @rejected_image_codes ~w(invalid_argument not_found permission_denied data_loss)
 
   @doc """
   Reopens the Group Station once its Host connects again, when its current
@@ -100,9 +104,17 @@ defmodule SalixStore.ComputeWorkloadManagement do
           )
         ) || %{}
 
-      if group_station?(workload) and parked["kind"] == "action_required" and parked["code"] in @healable_codes,
-         do: reopen!(workload),
-         else: :ok
+      cond do
+        group_station?(workload) and parked["kind"] == "action_required" and healable?(parked) ->
+          reopen!(workload)
+
+        group_station?(workload) and workload.desired_state == "ready" and
+          is_nil(workload.deletion) and parked["kind"] != "action_required" ->
+          wake_retry_claim!(workload)
+
+        true ->
+          :ok
+      end
     end)
     |> case do
       {:ok, :ok} -> :ok
@@ -110,6 +122,39 @@ defmodule SalixStore.ComputeWorkloadManagement do
       {:error, _} = error -> error
     end
   end
+
+  defp wake_retry_claim!(workload) do
+    now = SystemsClock.utc_now()
+
+    claim =
+      Repo.one(
+        from(c in Compute.ReconcilerClaim,
+          where: c.workload_id == ^workload.id and c.generation == ^workload.generation,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    if claim &&
+         (is_nil(claim.lease_expires_at) or DateTime.compare(claim.lease_expires_at, now) != :gt) &&
+         not is_nil(claim.next_retry_at) && DateTime.compare(claim.next_retry_at, now) == :gt do
+      Repo.update_all(
+        from(c in Compute.ReconcilerClaim,
+          where: c.workload_id == ^workload.id and c.generation == ^workload.generation
+        ),
+        set: [next_retry_at: now, updated_at: now]
+      )
+    end
+
+    :ok
+  end
+
+  defp healable?(%{"code" => code}) when code in @healable_codes, do: true
+
+  # Import attempts used up on the old Host get a new window on the new one.
+  defp healable?(%{"stage" => "image_import", "code" => code}) when is_binary(code),
+    do: code not in @rejected_image_codes
+
+  defp healable?(_), do: false
 
   # The reopen preserves commands and their outcomes. A parked allocation
   # projection can authorize one new desired-state attempt on the same target.

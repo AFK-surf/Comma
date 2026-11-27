@@ -3,6 +3,7 @@ import { render, renderHook, screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { labelCatalog, labelsCore } from "../../../test/labelsCore";
+import { TaskHostChip } from "../taskChips";
 import { TaskBadgeChips, useTaskBadges } from "../useTaskBadges";
 
 const GROUP = "grp_badges";
@@ -13,6 +14,18 @@ const tasksOf = (count: number, labels: string[] = []) =>
     conversationId: `task-${index + 1}`,
     labels,
   }));
+
+/** What this device knows of where a station's Task runs. */
+const host = (
+  machine: string | null,
+  model: string | null,
+  online: boolean | null
+) => ({
+  machine,
+  model,
+  online,
+});
+const text = (testId: string) => screen.getByTestId(testId).textContent;
 
 describe("useTaskBadges", () => {
   it("uses projected membership for every loaded task, including same-timestamp changes", async () => {
@@ -166,6 +179,51 @@ describe("useTaskBadges", () => {
     expect(screen.getByTestId("task-none")).toBeEmptyDOMElement();
   });
 
+  it("says where a station's Task runs, never with the model as the place", async () => {
+    const labels = labelsCore({ catalog: catalog() });
+    const tasks = [
+      { conversationId: "known", host: host("Studio", "gpt-5.5", false) },
+      // A still.fail chat: no device reaches its machine, and it runs in still.fail.
+      {
+        conversationId: "stillfail",
+        host: host(null, "claude-fable-5-2", null),
+        url: "https://still.fail/c/12",
+      },
+      {
+        conversationId: "stillfail-bare",
+        host: host(null, null, null),
+        url: "https://still.fail/c/13",
+      },
+      // A station this device has not linked: its machine is unknown.
+      { conversationId: "unknown", host: host(null, "claude-opus-5-5", null) },
+    ];
+    function Cards() {
+      const badges = useTaskBadges(GROUP, tasks);
+      return (
+        <>
+          {tasks.map(({ conversationId: id }) => (
+            <div data-testid={id} key={id}>
+              {badges.renderTaskBadges({ conversationId: id })}
+            </div>
+          ))}
+        </>
+      );
+    }
+    render(<Cards />, { wrapper: labels.wrapper });
+    await flush();
+    expect(text("known")).toBe("On Studio · gpt-5.5 · Offline");
+    expect(text("stillfail")).toBe("On Monoid · claude-fable-5-2");
+    expect(text("stillfail-bare")).toBe("On Monoid");
+    expect(text("unknown")).toBe("On a computer · claude-opus-5-5");
+    // A still.fail chat wears still.fail's mark in place of the computer.
+    expect(
+      screen.getByTestId("stillfail").querySelector('[data-provider-logo="stillfail"]')
+    ).not.toBeNull();
+    expect(
+      screen.getByTestId("unknown").querySelector('[data-provider-logo="stillfail"]')
+    ).toBeNull();
+  });
+
   it("opens the pull request from its chip without opening the card", async () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const onCard = vi.fn();
@@ -255,6 +313,13 @@ describe("useTaskBadges", () => {
     expect(chip.querySelector("svg[data-comma-icon]")).not.toBeNull();
   });
 
+  it("names a Task created from a Linear issue with the Linear mark", () => {
+    render(<TaskBadgeChips labels={[]} origin="linear" />);
+    const chip = screen.getByTestId("task-card-platform");
+    expect(chip).toHaveTextContent("Linear");
+    expect(chip.querySelector("svg")).not.toBeNull();
+  });
+
   it("refreshes the catalog for changed membership but not ordinary task updates", async () => {
     let read = [work];
     // A refresh reads the catalog the server has now.
@@ -316,5 +381,57 @@ describe("useTaskBadges", () => {
     expect(screen.getByText("Telegram")).toBeVisible();
     expect(screen.getByText("Work")).toBeVisible();
     expect(labels.sentTo("taskLabels.refresh")).toHaveLength(1);
+  });
+
+  it("splits long chip labels for middle ellipsis while keeping short labels in one node", () => {
+    const longLabel = "Platform Engineering Production Release";
+    render(
+      <>
+        <TaskHostChip
+          host={{
+            ...host("tokyo-mac-studio-0", "claude-opus-5-5", true),
+            stillfail: true,
+          }}
+          testId="task-card-host"
+        />
+        <TaskBadgeChips
+          labels={[
+            { color: "blue", id: "lbl_short", name: "Work" },
+            { color: "purple", id: "lbl_long", name: longLabel },
+          ]}
+          origin={undefined}
+        />
+      </>
+    );
+
+    const hostChip = screen.getByTestId("task-card-host");
+    const hostMiddle = hostChip.querySelector(".comma-task-label-chip-text-middle");
+    expect(hostMiddle).not.toBeNull();
+    expect(hostMiddle).toHaveAttribute(
+      "title",
+      "On tokyo-mac-studio-0 · claude-opus-5-5"
+    );
+    expect(
+      hostMiddle?.querySelector(".comma-task-label-chip-text-start")?.textContent
+    ).toBeTruthy();
+    expect(
+      hostMiddle?.querySelector(".comma-task-label-chip-text-end")?.textContent
+    ).toBeTruthy();
+    expect(hostChip).toHaveTextContent("On tokyo-mac-studio-0 · claude-opus-5-5");
+    // Monoid tasks always wear the Monoid logo, even when their station machine name is known.
+    expect(hostChip.querySelector('[data-provider-logo="stillfail"]')).not.toBeNull();
+
+    const labelChips = screen.getAllByTestId("task-card-label");
+    expect(
+      labelChips[0]!.querySelector(".comma-task-label-chip-text-middle")
+    ).toBeNull();
+    expect(labelChips[0]).toHaveTextContent("Work");
+
+    const longMiddle = labelChips[1]!.querySelector(
+      ".comma-task-label-chip-text-middle"
+    );
+    expect(longMiddle).not.toBeNull();
+    expect(longMiddle).toHaveAttribute("title", longLabel);
+    expect(labelChips[1]).toHaveTextContent(longLabel);
   });
 });

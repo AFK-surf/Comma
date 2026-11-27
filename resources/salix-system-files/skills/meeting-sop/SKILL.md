@@ -1,6 +1,7 @@
 ---
 name: meeting-sop
 description: Run a capability-aware meeting workflow from scheduling and preparation through live capture, minutes, artifact delivery, and optional archival. Use when the user asks to create, prepare for, join, record, transcribe, summarize, document, or archive a meeting, or asks for the standard deliverables from one.
+prompt_summary: "Schedule, join, record, transcribe, summarize, deliver minutes, or archive meetings according to available capabilities."
 ---
 
 # Meeting SOP

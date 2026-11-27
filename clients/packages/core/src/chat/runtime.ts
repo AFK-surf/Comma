@@ -7,6 +7,7 @@ export {
   type AttachmentTranscoder,
   type AttachmentUploadInput,
   type ChatMessage,
+  type ChatWorkerSession,
   type ConversationChannelEnv,
   type ConversationChannelOptions,
   type ConversationObservationState,

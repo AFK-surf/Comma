@@ -6,6 +6,10 @@ import surf.comma.android.conversation.WorkspaceFile
 import surf.comma.android.conversation.MessageAttachment
 import surf.comma.android.chat.model.ChatMessage
 import surf.comma.android.chat.model.ChatRole
+import surf.comma.android.chat.model.SPEAKER_NOTICE
+import surf.comma.android.chat.model.SPEAKER_PERSON
+import surf.comma.android.chat.model.SPEAKER_ROUTER
+import surf.comma.android.chat.model.SPEAKER_WORKER
 import surf.comma.android.chat.model.MessageStatus
 import surf.comma.android.chat.model.TimelineBlockKinds
 import org.json.JSONArray
@@ -78,12 +82,41 @@ object LiveRowKinds {
     }
 }
 
+/** Another person as People knows them: their name, and where their avatar is read (a `files.read` source, as JSON). */
+data class WriterFace(val name: String, val avatar: String? = null)
+
+/**
+ * Who wrote a person's message in a Task together. [selfId] is the account's user id; a message by anyone else is
+ * another person's, shown by [face] (null while unknown: [LiveLabels.someone], initials only). The Router's chat calls
+ * its one user `current`, which is the account.
+ */
+class MessageWriters(
+    val selfId: String? = null,
+    /** The conversation is a Task: its left-side rows show who says them, beside an avatar gutter. */
+    val task: Boolean = false,
+    val face: (String) -> WriterFace? = { null },
+) {
+    /** The user id of the other person who wrote [message], or null for the account's own and for an Agent's. */
+    fun other(message: LiveMessage): String? {
+        if (message.role != surf.comma.android.conversation.ChatRole.USER) return null
+        val writer = message.createdBy ?: return null
+        val self = selfId ?: return null
+        return writer.takeIf { it != self && it != CURRENT_USER }
+    }
+
+    private companion object {
+        const val CURRENT_USER = "current"
+    }
+}
+
 /** Display strings the mapping needs; the defaults are only for tests. */
 data class LiveLabels(
     val replyErrorTitle: String = "回复出错了",
     val replyErrorDetail: String = "请稍后再试。",
     val interactiveUnavailable: String = "交互内容暂不可用",
     val file: String = "文件",
+    /** Another person in a Task together whose name is not known. */
+    val someone: String = "Someone",
     /** A task in running text whose title is not known yet. */
     val task: String = "任务",
     /** A task in running text that cannot be opened. */
@@ -131,9 +164,11 @@ fun mapConversation(
     requests: List<AgentRequest> = emptyList(),
     /** What the page's task directory knows: the titles of tasks in running text, and IDs that are not tasks. */
     tasks: KnownTasks = KnownTasks(),
+    /** Who wrote each person's message, so another person's sits on the left under their name. */
+    writers: MessageWriters = MessageWriters(),
     resolveMedia: (ChatAttachment) -> ChatAttachment = { it },
 ): LiveTimeline {
-    val builder = RowBuilder(state.conversationId.orEmpty(), tasks, resolveMedia) { question ->
+    val builder = RowBuilder(state.conversationId.orEmpty(), tasks, resolveMedia, writers, state.workerSessions) { question ->
         QuestionCardPayload.of(question, state.questionAttachments[question.messageId].orEmpty(), questionImages)
     }
     val placed = placeRequests(state.timeline, requests)
@@ -158,7 +193,34 @@ fun mapConversation(
         // Waiting for a reply is shown as the typing bubble alone; the status text is not used.
         reply.pending -> builder.typing()
     }
+    markSpeakerRuns(builder.rows)
     return LiveTimeline(builder.rows, builder.retryTargets, builder.entryRows, builder.rowEntries)
+}
+
+/**
+ * One speaker's consecutive rows are one run, as desktop and iOS group them: another person's name (or a worker
+ * session's label in a multi-session Task) goes over the run's first row, and the speaker's avatar beside its last.
+ * Rows carrying distinct non-empty [ChatMessage.participantId] values never merge into one run.
+ */
+internal fun sameRunSpeaker(a: ChatMessage?, b: ChatMessage?): Boolean {
+    if (a == null || b == null) return false
+    val speaker = a.speaker ?: return false
+    if (speaker != b.speaker) return false
+    val aPid = a.participantId?.takeIf { it.isNotEmpty() }
+    val bPid = b.participantId?.takeIf { it.isNotEmpty() }
+    if (aPid != null && bPid != null && aPid != bPid) return false
+    return true
+}
+
+internal fun markSpeakerRuns(rows: MutableList<ChatMessage>) {
+    for (index in rows.indices) {
+        val row = rows[index]
+        val speaker = row.speaker
+        val first = speaker != null && !sameRunSpeaker(rows.getOrNull(index - 1), row)
+        val last = speaker != null && speaker != SPEAKER_NOTICE && !sameRunSpeaker(row, rows.getOrNull(index + 1))
+        val label = first && (row.otherWriterId != null || row.otherWriterName != null)
+        if (label != row.writerLabel || last != row.speakerAvatar) rows[index] = row.copy(writerLabel = label, speakerAvatar = last)
+    }
 }
 
 /** Where the request cards go: after the entry of the reply that owns each, or on the newest turn. */
@@ -200,6 +262,8 @@ private class RowBuilder(
     private val conversationId: String,
     private val tasks: KnownTasks,
     private val resolveMedia: (ChatAttachment) -> ChatAttachment,
+    private val writers: MessageWriters,
+    private val workerSessions: List<surf.comma.android.conversation.WorkerSession>,
     private val questionPayload: (surf.comma.android.conversation.AgentQuestion) -> QuestionCardPayload,
 ) {
     val rows = ArrayList<ChatMessage>()
@@ -207,6 +271,15 @@ private class RowBuilder(
     val entryRows = HashMap<String, Long>()
     val rowEntries = HashMap<Long, String>()
     private var turn = ""
+    /** The chat platform of the person's message whose rows are being added; null for every other row. */
+    private var platform: String? = null
+    /** The other person whose message's rows are being added, by id and face; null for every other row. */
+    private var writerId: String? = null
+    private var writerFace: WriterFace? = null
+    /** The Agent whose message's rows are being added ([SPEAKER_ROUTER] or [SPEAKER_WORKER]); null otherwise. */
+    private var agentSpeaker: String? = null
+    /** The Participant row that authored the current message, if present. */
+    private var messageParticipantId: String? = null
 
     fun message(key: String, message: LiveMessage, labels: LiveLabels) {
         val start = rows.size
@@ -217,7 +290,37 @@ private class RowBuilder(
 
     private fun messageRows(key: String, message: LiveMessage, labels: LiveLabels) {
         val user = message.role == surf.comma.android.conversation.ChatRole.USER
-        if (user) turn = key
+        val other = writers.other(message)
+        // Another person's message starts no turn of the account's: the next reply still answers the account's own.
+        if (user && other == null) turn = key
+        platform = message.platformSource.takeIf { user }
+        writerId = other
+        agentSpeaker = if (user || message.actorType == SYSTEM_ACTOR) null
+            else if (message.actorRole == "router") SPEAKER_ROUTER else SPEAKER_WORKER
+        messageParticipantId = message.participantId?.takeIf { it.isNotEmpty() }
+        val sessionLabel = if (other == null && agentSpeaker == SPEAKER_WORKER && workerSessions.size > 1 && messageParticipantId != null) {
+            workerSessions.firstOrNull { it.participantId == messageParticipantId }?.let { session ->
+                val trimmed = session.label.trim()
+                val showSlot = !trimmed.equals(session.slot, ignoreCase = true) && !trimmed.equals("@${session.slot}", ignoreCase = true)
+                if (showSlot) "$trimmed @${session.slot}" else trimmed
+            }
+        } else null
+        writerFace = other?.let { id ->
+            val known = writers.face(id)
+            WriterFace(known?.name?.takeIf(String::isNotBlank) ?: labels.someone, known?.avatar)
+        } ?: sessionLabel?.let { WriterFace(it, null) }
+        try {
+            messageParts(key, message, labels, user && other == null)
+        } finally {
+            platform = null
+            writerId = null
+            writerFace = null
+            agentSpeaker = null
+            messageParticipantId = null
+        }
+    }
+
+    private fun messageParts(key: String, message: LiveMessage, labels: LiveLabels, user: Boolean) {
         val role = when {
             user -> ChatRole.USER
             message.actorType == SYSTEM_ACTOR -> ChatRole.SYSTEM
@@ -370,18 +473,54 @@ private class RowBuilder(
         val resolved = files.map { (key, file) -> key to resolveMedia(file) }
         // View the whole message in original attachment order, using the authenticated originals.
         val gallery = resolved.mapNotNull { (_, file) -> file.copy(preview = null).image() }
-        var imageIndex = 0
-        resolved.forEach { (key, file) ->
-            val attachment = file.copy(gallery = gallery, galleryIndex = if (file.display == AttachmentDisplay.IMAGE) imageIndex++ else 0)
-            val failed = pending?.status == PendingStatus.FAILED
-            val id = add(key, role, "", createdAt, LiveRowKinds.ATTACHMENT,
-                LiveRowKinds.encode(LiveRowKinds.Attachment(file.display == AttachmentDisplay.IMAGE,
-                    file.file.displayName, file.dimensions?.width, file.dimensions?.height)),
-                status = when (pending?.status) {
-                    PendingStatus.SENDING -> MessageStatus.PENDING
-                    PendingStatus.FAILED -> MessageStatus.FAILED
-                    else -> MessageStatus.COMPLETED
-                }, requestId = pending?.clientRequestId, retryable = failed, attachment = attachment)
+        val (images, others) = resolved.partition { (_, file) -> file.display == AttachmentDisplay.IMAGE }
+        val failed = pending?.status == PendingStatus.FAILED
+        val status = when (pending?.status) {
+            PendingStatus.SENDING -> MessageStatus.PENDING
+            PendingStatus.FAILED -> MessageStatus.FAILED
+            else -> MessageStatus.COMPLETED
+        }
+
+        if (images.isNotEmpty()) {
+            val group = images.mapIndexed { idx, (_, file) ->
+                file.copy(gallery = gallery, galleryIndex = idx)
+            }
+            val firstKey = images.first().first
+            val first = group.first()
+            val id = add(
+                key = firstKey,
+                role = role,
+                text = "",
+                createdAt = createdAt,
+                cardKind = LiveRowKinds.ATTACHMENT,
+                payload = LiveRowKinds.encode(
+                    LiveRowKinds.Attachment(true, first.file.displayName, first.dimensions?.width, first.dimensions?.height),
+                ),
+                status = status,
+                requestId = pending?.clientRequestId,
+                retryable = failed,
+                attachment = first,
+                attachments = group,
+            )
+            if (failed) retryTargets[id] = pending!!.clientRequestId
+        }
+
+        others.forEach { (key, file) ->
+            val attachment = file.copy(gallery = gallery, galleryIndex = 0)
+            val id = add(
+                key = key,
+                role = role,
+                text = "",
+                createdAt = createdAt,
+                cardKind = LiveRowKinds.ATTACHMENT,
+                payload = LiveRowKinds.encode(
+                    LiveRowKinds.Attachment(false, file.file.displayName, file.dimensions?.width, file.dimensions?.height),
+                ),
+                status = status,
+                requestId = pending?.clientRequestId,
+                retryable = failed,
+                attachment = attachment,
+            )
             if (failed) retryTargets[id] = pending!!.clientRequestId
         }
     }
@@ -397,13 +536,23 @@ private class RowBuilder(
         requestId: String? = null,
         retryable: Boolean = false,
         attachment: ChatAttachment? = null,
+        attachments: List<ChatAttachment> = emptyList(),
         markdown: String? = null,
     ): Long {
         val id = rowId(key)
         rows += ChatMessage(id = id, conversationId = conversationId, turnId = turn, role = role, text = text,
             createdAt = createdAt, status = status, requestId = requestId, retryable = retryable,
-            cardKind = cardKind, cardPayload = payload, attachment = attachment, markdown = markdown)
+            cardKind = cardKind, cardPayload = payload, attachment = attachment, attachments = attachments,
+            markdown = markdown, platformSource = platform, otherWriterName = writerFace?.name, otherWriterId = writerId,
+            otherWriterAvatar = writerFace?.avatar, speaker = speakerOf(role), participantId = messageParticipantId)
         return id
+    }
+
+    /** Who says a left-side row in a Task: another person, the Agent of its message, else the Task's Worker. */
+    private fun speakerOf(role: ChatRole): String? {
+        if (!writers.task || role == ChatRole.USER) return null
+        if (role == ChatRole.SYSTEM) return SPEAKER_NOTICE
+        return writerId?.let { SPEAKER_PERSON + it } ?: agentSpeaker ?: SPEAKER_WORKER
     }
 
     private companion object {

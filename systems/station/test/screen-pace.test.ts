@@ -2,7 +2,7 @@
 // is asked for, from the acknowledgements alone, on a clock the test moves.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AHEAD_MS, CUT, LINK_SLACK_MS, DOWN, DOWNSIZE_MS, DOWNSIZE_SHARE, FrameLatency, LOW_BOUNDS, Sizer, UPSIZE_MS, LoopStall, MAX_RATE, MAX_UNACKED, MIN_RATE, Pacer, QUEUE_MS, START_RATE, START_UNACKED, START_UP, UP, UP_AFTER_MS, UP_EVERY_MS, UP_FAST, ownRate, type Quality, queueMs, rateCeiling, rateToAsk, SALIX_RATE, SHARPER, STILL_MS, Sharpener, viewCeiling } from "../src/mesh/screen-pace.ts";
+import { AHEAD_MS, CUT, LINK_SLACK_MS, LOSS_WINDOW_MS, LinkLoss, DOWN, DOWNSIZE_MS, DOWNSIZE_SHARE, FrameLatency, LOW_BOUNDS, Sizer, UPSIZE_MS, LoopStall, MAX_RATE, MAX_UNACKED, MIN_RATE, Pacer, QUEUE_MS, START_RATE, START_UNACKED, START_UP, UP, UP_AFTER_MS, UP_EVERY_MS, UP_FAST, ownRate, type Quality, queueMs, rateCeiling, rateToAsk, SALIX_RATE, SHARPER, STILL_MS, Sharpener, viewCeiling } from "../src/mesh/screen-pace.ts";
 
 function paced() {
   let now = 0;
@@ -810,4 +810,39 @@ test("backlogged: the oldest frame on the way waited past its round trip and the
   // Through: none waits.
   p.pacer.acked(3000);
   assert.equal(p.pacer.backlogged(), false);
+});
+
+test("a view's packet loss is counted over the last 10 s on its path alone, however few packets went", () => {
+  const loss = new LinkLoss();
+  const relay = { via: "relay", relay: "https://relay.example/" };
+  // Nothing to tell before packets went, nor from a link that counts none.
+  assert.equal(loss.sample(0, { ...relay, sentDatagrams: 100, lostPackets: 3 }), null);
+  assert.equal(loss.sample(500, { ...relay }), null);
+  assert.equal(loss.sample(1000, { ...relay, sentDatagrams: 100, lostPackets: 3 }), null);
+  assert.equal(loss.sample(2000, { ...relay, sentDatagrams: 150, lostPackets: 3 }), 0);
+  assert.equal(loss.sample(3000, { ...relay, sentDatagrams: 200, lostPackets: 17 }), 14);
+  // Nothing more went: the last loss stays.
+  assert.equal(loss.sample(4000, { ...relay, sentDatagrams: 200, lostPackets: 17 }), 14);
+  // A link that loses most of what it sends sends few: 4 sent and 2 of them lost is said.
+  const collapsed = new LinkLoss();
+  collapsed.sample(0, { ...relay, sentDatagrams: 10, lostPackets: 0 });
+  assert.equal(collapsed.sample(1000, { ...relay, sentDatagrams: 14, lostPackets: 2 }), 50);
+
+  // The window moves on: the loss from 3 s ago is forgotten once 10 s of clean packets came after it.
+  const window = new LinkLoss();
+  window.sample(0, { ...relay, sentDatagrams: 0, lostPackets: 0 });
+  assert.equal(window.sample(1000, { ...relay, sentDatagrams: 50, lostPackets: 14 }), 28);
+  let sent = 50;
+  for (let at = 2000; at <= 1000 + LOSS_WINDOW_MS; at += 1000) window.sample(at, { ...relay, sentDatagrams: (sent += 50), lostPackets: 14 });
+  assert.equal(window.sample(2000 + LOSS_WINDOW_MS, { ...relay, sentDatagrams: (sent += 50), lostPackets: 14 }), 0);
+
+  // Another path, another relay or counters that went back (another connection) start again: no difference across them.
+  const paths = new LinkLoss();
+  paths.sample(0, { ...relay, sentDatagrams: 100, lostPackets: 0 });
+  assert.equal(paths.sample(1000, { ...relay, sentDatagrams: 120, lostPackets: 4 }), 20);
+  assert.equal(paths.sample(2000, { via: "direct", relay: null, sentDatagrams: 10, lostPackets: 0 }), null);
+  assert.equal(paths.sample(3000, { via: "direct", relay: null, sentDatagrams: 60, lostPackets: 0 }), 0);
+  assert.equal(paths.sample(4000, { via: "relay", relay: "https://other.example/", sentDatagrams: 70, lostPackets: 0 }), null);
+  assert.equal(paths.sample(5000, { via: "relay", relay: "https://other.example/", sentDatagrams: 5, lostPackets: 0 }), null);
+  assert.equal(paths.sample(6000, { via: "relay", relay: "https://other.example/", sentDatagrams: 25, lostPackets: 1 }), 5);
 });

@@ -57,6 +57,10 @@ function issueLabel(
         : messages.chat_issue_usage_limit();
     case "rate_limited":
       return messages.chat_issue_rate_limited();
+    case "subscription_authentication_required":
+      return provider
+        ? messages.chat_issue_subscription_sign_in_source({ provider })
+        : messages.chat_issue_subscription_sign_in();
     case "authentication_required":
       return messages.chat_issue_sign_in();
     case "model_unavailable":

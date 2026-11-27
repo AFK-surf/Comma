@@ -103,6 +103,9 @@ fun View.glass(radius: Float = -1f, elevated: Boolean = true, @ColorRes fill: In
         override fun getOutline(view: View, outline: Outline) {
             val r = if (radius < 0) minOf(view.width, view.height) / 2f else radius
             outline.setRoundRect(0, 0, view.width, view.height, r)
+            // The glass is see-through: an outline taken as opaque leaves the shadow out where the glass covers it,
+            // and the spot shadow's offset shows that gap as a pale lip under the glass's lower edge.
+            if (!liquid) outline.alpha = android.graphics.Color.alpha(fillColor) / 255f
         }
     }
     if (elevated && !liquid) {
@@ -157,19 +160,23 @@ private fun View.fillPress(@ColorRes pressed: Int, radius: Float): (View, Motion
 fun View.selectionTick() = performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
 fun View.confirmTick() = performHapticFeedback(HapticFeedbackConstants.CONFIRM)
 
-/** The grey capsule the empty states and footers offer their way out with (iOS secondary compact button). */
+/**
+ * The capsule the empty states and footers offer their way out with (iOS compact button): grey, or white on the brand
+ * fill when [primary], for the one thing a page asks the member to do.
+ */
 // Styled entirely here in code on the platform widget, like the composer's buttons; AppCompat's tinting adds nothing.
 @SuppressLint("AppCompatCustomView")
-class CapsuleButton(context: Context, text: CharSequence) : TextView(context) {
+class CapsuleButton(context: Context, text: CharSequence, primary: Boolean = false) : TextView(context) {
     init {
         DesignTypography.applyTo(this, Level.SMALL, DesignFonts.medium)
         includeFontPadding = false
-        setTextColor(context.getColor(R.color.token_text_primary))
+        setTextColor(if (primary) android.graphics.Color.WHITE else context.getColor(R.color.token_text_primary))
         this.text = text
         gravity = Gravity.CENTER
         minHeight = context.dp(36)
         setPadding(context.dp(16), 0, context.dp(16), 0)
-        background = rounded(context.getColor(R.color.token_bg_tertiary), context.dpf(18f))
+        background = rounded(context.getColor(if (primary) R.color.token_bg_brand_solid else R.color.token_bg_tertiary),
+            context.dpf(18f))
         tactile(0.96f)
     }
 }
@@ -208,14 +215,18 @@ class EmptyStateView(context: Context) : LinearLayout(context) {
         title.gravity = Gravity.CENTER
         title.isAccessibilityHeading = true
         detail.gravity = Gravity.CENTER
+        // iOS keeps an empty state's text to a 320pt column, so a long explanation reads as a short block.
+        title.maxWidth = context.dp(MAX_TEXT_DP)
+        detail.maxWidth = context.dp(MAX_TEXT_DP)
         addView(icon, LayoutParams(context.dp(24), context.dp(24)))
         addView(title, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { topMargin = context.dp(8) })
         addView(detail, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { topMargin = context.dp(4) })
         addView(actions, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { topMargin = context.dp(14) })
     }
 
+    /** [primary] draws the first of [actions] on the brand fill, as the page's one call to act. */
     fun show(@DrawableRes glyph: Int?, title: CharSequence, detail: CharSequence? = null,
-             vararg actions: Pair<CharSequence, () -> Unit>) {
+             vararg actions: Pair<CharSequence, () -> Unit>, primary: Boolean = false) {
         icon.isVisible = glyph != null
         glyph?.let(icon::setImageResource)
         this.title.text = title
@@ -223,12 +234,14 @@ class EmptyStateView(context: Context) : LinearLayout(context) {
         this.detail.isVisible = !detail.isNullOrEmpty()
         this.actions.removeAllViews()
         actions.forEachIndexed { index, (label, action) ->
-            this.actions.addView(CapsuleButton(context, label).apply { setOnClickListener { action() } },
+            this.actions.addView(CapsuleButton(context, label, primary && index == 0).apply { setOnClickListener { action() } },
                 LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { if (index > 0) topMargin = context.dp(8) })
         }
         this.actions.isVisible = actions.isNotEmpty()
         (this.actions.layoutParams as LayoutParams).topMargin = context.dp(14)
     }
+
+    private companion object { const val MAX_TEXT_DP = 320 }
 }
 
 /** A circular 44dp button on glass holding one glyph: the sheets' close button, the Task header's buttons. */

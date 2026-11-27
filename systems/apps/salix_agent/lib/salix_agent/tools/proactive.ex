@@ -130,6 +130,10 @@ defmodule SalixAgent.Tools.Proactive do
     do:
       ". Check key (a-z, 0-9, _ or -), source_ref, intent, and either poll_interval_ms (60000-86400000) or a trigger."
 
+  defp hint(:station_task_use_send_message),
+    do:
+      ". This matter is already a station chat (still.fail). Do not create a Draft Task; send the user's answer into its conversation_id with im_api.internal.send_message and mark the matter handled with proactive.act."
+
   defp hint(_reason), do: ""
 
   defp string, do: %{"type" => "string", "minLength" => 1, "maxLength" => 1000}

@@ -32,6 +32,7 @@ internal class FakeAccountCore : CoreApi {
     val policy = MutableStateFlow("ask")
     val sessions = MutableStateFlow(listOf(session("ses-this", current = true), session("ses-other", label = "Web on Android")))
     val devices = MutableStateFlow(listOf(device()))
+    val sharing = MutableStateFlow(false)
     val keys = MutableStateFlow(listOf(JSONObject().put("key_id", "gak_test").put("name", "Kitchen (dev_test_1)")))
 
     fun profile(id: String = "usr_test_a", name: String? = "Ada", avatar: String? = null): JSONObject = JSONObject().put("id", id)
@@ -71,6 +72,7 @@ internal class FakeAccountCore : CoreApi {
             "emailChange.requestCode" -> JSONObject().put("challengeId", "current-1")
             "emailChange.requestNewCode" -> JSONObject().put("challengeId", "new-1")
             "emailChange.confirm" -> JSONObject().put("email", "ada@home.example")
+            "locationSharing.set" -> null.also { sharing.value = params.getBoolean("enabled") }
             "voice.deleteKey" -> null.also { keys.value = keys.value.filterNot { it.getString("key_id") == params.getString("key") } }
             else -> null
         }
@@ -85,6 +87,7 @@ internal class FakeAccountCore : CoreApi {
             "accountSessions" -> sessions.map { JSONObject().put("status", "ready").put("sessions", JSONArray(it)) }
             "devices" -> devices.map { JSONObject().put("workspace", topic.optString("prefer")).put("loading", false)
                 .put("failed", false).put("devices", JSONArray(it)) }
+            "locationSharing" -> sharing.map { JSONObject().put("enabled", it) }
             "voice" -> keys.map { JSONObject().put("workspace", topic.optString("prefer")).put("keys", JSONArray(it)) }
             else -> MutableStateFlow(null)
         }

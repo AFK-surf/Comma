@@ -65,6 +65,17 @@ defmodule SalixIM.Provider.Lark.MeetingBot do
 
   def error_code(_reason), do: nil
 
+  @doc "The HTTP status of an error of this client that names no platform code, or nil."
+  @spec http_status(term()) :: integer() | nil
+  def http_status(reason) when is_binary(reason) do
+    case Regex.run(~r/^(?:Lark|Feishu) HTTP (\d{3})\b/, reason) do
+      [_, status] -> String.to_integer(status)
+      nil -> nil
+    end
+  end
+
+  def http_status(_reason), do: nil
+
   @doc """
   The web link of a document (an AI note's `docx`), read with `connect`'s
   identity (`drive/v1/metas/batch_query`).

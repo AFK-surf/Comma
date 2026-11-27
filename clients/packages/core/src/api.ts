@@ -33,8 +33,13 @@ const sessionRefusals = new Set([
  * sends none was built before the header, and is offered nothing that needs one.
  * - `device-plugins`: lists and installs, itself, the plugins that run on the user's own device (the Mac apps).
  * - `blender-plugin`: the desktop app serves the Blender plugin on its own device.
+ * - `plugin-oauth-code`: supports two-step OAuth authorization code paste setup (`format: "oauth_code"`).
  */
-export const CLIENT_CAPABILITIES = ["device-plugins", "blender-plugin"] as const;
+export const CLIENT_CAPABILITIES = [
+  "device-plugins",
+  "blender-plugin",
+  "plugin-oauth-code",
+] as const;
 
 /** The headers every request carries: what the app is (`kind/platform/version`) and what this core can do. */
 export function clientHeaders(client: ClientIdentity | undefined): [string, string][] {
@@ -81,11 +86,27 @@ export class Api {
   readonly #client: [string, string][];
   /** Each account's last answers, by method and path. */
   readonly #answers = new WeakMap<Account, Map<string, unknown>>();
+  /** Paths the account cannot reach, answered here as not found without asking (`refuse`). */
+  #refused: (path: string) => boolean = () => false;
 
   constructor(host: Host, session: Session) {
     this.#host = host;
     this.#session = session;
     this.#client = clientHeaders(host.client);
+  }
+
+  /**
+   * Answers `path`s `refused` names as not found without asking the server: the host's Group routes of a Task the
+   * account joined as a member (`Collaborations`), which the server refuses anyway.
+   */
+  refuse(refused: (path: string) => boolean): void {
+    this.#refused = refused;
+  }
+
+  #refusedHere(path: string): CoreError | undefined {
+    return this.#refused(path)
+      ? new CoreError("not_found", `${pathShape(path)} is the host's`, 404)
+      : undefined;
   }
 
   /** `method path` for `account`, its answer through `schema`; `headers` adds to the request's own. */
@@ -232,6 +253,8 @@ export class Api {
     path: string,
     send?: { method: "POST"; contentType: string; body: Uint8Array }
   ): Effect.Effect<Pull<Uint8Array>, CoreError, Scope.Scope> {
+    const refused = this.#refusedHere(path);
+    if (refused) return Effect.fail(refused);
     const request: ApiRequest = {
       method: send?.method ?? "GET",
       path,
@@ -279,6 +302,8 @@ export class Api {
     raw?: { contentType: string; body: Uint8Array },
     extra: [string, string][] = []
   ): Effect.Effect<Conditional<z.output<S>>, CoreError> {
+    const refused = this.#refusedHere(path);
+    if (refused) return Effect.fail(refused);
     const headers: [string, string][] = [
       ["accept", "application/json"],
       ...extra,

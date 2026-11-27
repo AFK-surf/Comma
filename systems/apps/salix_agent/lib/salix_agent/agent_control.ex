@@ -74,8 +74,10 @@ defmodule SalixAgent.AgentControl do
           actual_source = if StationBinding.bound?(record), do: "station", else: "internal"
           actual_provider = get_in(record, ["station_binding", "model", "provider"])
 
+          # A Collaborative Task's Worker belongs to its one Task: product lists leave it out.
           (is_nil(role) or record["role"] == role) and record["hidden"] != true and
             record["agent_id"] != task_agent and
+            not SalixAgent.CollaborationPolicy.collaboration_purpose?(record["purpose"]) and
             (lifecycle == "all" or archived?(record) == (lifecycle == "archived")) and
             (is_nil(source) or source == actual_source) and
             (is_nil(provider) or provider == actual_provider) and
@@ -419,6 +421,7 @@ defmodule SalixAgent.AgentControl do
          {:ok, role} <-
            validate_role(attrs["role"] || if(attrs["is_router"], do: "router", else: "worker")),
          {:ok, model} <- creation_model(attrs["model"], tenant_id),
+         model = platform_router_model(model, tenant_id, role, attrs["purpose"]),
          attrs = Map.put(attrs, "model", model),
          {:ok, record} <- creation_record(model, role, tenant_id),
          :ok <- admit_tenant_profile(tenant_id, role, attrs["purpose"]) do
@@ -446,12 +449,16 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
+  # A guest Router's and a Collaborative Task Worker's purposes select
+  # fail-closed tool policies; neither the purpose nor what widens the tools
+  # changes after creation.
   defp reject_guest_router_escalation(%{"purpose" => purpose}, attrs) do
-    if purpose == SalixStore.TenantProfiles.guest_router_purpose() and
+    if (purpose == SalixStore.TenantProfiles.guest_router_purpose() or
+          SalixAgent.CollaborationPolicy.collaboration_purpose?(purpose)) and
          (Map.has_key?(attrs, "purpose") or Map.has_key?(attrs, "disabled_tools") or
             Map.has_key?(attrs, "runtime_config") or
             Map.has_key?(attrs, "inspector_policy")),
-       do: {:error, {:bad_request, "guest Router configuration is fixed"}},
+       do: {:error, {:bad_request, "this agent's configuration is fixed"}},
        else: :ok
   end
 
@@ -472,6 +479,17 @@ defmodule SalixAgent.AgentControl do
     case ModelChoice.choose(model, tenant_id) do
       {:ok, value} -> {:ok, value}
       {:error, _reason} -> {:error, {:bad_request, "invalid model"}}
+    end
+  end
+
+  # A new Router of a Tenant with a platform Router (`SalixAgent.PlatformRouter`)
+  # takes its marked choice instead of the model it was created with.
+  defp platform_router_model(model, tenant_id, role, purpose) do
+    with true <- SalixAgent.PlatformRouter.applies?(tenant_id, role, purpose),
+         %{} = choice <- SalixAgent.PlatformRouter.choice(tenant_id) do
+      choice
+    else
+      _ -> model
     end
   end
 
@@ -530,6 +548,36 @@ defmodule SalixAgent.AgentControl do
   end
 
   defp creation_station_binding(_attrs, _role, _tenant_id, _group_id), do: {:ok, nil}
+
+  @doc """
+  Store the platform Router's marked choice (`SalixAgent.PlatformRouter`) on
+  one Router of `tenant_id`. The platform admin's trusted path: it does not
+  go through `ModelChoice.choose/2`, which rejects the mark. Guest, archived
+  and other Tenants' Agents are refused.
+  """
+  def put_platform_model(agent_id, tenant_id, choice) when is_map(choice) do
+    if ModelChoice.platform?(choice) and Ids.valid_agent_id?(agent_id) do
+      update_record(agent_id, fn
+        %{"tenant_id" => ^tenant_id, "role" => "router"} = record ->
+          cond do
+            not visible?(record) or
+                not SalixAgent.PlatformRouter.applies?(tenant_id, "router", record["purpose"]) ->
+              {:error, :not_found}
+
+            record["model"] == choice ->
+              {:unchanged, record}
+
+            true ->
+              Map.merge(record, put_model_provider(%{"model" => choice}, record))
+          end
+
+        _other ->
+          {:error, :not_found}
+      end)
+    else
+      {:error, :invalid_model_configuration}
+    end
+  end
 
   # Legacy wire entry point. Its final CAS rejects transferred configuration.
   def update(agent_id, attrs), do: configure_record(agent_id, attrs, :legacy)
@@ -1545,7 +1593,7 @@ defmodule SalixAgent.AgentControl do
          {:ok, updates} <- validate_router_system_prompt(attrs, updates),
          {:ok, updates} <- validate_reply_style(attrs, updates),
          :ok <- reject_template_id(attrs),
-         {:ok, updates} <- validate_model(attrs, updates, current["tenant_id"]),
+         {:ok, updates} <- validate_model(attrs, updates, current),
          {:ok, updates} <- validate_tool_router(attrs, updates),
          {:ok, updates} <- validate_disabled_tools(attrs, updates),
          {:ok, updates} <- validate_runtime_config(attrs, updates),
@@ -1662,17 +1710,30 @@ defmodule SalixAgent.AgentControl do
 
   # A model choice (`ModelChoice`); `nil` clears it, so the Agent follows the
   # platform model of its role.
-  defp validate_model(%{"model" => nil}, updates, _tenant_id),
+  # A tenant write never stores the platform Router mark (`ModelChoice.choose/2`
+  # rejects it). Only the Agent's own marked choice, sent back unchanged with
+  # an unrelated update, is kept as it is.
+  defp validate_model(%{"model" => nil}, updates, _current),
     do: {:ok, Map.put(updates, "model", nil)}
 
-  defp validate_model(%{"model" => model}, updates, tenant_id) when is_map(model) do
+  defp validate_model(%{"model" => model}, updates, %{"model" => model} = current)
+       when is_map(model) do
+    if ModelChoice.platform?(model),
+      do: {:ok, Map.put(updates, "model", model)},
+      else: choose_model(model, updates, current["tenant_id"])
+  end
+
+  defp validate_model(%{"model" => model}, updates, current) when is_map(model),
+    do: choose_model(model, updates, current["tenant_id"])
+
+  defp validate_model(_attrs, updates, _current), do: {:ok, updates}
+
+  defp choose_model(model, updates, tenant_id) do
     case ModelChoice.choose(model, tenant_id) do
       {:ok, value} -> {:ok, Map.put(updates, "model", value)}
       {:error, _reason} -> {:error, {:bad_request, "invalid model"}}
     end
   end
-
-  defp validate_model(_attrs, updates, _tenant_id), do: {:ok, updates}
 
   defp validate_tool_router(%{"tool_router_enabled" => enabled}, updates)
        when is_boolean(enabled),

@@ -370,6 +370,12 @@ test(
         '[data-message-id="msg_images"] .comma-chat-inline-images'
       );
       await expect(group).toBeVisible();
+      // Four images start as a stack with only the front card reachable: spread them first.
+      await group.getByRole("button", { name: "4 Images", exact: true }).click();
+      // Expanded, the toggle is named for what it does next.
+      await expect(
+        group.getByRole("button", { name: "Hide", exact: true })
+      ).toHaveAttribute("aria-expanded", "true");
       // Native test windows start inactive. Activate before opening a focus-owned menu.
       await page.bringToFront();
       await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(true);

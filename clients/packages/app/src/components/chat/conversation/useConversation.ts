@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type {
+  ChatDraftEntry,
   ChatConversationFile,
   ChatTaskRunChoice,
   ManualTaskStatus,
@@ -132,11 +133,15 @@ export function useConversation(
               channel.previewLocalFile!(previewRef, signal),
           }
         : {}),
-      clearPresentation: () => channel?.clearPresentation?.(),
+      // Background upkeep (sync, paging, draft mirroring, read marks) has
+      // nothing to report once this lease's session is gone: a stale session
+      // makes it a no-op. Actions the person waits on keep the error, so the
+      // caller can undo what it showed and say it did not happen.
+      clearPresentation: () => ignoreStaleSession(() => channel?.clearPresentation?.()),
       discard: (clientRequestId: string) => channel?.discard(clientRequestId),
-      refresh: () => channel?.refresh(),
-      older: () => channel?.older?.(),
-      readTaskActivity: () => channel?.readTaskActivity?.(),
+      refresh: () => ignoreStaleSession(() => channel?.refresh()),
+      older: () => ignoreStaleSession(() => channel?.older?.()),
+      readTaskActivity: () => ignoreStaleSession(() => channel?.readTaskActivity?.()),
       removeAttachment: (id: string, questionMessageId?: string) =>
         channel?.removeAttachment(id, questionMessageId),
       retry: (clientRequestId: string) => channel?.retry(clientRequestId),
@@ -145,7 +150,10 @@ export function useConversation(
       answerQuestion: (answer: QuestionCardAnswer) =>
         channel?.answerQuestion?.(answer) ?? Promise.resolve(undefined),
       send: (text: string, options?: ChatSendOptions) => channel?.send(text, options),
-      setDraft: (draft: string) => channel?.setDraft(draft),
+      setDraft: (draft: string, entry?: ChatDraftEntry) =>
+        ignoreStaleSession(() =>
+          entry ? channel?.setDraft(draft, entry) : channel?.setDraft(draft)
+        ),
     }),
     [channel]
   );
@@ -166,3 +174,12 @@ const loadingConversationState = {
   status: "loading" as const,
   connection: "connecting" as const,
 };
+
+function ignoreStaleSession<T>(action: () => T): T | undefined {
+  try {
+    return action();
+  } catch (error) {
+    if (isStaleChatSessionError(error)) return undefined;
+    throw error;
+  }
+}

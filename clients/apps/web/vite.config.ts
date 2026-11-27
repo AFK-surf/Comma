@@ -44,9 +44,11 @@ const hostedPosthog =
     : undefined;
 
 const publicShareRequest = /^\/s\/[^/?#]+\/?(?:[?#].*)?$/;
+const collabGuestRequest = /^\/c\/[^/?#]+\/?(?:[?#].*)?$/;
 
 const rewritePublicShare: Connect.NextHandleFunction = (req, _res, next) => {
   if (req.url && publicShareRequest.test(req.url)) req.url = "/share.html";
+  else if (req.url && collabGuestRequest.test(req.url)) req.url = "/collab.html";
   next();
 };
 
@@ -180,11 +182,15 @@ export default defineConfig({
       ),
       "@comma/app/task-panel": resolve("../../packages/app/src/task-panel.ts"),
       "@comma/app/task-share": resolve("../../packages/app/src/task-share.ts"),
+      "@comma/app/collab-guest": resolve("../../packages/app/src/collab-guest.ts"),
       "@comma/app/styles.css": resolve("../../packages/app/src/styles.css"),
       "@comma/app": resolve("../../packages/app/src/index.tsx"),
       "@comma/config": resolve("../../packages/config/src/index.ts"),
       "@comma/core/contract": resolve("../../packages/core/src/contract.ts"),
       "@comma/core/chat": resolve("../../packages/core/src/chat/public.ts"),
+      "@comma/core/collab-guest": resolve(
+        "../../packages/core/src/hosts/collab-guest.ts"
+      ),
       "@comma/core/markdown": resolve("../../packages/core/src/markdown/index.ts"),
       "@comma/core/api-schemas": resolve(
         "../../packages/core/src/comma/api-schemas.ts"
@@ -227,6 +233,7 @@ export default defineConfig({
         main: resolve(import.meta.dirname, "index.html"),
         taskPanel: resolve(import.meta.dirname, "task-panel.html"),
         share: resolve(import.meta.dirname, "share.html"),
+        collab: resolve(import.meta.dirname, "collab.html"),
       },
     },
   },

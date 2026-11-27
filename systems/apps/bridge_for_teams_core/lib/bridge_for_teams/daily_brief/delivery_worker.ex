@@ -8,7 +8,9 @@ defmodule BridgeForTeams.DailyBrief.DeliveryWorker do
 
   require Logger
 
-  alias BridgeForTeams.DailyBrief.Delivery
+  alias BridgeForTeams.DailyBrief.{Delivery, Scope, SharedSource}
+  alias BridgeForTeams.Repo
+  alias BridgeForTeams.Schema.DailyBriefMember
 
   @default_interval_ms 60_000
   @default_batch 2
@@ -21,11 +23,26 @@ defmodule BridgeForTeams.DailyBrief.DeliveryWorker do
   def run_once(opts \\ []) do
     now = Keyword.get(opts, :now, SystemsClock.utc_now())
     due = Delivery.claim_due(now, Keyword.get(opts, :batch, @default_batch))
+    {groups, scopes} = batch_groups(due, now)
 
     # One member's failure must not cost the rest of the batch their brief.
-    Enum.each(due, fn {settings, member} ->
+    # Members in the same batch that read the same Swarms over the same window
+    # share one read of the public channels.
+    Enum.reduce(due, %{}, fn {settings, member}, shared_cache ->
+      scope = Map.fetch!(scopes, member.id)
+      key = {Scope.key(scope), Delivery.member_window(member, now)}
+      batch_members = Map.get(groups, key, [])
+      {shared, shared_cache} = resolve_batch_shared(scope, key, batch_members, shared_cache)
+
+      deliver_opts =
+        opts
+        |> Keyword.put(:now, now)
+        |> Keyword.put(:batch_members, batch_members)
+        |> Keyword.put(:scope, scope)
+        |> then(&if(shared, do: Keyword.put(&1, :shared, shared), else: &1))
+
       try do
-        Delivery.deliver(settings, member, Keyword.put(opts, :now, now))
+        Delivery.deliver(settings, member, deliver_opts)
       rescue
         exception ->
           Logger.error(
@@ -41,6 +58,8 @@ defmodule BridgeForTeams.DailyBrief.DeliveryWorker do
 
           Delivery.release_claim(settings, member, now)
       end
+
+      shared_cache
     end)
 
     # Then the team briefs whose time has come.
@@ -88,4 +107,32 @@ defmodule BridgeForTeams.DailyBrief.DeliveryWorker do
 
   defp schedule(interval_ms),
     do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :deliver, interval_ms)
+
+  # Members by the Swarms their brief reads and its window, and each
+  # member's Swarms.
+  defp batch_groups(due, now) do
+    Enum.reduce(due, {%{}, %{}}, fn {settings, claimed}, {groups, scopes} ->
+      member = DailyBriefMember |> Repo.get!(claimed.id) |> Repo.preload(:aliases)
+      scope = Scope.personal(settings, member)
+      key = {Scope.key(scope), Delivery.member_window(member, now)}
+
+      {Map.update(groups, key, [member], &(&1 ++ [member])), Map.put(scopes, member.id, scope)}
+    end)
+  end
+
+  defp resolve_batch_shared(_scope, key, _members, cache) when is_map_key(cache, key),
+    do: {cache[key], cache}
+
+  defp resolve_batch_shared(scope, {scope_key, window} = key, [_, _ | _] = members, cache) do
+    case SharedSource.read(scope, window, members: members) do
+      {:ok, shared} ->
+        shared = Map.put(shared, :scope, scope_key)
+        {shared, Map.put(cache, key, shared)}
+
+      _error ->
+        {nil, cache}
+    end
+  end
+
+  defp resolve_batch_shared(_settings, _key, _single, cache), do: {nil, cache}
 end

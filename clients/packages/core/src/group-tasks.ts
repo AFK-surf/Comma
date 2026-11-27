@@ -31,12 +31,14 @@ function readyPreview(preview: CommaConversationPreview): NonNullable<GroupTaskV
 }
 
 function groupTask(conversation: CommaConversation): GroupTask {
+  const loop = taskLoop(conversation.loop);
   return {
     id: conversation.id,
     title: conversation.title,
     status: conversation.status,
     updatedAt: conversation.updated_at ?? 0,
     activityStatus: conversation.activity_status ?? "idle",
+    ...(loop ? { loop } : {}),
   };
 }
 

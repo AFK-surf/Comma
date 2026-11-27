@@ -60,7 +60,12 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
              "vmm.example.test:7443"
 
     assert :ok = AgentVMM.authenticate_registration(id, credential)
-    assert http(:get, "#{path}/#{id}", new["token"]).status == 200
+    current = http(:get, "#{path}/#{id}", new["token"])
+    assert current.status == 200
+
+    assert %{"device_id" => "host", "connected" => false} =
+             Jason.decode!(current.resp_body)["registration"]
+
     assert http(:post, "#{path}/#{id}/disable", new["token"]).status == 200
 
     Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^id),
@@ -89,6 +94,74 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
     assert http(:post, "#{path}/#{id}/recovery", new["token"], recovery_body).status == 200
     assert http(:post, "#{path}/#{id}/revoke", old["token"]).status == 200
     assert http(:post, "#{path}/#{id}/recovery", new["token"], recovery_body).status != 200
+  end
+
+  test "revocation retains the old business owner and a new registration places its Station" do
+    {_user, session, workspace} = owner_fixture()
+    path = "/v1/comma/workspaces/#{workspace.id}/compute-nodes/agent-vmm/registrations"
+
+    bind = fn request_id, device ->
+      created = http(:post, path, session["token"], %{}, [{"idempotency-key", request_id}])
+      assert created.status == 200, created.resp_body
+      descriptor = Jason.decode!(created.resp_body)["descriptor"]
+      id = descriptor["registration_id"]
+
+      claimed =
+        claim_http(
+          %{
+            version: 1,
+            registration_id: id,
+            device_id: device,
+            root_public_key: Base.encode64(<<2, 1::256>>),
+            root_key_revision: 1,
+            candidate_credential: Base.encode64(String.duplicate("k", 43))
+          },
+          "RegistrationTicket " <> descriptor["ticket"]
+        )
+
+      assert claimed.status == 200, claimed.resp_body
+
+      assert {:ok, :ok} =
+               AgentVMM.observe_registration(id, "gateway", %{
+                 "connectionEpoch" => "1",
+                 "inventoryWatermark" => 0,
+                 "inventory" => []
+               })
+
+      read = http(:get, "#{path}/#{id}", session["token"])
+
+      assert %{"device_id" => ^device, "connected" => true} =
+               Jason.decode!(read.resp_body)["registration"]
+
+      assert {:ok, station} =
+               SalixStore.ComputeGroupStation.ensure(
+                 workspace.salix_tenant_id,
+                 workspace.salix_group_id
+               )
+
+      {id, station}
+    end
+
+    {old_id, old_station} = bind.("before-reset", "old-host")
+    assert old_station.kind == "service"
+    assert http(:post, "#{path}/#{old_id}/revoke", session["token"]).status == 200
+    assert {:ok, %{after_id: ""}} = SalixStore.ComputeWorkloadDeletion.retire_revoked()
+    retired = Repo.get!(SalixStore.Compute.Workload, old_station.id)
+    assert retired.desired_state == "stopped"
+    assert retired.owner_ref == old_station.owner_ref
+    assert is_nil(retired.deletion)
+    assert Repo.get!(SalixStore.Compute.Allocation, retired.allocation_id).status == "released"
+
+    {new_id, new_station} = bind.("after-reset", "new-host")
+    refute new_id == old_id
+    refute new_station.id == old_station.id
+    assert new_station.owner_ref == old_station.owner_ref
+    assert new_station.desired_state == "ready"
+    allocation = Repo.get!(SalixStore.Compute.Allocation, new_station.allocation_id)
+    binding = Repo.get!(SalixStore.Compute.ProviderBinding, allocation.provider_binding_id)
+    assert binding.provider_ref == new_id
+    refute allocation.status == "released"
+    assert Repo.get!(SalixStore.Compute.Workload, old_station.id).desired_state == "stopped"
   end
 
   test "claim rejects wrong schemes, changed candidates and oversized bodies before changing authorization" do

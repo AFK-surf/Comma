@@ -1,17 +1,25 @@
 import type { ChatAttachment } from "@comma/core/chat";
 import { isImageAttachment } from "@comma/core/chat";
 
+/**
+ * The files a message's text lists, as pills: a workspace file opens from the Group's uploads; one named by its path
+ * on the sender's computer (`local`) is a file pill with nothing to open here.
+ */
 export function textAttachmentsToPills(
-  attachments: { name: string; path: string }[]
+  attachments: { name: string; path: string; local?: true | undefined }[]
 ): ChatAttachment[] {
-  return attachments.map((attachment) => ({
-    blockType: isImageAttachment(attachment.name) ? "image" : "file",
-    fileName: attachment.name,
-    mimeType: undefined,
-    size: undefined,
-    title: undefined,
-    workspacePath: attachment.path,
-  }));
+  return attachments.map((attachment) => {
+    const uploaded = !attachment.local;
+    return {
+      blockType: uploaded && isImageAttachment(attachment.name) ? "image" : "file",
+      fileName: attachment.name,
+      mimeType: undefined,
+      size: undefined,
+      title: undefined,
+      workspacePath: uploaded ? attachment.path : undefined,
+      ...(uploaded ? {} : { localPath: attachment.path }),
+    };
+  });
 }
 
 export function mergeMessageAttachments(

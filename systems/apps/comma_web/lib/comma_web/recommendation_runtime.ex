@@ -134,7 +134,10 @@ defmodule CommaWeb.RecommendationRuntime do
            evidence = undismissed(profile, run.source_evidence),
            context =
              if(member?(run),
-               do: MemberSourceIngest.context(collection, evidence),
+               do:
+                 collection
+                 |> MemberSourceIngest.context(evidence)
+                 |> CommaWeb.ProactiveRoutine.prioritize_candidates(workspace),
                else: RecommendationDraft.prepare(collection.facts, evidence)
              ),
            remaining = RecommendationGenerate.remaining_ms(run),

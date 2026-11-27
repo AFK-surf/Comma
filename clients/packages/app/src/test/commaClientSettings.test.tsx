@@ -293,6 +293,7 @@ describe("CommaElectronClientSettingsProvider", () => {
     const settledAppearance = appearanceRenders;
 
     publish({ showInNotch: false });
+    publish({ showComputerUseInNotch: false });
     publish({ notchSideWidth: 200 });
     expect(settingsRenders).toBe(settledSettings);
     expect(appearanceRenders).toBe(settledAppearance);

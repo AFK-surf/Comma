@@ -5,7 +5,8 @@ defmodule SalixIM.TaskArchive do
   Archive leaves a Task's Schedule binding behind: an ended Task no longer
   runs on its Schedule, and restoring it does not run the Schedule again.
   """
-  @restorable ~w(ready_for_review completed failed cancelled escalated)
+  alias SalixIM.TaskStatus
+
   @fields ~w(archived_from_status archived_at)
 
   def availability(conversation) do
@@ -17,7 +18,7 @@ defmodule SalixIM.TaskArchive do
         conversation["status"] == "archived" ->
           "already_archived"
 
-        conversation["status"] not in @restorable ->
+        not TaskStatus.archivable?(conversation["status"]) ->
           "not_finished"
 
         true ->
@@ -57,7 +58,7 @@ defmodule SalixIM.TaskArchive do
       action == :archive ->
         archive(conversation, now)
 
-      conversation["archived_from_status"] not in @restorable ->
+      not TaskStatus.archivable?(conversation["archived_from_status"]) ->
         conflict("Archived Task has no valid previous status; contact support")
 
       true ->
@@ -98,7 +99,7 @@ defmodule SalixIM.TaskArchive do
   def ordinary_update(conversation, attrs) do
     with :ok <- writable(conversation) do
       if attrs["status"] == "archived" or Enum.any?(@fields, &Map.has_key?(attrs, &1)),
-        do: conflict("Use the Task archive operation"),
+        do: conflict("Use im_api.internal.task.archive or the Task archive operation"),
         else: :ok
     end
   end

@@ -21,8 +21,9 @@ defmodule SalixAgent.IFCRoundE2ETest do
   it has declared what the reply drew on — so nothing has authorized it, and
   the refusal that stops the completed send arrives after the text has been
   seen. Clearing a draft does not unsee it. Under `enforce` the draft
-  therefore waits for the decision; under `audit` it must not, because audit
-  may never change what happens.
+  therefore waits for the decision. Audit keeps incremental drafts before
+  declaration validation and permission checks. Completed calls still require
+  valid declarations, but permission denials do not block audit execution.
   """
 
   use SystemsClock.Case, async: false
@@ -178,6 +179,7 @@ defmodule SalixAgent.IFCRoundE2ETest do
          "provider" => "slack",
          "apis" =>
            for {name, safety} <- [
+                 {"slack.reply_message", "write"},
                  {"slack.post_message", "write"},
                  {"slack.post_task_card", "write"},
                  {"slack.get_channel_history", "read"}
@@ -230,6 +232,8 @@ defmodule SalixAgent.IFCRoundE2ETest do
     end
 
     def provider_manual(_provider), do: {:error, :unsupported}
+
+    def builtin_provider_manual(provider), do: provider_manual(provider)
 
     @impl true
     def call_api(agent_id, provider, api, args) do
@@ -388,6 +392,7 @@ defmodule SalixAgent.IFCRoundE2ETest do
             Map.merge(
               %{
                 "provider" => "internal",
+                "source_message_id" => @encoded_source,
                 "conversation_id" => @conversation_id,
                 "conversation_kind" => conversation_kind,
                 "message_id" => @source_message_id,
@@ -596,7 +601,7 @@ defmodule SalixAgent.IFCRoundE2ETest do
           "welcome",
           "im_api.slack.post_message",
           %{"channel" => "C_JOIN", "text" => "private research"},
-          "context"
+          ["src:t-research"]
         )
 
       startup =
@@ -783,6 +788,7 @@ defmodule SalixAgent.IFCRoundE2ETest do
                    name: "call",
                    args: %{
                      "tool" => "help",
+                     "ifc" => %{"sources" => []},
                      "params" => %{
                        "tool" =>
                          if(@scenario == :repeated_reads or rem(n, 2) == 0,
@@ -1030,9 +1036,38 @@ defmodule SalixAgent.IFCRoundE2ETest do
   end
 
   defp inspector_call(id, tool, params),
-    do: %{id: id, name: "call", args: %{"tool" => tool, "params" => params}}
+    do: %{
+      id: id,
+      name: "call",
+      args: %{"tool" => tool, "params" => params, "ifc" => %{"sources" => ["src:q-1"]}}
+    }
 
   describe "the streaming draft" do
+    test "audit publishes a draft before the complete call reaches permission checks", %{
+      agent: agent
+    } do
+      put_mode("audit")
+      :ok = deliver_source(agent)
+      script_reply(String.duplicate("A longer answer can be read while it is generated. ", 20))
+      {:parked, _owned} = settle_quiet(agent)
+
+      {:messages, messages} = Process.info(self(), :messages)
+      draft = Enum.find_index(messages, &match?({:notified, ^agent, {:draft_seen, _}}, &1))
+      decision = Enum.find_index(messages, &match?({:ifc_resolve, _}, &1))
+
+      sent =
+        Enum.find_index(
+          messages,
+          &match?({:im_provider_call, ^agent, _, "internal.send_message", _}, &1)
+        )
+
+      assert is_integer(draft), "audit must show a draft during generation"
+      assert is_integer(decision)
+      assert is_integer(sent)
+      assert draft < decision
+      assert decision < sent
+    end
+
     test "waits for the decision under enforce", %{agent: agent} do
       put_mode("enforce")
       :ok = deliver_source(agent)
@@ -1099,6 +1134,7 @@ defmodule SalixAgent.IFCRoundE2ETest do
            id: "corrected-send",
            name: "call",
            args: %{
+             "ifc" => %{"sources" => ["src:q-1"]},
              "tool" => "im_api.internal.send_message",
              "params" => %{
                "connect_id" => "internal",
@@ -1410,6 +1446,664 @@ defmodule SalixAgent.IFCRoundE2ETest do
 
       assert SalixAgent.AgentWorkspace.label(agent, "/notes/from-the-conversation.md") ==
                ["conversation|#{@conversation_id}"]
+    end
+  end
+
+  test "direct session metadata keeps absence distinct from an explicit null declaration", %{
+    agent: agent
+  } do
+    put_mode("enforce")
+    :ok = deliver_source(agent)
+
+    assert {:ok, help, pending, _, _} =
+             SalixAgent.SessionToolExecution.execute(
+               agent,
+               @session_id,
+               :internal,
+               [@encoded_source],
+               "help",
+               %{"tool" => "ifc"}
+             )
+
+    help =
+      case pending do
+        [] ->
+          help
+
+        [pending] ->
+          assert {:ok, result} = SalixAgent.DependencyJob.yield(pending.dependency_job, 5_000)
+          result
+      end
+
+    assert Jason.decode!(help.content)["manual"]
+
+    assert {:ok, rejected, [], _, _} =
+             SalixAgent.SessionToolExecution.execute(
+               agent,
+               @session_id,
+               :internal,
+               [@encoded_source],
+               "help",
+               %{"tool" => "ifc", "ifc" => nil}
+             )
+
+    assert Jason.decode!(rejected.content)["guidance_reason"] == "invalid_params"
+    assert provider_calls(agent) == []
+    # Background inference may resolve public projection facts. No effect facts are needed.
+    assert Enum.reject(resolves(), &(&1 == %{"kind" => "public"})) == []
+  end
+
+  test "direct session calls require a declaration and audit still delivers a valid denied call",
+       %{agent: agent} do
+    put_mode("audit")
+    put_destination(["scope|cnx1|C_ELSEWHERE"])
+    :ok = deliver_source(agent)
+
+    args = %{
+      "connect_id" => "internal",
+      "conversation_id" => @conversation_id,
+      "content" => [%{"type" => "text", "text" => "direct"}]
+    }
+
+    assert {:ok, rejected, [], _, _} =
+             SalixAgent.SessionToolExecution.execute(
+               agent,
+               @session_id,
+               :internal,
+               [@encoded_source],
+               "im_api.internal.send_message",
+               args
+             )
+
+    assert Jason.decode!(rejected.content)["guidance_reason"] == "invalid_params"
+    assert provider_calls(agent) == []
+    assert resolves() == []
+
+    assert {:ok, result, _pending, _, _} =
+             SalixAgent.SessionToolExecution.execute(
+               agent,
+               @session_id,
+               :internal,
+               [@encoded_source],
+               "im_api.internal.send_message",
+               Map.put(args, "ifc", %{"sources" => ["src:q-1"]})
+             )
+
+    assert result.status in ["completed", "async_running"]
+
+    SystemsRuntime.Proc.receive do
+      {:im_provider_call, ^agent, "internal", "internal.send_message", _} -> :ok
+    end
+
+    assert [_] = resolves()
+  end
+
+  defmodule DeclarationLLM do
+    def complete(messages, tools) do
+      owner = SystemsRuntime.PersistentTerm.get({__MODULE__, :owner})
+      SystemsRuntime.Proc.send(owner, {:declaration_specs, tools})
+      SystemsRuntime.Proc.send(owner, {:projection_messages, messages})
+      response = SalixAgent.LLM.Mock.complete(messages, tools)
+
+      case response do
+        {:assistant, text, [%{id: "repair-fields", args: args} = call]} ->
+          tool = Enum.find(tools, &(&1["name"] == "end_turn"))
+
+          description =
+            get_in(tool, ["parameters", "properties", "reply", "description"]) ||
+              get_in(tool, ["input_schema", "properties", "reply", "description"]) || ""
+
+          contract = description |> String.split("\n") |> List.last() |> Jason.decode()
+
+          args =
+            case contract do
+              {:ok, %{"im_api.slack.reply_message" => %{"properties" => fields}}} ->
+                if Map.has_key?(fields, "channel") do
+                  update_in(args, ["reply", "params"], fn p ->
+                    {v, p} = Map.pop(p, "channel_id")
+                    Map.put(p, "channel", v)
+                  end)
+                else
+                  args
+                end
+
+              _ ->
+                args
+            end
+
+          {:assistant, text, [%{call | args: args}]}
+
+        other ->
+          other
+      end
+    end
+  end
+
+  for rounds <- [7, 8] do
+    @cap_rounds rounds
+    @tag :hard_convergence
+    test "visible no-progress streak #{rounds} selects tools and still delivers end_turn reply",
+         %{agent: agent} do
+      agent = SalixAgent.TestSupport.new_agent_id()
+      record = SalixAgent.TestSupport.create_control_agent!(agent, %{"role" => "router"})
+      {:ok, session_id} = SalixStore.RuntimeIds.persisted_router_session_id(record)
+      put_mode("enforce")
+      SystemsRuntime.put_env(:salix_agent, :llm, DeclarationLLM)
+      SystemsRuntime.PersistentTerm.put({DeclarationLLM, :owner}, SystemsRuntime.Proc.self())
+      on_exit(fn -> SystemsRuntime.PersistentTerm.erase({DeclarationLLM, :owner}) end)
+      label = ["conversation|#{@conversation_id}"]
+
+      origin = %{
+        "provider" => "internal",
+        "source_message_id" => @encoded_source,
+        "conversation_id" => @conversation_id,
+        "conversation_kind" => "user_chat",
+        "message_id" => @source_message_id,
+        "participant_id" => @participant_id,
+        "source_actor_type" => "user",
+        "agent_group_id" => @group_id,
+        "ifc" => %{"label" => label, "integrity" => "command", "principal" => @requester}
+      }
+
+      messages =
+        [
+          %{
+            id: 1,
+            role: "user",
+            content: "Please answer.",
+            source_message_id: @encoded_source,
+            trusted_origin: origin
+          }
+        ] ++
+          Enum.flat_map(1..@cap_rounds, fn n ->
+            [
+              %{
+                id: 2 * n,
+                role: "assistant",
+                content: "",
+                ifc_view_label: label,
+                tool_calls: [
+                  %{
+                    id: "explore-#{n}",
+                    name: "call",
+                    args: %{
+                      "tool" => "history.search",
+                      "params" => %{"query" => "q#{n}"},
+                      "ifc" => %{"sources" => []}
+                    }
+                  }
+                ]
+              },
+              %{
+                id: 2 * n + 1,
+                role: "tool",
+                tool_call_id: "explore-#{n}",
+                ifc_view_label: label,
+                ifc: %{"label" => label},
+                content: ~s({"results":[]})
+              }
+            ]
+          end)
+
+      state = %SalixAgent.InternalSession.State{
+        agent_id: agent,
+        session_id: session_id,
+        messages: messages,
+        next_message_id: length(messages) + 1
+      }
+
+      :ok =
+        SalixAgent.TestSupport.SessionFixture.seed(agent, SalixAgent.InternalSession.open(state))
+
+      Mock.script([
+        {:assistant, "",
+         [
+           %{
+             id: "finish",
+             name: "end_turn",
+             args: %{
+               "outcome" => "done",
+               "reply" => %{
+                 "tool" => "im_api.internal.send_message",
+                 "params" => %{
+                   "connect_id" => "internal",
+                   "conversation_id" => @conversation_id,
+                   "reply_to_message_id" => @source_message_id,
+                   "content" => [%{"type" => "text", "text" => "Please provide more context."}]
+                 },
+                 "ifc" => %{"sources" => []}
+               }
+             }
+           }
+         ]}
+      ])
+
+      {:ok, _pid} = Fleet.ensure_started(agent, create: true)
+      Server.wake(agent)
+      assert eventually(fn -> settled?(agent) end, 3000)
+      :ok = SalixAgent.TestSupport.await_session_quiet(agent, session_id)
+      assert_received {:declaration_specs, specs}
+      assert_received {:projection_messages, _seen_messages}
+      names = Enum.map(specs, & &1["name"])
+
+      if @cap_rounds == 8,
+        do: assert(names == ["end_turn"]),
+        else: assert("call" in names and "wait_for" in names)
+
+      assert_received {:im_provider_call, ^agent, "internal", "internal.send_message", _}
+    end
+  end
+
+  for rounds <- [8] do
+    @repair_rounds rounds
+    @tag :hard_convergence
+    test "capped reply recovers a wrong channel field from public contract without prefix changes",
+         %{agent: agent} do
+      agent = SalixAgent.TestSupport.new_agent_id()
+      record = SalixAgent.TestSupport.create_control_agent!(agent, %{"role" => "router"})
+      {:ok, session_id} = SalixStore.RuntimeIds.persisted_router_session_id(record)
+      put_mode("enforce")
+      SystemsRuntime.put_env(:salix_agent, :llm, DeclarationLLM)
+      SystemsRuntime.PersistentTerm.put({DeclarationLLM, :owner}, SystemsRuntime.Proc.self())
+      on_exit(fn -> SystemsRuntime.PersistentTerm.erase({DeclarationLLM, :owner}) end)
+      label = ["scope|slack-1|C_REPLY"]
+      put_destination(label)
+
+      origin = %{
+        "provider" => "slack",
+        "source_actor_type" => "provider_user",
+        "source_message_id" => @encoded_source,
+        "source_text" => "Please answer.",
+        "provider_context" => %{
+          "connect_id" => "slack-1",
+          "channel_id" => "C_REPLY",
+          "thread_ts" => "1.0"
+        },
+        "ifc" => %{
+          "label" => label,
+          "integrity" => "command",
+          "principal" => "provider_user|slack-1|U_REPLY"
+        }
+      }
+
+      messages =
+        [
+          %{
+            id: 1,
+            role: "user",
+            content: "Please answer.",
+            source_message_id: @encoded_source,
+            trusted_origin: origin
+          }
+        ] ++
+          Enum.flat_map(1..@repair_rounds, fn n ->
+            [
+              %{
+                id: 2 * n,
+                role: "assistant",
+                content: "",
+                ifc_view_label: label,
+                tool_calls: [
+                  %{
+                    id: "explore-#{n}",
+                    name: "call",
+                    args: %{
+                      "tool" => "history.search",
+                      "params" => %{"query" => "q#{n}"},
+                      "ifc" => %{"sources" => []}
+                    }
+                  }
+                ]
+              },
+              %{
+                id: 2 * n + 1,
+                role: "tool",
+                tool_call_id: "explore-#{n}",
+                ifc_view_label: label,
+                ifc: %{"label" => label},
+                content: ~s({"results":[]})
+              }
+            ]
+          end)
+
+      state = %SalixAgent.InternalSession.State{
+        agent_id: agent,
+        session_id: session_id,
+        messages: messages,
+        next_message_id: length(messages) + 1
+      }
+
+      :ok =
+        SalixAgent.TestSupport.SessionFixture.seed(agent, SalixAgent.InternalSession.open(state))
+
+      reply = fn id ->
+        {:assistant, "",
+         [
+           %{
+             id: id,
+             name: "end_turn",
+             args: %{
+               "outcome" => "done",
+               "reply" => %{
+                 "tool" => "im_api.slack.reply_message",
+                 "params" => %{
+                   "connect_id" => "slack-1",
+                   "channel_id" => "C_REPLY",
+                   "thread_ts" => "1.0",
+                   "text" => "Please provide more context."
+                 },
+                 "ifc" => %{"sources" => []}
+               }
+             }
+           }
+         ]}
+      end
+
+      Mock.script([reply.("wrong-fields"), reply.("repair-fields")])
+
+      {:ok, _pid} = Fleet.ensure_started(agent, create: true)
+      Server.wake(agent)
+      assert eventually(fn -> settled?(agent) end, 3000)
+      :ok = SalixAgent.TestSupport.await_session_quiet(agent, session_id)
+      assert_received {:declaration_specs, first_specs}
+      assert_received {:projection_messages, first_messages}
+      assert_received {:declaration_specs, second_specs}
+      assert_received {:projection_messages, second_messages}
+      assert Enum.map(first_specs, & &1["name"]) == ["end_turn"]
+      assert Enum.map(second_specs, & &1["name"]) == ["end_turn"]
+      prefix = fn ms -> Enum.filter(ms, &(&1[:role] in ["system", "summary"])) end
+      assert_received {:im_provider_call, ^agent, "slack", "slack.reply_message", sent}
+      assert prefix.(first_messages) == prefix.(second_messages)
+      assert sent["params"]["channel"] == "C_REPLY"
+      refute Map.has_key?(sent["params"], "channel_id")
+      refute Jason.encode!(second_specs) =~ "C_REPLY"
+    end
+  end
+
+  test "enforce physically removes another domain before the model while preserving session history",
+       %{agent: agent} do
+    put_mode("enforce")
+    SystemsRuntime.put_env(:salix_agent, :llm, DeclarationLLM)
+    SystemsRuntime.PersistentTerm.put({DeclarationLLM, :owner}, SystemsRuntime.Proc.self())
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase({DeclarationLLM, :owner}) end)
+
+    state = %SalixAgent.InternalSession.State{
+      agent_id: agent,
+      session_id: @session_id,
+      next_message_id: 2,
+      last_ack_message_id: 1,
+      messages: [
+        %{
+          id: 1,
+          role: "user",
+          content: "FOREIGN_SECRET_MEETING",
+          source_message_id: "foreign-data",
+          trusted_origin: %{
+            "provider" => "internal",
+            "source_actor_type" => "agent",
+            "source_message_id" => "foreign-data",
+            "ifc" => %{"integrity" => "data", "label" => ["scope|private|bob"]}
+          }
+        }
+      ]
+    }
+
+    :ok =
+      SalixAgent.TestSupport.SessionFixture.seed(agent, SalixAgent.InternalSession.open(state))
+
+    :ok = deliver_source(agent, "user_chat", %{"source_message_id" => @encoded_source})
+    script_reply("received")
+    {:parked, _} = settle_quiet(agent)
+    assert_received {:projection_messages, messages}
+    wire = inspect(messages, limit: :infinity, printable_limit: :infinity)
+    assert wire =~ "what did legal say?"
+    refute wire =~ "FOREIGN_SECRET_MEETING"
+    {:ok, session} = SalixAgent.InternalSessionStore.read(agent, @session_id)
+
+    assert inspect(SalixAgent.InternalSession.get(session, :messages),
+             limit: :infinity,
+             printable_limit: :infinity
+           ) =~ "FOREIGN_SECRET_MEETING"
+
+    assistants =
+      Enum.filter(SalixAgent.InternalSession.get(session, :messages), &(&1[:role] == "assistant"))
+
+    assert assistants != []
+    assert Enum.all?(assistants, &is_list(&1[:ifc_view_label]))
+  end
+
+  test "async projected rounds persist global refs and restore local refs on the next request",
+       %{agent: agent} do
+    put_mode("enforce")
+    SystemsRuntime.put_env(:salix_agent, :llm, DeclarationLLM)
+    SystemsRuntime.PersistentTerm.put({DeclarationLLM, :owner}, SystemsRuntime.Proc.self())
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase({DeclarationLLM, :owner}) end)
+
+    state = %SalixAgent.InternalSession.State{
+      agent_id: agent,
+      session_id: @session_id,
+      next_message_id: 2,
+      last_ack_message_id: 1,
+      messages: [
+        %{
+          id: 1,
+          role: "user",
+          content: "FOREIGN_SECRET_MEETING",
+          source_message_id: "foreign-data",
+          trusted_origin: %{
+            "provider" => "internal",
+            "source_actor_type" => "agent",
+            "source_message_id" => "foreign-data",
+            "ifc" => %{"integrity" => "data", "label" => ["scope|private|bob"]}
+          }
+        }
+      ]
+    }
+
+    :ok =
+      SalixAgent.TestSupport.SessionFixture.seed(agent, SalixAgent.InternalSession.open(state))
+
+    :ok = deliver_source(agent, "user_chat", %{"source_message_id" => @encoded_source})
+
+    Mock.script([
+      {:assistant, "",
+       [
+         %{
+           id: "local-help",
+           name: "call",
+           args: %{
+             "tool" => "help",
+             "params" => %{"tool" => "ifc"},
+             "ifc" => %{"request" => "src:q-1", "sources" => []}
+           }
+         }
+       ]},
+      {:assistant, "",
+       [
+         inspector_call("local-reply", "im_api.internal.send_message", %{
+           "connect_id" => "internal",
+           "conversation_id" => @conversation_id,
+           "reply_to_message_id" => @source_message_id,
+           "content" => [%{"type" => "text", "text" => "received"}]
+         })
+       ]},
+      {:final, "done"}
+    ])
+
+    {:parked, _} = settle_quiet(agent)
+    assert_received {:projection_messages, messages}
+    wire = inspect(messages, limit: :infinity, printable_limit: :infinity)
+    assert wire =~ "what did legal say?"
+    refute wire =~ "FOREIGN_SECRET_MEETING"
+    {:ok, session} = SalixAgent.InternalSessionStore.read(agent, @session_id)
+
+    assert inspect(SalixAgent.InternalSession.get(session, :messages),
+             limit: :infinity,
+             printable_limit: :infinity
+           ) =~ "FOREIGN_SECRET_MEETING"
+
+    assistants =
+      Enum.filter(SalixAgent.InternalSession.get(session, :messages), &(&1[:role] == "assistant"))
+
+    assert assistants != []
+    first = hd(assistants)
+    assert hd(first.tool_calls)["args"]["ifc"]["request"] == "src:q-2"
+    assert_received {:projection_messages, next_messages}
+    next_assistant = Enum.find(next_messages, &(&1[:role] == "assistant"))
+    assert hd(next_assistant.tool_calls)["args"]["ifc"]["request"] == "src:q-1"
+    assert provider_calls(agent) != []
+
+    refute inspect(next_messages, limit: :infinity, printable_limit: :infinity) =~
+             "src:unavailable"
+
+    assert inspect(next_messages, limit: :infinity, printable_limit: :infinity) =~ "src:q-1"
+    assert Enum.all?(assistants, &is_list(&1[:ifc_view_label]))
+  end
+
+  test "visible round keeps withheld discovery feedback and can send a safe reply", %{
+    agent: agent
+  } do
+    put_mode("enforce")
+    SystemsRuntime.put_env(:salix_agent, :llm, DeclarationLLM)
+    SystemsRuntime.PersistentTerm.put({DeclarationLLM, :owner}, SystemsRuntime.Proc.self())
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase({DeclarationLLM, :owner}) end)
+    :ok = deliver_source(agent)
+
+    Mock.script([
+      {:assistant, "",
+       [
+         %{
+           id: "private-discovery",
+           name: "call",
+           args: %{
+             "tool" => "im.provider_apis_list",
+             "params" => %{"provider" => "internal", "connect_id" => "internal"},
+             "ifc" => %{"sources" => []}
+           }
+         }
+       ]},
+      {:assistant, "",
+       [
+         %{
+           id: "safe-reply",
+           name: "call",
+           args: %{
+             "tool" => "im_api.internal.send_message",
+             "params" => %{
+               "connect_id" => "internal",
+               "conversation_id" => @conversation_id,
+               "content" => [%{"type" => "text", "text" => "I cannot provide that here."}]
+             },
+             "ifc" => %{"sources" => []}
+           }
+         }
+       ]},
+      {:final, "done"}
+    ])
+
+    {:parked, _} = settle_quiet(agent)
+    assert_received {:projection_messages, _first}
+    assert_received {:projection_messages, next}
+
+    assert Enum.any?(next, fn message ->
+             message[:role] == "tool" and
+               String.contains?(message[:content] || "", "withheld_by_visibility")
+           end)
+
+    assert Enum.any?(provider_calls(agent), fn {_, api, _} -> api == "internal.send_message" end)
+  end
+
+  for {mode, route} <- [{"off", :call}, {"audit", :call}, {"enforce", :end_turn}] do
+    @declaration_mode mode
+    @declaration_route route
+    @tag :required_declaration
+    test "#{mode} #{route} declares sources at the model and dispatch boundaries" do
+      put_mode(@declaration_mode)
+      SystemsRuntime.put_env(:salix_agent, :llm, DeclarationLLM)
+      SystemsRuntime.PersistentTerm.put({DeclarationLLM, :owner}, SystemsRuntime.Proc.self())
+      on_exit(fn -> SystemsRuntime.PersistentTerm.erase({DeclarationLLM, :owner}) end)
+      agent = SalixAgent.TestSupport.new_agent_id()
+      record = SalixAgent.TestSupport.create_control_agent!(agent, %{"role" => "router"})
+      {:ok, session_id} = SalixStore.RuntimeIds.persisted_router_session_id(record)
+
+      envelope = %{
+        "tool" => "im_api.internal.send_message",
+        "params" => %{
+          "connect_id" => "internal",
+          "conversation_id" => @conversation_id,
+          "reply_to_message_id" => @source_message_id,
+          "content" => [%{"type" => "text", "text" => "received"}]
+        }
+      }
+
+      make_call = fn id, args ->
+        case @declaration_route do
+          :call -> %{id: id, name: "call", args: args}
+          :end_turn -> %{id: id, name: "end_turn", args: %{"outcome" => "done", "reply" => args}}
+        end
+      end
+
+      first = make_call.("missing-declaration", envelope)
+      corrected = make_call.("explicit-empty", Map.put(envelope, "ifc", %{"sources" => []}))
+      Mock.script([{:assistant, "", [first]}, {:assistant, "", [corrected]}, {:final, "done"}])
+      {:ok, _pid} = Fleet.ensure_started(agent, create: true)
+
+      {:ok, :created} =
+        SalixAgent.deliver(
+          agent,
+          %{
+            content: "Please confirm receipt.",
+            session_id: session_id,
+            trusted_origin: %{
+              "provider" => "internal",
+              "conversation_id" => @conversation_id,
+              "conversation_kind" => "user_chat",
+              "message_id" => @source_message_id,
+              "source_message_id" => @encoded_source,
+              "participant_id" => @participant_id,
+              "source_actor_type" => "user",
+              "agent_group_id" => record["group_id"],
+              "ifc" => %{
+                "label" => ["conversation|#{@conversation_id}"],
+                "integrity" => "command",
+                "principal" => @requester
+              }
+            }
+          },
+          source_message_id: @encoded_source
+        )
+
+      settle(agent)
+      :ok = SalixAgent.TestSupport.await_session_quiet(agent, session_id)
+      calls = provider_calls(agent)
+
+      if @declaration_mode != "off" do
+        assert length(calls) == 1
+        {:ok, session} = SalixAgent.InternalSessionStore.read(agent, session_id)
+
+        assert Enum.any?(SalixAgent.InternalSession.get(session, :messages), fn m ->
+                 is_binary(m[:content]) and String.contains?(m[:content], "Provide ifc.sources")
+               end)
+      else
+        assert calls != []
+      end
+
+      assert_received {:declaration_specs, specs}
+      call_schema = Enum.find(specs, &(&1["name"] == "call"))["input_schema"]
+
+      reply_schema =
+        Enum.find(specs, &(&1["name"] == "end_turn"))["input_schema"]["properties"]["reply"]
+
+      for schema <- [call_schema, reply_schema] do
+        valid = Map.put(envelope, "ifc", %{"sources" => []})
+        assert :ok = SalixAgent.Tools.validate_schema(valid, schema)
+
+        if @declaration_mode != "off" do
+          assert {:error, _} = SalixAgent.Tools.validate_schema(envelope, schema)
+        else
+          assert :ok = SalixAgent.Tools.validate_schema(envelope, schema)
+        end
+      end
     end
   end
 end

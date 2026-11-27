@@ -35,6 +35,7 @@ defmodule CommaLog.Formatter do
       # `ts` field below is the canonical application timestamp; the CRI
       # envelope supplies the LogEntry timestamp.
       |> Map.delete(:time)
+      |> rename_stream()
       |> enrich_observability()
       |> redact_crash_metadata()
 
@@ -55,6 +56,17 @@ defmodule CommaLog.Formatter do
         Jason.encode_to_iodata!(%{"level" => to_string(level), "msg" => "[log format error]"}),
         ?\n
       ]
+  end
+
+  # The GKE log agent keeps the container stream (`stdout`/`stderr`) in a
+  # top-level `stream` field. A JSON record with its own `stream` makes the
+  # agent fail to decode its whole flush of the pod's records, so every line
+  # written in the same few seconds is lost, not only this one.
+  defp rename_stream(metadata) do
+    case Map.pop(metadata, :stream) do
+      {nil, metadata} -> metadata
+      {value, metadata} -> Map.put(metadata, :app_stream, value)
+    end
   end
 
   defp enrich_observability(metadata) do

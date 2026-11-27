@@ -249,6 +249,98 @@ defmodule Salix.Control.RemoteMCPOAuth do
   def delete_provider_app(tenant_id, provider_key),
     do: OAuthApps.delete_remote_mcp(tenant_id, provider_key)
 
+  # ---- personal sign-ins (Salix.Control.RemoteMCPDeviceSignIn) ----
+
+  @doc false
+  # The OAuth identity of a remote MCP binding's server, discovered as for an
+  # authorization.
+  def discover(tenant_id, group_id, binding_id) do
+    with {:ok, binding, definition, _connection} <-
+           SalixMCP.Store.get_binding_with_definition(tenant_id, group_id, binding_id),
+         :ok <- ensure_remote_binding(definition, binding),
+         {:ok, config} <- remote_config(definition, binding),
+         {:ok, identity} <- discover_identity(definition, binding, config) do
+      {:ok, binding, identity}
+    end
+  end
+
+  @doc false
+  # A client registered for the device grant. It is kept apart from the
+  # authorization-code client of the same server, which names redirect URIs.
+  def device_client(tenant_id, identity) do
+    key = device_registration_key(identity["provider_key"])
+    metadata = identity["authorization_server_metadata"] || %{}
+
+    case get_client_registration(tenant_id, key) do
+      {:ok, client} ->
+        {:ok, client}
+
+      {:error, :not_found} ->
+        case string(metadata["registration_endpoint"]) do
+          "" -> {:error, {:missing_oauth_client, "the server registers no device clients"}}
+          endpoint -> register_device_client(tenant_id, identity, key, endpoint)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp register_device_client(tenant_id, identity, key, endpoint) do
+    body = %{
+      "client_name" => "Comma",
+      "grant_types" => ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
+      "token_endpoint_auth_method" => "none"
+    }
+
+    with {:ok, status, parsed} <- post_json(endpoint, body, "MCP device client registration"),
+         :ok <- expect_status(status, 200..299, "MCP device client registration"),
+         parsed = unwrap_response(parsed, "client_id"),
+         client_id when client_id != "" <- string(parsed["client_id"]) do
+      put_client_registration(tenant_id, key, %{
+        "client_registration_id" => "mcpdev-" <> provider_hash(identity),
+        "provider_kind" => @provider_kind,
+        "provider_key" => identity["provider_key"],
+        "tenant_id" => tenant_id,
+        "client_source" => "device",
+        "client_id" => client_id,
+        "client_secret" => string(parsed["client_secret"]),
+        "token_endpoint_auth_method" =>
+          case string(parsed["token_endpoint_auth_method"]) do
+            "" -> "none"
+            method -> method
+          end,
+        "created_at" => Store.now(),
+        "updated_at" => Store.now()
+      })
+    else
+      "" -> {:error, {:bad_request, "device client registration response missing client_id"}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp device_registration_key(provider_key), do: string(provider_key) <> "-device"
+
+  @doc false
+  # A device-grant request to the server's token or device endpoint, with the
+  # client's authentication: the status and the decoded body.
+  def device_post(url, client, form, label) do
+    form
+    |> maybe_query("client_id", client_id_form_value(client))
+    |> authorize_form_with_client_secret(client)
+    |> then(&post_form(url, &1, label, token_headers(client)))
+  end
+
+  @doc false
+  # Feishu Project's OAuth endpoints may answer `{"code": 0, "data": {...}}`
+  # instead of the plain OAuth body: the inner body, when the outer one lacks
+  # `key`.
+  def unwrap_response(%{"data" => %{} = data} = parsed, key) do
+    if Map.has_key?(parsed, key), do: parsed, else: data
+  end
+
+  def unwrap_response(parsed, _key), do: parsed
+
   # ---- discovery / authorization setup ----
 
   defp ensure_remote_binding(definition, binding) do
@@ -999,12 +1091,12 @@ defmodule Salix.Control.RemoteMCPOAuth do
                  token_headers(client)
                ) do
             {:ok, status, parsed} when status in 200..299 ->
-              with {:ok, tokens} <- token_from_response(parsed) do
+              with {:ok, tokens} <- token_from_response(unwrap_response(parsed, "access_token")) do
                 {:ok, drop_empty_token_fields(tokens)}
               end
 
             {:ok, _status, parsed} ->
-              refresh_error(parsed)
+              refresh_error(unwrap_response(parsed, "error"))
 
             {:error, reason} ->
               {:error, reason}
@@ -1025,6 +1117,12 @@ defmodule Salix.Control.RemoteMCPOAuth do
 
       "static" ->
         case OAuthApps.get_remote_mcp(tenant_id, provider_key) do
+          {:ok, client} -> {:ok, client}
+          _ -> {:error, :reauthorization_required}
+        end
+
+      "device" ->
+        case get_client_registration(tenant_id, device_registration_key(provider_key)) do
           {:ok, client} -> {:ok, client}
           _ -> {:error, :reauthorization_required}
         end
@@ -1422,6 +1520,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
       "token_endpoint",
       "registration_endpoint",
       "revocation_endpoint",
+      "device_authorization_endpoint",
       "scopes_supported",
       "response_types_supported",
       "grant_types_supported",

@@ -142,7 +142,7 @@ it("says why a Task in progress does not run once its Loop stopped", async () =>
   const { core, result, unmount } = render([running]);
   await waitFor(() =>
     expect(result.current[0]).toMatchObject({
-      statusBucket: "in_progress",
+      statusBucket: "loops",
       loopStop: undefined,
     })
   );
@@ -160,10 +160,77 @@ it("says why a Task in progress does not run once its Loop stopped", async () =>
   );
   await waitFor(() =>
     expect(result.current[0]).toMatchObject({
-      statusBucket: "in_progress",
+      statusBucket: "loops",
       loopStop: { text: "Stopped · couldn’t reach this task", failed: true },
     })
   );
+  unmount();
+});
+
+it("reports loopStanding for active and pending Loop Tasks and clears it when paused", async () => {
+  const scheduledLoop = {
+    state: "active" as const,
+    startedAt: 1,
+    wakeCount: 2,
+    cadence: {
+      cron: "0 9 * * *",
+      pattern: { kind: "daily" as const, hour: 9, minute: 0 },
+    },
+    nextRunAt: Date.UTC(2026, 10, 22, 1, 0),
+  };
+  const { core, result, unmount } = render([
+    { ...summary, status: "active", loop: scheduledLoop },
+  ]);
+  await waitFor(() =>
+    expect(result.current[0]).toMatchObject({
+      statusBucket: "loops",
+      loopStop: undefined,
+      loopStanding: {
+        kind: "scheduled",
+        text: expect.stringContaining("9:00"),
+        nextRunText: expect.stringContaining("Next run"),
+      },
+    })
+  );
+
+  act(() =>
+    core.emit("taskSummaries", {
+      summaries: [
+        {
+          ...summary,
+          status: "active",
+          updated_at: 4,
+          loop: { ...scheduledLoop, state: "pending" },
+        },
+      ],
+    })
+  );
+  await waitFor(() =>
+    expect(result.current[0]).toMatchObject({
+      statusBucket: "loops",
+      loopStanding: { kind: "pending", text: "Setting up" },
+    })
+  );
+
+  act(() =>
+    core.emit("taskSummaries", {
+      summaries: [
+        {
+          ...summary,
+          status: "active",
+          updated_at: 5,
+          loop: { ...scheduledLoop, state: "paused", reason: "quota" },
+        },
+      ],
+    })
+  );
+  await waitFor(() =>
+    expect(result.current[0]).toMatchObject({
+      statusBucket: "loops",
+      loopStop: { text: "Paused · usage limit reached", failed: false },
+    })
+  );
+  expect(result.current[0]?.loopStanding).toBeUndefined();
   unmount();
 });
 

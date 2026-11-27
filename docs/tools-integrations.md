@@ -28,12 +28,12 @@ Confirmation queues source sync and one Routine run, even for the same source ID
 Reconnect keeps the old account and receipt until the new grant completes. Then it retires only that account.
 Drive is optional. Gmail and Calendar are required. Settings links to Plugins.
 
-GitHub, Linear, Notion, and Slack use Salix OAuth for APIs and recommendations. Notion alone needs separate MCP OAuth.
-Linear requests `read` and `write`.
-PostHog: MCP OAuth only; switches name its `features`.
-Stripe, Tencent Docs, flomo, Pixso: MCP OAuth. Other `ChinaServices`: user key.
+GitHub/Linear/Notion/Slack: Salix OAuth for APIs and recommendations; Notion also needs MCP OAuth.
+Linear: `read`, `write`. PostHog: MCP OAuth only; switches name `features`.
+Stripe/Tencent Docs/flomo/Pixso: MCP OAuth; other hosted services: keys.
+[Fastmail](architecture/FASTMAIL.md): MCP token.
 Dropbox, Canva, HubSpot: Composio; not personal sources.
-Native reauthorization gives the OAuth callback the attempt's 2-minute deadline.
+Native reauthorization uses the attempt's 2-minute callback deadline.
 The callback checks generation before binding writes. Cancellation keeps old access if it wins. Otherwise it conflicts.
 Comma connects `setup.required_connections` in order and installs after all complete. MCP callbacks match the plugin and group.
 App credentials use tenant overrides or defaults. Grants remain group-scoped.
@@ -103,7 +103,7 @@ A Slack, Feishu, or Lark send can carry a `question`: options or a field, and a 
 See [Slack command threads and receipt lifecycle](architecture/DOMAIN_CONCEPTS.md#slack-command-source-receipts).
 
 Triage has its own product admission contract. See [Bridge For Teams](bridge-for-teams/design.md).
-See [Messaging, voice](messaging-voice.md) and [QQ, Lark bots](../systems/README.md#qq-bot).
+See [Messaging, voice](messaging-voice.md) and [QQ, Lark, WeCom bots](../systems/README.md#qq-bot).
 
 Linear agent sessions map to Tasks. See [Linear agent installation](architecture/DOMAIN_CONCEPTS.md#linear-agent-installation).
 Message-search visibility is checked after ranking and before content return. See [Storage](storage-search.md).
@@ -229,7 +229,7 @@ A user-reportable failure shows only its public summary in every request.
 For a lasting fact (an ended call, an unknown send outcome, a rate limit), return a stable `error_class` or `code`.
 `public_summary` is text users can see. Tool failures use only `model_only` or `user_reportable`.
 
-#### Slack reply routing and Task sources
+#### Reply routing and Task sources
 
 `slack.leave_thread` blocks Router continuation and message sends for 30 days, including `end_turn.reply`.
 Only a human @-mention restores participation before delivery. App replies, history, and outbound sends cannot cancel the leave.
@@ -239,9 +239,9 @@ Only a human @-mention restores participation before delivery. App replies, hist
 
 `slack.post_message` stays product-only. Agent sends keep the renderer, provider access controls, and IFC checks.
 
-Task creation stores the selected trusted Slack source in runtime-owned `source_refs.task_reply_source`, independent of IFC mode.
+Task creation stores the selected trusted Slack/Feishu/Lark source in runtime-owned `source_refs.task_reply_source`, independent of IFC mode.
 As for cards, an answered person followed by a non-person source, or an `own_work` Task, selects none.
-Conversation updates cannot replace or remove it. Every delivered Task message shows its coordinates to the model.
+Conversation updates cannot replace or remove it. Every delivered Task message shows the model its coordinates.
 It grants no execution authority. Workers report through Tasks. Scheduled delivery restrictions stay unchanged.
 Tasks without it cannot infer a source from the current turn.
 

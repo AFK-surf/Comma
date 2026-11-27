@@ -41,6 +41,10 @@ const MACOS_AUDIO_CAPTURE_SETTINGS_URL =
 /** Windows' own page for which apps may use the microphone. */
 const WINDOWS_MICROPHONE_SETTINGS_URL = "ms-settings:privacy-microphone";
 
+export interface AudioCaptureLogger {
+  warn(message: string, context: Record<string, unknown>): void;
+}
+
 export type ScreenAccessStatus =
   | "granted"
   | "denied"
@@ -116,6 +120,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
   readonly #recordingsDir: string;
   readonly #drive: AudioCaptureDriveStore;
   readonly #encoder: RecordingEncoder;
+  readonly #logger: AudioCaptureLogger | undefined;
   readonly #onSaved:
     | ((
         recording: AudioCaptureRecording,
@@ -148,6 +153,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     screenAccessStatus,
     drive,
     encoder,
+    logger,
     onSaved,
   }: {
     /** Main's clock: when a recording starts, pauses and stops, and the level meter's pace. */
@@ -165,6 +171,8 @@ export class AudioCaptureService implements AudioCaptureProvider {
     screenAccessStatus?: (() => ScreenAccessStatus) | undefined;
     drive: AudioCaptureDriveStore;
     encoder: RecordingEncoder;
+    /** Main's diagnostics log; user-facing reasons stay short. */
+    logger?: AudioCaptureLogger | undefined;
     onSaved?: (
       recording: AudioCaptureRecording,
       target: RecordingDriveTarget,
@@ -179,6 +187,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     this.#recordingsDir = recordingsDir;
     this.#drive = drive;
     this.#encoder = encoder;
+    this.#logger = logger;
     this.#onSaved = onSaved;
     this.#permission = readScreenAccess(screenAccessStatus) ? "granted" : "unknown";
   }
@@ -407,7 +416,14 @@ export class AudioCaptureService implements AudioCaptureProvider {
     let encodedPath: string;
     try {
       encodedPath = await this.#encoder.encode(capture.path);
-    } catch {
+    } catch (error) {
+      this.#logger?.warn("Recording compression failed.", {
+        sampleRate: summary.sampleRate,
+        channels: summary.channels,
+        byteLength: summary.byteLength,
+        durationMs: summary.durationMs,
+        ...encoderFailure(error),
+      });
       const reason =
         "The recording could not be compressed. The WAV is retained in Comma's local recordings folder on this device.";
       this.#publish({ reason, status: "idle" });
@@ -453,7 +469,10 @@ export class AudioCaptureService implements AudioCaptureProvider {
         recording,
         status: "ready",
       };
-    } catch {
+    } catch (error) {
+      this.#logger?.warn("Recording save to Drive failed.", {
+        error: describeError(error),
+      });
       const reason =
         "The recording could not be saved to Drive. The WAV and M4A are retained in Comma's local recordings folder on this device.";
       // Failure retains the completed file without retrying Put.
@@ -819,6 +838,37 @@ function readScreenAccess(read: (() => ScreenAccessStatus) | undefined) {
 
 function describeError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The helper's exit and its last JSON `{"event":"error","message":...}` stderr line. */
+function encoderFailure(error: unknown): Record<string, unknown> {
+  const failure = (error ?? {}) as {
+    code?: unknown;
+    killed?: unknown;
+    signal?: unknown;
+    stderr?: unknown;
+  };
+  const stderr = typeof failure.stderr === "string" ? failure.stderr.trim() : "";
+  return {
+    ...(failure.code !== undefined ? { code: failure.code } : {}),
+    ...(failure.signal ? { signal: failure.signal } : {}),
+    ...(failure.killed !== undefined ? { killed: failure.killed } : {}),
+    ...helperOutput(stderr),
+    error: describeError(error),
+  };
+}
+
+function helperOutput(stderr: string): Record<string, string> {
+  if (!stderr) return {};
+  for (const line of stderr.split("\n").toReversed()) {
+    try {
+      const { message } = JSON.parse(line) as { message?: unknown };
+      if (typeof message === "string") return { helperMessage: message.slice(0, 500) };
+    } catch {
+      // Not one of the helper's JSON event lines.
+    }
+  }
+  return { stderr: stderr.slice(0, 500) };
 }
 
 function recordingFileName(startedAtMs: number) {

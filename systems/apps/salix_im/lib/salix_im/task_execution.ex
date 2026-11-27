@@ -215,6 +215,14 @@ defmodule SalixIM.TaskExecution do
 
   def ifc_request(_name, _args, _ctx), do: :none
 
+  def ifc_projection_targets(ctx) do
+    with {:ok, _scope, task, _source} <- assigned_command(ctx, true) do
+      {:ok, [["task|" <> task["conversation_id"]]]}
+    else
+      _ -> :none
+    end
+  end
+
   # The Task's Comma owner, else the person who asked for it in a provider
   # chat (`ifc_requester`), as `SalixWeb.StationTasks` reads them.
   defp task_person(%{"owner_user_id" => owner}) when is_binary(owner) and owner != "",
@@ -478,6 +486,8 @@ defmodule SalixIM.TaskExecution do
              origin["conversation_id"],
              origin["participant_id"]
            ),
+         true <-
+           is_nil(SalixIM.TaskSessionSlots.normalize_target_key(participant["target_key"])),
          {agent_id, ^session_id} <- ConversationParticipantActivity.session_ref(participant),
          true <- agent_id == scope.agent_id do
       :ok

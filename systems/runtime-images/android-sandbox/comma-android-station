@@ -1,0 +1,9 @@
+#!/bin/sh
+# Use one fresh Station data directory per guest. Enrollment stores its Device there.
+set -eu
+. /usr/local/lib/comma-android-env
+unset SALIX_WORKLOAD_CREDENTIAL SALIX_CONNECTOR_JOIN
+mkdir -p "$HOME/.comma/android-station" "$HOME/.tmp"
+export TMPDIR="$HOME/.tmp"
+exec /opt/comma-station/mesh/target/release/comma-station "$@" \
+    --app /opt/comma-station --data "$HOME/.comma/android-station"

@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import MapKit
 import Observation
 import CommaCore
 
@@ -55,6 +56,30 @@ import CommaCore
             catch { failure = error.localizedDescription; return }
         }
     }
+    nonisolated static func sheetTitle(
+        for payload: NSDictionary?,
+        preferredTitle: String? = nil,
+        fallback: String = String(localized: "Interactive content")
+    ) -> String {
+        if let title = preferredTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        if let data = payload?["data"] as? NSDictionary {
+            if let title = data.string("title")?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !title.isEmpty {
+                return title
+            }
+            if data.count == 1,
+               let child = data.allValues.first as? NSDictionary,
+               let title = child.string("title")?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !title.isEmpty {
+                return title
+            }
+        }
+        return fallback
+    }
+    var sheetTitle: String { Self.sheetTitle(for: feed.value.object?["ui"] as? NSDictionary, preferredTitle: ui.title) }
     func addProposal(to pane: ConversationPane) { guard scope.current, !pane.closed, let proposal else { return }; pane.fillDraft(proposal); self.proposal = nil }
 }
 
@@ -81,7 +106,7 @@ struct PhoneDynamicUIView: View {
             }
             if let failure = model.failure { InlineError(message: failure, dismiss: { dismiss() }) }
         }.padding(.horizontal, GroupedSurface.margin).background(CommaTheme.cardPrimary)
-            .pageTitle("Interactive content").sheetCloseButton { dismiss() }
+            .pageTitle(verbatim: model.sheetTitle).sheetCloseButton { dismiss() }
             .task { await model.feed.follow() }
             .task { await model.loadState(); stateLoaded = true }
             .confirmationDialog("Open this link?", isPresented: Binding(get: { model.link != nil }, set: { if !$0 { model.link = nil } }), titleVisibility: .visible) {
@@ -108,7 +133,7 @@ private struct PhoneDynamicUIHost: UIViewRepresentable {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.isOpaque = false; view.backgroundColor = .clear; view.navigationDelegate = context.coordinator
         context.coordinator.webView = view
-        view.loadHTMLString("<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline' https:; worker-src blob:; style-src 'unsafe-inline' https:; img-src https:; font-src https:; frame-src blob:; connect-src 'none'; form-action 'none'; base-uri 'none'\"></head><body></body></html>", baseURL: nil)
+        view.loadHTMLString("<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline' https:; worker-src blob:; style-src 'unsafe-inline' https:; img-src https: data:; font-src https:; frame-src blob:; connect-src 'none'; form-action 'none'; base-uri 'none'\"></head><body></body></html>", baseURL: nil)
         return view
     }
     func updateUIView(_ view: WKWebView, context: Context) { }
@@ -132,14 +157,41 @@ private struct PhoneDynamicUIHost: UIViewRepresentable {
                     theme["space"] = "\(GroupedSurface.margin)px"; theme["radius"] = "\(GroupedSurface.radius)px"
                     let copy = ["recommended": String(localized: "Recommended"), "alternatives": String(localized: "Other options"), "high": String(localized: "High"), "low": String(localized: "Low"), "feelsLike": String(localized: "Feels like"), "humidity": String(localized: "Humidity"), "ongoing": String(localized: "Now"), "directions": String(localized: "Directions"), "range": String(localized: "Range"), "days": String(localized: "days"), "attribute": String(localized: "Attribute"), "option": String(localized: "Option"), "versus": "VS", "checklistProgress": String(localized: "{done} of {total} done"), "focus": String(localized: "Focus"), "rest": String(localized: "Break"), "paused": String(localized: "Paused"), "timeUp": String(localized: "Time’s up"), "timerCycle": String(localized: "Session {current} of {total}"), "arrivesBy": String(localized: "Arrives by {time}"), "orderHeadline": String(localized: "{status}, {arrival}"), "offline": String(localized: "Offline"), "upNext": String(localized: "Up next"), "partFailed": String(localized: "This part couldn’t be shown")]
                     let initValue: [String: Any] = ["payload": owner.payload.value ?? NSNull(), "state": decode("state"), "cardState": decode("cards"), "seed": owner.model.ui.id,
-                                                   "theme": theme, "tokens": [:], "icons": [:], "copy": copy, "locale": Locale.preferredLanguages.first ?? "en", "timeZone": TimeZone.current.identifier]
+                                                   "theme": theme, "tokens": [:], "icons": [:], "copy": copy, "mapSnapshots": true, "mapCredit": "\u{F8FF} Maps", "locale": Locale.preferredLanguages.first ?? "en", "timeZone": TimeZone.current.identifier]
                     _ = try await webView.callAsyncJavaScript("globalThis.host = commaDynamicUIIOS.install(); await host.start(init); return null;", arguments: ["init": initValue], in: nil, contentWorld: Self.world)
                 } catch { if !closed { owner.model.failure = error.localizedDescription } }
             }
         }
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard !closed, message.frameInfo.isMainFrame, let wire = message.body as? String, wire.utf8.count <= 40_000, let data = wire.data(using: .utf8), let json = (try? JSONSerialization.jsonObject(with: data)) as? NSDictionary else { return }
+            if json.string("type") == "map-snapshot" { snapshot(json); return }
             owner.model.receive(json)
+        }
+        private var snapshotsRunning = 0
+        /// Draws a map card's base with MapKit: the card names the area in Web Mercator pixels at zoom 0, the same
+        /// projection as `MKMapRect` at a larger scale, so the pins the card draws on top line up.
+        private func snapshot(_ json: NSDictionary) {
+            let unit = MKMapSize.world.width / 256
+            guard snapshotsRunning < 8, let id = json.string("id"), id.count <= 16, let rect = (json["rect"] as? [NSNumber])?.map({ $0.doubleValue * unit }), rect.count == 4, rect.allSatisfy(\.isFinite),
+                  let width = (json["width"] as? NSNumber)?.doubleValue, let height = (json["height"] as? NSNumber)?.doubleValue, (1...1200).contains(width), (1...1200).contains(height) else { return }
+            let options = MKMapSnapshotter.Options()
+            options.mapRect = MKMapRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
+            options.size = CGSize(width: width, height: height)
+            // A quiet base without places of its own, so the card's pins and route stand out.
+            let configuration = MKStandardMapConfiguration(emphasisStyle: .muted)
+            configuration.pointOfInterestFilter = .excludingAll
+            options.preferredConfiguration = configuration
+            options.traitCollection = UITraitCollection { traits in
+                traits.userInterfaceStyle = owner.dark ? .dark : .light
+                traits.displayScale = 3
+            }
+            snapshotsRunning += 1
+            let snapshotter = MKMapSnapshotter(options: options)
+            Task {
+                defer { snapshotsRunning -= 1 }
+                guard let shot = try? await snapshotter.start(), !closed, let data = shot.image.jpegData(compressionQuality: 0.8) else { return }
+                _ = try? await webView?.callAsyncJavaScript("globalThis.host?.mapSnapshot(id, src); return null;", arguments: ["id": id, "src": "data:image/jpeg;base64," + data.base64EncodedString()], in: nil, contentWorld: Self.world)
+            }
         }
         func stop() { closed = true; webView?.callAsyncJavaScript("globalThis.host?.stop(); return null;", arguments: [:], in: nil, in: Self.world, completionHandler: nil); webView?.stopLoading() }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {

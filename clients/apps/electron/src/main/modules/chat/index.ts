@@ -8,7 +8,9 @@ import type {
   ChatCommandReceipt,
   ChatLeasedAttachInput,
   ChatLeasedAttachLocalFilesInput,
+  ChatLeasedAttachLocalPathsInput,
   ChatLeasedTarget,
+  ChatLocalPathMode,
   ChatTarget,
 } from "@comma/chat-contract";
 import type {
@@ -32,6 +34,8 @@ export type ChatAttachmentIntakeOutcome = {
  */
 export interface MainChatIntake {
   readonly intakeId: string;
+  /** Which files that are not images the draft's message names by their path rather than uploads. */
+  readonly localPathMode: ChatLocalPathMode;
   /** Asks the core whether the intake is still its draft's. */
   refresh(): Promise<void>;
   assertCurrent(): void;
@@ -157,16 +161,22 @@ export class MainChat {
     return this.#call("chat.attachLocalFiles", input);
   }
 
+  attachLocalPaths(
+    input: ChatLeasedAttachLocalPathsInput
+  ): Promise<ChatCommandReceipt> {
+    return this.#call("chat.attachLocalPaths", input);
+  }
+
   /** Opens an intake for `target`'s draft: the draft's send waits until it settles. */
   async claim(target: MainChatTarget): Promise<MainChatIntake> {
-    const { intakeId } = await this.#call<{ intakeId: string }>(
-      "chat.intake.claim",
-      target
-    );
+    const { intakeId, localPathMode } = await this.#call<
+      Calls["chat.intake.claim"]["result"]
+    >("chat.intake.claim", target);
     const fence = this.intake(intakeId);
     let active = true;
     return {
       ...fence,
+      localPathMode,
       assertCurrent: () => {
         if (!active)
           throw new Error("The Chat attachment intake claim is no longer active.");

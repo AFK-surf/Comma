@@ -99,6 +99,20 @@ describe("the Tasks a surface refers to", () => {
     });
   });
 
+  it("says a Task is still being read until the server answers, even when it leaves it out", async () => {
+    const t = setup();
+    t.api.on("GET", summaries, () => json(200, { data: [task("known")] }));
+    const release = t.api.hold("GET", summaries);
+    const value = t.watch(shown(["known", "gone"]));
+    await t.time.pass(100);
+    expect(value()).toEqual({ summaries: [], pending: true });
+    release();
+    await t.time.pass(100);
+    // The answer left "gone" out: it is not pending any more, only absent.
+    expect(value()?.pending).toBeUndefined();
+    expect(value()?.summaries.map((summary) => summary.id)).toEqual(["known"]);
+  });
+
   it("takes the list's facts for a Task it has with a version, and asks for none", async () => {
     const t = setup([task("listed", { updated_at: 5, title: "From the list" })]);
     t.api.on("GET", summaries, answering());
@@ -246,6 +260,14 @@ describe("the Tasks a surface refers to", () => {
     t.watch(shown(["0", "1000"]));
     await t.time.pass(100);
     expect(t.api.seen("GET", summaries)).toHaveLength(20);
+  });
+
+  it("keeps a Task pending when its request fails: the server has not said it is gone", async () => {
+    const t = setup();
+    t.api.on("GET", summaries, unanswered);
+    const value = t.watch(shown(["a"]));
+    await t.time.pass(100);
+    expect(value()).toEqual({ summaries: [], pending: true });
   });
 
   it("asks for nothing when a surface only peeks", async () => {

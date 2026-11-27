@@ -45,7 +45,7 @@ export function PluginPersonalSources({
   plugin: Pick<CommaPlugin, "name" | "brand">;
   personalSources: PersonalSourcesState;
   reauthorizingConnectionId: string | undefined;
-  onReauthorize: (connectionId: string) => void;
+  onReauthorize: (connectionId: string, bindingId?: string) => void;
 }) {
   const messages = useCommaMessages();
   const { error, retry } = personalSources;
@@ -54,10 +54,23 @@ export function PluginPersonalSources({
   // The section appears with its first read, never as an empty heading.
   if (!sources?.length && !error) return null;
 
+  const isConnectedAccountsOnly =
+    sources !== undefined &&
+    sources.length > 0 &&
+    sources.every((source) => source.kind === "oauth_code_paste");
+
   return (
-    <PluginDetailSection title={messages.plugins_personal_sources()}>
+    <PluginDetailSection
+      title={
+        isConnectedAccountsOnly
+          ? messages.plugins_connected_accounts()
+          : messages.plugins_personal_sources()
+      }
+    >
       <p className="m-0 px-md text-pretty text-sm text-quaternary">
-        {messages.plugins_personal_sources_description()}
+        {isConnectedAccountsOnly
+          ? messages.plugins_connected_accounts_description()
+          : messages.plugins_personal_sources_description()}
       </p>
       {error ? (
         <div className="flex items-center gap-sm px-md" role="alert">
@@ -76,12 +89,16 @@ export function PluginPersonalSources({
         <ul className="m-0 flex list-none flex-col gap-xs p-0">
           {sources.map((source) => (
             <PersonalSourceRow
-              key={source.connectionId}
+              key={source.bindingId ?? source.connectionId}
               name={sourceName(source, plugin.name)}
               onReauthorize={onReauthorize}
               personalSources={personalSources}
               pluginBrand={plugin.brand}
-              reauthorizing={reauthorizingConnectionId === source.connectionId}
+              reauthorizing={
+                reauthorizingConnectionId === source.connectionId ||
+                (source.bindingId !== undefined &&
+                  reauthorizingConnectionId === source.bindingId)
+              }
               source={source}
             />
           ))}
@@ -169,7 +186,7 @@ function PersonalSourceRow({
   pluginBrand: string | null | undefined;
   personalSources: PersonalSourcesState;
   reauthorizing: boolean;
-  onReauthorize: (connectionId: string) => void;
+  onReauthorize: (connectionId: string, bindingId?: string) => void;
 }) {
   const messages = useCommaMessages();
   const { confirmation, pending, prepare, confirm, cancel } = personalSources;
@@ -210,17 +227,7 @@ function PersonalSourceRow({
       <span className="flex min-w-0 flex-col gap-xxs text-sm">
         <span className="truncate text-primary">{name}</span>
         <span className="text-pretty text-quaternary">
-          {source.state === "ready"
-            ? messages.plugins_personal_source_ready()
-            : source.state === "needs_confirmation"
-              ? messages.plugins_personal_source_needs_confirmation()
-              : needsReauthorization
-                ? source.missingScopes?.length
-                  ? messages.plugins_personal_source_missing_scopes({
-                      scopes: source.missingScopes.join(", "),
-                    })
-                  : messages.plugins_personal_source_needs_reauthorization()
-                : messages.plugins_personal_source_needs_authorization()}
+          {sourceSubtitle(source, messages)}
         </span>
       </span>
       <div className="flex items-center gap-xs">
@@ -259,7 +266,7 @@ function PersonalSourceRow({
           isDisabled={pending !== undefined || reauthorizing}
           onPress={() => {
             cancel();
-            onReauthorize(source.connectionId);
+            onReauthorize(source.connectionId, source.bindingId);
           }}
           size="sm"
         >
@@ -342,12 +349,52 @@ function ConfirmationPanel({
   );
 }
 
+function sourceSubtitle(
+  source: PluginConnectionSource,
+  messages: ReturnType<typeof useCommaMessages>
+): string {
+  // Its account is the row's name; the line under it says what the account has.
+  if (source.kind === "oauth_code_paste" && source.state === "ready") {
+    const parts: string[] = [];
+    const ccu = source.metadata?.ccuBalance;
+    if (typeof ccu === "number" && Number.isFinite(ccu)) {
+      const formatted = new Intl.NumberFormat(undefined, {
+        maximumFractionDigits: 2,
+      }).format(ccu);
+      parts.push(messages.plugins_colab_cu_balance({ balance: formatted }));
+    }
+    const activeVms = source.metadata?.activeVmCount;
+    if (typeof activeVms === "number" && activeVms > 0) {
+      parts.push(
+        activeVms === 1
+          ? messages.plugins_colab_active_vms_one({ count: activeVms })
+          : messages.plugins_colab_active_vms_other({ count: activeVms })
+      );
+    }
+    if (parts.length > 0) return parts.join(" · ");
+  }
+  if (source.state === "ready") return messages.plugins_personal_source_ready();
+  if (source.state === "needs_confirmation")
+    return messages.plugins_personal_source_needs_confirmation();
+  if (source.state === "needs_reauthorization") {
+    return source.missingScopes?.length
+      ? messages.plugins_personal_source_missing_scopes({
+          scopes: source.missingScopes.join(", "),
+        })
+      : messages.plugins_personal_source_needs_reauthorization();
+  }
+  return messages.plugins_personal_source_needs_authorization();
+}
+
 function sourceName(source: PluginConnectionSource, pluginName: string) {
   switch (source.kind) {
     case "composio":
       return toolkitNames[source.toolkit] ?? pluginName;
     case "native_mcp_oauth":
       return `${pluginName} MCP`;
+    // The page is already the plugin's: its Google account tells the row apart.
+    case "oauth_code_paste":
+      return source.selectedAccountId ?? pluginName;
     case "managed_oauth":
     case "im_connect":
       return pluginName;

@@ -205,6 +205,7 @@ async function mount(
         host.uiPort = channel.port1;
         channel.port1.addEventListener("message", (incoming) => {
           host.uiMessages.push(incoming.data);
+          window.dispatchEvent(new MessageEvent("ui", { data: incoming.data }));
           if (incoming.data.type === "height")
             frame.style.height = `${Math.min(12000, Math.max(60, incoming.data.value))}px`;
         });
@@ -243,6 +244,21 @@ async function mount(
       cards: cardInit,
       slot: container,
     }
+  );
+}
+/** The reason the runtime gave when it stopped the widget. */
+async function stopped() {
+  return page.evaluate(
+    () =>
+      new Promise<unknown>((settle) => {
+        const reason = (message: Record<string, unknown>) => {
+          if (message.type === "error") settle(message.reason);
+        };
+        (
+          window as unknown as { uiMessages: Record<string, unknown>[] }
+        ).uiMessages.forEach(reason);
+        window.addEventListener("ui", (event) => reason((event as MessageEvent).data));
+      })
   );
 }
 async function messages() {
@@ -489,6 +505,46 @@ test("terminates a stuck worker and keeps the transcript responsive", async () =
     )
     .toBe(true);
   expect(await page.evaluate(() => 1 + 1)).toBe(2);
+});
+
+// A script's top-level declarations exist before its first line runs, and the
+// runtime's own first lines are in the same script. A script that declares
+// postMessage must not keep the host from hearing that the Worker runs.
+test("a stuck script that declares its own postMessage is stopped", async () => {
+  await launch();
+  await mount("function postMessage() {}\nwhile (true) {}");
+  expect(await stopped()).toMatch(/^UI script /);
+  expect(await page.evaluate(() => 1 + 1)).toBe(2);
+});
+
+// The browser starts a widget's Worker through Main. While Main is busy for
+// longer than a script may take to answer (the app catching up on a morning of
+// messages), the Worker starts late. That is not a stuck script.
+test("a widget whose Worker starts late behind a busy Main still runs", async () => {
+  await launch();
+  await app.evaluate(({ BrowserWindow }) => {
+    // From when the widget's document has loaded, Main is busy four times for
+    // 2.5 s, longer than the 2 s within which the host stops a script that has
+    // not answered. Between two turns Main serves only what already waits, so
+    // each step of starting the Worker that needs Main waits one turn.
+    let turns = 4;
+    const work = () => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+      // ast-grep-ignore: ts-test-timer -- Main's own next turn: the gap before it is when Main serves what waits.
+      if (--turns) setTimeout(work, 0);
+    };
+    let loaded = false;
+    BrowserWindow.getAllWindows()[0]!.webContents.on(
+      "did-frame-finish-load",
+      (_event, isMainFrame) => {
+        if (isMainFrame || loaded) return;
+        loaded = true;
+        work();
+      }
+    );
+  });
+  await mount("comma.text('result', 'Ready');");
+  await expect(page.frameLocator("iframe").locator("#result")).toHaveText("Ready");
 });
 
 // Main refuses the widget frame's own navigation (installWindowSecurity).

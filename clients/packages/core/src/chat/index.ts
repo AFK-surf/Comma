@@ -17,6 +17,7 @@ import { lazySchema } from "@comma/chat-contract";
 import {
   chatLeasedAttachInputSchema,
   chatLeasedAttachLocalFilesInputSchema,
+  chatLeasedAttachLocalPathsInputSchema,
   chatLeasedPickAttachmentsInputSchema,
   chatLeasedTargetSchema,
   chatGroupImagePreviewSchema,
@@ -27,6 +28,8 @@ import {
   chatTargetSchema,
   chatWorkspaceSkillsInputSchema,
   type ChatCommandReceipt,
+  type ChatLocalPathFile,
+  type ChatLocalPathMode,
   type ChatPickAttachmentsResult,
   type ChatReadGroupImageInput,
   type ChatRuntimeSnapshot,
@@ -51,6 +54,7 @@ import type { Account } from "../account.ts";
 import type { ChatSessionIdentity, TaskSummary } from "../contract.ts";
 import { readFile } from "../files.ts";
 import type { Ctx } from "../ctx.ts";
+import type { ClientLocation } from "../location-sharing.ts";
 import {
   CommaApiError,
   type CommaConversation,
@@ -221,6 +225,8 @@ export class Chat {
   hosted: HostedConversations | undefined;
   /** Told a Task's facts (status, title, version) each time a chat's read of its conversation changes them. */
   onTaskRead: ((task: TaskSummary) => void) | undefined;
+  /** This device's position for the next message sent, while the person shares it (`locationSharing`). */
+  clientLocation: (() => ClientLocation | undefined) | undefined;
 
   /**
    * What the coordinator answers a call with, as the call's effect: its error as the core's. Work it starts runs in
@@ -629,6 +635,7 @@ export class Chat {
     items: readonly (
       | { kind: "upload"; name: string; size: number; bytes: Uint8Array<ArrayBuffer> }
       | { kind: "local_file"; file: z.output<typeof chatLocalFileSchema> }
+      | { kind: "local_path"; file: ChatLocalPathFile }
     )[]
   ): ChatCommandReceipt | undefined {
     const holder = this.#holder(target.conversationId);
@@ -642,8 +649,32 @@ export class Chat {
               name: item.name,
               size: item.size,
             })
-          : holder.attachLocalFiles({ ...target, files: [item.file] });
+          : item.kind === "local_path"
+            ? holder.attachLocalPaths({ ...target, files: [item.file] })
+            : holder.attachLocalFiles({ ...target, files: [item.file] });
     return receipt;
+  }
+
+  /**
+   * How a desktop pick for `target`'s draft takes the files that are not images. A Task a station hosts on this
+   * computer reads every one where it is; one on another machine gets each uploaded. A Salix conversation names the
+   * files the server does not take well by their path when this computer is connected to the workspace (its device
+   * is sent with the message, so the agent knows where they are); otherwise all upload.
+   */
+  #localPathMode(target: ChatTarget): ChatLocalPathMode {
+    const deviceId = this.#deviceIds.get(target.workspaceId);
+    if (this.hosted?.owns(target.conversationId))
+      return this.hosted.runsOnDevice(
+        {
+          workspace: target.workspaceId,
+          group: target.groupId,
+          conversation: target.conversationId,
+        },
+        deviceId
+      )
+        ? "all_non_images"
+        : "none";
+    return deviceId === undefined ? "none" : "routed";
   }
 
   /** The revision the views of `target` are at, as a receipt names it. */
@@ -664,7 +695,7 @@ export class Chat {
         if (!account) throw new StaleChatSessionError();
         const isCurrent = () => !account.closed && ctx.session.current() === account;
         return {
-          api: createChatApi(ctx, account, env),
+          api: createChatApi(ctx, account, env, () => this.clientLocation?.()),
           session: account.lease,
           isCurrent,
           assertCurrent: () => {
@@ -849,6 +880,9 @@ export class Chat {
       "chat.attachLocalFiles": sync(chatLeasedAttachLocalFilesInputSchema, (i) =>
         this.#holder(i.conversationId).attachLocalFiles(i)
       ),
+      "chat.attachLocalPaths": sync(chatLeasedAttachLocalPathsInputSchema, (i) =>
+        this.#holder(i.conversationId).attachLocalPaths(i)
+      ),
       "chat.resolveWorkspaceChat": sync(
         z.object({
           workspaceId: z.string().min(1).optional(),
@@ -898,9 +932,13 @@ export class Chat {
               : readMessageContext(this.#ctx, input);
           }).pipe(Effect.catchDefect((defect) => Effect.fail(asCoreError(defect)))),
       },
-      "chat.readGroupImage": sync(chatReadGroupImageInputSchema, (i) =>
-        i.source === "attachment" ? this.#readMessageImage(i) : c().readGroupImage(i)
-      ),
+      // A preview the window let go (nobody waits for it) stops its request.
+      "chat.readGroupImage": {
+        ...sync(chatReadGroupImageInputSchema, (i) =>
+          i.source === "attachment" ? this.#readMessageImage(i) : c().readGroupImage(i)
+        ),
+        cancellable: true,
+      },
       /** A reply sent without a view (Main's notification banner). */
       "chat.sendDetached": sync(
         chatTargetSchema.extend({ text: z.string().min(1) }),
@@ -959,12 +997,27 @@ export class Chat {
           .object({
             workspaceId: z.string().min(1),
             key: z.string().min(8).max(128),
-            model: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+            model: z
+              .object({ id: z.string().min(1), name: z.string().min(1) })
+              .optional(),
+            stillfail: z
+              .object({
+                deviceId: z.string().min(1).max(256),
+                provider: z.string().min(1).max(64).optional(),
+                model: z.string().min(1).max(256).optional(),
+              })
+              .refine((s) => s.model === undefined || s.provider !== undefined, {
+                message: "stillfail model requires provider",
+              })
+              .optional(),
             text: z.string().trim(),
             uploads: z
               .array(z.object({ name: z.string().min(1), path: z.string().min(1) }))
               .max(MAX_ATTACHMENTS_PER_MESSAGE)
               .optional(),
+          })
+          .refine((i) => !(i.stillfail && i.model), {
+            message: "stillfail and cloud model cannot both be set",
           })
           .refine((i) => i.text !== "" || (i.uploads?.length ?? 0) > 0, {
             message: "text is required",
@@ -981,7 +1034,24 @@ export class Chat {
                 {
                   client_request_id: i.key,
                   text: composeMessageWithAttachments(i.text, i.uploads ?? []),
-                  model: { id: i.model.id },
+                  ...(i.stillfail
+                    ? {
+                        runs_on: { kind: "station", device_id: i.stillfail.deviceId },
+                        ...(i.stillfail.provider
+                          ? {
+                              model: {
+                                kind: "runtime",
+                                provider: i.stillfail.provider,
+                                ...(i.stillfail.model
+                                  ? { model: i.stillfail.model }
+                                  : {}),
+                              },
+                            }
+                          : {}),
+                      }
+                    : i.model
+                      ? { model: { id: i.model.id } }
+                      : {}),
                 }
               )
             ),
@@ -1053,7 +1123,10 @@ export class Chat {
               claim,
               target: input,
             });
-            return { intakeId: claim.intakeId };
+            return {
+              intakeId: claim.intakeId,
+              localPathMode: this.#localPathMode(input),
+            };
           }),
       },
       "chat.intake.check": this.#intakeCall((intake) => {
@@ -1171,6 +1244,7 @@ export class Chat {
         maxFiles,
         maxTotalSize,
         maxUploadFiles,
+        localPathMode: this.#localPathMode(target),
       })
       .pipe(
         Effect.map((picked): ChatPickAttachmentsResult => {
@@ -1296,7 +1370,8 @@ export class Chat {
 function refusedWithWhy(failure: Error): Error {
   const refusal = failure as Partial<CoreError>;
   const why = (refusal.detail as { message?: unknown } | undefined)?.message;
-  return refusal.code === "refused" && typeof why === "string"
-    ? new CoreError("refused", why, refusal.status)
+  return (refusal.code === "refused" || refusal.code === "machine_offline") &&
+    typeof why === "string"
+    ? new CoreError(refusal.code, why, refusal.status)
     : failure;
 }

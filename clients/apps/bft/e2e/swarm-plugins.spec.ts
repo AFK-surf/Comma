@@ -593,6 +593,54 @@ test("a connected Composio account points to the Composio connection list", asyn
   ).toHaveAttribute("href", "/orgs/acme/projects/p-1/connections#composio");
 });
 
+test("a per-person sign-in offers no connect, only disconnect", async ({ page }) => {
+  const feishuProject = {
+    project,
+    android: null,
+    plugin: {
+      ...plugin("feishu-project", "飞书项目", "system", { enabled: true }),
+      setup: {
+        mcps: [
+          {
+            alias: "feishu-project",
+            placement: "server",
+            state: "ready_on_use",
+            connections: [
+              credential("feishu-project", "requester_mcp_oauth", "飞书项目", {
+                state: "connected",
+                action: "reconnect",
+                disconnectable: true,
+                dependent_mcps: ["feishu-project"],
+              }),
+            ],
+          },
+        ],
+        connections: [],
+      },
+    },
+  };
+  await open(
+    page,
+    (request) =>
+      request.method === "GET" && request.path === `${api}/feishu-project`
+        ? ok(feishuProject)
+        : undefined,
+    `${base}/feishu-project`
+  );
+
+  const servers = main(page).getByRole("region", { name: "MCP servers" });
+  await expect(servers.getByText("Sign-in per person")).toBeVisible();
+  await expect(
+    servers.getByText("Each person signs in from the chat the first time they use it.")
+  ).toBeVisible();
+  await expect(
+    servers.getByRole("button", { name: /^(Connect|Reconnect) / })
+  ).toHaveCount(0);
+  await expect(
+    servers.getByRole("button", { name: "Disconnect 飞书项目" })
+  ).toBeVisible();
+});
+
 test("a failed OAuth return is said once and leaves the address", async ({ page }) => {
   await open(page, undefined, `${base}/linear?oauth_error=access_denied`);
   await expect(

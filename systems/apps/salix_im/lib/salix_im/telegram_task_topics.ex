@@ -157,7 +157,8 @@ defmodule SalixIM.TelegramTaskTopics do
          {:ok, attachments, failed} <-
            ProviderConversationInput.stage_worker_attachments(
              task["task_worker_agent_id"],
-             Keyword.get(opts, :attachments, [])
+             Keyword.get(opts, :attachments, []),
+             SalixIM.ProviderAttachments.ingress_label(binding["group_id"], metadata)
            ),
          {:ok, _} <-
            ConversationServer.append_group_conversation_message(

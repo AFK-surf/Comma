@@ -15,7 +15,8 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
     GoogleCalendarSource,
     LarkMeetingPreparationDashboard,
     MeetingCalendarStatus,
-    MeetingEnrollment
+    MeetingEnrollment,
+    MemberMeetingStatus
   }
 
   alias SalixIM.Provider.Slack.API
@@ -217,19 +218,15 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
     end
   end
 
-  # Members' calendars are scanned one by one; the page reports how many are
-  # enrolled rather than reading every member's projection.
+  # Members' calendars: a bounded number of members' projections, one row per
+  # meeting (`MemberMeetingStatus`).
   defp status(_group, %{"enabled" => true, "calendar_scope" => "members"} = settings) do
     case CalendarEnrollmentCache.load(settings) do
-      {:ok, %{group: enrolled}} ->
-        %{
-          "health" => "members",
-          "member_calendars" =>
-            Enum.count(enrolled["units"] || [], &(List.wrap(&1["calendars"]) != [])),
-          "events" => []
-        }
+      {:ok, %{group: %{"calendar_scope" => "members"} = enrolled}} ->
+        {:ok, calendar} = MemberMeetingStatus.get(enrolled, 20)
+        calendar
 
-      {:error, _} ->
+      _ ->
         %{"health" => "pending", "member_calendars" => 0, "events" => []}
     end
   end
@@ -297,8 +294,9 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
     end
   end
 
-  # Members' calendars join and record; preparation, when on, is one direct
-  # message per meeting to its organizer (or the member who holds it).
+  # Members' calendars join and record; preparation, when on, researches each
+  # meeting once and sends a direct message to each member whose calendar
+  # holds it.
   # A Feishu/Lark bot has its own settings (`LarkMeetingPreparationDashboard`).
   defp configuration(group, %{"enabled" => true, "connect_id" => connect_id} = attrs)
        when is_binary(connect_id) do

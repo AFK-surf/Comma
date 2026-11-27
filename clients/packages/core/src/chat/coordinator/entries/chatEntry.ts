@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import type { ChatEnv, TimerHandle } from "../../env";
 import type {
+  ChatDraftEntry,
   ChatRuntimeSession,
   ChatTarget,
   ConversationProjection,
@@ -32,6 +33,8 @@ export type ChatEntry = {
   conversationId: string;
   groupId: string;
   draftEpoch: number;
+  /** Where the draft's words were written when not here (`ChatDraftEntry`): the send that consumes it reports it. */
+  draftEntry: ChatDraftEntry | undefined;
   draftOwnerSurfaceId: string | undefined;
   key: string;
   /** The channel state last projected, to tell a draft-only emit apart. */
@@ -120,6 +123,7 @@ export function createChatEntry(
     conversationId: target.conversationId,
     groupId: target.groupId,
     draftEpoch: 0,
+    draftEntry: undefined,
     draftOwnerSurfaceId: undefined,
     key: chatKey(target),
     observedState: channel.getSnapshot(),

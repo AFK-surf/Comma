@@ -201,10 +201,13 @@ it("opens a row's step log beside the card and keeps it open on the way in", asy
 
   // Beside the card, level with its bottom, growing up as the card does.
   const cardBox = card.element().getBoundingClientRect();
-  const frame = log.querySelector(".comma-chat-activity-log-frame")!;
+  const frame = log.querySelector<HTMLElement>(".comma-chat-activity-log-frame")!;
   const steps = frame.getBoundingClientRect();
   expect(steps.left).toBeGreaterThan(cardBox.right);
   expect(Math.abs(steps.bottom - cardBox.bottom)).toBeLessThan(2);
+  // Short logs fit without a scroll range or a native Windows scrollbar.
+  expect(frame.scrollHeight).toBe(frame.clientHeight);
+  expect(frame.offsetWidth - frame.clientWidth).toBe(0);
 
   // The pointer crosses the gap into the log, and the log stays.
   await userEvent.hover(log.querySelector("li")!);
@@ -253,6 +256,7 @@ it("scrolls before the window's top and follows the newest step", async () => {
     // It stops short of the window's top and scrolls instead.
     expect(frame.getBoundingClientRect().top).toBeGreaterThanOrEqual(15);
     expect(frame.scrollHeight).toBeGreaterThan(frame.clientHeight);
+    expect(frame.offsetWidth - frame.clientWidth).toBe(0);
     // Scrolled to the newest step.
     expect(frame.scrollTop + frame.clientHeight).toBeGreaterThanOrEqual(
       frame.scrollHeight - 2

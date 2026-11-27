@@ -1,4 +1,5 @@
 import type { ScreenClip, ScreenViewEvent } from "@comma/core/contract";
+import type { DuoPostureId } from "./devices/duoScreens";
 import { uiClock } from "@comma/ui/clock";
 import {
   askedCodecs,
@@ -33,6 +34,8 @@ export type ScreenStreamPeer = {
   setClipboard?(clip: ScreenClip, paste: boolean): void;
   /** The view's sound off (muted here: the computer sends none) or on again. */
   sound?(on: boolean): void;
+  /** Moves a device that folds to a posture: the core sends its fold and turns. */
+  setPosture?(posture: DuoPostureId): void;
   close(): void;
 };
 
@@ -53,6 +56,7 @@ export type ScreenViewMessage =
   | { input: ScreenStreamInput }
   | { control: boolean }
   | { clipboard: ScreenClip; paste: boolean }
+  | { posture: DuoPostureId }
   | { sound: boolean };
 
 /** Ms from the page having a frame to its decoder taking it, giving it out, it handed to the track, its `ack`. */
@@ -193,7 +197,10 @@ export function openMeshScreenStream(options: {
   onAgent?(on: boolean): void;
   /** Where that agent's finger is as it acts. */
   onAgentPointer?(at: ScreenAgentPointer): void;
-  /** What the statistics show as it changes: the picture's codec and size, how it is made, how late it is. */
+  /**
+   * What the statistics show as it changes: the picture's codec and size, how it is made, how late it is, its path's
+   * round trip and packet loss (both undefined again as another view opens: they were the last view's path's).
+   */
   onStats?(stats: Omit<ScreenStreamStats, "frames" | "bytes">): void;
   /** A frame came, of so many bytes (the statistics' frame rate and bandwidth). */
   onFrame?(bytes: number): void;
@@ -370,12 +377,29 @@ export function openMeshScreenStream(options: {
         options.onDevice?.({
           orientation: event.state.orientation,
           pose: event.state.pose,
+          ...(event.state.panel === true ? { panel: true } : {}),
+          ...(typeof event.state.hinge === "number"
+            ? { hinge: event.state.hinge }
+            : {}),
         });
       if (event.state.cursor) options.onCursor?.(event.state.cursor);
       if (event.state.agent !== undefined) options.onAgent?.(event.state.agent);
       if (event.state.agentPointer) options.onAgentPointer?.(event.state.agentPointer);
       if (event.state.video) options.onStats?.({ video: event.state.video });
       if (event.state.latency) options.onStats?.({ latency: event.state.latency });
+      // (only figures that can be: a station's word is not trusted to be in range)
+      const { rtt, loss } = event.state;
+      const rttMs =
+        typeof rtt === "number" && Number.isFinite(rtt) && rtt >= 0 ? rtt : undefined;
+      const lossPct =
+        typeof loss === "number" && Number.isFinite(loss) && loss >= 0 && loss <= 100
+          ? loss
+          : undefined;
+      if (rttMs !== undefined || lossPct !== undefined)
+        options.onStats?.({
+          ...(rttMs !== undefined ? { rtt: rttMs } : {}),
+          ...(lossPct !== undefined ? { loss: lossPct } : {}),
+        });
       return;
     }
     // (the statistics' figures, apart from the decoder's path)
@@ -414,6 +438,7 @@ export function openMeshScreenStream(options: {
       if (options.sound?.() === false) options.send(view, { sound: false });
       timing = false;
       times.clear();
+      options.onStats?.({ rtt: undefined, loss: undefined });
       options.onClipboardTypes?.(event.clipboard ?? []);
     } else if (event.type === "config") ensureDecoder().configure(event);
     else if (event.type === "video") {
@@ -514,6 +539,9 @@ export function openMeshScreenStream(options: {
     },
     setClipboard(clip, paste) {
       if (view !== undefined) options.send(view, { clipboard: clip, paste });
+    },
+    setPosture(posture) {
+      if (view !== undefined) options.send(view, { posture });
     },
     sound(on) {
       if (view !== undefined) options.send(view, { sound: on });

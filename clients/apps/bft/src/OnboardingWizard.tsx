@@ -3,6 +3,7 @@ import { Checkbox } from "@comma/ui/components/checkbox";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import {
+  BftApiError,
   BftUnauthenticatedError,
   wizardSteps,
   type BftToolkitState,
@@ -16,14 +17,35 @@ import { FlashNotice, showFlash } from "./flash";
 import { messages } from "./messages";
 import { orgHref, projectHref, settingsPaths } from "./navSpec";
 import { dataKey, useApi, useResource, type Resource } from "./resource";
-import { navigate, spaLinkClick } from "./router";
+import { navigate, spaLinkClick, useSearch } from "./router";
 import { useWrite } from "./settingsForm";
 import { ErrorState, Skeleton } from "./states";
 
 const t = messages.onboardingWizard;
 
-export const wizardPath = (step: BftWizardStep) =>
-  step === "capabilities" ? "/onboarding" : `/onboarding/${step}`;
+export const wizardPath = (step: BftWizardStep, org?: string) => {
+  const base = step === "capabilities" ? "/onboarding" : `/onboarding/${step}`;
+  return org !== undefined ? `${base}?org=${encodeURIComponent(org)}` : base;
+};
+
+const isOrgUnavailable = (error: unknown) =>
+  error instanceof BftApiError && error.code === "organization_unavailable";
+
+function runWizardWrite<T>(
+  write: ReturnType<typeof useWrite>,
+  action: () => Promise<T>,
+  onSuccess: (value: T) => void,
+  onOrgUnavailable: () => void
+) {
+  write.run(async () => {
+    try {
+      return await action();
+    } catch (error) {
+      if (isOrgUnavailable(error)) onOrgUnavailable();
+      throw error;
+    }
+  }, onSuccess);
+}
 
 // A bare `/onboarding` resumes on the step reached before, once per page load,
 // so Back to the first step stays there.
@@ -43,11 +65,22 @@ export function OnboardingWizard({
   pathname: string;
 }) {
   const api = useApi();
-  const [resource, retry] = useResource("onboarding-wizard", (signal) =>
-    api.wizard(signal)
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  const targetOrg = searchParams.has("org")
+    ? (searchParams.get("org") ?? "")
+    : undefined;
+  const [resource, retry] = useResource(
+    targetOrg !== undefined ? `onboarding-wizard:${targetOrg}` : "onboarding-wizard",
+    (signal) => api.wizard(signal, targetOrg)
   );
   // A saved step answers with the wizard as it is now.
   const [written, setWritten] = useState<BftWizard | null>(null);
+  const targetOrgKey = targetOrg !== undefined ? `org:${targetOrg}` : "default";
+  const [unavailableForOrg, setUnavailableForOrg] = useState<string | null>(null);
+  const orgUnavailable =
+    unavailableForOrg !== null && unavailableForOrg === targetOrgKey;
+  const markOrgUnavailable = () => setUnavailableForOrg(targetOrgKey);
   const data = written ?? (resource.state === "ready" ? resource.data : undefined);
   const finished = data !== undefined && data.status !== "in_progress";
   const resumeTo =
@@ -63,8 +96,8 @@ export function OnboardingWizard({
     if (!data) return;
     resumeChecked = true;
     if (finished) navigate("/", { replace: true });
-    else if (resumeTo) navigate(wizardPath(resumeTo), { replace: true });
-  }, [data, finished, resumeTo]);
+    else if (resumeTo) navigate(wizardPath(resumeTo, targetOrg), { replace: true });
+  }, [data, finished, resumeTo, targetOrg]);
 
   const index = wizardSteps.indexOf(step);
 
@@ -85,19 +118,42 @@ export function OnboardingWizard({
           <p className="bft-wizard-progress">
             {t.stepOf(index + 1, wizardSteps.length)}
           </p>
-          {resource.state === "error" && !written ? (
+          {orgUnavailable ? (
+            <OrgUnavailableState />
+          ) : resource.state === "error" && !written ? (
             resource.error instanceof BftUnauthenticatedError ? (
               <WizardSkeleton />
+            ) : isOrgUnavailable(resource.error) ? (
+              <OrgUnavailableState />
             ) : (
               <ErrorState onRetry={retry} />
             )
           ) : !data || finished || resumeTo ? (
             <WizardSkeleton />
           ) : (
-            <Step data={data} key={dataKey(data)} onSaved={setWritten} step={step} />
+            <Step
+              data={data}
+              key={dataKey(data)}
+              onOrgUnavailable={markOrgUnavailable}
+              onSaved={setWritten}
+              step={step}
+              targetOrg={targetOrg}
+            />
           )}
         </main>
       </ScrollArea>
+    </div>
+  );
+}
+
+function OrgUnavailableState() {
+  return (
+    <div className="bft-state" role="alert">
+      <h2>{t.orgUnavailableTitle}</h2>
+      <p>{t.orgUnavailableBody}</p>
+      <a className="bft-btn" href="/orgs" onClick={spaLinkClick}>
+        {messages.states.backToOrganizations}
+      </a>
     </div>
   );
 }
@@ -106,18 +162,42 @@ function Step({
   step,
   data,
   onSaved,
+  onOrgUnavailable,
+  targetOrg,
 }: {
   step: BftWizardStep;
   data: BftWizard;
   onSaved: (data: BftWizard) => void;
+  onOrgUnavailable: () => void;
+  targetOrg: string | undefined;
 }) {
   switch (step) {
     case "capabilities":
-      return <CapabilitiesStep data={data} onSaved={onSaved} />;
+      return (
+        <CapabilitiesStep
+          data={data}
+          onOrgUnavailable={onOrgUnavailable}
+          onSaved={onSaved}
+          targetOrg={targetOrg}
+        />
+      );
     case "profile":
-      return <ProfileStep data={data} onSaved={onSaved} />;
+      return (
+        <ProfileStep
+          data={data}
+          onOrgUnavailable={onOrgUnavailable}
+          onSaved={onSaved}
+          targetOrg={targetOrg}
+        />
+      );
     case "integrations":
-      return <IntegrationsStep data={data} />;
+      return (
+        <IntegrationsStep
+          data={data}
+          onOrgUnavailable={onOrgUnavailable}
+          targetOrg={targetOrg}
+        />
+      );
   }
 }
 
@@ -140,12 +220,16 @@ function Actions({
   busy,
   error,
   onPrimary,
+  onOrgUnavailable,
+  targetOrg,
 }: {
   back: BftWizardStep | null;
   primaryLabel: string;
   busy: boolean;
   error: string | undefined;
   onPrimary: () => void;
+  onOrgUnavailable: () => void;
+  targetOrg: string | undefined;
 }) {
   const api = useApi();
   const [asking, setAsking] = useState(false);
@@ -158,7 +242,7 @@ function Actions({
           <Button
             disabled={busy}
             hierarchy="secondary-gray"
-            onPress={() => navigate(wizardPath(back))}
+            onPress={() => navigate(wizardPath(back, targetOrg))}
             size="sm"
           >
             {t.back}
@@ -187,7 +271,17 @@ function Actions({
             setAsking(false);
             skip.reset();
           }}
-          onConfirm={() => skip.run(() => api.skipWizard(), leave)}
+          onConfirm={() =>
+            runWizardWrite(
+              skip,
+              () => api.skipWizard(targetOrg),
+              leave,
+              () => {
+                setAsking(false);
+                onOrgUnavailable();
+              }
+            )
+          }
           title={t.skipTitle}
         />
       ) : null}
@@ -204,9 +298,13 @@ function leave(finish: BftWizardFinish) {
 function CapabilitiesStep({
   data,
   onSaved,
+  onOrgUnavailable,
+  targetOrg,
 }: {
   data: BftWizard;
   onSaved: (data: BftWizard) => void;
+  onOrgUnavailable: () => void;
+  targetOrg: string | undefined;
 }) {
   const api = useApi();
   const [grants, setGrants] = useState(data.capabilities);
@@ -259,16 +357,20 @@ function CapabilitiesStep({
         back={null}
         busy={write.busy}
         error={write.error}
+        onOrgUnavailable={onOrgUnavailable}
         onPrimary={() =>
-          write.run(
-            () => api.saveWizardCapabilities(grants),
+          runWizardWrite(
+            write,
+            () => api.saveWizardCapabilities(grants, targetOrg),
             (saved) => {
               onSaved(saved);
-              navigate(wizardPath("profile"));
-            }
+              navigate(wizardPath("profile", targetOrg));
+            },
+            onOrgUnavailable
           )
         }
         primaryLabel={t.continue}
+        targetOrg={targetOrg}
       />
     </>
   );
@@ -277,13 +379,20 @@ function CapabilitiesStep({
 function ProfileStep({
   data,
   onSaved,
+  onOrgUnavailable,
+  targetOrg,
 }: {
   data: BftWizard;
   onSaved: (data: BftWizard) => void;
+  onOrgUnavailable: () => void;
+  targetOrg: string | undefined;
 }) {
   const api = useApi();
-  const [integrations] = useResource("onboarding-integrations", (signal) =>
-    api.wizardIntegrations(signal)
+  const [integrations] = useResource(
+    targetOrg !== undefined
+      ? `onboarding-integrations:${targetOrg}`
+      : "onboarding-integrations",
+    (signal) => api.wizardIntegrations(signal, targetOrg)
   );
   const write = useWrite();
   const p = t.profile;
@@ -354,16 +463,20 @@ function ProfileStep({
         back="capabilities"
         busy={write.busy}
         error={write.error}
+        onOrgUnavailable={onOrgUnavailable}
         onPrimary={() =>
-          write.run(
-            () => api.saveWizardProfile(),
+          runWizardWrite(
+            write,
+            () => api.saveWizardProfile(targetOrg),
             (saved) => {
               onSaved(saved);
-              navigate(wizardPath("integrations"));
-            }
+              navigate(wizardPath("integrations", targetOrg));
+            },
+            onOrgUnavailable
           )
         }
         primaryLabel={t.continue}
+        targetOrg={targetOrg}
       />
     </>
   );
@@ -402,10 +515,21 @@ function Plans({ integrations }: { integrations: Resource<BftWizardIntegrations>
   );
 }
 
-function IntegrationsStep({ data }: { data: BftWizard }) {
+function IntegrationsStep({
+  data,
+  onOrgUnavailable,
+  targetOrg,
+}: {
+  data: BftWizard;
+  onOrgUnavailable: () => void;
+  targetOrg: string | undefined;
+}) {
   const api = useApi();
-  const [integrations, retry] = useResource("onboarding-integrations", (signal) =>
-    api.wizardIntegrations(signal)
+  const [integrations, retry] = useResource(
+    targetOrg !== undefined
+      ? `onboarding-integrations:${targetOrg}`
+      : "onboarding-integrations",
+    (signal) => api.wizardIntegrations(signal, targetOrg)
   );
   const finish = useWrite();
   const i = t.integrations;
@@ -418,18 +542,34 @@ function IntegrationsStep({ data }: { data: BftWizard }) {
       ) : integrations.state === "error" ? (
         integrations.error instanceof BftUnauthenticatedError ? (
           <RowsSkeleton rows={5} />
+        ) : isOrgUnavailable(integrations.error) ? (
+          <OrgUnavailableState />
         ) : (
           <ErrorState onRetry={retry} />
         )
       ) : (
-        <Integrations data={integrations.data} org={data.org?.slug ?? null} />
+        <Integrations
+          data={integrations.data}
+          onOrgUnavailable={onOrgUnavailable}
+          org={data.org?.slug ?? null}
+          targetOrg={targetOrg}
+        />
       )}
       <Actions
         back="profile"
         busy={finish.busy}
         error={finish.error}
-        onPrimary={() => finish.run(() => api.completeWizard(), leave)}
+        onOrgUnavailable={onOrgUnavailable}
+        onPrimary={() =>
+          runWizardWrite(
+            finish,
+            () => api.completeWizard(targetOrg),
+            leave,
+            onOrgUnavailable
+          )
+        }
         primaryLabel={t.finish}
+        targetOrg={targetOrg}
       />
     </>
   );
@@ -438,9 +578,13 @@ function IntegrationsStep({ data }: { data: BftWizard }) {
 function Integrations({
   data,
   org,
+  onOrgUnavailable,
+  targetOrg,
 }: {
   data: BftWizardIntegrations;
   org: string | null;
+  onOrgUnavailable: () => void;
+  targetOrg: string | undefined;
 }) {
   const api = useApi();
   const connect = useWrite();
@@ -459,9 +603,11 @@ function Integrations({
   }
 
   const start = (toolkit: string) =>
-    connect.run(
-      () => api.connectWizardToolkit(toolkit),
-      ({ redirect_url }) => window.location.assign(redirect_url)
+    runWizardWrite(
+      connect,
+      () => api.connectWizardToolkit(toolkit, targetOrg),
+      ({ redirect_url }) => window.location.assign(redirect_url),
+      onOrgUnavailable
     );
 
   return (

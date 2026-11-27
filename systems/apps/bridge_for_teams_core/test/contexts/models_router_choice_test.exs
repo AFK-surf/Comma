@@ -131,4 +131,37 @@ defmodule BridgeForTeams.ModelsRouterChoiceTest do
 
     assert {:error, :target_not_found} = Models.router_model_filter(SystemsRuntime.Proc.uuid())
   end
+
+  test "the platform Router mark has its own key and no org choice can hold it", %{
+    org: org,
+    project: p
+  } do
+    plain = Models.normalize(%{"kind" => "catalog", "model" => "gpt-5.5"})
+    marked = %{"kind" => "catalog", "model" => "gpt-5.5", "platform" => true}
+
+    # A kept marked Router and one switched to the org's own account differ.
+    assert Models.normalize(marked)["platform"] == true
+    assert Models.key(Models.normalize(marked)) == "catalog:gpt-5.5+platform"
+    assert Models.key(plain) == "catalog:gpt-5.5"
+
+    # Not offered, allowed or chosen, whatever the allowed list says.
+    catalog = {:ok, [Models.option(plain, [])]}
+    assert Models.allowed?(org, plain, catalog)
+    refute Models.allowed?(org, marked, catalog)
+    assert {:error, :invalid_model_configuration} = Models.choose(org, marked, catalog)
+    assert {:error, :model_not_allowed} = Models.router_choice(p.id, marked)
+
+    for field <- ~w(default_router_model default_task_model) do
+      assert {:error, %Ecto.Changeset{}} = Orgs.update_org(org, %{field => marked})
+    end
+
+    assert {:error, %Ecto.Changeset{}} = Orgs.update_org(org, %{"allowed_models" => [marked]})
+
+    govern(org, allowed_models: [plain, Models.normalize(marked)])
+    refute Models.allowed?(Repo.get!(Organization, org.id), marked, catalog)
+    assert {:ok, filter} = Models.router_model_filter(p.id)
+
+    assert [%{"choices" => [^plain]}] =
+             filter.([%{"id" => "gpt-5.5", "served_by" => "subscription", "efforts" => []}])
+  end
 end

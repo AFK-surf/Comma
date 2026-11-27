@@ -41,6 +41,12 @@ export const MEETING_APPS: readonly MeetingAppDescriptor[] = [
   { bundleIdentifier: "Cisco-Systems.Spark", kind: "native", name: "Webex" },
   { bundleIdentifier: "com.tencent.meeting", kind: "native", name: "Tencent Meeting" },
   { bundleIdentifier: "com.electron.lark", kind: "native", name: "Feishu" },
+  // Lark, Feishu's international build, has its own identifiers; its call
+  // process is `com.larksuite.larkApp.iron`.
+  { bundleIdentifier: "com.larksuite.larkApp", kind: "native", name: "Lark" },
+  // The Mac App Store builds of Feishu and Lark have other identifiers.
+  { bundleIdentifier: "com.bytedance.macos.feishu", kind: "native", name: "Feishu" },
+  { bundleIdentifier: "com.larksuite.macos.lark", kind: "native", name: "Lark" },
   { bundleIdentifier: "com.google.Chrome", kind: "browser", name: "Google Chrome" },
   { bundleIdentifier: "com.apple.Safari", kind: "browser", name: "Safari" },
   { bundleIdentifier: "company.thebrowser.Browser", kind: "browser", name: "Arc" },

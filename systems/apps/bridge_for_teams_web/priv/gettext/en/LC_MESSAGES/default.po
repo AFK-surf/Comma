@@ -165,8 +165,8 @@ msgstr ""
 msgid "Couldn't update role."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:231
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:318
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:247
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:393
 msgid "Create organization"
 msgstr ""
 
@@ -216,7 +216,7 @@ msgstr ""
 msgid "Integrations"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:247
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:294
 msgid "Invite code"
 msgstr ""
 
@@ -248,7 +248,7 @@ msgstr ""
 msgid "Only Agent Swarm admins can manage access."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:261
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:308
 msgid "Organization name"
 msgstr ""
 
@@ -258,7 +258,7 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:66
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:135
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:275
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:328
 msgid "Organization slug"
 msgstr ""
 
@@ -280,7 +280,7 @@ msgstr ""
 msgid "Sign in"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:324
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:413
 msgid "Sign in with SSO"
 msgstr ""
 
@@ -298,7 +298,7 @@ msgid ""
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:6
-msgid "Switch your dashboard session to another Bridge For Teams user."
+msgid "Switch your dashboard session to another Comma for Teams user."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4869
@@ -322,12 +322,12 @@ msgstr ""
 msgid "The runtime is not ready yet. Retry shortly."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:233
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:249
 msgid "Use your invite code to create your organization and owner account."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:151
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:290
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:344
 msgid "Work email"
 msgstr ""
 
@@ -335,7 +335,7 @@ msgstr ""
 msgid "You"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:309
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:365
 msgid "Your name"
 msgstr ""
 
@@ -621,12 +621,6 @@ msgid "No check result observed"
 msgstr ""
 
 msgid "No gates recorded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-msgid ""
-"Only one Feishu app can be enabled for the group bot right now. Disable the "
-"existing bot app before enabling another."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:734
@@ -1660,6 +1654,29 @@ msgid "%{model} (current; unavailable for selection)"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen
+msgid "%{model} (current; no enabled account serves it)"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen
+msgid "%{model}; no enabled account serves it"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen
+msgid "%{model} (pay-per-use)"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen
+msgid "Tasks · %{model}; no enabled account serves it"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "The binding changed. Reopen the form and try again."
 msgstr ""
 
@@ -1933,7 +1950,7 @@ msgstr ""
 msgid "Could not run Lark checks."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:80
 #, elixir-autogen, elixir-format
 msgid "Sign in with Lark"
 msgstr ""
@@ -2173,4 +2190,604 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
 #, elixir-autogen, elixir-format
 msgid "A member already keeps a key under this name. Choose another name."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "%{model} (provided by the platform)"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Choose whether this workspace's people are your organization's or external."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Access granted."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Access removed."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Choose 1, 7 or 30 days, or no expiry."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "People of this workspace are your organization's people now."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "People of this workspace are external now. Only people you grant can use stations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "That person could not be found in this workspace. Search again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "A connect can have at most 100 people granted. Remove one first."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Only organization owners and admins can assign a department."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Choose an existing department."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "is invalid"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Could not create the department."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "An organization can have at most %{count} departments."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Could not update the department."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Could not delete the department."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "An Agent Swarm can search at most %{count} other Agent Swarms. Remove some departments or Agent Swarms and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Department not found."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_projects.ex
+#, elixir-autogen, elixir-format
+msgid "Choose existing departments or Agent Swarms in this organization."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Organization default (%{model})"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only organization owners and admins can change the department."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Choose an existing department in this organization."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only organization owners and admins can change cross-Swarm search permissions."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Could not save cross-Swarm search permissions."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Updated the WeCom bot's credentials."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This WeCom bot is already connected to another Agent Swarm. One WeCom bot serves one Agent Swarm; delete the existing connect or use a different bot."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "WeCom rejected these credentials. Check the Bot ID and Secret and retry."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
+#, elixir-autogen, elixir-format
+msgid "Paste the key, or this ability's own address."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "The still.fail station was disconnected."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "This Agent Swarm has no such still.fail station."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "device_id must be a station's id."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Feishu / Lark triage enabled for this connection."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Feishu / Lark triage paused for this connection."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "The group chats could not be added."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Group chat resumed."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Group chat paused."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This group chat is already watched by another Agent Swarm. Pause it there first."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "“%{chat}” is already watched by the Agent Swarm “%{swarm}”. Pause it there first."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This group chat is already watched by the Agent Swarm “%{swarm}”. Pause it there first."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This organization is still being set up."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "Feishu / Lark triage"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "That item is no longer available."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "The request is not valid."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "This connection is missing its bot identity and cannot watch group chats. Reconnect the app first."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_lark_suite_triage.ex
+#, elixir-autogen, elixir-format
+msgid "1 group chat added."
+msgid_plural "%{count} group chats added."
+msgstr[0] ""
+msgstr[1] ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:222
+msgid "Your organization is created after payment is confirmed. Refresh this page to check again. Payment does not sign you in."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:224
+msgid "Back to checkout"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:223
+msgid "Check payment"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:221
+msgid "Checkout cancelled"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:221
+msgid "Confirming your payment"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:393
+msgid "Continue to payment"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:398
+msgid "Buy Teams and create an organization"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:279
+msgid "Payment channel"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:287
+msgid "Local payment"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:255
+msgid "Pay for three months in your local currency. Model subscriptions and API usage are paid separately."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:466
+msgid "Billing country"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:498
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:513
+msgid "Payment method"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:446
+msgid "Online banking"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:447
+msgid "Debit card"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:448
+msgid "Credit card"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:449
+msgid "Cash"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:525
+msgid "First name"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:526
+msgid "Last name"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:529
+msgid "Phone number"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:531
+msgid "6–9 local digits, without +593 or a leading zero."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:536
+msgid "CPF number"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:542
+msgid "Document type"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:555
+msgid "Document number"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:563
+msgid "Estimated quarterly total: %{amount}"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:241
+msgid "Local payment is unavailable for this country. Choose another country or use Stripe."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:246
+msgid "A checkout is already in progress. Check your payment before starting a new checkout."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:251
+msgid "We could not confirm that checkout started. Check your payment before trying again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:256
+msgid "Local checkout could not start. Check your details and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:267
+msgid "Enter 6–9 local digits, without +593 or a leading zero."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:269
+msgid "Enter a valid phone number."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:270
+msgid "Enter the payer’s first name."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:271
+msgid "Enter the payer’s last name."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:272
+msgid "Enter a valid work email address."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:273
+msgid "Enter an 11-digit CPF number."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:276
+msgid "Choose a document type for this country."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:279
+msgid "Enter a valid number for the selected document type."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:283
+msgid "Choose a payment method available for this document type."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:285
+msgid "Check the payer details and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:252
+msgid "$80 per seat per month, billed quarterly. Model subscriptions and API usage are paid separately."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:432
+msgid "Pay with a local method in Latin America"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:391
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:503
+msgid "Seats"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:271
+msgid "This payment session has expired. Re-enter the payment page to continue."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:273
+msgid "Re-enter payment page"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:403
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:284
+msgid "Enter at least %{min} seats."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:483
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:281
+msgid "Enter between %{min} and %{max} seats."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:292
+msgid "Enter a valid seat count."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:295
+msgid "This total exceeds the local payment limits. Choose fewer seats."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex:321
+msgid "Checkout could not start. Check your details and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Email"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Forgot your organization slug? Sign in with email"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Buy Comma for Teams"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Enter your work email and we'll send sign-in links for your Comma for Teams organizations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Send sign-in links"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Your Teams organizations"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Signed in as %{email}"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Ask an organization owner or admin to manage seats."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Open"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Manage billing & seats"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Previous"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Next"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Create a new organization"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Creates a separate organization and does not add seats to existing ones."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Sign out and use another account"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Owner"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Admin"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Member"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Billing status unavailable"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Contract or invite-managed"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Active: %{seats} seats (valid through %{date})"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Active: %{seats} seats"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Subscription inactive"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Checkout session not found"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "This payment confirmation link does not match your current browser session. If you already completed payment, check your email for your organization sign-in link."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Organization %{name} was created, but its Teams subscription is not active. Sign in to manage billing for this organization."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Sign in to organization"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Payment status is temporarily unavailable. Refresh this page shortly to check again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Already have a Teams organization?"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "You are creating a separate new organization. This will not add seats to your existing organizations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Manage existing organizations"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "$80 per seat per month, billed quarterly. Creates a standalone Comma for Teams organization separate from personal Comma accounts. Model subscriptions and API usage are paid separately."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Pay for three months in your local currency. Creates a standalone Comma for Teams organization separate from personal Comma accounts. Model subscriptions and API usage are paid separately."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Your original checkout stays locked until %{expires_at} UTC."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Open original checkout"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Check payment status"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Quarterly total: $%{total} USD before tax ($240 / seat × %{seats} seats)"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+msgid "Sign in to an existing organization"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "Unable to verify your previous checkout status right now. Please refresh and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "Teams checkout is temporarily unavailable. Please try again later."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "Organization %{name} was created for another account. Sign out to sign in as the new organization owner."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_controller.ex
+msgid "If that email matches any organizations, we sent sign-in links. Magic links expire in 15 minutes."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_onboarding_wizard.ex
+msgid "You do not have access to that organization."
 msgstr ""

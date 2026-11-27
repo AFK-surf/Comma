@@ -73,6 +73,27 @@ def toolSource (name : Term) (blocks : List Term) : Term :=
     a "image_read"
   else nil
 
+-- The leading IFC source marker (`[src:…]` and a newline) of a runtime
+-- message's content, as `Provider.Messages.runtimeContent` reads it, or empty.
+def sourceMarker (raw : ByteArray) : ByteArray := Id.run do
+  if raw.size < 6 || raw.extract 0 5 != "[src:".toUTF8 then return ByteArray.empty
+  for index in [5:raw.size] do
+    if raw[index]! == 93 then
+      if index + 1 < raw.size && raw[index + 1]! == 10 then return raw.extract 0 (index + 2)
+      return ByteArray.empty
+    if raw[index]! == 10 then return ByteArray.empty
+  return ByteArray.empty
+
+/-- The text block that keeps a completion notice's facts when its stored
+result replaces the notice's content: the model must still see which call
+completed, and the IFC marker that lets it cite the result. -/
+def completionNotice (m id name : Term) : KernelM Term := do
+  let notice ← encode (obj [("type", b "tool_call_completed"), ("tool_call_id", id),
+    ("tool_name", name), ("status", b "completed"),
+    ("note", b "tool call completed after returning early; its result is attached below")])
+  let marker := sourceMarker (bytes (Provider.field m "content"))
+  return obj [("type", b "text"), ("text", .binary (marker ++ bytes notice))]
+
 def runtimeSource (m : Term) : KernelM (Option (List Term × Term)) := do
   -- The notification names a stored result. Its content cannot authorize a VFS read.
   let id := Provider.field m "source_tool_call_id"
@@ -87,8 +108,66 @@ def runtimeSource (m : Term) : KernelM (Option (List Term × Term)) := do
     !result.isMap || get result "id" != id || !nonempty name ||
     get result "name" != name || get result "status" != b "completed" ||
     get result "error" == a "true" then return none
-  if name == b "tool_call.get_result" then return canonical (get result "content")
-  return (direct (get result "content")).map (fun blocks => (blocks, name))
+  let resolved := if name == b "tool_call.get_result" then canonical (get result "content")
+    else (direct (get result "content")).map (fun blocks => (blocks, name))
+  let some (blocks, innerName) := resolved | return none
+  let notice ← completionNotice m id name
+  return some (notice :: blocks, innerName)
+
+def structuredBlock (block : Term) : Bool :=
+  let type := get block "type"
+  (type == b "dynamic_ui" && (nonempty (get block "ui_ref") || nonempty (get block "path"))) ||
+  (type == b "conversation_ref" && nonempty (get block "conversation_id"))
+
+def commandHint : ByteArray :=
+  "IFC: command input; use this ref as request when acting on it.\n".toUTF8
+
+def conversationPrefix (raw : ByteArray) : ByteArray := Id.run do
+  if raw.size < 16 || raw.extract 0 14 != "[conversation ".toUTF8 then return ByteArray.empty
+  for index in [14:raw.size] do
+    if raw[index]! == 93 then
+      if index + 1 < raw.size && raw[index + 1]! == 32 then
+        return raw.extract 0 (index + 2)
+      return ByteArray.empty
+    if raw[index]! == 10 then return ByteArray.empty
+  return ByteArray.empty
+
+-- Leading annotations `Session.Request.annotate` prepends to a user message
+-- (`[src:…]\n`, optional IFC command hint, optional `[conversation …] `).
+def userPrefix (raw : ByteArray) : ByteArray × ByteArray := Id.run do
+  let mut pos : Nat := 0
+  let marker := sourceMarker raw
+  if marker.size > 0 then
+    pos := marker.size
+    if pos + commandHint.size ≤ raw.size &&
+        raw.extract pos (pos + commandHint.size) == commandHint then
+      pos := pos + commandHint.size
+  let rest := raw.extract pos raw.size
+  let conv := conversationPrefix rest
+  if conv.size > 0 then
+    pos := pos + conv.size
+  return (raw.extract 0 pos, raw.extract pos raw.size)
+
+def prependPrefix (prefixBytes : ByteArray) (blocks : List Term) : List Term :=
+  if prefixBytes.size == 0 then blocks
+  else match blocks with
+    | first :: rest =>
+      if member (get first "type") ["text", "input_text", "output_text"] &&
+          (get first "text").isBinary then
+        (first.put (b "text") (.binary (prefixBytes ++ bytes (get first "text")))) :: rest
+      else
+        let trimmed :=
+          if prefixBytes[prefixBytes.size - 1]? == some 10 then
+            prefixBytes.extract 0 (prefixBytes.size - 1)
+          else prefixBytes
+        obj [("type", b "text"), ("text", .binary trimmed)] :: blocks
+    | [] => []
+
+def trustedInternalAgentOrigin (m : Term) : Bool :=
+  let origin := Provider.field m "trusted_origin"
+  origin.isMap &&
+    Provider.field origin "provider" == b "internal" &&
+    Provider.field origin "source_actor_type" == b "agent"
 
 def source (m : Term) : KernelM Term := do
   -- Trust user attachments only through out-of-band refs, and tool attachments through journal provenance.
@@ -98,12 +177,19 @@ def source (m : Term) : KernelM Term := do
   let name ← if role == b "tool" then str (Provider.field m "tool_name") else pure nil
   let mut source := nil
   let mut blocks := []
-  if let some directBlocks := direct content then
+  let mut prefixBytes := ByteArray.empty
+  let (userPfx, userBody) :=
+    if role == b "user" then userPrefix (bytes content) else (ByteArray.empty, bytes content)
+  let directInput := if role == b "user" then .binary userBody else content
+  if let some directBlocks := direct directInput then
     blocks := directBlocks
     if role == b "user" then
+      prefixBytes := userPfx
       let refs := items (Provider.field m "trusted_attachment_refs")
       let native := blocks.filter nativeRef
       if !refs.isEmpty && native.all (fun v => refKey v != nil && refs.any (fun ref => refKey ref == refKey v)) then
+        source := a "user_attachment"
+      else if native.isEmpty && trustedInternalAgentOrigin m && blocks.any structuredBlock then
         source := a "user_attachment"
     else if role == b "tool" then source := toolSource name (blocks.filter nativeRef)
     else if role == b "runtime" && Provider.field m "native_content_trusted" == a "true" then source := a "provider_attachment"
@@ -114,11 +200,14 @@ def source (m : Term) : KernelM Term := do
   else if let some (resolved, name) ← runtimeSource m then
     blocks := resolved
     source := toolSource name (blocks.filter nativeRef)
+  let userStructured := source == a "user_attachment" && blocks.any structuredBlock
   let safe := blocks.all (fun block =>
     (member (get block "type") ["text", "input_text", "output_text"] && block.has (b "text")) ||
-    refKey block != nil)
-  if source == nil || !(blocks.any nativeRef) || !safe then return a "error"
-  return .tuple [a "ok", list blocks, source]
+    refKey block != nil ||
+    (source == a "user_attachment" && structuredBlock block))
+  if source == nil || (!(blocks.any nativeRef) && !userStructured) || !safe then return a "error"
+  let finalBlocks := if prefixBytes.size > 0 then prependPrefix prefixBytes blocks else blocks
+  return .tuple [a "ok", list finalBlocks, source]
 
 -- An inbound attachment is never model input, whatever its type. The host
 -- announces a file by name and VFS path, so presenting an inbound image as one

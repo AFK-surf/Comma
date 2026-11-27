@@ -44,6 +44,7 @@ import surf.comma.android.ui.kit.tactile
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignTypography.Level
 import surf.comma.android.workspace.wireMillis
+import surf.comma.android.people.personRow
 import java.util.Calendar
 
 /**
@@ -78,6 +79,8 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
     private var filterSheet: FilterSheet? = null
     private var workspaceId: String? = null
     private var fillPages = 0
+    /** Invitations to Collaborative Tasks others host: they wait here, above the Tasks, until answered. */
+    private var invitations: surf.comma.android.people.PeopleModel? = null
 
     init {
         orientation = VERTICAL
@@ -133,22 +136,72 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
     private fun bind() {
         activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { combine(store.tasks.state, store.pinned, store.inboxMarks) { _, _, _ -> }.collect { render() } }
-                // The compact ages move on by the minute.
-                launch { while (true) { delay(60_000); render(force = true) } }
-                launch {
-                    // Collecting again on each return to the foreground re-reads the same workspace, which keeps its filter.
-                    store.auth.state.collect { state ->
-                        val id = (state as? AuthState.Connected)?.selection?.workspace?.id
-                        if (id != workspaceId) {
-                            workspaceId = id
-                            // A new workspace opens on the default filter again.
-                            filter = InboxProjection.DEFAULT_FILTER
-                            unreadOnly = false
-                            render()
+                try {
+                    kotlinx.coroutines.coroutineScope {
+                        launch { combine(store.tasks.state, store.pinned, store.inboxMarks) { _, _, _ -> }.collect { render() } }
+                        // The compact ages move on by the minute.
+                        launch { while (true) { delay(60_000); render(force = true) } }
+                        launch {
+                            // Collecting again on each return to the foreground re-reads the same workspace, which keeps its filter.
+                            store.auth.state.collect { state ->
+                                val id = (state as? AuthState.Connected)?.selection?.workspace?.id
+                                if (id != workspaceId || invitations?.scope?.current != true) followInvitations()
+                                if (id != workspaceId) {
+                                    workspaceId = id
+                                    // A new workspace opens on the default filter again.
+                                    filter = InboxProjection.DEFAULT_FILTER
+                                    unreadOnly = false
+                                    render()
+                                }
+                            }
                         }
                     }
+                } finally {
+                    invitations?.scope?.close()
+                    invitations = null
                 }
+            }
+        }
+    }
+
+    private fun followInvitations() {
+        invitations?.scope?.close()
+        invitations = surf.comma.android.people.peopleScope(activity)?.let { scope ->
+            surf.comma.android.people.PeopleModel(scope, (store.auth.state.value as? AuthState.Connected)?.account?.id).also { model ->
+                scope.onChange { render() }
+                model.followCollaborations()
+            }
+        }
+    }
+
+    private fun invitationRows(out: MutableList<Row>) {
+        val model = invitations ?: return
+        val waiting = model.collaborations.filter { it.invited }
+        if (waiting.isEmpty()) return
+        out += Row("invitations", TYPE_DAY, null, create = {
+            activity.label(Level.SMALL, R.color.token_text_quaternary, DesignFonts.semibold).apply {
+                isAccessibilityHeading = true
+                setPadding(activity.dp(20), activity.dp(16), activity.dp(20), activity.dp(8))
+            }
+        }) { view -> (view as TextView).setText(R.string.people_invitations) }
+        waiting.forEach { item ->
+            out += Row("invitation:${item.id}", TYPE_INVITE, item, create = { parent ->
+                FrameLayout(parent.context).apply {
+                    layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT).apply {
+                        marginStart = activity.dp(10); marginEnd = activity.dp(10)
+                    }
+                }
+            }) { view ->
+                val frame = view as FrameLayout
+                frame.removeAllViews()
+                val avatar = surf.comma.android.people.PersonAvatarView(activity, 28).apply {
+                    show(item.hostName, item.hostId?.let(model::person)?.avatar, model.scope.core)
+                    layoutParams = LayoutParams(activity.dp(28), activity.dp(28))
+                }
+                frame.addView(activity.personRow(avatar, item.title, activity.getString(R.string.people_invited_to_collaborate, item.hostName),
+                    waiting = true) {
+                    surf.comma.android.people.InvitationSheet(activity, model, item) { store.openTask(item.taskId, item.groupId) }.show()
+                }.apply { id = R.id.people_invitation })
             }
         }
     }
@@ -175,6 +228,7 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
         val rows = InboxProjection.rows(tasks, marks, filter, unreadOnly)
         val now = System.currentTimeMillis()
         val out = mutableListOf<Row>()
+        invitationRows(out)
         var day: Long? = null
         rows.forEach { task ->
             val start = startOfDay(wireMillis(task.changedAt))
@@ -199,7 +253,7 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
         if (loading) out += Row("footer", TYPE_FOOTER, minute, create = {
             FrameLayout(activity).apply {
                 minimumHeight = activity.dp(56)
-                addView(android.widget.ProgressBar(activity), FrameLayout.LayoutParams(activity.dp(24), activity.dp(24), Gravity.CENTER))
+                addView(surf.comma.android.ui.kit.ActivityIndicator(activity), FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
             }
         }) else if (state.hasMore) out += Row("more", TYPE_MORE, null, create = {
             // Past the pages read by themselves, older Tasks are read when the member asks.
@@ -213,7 +267,7 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
         adapter.show(out) { list.post { if (!list.canScrollVertically(1)) loadMore() } }
         filterCount.isVisible = appliedCount > 0
         filterCount.text = appliedCount.toString()
-        empty.isVisible = rows.isEmpty() && !loading && !state.hasMore
+        empty.isVisible = rows.isEmpty() && !loading && !state.hasMore && invitations?.collaborations?.none { it.invited } != false
         if (empty.isVisible) bindEmpty()
     }
 
@@ -360,6 +414,7 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
         const val TYPE_TASK = 2
         const val TYPE_FOOTER = 3
         const val TYPE_MORE = 4
+        const val TYPE_INVITE = 5
         const val FILL_TARGET = 20
         const val FILL_LIMIT = 5
     }

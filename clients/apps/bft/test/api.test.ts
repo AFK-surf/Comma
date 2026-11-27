@@ -324,9 +324,19 @@ describe("BFT API client", () => {
         },
       })
     );
-    const brief = await api.dailyBrief("acme");
+    const brief = await api.dailyBrief("acme", null);
     expect(fetch.mock.calls[0]?.[0]).toBe("/dashboard/api/v1/orgs/acme/daily-brief");
     expect(brief.settings).toBeNull();
+    expect(brief.configured_projects).toEqual([]);
+    expect(brief.members[0]?.project_id).toBeNull();
+
+    const swarm = apiReturning(
+      json(200, { ok: true, data: { settings: null, members: [] } })
+    );
+    await swarm.api.dailyBrief("acme", "p 2");
+    expect(swarm.fetch.mock.calls[0]?.[0]).toBe(
+      "/dashboard/api/v1/orgs/acme/daily-brief?project_id=p+2"
+    );
     expect(brief.members[0]?.enabled).toBe(true);
     expect(brief.runs[0]).toMatchObject({ kind: "personal_brief", status: "failed" });
   });
@@ -334,6 +344,8 @@ describe("BFT API client", () => {
   it("saves daily brief settings", async () => {
     const settings = {
       project_id: "p1",
+      provider: "slack" as const,
+      connect_id: "slack-main",
       slack_connect_id: "slack-main",
       enabled: true,
       retention_days: 30,
@@ -367,6 +379,102 @@ describe("BFT API client", () => {
       status: 404,
       code: "org_not_found",
     });
+  });
+
+  it("parses departments and cross-Swarm search grants and sends department/search writes with CSRF", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      json(200, {
+        ok: true,
+        data: {
+          viewer: { can_create: true, can_manage_departments: true },
+          departments: [
+            {
+              id: "d1",
+              name: "Engineering",
+              targets: [{ kind: "self", id: "d1", name: "Engineering" }],
+            },
+          ],
+          catalog_swarms: [{ id: "p1", name: "Core Services", department_id: "d1" }],
+          projects: [
+            {
+              id: "p1",
+              name: "Core Services",
+              slug: "core",
+              salix_group_id: "grp1_acme_1",
+              status: "active",
+              created_at: "2026-11-16T00:00:00Z",
+              department_id: "d1",
+              department_name: "Engineering",
+              extra_targets: [],
+            },
+          ],
+          next_cursor: null,
+        },
+      })
+    );
+    const api = createBftApi({ fetch, csrfToken: () => "csrf-tok" });
+    const page = await api.updateDepartment("acme", "d1", {
+      name: "Engineering",
+      targets: [{ kind: "self" }],
+    });
+    expect(page.departments[0]?.targets).toEqual([
+      { kind: "self", id: "d1", name: "Engineering" },
+    ]);
+    expect(fetch).toHaveBeenCalledWith(
+      "/dashboard/api/v1/orgs/acme/departments/d1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ name: "Engineering", targets: [{ kind: "self" }] }),
+        headers: expect.objectContaining({ "x-csrf-token": "csrf-tok" }),
+      })
+    );
+
+    const allDeptsFetch = vi.fn<typeof globalThis.fetch>(async () =>
+      json(200, {
+        ok: true,
+        data: {
+          viewer: { can_create: true, can_manage_departments: true },
+          departments: [
+            {
+              id: "d1",
+              name: "Engineering",
+              targets: [
+                { kind: "all_departments", id: "org-1", name: "All departments" },
+                { kind: "project", id: "p2", name: "My Swarm" },
+              ],
+            },
+          ],
+          catalog_swarms: [
+            { id: "p1", name: "Core Services", department_id: "d1" },
+            { id: "p2", name: "My Swarm", department_id: null },
+          ],
+          projects: [],
+          next_cursor: null,
+        },
+      })
+    );
+    const allDeptsApi = createBftApi({
+      fetch: allDeptsFetch,
+      csrfToken: () => "csrf-tok",
+    });
+    const updated = await allDeptsApi.updateDepartment("acme", "d1", {
+      name: "Engineering",
+      targets: [{ kind: "all_departments" }, { kind: "project", id: "p2" }],
+    });
+    expect(updated.departments[0]?.targets).toEqual([
+      { kind: "all_departments", id: "org-1", name: "All departments" },
+      { kind: "project", id: "p2", name: "My Swarm" },
+    ]);
+    expect(allDeptsFetch).toHaveBeenCalledWith(
+      "/dashboard/api/v1/orgs/acme/departments/d1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "Engineering",
+          targets: [{ kind: "all_departments" }, { kind: "project", id: "p2" }],
+        }),
+      })
+    );
   });
 });
 

@@ -450,13 +450,18 @@ defmodule SalixIM.TaskLoop do
       "limits. Give it its program: read loop.sdk, write the program, build it with " <>
       "loop.build and create it with loop.create, passing no cadence" <>
       timed_guidance(cadence) <>
-      ". Each agent.notify of the program is one run and wakes you in this Task. Report each " <>
-      "run as exactly one result Message in this Task with im_api.internal.send_message" <>
+      ". Each agent.notify of the program is one run and wakes you in this Task. For monitoring " <>
+      "or change-detection loops, compare against your checkpoint inside the program and call " <>
+      "agent.notify only when there is a real change or condition to report; stay quiet when " <>
+      "nothing changed instead of sending a 'no change' message. Report each run that has " <>
+      "something to say as exactly one result Message in this Task with im_api.internal.send_message" <>
       if(loop["until"],
         do: ", and say in it when the stop condition holds",
         else: ""
       ) <>
-      ". Never change the Task status; the Router does. The server ends the Loop at its run " <>
+      ". Write the Message for the user directly; never include internal instructions to the " <>
+      "Router (such as asking the Router to forward the message to Home). Never change the Task " <>
+      "status; the Router does. The server ends the Loop at its run " <>
       "limit or end time, and when the Task ends. If the Loop stops on its own, say why in " <>
       "one Message in this Task. If you cannot create the Loop, publish one failure Message " <>
       "that says why. The source Task conversation_id is #{conversation_id}."

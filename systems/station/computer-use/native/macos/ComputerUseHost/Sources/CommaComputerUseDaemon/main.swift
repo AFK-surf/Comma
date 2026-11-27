@@ -1,6 +1,5 @@
 import AppKit
 import CUBackground
-import CUForeground
 import CUShared
 import Darwin
 import Foundation
@@ -53,6 +52,7 @@ private func startCommaComputerUseDaemon() {
 private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDelegate {
     private var socketServer: CommaComputerUseSocketServer?
     private var permissionWindow: PermissionAuthWindowController?
+    private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = ProcessInfo.processInfo.environment
@@ -72,19 +72,20 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
         }
 
         DaemonPermissionBridge.shared = PermissionFlowBridge()
+        _ = VirtualDesktopRecovery.applyRecovery()
         SessionRegistry.shared.registerBackground(
             factory: { BackgroundModeRuntime() },
             help: ComputerUseCLI.agentUsage
         )
-        SessionRegistry.shared.registerForeground(
-            factory: { ForegroundModeRuntime() },
-            help: ForegroundParser.agentUsage
-        )
 
         let socketServer = CommaComputerUseSocketServer(socketPath: socketPath, authToken: authToken)
         self.socketServer = socketServer
-        socketServer.onShutdownRequested = { [weak self] in
-            self?.shutdown()
+        socketServer.onShutdownRequested = {
+            requestDaemonShutdown()
+        }
+        socketServer.onSocketLost = {
+            fputs("The socket path no longer names this daemon: this daemon ends.\n", stderr)
+            requestDaemonShutdown()
         }
         socketServer.onRequest = { [weak self] request in
             guard let self else { return .failure("Daemon shutting down") }
@@ -98,16 +99,12 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
             NSApplication.shared.terminate(nil)
         }
 
-        signal(SIGTERM) { _ in
-            DispatchQueue.main.async {
-                (NSApplication.shared.delegate as? CommaComputerUseDaemonAppDelegate)?.shutdown()
-            }
-        }
-
-        signal(SIGINT) { _ in
-            DispatchQueue.main.async {
-                (NSApplication.shared.delegate as? CommaComputerUseDaemonAppDelegate)?.shutdown()
-            }
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .global(qos: .utility))
+            source.setEventHandler { requestDaemonShutdown() }
+            source.resume()
+            signalSources.append(source)
         }
     }
 
@@ -116,7 +113,12 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
         case let .control(control):
             return handleControl(control)
         case let .action(action):
-            return await handleAction(action, display: request.display, thinking: request.thinking)
+            return await handleAction(
+                action,
+                display: request.display,
+                thinking: request.thinking,
+                sessionId: request.sessionId
+            )
         }
     }
 
@@ -143,48 +145,64 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
     private func handleAction(
         _ action: CommaComputerUseAction,
         display: Int?,
-        thinking: String?
+        thinking: String?,
+        sessionId: String?
     ) async -> CommaComputerUseResponse {
+        let effectiveSessionID: String? = (sessionId?.isEmpty == false) ? sessionId : nil
         switch action.name {
         case "start":
-            let mode = action.string("mode").flatMap(ModeKind.init(rawValue:)) ?? .background
+            if let requestedMode = action.string("mode")?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !requestedMode.isEmpty,
+               requestedMode != ModeKind.background.rawValue
+            {
+                return .failure("Computer Use runs in background mode only (mode=\(requestedMode) was removed)")
+            }
             let apps = action.stringArray("apps")
+            let title = action.string("title")
+            let virtualDesktop = action.bool("virtual_desktop")
             let control = SessionControl(
                 op: .start,
-                mode: mode,
-                foreground: mode == .foreground
-                    // TODO(COMMA-46): wire the board observer proxy through the station
-                    // so foreground mode can request visual summaries without depending
-                    // on the Electron app process.
-                    ? ForegroundStartArgs(apps: apps, display: display, observer: nil)
-                    : nil,
-                background: mode == .background ? BackgroundStartArgs() : nil
+                mode: .background,
+                background: BackgroundStartArgs(
+                    apps: apps,
+                    title: title,
+                    virtualDesktop: virtualDesktop
+                ),
+                sessionId: effectiveSessionID
             )
             return await commaResponse(from: SessionRegistry.shared.handle(session: control))
 
         case "end", "stop":
             return await commaResponse(
-                from: SessionRegistry.shared.handle(session: SessionControl(op: .stop))
+                from: SessionRegistry.shared.handle(
+                    session: SessionControl(op: .stop, sessionId: effectiveSessionID)
+                )
             )
 
         case "status":
-            return .success(text: SessionRegistry.shared.sessionStatusJSON(), permissions: commaPermissionInfo())
+            return .success(
+                text: SessionRegistry.shared.sessionStatusJSON(for: effectiveSessionID),
+                permissions: commaPermissionInfo()
+            )
 
         case "permissions_status":
             return .success(text: permissionStatusText(), permissions: commaPermissionInfo())
 
         case "mode_help":
-            let mode = action.string("mode").flatMap(ModeKind.init(rawValue:))
-                ?? SessionRegistry.shared.activeMode ?? .background
-            if let help = SessionRegistry.shared.helpText(for: mode) {
+            if let help = SessionRegistry.shared.helpText(for: .background) {
                 return .success(text: help)
             }
-            return .failure("No help registered for mode=\(mode.rawValue)")
+            return .failure("No help registered for mode=background")
 
         default:
+            if let thinking, !thinking.isEmpty {
+                SessionRegistry.shared.recordThinking(thinking, sessionId: effectiveSessionID)
+            }
             do {
                 let argv = try commaArgv(for: action, display: display, thinking: thinking)
-                return await commaResponse(from: SessionRegistry.shared.handle(action: argv))
+                return await commaResponse(
+                    from: SessionRegistry.shared.handle(action: argv, sessionId: effectiveSessionID)
+                )
             } catch {
                 return .failure("\(error)")
             }
@@ -207,6 +225,17 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
         SessionRegistry.shared.deactivateIfActive()
         DaemonCursor.shared.tearDown()
         NSApplication.shared.terminate(nil)
+    }
+}
+
+@available(macOS 14.0, *)
+private func requestDaemonShutdown() {
+    DispatchQueue.main.async {
+        (NSApplication.shared.delegate as? CommaComputerUseDaemonAppDelegate)?.shutdown()
+    }
+    // A main thread that does not run the shutdown (a stuck action) cannot keep the process.
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+        _exit(0)
     }
 }
 

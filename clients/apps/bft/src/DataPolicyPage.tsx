@@ -1,7 +1,9 @@
 import { Button } from "@comma/ui/components/Button";
 import { Dropdown } from "@comma/ui/components/dropdown";
+import { Toggle } from "@comma/ui/components/toggle";
 import { createContext, useContext, useEffect, useState } from "react";
 import type {
+  BftApi,
   BftDataPolicy,
   BftDataPolicyChange,
   BftDataPolicyConnect,
@@ -49,6 +51,9 @@ function usePeople(org: string, project: string, policy: BftDataPolicy | null) {
       const id = connect.connect_id;
       const shown = [
         ...policy.supervisors.filter((s) => s.connect_id === id).map((s) => s.id),
+        ...policy.memory_writers.writers
+          .filter((w) => w.connect_id === id)
+          .map((w) => w.id),
         ...connect.clearances.flatMap((c) => c.principals.map(principalId)),
         ...connect.principals.map((p) => p.id),
       ];
@@ -77,6 +82,7 @@ type Open =
   | { kind: "classify"; connect: string; scope: BftDataPolicyScope }
   | { kind: "grant"; connect: string }
   | { kind: "supervisor" }
+  | { kind: "memory_writer" }
   | { kind: "ssh_host"; host: BftDataPolicy["ssh_hosts"][number] };
 
 export function DataPolicyPage({
@@ -188,6 +194,12 @@ export function DataPolicyPage({
               onOpen={setOpen}
               policy={policy}
             />
+            <MemoryWriters
+              busy={write.busy}
+              onChange={change}
+              onOpen={setOpen}
+              policy={policy}
+            />
             {policy.connects.length === 0 ? (
               <p className="bft-quiet bft-quiet-inline">{t.noConnects}</p>
             ) : null}
@@ -211,12 +223,36 @@ export function DataPolicyPage({
               />
             ) : null}
             {open?.kind === "supervisor" ? (
-              <SupervisorDialog
-                apply={apply}
+              <PersonDialog
+                add={(entry) =>
+                  apply({
+                    kind: "supervisors",
+                    supervisors: [...policy.supervisors, entry],
+                  })
+                }
+                body={t.addSupervisorBody}
                 onClose={() => setOpen(null)}
                 org={org}
                 policy={policy}
                 project={swarm?.id ?? ""}
+                title={t.addSupervisor}
+              />
+            ) : null}
+            {open?.kind === "memory_writer" ? (
+              <PersonDialog
+                add={(entry) =>
+                  apply({
+                    kind: "memory_writers",
+                    restricted: policy.memory_writers.restricted,
+                    writers: [...policy.memory_writers.writers, entry],
+                  })
+                }
+                body={t.addMemoryWriterBody}
+                onClose={() => setOpen(null)}
+                org={org}
+                policy={policy}
+                project={swarm?.id ?? ""}
+                title={t.addMemoryWriter}
               />
             ) : null}
             {open?.kind === "ssh_host" ? (
@@ -329,19 +365,100 @@ function Supervisors({
   );
 }
 
-function SupervisorDialog({
-  apply,
+function MemoryWriters({
+  policy,
+  busy,
+  onChange,
+  onOpen,
+}: {
+  policy: BftDataPolicy;
+  busy: boolean;
+  onChange: (change: BftDataPolicyChange) => void;
+  onOpen: (open: Open) => void;
+}) {
+  const { restricted, writers } = policy.memory_writers;
+
+  return (
+    <FormSection
+      action={
+        policy.connects.length > 0 ? (
+          <button
+            className="bft-btn bft-btn-sm"
+            disabled={busy}
+            onClick={() => onOpen({ kind: "memory_writer" })}
+            type="button"
+          >
+            {t.addMemoryWriter}
+          </button>
+        ) : null
+      }
+      description={t.memoryWritersHint}
+      title={t.memoryWriters}
+    >
+      <Toggle
+        checked={restricted}
+        disabled={busy}
+        label={t.memoryRestricted}
+        onChange={(event) =>
+          onChange({
+            kind: "memory_writers",
+            restricted: event.target.checked,
+            writers,
+          })
+        }
+        size="sm"
+      />
+      {writers.length === 0 ? (
+        restricted ? (
+          <p className="bft-quiet bft-quiet-inline">{t.noMemoryWriters}</p>
+        ) : null
+      ) : (
+        <ul className="bft-list">
+          {writers.map((writer) => (
+            <li className="bft-setting-row" key={`${writer.connect_id}|${writer.id}`}>
+              <SupervisorName policy={policy} supervisor={writer} />
+              <button
+                aria-label={t.removeMemoryWriter(writer.id)}
+                className="bft-btn bft-btn-sm"
+                disabled={busy}
+                onClick={() =>
+                  onChange({
+                    kind: "memory_writers",
+                    restricted,
+                    writers: writers.filter((item) => item !== writer),
+                  })
+                }
+                type="button"
+              >
+                {messages.common.remove}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </FormSection>
+  );
+}
+
+/** Choose one person of one chat workspace and add them to a list. */
+function PersonDialog({
+  add,
+  body,
+  title,
   policy,
   onClose,
   org,
   project,
 }: {
-  apply: Apply;
+  add: (entry: { connect_id: string; id: string }) => Promise<BftDataPolicy>;
+  body: string;
+  title: string;
   policy: BftDataPolicy;
   onClose: () => void;
   org: string;
   project: string;
 }) {
+  const api = useApi();
   const write = useWrite();
   const [connect, setConnect] = useState(policy.connects[0]?.connect_id ?? "");
   const [person, setPerson] = useState<BftDataPolicyPerson | null>(null);
@@ -349,26 +466,16 @@ function SupervisorDialog({
 
   return (
     <FormDialog
-      description={t.addSupervisorBody}
+      description={body}
       onClose={() => {
         if (!write.busy) onClose();
       }}
       onSubmit={() => {
         if (!person) return setMissing(true);
-        write.run(
-          () =>
-            apply({
-              kind: "supervisors",
-              supervisors: [
-                ...policy.supervisors,
-                { connect_id: connect, id: person.id },
-              ],
-            }),
-          onClose
-        );
+        write.run(() => add({ connect_id: connect, id: person.id }), onClose);
       }}
-      submitLabel={t.addSupervisor}
-      title={t.addSupervisor}
+      submitLabel={title}
+      title={title}
       write={write}
     >
       <Dropdown
@@ -388,15 +495,13 @@ function SupervisorDialog({
         value={connect}
       />
       <PersonPicker
-        connect={connect}
-        disabled={write.busy}
+        disabled={write.busy || !connect}
         key={connect}
         onChange={(chosen) => {
           setPerson(chosen);
           if (chosen) setMissing(false);
         }}
-        org={org}
-        project={project}
+        search={(query) => searchPeople(api, org, project, connect, query)}
         value={person}
       />
       {missing ? (
@@ -594,39 +699,48 @@ function PrincipalName({
   );
 }
 
+const searchPeople = (
+  api: BftApi,
+  org: string,
+  project: string,
+  connect: string,
+  query: string
+) => api.dataPolicyPeople(org, project, connect, query).then((people) => ({ people }));
+
+const personLabel = (person: BftDataPolicyPerson) =>
+  [person.name ?? person.id, person.email].filter(Boolean).join(" · ");
+
+/** What a person search finds; `complete: false` when more people match. */
+export interface PeopleFound {
+  people: BftDataPolicyPerson[];
+  complete?: boolean;
+}
+
 /**
  * Finds a person of one connect by name, email or user id. A pasted id or
  * email is looked up too, so the person shows by name before it is saved.
  */
-const personLabel = (person: BftDataPolicyPerson) =>
-  [person.name ?? person.id, person.email].filter(Boolean).join(" · ");
-
-function PersonPicker({
-  org,
-  project,
-  connect,
+export function PersonPicker({
+  search: find,
   value,
   onChange,
   disabled,
 }: {
-  org: string;
-  project: string;
-  connect: string;
+  search: (query: string) => Promise<PeopleFound>;
   value: BftDataPolicyPerson | null;
   onChange: (person: BftDataPolicyPerson | null) => void;
   disabled: boolean;
 }) {
-  const api = useApi();
   const [query, setQuery] = useState("");
-  const [found, setFound] = useState<BftDataPolicyPerson[] | null>(null);
+  const [found, setFound] = useState<PeopleFound | null>(null);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
 
   const search = () => {
-    if (!query.trim() || !connect) return;
+    if (!query.trim()) return;
     setLoading(true);
     setError(undefined);
-    api.dataPolicyPeople(org, project, connect, query.trim()).then(
+    find(query.trim()).then(
       (people) => {
         setLoading(false);
         setFound(people);
@@ -640,10 +754,9 @@ function PersonPicker({
 
   return (
     <div className="bft-form">
-      <div className="bft-route-connect">
+      <div className="bft-route-connect bft-route-connect-field">
         <TextField
           disabled={disabled || loading}
-          hint={t.personSearchHint}
           label={t.personSearchLabel}
           onChange={setQuery}
           placeholder={t.personSearchPlaceholder}
@@ -658,23 +771,27 @@ function PersonPicker({
           {t.personSearch}
         </Button>
       </div>
+      <p className="bft-form-section-note">{t.personSearchHint}</p>
       {error ? (
         <p className="bft-dialog-error" role="alert">
           {error}
         </p>
-      ) : found === null ? null : found.length === 0 ? (
+      ) : found === null ? null : found.people.length === 0 ? (
         <p className="bft-form-section-note">{t.personNoResults}</p>
       ) : (
         <Dropdown
           className="bft-form-field"
           disabled={disabled}
-          items={found.map((person) => ({
+          {...(found.complete === false ? { hint: t.personMore } : {})}
+          items={found.people.map((person) => ({
             id: person.id,
             label: person.name ?? person.email ?? person.id,
             ...(person.name && person.email ? { subtitle: person.email } : {}),
           }))}
           label={t.personChoose}
-          onChange={(id) => onChange(found.find((person) => person.id === id) ?? null)}
+          onChange={(id) =>
+            onChange(found.people.find((person) => person.id === id) ?? null)
+          }
           placeholder={t.personChoosePlaceholder}
           size="sm"
           {...(value ? { value: value.id } : {})}
@@ -790,6 +907,7 @@ function GrantDialog({
   org: string;
   project: string;
 }) {
+  const api = useApi();
   const write = useWrite();
   const [tag, setTag] = useState("");
   const [person, setPerson] = useState<BftDataPolicyPerson | null>(null);
@@ -814,14 +932,12 @@ function GrantDialog({
     >
       <TextField disabled={write.busy} label={t.tag} onChange={setTag} value={tag} />
       <PersonPicker
-        connect={connect}
         disabled={write.busy}
         onChange={(chosen) => {
           setPerson(chosen);
           if (chosen) setMissing(false);
         }}
-        org={org}
-        project={project}
+        search={(query) => searchPeople(api, org, project, connect, query)}
         value={person}
       />
       {missing ? (

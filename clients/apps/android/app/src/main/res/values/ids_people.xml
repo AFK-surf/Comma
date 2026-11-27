@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="tab_people" type="id" />
+    <item name="people_add" type="id" />
+    <item name="people_collaborate" type="id" />
+    <item name="people_request" type="id" />
+    <item name="people_start" type="id" />
+    <item name="people_add_recipient" type="id" />
+    <item name="people_invitation" type="id" />
+    <item name="request_detail_more" type="id" />
+</resources>

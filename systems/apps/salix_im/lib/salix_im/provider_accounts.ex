@@ -7,8 +7,8 @@ defmodule SalixIM.ProviderAccounts do
   the last two. What a provider cannot say stays out, and a connect that
   cannot be read gives `%{}`: a lookup never stops what it serves.
 
-  `app_member/2` is not such a lookup: it answers whether a chat app is
-  available to a person, and its caller refuses on any failure.
+  `app_member/2` is not such a lookup: it answers whether a person is one of
+  the connect's own people, and its caller refuses on any failure.
   """
 
   alias SalixIM.Ports.Organizations
@@ -35,10 +35,12 @@ defmodule SalixIM.ProviderAccounts do
   def who(_group_id, _connect_id, _provider, _subject), do: %{}
 
   @doc """
-  Whether the connect's chat app is available to the person `subject` (the
-  app's availability range), and who they are (`"name"`, `"email"`):
-  `SalixIM.Provider.Feishu.AppAvailability` and its Lark twin. Other providers
-  answer `{:error, :unsupported}`.
+  Whether the person `subject` is one of the connect's own people, and who
+  they are (`"name"`, `"email"`): for Feishu and Lark, the app is available
+  to them (`SalixIM.Provider.Feishu.AppAvailability` and its Lark twin); for
+  Slack, they are a full member of the connect's workspace
+  (`SalixIM.Provider.Slack.WorkspaceMember`). Other providers answer
+  `{:error, :unsupported}`.
   """
   @spec app_member(map(), String.t()) :: {:ok, map()} | {:error, term()}
   def app_member(%{"provider" => "feishu"} = connect, subject),
@@ -46,6 +48,9 @@ defmodule SalixIM.ProviderAccounts do
 
   def app_member(%{"provider" => "lark"} = connect, subject),
     do: Provider.Lark.AppAvailability.member(connect, subject)
+
+  def app_member(%{"provider" => "slack"} = connect, subject),
+    do: Provider.Slack.WorkspaceMember.member(connect, subject)
 
   def app_member(_connect, _subject), do: {:error, :unsupported}
 

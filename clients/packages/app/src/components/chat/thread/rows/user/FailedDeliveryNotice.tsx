@@ -37,7 +37,7 @@ export function FailedDeliveryNotice({
             {outOfCredits ? (
               <button
                 className="comma-chat-notice-card-action"
-                onClick={openUsageBillingSettings}
+                onClick={() => openUsageBillingSettings("failed_delivery")}
                 type="button"
               >
                 {messagesApi.chat_add_credits()}

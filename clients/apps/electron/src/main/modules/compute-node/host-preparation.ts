@@ -6,9 +6,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream, realpathSync } from "node:fs";
 import {
   access,
+  chmod,
+  copyFile,
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   rename,
   rm,
@@ -26,6 +29,7 @@ import { getPublishedAssetUrl } from "../../../release-config";
 import publishedHost from "../../../../../../../.github/agent-vmm-host.json";
 
 const APP_NAME = "Agent VMM Host.app";
+const LIFECYCLE = join("Contents", "Helpers", "agent-vmm-lifecycle");
 const MAX_ARCHIVE_BYTES = 2 * 1024 ** 3;
 const MAX_EXTRACTED_BYTES = 8 * 1024 ** 3;
 /** A download that receives no byte for this long is given up; its `.part` file resumes on the next attempt. */
@@ -222,11 +226,19 @@ export class AgentVMMHostPreparation implements HostPreparation {
       const prepared = join(this.config.directory, ".prepared");
       // One signature check per bundle before it is used: a retained bundle is checked
       // when it is reused, a new bundle when it lands.
-      let version: { release_id: string } | undefined;
+      let version: { release_id: string; currentSchema?: number } | undefined;
       if (await pathExists(sourceApp)) {
         try {
           await this.verifyBundle(sourceApp);
           version = await this.bundleVersion(sourceApp);
+          if (
+            !this.config.sourcePath &&
+            !this.config.downloadUrlOverride &&
+            version.release_id !== artifact.release_id
+          ) {
+            version = undefined;
+            await rm(sourceApp, { recursive: true, force: true });
+          }
         } catch (error) {
           if (error instanceof HostMaintenanceIncompatibleError) throw error;
           version = undefined;
@@ -252,6 +264,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
           throw error;
         }
         await rename(staged, sourceApp);
+        await rm(join(prepared, "unpacked"), { recursive: true, force: true });
         version = await this.bundleVersion(sourceApp);
       }
       // The download was checked against the pinned digest when it landed; its release is the bundle's own.
@@ -274,15 +287,162 @@ export class AgentVMMHostPreparation implements HostPreparation {
     }
   }
 
-  private async bundleVersion(appPath: string): Promise<{ release_id: string }> {
-    const value = JSON.parse(
-      await this.run(join(appPath, "Contents", "Helpers", "agent-vmm-lifecycle"), [
-        "version",
-        "--json",
-      ])
+  /**
+   * The one lifecycle helper that Main keeps after maintenance, outside the installed Host and its data. Native reads
+   * its receipts with any helper, but runs maintenance only from a helper inside an `Agent VMM Host.app` bundle, so the
+   * copy keeps that layout and holds no other file of the release.
+   */
+  get retainedApp() {
+    return join(this.config.directory, ".lifecycle-helper", APP_NAME);
+  }
+
+  /** Copies `helper` into {@link retainedApp} in one rename and checks that the copy speaks the current contract. */
+  private async retain(helper: string) {
+    const directory = join(this.config.directory, ".lifecycle-helper");
+    if ((await pathExists(directory)) && (await lstat(directory)).isSymbolicLink())
+      throw new Error("Retained helper directory cannot be a symbolic link.");
+    const target = join(this.retainedApp, LIFECYCLE);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    const copy = `${target}.${randomUUID()}.tmp`;
+    try {
+      await copyFile(helper, copy);
+      await chmod(copy, 0o755);
+      await rename(copy, target);
+    } finally {
+      await rm(copy, { force: true });
+    }
+    return this.bundleVersion(this.retainedApp);
+  }
+
+  /**
+   * Keeps the helper of a settled request as {@link retainedApp}, so its receipt stays readable after the request's
+   * bundle is removed. Returns false, and keeps nothing new, when another preparer holds the directory.
+   */
+  async retainHelper(helper: string) {
+    const lock = await this.tryLock();
+    if (!lock) return false;
+    try {
+      await this.retain(helper);
+      return true;
+    } finally {
+      lock.close();
+    }
+  }
+
+  /**
+   * Prepares an uninstall from the installed helper alone when it is signed, speaks the current contract,
+   * and is at least as new as `artifact` (matching `release_id`, or carrying a newer `currentSchema`).
+   * Returns undefined otherwise so the caller stages `artifact` instead of falling back to an older helper.
+   * Like {@link stageMaintenance}, it keeps the preparation lock through `execute`.
+   */
+  async stageUninstall(
+    report: (state: HostPreparationState) => void,
+    execute: (bundle: { sourceApp: string; targetReleaseId: string }) => Promise<void>,
+    artifact: typeof publishedHost & { currentSchema?: number } = publishedHost
+  ): Promise<{ sourceApp: string; targetReleaseId: string } | undefined> {
+    if (!(await pathExists(this.config.lifecyclePath))) return undefined;
+    await mkdir(this.config.directory, { recursive: true, mode: 0o700 });
+    let lock: DatabaseSync | undefined;
+    try {
+      lock = await this.acquireLock(this.clock.now() + DEFAULT_PREPARATION_MS);
+      let version: { release_id: string; currentSchema?: number };
+      try {
+        await this.run("/usr/bin/codesign", [
+          "--verify",
+          "--strict",
+          this.config.lifecyclePath,
+        ]);
+        const installedVersion = await this.helperVersion(this.config.lifecyclePath);
+        if (
+          !this.config.sourcePath &&
+          !this.config.downloadUrlOverride &&
+          !isReusableLocalHelper(installedVersion, artifact)
+        )
+          return undefined;
+        version = await this.retain(this.config.lifecyclePath);
+      } catch {
+        return undefined;
+      }
+      this.setPhase("ready", report);
+      const bundle = {
+        sourceApp: this.retainedApp,
+        targetReleaseId: version.release_id,
+      };
+      await execute(bundle);
+      return bundle;
+    } catch (error) {
+      this.setPhase("failed", report, error);
+      throw error;
+    } finally {
+      lock?.close();
+    }
+  }
+
+  /**
+   * Removes the maintenance bundles of requests other than `keep`, dev update copies that no pending record names,
+   * and, with `prepared`, the download and extraction cache. Skips everything while another preparer holds the
+   * directory: that preparer may be using any of them.
+   */
+  async cleanupMaintenance(keep: string | undefined, prepared: boolean) {
+    if (!(await this.maintenanceLeftovers(keep, prepared)).length) return;
+    const lock = await this.tryLock();
+    if (!lock) return;
+    try {
+      for (const name of await this.maintenanceLeftovers(keep, prepared))
+        await rm(join(this.config.directory, name), { recursive: true, force: true });
+    } finally {
+      lock.close();
+    }
+  }
+
+  /** The names that {@link cleanupMaintenance} would remove. Reads one directory listing. */
+  async maintenanceLeftovers(keep: string | undefined, prepared: boolean) {
+    let names: string[];
+    try {
+      names = await readdir(this.config.directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    let pendingUpdate: unknown;
+    try {
+      pendingUpdate = JSON.parse(
+        await readFile(join(this.config.directory, ".pending-update.json"), "utf8")
+      ).sourceApp;
+    } catch {
+      /* No pending dev update. */
+    }
+    return names.filter(
+      (name) =>
+        (name.startsWith(".maintenance-") && name !== `.maintenance-${keep}`) ||
+        (name.startsWith(".Agent VMM Host.comma-update-") &&
+          name.endsWith(".app") &&
+          join(this.config.directory, name) !== pendingUpdate) ||
+        (prepared && keep === undefined && name === ".prepared")
     );
+  }
+
+  /** The preparation lock when no other preparer holds it now. */
+  private async tryLock() {
+    try {
+      return await this.acquireLock(this.clock.now());
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async helperVersion(
+    helperPath: string
+  ): Promise<{ release_id: string; currentSchema?: number }> {
+    const value = JSON.parse(await this.run(helperPath, ["version", "--json"]));
     assertHelperContract(value);
     return value;
+  }
+
+  private async bundleVersion(
+    appPath: string
+  ): Promise<{ release_id: string; currentSchema?: number }> {
+    return this.helperVersion(join(appPath, LIFECYCLE));
   }
 
   /** SQLite releases the cross-process lock on process exit, so no stale lock deletion is needed.
@@ -341,8 +501,14 @@ export class AgentVMMHostPreparation implements HostPreparation {
       const pendingFile = join(this.config.directory, ".pending-update.json");
       if (await pathExists(pendingFile)) {
         phase("installing");
-        await this.applyUpdate(JSON.parse(await readFile(pendingFile, "utf8")));
+        const pending = JSON.parse(await readFile(pendingFile, "utf8"));
+        await this.applyUpdate(pending);
         await rm(pendingFile);
+        await rm(pending.sourceApp, { recursive: true, force: true });
+        await rm(join(this.config.directory, ".prepared"), {
+          recursive: true,
+          force: true,
+        });
         phase("ready");
         return;
       }
@@ -380,6 +546,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
             this.remaining(deadline, PUBLISH_TIMEOUT_MS)
           );
         await this.activateSource();
+        await rm(preparedDirectory, { recursive: true, force: true });
       } else {
         const requestId = `comma-update-${randomUUID()}`;
         const stagedSibling = join(
@@ -401,6 +568,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
         await rename(`${pendingFile}.tmp`, pendingFile);
         await this.applyUpdate(pending);
         await rm(pendingFile);
+        await rm(stagedSibling, { recursive: true, force: true });
+        await rm(preparedDirectory, { recursive: true, force: true });
       }
       phase("ready");
     } catch (error) {
@@ -725,6 +894,20 @@ function displayDownloadLocation(value: string) {
   } catch {
     return "Invalid download URL";
   }
+}
+
+function isReusableLocalHelper(
+  version: { release_id: string; currentSchema?: number },
+  artifact: { release_id: string; currentSchema?: number }
+) {
+  if (version.release_id === artifact.release_id) return true;
+  return (
+    typeof version.currentSchema === "number" &&
+    Number.isSafeInteger(version.currentSchema) &&
+    typeof artifact.currentSchema === "number" &&
+    Number.isSafeInteger(artifact.currentSchema) &&
+    version.currentSchema > artifact.currentSchema
+  );
 }
 
 function isBusy(error: unknown) {

@@ -95,6 +95,7 @@
     <string name="new_task_cloud">Comma 云端</string>
     <string name="new_task_code">写代码</string>
     <string name="new_task_default_model">默认</string>
+    <string name="new_task_builtin_model">Comma 内置</string>
     <string name="new_task_models_unavailable">此工作空间无法使用模型设置。</string>
     <string name="new_task_create">创建 Task</string>
     <string name="new_task_default_branch">默认分支</string>

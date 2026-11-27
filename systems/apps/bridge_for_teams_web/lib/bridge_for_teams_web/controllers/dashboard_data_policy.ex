@@ -23,6 +23,7 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
          overview
          |> Map.take(~w(mode language audience_modes))
          |> Map.put("supervisors", Enum.flat_map(overview["supervisors"] || [], &supervisor/1))
+         |> Map.put("memory_writers", memory_writers(overview["memory_writers"]))
          |> Map.put("connects", Enum.map(overview["connects"] || [], &public_connect/1))
          |> Map.merge(ssh_hosts(overview["ssh_hosts"]))}
 
@@ -80,6 +81,15 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
 
   defp apply_change(org, id, :group, %{"supervisors" => supervisors}),
     do: InformationFlow.set_supervisors(org, id, supervisors)
+
+  defp apply_change(org, id, :group, %{"memory_writers" => %{} = writers}),
+    do:
+      InformationFlow.set_memory_writers(
+        org,
+        id,
+        writers["restricted"],
+        writers["writers"]
+      )
 
   defp apply_change(_org, _id, :group, _params), do: {:error, :invalid_mode}
 
@@ -171,6 +181,11 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
       _other -> []
     end
   end
+
+  defp memory_writers(%{"restricted" => restricted, "writers" => keys}) when is_list(keys),
+    do: %{"restricted" => restricted == true, "writers" => Enum.flat_map(keys, &supervisor/1)}
+
+  defp memory_writers(_absent), do: %{"restricted" => false, "writers" => []}
 
   defp tags(tags) when is_list(tags) do
     tags

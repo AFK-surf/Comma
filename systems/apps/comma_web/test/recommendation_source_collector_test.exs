@@ -459,11 +459,9 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
     assert whole in 1..39
     assert Enum.take(kept, whole) == Enum.take(long, whole)
 
-    # A record cut within its link keeps nothing to cite.
-    for {cut, original} <- Enum.zip(kept, long), cut["webUrl"] not in [nil, ""] do
-      assert Map.take(cut, ~w(messageId threadId webUrl)) ==
-               Map.take(original, ~w(messageId threadId webUrl))
-    end
+    # No partial tail record survives: every kept record stays intact so shifting
+    # the byte boundary never drifts a record's facts or fingerprint.
+    assert kept == Enum.take(long, whole)
   end
 
   test "the collection sub-deadline bounds a multi-wave provider fan-out" do
@@ -488,6 +486,330 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
     assert elapsed_ms < 2_000
     assert Enum.map(failures, & &1["sourceId"]) == Enum.map(sources, & &1["connectionId"])
     assert Enum.all?(failures, &String.contains?(&1["message"], "collection_deadline_exceeded"))
+  end
+
+  test "Slack member collection keeps direct messages, thread replies, and buried mentions intact when bot mentions carry multi-kilobyte text" do
+    now = ~U[2026-11-20 02:45:00Z]
+    slack_source = %{"appId" => "slack", "appName" => "Slack", "connectionId" => "slack-member"}
+
+    mentions =
+      for i <- 1..27 do
+        text =
+          if i <= 10 do
+            String.duplicate("诊断日志输出行 #{i} — build step output details.\n", 80) <>
+              "<@UME1> 请确认发布第 #{i} 批次"
+          else
+            "<@UME1> review item #{i}"
+          end
+
+        %{
+          "text" => text,
+          "user" => "UBOT#{i}",
+          "username" => "bot-#{i}",
+          "ts" => "1795140#{String.pad_leading("#{i}", 3, "0")}.000100",
+          "channel" => %{"id" => "C100"},
+          "permalink" => "https://team.slack.com/archives/C100/p1795140#{i}"
+        }
+      end
+
+    direct =
+      for d <- 1..2 do
+        %{
+          "text" => "私信确认事项 #{d}：今天能批一下吗？",
+          "user" => "UDM#{d}",
+          "username" => "colleague-#{d}",
+          "ts" => "1795130#{String.pad_leading("#{d}", 3, "0")}.000100",
+          "channel" => %{"id" => "D#{d}", "is_im" => true},
+          "permalink" => "https://team.slack.com/archives/D#{d}/p1795130#{d}"
+        }
+      end
+
+    threads =
+      for t <- 1..20 do
+        text =
+          if t == 20,
+            do: "PR #6140 已合并上线，无需继续跟进",
+            else: "参与线程回复 #{t}：" <> String.duplicate("上下文说明", 40)
+
+        %{
+          "text" => text,
+          "user" => "UTH#{t}",
+          "username" => "peer-#{t}",
+          "ts" => "1795120#{String.pad_leading("#{t}", 3, "0")}.000100",
+          "channel" => %{"id" => "C200"},
+          "permalink" =>
+            "https://team.slack.com/archives/C200/p1795120#{t}?thread_ts=1795100#{String.pad_leading("#{t}", 3, "0")}.000100"
+        }
+      end
+
+    request = fn "GET", url, _opts ->
+      uri = URI.parse(url)
+      params = URI.decode_query(uri.query || "")
+
+      case {uri.path, params["query"]} do
+        {"/api/auth.test", _} ->
+          {:ok, %{"ok" => true, "user_id" => "UME1", "team_id" => "T1"}}
+
+        {"/api/search.messages", "<@UME1>" <> _} ->
+          {:ok,
+           %{"ok" => true, "messages" => %{"matches" => mentions, "paging" => %{"pages" => 1}}}}
+
+        {"/api/search.messages", "to:me" <> _} ->
+          {:ok,
+           %{"ok" => true, "messages" => %{"matches" => direct, "paging" => %{"pages" => 1}}}}
+
+        {"/api/search.messages", "is:thread" <> _} ->
+          {:ok,
+           %{"ok" => true, "messages" => %{"matches" => threads, "paging" => %{"pages" => 1}}}}
+
+        {"/api/users.info", _} ->
+          {:ok, %{"ok" => true, "user" => %{"name" => "peng", "profile" => %{}}}}
+      end
+    end
+
+    assert {:ok, data, subject} = CommaWeb.RecommendationSlackMemberSource.read(request, now)
+
+    first_relations =
+      data["messages"]["matches"] |> Enum.take(3) |> Enum.map(& &1["memberRelation"])
+
+    assert first_relations == ~w(mentioned_you direct_message_to_you replied_in_your_thread)
+
+    assert {:ok, fact, []} =
+             RecommendationSourceCollector.member_fact(slack_source, data, subject, now)
+
+    assert %{"truncated" => false, "kept" => 49, "dropped" => 0} = fact["bound"]
+
+    candidates = CommaWeb.MemberSourceIngest.items([fact])["slack-member"]
+    assert length(candidates) == 49
+
+    by_rel = Enum.group_by(candidates, & &1["relationship"])
+    assert length(by_rel["mentioned_you"]) == 27
+    assert length(by_rel["direct_message_to_you"]) == 2
+    assert length(by_rel["replied_in_your_thread"]) == 20
+
+    buried_first =
+      Enum.find(candidates, &(&1["url"] == "https://team.slack.com/archives/C100/p17951401"))
+
+    assert buried_first["title"] =~ "请确认发布第 1 批次"
+    assert buried_first["excerpt"] =~ "请确认发布第 1 批次"
+
+    merged_reply =
+      Enum.find(
+        candidates,
+        &(&1["url"] ==
+            "https://team.slack.com/archives/C200/p179512020?thread_ts=1795100020.000100")
+      )
+
+    assert merged_reply["excerpt"] =~ "PR #6140 已合并上线"
+  end
+
+  test "a Slack mention also posted where the member's work is keeps its relation and full text" do
+    now = ~U[2026-11-20 02:45:00Z]
+    long = String.duplicate("Release log line. ", 40) <> "<@UME1> please approve release 42."
+    assert String.length(long) > 700
+    first = slack_match("1", "<@UME1> short note")
+    buried = slack_match("2", long)
+
+    request =
+      slack_request(%{"<@UME1>" => [first, buried], "in:#releases" => [buried]})
+
+    assert {:ok, data, _subject} =
+             CommaWeb.RecommendationSlackMemberSource.read(request, now, nil,
+               targets: %{"channels" => ["releases"]}
+             )
+
+    matches = data["messages"]["matches"]
+    assert [match] = Enum.filter(matches, &(&1["permalink"] == buried["permalink"]))
+    assert match["memberRelation"] == "mentioned_you"
+    assert match["text"] == long
+  end
+
+  test "a Slack mention at the end of one long line keeps the mention after the preamble" do
+    now = ~U[2026-11-20 02:45:00Z]
+    long = "Report header\n" <> String.duplicate("a", 1_500) <> "<@UME1> please approve"
+    request = slack_request(%{"<@UME1>" => [slack_match("1", long)]})
+
+    assert {:ok, data, _subject} = CommaWeb.RecommendationSlackMemberSource.read(request, now)
+    assert [%{"text" => text}] = data["messages"]["matches"]
+    assert String.length(text) <= 1_200
+    assert [head, tail] = String.split(text, "\n…\n")
+    assert head == String.slice(long, 0, String.length(head))
+    # The tail is the message's end, apart from the head.
+    assert String.ends_with?(tail, "<@UME1> please approve")
+    assert String.ends_with?(long, tail)
+    assert String.length(head) + String.length(tail) <= String.length(long)
+  end
+
+  test "unrelated Outlook mail or calendar churn does not drift surviving items' context or prompt_context" do
+    source = %{"appId" => "outlook", "appName" => "Outlook", "connectionId" => "ms-mail"}
+    now = ~U[2026-11-25 08:30:00Z]
+
+    mail = fn n ->
+      id = "msg-#{n}"
+
+      body =
+        "Apple Developer invite #{n}. " <> String.duplicate("Details about access and role. ", 50)
+
+      %{
+        "messageId" => id,
+        "threadId" => "thread-#{n}",
+        "subject" => "Invite #{n}",
+        "sender" => "noreply@example.com",
+        "messageTimestamp" => "2026-11-25T02:23:43Z",
+        "webUrl" => "https://outlook.office365.com/owa/?ItemID=#{id}",
+        "context" =>
+          CommaWeb.RecommendationSourceContext.attach(%{"body" => body}, ["body"])["context"]
+          |> Map.put("attachments", "unread")
+      }
+    end
+
+    event = fn n ->
+      %{
+        "id" => "evt-#{n}",
+        "subject" => "Standup #{n}",
+        "webUrl" => "https://outlook.office365.com/owa/?itemid=evt-#{n}",
+        "context" =>
+          CommaWeb.RecommendationSourceContext.attach(%{"bodyPreview" => "Room #{n}"}, [
+            "bodyPreview"
+          ])["context"]
+      }
+    end
+
+    data_before = %{
+      "messages" => Enum.map(1..40, mail),
+      "items" => Enum.map(1..20, event),
+      "memberRelation" => "your_recent_inbox_and_upcoming_events"
+    }
+
+    # One new mail arrives and one calendar event passes `now`.
+    data_after = %{
+      "messages" => [mail.(41) | Enum.map(1..40, mail)],
+      "items" => Enum.map(2..20, event),
+      "memberRelation" => "your_recent_inbox_and_upcoming_events"
+    }
+
+    assert {:ok, fact_before, []} =
+             RecommendationSourceCollector.member_fact(source, data_before, %{}, now)
+
+    assert {:ok, fact_after, []} =
+             RecommendationSourceCollector.member_fact(source, data_after, %{}, now)
+
+    items_before =
+      Map.new(CommaWeb.MemberSourceIngest.items([fact_before])["ms-mail"], &{&1["url"], &1})
+
+    items_after =
+      Map.new(CommaWeb.MemberSourceIngest.items([fact_after])["ms-mail"], &{&1["url"], &1})
+
+    for n <- 1..40 do
+      url = "https://outlook.office365.com/owa/?ItemID=msg-#{n}"
+      assert items_before[url] == items_after[url]
+      assert items_before[url]["context"]["attachments"] == "unread"
+    end
+  end
+
+  test "unrelated long multi-byte Slack messages do not drift surviving items' excerpt or Routine budget" do
+    source = %{"appId" => "slack", "appName" => "Slack", "connectionId" => "slack-cjk"}
+    now = ~U[2026-11-25 08:30:00Z]
+
+    long_match = fn n ->
+      text =
+        "第#{n}条中文长消息：" <> String.duplicate("这是一段用于验证多字节消息体稳定性的上下文内容。", 48)
+
+      %{
+        "text" => text,
+        "ts" => "1795140#{String.pad_leading("#{n}", 3, "0")}.000100",
+        "permalink" => "https://team.slack.com/archives/C100/p1795140#{n}",
+        "memberRelation" => "mentioned_you"
+      }
+    end
+
+    # 70 long CJK messages exceed 196,608 encoded bytes; adding 10 more must not
+    # alter the stored excerpt or prompt_context of surviving messages.
+    before_matches = Enum.map(1..70, long_match)
+    after_matches = Enum.map(1..80, long_match)
+
+    assert {:ok, fact_before, []} =
+             RecommendationSourceCollector.member_fact(
+               source,
+               %{
+                 "messages" => %{"matches" => before_matches},
+                 "memberRelation" => "involves_you"
+               },
+               %{"provider_user_id" => "UME1"},
+               now
+             )
+
+    assert {:ok, fact_after, []} =
+             RecommendationSourceCollector.member_fact(
+               source,
+               %{"messages" => %{"matches" => after_matches}, "memberRelation" => "involves_you"},
+               %{"provider_user_id" => "UME1"},
+               now
+             )
+
+    items_before =
+      Map.new(CommaWeb.MemberSourceIngest.items([fact_before])["slack-cjk"], &{&1["url"], &1})
+
+    items_after =
+      Map.new(CommaWeb.MemberSourceIngest.items([fact_after])["slack-cjk"], &{&1["url"], &1})
+
+    for n <- 1..70 do
+      url = "https://team.slack.com/archives/C100/p1795140#{n}"
+      assert items_before[url] == items_after[url]
+    end
+
+    # Routine model_candidates still bounds total per-source excerpt bytes to 196,608.
+    context =
+      Comma.RecommendationDraft.prepare(
+        [fact_after],
+        Comma.Recommendations.source_evidence([fact_after]),
+        "member"
+      )
+
+    model_candidates = Comma.RecommendationMemberSelection.model_candidates(context)
+
+    total_excerpt_bytes =
+      Enum.reduce(model_candidates, 0, fn item, acc ->
+        acc + max(byte_size(Jason.encode!(item["excerpt"] || "")) - 2, 0)
+      end)
+
+    assert total_excerpt_bytes <= 196_608
+  end
+
+  defp slack_match(id, text) do
+    %{
+      "text" => text,
+      "user" => "UBOT#{id}",
+      "username" => "bot-#{id}",
+      "ts" => "1795140#{String.pad_leading(id, 3, "0")}.000100",
+      "channel" => %{"id" => "C100"},
+      "permalink" => "https://team.slack.com/archives/C100/p1795140#{id}"
+    }
+  end
+
+  # Slack's search answers each query that starts with a key of `results`.
+  defp slack_request(results) do
+    fn "GET", url, _opts ->
+      uri = URI.parse(url)
+      params = URI.decode_query(uri.query || "")
+
+      case uri.path do
+        "/api/auth.test" ->
+          {:ok, %{"ok" => true, "user_id" => "UME1", "team_id" => "T1"}}
+
+        "/api/search.messages" ->
+          matches =
+            Enum.find_value(results, [], fn {prefix, matches} ->
+              if String.starts_with?(params["query"], prefix), do: matches
+            end)
+
+          {:ok,
+           %{"ok" => true, "messages" => %{"matches" => matches, "paging" => %{"pages" => 1}}}}
+
+        "/api/users.info" ->
+          {:ok, %{"ok" => true, "user" => %{"name" => "peng", "profile" => %{}}}}
+      end
+    end
   end
 
   defp workspace,

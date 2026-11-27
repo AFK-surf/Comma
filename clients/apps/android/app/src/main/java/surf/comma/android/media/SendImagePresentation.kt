@@ -156,9 +156,11 @@ internal class SendImagePresentation(private val placeholderColor: Int, private 
 }
 
 /** Receives the existing media binding's readiness and cancellation without starting a second load. */
-internal class SendImageView(context: Context) : AppCompatImageView(context) {
-    val presentation = SendImagePresentation(context.getColor(R.color.token_bg_tertiary),
-        resources.getDimension(R.dimen.radius_4xl))
+internal class SendImageView(
+    context: Context,
+    cornerRadiusPx: Float = context.resources.getDimension(R.dimen.radius_4xl),
+) : AppCompatImageView(context) {
+    val presentation = SendImagePresentation(context.getColor(R.color.token_bg_tertiary), cornerRadiusPx)
 
     init { super.setImageDrawable(presentation) }
 

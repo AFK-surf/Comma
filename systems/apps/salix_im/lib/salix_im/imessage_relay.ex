@@ -47,13 +47,12 @@ defmodule SalixIM.IMessageRelay do
     request(:post, "/v1/messages/text", json: body) |> sent()
   end
 
-  def send_image(sender, chat, upload, caption \\ "") do
+  def send_image(sender, chat, upload) do
     if byte_size(upload.data) <= @max_image_bytes do
       request(:post, "/v1/messages/image",
         form_multipart: %{
           sender_handle: sender,
           chat_guid: chat,
-          caption: caption,
           image: {upload.data, filename: upload.filename}
         },
         plugins: [SalixIM.Multipart]
@@ -293,8 +292,9 @@ defmodule SalixIM.IMessageRelay do
            "Do not retry this send, send a failure notice, or claim delivery. " <>
            "This integration has no delivery-verification API. Device or connection discovery cannot confirm this send. " <>
            "End this turn now with end_turn and outcome=blocked. " <>
-           "Use a private reason: iMessage delivery is unknown. The user/operator must verify in Messages before a new send. " <>
-           "Do not ask through iMessage or wait_for a human response."
+           "Use a private reason: iMessage delivery is unknown. " <>
+           "Do not ask through iMessage or wait_for a human response. " <>
+           "This stops only this send. When the person writes again, answer the new message with an ordinary send."
      }}
   end
 

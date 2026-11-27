@@ -59,6 +59,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
   taskLink,
   workerVendor,
   onSwitchRun,
+  workerStarting = false,
 }: {
   activity?: ChatActivity | undefined;
   participantStatus: ChatParticipantStatus | undefined;
@@ -81,6 +82,8 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
   workerVendor?: string | undefined;
   /** In a Task the viewer may switch to another model: a way out of its Worker's stops. */
   onSwitchRun?: (() => void) | undefined;
+  /** In a Task: it has started and its Worker has not reported yet (`workerStarting`). */
+  workerStarting?: boolean | undefined;
 }) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
@@ -214,15 +217,31 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
                 }
               : undefined));
 
+  // The client's own word while a started Task's Worker has not reported: any
+  // Participant's status takes the line from it. It also holds before the
+  // Task's Participant statuses first arrive (the detail is loaded, its feed
+  // has not reported yet).
+  const startingPresentation: SlotPresentation | undefined = workerStarting
+    ? {
+        actorRole: "worker",
+        key: "worker-starting",
+        label: messages.chat_activity_working(),
+        state: "active",
+      }
+    : undefined;
   const requestedPresentations: SlotPresentation[] = taskPresentations
-    ? taskPresentations.toSorted(
-        (a, b) =>
-          Number(b.actorRole === "router") - Number(a.actorRole === "router") ||
-          a.key.localeCompare(b.key)
-      )
+    ? taskPresentations.length === 0 && startingPresentation
+      ? [startingPresentation]
+      : taskPresentations.toSorted(
+          (a, b) =>
+            Number(b.actorRole === "router") - Number(a.actorRole === "router") ||
+            a.key.localeCompare(b.key)
+        )
     : presentation
       ? [presentation]
-      : [];
+      : startingPresentation
+        ? [startingPresentation]
+        : [];
   const handingOffToBubble = hasResponse && streaming;
   const presentations = useThinkingContinuity(
     requestedPresentations,
@@ -230,12 +249,18 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
       participantStatus?.state === "stopped" ||
       participantStatus?.loopWake === true
   );
+  // The line shows Task work: its Participants, or the client's word for a
+  // started Task, also while that word is held on screen past its request.
+  // It keeps the Task's layout through the first statuses' arrival.
+  const taskSlot =
+    taskPresentations !== undefined ||
+    presentations.some((item) => item.key === "worker-starting");
   const active = presentations.filter((item) => item.state === "active");
   const errors = presentations.filter((item) => item.state === "error");
   const named = active.filter((item) => item.name);
   const router = named.find((item) => item.actorRole === "router");
   const workingProvider =
-    !taskPresentations && errors.length === 0 ? active[0]?.workingProvider : undefined;
+    !taskSlot && errors.length === 0 ? active[0]?.workingProvider : undefined;
   // A lone stop the member fixes themselves (a funding stop, a model nothing
   // serves) names itself in the card, with what to do and the ways out.
   const stopped =
@@ -269,7 +294,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
         telegram: messages.chat_activity_working_telegram,
         signal: messages.chat_activity_working_signal,
       }[workingProvider]()
-    : taskPresentations
+    : taskSlot
       ? named.length > 0
         ? // Agent names are formatted into the copy; a CJK name sits flush.
           withRouterNameSpacing(
@@ -287,10 +312,12 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
                     })
                   : messages.chat_active_workers({ count: named.length })
           )
-        : errors.map((item) => `${item.name} · ${item.label}`).join("; ")
+        : errors.length > 0
+          ? errors.map((item) => `${item.name} · ${item.label}`).join("; ")
+          : (active[0]?.label ?? "")
       : (presentations[0]?.label ?? "");
   const summary = notice
-    ? taskPresentations && errors[0]!.name
+    ? taskSlot && errors[0]!.name
       ? `${errors[0]!.name} · ${notice.title}`
       : notice.title
     : statusSummary;
@@ -306,9 +333,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
         ? routerFocus
         : undefined;
   const cardFocus =
-    thinkingBubble &&
-    !taskPresentations &&
-    markedFocus?.tasks.some((task) => task.title)
+    thinkingBubble && !taskSlot && markedFocus?.tasks.some((task) => task.title)
       ? markedFocus
       : undefined;
   // A Worker on Comma's own model, or whose model's maker is not known yet,
@@ -345,7 +370,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
       title={detail || undefined}
     >
       <div className="comma-chat-activity-row" aria-hidden={!visible} inert={!visible}>
-        {taskPresentations && active.length > 0 && errors.length === 0 ? (
+        {taskSlot && active.length > 0 && errors.length === 0 ? (
           <div
             className="comma-chat-activity-avatars"
             style={{ "--comma-status-count": avatars.length } as CSSProperties}
@@ -356,7 +381,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
               // Chat has one continuous reply mark. Changing from local feedback
               // to Participant/Activity authority must not remount its animation.
               // Tasks still identify each avatar by its actual participant.
-              const avatarKey = taskPresentations ? item.key : "chat-reply";
+              const avatarKey = taskSlot ? item.key : "chat-reply";
               const avatarProps = {
                 "data-participant-key": item.key,
                 "data-actor-role": item.actorRole ?? (isRouter ? "router" : undefined),
@@ -376,7 +401,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
                   {...avatarProps}
                   className={`${avatarProps.className} comma-chat-assistant-router-mark`}
                 >
-                  <CommaLogoAnimation />
+                  <CommaLogoAnimation paused={!visible || active.length === 0} />
                 </span>
               ) : (
                 <WorkerModelMark
@@ -399,7 +424,7 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
           taskLink={taskLink}
           workingProvider={workingProvider}
         >
-          {thinkingBubble && !taskPresentations ? (
+          {thinkingBubble && !taskSlot ? (
             workingProvider ? (
               <span className="comma-chat-channel-logos" aria-hidden>
                 <span className="comma-chat-channel-logo">
@@ -537,7 +562,7 @@ function ActivityBubble({
 }
 
 function isRouterAvatar(item: SlotPresentation) {
-  return item.actorRole === "router" || !item.name;
+  return item.actorRole === "router" || (!item.actorRole && !item.name);
 }
 
 /** A Worker's mark is Comma's: its model is Comma's own, or its maker is not known yet. */

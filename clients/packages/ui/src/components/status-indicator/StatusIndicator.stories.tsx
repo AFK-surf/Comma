@@ -68,10 +68,10 @@ export const KeyboardNavigation: Story = {
     );
     selectedStatus?.focus();
     await userEvent.keyboard("{End}");
-    await expect(indicator?.value).toBe("cancel");
+    await expect(indicator?.value).toBe("loops");
     await expect(
       indicator?.shadowRoot?.querySelector('[role="radio"][aria-checked="true"]')
-    ).toHaveTextContent("Cancel");
+    ).toHaveTextContent("Automated");
     await userEvent.keyboard("{Home}");
     await expect(indicator?.value).toBe("in-progress");
     await expect(
@@ -180,7 +180,7 @@ export const WithTasks: Story = {
     await waitFor(() => {
       const lazy =
         canvasElement.querySelector<StatusIndicatorElement>("status-indicator");
-      expect(lazy?.shadowRoot?.querySelectorAll('[role="radio"]')).toHaveLength(4);
+      expect(lazy?.shadowRoot?.querySelectorAll('[role="radio"]')).toHaveLength(5);
     });
     const indicator =
       canvasElement.querySelector<StatusIndicatorElement>("status-indicator");
@@ -202,7 +202,7 @@ export const KeyboardShortcuts: Story = {
     docs: {
       description: {
         story:
-          "Each status is available through its global macOS Option shortcut while the indicator is mounted: ⌥1 through ⌥4. The shortcut changes the bound task bucket without moving focus. In a text field, such as the composer, a key that types an ASCII character, a letter, a quotation mark or a dead key types it: on a Mac, Option+2 types @ in Swedish and “ in German. Rare symbols such as the US layout's ¡ ™ £ ¢ stay with the shortcut. On Windows and Linux, where Alt with a digit types nothing, the shortcut always runs.",
+          "Each status is available through its global macOS Option shortcut while the indicator is mounted: ⌥1 through ⌥5. The shortcut changes the bound task bucket without moving focus. In a text field, such as the composer, a key that types an ASCII character, a letter, a quotation mark or a dead key types it: on a Mac, Option+2 types @ in Swedish and “ in German. Rare symbols such as the US layout's ¡ ™ £ ¢ stay with the shortcut. On Windows and Linux, where Alt with a digit types nothing, the shortcut always runs.",
       },
     },
   },

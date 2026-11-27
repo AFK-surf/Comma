@@ -46,6 +46,7 @@ defmodule Comma.Data.TaskRequest do
     field(:sender_group_id, :string)
     field(:source, :map)
     field(:reported_at, :utc_datetime_usec)
+    field(:sender_hidden_at, :utc_datetime_usec)
     field(:expires_at, :utc_datetime_usec)
     field(:decided_at, :utc_datetime_usec)
 
@@ -80,5 +81,66 @@ defmodule Comma.Data.ProviderUserLink do
       type: :utc_datetime_usec,
       autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
     )
+  end
+end
+
+defmodule Comma.Data.TaskCollaborator do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key {:id, :string, autogenerate: false}
+  schema "comma_task_collaborators" do
+    field(:workspace_id, :string)
+    field(:group_id, :string)
+    field(:conversation_id, :string)
+    field(:title, :string)
+    field(:host_user_id, :string)
+    field(:user_id, :string)
+    field(:invited_email, :string)
+    field(:invite_token, :string, redact: true)
+    field(:invite_expires_at, :utc_datetime_usec)
+    field(:guest_name, :string)
+    field(:status, :string)
+    field(:decided_at, :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
+  end
+end
+
+defmodule Comma.Data.CollaborationGuestSession do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key {:id, :string, autogenerate: false}
+  schema "comma_collaboration_guest_sessions" do
+    field(:collaborator_id, :string)
+    field(:workspace_id, :string)
+    field(:group_id, :string)
+    field(:conversation_id, :string)
+    field(:email, :string)
+    field(:token_hash, :string, redact: true)
+    field(:expires_at, :utc_datetime_usec)
+    field(:revoked_at, :utc_datetime_usec)
+    field(:last_used_at, :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
+  end
+end
+
+defmodule Comma.Data.CollaborationInviteSend do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key {:id, :string, autogenerate: false}
+  schema "comma_collaboration_invite_sends" do
+    field(:host_user_id, :string)
+    field(:collaborator_id, :string)
+    field(:inserted_at, :utc_datetime_usec)
   end
 end

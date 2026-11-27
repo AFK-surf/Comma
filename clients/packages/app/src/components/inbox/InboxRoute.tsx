@@ -17,6 +17,7 @@ export function InboxRoute() {
   const params = useParams({ strict: false }) as {
     conversationId?: string;
     requestId?: string;
+    invitationId?: string;
   };
   const [loadMoreState, setLoadMoreState] = useState<{
     error?: string;
@@ -93,6 +94,7 @@ export function InboxRoute() {
         <InboxView
           result={null}
           selectedConversationId={params.conversationId}
+          selectedInvitationId={params.invitationId}
           selectedRequestId={params.requestId}
         />
       </div>
@@ -106,6 +108,7 @@ export function InboxRoute() {
       onLoadMore={handleLoadMore}
       result={result}
       selectedConversationId={params.conversationId}
+      selectedInvitationId={params.invitationId}
       selectedRequestId={params.requestId}
       workspaceSelector={
         result.activeWorkspaceId && result.workspaces && result.workspaces.length > 1

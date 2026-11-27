@@ -33,6 +33,29 @@ defmodule SalixStore.AgentVMMRegistrationsTest do
     :ok
   end
 
+  test "registration projections expose the bound device and current connection for both surfaces" do
+    for surface <- ["comma", "bft"] do
+      registration = %Registration{
+        surface: surface,
+        device_id: nil,
+        connected: false,
+        desired_enabled: false
+      }
+
+      assert %{device_id: nil, connected: false} = AgentVMMRegistrations.project(registration)
+
+      assert %{device_id: "host", connected: true} =
+               AgentVMMRegistrations.project(%{registration | device_id: "host", connected: true})
+
+      assert %{device_id: "host", connected: false} =
+               AgentVMMRegistrations.project(%{
+                 registration
+                 | device_id: "host",
+                   connected: false
+               })
+    end
+  end
+
   test "one claim accepts the persisted client credential and authenticates a lost-response retry after ticket expiry" do
     now = SystemsClock.utc_now()
     {:ok, d} = request()

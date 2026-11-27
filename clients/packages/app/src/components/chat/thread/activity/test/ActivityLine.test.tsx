@@ -217,6 +217,93 @@ describe("Task activity summary", () => {
   });
 });
 
+describe("a started Task whose Worker has not reported", () => {
+  it("says so while nobody in the Task is at work yet", () => {
+    render(
+      <CommaI18nProvider locale="en">
+        <ParticipantStatusSlot
+          participantStatus={undefined}
+          participantStatuses={[]}
+          workerStarting
+        />
+      </CommaI18nProvider>
+    );
+    const slot = screen.getByTestId("participant-status-slot");
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(slot).toHaveAttribute("data-state", "active");
+    expect(slot).toHaveTextContent("Working");
+  });
+
+  it("says so before the Task's Participant statuses first arrive", () => {
+    render(
+      <CommaI18nProvider locale="en">
+        <ParticipantStatusSlot
+          participantStatus={undefined}
+          participantStatuses={undefined}
+          workerStarting
+        />
+      </CommaI18nProvider>
+    );
+    const slot = screen.getByTestId("participant-status-slot");
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(slot).toHaveAttribute("data-state", "active");
+    expect(slot).toHaveTextContent("Working");
+  });
+
+  it.each([
+    { name: "before its statuses arrive", statuses: undefined },
+    { name: "while nobody reports", statuses: [] },
+  ])(
+    "draws the Worker's model mark $name, and keeps it as the Worker reports",
+    ({ statuses }) => {
+      const view = (participantStatuses: ChatParticipantStatus[] | undefined) => (
+        <CommaI18nProvider locale="en">
+          <ParticipantStatusSlot
+            participantStatus={undefined}
+            participantStatuses={participantStatuses}
+            workerStarting={participantStatuses === statuses}
+            workerVendor="anthropic"
+          />
+        </CommaI18nProvider>
+      );
+      const rendered = render(view(statuses));
+      const starting = rendered.container.querySelector(
+        '.comma-chat-activity-avatars [data-actor-role="worker"][data-model-vendor="anthropic"]'
+      );
+      expect(starting?.querySelector("img")).toBeInTheDocument();
+      expect(
+        rendered.container.querySelector('[data-slot="comma-logo-animation"]')
+      ).toBeNull();
+
+      rendered.rerender(view([worker]));
+      const reported = rendered.container.querySelector(
+        '.comma-chat-activity-avatars [data-actor-role="worker"][data-model-vendor="anthropic"]'
+      );
+      expect(reported?.querySelector("img")).toBeInTheDocument();
+      expect(
+        rendered.container.querySelector('[data-slot="comma-logo-animation"]')
+      ).toBeNull();
+    }
+  );
+
+  it("leaves the line to a Worker that stopped on an error", () => {
+    render(
+      <CommaI18nProvider locale="en">
+        <ParticipantStatusSlot
+          participantStatus={undefined}
+          participantStatuses={[
+            { ...worker, issue: "runtime_failed", state: "error", status: "error" },
+          ]}
+          workerStarting
+        />
+      </CommaI18nProvider>
+    );
+    const slot = screen.getByTestId("participant-status-slot");
+    expect(slot).toHaveAttribute("data-state", "error");
+    expect(slot).not.toHaveTextContent("Working");
+  });
+});
+
 describe("a Task the viewer may switch to another model", () => {
   it("offers another model as a way out of its Worker's model stops", async () => {
     const onSwitchRun = vi.fn();
@@ -1211,6 +1298,30 @@ describe("ParticipantStatusSlot", () => {
   // the runtime also settles the session's own activity to error with a stable
   // reason code. That one survives a reload, and carries localized copy rather
   // than the runtime's English text.
+  it("identifies subscription authorization and tells the member where to recover", () => {
+    const view = render(
+      <CommaI18nProvider locale="zh-CN">
+        <ParticipantStatusSlot
+          participantStatus={{
+            conversationId: "cnv_1",
+            issue: "subscription_authentication_required",
+            issueDetail: { source: "codex" },
+            participantId: "ptp_1",
+            state: "error",
+            status: "private upstream diagnostic",
+            updatedAt: 1_791_244_815,
+          }}
+        />
+      </CommaI18nProvider>
+    );
+    expect(view.getByRole("alert")).toHaveTextContent(
+      "ChatGPT 订阅账号需要重新授权。请在「设置 → 模型与 API」中重新授权，再重试消息。"
+    );
+    expect(view.getByRole("alert")).not.toHaveTextContent(
+      "private upstream diagnostic"
+    );
+  });
+
   it("says when a model request failed and what started its round", () => {
     // The line stays under the newest message, so it names the failure time
     // and a background or voice call start instead of reading as that reply.

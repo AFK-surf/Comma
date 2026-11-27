@@ -15,6 +15,7 @@ export function MessageAvatar({
   user = false,
   preview = false,
   unavailable = false,
+  workerVendor: sessionVendor,
 }: {
   actorRole?: ChatMessage["actorRole"];
   createdBy?: string | undefined;
@@ -23,6 +24,8 @@ export function MessageAvatar({
   user?: boolean;
   preview?: boolean;
   unavailable?: boolean;
+  /** The maker of this message's own worker session, where it differs per session. */
+  workerVendor?: string | undefined;
 }) {
   const messagesApi = useCommaMessages();
   const profile = useContext(ThreadUserAvatarContext);
@@ -34,7 +37,8 @@ export function MessageAvatar({
       (createdBy === "current" && profile.currentUserAlias))
       ? profile
       : undefined;
-  const workerVendor = useContext(ThreadWorkerVendorContext);
+  const taskVendor = useContext(ThreadWorkerVendorContext);
+  const workerVendor = sessionVendor ?? taskVendor;
   const commaMark = actorRole === "router" || system;
   const className = cx(
     "comma-chat-assistant-source-avatar",

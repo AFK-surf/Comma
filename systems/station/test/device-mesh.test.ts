@@ -186,6 +186,26 @@ test("a run that drops leaves what is open for a moment, admits no one new, and 
   assert.equal(alone.active(), false);
 });
 
+test("a Task's sandbox admits its Task's owner to look, and no one once Salix has said nothing for a while", async () => {
+  const device = "de".repeat(32);
+  const sandbox = new DeviceMeshAdmissions({ looks: true, staleMs: 60_000 });
+  const run = {};
+  sandbox.set(run, facts("wsA", "u_task_owner"));
+  const owner = sandbox.admit(credential({ sub: "u_task_owner", ws: "wsA", role: "owner", device }), device);
+  assert.equal(sandbox.mayView(owner), true);
+  assert.equal(sandbox.mayControl(owner), false);
+
+  // Its run stays when Salix cannot tell it; what it was told ends by itself, and a word in time keeps it.
+  const quiet = new DeviceMeshAdmissions({ looks: true, staleMs: 1 });
+  const unheard = {};
+  quiet.set(unheard, facts("wsA", "u_task_owner"));
+  const ended = new Promise<void>((resolve) => quiet.listen(resolve));
+  await ended;
+  assert.equal(quiet.active(), false);
+  sandbox.set(run, facts("wsA", "u_task_owner"));
+  assert.equal(sandbox.active(), true);
+});
+
 test("a credential past its end holds no longer, whatever the run says", () => {
   const device = "de".repeat(32);
   const admissions = new DeviceMeshAdmissions();

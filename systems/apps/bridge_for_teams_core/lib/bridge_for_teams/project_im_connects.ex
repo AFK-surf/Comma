@@ -9,11 +9,13 @@ defmodule BridgeForTeams.ProjectIMConnects do
   by Salix's tenant Feishu app store, so project connects forward only app
   identity.
 
-  Supported providers: Slack, Feishu, QQ, Lark and Telegram. A Slack connect
+  Supported providers: Slack, Feishu, QQ, Lark, Telegram and WeCom. A Slack connect
   returns an `oauth_url` to finish the workspace install; a Feishu or QQ connect
   returns a `webhook_url` to paste into the app's or bot's callback settings. A
   QQ bot's AppSecret is connect-owned. A Telegram bot needs only its token, since
-  Salix polls it, and serves no chat until an admin allows one. Connect lifecycle
+  Salix polls it, and serves no chat until an admin allows one. A WeCom AI bot
+  needs its Bot ID and Secret, which its connect owns; Salix holds the bot's
+  long connection, so it has no callback address. Connect lifecycle
   (disable/enable/delete) is provider-neutral.
   """
   require Logger
@@ -22,7 +24,7 @@ defmodule BridgeForTeams.ProjectIMConnects do
   alias BridgeForTeams.Salix.{Client, Reconciler}
   alias BridgeForTeams.Schema.{Organization, Project}
 
-  @providers ~w(slack feishu qq lark telegram)
+  @providers ~w(slack feishu qq lark telegram wecom)
   @transient [:unavailable, :timeout]
   # `list_connects_for_projects/2` budgets: per Salix call, and for the whole
   # lookup before it starts another call.
@@ -38,7 +40,8 @@ defmodule BridgeForTeams.ProjectIMConnects do
     "feishu" => ~w(app_id),
     "qq" => ~w(app_id app_secret),
     "lark" => ~w(app_id app_secret),
-    "telegram" => ~w(bot_token)
+    "telegram" => ~w(bot_token),
+    "wecom" => ~w(app_id app_secret)
   }
 
   @type result :: {:ok, term()} | {:error, term()}
@@ -355,8 +358,13 @@ defmodule BridgeForTeams.ProjectIMConnects do
             org_id,
             project_id,
             "feishu",
-            %{"app_id" => app.app_id, "app_secret" => app.app_secret, "events" => "socket"},
-            opts
+            %{
+              "app_id" => app.app_id,
+              "app_secret" => app.app_secret,
+              "events" => "socket",
+              "member_scope" => Keyword.get(opts, :member_scope)
+            },
+            Keyword.delete(opts, :member_scope)
           )
 
         other ->
@@ -395,8 +403,13 @@ defmodule BridgeForTeams.ProjectIMConnects do
             org_id,
             project_id,
             "lark",
-            %{"app_id" => app.app_id, "app_secret" => app.app_secret, "events" => "socket"},
-            opts
+            %{
+              "app_id" => app.app_id,
+              "app_secret" => app.app_secret,
+              "events" => "socket",
+              "member_scope" => Keyword.get(opts, :member_scope)
+            },
+            Keyword.delete(opts, :member_scope)
           )
 
         other ->
@@ -624,6 +637,149 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
     result
   end
+
+  @doc """
+  Sets whose people a Slack, Feishu or Lark connect's people are:
+  `"organization"` (the workspace's or tenant's own members are the
+  Project's people) or `"external"` (only the people an admin grants by name,
+  `grant_project_connect_member/6`). Connecting an app does not say this.
+  """
+  @spec update_project_connect_member_scope(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: result()
+  def update_project_connect_member_scope(org_id, project_id, connect_id, scope, opts \\ []) do
+    members_write(
+      org_id,
+      project_id,
+      connect_id,
+      %{"member_scope" => scope},
+      opts,
+      fn org, project ->
+        [org.salix_tenant_id, project.salix_group_id, connect_id, scope]
+      end,
+      :set_im_connect_member_scope
+    )
+  end
+
+  @doc """
+  Grants one person of an external connect (`subject`, their provider user
+  id) the Project's people's access, for `expires_in_days` (1, 7 or 30) or
+  without expiry (nil). Salix reads the person's name and email from the
+  provider now and keeps them with the grant.
+  """
+  @spec grant_project_connect_member(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          String.t(),
+          pos_integer() | nil,
+          keyword()
+        ) :: result()
+  def grant_project_connect_member(org_id, project_id, connect_id, subject, days, opts \\ []) do
+    members_write(
+      org_id,
+      project_id,
+      connect_id,
+      %{"member_grant" => "granted"},
+      opts,
+      fn org, project ->
+        [
+          org.salix_tenant_id,
+          project.salix_group_id,
+          connect_id,
+          subject,
+          days,
+          Keyword.get(opts, :actor_label)
+        ]
+      end,
+      :put_im_connect_member_grant
+    )
+  end
+
+  @doc "Removes one person's member grant from a connect."
+  @spec revoke_project_connect_member(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: result()
+  def revoke_project_connect_member(org_id, project_id, connect_id, subject, opts \\ []) do
+    members_write(
+      org_id,
+      project_id,
+      connect_id,
+      %{"member_grant" => "revoked"},
+      opts,
+      fn org, project ->
+        [org.salix_tenant_id, project.salix_group_id, connect_id, subject]
+      end,
+      :delete_im_connect_member_grant
+    )
+  end
+
+  @doc """
+  Up to 20 people of a Slack, Feishu or Lark connect whose name or email
+  matches `query`, or the one person a provider user id names, for the grant
+  picker: `%{"people" => [%{"subject", "name", "email"}], "complete" => bool}`.
+  """
+  @spec search_project_connect_people(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+          result()
+  def search_project_connect_people(org_id, project_id, connect_id, query) do
+    with {:ok, org, project} <- fetch_org_project(org_id, project_id),
+         :ok <- ensure_group_ready(project) do
+      :search_im_connect_people
+      |> call_optional_salix([org.salix_tenant_id, project.salix_group_id, connect_id, query])
+      |> connect_not_found()
+    end
+  end
+
+  defp members_write(org_id, project_id, connect_id, attrs, opts, args, fun) do
+    result =
+      with {:ok, org, project} <- fetch_org_project(org_id, project_id),
+           :ok <- ensure_group_ready(project) do
+        result = fun |> call_optional_salix(args.(org, project)) |> connect_not_found()
+
+        with {:ok, connect} <- result do
+          provider = safe_connect_field(connect, "provider")
+
+          maybe_record_project_im_audit(
+            project_im_action(provider, "updated"),
+            org,
+            project,
+            provider,
+            connect,
+            attrs,
+            opts,
+            resource_id: connect_id
+          )
+        end
+
+        result
+      end
+
+    maybe_record_project_im_write_attempt(
+      result,
+      project_im_action(nil, "updated"),
+      org_id,
+      project_id,
+      nil,
+      Map.put(attrs, "connect_id", connect_id),
+      opts
+    )
+
+    result
+  end
+
+  defp call_optional_salix(fun, args),
+    do: fun |> Client.call_optional(args) |> normalize_salix_result()
+
+  defp connect_not_found({:error, :not_found}), do: {:error, :connect_not_found}
+  defp connect_not_found(other), do: other
 
   @doc """
   Replaces the shortcuts of a QQ bot's command menu. Salix checks them, writes
@@ -969,7 +1125,9 @@ defmodule BridgeForTeams.ProjectIMConnects do
         ),
       "encrypt_key_configured" =>
         configured_from_connect?(connect, attrs, "encrypt_key_configured", "encrypt_key"),
-      "auto_join_public_channels" => Map.get(attrs, "auto_join_public_channels")
+      "auto_join_public_channels" => Map.get(attrs, "auto_join_public_channels"),
+      "member_scope" => Map.get(attrs, "member_scope"),
+      "member_grant" => Map.get(attrs, "member_grant")
     }
     |> compact_audit_metadata()
   end
@@ -1195,7 +1353,8 @@ defmodule BridgeForTeams.ProjectIMConnects do
       "client_secret" => credentials["client_secret"],
       "signing_secret" => credentials["signing_secret"],
       "inbound_agent_id" => credentials["inbound_agent_id"],
-      "inbound_tasks" => inbound_tasks(credentials["inbound_tasks"])
+      "inbound_tasks" => inbound_tasks(credentials["inbound_tasks"]),
+      "member_scope" => credentials["member_scope"]
     }
     |> drop_blank()
   end
@@ -1204,10 +1363,11 @@ defmodule BridgeForTeams.ProjectIMConnects do
   # other Feishu app is the org's binding, whose secrets Salix holds.
   defp payload(_org, _project, "feishu", credentials) do
     %{
-      "app_name" => nonblank(credentials["app_name"], "Bridge"),
+      "app_name" => nonblank(credentials["app_name"], "Comma"),
       "app_id" => credentials["app_id"],
       "events" => credentials["events"],
-      "app_secret" => if(credentials["events"] == "socket", do: credentials["app_secret"])
+      "app_secret" => if(credentials["events"] == "socket", do: credentials["app_secret"]),
+      "member_scope" => credentials["member_scope"]
     }
     |> drop_blank()
   end
@@ -1224,7 +1384,14 @@ defmodule BridgeForTeams.ProjectIMConnects do
   # connection (`"events" => "socket"`).
   defp payload(_org, _project, "lark", credentials) do
     credentials
-    |> Map.take(~w(app_id app_secret verification_token encrypt_key events))
+    |> Map.take(~w(app_id app_secret verification_token encrypt_key events member_scope))
+    |> drop_blank()
+  end
+
+  # A WeCom AI bot's Bot ID (`app_id`) and Secret (`app_secret`) belong to
+  # its connect.
+  defp payload(_org, _project, "wecom", credentials) do
+    %{"app_id" => credentials["app_id"], "app_secret" => credentials["app_secret"]}
     |> drop_blank()
   end
 
@@ -1238,12 +1405,14 @@ defmodule BridgeForTeams.ProjectIMConnects do
   defp create_fun("qq"), do: :create_qq_im_connect
   defp create_fun("lark"), do: :create_lark_im_connect
   defp create_fun("telegram"), do: :create_telegram_im_connect
+  defp create_fun("wecom"), do: :create_wecom_im_connect
 
   defp update_fun("slack"), do: :update_slack_im_connect
   defp update_fun("feishu"), do: :update_feishu_im_connect
   defp update_fun("qq"), do: :update_qq_im_connect
   defp update_fun("lark"), do: :update_lark_im_connect
   defp update_fun("telegram"), do: :update_telegram_im_connect
+  defp update_fun("wecom"), do: :update_wecom_im_connect
 
   defp active?(connect), do: is_nil(connect["disabled_at"])
 

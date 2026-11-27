@@ -79,7 +79,7 @@ defmodule SalixAgent.Tools.AsyncOps do
          "rather than reuse a position or address from earlier in the conversation. " <>
          "Location requests are unavailable in Comma Telegram. Ask for a city in a text reply instead. " <>
          "In the internal host app, creates a location request with an auto-wait for the user's response; " <>
-         "a phone with the app open and location allowed answers it without asking, and the result says when the position was read.",
+         "a phone or computer with the app open and location allowed answers it without asking, and the result says when the position was read.",
        &__MODULE__.request_location/2, @user_interaction_auto_wait_seconds,
        @visible_request_opts},
       {"tool_call.get_status", "Return the current status for a tool call by tool_call_id.",
@@ -262,7 +262,7 @@ defmodule SalixAgent.Tools.AsyncOps do
      )}
   end
 
-  # The person whose message this turn serves: their open phone answers without a card.
+  # The person whose message this turn serves: their open phone or computer answers without a card.
   defp location_surface(ctx) do
     case {SalixAgent.Tools.OAuth.conversation_surface(ctx), ctx[:ifc]} do
       {nil, _ifc} ->
@@ -361,7 +361,7 @@ defmodule SalixAgent.Tools.AsyncOps do
         |> Jason.encode!()
 
       true ->
-        Jason.encode!(record)
+        Jason.encode!(AsyncToolResults.model_record(record))
     end
   end
 
@@ -391,7 +391,10 @@ defmodule SalixAgent.Tools.AsyncOps do
         Jason.encode!(%{"status" => "not_found", "tool_call_id" => id})
 
       %{"status" => status} = record when status in ["completed", "failed", "cancelled"] ->
-        apply_result_diagnostic_contract(record, Jason.encode!(record))
+        apply_result_diagnostic_contract(
+          record,
+          Jason.encode!(AsyncToolResults.model_record(record))
+        )
 
       record ->
         _ = cancel_provider_tool_call(record, ctx, id, reason)

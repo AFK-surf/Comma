@@ -1,4 +1,5 @@
 import { HomeTasks } from "@comma/ui/components/home-tasks";
+import { openNativePlatformExternalUrl } from "../../nativePlatformActions";
 import { openTaskTarget } from "../tasks/openTaskTarget";
 import type { VisibleTaskStatusBucket } from "@comma/i18n";
 import { uiClock } from "@comma/ui/clock";
@@ -20,6 +21,7 @@ const MANUAL_SELECTION_HOLD_MS = 8_000;
 const FOLLOW_PRIORITY: readonly VisibleTaskStatusBucket[] = [
   "in_progress",
   "needs_review",
+  "loops",
   "done",
   "cancelled",
 ];
@@ -149,6 +151,11 @@ export const HomeTasksRail = memo(function HomeTasksRail({
 
   const openTask = useCallback(
     (task: TaskViewModel) => {
+      // A still.fail chat opens at its page in still.fail: no app reaches its station.
+      if (task.url) {
+        void openNativePlatformExternalUrl(task.url);
+        return;
+      }
       void navigate(openTaskTarget(task));
     },
     [navigate]

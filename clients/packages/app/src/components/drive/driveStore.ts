@@ -309,17 +309,32 @@ export const formatDriveFileSize = (sizeBytes: number) => {
 
 export type DriveFileKind = "audio" | "document" | "image" | "text" | "video";
 
-const imageExtensions = new Set(["avif", "gif", "jpeg", "jpg", "png", "svg", "webp"]);
+// Browser <img> cannot decode TIFF, so `.tif`/`.tiff` stay "document" here (file glyph in lists)
+// while FilePreviewPanel decodes them via TiffFilePreview.
+const imageExtensions = new Set([
+  "avif",
+  "bmp",
+  "gif",
+  "ico",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+]);
 const audioExtensions = new Set(["aac", "flac", "m4a", "mp3", "ogg", "wav"]);
 const videoExtensions = new Set(["m4v", "mov", "mp4", "webm"]);
 /** Read as text in the preview; anything else without a media type is a document. */
 const textExtensions = new Set([
   "csv",
   "json",
+  "jsonl",
   "log",
   "markdown",
   "md",
+  "ndjson",
   "toml",
+  "tsv",
   "txt",
   "xml",
   "yaml",
@@ -334,11 +349,15 @@ const textExtensions = new Set([
  */
 const imageMimeByExtension: Record<string, string> = {
   avif: "image/avif",
+  bmp: "image/bmp",
   gif: "image/gif",
+  ico: "image/x-icon",
   jpeg: "image/jpeg",
   jpg: "image/jpeg",
   png: "image/png",
   svg: "image/svg+xml",
+  tif: "image/tiff",
+  tiff: "image/tiff",
   webp: "image/webp",
 };
 
@@ -348,11 +367,12 @@ export const driveUploadMimeType = (name: string, pickedType: string) =>
 export const driveFileKind = (
   file: Pick<DriveFile, "blob" | "name">
 ): DriveFileKind => {
-  const mime = file.blob?.type ?? "";
-  if (mime.startsWith("image/")) return "image";
+  const mime = file.blob?.type.split(";")[0]?.trim().toLowerCase() ?? "";
+  const extension = driveFileExtension(file.name);
+  const isTiff = mime === "image/tiff" || extension === "tif" || extension === "tiff";
+  if (!isTiff && mime.startsWith("image/")) return "image";
   if (mime.startsWith("audio/")) return "audio";
   if (mime.startsWith("video/")) return "video";
-  const extension = driveFileExtension(file.name);
   if (imageExtensions.has(extension)) return "image";
   if (audioExtensions.has(extension)) return "audio";
   if (videoExtensions.has(extension)) return "video";

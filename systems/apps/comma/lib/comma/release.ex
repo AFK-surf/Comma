@@ -33,11 +33,20 @@ defmodule Comma.Release do
         is_map(decoded) and decoded["stage"] == "conversation_search" ->
           open_conversation_search()
 
+        is_map(decoded) and decoded["stage"] == "conversation_search_titles" ->
+          conversation_search_titles_page()
+
         is_map(decoded) and decoded["stage"] == "task_files" ->
           open_task_files()
 
+        is_map(decoded) and decoded["stage"] == "task_feed" ->
+          open_task_feed()
+
         is_map(decoded) and decoded["stage"] == "cloud_vm_cutover" ->
           cloud_vm_cutover_page()
+
+        is_map(decoded) and decoded["stage"] == "tenant_directory" ->
+          tenant_directory_page()
 
         is_map(decoded) and decoded["stage"] == "workspace_provisioning" ->
           retry_workspace_provisioning_page(decoded["source"])
@@ -144,17 +153,41 @@ defmodule Comma.Release do
     if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(search) do
       case apply(search, :open_after_rollout, [authority]) do
         {:ok, :opened} ->
-          {:ok, %{processed: 1, next_cursor: %{"stage" => "task_files"}}}
+          {:ok, %{processed: 1, next_cursor: %{"stage" => "conversation_search_titles"}}}
 
         {:ok, _state} ->
-          {:ok, %{processed: 0, next_cursor: %{"stage" => "task_files"}}}
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "conversation_search_titles"}}}
 
         {:error, reason} ->
           IO.puts(:stderr, "Task search was not opened: #{inspect(reason)}")
-          {:ok, %{processed: 0, next_cursor: %{"stage" => "task_files"}}}
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "conversation_search_titles"}}}
       end
     else
       {:ok, %{processed: 0, next_cursor: %{"stage" => "workspace_provisioning"}}}
+    end
+  end
+
+  # Task search titles get their one-character grams
+  # (`SalixStore.ConversationSearch.title_unigrams_after_rollout_page/1`): core
+  # rollout has succeeded, so no server of the release before is left to write
+  # a title without them. Page by page; once done, it does nothing. A page that
+  # fails pauses the job, which runs the same page again.
+  defp conversation_search_titles_page do
+    search = Module.concat([SalixStore, ConversationSearch])
+
+    if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(search) do
+      case apply(search, :title_unigrams_after_rollout_page, []) do
+        {:ok, %{processed: processed, done: true}} ->
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "task_files"}}}
+
+        {:ok, %{processed: processed, done: false}} ->
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "conversation_search_titles"}}}
+
+        {:error, reason} ->
+          {:error, {:conversation_search_titles, reason}}
+      end
+    else
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "task_files"}}}
     end
   end
 
@@ -171,13 +204,38 @@ defmodule Comma.Release do
     if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(files) do
       case apply(files, :open_after_rollout, [authority]) do
         {:ok, :opened} ->
+          {:ok, %{processed: 1, next_cursor: %{"stage" => "task_feed"}}}
+
+        {:ok, _state} ->
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "task_feed"}}}
+
+        {:error, reason} ->
+          IO.puts(:stderr, "Task files were not opened: #{inspect(reason)}")
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "task_feed"}}}
+      end
+    else
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "task_feed"}}}
+    end
+  end
+
+  # The Task Feed projection (`SalixIM.TaskFeed`): core rollout has succeeded,
+  # so every server projects live writes. The release opens the bounded
+  # historical backfill (`SalixIM.TaskFeedBackfill`); failure does not block
+  # the release.
+  defp open_task_feed do
+    feed = Module.concat([SalixIM, TaskFeed])
+    authority = "comma-release:" <> (System.get_env("COMMA_REVISION") || "unknown")
+
+    if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(feed) do
+      case apply(feed, :open_after_rollout, [authority]) do
+        {:ok, :opened} ->
           {:ok, %{processed: 1, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
 
         {:ok, _state} ->
           {:ok, %{processed: 0, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
 
         {:error, reason} ->
-          IO.puts(:stderr, "Task files were not opened: #{inspect(reason)}")
+          IO.puts(:stderr, "Task feed backfill was not opened: #{inspect(reason)}")
           {:ok, %{processed: 0, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
       end
     else
@@ -196,7 +254,7 @@ defmodule Comma.Release do
     if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(cutover) do
       case apply(cutover, :after_rollout_page, []) do
         {:ok, %{processed: processed, done: true}} ->
-          {:ok, %{processed: processed, next_cursor: %{"stage" => "workspace_provisioning"}}}
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "tenant_directory"}}}
 
         {:ok, %{processed: processed, done: false}} ->
           {:ok, %{processed: processed, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
@@ -205,9 +263,113 @@ defmodule Comma.Release do
           {:error, {:cloud_vm_cutover, reason}}
       end
     else
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "tenant_directory"}}}
+    end
+  end
+
+  # The Tenant directory backfill (`SalixWeb.Migrations.TenantDirectoryBackfill`):
+  # core rollout has succeeded, so every Pod that makes a Tenant also writes
+  # its directory row; the backfill fills the rows of the Tenants made before,
+  # page by page, and records which product made each one. Once done, it does
+  # nothing. A node without Salix has no directory. A page that fails pauses
+  # the job, which runs the same page again.
+  defp tenant_directory_page do
+    backfill = Module.concat([SalixWeb, Migrations, TenantDirectoryBackfill])
+
+    if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(backfill) do
+      case apply(backfill, :after_rollout_page, [&tenant_products/1]) do
+        {:ok, %{processed: processed, done: true}} ->
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "workspace_provisioning"}}}
+
+        {:ok, %{processed: processed, done: false}} ->
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "tenant_directory"}}}
+
+        {:error, reason} ->
+          {:error, {:tenant_directory, reason}}
+      end
+    else
       {:ok, %{processed: 0, next_cursor: %{"stage" => "workspace_provisioning"}}}
     end
   end
+
+  @doc false
+  # The product that made each of one page of Tenant ids, from the product
+  # stores' own Tenant mappings, each read with one indexed query: a standard
+  # Comma Workspace's Tenant, the guest policy's Tenant and every router-only
+  # (guest) Tenant are Comma's; an Organization's Tenant is Comma for Teams'.
+  # A store this node does not run maps nothing.
+  def tenant_products(tenant_ids) when is_list(tenant_ids) do
+    enabled = enabled_subsystems()
+    comma = comma_tenant_ids(tenant_ids, enabled)
+    cft = cft_tenant_ids(tenant_ids, enabled)
+
+    {:ok,
+     Map.new(tenant_ids, fn id ->
+       product =
+         cond do
+           MapSet.member?(comma, id) -> "comma"
+           MapSet.member?(cft, id) -> "cft"
+           true -> nil
+         end
+
+       {id, product}
+     end)}
+  rescue
+    exception -> {:error, {:tenant_products, Exception.message(exception)}}
+  end
+
+  defp comma_tenant_ids([], _enabled), do: MapSet.new()
+
+  defp comma_tenant_ids(tenant_ids, enabled) do
+    repo = Module.concat([Comma, Repo])
+    profiles = Module.concat([SalixStore, TenantProfiles])
+    guests = apply(profiles, :router_only_ids, [tenant_ids])
+
+    if enabled?(:comma_product, enabled) and SystemsRuntime.Proc.whereis(repo) != nil do
+      %{rows: workspace_rows} =
+        sql_query!(
+          repo,
+          "SELECT salix_tenant_id FROM comma_workspaces WHERE kind = 'standard' AND salix_tenant_id = ANY($1)",
+          [tenant_ids]
+        )
+
+      %{rows: policy_rows} =
+        sql_query!(
+          repo,
+          "SELECT salix_tenant_id FROM comma_guest_policy WHERE id = 1 AND salix_tenant_id = ANY($1)",
+          [tenant_ids]
+        )
+
+      (workspace_rows ++ policy_rows)
+      |> Enum.map(&hd/1)
+      |> MapSet.new()
+      |> MapSet.union(guests)
+    else
+      guests
+    end
+  end
+
+  defp cft_tenant_ids([], _enabled), do: MapSet.new()
+
+  defp cft_tenant_ids(tenant_ids, enabled) do
+    repo = Module.concat([BridgeForTeams, Repo])
+
+    if enabled?(:bridge_for_teams, enabled) and SystemsRuntime.Proc.whereis(repo) != nil do
+      %{rows: rows} =
+        sql_query!(
+          repo,
+          "SELECT salix_tenant_id FROM organizations WHERE salix_tenant_id = ANY($1)",
+          [tenant_ids]
+        )
+
+      rows |> Enum.map(&hd/1) |> MapSet.new()
+    else
+      MapSet.new()
+    end
+  end
+
+  defp sql_query!(repo, sql, params),
+    do: apply(Module.concat([Ecto, Adapters, SQL]), :query!, [repo, sql, params])
 
   # Queue recovery after core rollout. Billing and Salix are rechecked by the
   # worker; this page does not wait for any provider, including Synchronicity.
@@ -458,6 +620,28 @@ defmodule Comma.Release do
 
       {:ok, summary} ->
         raise "member identity backfill failed: #{apply(Jason, :encode!, [summary])}"
+    end
+  end
+
+  @doc """
+  One-time serving-node repair for Tasks corrupted to `status = "archive"`.
+  Defaults to `dry_run: true` and `target_status: "completed"`:
+
+      bin/comma rpc 'Comma.Release.repair_archive_typo_tasks(dry_run: true)'
+      bin/comma rpc 'Comma.Release.repair_archive_typo_tasks(dry_run: false)'
+  """
+  @spec repair_archive_typo_tasks(keyword()) :: {:ok, map()}
+  def repair_archive_typo_tasks(opts \\ []) do
+    case apply(Module.concat([SalixIM, Migrations, RepairArchiveTypoTasks]), :run, [opts]) do
+      {:ok, %{"failed" => []} = summary} ->
+        IO.puts("repair archive typo tasks: #{apply(Jason, :encode!, [summary])}")
+        {:ok, summary}
+
+      {:ok, summary} ->
+        raise "repair archive typo tasks failed: #{apply(Jason, :encode!, [summary])}"
+
+      {:error, reason} ->
+        raise "repair archive typo tasks failed: #{inspect(reason)}"
     end
   end
 
@@ -764,6 +948,11 @@ defmodule Comma.Release do
     Application.load(:comma_core)
     catalog = Module.concat([Comma, Billing, PricingV1]) |> apply(:catalog, [])
     Module.concat([BillingStripe, Release]) |> apply(:sync_portal, [catalog, opts])
+  end
+
+  @doc "Converge the Teams quarterly price and its local mapping through an explicit ops command."
+  def sync_teams_billing(opts \\ []) do
+    Module.concat([BillingStripe, Release]) |> apply(:sync_teams_catalog, [opts])
   end
 
   defp sync_local_billing_catalog(catalog, opts) do

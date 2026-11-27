@@ -27,13 +27,17 @@ import { RoutingTransfer } from "./routing_transfer.mjs";
 
 const Hooks = { ResponsiveNavigation, CommandDraft, TemplateDraft, FloatingDropdown, PersistentDetails, RoutingTransfer };
 
+// A paged list: when `data-cursor` changes, scroll the `<main>` container up
+// until the element's top is in view again (never down).
 Hooks.CatalogPage = {
   mounted() { this.cursor = this.el.dataset.cursor; },
   updated() {
     if (this.cursor !== this.el.dataset.cursor) {
       this.cursor = this.el.dataset.cursor;
       const main = this.el.closest("main");
-      if (main) main.scrollTop += this.el.getBoundingClientRect().top - main.getBoundingClientRect().top - 16;
+      if (!main) return;
+      const offset = this.el.getBoundingClientRect().top - main.getBoundingClientRect().top - 16;
+      if (offset < 0) main.scrollTop += offset;
     }
   },
 };

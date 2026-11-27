@@ -224,7 +224,6 @@ defmodule SalixWeb.ConnectorScopeTest do
   end
 
   describe "credential lifecycle" do
-
     test "stable device reuse requires the registry owner to match", %{
       tenant_id: tenant_id,
       group_id: group_id

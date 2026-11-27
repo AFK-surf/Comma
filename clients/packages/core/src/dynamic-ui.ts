@@ -10,6 +10,7 @@
 import { CoreError, type Topic, type Value } from "@comma/core-kernel";
 import { Duration, Effect, Option, Result } from "effect";
 import { route } from "./api.ts";
+import { conversationBasePath } from "./collaborations.ts";
 import type { DynamicUiValue } from "./contract.ts";
 import { type Ctx, Live } from "./ctx.ts";
 
@@ -84,7 +85,8 @@ export class DynamicUis {
 
   #read(topic: Topic): Effect.Effect<void> {
     const ctx = this.#ctx;
-    const path = route`/v1/comma/groups/${String(topic.group)}/conversations/${String(topic.conversation)}/messages/${String(topic.message)}/attachments/${String(topic.index)}`;
+    // A Task together the account joined reads its cards by the member's own route.
+    const path = `${conversationBasePath(ctx, String(topic.group), String(topic.conversation))}${route`/messages/${String(topic.message)}/attachments/${String(topic.index)}`}`;
     return Effect.gen({ self: this }, function* () {
       const account = yield* ctx.session.account().pipe(Effect.option);
       if (Option.isNone(account)) return;

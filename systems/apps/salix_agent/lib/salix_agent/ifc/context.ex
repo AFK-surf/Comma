@@ -9,9 +9,8 @@ defmodule SalixAgent.IFC.Context do
   encoding) so it can cross the external-runtime and JavaScript host seams and
   be archived verbatim.
 
-  Nothing is filtered. The model sees the whole context (§7); this structure
-  exists so that an *effect* can be checked against what it says it used, not
-  so that anything can be withheld from the prompt.
+  Effect checks retain the complete source index. Hard-mode model requests
+  use a separate audience-filtered projection with request-local aliases.
 
   Labels come from three places, in order:
 
@@ -52,6 +51,19 @@ defmodule SalixAgent.IFC.Context do
        opts |> Keyword.get(:source_message_ids, []) |> List.wrap(),
        Keyword.get(opts, :trusted_origin)}
     )
+    |> with_summary(handle(session))
+  end
+
+  defp with_summary(wire, session) do
+    case {InternalSession.get(session, :summary),
+          InternalSession.get(session, :summary_ifc_view_label)} do
+      {summary, label} when is_binary(summary) and is_list(label) ->
+        item = %{"ref" => "src:a-0", "label" => label, "integrity" => "data", "principal" => nil}
+        Map.update!(wire, "items", &[item | &1])
+
+      _ ->
+        wire
+    end
   end
 
   @doc "Use a provider-validated delegated command for one effect, without changing the transcript."
@@ -211,9 +223,9 @@ defmodule SalixAgent.IFC.Context do
   its sources only if the model declared it, which it does exactly when the
   DM's own content is in the answer (§4).
 
-  A round that declares nothing anywhere — no effect at all, or an effect
-  with `sources: "context"` — joins the whole context, which is the same
-  fail-closed reading `sources: "context"` gets at the effect.
+  A transcript round with no usable declarations joins the whole context.
+  This also labels malformed or historical records conservatively. Enabled
+  tool admission rejects missing or context declarations before authorization.
   """
   @spec round_label(wire(), [term()]) :: [String.t()]
   def round_label(wire, declarations) when is_list(declarations) do

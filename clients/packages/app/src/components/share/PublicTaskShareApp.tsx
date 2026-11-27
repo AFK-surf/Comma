@@ -25,8 +25,10 @@ import {
   passiveInlineTaskLinkAdapter,
 } from "../chat/thread/inline/MessageInlineElements";
 import { useTaskPanelFold, useTaskPanelOpen } from "../chat/tasks/TaskPanelFold";
+import { DocumentFilePreview } from "../file-preview/DocumentFilePreview";
 import {
   PublicShareError,
+  type PublicDocumentSummary,
   type PublicShareArtifact,
   type PublicShareClient,
   type PublicShareFailure,
@@ -37,6 +39,7 @@ import {
 type ViewState =
   | { kind: "loading" }
   | { kind: "failed"; reason: PublicShareFailure }
+  | { kind: "document"; summary: PublicDocumentSummary; blob: Blob }
   | {
       kind: "ready";
       summary: PublicShareSummary;
@@ -88,10 +91,19 @@ export function PublicTaskShareApp({ client }: { client: PublicShareClient }) {
   const load = useCallback(
     (signal?: AbortSignal) => {
       setState({ kind: "loading" });
-      Promise.all([client.summary(signal), readPages(0, signal)])
-        .then(([summary, page]) => {
+      // A Task's first messages are asked for with its summary. A document link has none: its ask fails, and
+      // the summary says so.
+      const firstPage = readPages(0, signal);
+      firstPage.catch(noop);
+      client
+        .summary(signal)
+        .then(async (summary) => {
+          const next: ViewState =
+            "kind" in summary
+              ? { kind: "document", summary, blob: await client.document(signal) }
+              : { kind: "ready", summary, ...(await firstPage) };
           if (signal?.aborted) return;
-          setState({ kind: "ready", summary, ...page });
+          setState(next);
         })
         .catch((error: unknown) => {
           if (signal?.aborted) return;
@@ -109,6 +121,7 @@ export function PublicTaskShareApp({ client }: { client: PublicShareClient }) {
 
   useEffect(() => {
     if (state.kind === "ready") document.title = state.summary.title;
+    if (state.kind === "document") document.title = state.summary.file_name;
   }, [state]);
 
   const loadMore = async () => {
@@ -166,6 +179,8 @@ export function PublicTaskShareApp({ client }: { client: PublicShareClient }) {
             </Button>
           )}
         </section>
+      ) : state.kind === "document" ? (
+        <SharedDocument blob={state.blob} summary={state.summary} />
       ) : (
         <SharedTask
           client={client}
@@ -177,6 +192,38 @@ export function PublicTaskShareApp({ client }: { client: PublicShareClient }) {
         />
       )}
     </ShareFrame>
+  );
+}
+
+/** One shared document, read as its page: its name and Download over it. */
+function SharedDocument({
+  blob,
+  summary,
+}: {
+  blob: Blob;
+  summary: PublicDocumentSummary;
+}) {
+  const messages = useCommaMessages();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="share-view-document">
+      <header className="flex shrink-0 items-center gap-md border-b-[length:var(--border-width-0-5)] border-primary px-xl py-sm">
+        <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-primary">
+          {summary.file_name}
+        </h1>
+        <Button
+          hierarchy="secondary-gray"
+          onPress={() => saveBlob(blob, summary.file_name)}
+          size="xs"
+        >
+          {messages.share_view_download()}
+        </Button>
+      </header>
+      <DocumentFilePreview
+        blob={blob}
+        fileName={summary.file_name}
+        onOpenBrowser={(url) => window.open(url, "_blank", "noopener,noreferrer")}
+      />
+    </div>
   );
 }
 

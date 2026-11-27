@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { hasRecommendationLinkPreview } from "../useLinkPreview";
 
 describe("hasRecommendationLinkPreview", () => {
-  it("matches the server's rich link shapes and never Gmail", () => {
+  it("matches the server's rich link shapes including Outlook and Gmail", () => {
     for (const href of [
+      "https://www.exxactcorp.com/Exxact-TS4-131188",
+      "https://github.com/AFK-surf/Comma/issues/845",
+      "http://github.com/AFK-surf/Comma/pull/845",
       "https://github.com/AFK-surf/Comma/pull/845",
       "https://github.com/AFK-surf/Comma/pull/845/files?x=1",
       "https://linear.app/comma/issue/COMMA-143",
@@ -23,13 +26,16 @@ describe("hasRecommendationLinkPreview", () => {
       "https://drive.google.com/open?usp=drive_link&id=1AbC_dEf-9",
       "https://outlook.office.com/mail/id/AAMkADk",
       "https://outlook.office365.com/calendar/item/AAMkADk",
+      "https://outlook.live.com/owa/?ItemID=AQMkADA&exvsurl=1",
+      "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
     ]) {
       expect(hasRecommendationLinkPreview(href), href).toBe(true);
     }
     for (const href of [
-      "https://github.com/AFK-surf/Comma/issues/845",
-      "http://github.com/AFK-surf/Comma/pull/845",
-      "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
+      "file:///C:/private.txt",
+      "https://user:password@example.com/",
+      "https://mail.google.com",
+      "http://mail.google.com/mail/#all/198f2ab4c7d3e011",
       "https://calendar.google.com",
       "http://comma-local.slack.com/archives/C01234567/p1786900000000000",
       "https://comma-local.slack.com/archives/C01234567",

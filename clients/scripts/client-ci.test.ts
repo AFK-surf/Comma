@@ -6,6 +6,7 @@ import {
   clientCiChanged,
   computerUseCiChanged,
   electronCiChanged,
+  raycastCiChanged,
   synchCiChanged,
   validateClientGate,
   storybookChanged,
@@ -93,6 +94,21 @@ describe("client CI CLI", () => {
         "clients/packages/ui/src/button.tsx",
       ])
     ).toBe(true);
+  });
+
+  it("builds the Raycast extension only for its own files and the CI that runs it", () => {
+    for (const input of [
+      "clients/apps/raycast/src/ask-comma.ts",
+      "clients/apps/raycast/src/lib/ask.ts",
+      "clients/apps/raycast/package-lock.json",
+      "clients/scripts/client-ci-lib.mjs",
+      ".github/workflows/client-checks.yml",
+    ]) {
+      expect(raycastCiChanged([input])).toBe(true);
+    }
+    expect(raycastCiChanged(["clients/apps/raycast/README.md"])).toBe(false);
+    expect(raycastCiChanged(["clients/apps/electron/src/main.ts"])).toBe(false);
+    expect(raycastCiChanged(["pnpm-lock.yaml"])).toBe(false);
   });
 
   it("runs the Synchronicity smoke only for its pinned binary and client", () => {

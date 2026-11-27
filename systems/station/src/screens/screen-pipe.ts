@@ -237,10 +237,12 @@ export class HelperView implements ScreenView {
         try {
           said = JSON.parse(payload.toString());
         } catch {}
-        const { orientation, pose } = said ?? {};
+        const { orientation, pose, hinge, panel } = said ?? {};
         this.#stands = {
           ...(orientation === 0 || orientation === 90 || orientation === 180 || orientation === 270 ? { orientation } : {}),
           ...(pose === "closed" || pose === "book" || pose === "open" ? { pose } : {}),
+          ...(typeof hinge === "number" && hinge >= 0 && hinge <= 180 ? { hinge } : {}),
+          ...(panel === true ? { panel: true as const } : {}),
         };
         this.#hears?.(this.#stands);
         return;

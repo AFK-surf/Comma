@@ -11,7 +11,7 @@ import {
 } from "../../nativePlatformActions";
 
 /** Sources whose loopback callback the desktop app can receive itself. */
-const nativeSources = new Set(["codex", "claude"]);
+const nativeSources = new Set(["codex", "claude", "gemini"]);
 
 export type SignInState = {
   attempt: SubscriptionSignIn | undefined;
@@ -24,7 +24,7 @@ export type SignInState = {
 
 /**
  * Signs a subscription in through OAuth. In the desktop app the browser
- * returns Codex and Claude to the core's loopback listener
+ * returns Codex, Claude and Gemini to the core's loopback listener
  * (`models.signIn.loopback`, which waits for it); elsewhere the core starts
  * the sign-in: a device code, which the core waits on, or a callback code the
  * reader pastes back. `onComplete` receives the new account when the
@@ -116,7 +116,7 @@ export function useSubscriptionSignIn(
             "models.signIn.loopback",
             {
               workspace,
-              provider: source as "codex" | "claude",
+              provider: source as "codex" | "claude" | "gemini",
               ...(reconnect
                 ? { account: reconnect.account_id, version: reconnect.version }
                 : {}),

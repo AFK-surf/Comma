@@ -619,7 +619,7 @@ defmodule SalixAgent.SubscriptionStore do
 
   @doc """
   The enabled accounts a Workload's station can run Claude or Codex with: their
-  subscriptions, and API keys of the Anthropic protocol (Claude's). First
+  subscriptions that need no new sign-in (`status` `ok`), and API keys of the Anthropic protocol (Claude's). First
   #{@station_accounts}, by id.
   """
   def station_accounts(tenant) do
@@ -627,7 +627,8 @@ defmodule SalixAgent.SubscriptionStore do
       """
       SELECT value,version FROM subscription_accounts
       WHERE tenant_id=$1 AND value->>'disabled'='false'
-        AND ((value->>'credential'='subscription' AND value->>'source' IN ('claude','codex'))
+        AND ((value->>'credential'='subscription' AND value->>'source' IN ('claude','codex')
+            AND value->>'status'='ok')
           OR (value->>'credential'='api_key' AND value->>'protocol'='anthropic'))
       ORDER BY id LIMIT #{@station_accounts}
       """,
@@ -691,6 +692,33 @@ defmodule SalixAgent.SubscriptionStore do
          do: SalixAgent.Profiles.rank(records, [keep_unusable: true] ++ opts),
          else: []
        )}
+    end
+  end
+
+  @doc "A signed-out subscription that would otherwise serve this model, for recovery guidance."
+  def reauthorization_account(tenant, provider, model, only, catalog_model) do
+    sql = """
+    SELECT value FROM subscription_accounts
+    WHERE tenant_id=$1 AND value->>'source'=$2
+      AND value->>'credential'='subscription' AND value->>'disabled'='false'
+      AND value->>'status'='login'
+      AND value->>'refresh_deadline' IS NULL
+      AND ($3::text IS NULL OR id=$3)
+    ORDER BY id LIMIT #{@candidate_scan}
+    """
+
+    with {:ok, %{rows: rows}} <- query(sql, [tenant, provider, only]) do
+      # This projection checks model policy only. It never authorizes dispatch.
+      records = Enum.map(rows, fn [record] -> Map.put(record, "status", "ok") end)
+
+      {:ok,
+       records
+       |> SalixAgent.Profiles.rank(
+         model: catalog_model,
+         provider_model: model,
+         keep_unusable: true
+       )
+       |> List.first()}
     end
   end
 

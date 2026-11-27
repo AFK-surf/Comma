@@ -22,6 +22,7 @@ export type SingleSliderProps = SliderBaseProps & {
   range?: false;
   value?: number;
   defaultValue?: number;
+  ariaLabel?: string;
   onValueChange?: (value: number) => void;
 };
 
@@ -47,6 +48,7 @@ const SingleSlider = ({
   disabled = false,
   className,
   id,
+  ariaLabel = "Slider value",
   onValueChange,
 }: SingleSliderProps) => {
   const generatedId = useId();
@@ -105,7 +107,7 @@ const SingleSlider = ({
           max={max}
           label={formatValue(currentValue)}
           labelPosition="none"
-          ariaLabel="Slider value"
+          ariaLabel={ariaLabel}
           disabled={disabled}
           onKeyDown={handleThumbKeyDown}
           onPointerDown={handleThumbPointerDown}

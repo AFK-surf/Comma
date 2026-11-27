@@ -500,6 +500,10 @@ export function decorateElectronE2eAppPreferencesProvider(
     openNotificationSettings: (input) => provider.openNotificationSettings(input),
     requestNotificationAuthorization: (input) =>
       provider.requestNotificationAuthorization(input),
+    requestLocationAuthorization: (input) =>
+      provider.requestLocationAuthorization(input),
+    requestMicrophoneAuthorization: (input) =>
+      provider.requestMicrophoneAuthorization(input),
     refreshLaunchAtLogin: (input) => provider.refreshLaunchAtLogin(input),
     async update(input) {
       const gateThisAcknowledgement = gateNextUpdateAcknowledgement;

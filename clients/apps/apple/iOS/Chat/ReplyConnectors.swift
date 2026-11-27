@@ -9,13 +9,29 @@ extension ChatTranscriptView {
     /// Geometry from `MessageReplyLines.tsx`: avatar-to-avatar lines run on the avatar centre line;
     /// a user target gets a short rounded cap; hidden-identity rows connect at their bubble edges.
     func connectors(anchors: [ChatAnchorID: Anchor<CGRect>], geometry: GeometryProxy) -> [ReplyConnector] {
+        Self.connectors(
+            rows: rows,
+            showsIdentity: showsIdentity,
+            rects: anchors.mapValues { geometry[$0] },
+            isNew: isNew
+        )
+    }
+
+    static func connectors(
+        rows: [ChatRow],
+        showsIdentity: (ChatRow) -> Bool,
+        rects: [ChatAnchorID: CGRect],
+        isNew: (ChatRow) -> Bool = { _ in false }
+    ) -> [ReplyConnector] {
         let index = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         func rect(_ id: String, _ part: ChatAnchorID.Part) -> CGRect? {
-            anchors[ChatAnchorID(row: id, part: part)].map { geometry[$0] }
+            guard let frame = rects[ChatAnchorID(row: id, part: part)],
+                  frame.width > 0, frame.height > 0 else { return nil }
+            return frame
         }
         func anchor(_ id: String, start: Bool) -> Point? {
             guard let row = index[id].map({ rows[$0] }) else { return nil }
-            if !row.isUser && !showsIdentity(row), let content = rect(id, .content) {
+            if !row.isMine && !showsIdentity(row), let content = rect(id, .content) {
                 return Point(x: content.minX + 13, y: start ? content.minY - 8 : content.maxY + 8, radius: 0, bubbleEdge: true)
             }
             if let avatar = rect(id, .avatar) {
@@ -29,24 +45,20 @@ extension ChatTranscriptView {
             guard let reply = row.reply else { continue }
             let sourceID = showsIdentity(row) ? reply.sourceAnchorID : row.id
             guard let source = anchor(sourceID, start: true) else { continue }
-            var target: Point?
+            let target: Point?
             switch reply.presentation {
             case .line:
                 target = anchor(reply.targetID, start: false)
-                // An unmounted earlier target is above the viewport: reach the top of the content.
-                if target == nil, let from = index[reply.targetID], let to = index[row.id], from < to {
-                    target = Point(x: source.x, y: 0, radius: 0, bubbleEdge: true)
-                }
             case .preview:
-                if let preview = rect(row.id, .preview) {
-                    target = Point(x: preview.minX + 13, y: preview.maxY, radius: 0, bubbleEdge: true)
+                target = rect(row.id, .preview).map { preview in
+                    Point(x: preview.minX + 13, y: preview.maxY, radius: 0, bubbleEdge: true)
                 }
             }
             guard let target else { continue }
             let top = target.y + target.radius
             // A member's reply sits on the other side: the line drops from under the message it answers and turns
             // toward the reply at its height in a short arm, the mirror of an Agent's hook to a member's prompt.
-            if row.isUser {
+            if row.isMine {
                 guard let content = rect(row.id, .content) else { continue }
                 let y = content.midY
                 guard y > top else { continue }

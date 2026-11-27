@@ -62,14 +62,20 @@ export function NotchTaskSync() {
     () => toNotchTaskItems(tasks, messages.tasks_in_progress()),
     [messages, tasks]
   );
+  // An active Loop waits between runs: the Notch never lists it, but its Worker is followed so that the Task
+  // cards show a run while it executes.
+  const loopTasks = useMemo(
+    () => toNotchLoopTaskItems(tasks, messages.tasks_in_progress()),
+    [messages, tasks]
+  );
   const taskSteps = useContext(TaskStepsContext);
   const watched = useSyncExternalStore(
     taskSteps?.subscribe ?? noSubscription,
     () => taskSteps?.watched() ?? false
   );
   const followed = useMemo(
-    () => (isDesktop || watched ? notchStepFeedTasks(runningTasks) : []),
-    [isDesktop, runningTasks, watched]
+    () => (isDesktop || watched ? notchStepFeedTasks(runningTasks, loopTasks) : []),
+    [isDesktop, loopTasks, runningTasks, watched]
   );
   const [steps, setSteps] = useState(NO_STEPS);
   const reportStep = useCallback((taskId: string, words: string | undefined) => {
@@ -143,7 +149,12 @@ export function NotchTaskSync() {
   return (
     <>
       {followed.map((task) => (
-        <NotchTaskStepFeed key={task.id} task={task} onStep={reportStep} />
+        <NotchTaskStepFeed
+          key={task.id}
+          task={task}
+          onStep={reportStep}
+          whileWorking={task.loop === true}
+        />
       ))}
     </>
   );
@@ -155,9 +166,11 @@ type ReportStep = (taskId: string, words: string | undefined) => void;
 function NotchTaskStepFeed({
   task,
   onStep,
+  whileWorking,
 }: {
   task: NotchTaskItem;
   onStep: ReportStep;
+  whileWorking: boolean;
 }) {
   const productLease = useChatProductLease();
   const ids = useMemo(() => [task.conversationId], [task.conversationId]);
@@ -170,6 +183,7 @@ function NotchTaskStepFeed({
       conversationId={task.conversationId}
       participantId={worker.participantId}
       onStep={onStep}
+      whileWorking={whileWorking}
     />
   );
 }
@@ -180,29 +194,46 @@ function NotchWorkerStep({
   conversationId,
   participantId,
   onStep,
+  whileWorking,
 }: {
   taskId: string;
   groupId: string;
   conversationId: string;
   participantId: string;
   onStep: ReportStep;
+  /** A Loop's last step stays in its history between runs: it counts only while the Worker works. */
+  whileWorking: boolean;
 }) {
   const history = useMemo(
     () => ({ groupId, conversationId, participantId }),
     [groupId, conversationId, participantId]
   );
-  const words = useWorkerSteps(history).shown?.words;
+  const view = useWorkerSteps(history);
+  const words = whileWorking && !view.working ? undefined : view.shown?.words;
   useEffect(() => onStep(taskId, words), [onStep, taskId, words]);
   useEffect(() => () => onStep(taskId, undefined), [onStep, taskId]);
   return null;
 }
 
-/** The running Tasks whose Workers the Notch follows: the newest first. */
-export function notchStepFeedTasks(tasks: readonly NotchTaskItem[]): NotchTaskItem[] {
-  return tasks
-    .toSorted((left, right) => right.updatedAt - left.updatedAt)
-    .slice(0, MAX_NOTCH_STEP_FEEDS);
+const newestFirst = (left: NotchTaskItem, right: NotchTaskItem) =>
+  right.updatedAt - left.updatedAt;
+
+/**
+ * The Tasks whose Workers the Notch follows: running Tasks first, then active
+ * Loops waiting for a run, each the newest first.
+ */
+export function notchStepFeedTasks(
+  tasks: readonly NotchTaskItem[],
+  loops: readonly LoopNotchTaskItem[] = []
+): LoopNotchTaskItem[] {
+  return [...tasks.toSorted(newestFirst), ...loops.toSorted(newestFirst)].slice(
+    0,
+    MAX_NOTCH_STEP_FEEDS
+  );
 }
+
+/** A Task whose Worker the Notch follows; `loop` marks an active Loop, followed only for the Task cards. */
+export type LoopNotchTaskItem = NotchTaskItem & { loop?: true };
 
 /** Puts each followed Worker's latest step under its Task's title. */
 export function withWorkerSteps(
@@ -245,8 +276,33 @@ export function toNotchTaskItems(
   tasks: readonly TaskViewModel[],
   inProgressLabel: string
 ): NotchTaskItem[] {
+  return notchItems(
+    tasks.filter((task) => task.statusBucket === "in_progress"),
+    inProgressLabel
+  );
+}
+
+/** The active Loops (not paused and not setting up), which run from time to time: the newest MAX_NOTCH_TASKS. */
+export function toNotchLoopTaskItems(
+  tasks: readonly TaskViewModel[],
+  inProgressLabel: string
+): LoopNotchTaskItem[] {
+  return notchItems(
+    tasks.filter(
+      (task) =>
+        task.statusBucket === "loops" &&
+        task.loopStop === undefined &&
+        task.loop?.state === "active"
+    ),
+    inProgressLabel
+  ).map((task) => ({ ...task, loop: true as const }));
+}
+
+function notchItems(
+  tasks: readonly TaskViewModel[],
+  inProgressLabel: string
+): NotchTaskItem[] {
   return tasks
-    .filter((task) => task.statusBucket === "in_progress")
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, MAX_NOTCH_TASKS)
     .map((task) => ({

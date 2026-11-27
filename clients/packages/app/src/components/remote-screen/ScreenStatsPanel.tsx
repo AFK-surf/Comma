@@ -1,10 +1,12 @@
 // How the view goes, from the bars in the panel's toolbar: ported from still.fail's web viewer
-// (web/src/screen/ScreenPanel.tsx `NetChip`), its groups and rows: frame latency and capture to sent (the station's
-// `state.latency`), frame rate and bandwidth (the frames as they come, counted over each second while it is open), the
-// route, the picture's size and codec, what captures it and whether it is encoded on the hardware (`state.video`).
-// Deviations: no round trip, packet loss, decode time, remote system or "copy diagnostics" (Cue's view has no such
-// figures to show); a row with no figure is left out, not drawn as a dash; and the
-// bars are an icon, not coloured by the round trip.
+// (web/src/screen/ScreenPanel.tsx `NetChip`), its groups and rows: the path's round trip (the station's `state.rtt`),
+// frame latency and capture to sent (`state.latency`), frame rate and bandwidth (the frames as they come, counted over
+// each second while it is open), packet loss (`state.loss`), the route, the picture's size and codec, what captures it
+// and whether it is encoded on the hardware (`state.video`). A weak link (round trip from 300 ms, loss from 1%) colours
+// its figure and the bars as a warning, a bad one (from 1 s, from 10%) as an error: the bars from the stream's own tone
+// while the panel is closed, so nothing is read each second then. Deviations: no decode time, remote system or "copy
+// diagnostics" (Cue's view has no such figures to show); a row with no figure (a station from before says no round
+// trip or loss) is left out, not drawn as a dash or 0%.
 import { useCommaMessages } from "@comma/i18n/react";
 import { uiClock } from "@comma/ui/clock";
 import { SignalBarsIcon } from "@comma/ui/components/icons";
@@ -21,9 +23,22 @@ import {
 import {
   bitrateText,
   codecText,
+  linkTone,
+  lossText,
+  lossTone,
+  rttTone,
   streamRate,
+  type ScreenLinkTone,
   type ScreenStreamStats as Stats,
 } from "./screenStreamStats";
+
+/** The text colour of a figure or the bars in a tone: none of their own when well. */
+const toneClass = (tone: ScreenLinkTone | undefined) =>
+  tone === "bad"
+    ? "text-error-primary"
+    : tone === "warn"
+      ? "text-warning-primary"
+      : undefined;
 
 /** The stats as they are now and the rate over the last second, read each second while `on`. */
 function useReading(read: (() => Stats) | undefined, on: boolean) {
@@ -58,12 +73,17 @@ function useReading(read: (() => Stats) | undefined, on: boolean) {
   return reading;
 }
 
-/** The bars that open the view's figures, and the figures. `way`: the route it comes by, as the toolbar says it. */
+/**
+ * The bars that open the view's figures, and the figures. `way`: the route it comes by, as the toolbar says it; `tone`:
+ * how its link fares as the stream says it (`linkTone`), which colours the bars while the figures are not read.
+ */
 export function ScreenStatsPanel({
   read,
+  tone,
   way,
 }: {
   read: (() => Stats) | undefined;
+  tone?: ScreenLinkTone | undefined;
   way: string | undefined;
 }) {
   const messages = useCommaMessages();
@@ -71,10 +91,23 @@ export function ScreenStatsPanel({
   const reading = useReading(read, open);
   const stats = reading?.stats;
   const rate = reading?.rate;
+  const barsClass = toneClass(
+    read ? (open && stats ? linkTone(stats) : (tone ?? "ok")) : "ok"
+  );
   // Only what is had: a row with nothing to say (scrcpy names no encoder) is left
   // out, rather than drawn empty.
   const groups: [string, ReactNode][][] = [
     [
+      ...(stats?.rtt !== undefined
+        ? ([
+            [
+              messages.remote_screen_stat_rtt(),
+              <span className={toneClass(rttTone(stats.rtt))} key="rtt">
+                {`${Math.round(stats.rtt)} ms`}
+              </span>,
+            ],
+          ] as [string, ReactNode][])
+        : []),
       ...(stats?.latency
         ? ([
             [messages.remote_screen_stat_frame_latency(), `${stats.latency.frame} ms`],
@@ -85,6 +118,16 @@ export function ScreenStatsPanel({
         ? ([
             [messages.remote_screen_stat_fps(), String(Math.round(rate.fps))],
             [messages.remote_screen_stat_bitrate(), bitrateText(rate.bps)],
+          ] as [string, ReactNode][])
+        : []),
+      ...(stats?.loss !== undefined
+        ? ([
+            [
+              messages.remote_screen_stat_loss(),
+              <span className={toneClass(lossTone(stats.loss))} key="loss">
+                {lossText(stats.loss)}
+              </span>,
+            ],
           ] as [string, ReactNode][])
         : []),
     ],
@@ -130,7 +173,10 @@ export function ScreenStatsPanel({
           data-testid="remote-screen-stats"
           isDisabled={!read}
         >
-          <SignalBarsIcon aria-hidden />
+          <SignalBarsIcon
+            aria-hidden
+            {...(barsClass ? { className: barsClass } : {})}
+          />
         </AriaButton>
       </Tooltip>
       <AriaPopover

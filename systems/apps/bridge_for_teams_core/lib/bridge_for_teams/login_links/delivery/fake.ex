@@ -11,12 +11,29 @@ defmodule BridgeForTeams.LoginLinks.Delivery.Fake do
   @behaviour BridgeForTeams.LoginLinks.Delivery
 
   @deliveries_key {__MODULE__, :deliveries}
+  @workspace_deliveries_key {__MODULE__, :workspace_deliveries}
   @result_key {__MODULE__, :result}
   @evidence_key {__MODULE__, :evidence}
 
   @doc "Deliveries recorded for the current test process, oldest first."
   @spec deliveries() :: [%{email: String.t(), org_name: String.t(), url: String.t()}]
   def deliveries, do: Enum.reverse(Process.get(@deliveries_key, []))
+
+  @doc "Workspace-link deliveries recorded for the current test process, oldest first."
+  @spec workspace_deliveries() :: [%{email: String.t(), entries: [map()]}]
+  def workspace_deliveries, do: Enum.reverse(Process.get(@workspace_deliveries_key, []))
+
+  @doc "Register a test process to receive delivery notifications from async tasks."
+  @spec set_listener(pid() | nil) :: :ok
+  def set_listener(nil) do
+    SystemsRuntime.delete_env(:bridge_for_teams_core, :login_link_delivery_listener)
+    :ok
+  end
+
+  def set_listener(pid) when is_pid(pid) do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :login_link_delivery_listener, pid)
+    :ok
+  end
 
   @doc "Override the result future deliveries return for the current test process."
   @spec script_result(:ok | {:error, term()}) :: :ok
@@ -40,12 +57,33 @@ defmodule BridgeForTeams.LoginLinks.Delivery.Fake do
 
   @impl true
   def deliver_login_link(email, org_name, url) do
-    Process.put(@deliveries_key, [
-      %{email: email, org_name: org_name, url: url} | Process.get(@deliveries_key, [])
-    ])
+    entry = %{email: email, org_name: org_name, url: url}
+    Process.put(@deliveries_key, [entry | Process.get(@deliveries_key, [])])
+    notify_listener({:login_link_delivered, entry})
 
     deliveries = Process.get(@deliveries_key)
     Process.get(@result_key, {:ok, %{provider_message_id: "fake-message-#{length(deliveries)}"}})
+  end
+
+  @impl true
+  def deliver_workspace_links(email, entries) do
+    entry = %{email: email, entries: entries}
+    Process.put(@workspace_deliveries_key, [entry | Process.get(@workspace_deliveries_key, [])])
+    notify_listener({:workspace_links_delivered, entry})
+
+    deliveries = Process.get(@workspace_deliveries_key)
+
+    Process.get(
+      @result_key,
+      {:ok, %{provider_message_id: "fake-workspace-message-#{length(deliveries)}"}}
+    )
+  end
+
+  defp notify_listener(msg) do
+    case SystemsRuntime.get_env(:bridge_for_teams_core, :login_link_delivery_listener) do
+      pid when is_pid(pid) -> send(pid, msg)
+      _ -> :ok
+    end
   end
 
   @impl true

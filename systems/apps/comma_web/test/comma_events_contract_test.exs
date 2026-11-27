@@ -21,6 +21,7 @@ defmodule CommaWeb.CommaEventsContractTest do
             messages: %{},
             participant_ids: %{},
             task_participants: %{},
+            task_worker_sessions: %{},
             participant_subscribe_error: nil,
             participant_statuses: %{},
             participant_subscribers: MapSet.new(),
@@ -33,7 +34,9 @@ defmodule CommaWeb.CommaEventsContractTest do
             mutation_subscribers: MapSet.new(),
             station_tasks: [],
             station_task_subscribers: MapSet.new(),
-            subscribers: MapSet.new()
+            subscribers: MapSet.new(),
+            task_runs: %{},
+            task_run_subscribers: %{}
           }
         end,
         name: __MODULE__
@@ -276,7 +279,8 @@ defmodule CommaWeb.CommaEventsContractTest do
 
     defp task_owner(state, conversation_id, participant_id) do
       Enum.find_value(
-        state.task_participants[conversation_id] || [],
+        (state.task_participants[conversation_id] || []) ++
+          (state.task_worker_sessions[conversation_id] || []),
         SystemsRuntime.Proc.whereis(__MODULE__),
         fn p ->
           if p["participant_id"] == participant_id, do: p["owner"]
@@ -289,8 +293,41 @@ defmodule CommaWeb.CommaEventsContractTest do
       {:ok, Agent.get(__MODULE__, &(&1.task_participants[conversation_id] || []))}
     end
 
+    @impl true
+    def task_worker_sessions(_workspace, conversation_id) do
+      Agent.get_and_update(__MODULE__, fn state ->
+        failures = Map.get(state, :task_worker_session_failures, %{})
+
+        case Map.get(failures, conversation_id, 0) do
+          n when n > 0 ->
+            next =
+              Map.put(
+                state,
+                :task_worker_session_failures,
+                Map.put(failures, conversation_id, n - 1)
+              )
+
+            {{:error, :transient_unavailable}, next}
+
+          _ ->
+            {{:ok, state.task_worker_sessions[conversation_id] || []}, state}
+        end
+      end)
+    end
+
+    def fail_next_task_worker_sessions(conversation_id, count \\ 1) do
+      Agent.update(__MODULE__, fn state ->
+        failures = Map.get(state, :task_worker_session_failures, %{})
+        Map.put(state, :task_worker_session_failures, Map.put(failures, conversation_id, count))
+      end)
+    end
+
     def put_task_participants(conversation_id, participants) do
       Agent.update(__MODULE__, &put_in(&1, [:task_participants, conversation_id], participants))
+    end
+
+    def put_task_worker_sessions(conversation_id, sessions) do
+      Agent.update(__MODULE__, &put_in(&1, [:task_worker_sessions, conversation_id], sessions))
     end
 
     def put_task_status(workspace, conversation_id, participant_id, activity, opts \\ []) do
@@ -422,6 +459,40 @@ defmodule CommaWeb.CommaEventsContractTest do
     def participant_status_read_count,
       do: Agent.get(__MODULE__, & &1.participant_status_reads)
 
+    @impl true
+    def task_run(_workspace, conversation_id) do
+      case Agent.get(__MODULE__, & &1.task_runs[conversation_id]) do
+        nil -> {:error, :not_found}
+        run -> {:ok, run}
+      end
+    end
+
+    @impl true
+    def subscribe_task_run(_workspace, conversation_id, subscriber) do
+      Agent.update(
+        __MODULE__,
+        &put_in(&1, [:task_run_subscribers, conversation_id], subscriber)
+      )
+    end
+
+    # The Task's run as Salix reads it now; `said`: its sandbox's station said
+    # something new, so the Task's stream is told.
+    def put_task_run(conversation_id, run, opts \\ []) do
+      subscriber =
+        Agent.get_and_update(__MODULE__, fn state ->
+          {state.task_run_subscribers[conversation_id],
+           put_in(state, [:task_runs, conversation_id], run)}
+        end)
+
+      if Keyword.get(opts, :said, false) and subscriber,
+        do: send(subscriber, {:coding_sandbox_said, conversation_id})
+
+      :ok
+    end
+
+    def task_run_subscribed?(conversation_id),
+      do: Agent.get(__MODULE__, &Map.has_key?(&1.task_run_subscribers, conversation_id))
+
     def send_subscription_events(events) when is_list(events) do
       Agent.get(__MODULE__, fn state ->
         Enum.each(MapSet.union(state.subscribers, state.participant_subscribers), fn subscriber ->
@@ -532,7 +603,21 @@ defmodule CommaWeb.CommaEventsContractTest do
       rev: 3
     }
 
-    SalixClientFake.put_station_tasks(group_id, [row])
+    # A still.fail chat the Router wrote in opens at its page in still.fail.
+    stillfail = %{
+      row
+      | station_id: "stillfail-dev_sf",
+        device_id: "dev_sf",
+        thread: "12@st_b",
+        task: "12@st_b",
+        labels: []
+    }
+
+    SalixClientFake.put_station_tasks(group_id, [
+      row,
+      Map.put(stillfail, :url, "https://still.fail/c/12")
+    ])
+
     response = user_req(session["token"], :get, path)
     assert response.status == 200
 
@@ -542,8 +627,10 @@ defmodule CommaWeb.CommaEventsContractTest do
                  "thread" => "EMBER/1",
                  "status" => "needs_review",
                  "device_id" => "dev_mac",
-                 "labels" => ["lbl_ship"]
-               }
+                 "labels" => ["lbl_ship"],
+                 "url" => nil
+               },
+               %{"thread" => "12@st_b", "url" => "https://still.fail/c/12"}
              ]
            } =
              response.body
@@ -895,6 +982,450 @@ defmodule CommaWeb.CommaEventsContractTest do
     refute body =~ "draft"
   end
 
+  test "Task SSE sends the Task's run again when its sandbox's station says something new, and only then" do
+    %{workspace: workspace, session: session} = create_fixture("task-run-said@example.com")
+    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
+    task_id = task["conversation_id"]
+    group_id = workspace["default_group_id"]
+    place = %{"kind" => "sandbox", "state" => "ready", "screen_owner" => "usr_ada"}
+    SalixClientFake.put_task_run(task_id, %{"place" => place})
+
+    response_task =
+      SystemsRuntime.Task.async(fn ->
+        user_req(
+          session["token"],
+          :get,
+          "/v1/comma/groups/#{group_id}/conversations/events?conversation_id=#{task_id}&wait=600"
+        )
+      end)
+
+    assert eventually(fn -> SalixClientFake.task_run_subscribed?(task_id) end)
+
+    # What Salix reads changed and no one said so, and another Task's sandbox
+    # said something: the stream reads nothing of this Task.
+    SalixClientFake.put_task_run(task_id, %{"place" => Map.put(place, "state", "stopped")})
+    SalixClientFake.send_subscription_events([{:coding_sandbox_said, "another"}])
+    # A Session's browser opened on the sandbox's display, and its station said so.
+    active = Map.put(place, "screen_active", true)
+    SalixClientFake.put_task_run(task_id, %{"place" => active}, said: true)
+
+    SalixClientFake.invalidate_task_list(group_id, task_id)
+    body = settled_await(response_task) |> expect_status(200)
+
+    assert Enum.map(sse_payloads(body, "task_participant_statuses"), & &1["run"]["place"]) ==
+             [place, active]
+  end
+
+  test "multi-session Task SSE keeps participants <= 2, exposes worker_sessions, and dynamically subscribes added sessions" do
+    %{workspace: workspace, session: session} = create_fixture("multi-session-sse@example.com")
+    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
+    task_id = task["conversation_id"]
+    group_id = workspace["default_group_id"]
+    router_id = SalixStore.Ids.new_participant_id()
+    lead_id = SalixStore.Ids.new_participant_id()
+    reviewer_id = SalixStore.Ids.new_participant_id()
+
+    lead_owner = spawn(fn -> SystemsClock.sleep(:infinity) end)
+    reviewer_owner = spawn(fn -> SystemsClock.sleep(:infinity) end)
+
+    SalixClientFake.put_task_participants(task_id, [
+      %{
+        "participant_id" => router_id,
+        "agent_id" => workspace["router_agent_id"],
+        "name" => "Router"
+      },
+      %{
+        "participant_id" => lead_id,
+        "agent_id" => "agt_worker_multi",
+        "name" => "Lead (Claude)",
+        "owner" => lead_owner
+      }
+    ])
+
+    SalixClientFake.put_task_worker_sessions(task_id, [
+      %{
+        "participant_id" => lead_id,
+        "agent_id" => "agt_worker_multi",
+        "name" => "Lead (Claude)",
+        "slot" => "lead",
+        "label" => "Lead (Claude)",
+        "model" => "claude-sonnet-4-6",
+        "runtime" => "claude",
+        "is_primary" => true,
+        "owner" => lead_owner
+      }
+    ])
+
+    SalixClientFake.put_task_status(workspace, task_id, router_id, %{
+      "state" => "active",
+      "status" => "Coordinating",
+      "updated_at" => 1
+    })
+
+    SalixClientFake.put_task_status(workspace, task_id, lead_id, %{
+      "state" => "active",
+      "status" => "Drafting patch",
+      "updated_at" => 1
+    })
+
+    response_task =
+      SystemsRuntime.Task.async(fn ->
+        user_req(
+          session["token"],
+          :get,
+          "/v1/comma/groups/#{group_id}/conversations/events?conversation_id=#{task_id}&wait=600"
+        )
+      end)
+
+    assert eventually(fn -> SalixClientFake.participant_subscriber_count() == 1 end)
+
+    # Simulate `task.add_session` adding a secondary reviewer session while SSE is open.
+    SalixClientFake.put_task_worker_sessions(task_id, [
+      %{
+        "participant_id" => lead_id,
+        "agent_id" => "agt_worker_multi",
+        "name" => "Lead (Claude)",
+        "slot" => "lead",
+        "label" => "Lead (Claude)",
+        "model" => "claude-sonnet-4-6",
+        "runtime" => "claude",
+        "is_primary" => true,
+        "owner" => lead_owner
+      },
+      %{
+        "participant_id" => reviewer_id,
+        "agent_id" => "agt_worker_multi",
+        "name" => "Reviewer (Codex)",
+        "slot" => "reviewer",
+        "label" => "Reviewer (Codex)",
+        "model" => "gpt-5.3-codex",
+        "runtime" => "codex",
+        "is_primary" => false,
+        "owner" => reviewer_owner
+      }
+    ])
+
+    SalixClientFake.put_task_status(workspace, task_id, reviewer_id, %{
+      "state" => "active",
+      "status" => "Reviewing diff",
+      "updated_at" => 2
+    })
+
+    SalixClientFake.invalidate_task_list(group_id, task_id)
+
+    assert eventually(fn -> SalixClientFake.participant_status_read_count() > 0 end)
+
+    # Secondary owner exit clears subscription state while preserving roster membership.
+    SystemsRuntime.Proc.exit(reviewer_owner, :kill)
+    SalixClientFake.invalidate_task_list(group_id, task_id)
+
+    body = settled_await(response_task) |> expect_status(200)
+    snapshots = sse_payloads(body, "task_participant_statuses")
+
+    assert length(snapshots) >= 3
+    refute body =~ "agent_id"
+
+    # Every snapshot keeps legacy `participants` <= 2 and deterministic primary `bound_worker`.
+    assert Enum.all?(snapshots, fn s ->
+             length(s["participants"]) <= 2 and
+               s["bound_worker"]["participant_id"] == lead_id
+           end)
+
+    # Initial snapshot had only lead; a subsequent snapshot dynamically picked up reviewer active.
+    assert [%{"participant_id" => ^lead_id, "slot" => "lead", "is_primary" => true}] =
+             hd(snapshots)["worker_sessions"]
+
+    assert Enum.any?(snapshots, fn s ->
+             Enum.any?(s["worker_sessions"] || [], fn ws ->
+               ws["participant_id"] == reviewer_id and
+                 ws["slot"] == "reviewer" and
+                 ws["label"] == "Reviewer (Codex)" and
+                 ws["model"] == "gpt-5.3-codex" and
+                 ws["runtime"] == "codex" and
+                 ws["is_primary"] == false and
+                 ws["subscribed"] == true and
+                 ws["state"] == "active"
+             end)
+           end)
+
+    # After reviewer owner went down, reviewer stays in roster with subscribed: false.
+    assert Enum.any?(List.last(snapshots)["worker_sessions"] || [], fn ws ->
+             ws["participant_id"] == reviewer_id and
+               ws["subscribed"] == false and
+               ws["state"] == "stopped"
+           end)
+
+    SystemsRuntime.Proc.exit(lead_owner, :kill)
+  end
+
+  test "multi-session Task SSE recovers secondary after owner :DOWN, demonitors removed sessions, and projects waiting state" do
+    %{workspace: workspace, session: session} =
+      create_fixture("multi-session-recover@example.com")
+
+    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
+    task_id = task["conversation_id"]
+    group_id = workspace["default_group_id"]
+    lead_id = SalixStore.Ids.new_participant_id()
+    reviewer_id = SalixStore.Ids.new_participant_id()
+
+    lead_owner = spawn(fn -> SystemsClock.sleep(:infinity) end)
+    reviewer_owner_1 = spawn(fn -> SystemsClock.sleep(:infinity) end)
+    reviewer_owner_2 = spawn(fn -> SystemsClock.sleep(:infinity) end)
+
+    SalixClientFake.put_task_participants(task_id, [
+      %{
+        "participant_id" => lead_id,
+        "agent_id" => "agt_worker_recover",
+        "name" => "Lead (Claude)",
+        "owner" => lead_owner
+      }
+    ])
+
+    lead_entry = %{
+      "participant_id" => lead_id,
+      "agent_id" => "agt_worker_recover",
+      "name" => "Lead (Claude)",
+      "slot" => "lead",
+      "label" => "Lead (Claude)",
+      "is_primary" => true,
+      "owner" => lead_owner
+    }
+
+    SalixClientFake.put_task_worker_sessions(task_id, [
+      lead_entry,
+      %{
+        "participant_id" => reviewer_id,
+        "agent_id" => "agt_worker_recover",
+        "name" => "Reviewer (Codex)",
+        "slot" => "reviewer",
+        "label" => "Reviewer (Codex)",
+        "is_primary" => false,
+        "owner" => reviewer_owner_1
+      }
+    ])
+
+    # Lead is waiting on a tool call: should project as "waiting" (not "stopped") in worker_sessions.
+    SalixClientFake.put_task_status(
+      workspace,
+      task_id,
+      lead_id,
+      %{"state" => "active", "status" => "Waiting on check", "updated_at" => 1},
+      wait: %{"tool" => "run_command"}
+    )
+
+    SalixClientFake.put_task_status(workspace, task_id, reviewer_id, %{
+      "state" => "active",
+      "status" => "First pass",
+      "updated_at" => 1
+    })
+
+    response_task =
+      SystemsRuntime.Task.async(fn ->
+        user_req(
+          session["token"],
+          :get,
+          "/v1/comma/groups/#{group_id}/conversations/events?conversation_id=#{task_id}&wait=600"
+        )
+      end)
+
+    assert eventually(fn -> SalixClientFake.participant_subscriber_count() == 1 end)
+
+    # Kill reviewer_owner_1 -> reviewer drops subscription, then swap to reviewer_owner_2 and sync -> recovers!
+    SystemsRuntime.Proc.exit(reviewer_owner_1, :kill)
+
+    SalixClientFake.put_task_worker_sessions(task_id, [
+      lead_entry,
+      %{
+        "participant_id" => reviewer_id,
+        "agent_id" => "agt_worker_recover",
+        "name" => "Reviewer (Codex)",
+        "slot" => "reviewer",
+        "label" => "Reviewer (Codex)",
+        "is_primary" => false,
+        "owner" => reviewer_owner_2
+      }
+    ])
+
+    SalixClientFake.put_task_status(workspace, task_id, reviewer_id, %{
+      "state" => "active",
+      "status" => "Recovered review",
+      "updated_at" => 2
+    })
+
+    # A-P1-3: Do NOT call invalidate_task_list — silent Task must auto-recover via bounded retry.
+
+    body = settled_await(response_task) |> expect_status(200)
+    snapshots = sse_payloads(body, "task_participant_statuses")
+
+    # Initial snapshot projects waiting worker as "waiting", never "stopped".
+    assert Enum.any?(hd(snapshots)["worker_sessions"] || [], fn ws ->
+             ws["participant_id"] == lead_id and ws["state"] == "waiting"
+           end)
+
+    # Recovered reviewer receives its new active status after owner_1 :DOWN.
+    assert Enum.any?(snapshots, fn s ->
+             Enum.any?(s["worker_sessions"] || [], fn ws ->
+               ws["participant_id"] == reviewer_id and
+                 ws["subscribed"] == true and
+                 ws["state"] == "active" and
+                 ws["status"] == "Recovered review"
+             end)
+           end)
+
+    SystemsRuntime.Proc.exit(lead_owner, :kill)
+    SystemsRuntime.Proc.exit(reviewer_owner_2, :kill)
+  end
+
+  test "A-P1-2: legacy participants array receives primary active status when worker_sessions recovers primary" do
+    %{workspace: workspace, session: session} =
+      create_fixture("multi-session-primary-backfill@example.com")
+
+    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
+    task_id = task["conversation_id"]
+    group_id = workspace["default_group_id"]
+    lead_id = SalixStore.Ids.new_participant_id()
+
+    lead_owner = spawn(fn -> SystemsClock.sleep(:infinity) end)
+
+    # Simulate initial `task_activity_participants` missing primary (or initial primary subscribe failing),
+    # while `task_worker_sessions` succeeds in subscribing to the primary worker.
+    SalixClientFake.put_task_participants(task_id, [])
+
+    SalixClientFake.put_task_worker_sessions(task_id, [
+      %{
+        "participant_id" => lead_id,
+        "agent_id" => "agt_worker_backfill",
+        "name" => "Lead (Claude)",
+        "slot" => "lead",
+        "label" => "Lead (Claude)",
+        "is_primary" => true,
+        "owner" => lead_owner
+      }
+    ])
+
+    SalixClientFake.put_task_status(workspace, task_id, lead_id, %{
+      "state" => "active",
+      "status" => "Primary recovered",
+      "updated_at" => 1
+    })
+
+    response =
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/groups/#{group_id}/conversations/events?conversation_id=#{task_id}&wait=60"
+      )
+
+    body = expect_status(response, 200)
+    snapshots = sse_payloads(body, "task_participant_statuses")
+    assert snapshots != []
+
+    # Legacy `participants` (read by older clients that ignore `worker_sessions`) must include primary active!
+    assert Enum.any?(hd(snapshots)["participants"] || [], fn p ->
+             p["participant_id"] == lead_id and
+               p["state"] == "active" and
+               p["status"] == "Primary recovered"
+           end)
+
+    SystemsRuntime.Proc.exit(lead_owner, :kill)
+  end
+
+  test "A-P1-1: transient task_worker_sessions read failure retries automatically on a silent SSE stream" do
+    %{workspace: workspace, session: session} =
+      create_fixture("multi-session-roster-retry@example.com")
+
+    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
+    task_id = task["conversation_id"]
+    group_id = workspace["default_group_id"]
+    lead_id = SalixStore.Ids.new_participant_id()
+    reviewer_id = SalixStore.Ids.new_participant_id()
+
+    lead_owner = spawn(fn -> SystemsClock.sleep(:infinity) end)
+    reviewer_owner = spawn(fn -> SystemsClock.sleep(:infinity) end)
+
+    SalixClientFake.put_task_participants(task_id, [
+      %{
+        "participant_id" => lead_id,
+        "agent_id" => "agt_worker_retry",
+        "name" => "Lead",
+        "owner" => lead_owner
+      }
+    ])
+
+    lead_entry = %{
+      "participant_id" => lead_id,
+      "agent_id" => "agt_worker_retry",
+      "name" => "Lead",
+      "slot" => "lead",
+      "label" => "Lead",
+      "is_primary" => true,
+      "owner" => lead_owner
+    }
+
+    SalixClientFake.put_task_worker_sessions(task_id, [lead_entry])
+
+    SalixClientFake.put_task_status(workspace, task_id, lead_id, %{
+      "state" => "active",
+      "status" => "Working",
+      "updated_at" => 1
+    })
+
+    # Pre-seed reviewer status BEFORE starting SSE (initial roster still has only lead_entry),
+    # so the only way reviewer appears later is via roster sync retry — not a status-change event.
+    SalixClientFake.put_task_status(workspace, task_id, reviewer_id, %{
+      "state" => "active",
+      "status" => "Auditing after retry",
+      "updated_at" => 2
+    })
+
+    response_task =
+      SystemsRuntime.Task.async(fn ->
+        user_req(
+          session["token"],
+          :get,
+          "/v1/comma/groups/#{group_id}/conversations/events?conversation_id=#{task_id}&wait=600"
+        )
+      end)
+
+    assert eventually(fn -> SalixClientFake.participant_subscriber_count() == 1 end)
+
+    # Add 2nd worker, force the next roster read (triggered by invalidation) to fail once,
+    # then send NO further invalidations: bounded retry must deliver reviewer automatically.
+    SalixClientFake.put_task_worker_sessions(task_id, [
+      lead_entry,
+      %{
+        "participant_id" => reviewer_id,
+        "agent_id" => "agt_worker_retry",
+        "name" => "Reviewer",
+        "slot" => "reviewer",
+        "label" => "Reviewer",
+        "is_primary" => false,
+        "owner" => reviewer_owner
+      }
+    ])
+
+    SalixClientFake.fail_next_task_worker_sessions(task_id, 1)
+    SalixClientFake.invalidate_task_list(group_id, task_id)
+
+    body = settled_await(response_task) |> expect_status(200)
+    snapshots = sse_payloads(body, "task_participant_statuses")
+
+    # Initial snapshot must contain ONLY lead_id (never reviewer_id).
+    assert Enum.map(hd(snapshots)["worker_sessions"] || [], & &1["participant_id"]) == [lead_id]
+
+    assert Enum.any?(tl(snapshots), fn s ->
+             Enum.any?(s["worker_sessions"] || [], fn ws ->
+               ws["participant_id"] == reviewer_id and
+                 ws["subscribed"] == true and
+                 ws["state"] == "active" and
+                 ws["status"] == "Auditing after retry"
+             end)
+           end)
+
+    SystemsRuntime.Proc.exit(lead_owner, :kill)
+    SystemsRuntime.Proc.exit(reviewer_owner, :kill)
+  end
+
   test "user_chat events expose a canonical snapshot followed by an opaque invalidation" do
     %{workspace: workspace, session: session, conversation: conversation} =
       create_fixture("events-chat@example.com")
@@ -993,6 +1524,7 @@ defmodule CommaWeb.CommaEventsContractTest do
           "redirect_uri" => "https://api.example.com/v1/oauth/#{provider}/callback",
           "origin" => "agent",
           "status" => "pending",
+          "fields" => input["fields"],
           "expires_at" => SystemsClock.system_time(:millisecond) + 600_000,
           "created_at" => SystemsClock.system_time(:millisecond)
         })
@@ -1051,6 +1583,37 @@ defmodule CommaWeb.CommaEventsContractTest do
     assert %{"status" => "completed", "outcome" => "connected", "oauth" => oauth} = filled
     refute Map.has_key?(oauth, "input")
     refute Jason.encode!(filled) =~ "sk-mine"
+
+    # A secret with fields takes them by name on the card; an optional one may stay empty.
+    fields =
+      request!.("secret", "comma_user|" <> user["id"], %{
+        "kind" => "secret_fields",
+        "fields" => [
+          %{"name" => "app_key", "label" => "App Key", "secret" => false},
+          %{"name" => "app_secret", "label" => "App Secret", "secret" => true},
+          %{"name" => "token", "label" => "Token", "secret" => true, "optional" => true}
+        ]
+      })
+
+    # A wrong answer is refused before the request's one-time state is used.
+    for wrong <- [
+          %{"app_key" => 1, "app_secret" => "s"},
+          %{"app_key" => "k", "app_secret" => " ", "token" => "t"},
+          %{"app_key" => "k", "app_secret" => "s", "extra" => "x"}
+        ] do
+      assert user_req(session["token"], :post, "#{path}/#{fields}/input",
+               json: %{"fields" => wrong}
+             ).status == 400
+    end
+
+    filled =
+      user_req(session["token"], :post, "#{path}/#{fields}/input",
+        json: %{"fields" => %{"app_key" => "key-1", "app_secret" => "s3cr3t", "token" => ""}}
+      )
+      |> expect_status(200)
+
+    assert %{"status" => "completed", "outcome" => "connected"} = filled
+    refute Jason.encode!(filled) =~ "s3cr3t"
 
     # A Workspace owner gives its app; the card then has the provider's page.
     app = request!.("lark", "comma_user|" <> user["id"], %{"kind" => "app"})

@@ -223,6 +223,7 @@ defmodule SalixIM.Triage.FollowUpReceiver do
            fn -> admit_current_recheck(authority, trigger, occurrence) end
          ) do
       {:ok, :rescheduled} -> {:ok, :admitted}
+      {:ok, :stopped} -> {:ok, :stopped}
       {:ok, :stale} -> {:ok, :stale}
       {:stale, _reason} -> settle(invocation, :stale_authority)
       {:error, _reason} = error -> error

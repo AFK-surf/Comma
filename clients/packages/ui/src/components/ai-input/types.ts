@@ -31,8 +31,12 @@ export interface AiInputAttachment {
   meta?: string;
   thumbnailSrc?: string;
   alt?: string;
-  /** Full plain text revealed on hover. Quote chips carry the whole selection. */
+  /** Full plain text revealed on hover. Quote chips carry the whole selection; a file chip, the file's full path. */
   detail?: string;
+  /** `meta` is a path: too wide for the chip, it loses its middle, not its end (`MiddleEllipsis`). */
+  metaMiddleTruncate?: boolean | undefined;
+  /** Shown under a file chip's `detail` on hover, such as the file's size. */
+  detailMeta?: string | undefined;
   /** The snippet tile's mark, such as the brand of the app the text came from. */
   icon?: ReactNode;
   /** Called when a snippet is pressed to move its text into the prompt. */

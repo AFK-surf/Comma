@@ -1,0 +1,105 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "comma",
+  "title": "Comma",
+  "description": "Ask Comma, find your Tasks, and open Comma from Raycast.",
+  "icon": "icon.png",
+  "author": "zanwei_guo",
+  "owner": "afk-inc",
+  "access": "private",
+  "license": "MIT",
+  "platforms": [
+    "macOS",
+    "Windows"
+  ],
+  "categories": [
+    "Productivity",
+    "Applications"
+  ],
+  "commands": [
+    {
+      "name": "ask-comma",
+      "title": "Ask Comma",
+      "description": "Send a message to Comma. Before you connect, it asks whether to connect.",
+      "mode": "no-view",
+      "arguments": [
+        {
+          "name": "text",
+          "type": "text",
+          "placeholder": "Message",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "search-tasks",
+      "title": "Search Tasks",
+      "description": "Find a Task and open it in Comma. Its actions open Comma and disconnect the extension.",
+      "mode": "view"
+    },
+    {
+      "name": "menu-bar",
+      "title": "Comma Menu Bar",
+      "description": "Show your active Tasks in the menu bar.",
+      "mode": "menu-bar",
+      "interval": "5m",
+      "disabledByDefault": true
+    },
+    {
+      "name": "switch-workspace",
+      "title": "Switch Workspace",
+      "description": "Choose the Workspace that Ask Comma and Search Tasks use.",
+      "mode": "view"
+    },
+    {
+      "name": "connect",
+      "title": "Connect Comma",
+      "description": "Connect this extension to your Comma account. You confirm in the Comma app.",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "environment",
+      "title": "Comma Environment",
+      "description": "The Comma app and server this extension talks to.",
+      "type": "dropdown",
+      "required": false,
+      "default": "production",
+      "data": [
+        {
+          "title": "Production",
+          "value": "production"
+        },
+        {
+          "title": "Staging",
+          "value": "staging"
+        },
+        {
+          "title": "Development",
+          "value": "development"
+        }
+      ]
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^2.12.1"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.1.1",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "eslint": "^9.39.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix",
+    "test": "vitest run",
+    "publish": "npx @raycast/api@latest publish"
+  }
+}

@@ -1,6 +1,8 @@
 ---
 name: mini-app-builder
 description: Build or change a Comma app (a mini-app) when the user asks for an app, tool, tracker, game or dashboard that people open and use inside Comma. For Routers, which build, publish and manage apps.
+roles: router
+prompt_summary: "Create, manage, or revise an interactive Mini App that opens inside Comma (Router owns setup/spec; coding Task builds it)."
 ---
 
 # Mini-app builder

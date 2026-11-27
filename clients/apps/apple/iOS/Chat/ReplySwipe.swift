@@ -115,10 +115,10 @@ private struct ReplyPan: UIGestureRecognizerRepresentable {
                 && velocity.x > 0 && abs(velocity.x) > abs(velocity.y) * 1.6
         }
 
-        /// A sideways reply never scrolls the transcript, but it must not hold up anything else under the finger.
+        /// A sideways reply never scrolls the transcript or runs alongside another pan, but it must not hold up taps.
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            !(other.view is UIScrollView)
+            !(other.view is UIScrollView) && !(other is UIPanGestureRecognizer)
         }
     }
 }

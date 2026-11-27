@@ -1,31 +1,27 @@
 defmodule SalixAgent.Tools.Compute do
-  @moduledoc "Capability-gated tools for the current Compute Workload."
+  @moduledoc "Capability-gated tools for authorized workspace Compute Workloads."
 
   @wait SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
-  @request_id_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}\z/
 
   @definitions [
     {"compute.workloads.list",
-     "List one page of shared execution targets authorized for this workspace. Select workload_id when this Session has no bound target. Use next_cursor as after_id for the next page.",
+     "List one page of shared execution targets authorized for this workspace. Select workload_id for target operations. Use next_cursor as after_id for the next page.",
      :workloads_list},
     {"compute.workspace.stat", "Read metadata for one relative workspace path.", :workspace_stat},
-    {"compute.workspace.list", "List one bounded relative workspace directory.", :workspace_list},
+    {"compute.workspace.list",
+     "List one bounded relative workspace directory page. Use next_cursor as cursor for the next page.",
+     :workspace_list},
     {"compute.workspace.read", "Read a bounded byte range from one workspace file.",
      :workspace_read},
-    {"compute.workspace.write", "Write one bounded workspace file with an exact digest.",
-     :workspace_write},
+    {"compute.workspace.write",
+     "Atomically write or overwrite one workspace file under /workspace.", :workspace_write},
     {"compute.exec", "Run one bounded command in the current Compute Workload.", :compute_exec},
     {"process.start", "Start one long-lived process in the current Compute Workload.",
      :process_start},
     {"process.list", "List long-lived processes in the current Compute Workload.", :process_list},
     {"process.write", "Write bounded input to one current process.", :process_write},
     {"process.tail", "Read bounded output from one current process.", :process_tail},
-    {"process.stop", "Stop one current long-lived process.", :process_stop},
-    {"compute.build.run", "Run a bounded build in the current Compute Workload.", :build_run},
-    {"compute.service.export", "Export one logical Workload endpoint.", :service_export},
-    {"compute.service.import", "Import one authorized logical service endpoint.",
-     :service_import},
-    {"compute.route.revoke", "Revoke one exact ServiceRoute revision.", :route_revoke}
+    {"process.stop", "Stop one current long-lived process.", :process_stop}
   ]
 
   @runtime_operations ~w(
@@ -35,19 +31,30 @@ defmodule SalixAgent.Tools.Compute do
     process.write
     process.tail
     process.stop
-    compute.build.run
   )
 
-  def defs do
-    Enum.map(@definitions, fn {name, description, operation} ->
-      entry =
-        {name, description <> target_help(operation), schema(operation),
-         fn args, ctx -> call(name, operation, args, ctx) end, @wait}
+  @workspace_operations [
+    :workspace_stat,
+    :workspace_list,
+    :workspace_read,
+    :workspace_write
+  ]
 
-      if operation == :workloads_list,
-        do: Tuple.insert_at(entry, tuple_size(entry), safety: "read", runtimes: [:internal]),
-        else: entry
-    end)
+  @target_help " Target Workload ID from compute.workloads.list. Never switch targets after an uncertain result."
+  @workload_id_description "Target Workload ID from compute.workloads.list."
+
+  def defs do
+    Enum.map(@definitions, &build_def/1)
+  end
+
+  defp build_def({name, description, operation}) do
+    entry =
+      {name, description <> target_help(operation), schema(operation),
+       fn args, ctx -> call(name, operation, args, ctx) end, @wait}
+
+    if operation == :workloads_list,
+      do: Tuple.insert_at(entry, tuple_size(entry), safety: "read", runtimes: [:internal]),
+      else: entry
   end
 
   defp call(name, :workloads_list, args, ctx) do
@@ -77,18 +84,22 @@ defmodule SalixAgent.Tools.Compute do
     {target, args} = Map.pop(args, "workload_id")
 
     with {:ok, workload} <- authorize_workload(ctx, permission(operation), target),
-         {prepared, secrets} = prepare_args(operation, stringify(args), ctx),
+         {:ok, prepared, secrets} <- prepare_args(operation, args, ctx),
          {:ok, result} <- dispatch(adapter, operation, prepared, workload.id) do
-      result |> SalixAgent.OAuthCredentials.redact(secrets) |> Jason.encode!()
+      result
+      |> enrich_result(operation)
+      |> SalixAgent.OAuthCredentials.redact(secrets)
+      |> Jason.encode!()
     else
       false -> raise "compute is unavailable for this Workload"
+      {:error, {:invalid_argument, message}} -> invalid_argument(message)
       {:error, reason} -> failure(reason)
     end
   end
 
   defp authorize_workload(ctx, permission, target) do
     with {:ok, workload} <- resolve_workload(ctx, permission, target),
-         true <- is_nil(target) or target == workload.id do
+         true <- target == workload.id do
       {:ok, workload}
     else
       false -> {:error, :workload_target_mismatch}
@@ -97,29 +108,17 @@ defmodule SalixAgent.Tools.Compute do
   end
 
   defp resolve_workload(ctx, permission, target) do
-    tenant_id = required_context(ctx, :tenant_id)
-    agent_id = required_context(ctx, :agent_id)
-    grant_id = ctx[:workload_grant_id] || ctx["workload_grant_id"]
+    _tenant_id = required_context(ctx, :tenant_id)
+    _agent_id = required_context(ctx, :agent_id)
 
-    cond do
-      not is_nil(grant_id) ->
-        SalixStore.Compute.authorize_workload_grant(
-          tenant_id,
-          grant_id,
-          required_context(ctx, :environment_id),
-          agent_id,
-          permission
-        )
-
-      ctx[:runtime_kind] == :internal ->
-        if is_binary(target) and byte_size(target) in 1..128 do
-          SalixAgent.ComputeAccess.authorize(ctx, target, permission)
-        else
-          {:error, :workload_target_required}
-        end
-
-      true ->
-        {:error, :compute_grant_required}
+    if ctx[:runtime_kind] == :internal do
+      if is_binary(target) and byte_size(target) in 1..128 do
+        SalixAgent.ComputeAccess.authorize(ctx, target, permission)
+      else
+        {:error, :workload_target_required}
+      end
+    else
+      {:error, :compute_workspace_unavailable}
     end
   end
 
@@ -139,6 +138,40 @@ defmodule SalixAgent.Tools.Compute do
     end
   end
 
+  defp enrich_result(%{"content_base64" => b64} = result, :workspace_read) when is_binary(b64) do
+    case Base.decode64(b64) do
+      {:ok, bytes} ->
+        if String.valid?(bytes), do: Map.put(result, "content", bytes), else: result
+
+      :error ->
+        result
+    end
+  end
+
+  defp enrich_result(result, operation)
+       when is_map(result) and operation in [:compute_exec, :process_tail, :process_stop] do
+    cond do
+      result["oom_killed"] == true ->
+        Map.put(
+          result,
+          "diagnostic",
+          "Process was killed by the Linux OOM killer (SIGKILL). Reduce memory concurrency/heap size or split the task."
+        )
+
+      result["timed_out"] == true ->
+        Map.put(
+          result,
+          "diagnostic",
+          "Command reached its timeout_ms limit and the entire process group was terminated. Increase timeout_ms (up to 300000) or use process.start for long-lived commands."
+        )
+
+      true ->
+        result
+    end
+  end
+
+  defp enrich_result(result, _operation), do: result
+
   defp operation_name(:workspace_stat), do: "compute.workspace.stat"
   defp operation_name(:workspace_list), do: "compute.workspace.list"
   defp operation_name(:workspace_read), do: "compute.workspace.read"
@@ -149,13 +182,6 @@ defmodule SalixAgent.Tools.Compute do
   defp operation_name(:process_write), do: "process.write"
   defp operation_name(:process_tail), do: "process.tail"
   defp operation_name(:process_stop), do: "process.stop"
-  defp operation_name(:build_run), do: "compute.build.run"
-  defp operation_name(:service_export), do: "compute.service.export"
-  defp operation_name(:service_import), do: "compute.service.import"
-  defp operation_name(:route_revoke), do: "compute.route.revoke"
-
-  defp permission(operation) when operation in [:service_export, :service_import, :route_revoke],
-    do: "service_route"
 
   defp permission(operation)
        when operation in [
@@ -164,8 +190,7 @@ defmodule SalixAgent.Tools.Compute do
               :process_list,
               :process_write,
               :process_tail,
-              :process_stop,
-              :build_run
+              :process_stop
             ],
        do: "runtime"
 
@@ -185,10 +210,7 @@ defmodule SalixAgent.Tools.Compute do
   defp stringify(value), do: value
 
   defp target_help(:workloads_list), do: ""
-
-  defp target_help(_),
-    do:
-      " Omit workload_id for this Session's bound target. Otherwise, select workload_id from compute.workloads.list. Never switch targets after an uncertain result."
+  defp target_help(_operation), do: @target_help
 
   defp schema(:workloads_list) do
     %{
@@ -205,33 +227,129 @@ defmodule SalixAgent.Tools.Compute do
         :workspace_stat -> ~w(path)
         :workspace_list -> ~w(path)
         :workspace_read -> ~w(path)
-        :workspace_write -> ~w(path expected_prefix_sha256 content_base64)
+        :workspace_write -> ~w(path)
         :compute_exec -> ~w(command)
         :process_start -> ~w(command)
         :process_list -> []
-        :process_write -> ~w(process_id data_base64)
+        :process_write -> ~w(process_id)
         :process_tail -> ~w(process_id)
         :process_stop -> ~w(process_id)
-        :build_run -> ~w(dockerfile_path image context_base64)
-        :service_export -> ~w(logical_endpoint port protocol)
-        :service_import -> ~w(export_id virtual_service_name route_class)
-        :route_revoke -> ~w(route_id expected_revision)
       end
+
+    required = required ++ ["workload_id"]
 
     base = %{
       "type" => "object",
       "additionalProperties" => false,
       "required" => required,
       "properties" =>
-        Map.new(required, &{&1, %{"type" => property_type(&1)}})
+        Map.new(required -- ["workload_id"], &{&1, %{"type" => "string"}})
         |> Map.put("workload_id", %{
           "type" => "string",
           "minLength" => 1,
           "maxLength" => 128,
-          "description" =>
-            "Optional for this Session's bound target. Required when selecting a shared target from compute.workloads.list."
+          "description" => @workload_id_description
         })
     }
+
+    base =
+      if operation in @workspace_operations do
+        path_description =
+          if operation == :workspace_write do
+            "Relative file path under /workspace (for example \"src/main.py\")."
+          else
+            "Relative path under /workspace (use \".\" for the workspace root)."
+          end
+
+        put_in(base, ["properties", "path"], %{
+          "type" => "string",
+          "description" => path_description
+        })
+      else
+        base
+      end
+
+    base =
+      case operation do
+        :workspace_list ->
+          base
+          |> put_in(["properties", "limit"], %{
+            "type" => "integer",
+            "minimum" => 1,
+            "maximum" => 500,
+            "description" => "Optional maximum number of entries to return (1..500, default 100)."
+          })
+          |> put_in(["properties", "cursor"], %{
+            "type" => "string",
+            "maxLength" => 1024,
+            "description" => "Opaque pagination cursor (pass next_cursor from the previous page)."
+          })
+
+        :compute_exec ->
+          put_in(base, ["properties", "timeout_ms"], %{
+            "type" => "integer",
+            "minimum" => 1_000,
+            "maximum" => 300_000,
+            "description" =>
+              "Optional command timeout in milliseconds (1000..300000, default 60000). On timeout the entire process group is killed. Use process.start for long-lived or daemon commands."
+          })
+
+        :workspace_read ->
+          base
+          |> put_in(["properties", "offset"], %{
+            "type" => "integer",
+            "minimum" => 0,
+            "description" => "Optional byte offset to start reading from (default 0)."
+          })
+          |> put_in(["properties", "max_bytes"], %{
+            "type" => "integer",
+            "minimum" => 1,
+            "maximum" => 1_048_576,
+            "description" =>
+              "Optional maximum number of bytes to read (1..1048576, default 1048576)."
+          })
+
+        :workspace_write ->
+          base
+          |> put_in(["properties", "content"], %{
+            "type" => "string",
+            "description" =>
+              "UTF-8 text content to write. Provide exactly one of content or content_base64."
+          })
+          |> put_in(["properties", "content_base64"], %{
+            "type" => "string",
+            "description" =>
+              "Base64-encoded raw bytes for binary files. Provide exactly one of content or content_base64."
+          })
+          |> put_in(["properties", "mode"], %{
+            "type" => "integer",
+            "description" =>
+              "Optional file mode bits as a decimal integer (default 420, i.e. 0644)."
+          })
+
+        :process_write ->
+          base
+          |> put_in(["properties", "data"], %{
+            "type" => "string",
+            "description" =>
+              "UTF-8 text input to write. Provide exactly one of data or data_base64."
+          })
+          |> put_in(["properties", "data_base64"], %{
+            "type" => "string",
+            "description" =>
+              "Base64-encoded raw bytes to write. Provide exactly one of data or data_base64."
+          })
+
+        :process_stop ->
+          put_in(base, ["properties", "signal"], %{
+            "type" => "string",
+            "enum" => ["term", "int", "kill"],
+            "description" => "Optional signal to send to the process (default \"term\")."
+          })
+
+        _ ->
+          base
+      end
 
     base =
       if operation in [:compute_exec, :process_start] do
@@ -252,12 +370,13 @@ defmodule SalixAgent.Tools.Compute do
         base
       end
 
-    if operation == :process_start do
-      put_in(base, ["properties", "request_id"], %{
-        "type" => "string",
-        "minLength" => 1,
-        "maxLength" => 63,
-        "pattern" => "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$"
+    if operation == :process_tail do
+      put_in(base, ["properties", "wait_ms"], %{
+        "type" => "integer",
+        "minimum" => 0,
+        "maximum" => 30_000,
+        "description" =>
+          "Optional maximum milliseconds to wait (0..30000) when no new output is available yet and the process is still running; returns immediately on new output or process exit (default 0)."
       })
     else
       base
@@ -277,6 +396,11 @@ defmodule SalixAgent.Tools.Compute do
     invalid_cursor: "Use next_cursor from compute.workloads.list as after_id."
   }
 
+  defp invalid_argument(message) do
+    {:tool_failure, Jason.encode!(%{error_class: "invalid_argument", message: message}),
+     "invalid_argument", "user_reportable", message, []}
+  end
+
   defp failure(reason) do
     case Map.fetch(@public_errors, reason) do
       {:ok, message} ->
@@ -289,9 +413,6 @@ defmodule SalixAgent.Tools.Compute do
         raise "Compute operation failed: #{inspect(reason)}"
     end
   end
-
-  defp property_type(key) when key in ~w(port expected_revision), do: "integer"
-  defp property_type(_), do: "string"
 
   # The arguments to dispatch, and the credential values the result must not show.
   defp prepare_args(operation, args, ctx) when operation in [:compute_exec, :process_start] do
@@ -314,37 +435,104 @@ defmodule SalixAgent.Tools.Compute do
             )
           end
 
-        {normalize_args(operation, args, ctx), secrets}
+        with {:ok, normalized} <- normalize_args(operation, args, ctx) do
+          {:ok, normalized, secrets}
+        end
 
       {:error, message} ->
         raise message
     end
   end
 
-  defp prepare_args(operation, args, ctx), do: {normalize_args(operation, args, ctx), []}
-
-  defp normalize_args(:process_start, %{"request_id" => request_id} = args, _ctx)
-       when is_binary(request_id) do
-    if Regex.match?(@request_id_pattern, request_id) do
-      args
-    else
-      raise "process.start request_id must be a 1-63 character opaque identifier"
+  defp prepare_args(operation, args, ctx) do
+    with {:ok, normalized} <- normalize_args(operation, args, ctx) do
+      {:ok, normalized, []}
     end
   end
 
   defp normalize_args(:process_start, args, ctx) do
+    args = Map.delete(args, "request_id")
+
     case Map.get(ctx, :tool_call_id) || Map.get(ctx, "tool_call_id") do
       tool_call_id when is_binary(tool_call_id) and tool_call_id != "" ->
         request_id =
           "tps_" <>
             (:crypto.hash(:sha256, tool_call_id) |> Base.url_encode64(padding: false))
 
-        Map.put(args, "request_id", request_id)
+        {:ok, Map.put(args, "request_id", request_id)}
 
       _ ->
-        raise "process.start requires request_id or tool_call_id"
+        raise "process.start requires tool_call_id"
     end
   end
 
-  defp normalize_args(_operation, args, _ctx), do: args
+  defp normalize_args(:process_write, args, _ctx) do
+    encode_text_or_base64(args, "data", "data_base64")
+  end
+
+  defp normalize_args(operation, args, _ctx) when operation in @workspace_operations do
+    args =
+      case Map.get(args, "path") do
+        path when is_binary(path) ->
+          Map.put(args, "path", normalize_workspace_path(operation, path))
+
+        _ ->
+          args
+      end
+
+    if operation == :workspace_write do
+      args
+      |> Map.drop(["offset", "expected_prefix_sha256"])
+      |> encode_text_or_base64("content", "content_base64")
+    else
+      {:ok, args}
+    end
+  end
+
+  defp normalize_args(_operation, args, _ctx), do: {:ok, args}
+
+  defp encode_text_or_base64(args, text_key, b64_key) do
+    has_text = Map.has_key?(args, text_key)
+    has_b64 = Map.has_key?(args, b64_key)
+
+    cond do
+      has_text and has_b64 ->
+        {:error,
+         {:invalid_argument, "Provide exactly one of #{text_key} or #{b64_key}, not both."}}
+
+      not has_text and not has_b64 ->
+        {:error, {:invalid_argument, "Provide either #{text_key} or #{b64_key}."}}
+
+      has_text ->
+        case Map.get(args, text_key) do
+          text when is_binary(text) ->
+            {:ok, args |> Map.delete(text_key) |> Map.put(b64_key, Base.encode64(text))}
+
+          _ ->
+            {:error, {:invalid_argument, "#{text_key} must be a UTF-8 string."}}
+        end
+
+      true ->
+        case Map.get(args, b64_key) do
+          b64 when is_binary(b64) ->
+            case Base.decode64(b64) do
+              {:ok, _} -> {:ok, args}
+              :error -> {:error, {:invalid_argument, "#{b64_key} must be valid base64."}}
+            end
+
+          _ ->
+            {:error, {:invalid_argument, "#{b64_key} must be valid base64."}}
+        end
+    end
+  end
+
+  defp normalize_workspace_path(operation, "/" <> _ = path) do
+    case String.trim_leading(path, "/") do
+      "" when operation in [:workspace_stat, :workspace_list] -> "."
+      "" -> "/"
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_workspace_path(_operation, path), do: path
 end

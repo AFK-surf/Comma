@@ -249,6 +249,10 @@ defmodule SalixAgent.ToolsTest do
     [result] = Tools.execute([wrap.(name, %{})], denied)
     assert result.status == "guidance"
     assert result.guidance_reason == "not_callable"
+
+    # An enabled IFC mode reports the unavailable tool before the missing declaration.
+    [result] = Tools.execute([wrap.(name, %{})], Map.put(denied, :ifc_mode, :enforce))
+    assert result.guidance_reason == "not_callable"
   end
 
   test "grep finds matching lines across files", %{ctx: ctx} do
@@ -408,9 +412,13 @@ defmodule SalixAgent.ToolsTest do
     refute result.error
     assert Jason.decode!(result.content)["answer"] == "Task A, Task B"
 
-    assert [%{"role" => "user", "content" => [question, image]}] =
+    assert [
+             %{"role" => "system", "content" => system_prompt},
+             %{"role" => "user", "content" => [question, image]}
+           ] =
              SalixMedia.MockMedia.last_request()["messages"]
 
+    assert is_binary(system_prompt) and system_prompt != ""
     assert question["text"] == "Read the task titles"
     assert image["image_url"]["url"] =~ "data:image/png;base64,"
   end

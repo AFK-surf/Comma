@@ -3,6 +3,7 @@ name: shared-screen
 description: Look at and act on a screen the user shared from Comma's screen panel (a picture with a comma:screen/<device>/<screen> link), or one you opened for them, such as an iOS Simulator, an Android emulator or phone, or a Mac or Windows display. Use when a message has such a link or asks you to reproduce what it shows.
 metadata:
   displayName: Shared screen
+prompt_summary: "Inspect or act on a screen the user shared (comma:screen link or one opened earlier), or reproduce what a shared screen shows."
 ---
 
 # A shared screen

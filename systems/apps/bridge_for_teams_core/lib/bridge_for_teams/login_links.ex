@@ -18,8 +18,7 @@ defmodule BridgeForTeams.LoginLinks do
   then mints a normal dashboard session (`BridgeForTeams.Auth.Sessions`).
 
   Delivery goes through `BridgeForTeams.LoginLinks.Delivery` (Postmark by
-  default, same server token as agent owner notifications with a dedicated
-  From address). Requests are rate-limited per IP and per org+email via
+  default, from the Comma for Teams server and sender). Requests are rate-limited per IP and per org+email via
   `BridgeForTeams.RateLimit`.
 
   Every request writes one private `login_link_request` log line with its
@@ -35,7 +34,14 @@ defmodule BridgeForTeams.LoginLinks do
   alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.LoginLinks.Delivery
   alias BridgeForTeams.{Memberships, Observability, Orgs, RateLimit, Repo}
-  alias BridgeForTeams.Schema.{LoginEmailLink, Organization, User}
+
+  alias BridgeForTeams.Schema.{
+    LoginEmailLink,
+    Organization,
+    OrgMembership,
+    OrgSsoConnection,
+    User
+  }
 
   @ttl_seconds 15 * 60
   # Per requester IP: absorbs a login page's worth of retries, then ~2/minute.
@@ -81,6 +87,190 @@ defmodule BridgeForTeams.LoginLinks do
 
     log_request(outcome, facts, opts)
     :ok
+  end
+
+  @doc """
+  Slugless sign-in recovery: synchronously checks delivery config, rate limits,
+  and email syntax, then dispatches an async task under `BridgeForTeams.TaskSupervisor`
+  to find up to 20 organizations (SSO-less prioritized first so they are never
+  starved by SSO orgs) and send one consolidated email. SSO organizations only
+  receive `/login?o=<slug>` links and never a magic link. Always returns `:ok`.
+  """
+  @spec request_workspace_links(String.t(), keyword()) :: :ok
+  def request_workspace_links(email, opts \\ []) do
+    email = normalize(email)
+
+    case check(enabled?(), :delivery_not_configured) do
+      :ok ->
+        case check_workspace_rate_limits(email, opts) do
+          :ok ->
+            case check(valid_email?(email), :invalid_email) do
+              :ok ->
+                _ =
+                  SystemsRuntime.TaskSupervisor.start_child(BridgeForTeams.TaskSupervisor, fn ->
+                    {outcome, facts} = deliver_workspace_links_async(email, opts)
+                    log_request(outcome, facts, opts)
+                  end)
+
+                :ok
+
+              {outcome, facts} ->
+                log_request(outcome, facts, opts)
+                :ok
+            end
+
+          {outcome, facts} ->
+            log_request(outcome, facts, opts)
+            :ok
+        end
+
+      {outcome, facts} ->
+        log_request(outcome, facts, opts)
+        :ok
+    end
+  end
+
+  defp deliver_workspace_links_async(email, opts) do
+    case fetch_active_user_by_email_ci(email) do
+      {:ok, user} ->
+        rows =
+          from(o in Organization,
+            join: m in OrgMembership,
+            on: m.org_id == o.id,
+            left_join: sso in OrgSsoConnection,
+            on: sso.org_id == o.id,
+            where: m.user_id == ^user.id,
+            order_by: [desc: fragment("? IS NULL", sso.id), asc: o.name, asc: o.slug],
+            limit: 20,
+            select: {o, not is_nil(sso.id)}
+          )
+          |> Repo.all()
+
+        if rows == [] do
+          {:not_member, %{user_id: user.id}}
+        else
+          {entries, magic_records} =
+            Enum.reduce(rows, {[], []}, fn {org, has_sso?}, {acc_entries, acc_magic} ->
+              if has_sso? do
+                entry = %{
+                  org_name: org.name,
+                  org_slug: org.slug,
+                  kind: :sso,
+                  url: sso_login_url(org.slug, opts)
+                }
+
+                {[entry | acc_entries], acc_magic}
+              else
+                token = generate_token()
+
+                insert_attrs = %{
+                  "user_id" => user.id,
+                  "org_id" => org.id,
+                  "token_hash" => token_hash(token),
+                  "expires_at" => DateTime.add(now(), @ttl_seconds, :second)
+                }
+
+                case %LoginEmailLink{}
+                     |> LoginEmailLink.changeset(insert_attrs)
+                     |> Repo.insert() do
+                  {:ok, link} ->
+                    entry = %{
+                      org_name: org.name,
+                      org_slug: org.slug,
+                      kind: :magic_link,
+                      url: login_url(token, opts)
+                    }
+
+                    {[entry | acc_entries], [{org, link} | acc_magic]}
+
+                  {:error, _} ->
+                    {acc_entries, acc_magic}
+                end
+              end
+            end)
+
+          entries = Enum.reverse(entries)
+          magic_records = Enum.reverse(magic_records)
+          facts = %{user_id: user.id, org_count: length(entries)}
+
+          if entries == [] do
+            {:link_insert_failed, facts}
+          else
+            case Delivery.impl().deliver_workspace_links(user.email, entries) do
+              {:ok, receipt} ->
+                message_id = receipt[:provider_message_id]
+
+                Enum.each(magic_records, fn {org, link} ->
+                  record_audit("login_link.requested", org, user, link,
+                    request_id: opts[:request_id],
+                    provider_message_id: message_id
+                  )
+                end)
+
+                {:accepted, Map.put(facts, :provider_message_id, message_id)}
+
+              {:error, reason} ->
+                delivery_failure(reason, facts)
+            end
+          end
+        end
+
+      {:error, outcome} ->
+        {outcome, %{}}
+    end
+  end
+
+  defp fetch_active_user_by_email_ci(email) do
+    case fetch_user_by_email(email) do
+      {:ok, %User{status: "active"} = user} -> {:ok, user}
+      {:ok, %User{}} -> {:error, :user_inactive}
+      {:error, :user_not_found} -> {:error, :user_not_found}
+    end
+  end
+
+  defp check_workspace_rate_limits(email, opts) do
+    limits =
+      :bridge_for_teams_core
+      |> SystemsRuntime.get_env(:login_link_rate_limits, [])
+      |> Keyword.merge(Keyword.get(opts, :rate_limits, []))
+
+    ip = normalize(opts[:remote_ip])
+
+    ip_result =
+      if ip == "" do
+        {:ok, :unlimited}
+      else
+        RateLimit.hit({:login_link_ip, ip}, 1,
+          burst: Keyword.get(limits, :ip_burst, @ip_burst),
+          rate: Keyword.get(limits, :ip_rate, @ip_rate)
+        )
+      end
+
+    email_result =
+      RateLimit.hit({:login_link_workspace_email, String.downcase(email)}, 1,
+        burst: Keyword.get(limits, :email_burst, @email_burst),
+        rate: Keyword.get(limits, :email_rate, @email_rate)
+      )
+
+    case {ip_result, email_result} do
+      {{:ok, _}, {:ok, _}} -> :ok
+      {{:error, :rate_limited}, _} -> {:rate_limited_ip, %{}}
+      {_, {:error, :rate_limited}} -> {:rate_limited_email, %{}}
+      _ -> {:rate_limiter_unavailable, %{}}
+    end
+  end
+
+  defp sso_login_url(org_slug, opts) do
+    query =
+      %{"o" => org_slug}
+      |> maybe_put("return_to", if(opts[:next] == "teams_signup", do: "/signup/teams"))
+
+    path = "/login?" <> URI.encode_query(query)
+
+    case normalize(opts[:base_url]) do
+      "" -> path
+      base_url -> String.trim_trailing(base_url, "/") <> path
+    end
   end
 
   @doc """
@@ -281,7 +471,11 @@ defmodule BridgeForTeams.LoginLinks do
   defp provider_lookup(_result), do: %{error: :lookup_failed}
 
   defp login_url(token, opts) do
-    path = "/auth/email/verify?" <> URI.encode_query(%{"token" => token})
+    query =
+      %{"token" => token}
+      |> maybe_put("next", if(opts[:next] == "teams_signup", do: "teams_signup"))
+
+    path = "/auth/email/verify?" <> URI.encode_query(query)
 
     case normalize(opts[:base_url]) do
       "" -> path

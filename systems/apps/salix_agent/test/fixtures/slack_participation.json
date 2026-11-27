@@ -3,7 +3,7 @@
     "name": "product_observation_without_a_request",
     "source": "Original Slack thread, read successfully: A teammate says: 我记得这个产品以前主要宣传端侧小模型，现在看起来更强调把事情做完、让用户少动手了。 There are no replies yet. No external marketing history has been independently verified.",
     "allowed_kinds": [
-      "reply"
+      "silence"
     ]
   },
   {
@@ -45,6 +45,51 @@
   {
     "name": "owned_investigation_without_new_evidence",
     "source": "Original Slack thread, read successfully: A reports webhook failures. B replies: I have the logs and am checking delivery now. There is no request to Comma, no new diagnostic evidence, and no distinct useful check Comma can perform with its available access. Recovery has not been confirmed.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  },
+  {
+    "name": "unaddressed_ambiguous_channel_question_without_context",
+    "source": "Original Slack thread in #general (Comma was not @mentioned), read successfully: A teammate casually asks: 不儿 enterprise的还不能用了么？ Recent channel messages before this are unrelated lunch and weather chatter. Available memory, channel history, and workspace records contain no relevant facts about which enterprise account or service A means.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  },
+  {
+    "name": "unaddressed_elliptical_channel_question_with_clear_context",
+    "source": "Original Slack thread in #general (Comma was not @mentioned), read successfully: Immediately after teammates discuss topping up personal Gemini Ultra accounts in this channel, A asks: 不儿 enterprise的还不能用了么？ Reliable team facts found in workspace records: monoid #6548 landed on 11/15 adding 「企业版 · Gemini Enterprise」 login under Add Profile -> Google Gemini (auto-binding license or entering a GCP Project ID), though the channel has not stated whether enterprise seats or quota are currently restricted.",
+    "allowed_kinds": [
+      "reply"
+    ],
+    "required_reply_patterns": [
+      "6548|Gemini Enterprise|企业版"
+    ]
+  },
+  {
+    "name": "unaddressed_channel_question_already_answered_in_after_context",
+    "source": "Original Slack thread in #general (Comma was not @mentioned), read successfully: Immediately after teammates discuss topping up personal Gemini Ultra accounts in channel_context.before, A asks: 不儿 enterprise的还不能用了么？ In channel_context.after (1 minute later in the same channel), B already answered directly: 可以用了，在 Add Profile -> Google Gemini 里选「企业版 · Gemini Enterprise」登录就行（#6548 已经合了）。 There is no contradiction, error, or remaining unaddressed question.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  },
+  {
+    "name": "unaddressed_engineering_musing_without_project_facts",
+    "source": "Original Slack thread in #still-fail (Comma was not @mentioned), read successfully: Immediately after saying '感觉得搞搞 session transcript 备份' in channel_context.before, the same teammate adds: '这玩意现在是单点，有点吓人'. There is no question or request to Comma, and available workspace records, PRs, and Slack history contain no existing transcript-backup task, PR, or design decision to report.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  },
+  {
+    "name": "unaddressed_inconclusive_history_must_stay_silent",
+    "source": "Original Slack thread in #general (Comma was not @mentioned), read successfully: A teammate casually asks: :吃瓜:公司梯子啥时候能有. Available Slack history only contains an old inconclusive discussion from Nov 20 debating proxy vendors and noting 1TB traffic might not be enough, with no purchase confirmation, owner commitment, or launch ETA.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  },
+  {
+    "name": "unaddressed_alert_known_owner_missing_logs_must_stay_silent",
+    "source": "Original Slack thread in #alerts (Comma was not @mentioned), read successfully: A teammate posts: 告警又响了：[P2][PROD] worker_queue_lag 超过阈值，不知道是哪个租户打满的. Project context notes <@U_ONCALL1> is primary on-call for worker_queue_lag alerts. Visible Slack history has no tenant ID, trace, or root cause, and Comma has no read access to production queue metrics or tenant traffic dashboards.",
     "allowed_kinds": [
       "silence"
     ]

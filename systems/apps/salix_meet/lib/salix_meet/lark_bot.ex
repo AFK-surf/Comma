@@ -349,25 +349,34 @@ defmodule SalixMeet.LarkBot do
         {:abandoned, {:lark_meeting_unavailable, code}}
 
       Map.has_key?(@blocked, code) ->
-        blocked = Map.fetch!(@blocked, code)
+        blocked(id, state, Map.fetch!(@blocked, code), now)
 
-        with {:ok, _doc, _etag} <-
-               Store.update_state_retrying(id, fn current ->
-                 bot =
-                   map(current["lark_bot"])
-                   |> Map.put("blocked", blocked)
-                   |> Map.put("retry_at", now + @blocked_retry_s)
-
-                 Map.put(current, "lark_bot", bot)
-               end) do
-          # Told once per Meeting: the notice key of the status is its own.
-          _ = status(state, id, "lark_join_blocked", %{"lark_reason" => blocked})
-          {:deferred, {:lark_meeting_blocked, blocked}}
-        end
+      # Forbidden with no code: the platform refused the bot this meeting, as
+      # it may for a meeting of another organization or a Lark tenant the
+      # feature is not open to yet. Asked again like any other refusal.
+      is_nil(code) and LarkMeetingBot.http_status(reason) == 403 ->
+        Logger.warning("lark meeting join refused meeting=#{id}: #{inspect(reason)}")
+        blocked(id, state, "refused", now)
 
       true ->
         Logger.warning("lark meeting join failed meeting=#{id}: #{inspect(reason)}")
         {:error, reason}
+    end
+  end
+
+  defp blocked(id, state, reason, now) do
+    with {:ok, _doc, _etag} <-
+           Store.update_state_retrying(id, fn current ->
+             bot =
+               map(current["lark_bot"])
+               |> Map.put("blocked", reason)
+               |> Map.put("retry_at", now + @blocked_retry_s)
+
+             Map.put(current, "lark_bot", bot)
+           end) do
+      # Told once per Meeting: the notice key of the status is its own.
+      _ = status(state, id, "lark_join_blocked", %{"lark_reason" => reason})
+      {:deferred, {:lark_meeting_blocked, reason}}
     end
   end
 
@@ -383,6 +392,7 @@ defmodule SalixMeet.LarkBot do
         "security_policy" -> "企业的安全策略不允许机器人入会。管理员可以在管理后台修改。"
         "app_permission" -> "应用缺少入会权限（vc:meeting.bot.join:write）。管理员可以在开发者后台添加并发布新版本。"
         "meeting_full" -> "会议人数已满。"
+        "refused" -> "飞书/Lark 拒绝了机器人的入会请求（HTTP 403）。机器人只能加入本组织的会议；Lark 上的这项功能仍在逐步开放，可能尚未对本组织开放。"
         _ -> "机器人正在另一个通话中。"
       end <> "会议结束前我会继续尝试。"
   end
@@ -410,6 +420,9 @@ defmodule SalixMeet.LarkBot do
 
         "meeting_full" ->
           "it is full."
+
+        "refused" ->
+          "Lark/Feishu refused the bot's request to join it (HTTP 403). The bot can join meetings of its own organization only, and on Lark the feature is still being rolled out, so it may not be open to this organization."
 
         _ ->
           "the bot is in another call."

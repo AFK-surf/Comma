@@ -17,6 +17,8 @@ import {
 } from "./taskChips";
 import { taskLoopFilterKey } from "./taskLoopLabels";
 import { requestPersonKey } from "./requestPeople";
+import { useOptionalCommaClientSettings } from "../commaClientSettings";
+import { TaskTogetherChip } from "../people/TogetherChip";
 import { taskOriginKey, taskOriginLabel, type TaskOriginKey } from "./taskOrigin";
 import type { TasksFilterLink } from "./taskChips";
 
@@ -36,8 +38,12 @@ type LoadedTask = {
   loop?: TaskLoop | undefined;
   /** Set on a Task a station hosts. */
   host?: TaskHostFacts | undefined;
+  /** Set on a still.fail station's chat: its page in still.fail. */
+  url?: string | undefined;
   /** Set on a Task accepted from another person's request. */
   requestedBy?: ProductInboxItem["requestedBy"];
+  /** Set on a Task together: the people it was started with. */
+  together?: readonly string[] | undefined;
 };
 
 type TaskHostFacts = {
@@ -128,7 +134,14 @@ export function useTaskBadges(
     () =>
       new Map(
         tasks.flatMap((task) =>
-          task.host ? [[task.conversationId, task.host] as const] : []
+          task.host
+            ? [
+                [
+                  task.conversationId,
+                  { ...task.host, stillfail: task.url !== undefined },
+                ] as const,
+              ]
+            : []
         )
       ),
     [tasks]
@@ -144,10 +157,21 @@ export function useTaskBadges(
     [tasks]
   );
 
+  const togethers = useMemo(
+    () =>
+      new Map(
+        tasks.flatMap((task) =>
+          task.together?.length ? [[task.conversationId, task.together] as const] : []
+        )
+      ),
+    [tasks]
+  );
+
   const renderTaskBadges = useCallback(
     (task: { conversationId: string; origin?: string | undefined }): ReactNode => {
       const host = hosts.get(task.conversationId);
       const requestedBy = requesters.get(task.conversationId);
+      const together = togethers.get(task.conversationId);
       const origin = taskOriginKey(task.origin);
       const loop = loops.get(task.conversationId);
       const pullRequest = pullRequests.get(task.conversationId);
@@ -170,19 +194,22 @@ export function useTaskBadges(
             ) : null}
           </>
         );
-      if (labels.length === 0 && !pullRequest && !origin && !loop) return null;
+      if (labels.length === 0 && !pullRequest && !origin && !loop && !together)
+        return null;
       return (
         <TaskBadgeChips
+          conversationId={task.conversationId}
           labels={labels}
           loop={loop}
           onOpen={onOpen}
           origin={origin}
           pullRequest={pullRequest}
           requestedBy={requestedBy}
+          together={together}
         />
       );
     },
-    [catalogById, hosts, loops, metaById, onOpen, pullRequests, requesters]
+    [catalogById, hosts, loops, metaById, onOpen, pullRequests, requesters, togethers]
   );
 
   return { catalog, catalogById, metaById, renderTaskBadges };
@@ -194,13 +221,17 @@ export function useTaskBadges(
  * sent it). With `onOpen` each chip opens the Tasks page narrowed to it; without, they are plain (a hover card).
  */
 export function TaskBadgeChips({
+  conversationId,
   labels,
   loop,
   onOpen,
   origin,
   pullRequest,
   requestedBy,
+  together,
 }: {
+  /** The Task the chips are of; a Task together's faces read its Members on hover. */
+  conversationId?: string | undefined;
   labels: readonly CommaTaskLabel[];
   /** A Loop Task: one a Loop runs or ran. */
   loop?: TaskLoop | undefined;
@@ -210,8 +241,11 @@ export function TaskBadgeChips({
   pullRequest?: TaskPullRequest | undefined;
   /** Who sent the request the Task came from: its chip names them. */
   requestedBy?: ProductInboxItem["requestedBy"];
+  /** A Task together: the people it was started with, whose faces stand in for its platform. */
+  together?: readonly string[] | undefined;
 }) {
   const messages = useCommaMessages();
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
   // A squeezed row keeps two chips; the trigger chip takes the first place.
   const folded = labels.length - (loop ? 1 : 2);
   return (
@@ -248,7 +282,9 @@ export function TaskBadgeChips({
           pullRequest={pullRequest}
         />
       ) : null}
-      {origin === "task_request" && requestedBy ? (
+      {peopleEnabled && together && conversationId ? (
+        <TaskTogetherChip conversationId={conversationId} people={together} />
+      ) : origin === "task_request" && requestedBy ? (
         <TaskRequestChip
           avatar={
             requestedBy.avatar

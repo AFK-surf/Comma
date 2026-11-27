@@ -74,21 +74,30 @@ defmodule CommaWeb.RecommendationLarkMemberSource do
           |> Enum.uniq_by(& &1["chat_id"])
           |> Enum.take(@chats)
 
-        names = chat_names(request, Enum.map(matches, & &1["chat_id"]))
+        {message_records, chat_name_failure} =
+          case chat_names(request, Enum.map(matches, & &1["chat_id"])) do
+            {:ok, names} ->
+              {Enum.flat_map(matches, fn message ->
+                 message_record(
+                   provider,
+                   message,
+                   Map.get(relation, message["message_id"], "mentioned_you"),
+                   names[message["chat_id"]]
+                 )
+               end), nil}
 
-        records =
-          Enum.flat_map(matches, fn message ->
-            message_record(
-              provider,
-              message,
-              Map.get(relation, message["message_id"], "mentioned_you"),
-              names[message["chat_id"]]
-            )
-          end) ++ Enum.flat_map(list(events), &event_record/1)
+            {:error, reason} ->
+              # A transient chat-name failure must not emit nameless messages
+              # whose context differs from steady state and drifts fingerprints.
+              {[], reason}
+          end
+
+        records = message_records ++ Enum.flat_map(list(events), &event_record/1)
 
         failures =
           for({:error, reason} <- reads, do: reason) ++
-            List.wrap(group_failure) ++ List.wrap(direct_failure)
+            List.wrap(group_failure) ++
+            List.wrap(direct_failure) ++ List.wrap(chat_name_failure)
 
         {:ok,
          RecommendationMemberRead.warn(
@@ -109,8 +118,8 @@ defmodule CommaWeb.RecommendationLarkMemberSource do
       "query" => "",
       "filter" =>
         Map.put(filter, "time_range", %{
-          "start_time" => DateTime.to_iso8601(since),
-          "end_time" => DateTime.to_iso8601(now)
+          "start_time" => search_time(since),
+          "end_time" => search_time(now)
         })
     }
 
@@ -122,6 +131,15 @@ defmodule CommaWeb.RecommendationLarkMemberSource do
       {:ok,
        for(%{"meta_data" => %{"message_id" => id}} <- list(data["items"]), is_binary(id), do: id)}
     end
+  end
+
+  # Feishu/Lark `/im/v1/messages/search` expects RFC3339 timestamps truncated
+  # to whole seconds with an explicit timezone offset (e.g. `+00:00`).
+  defp search_time(%DateTime{} = dt) do
+    dt
+    |> DateTime.truncate(:second)
+    |> DateTime.to_iso8601()
+    |> String.replace_suffix("Z", "+00:00")
   end
 
   # Invitations the member has not answered, cancelled ones aside.
@@ -152,8 +170,10 @@ defmodule CommaWeb.RecommendationLarkMemberSource do
     end
   end
 
-  # Names are context only: a chat whose name could not be read keeps its record.
-  defp chat_names(_request, []), do: %{}
+  # Names are context only when permanently unavailable (e.g. missing scope),
+  # which stays constant across polls. A transient failure returns an error so
+  # messages are not re-emitted without chat names and re-judged twice.
+  defp chat_names(_request, []), do: {:ok, %{}}
 
   defp chat_names(request, chat_ids) do
     case request.(:post, "/im/v1/chats/batch_query",
@@ -161,13 +181,16 @@ defmodule CommaWeb.RecommendationLarkMemberSource do
            json: %{"chat_ids" => Enum.uniq(chat_ids)}
          ) do
       {:ok, data} ->
-        for %{"chat_id" => id} = chat <- list(data["items"]),
-            is_binary(chat["name"]) and chat["name"] != "",
-            into: %{},
-            do: {id, chat["name"]}
+        names =
+          for %{"chat_id" => id} = chat <- list(data["items"]),
+              is_binary(chat["name"]) and chat["name"] != "",
+              into: %{},
+              do: {id, chat["name"]}
 
-      {:error, _} ->
-        %{}
+        {:ok, names}
+
+      {:error, reason} ->
+        if RecommendationMemberRead.transient?(reason), do: {:error, reason}, else: {:ok, %{}}
     end
   end
 

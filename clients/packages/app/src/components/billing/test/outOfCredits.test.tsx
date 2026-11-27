@@ -34,7 +34,9 @@ describe("showOutOfCreditsToast", () => {
     // A toast action does not close its toast on its own; this one must, or
     // the refusal would still be showing over the billing page it opened.
     await user.click(screen.getByRole("button", { name: "Add credits" }));
-    expect(window.location.hash).toBe("#/settings?category=usage-billing");
+    expect(window.location.hash).toBe(
+      "#/settings?category=usage-billing&from=out_of_credits"
+    );
     await waitFor(() =>
       expect(screen.queryByTestId(OUT_OF_CREDITS_TOAST_ID)).not.toBeInTheDocument()
     );

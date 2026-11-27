@@ -1,6 +1,7 @@
 ---
 name: github
 description: Work with GitHub through the `gh` CLI, including issues, pull requests, reviews, Actions runs, releases, repository metadata, API queries, and CLI authentication/setup on persistent environments.
+prompt_summary: "Work with GitHub repos, PRs, issues, CI, and releases; prefer connected official MCP or existing native/Composio auth before re-authorizing or CLI."
 ---
 
 # GitHub

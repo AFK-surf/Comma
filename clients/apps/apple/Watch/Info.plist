@@ -46,6 +46,7 @@
 	<key>WKSupportsLiveActivityLaunchAttributeTypes</key>
 	<array>
 		<string>TaskActivityAttributes</string>
+		<string>LiveStatusAttributes</string>
 	</array>
 </dict>
 </plist>

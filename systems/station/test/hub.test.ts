@@ -526,6 +526,17 @@ test("a connect's runtime, profile and model decide the session", async () => {
   await r.close();
 });
 
+test("an agent is told of the browser tools only when its runtime gives them to its sessions", async () => {
+  const r = new Rig();
+  r.codex.browserTools = true;
+  await r.accept(say("<@UGPT> open the page"), "gpt");
+  await r.accept(message());
+  await settle();
+  assert.match(r.codex.last().options.instructions, /# Browser/);
+  assert.doesNotMatch(r.claude.last().options.instructions, /# Browser/);
+  await r.close();
+});
+
 test("two connects in one thread keep separate sessions, share its messages and reply through their own connection", async () => {
   const r = new Rig();
   const root = say("<@UBOT> <@UGPT> compare notes");
@@ -1187,6 +1198,42 @@ test("the Slack thread a turn works for says what the agent is doing until the t
   );
   assert.equal(r.chat.statuses[0]![0], `C1/${m.threadTs}`);
   assert.equal(r.chat.statuses[0]![1], m.ts, "the message that started it, for the fallback reaction");
+  await r.close();
+});
+
+test("the station says a session is using its browser from a browser tool until the browser closes, the turn ends, or the runtime goes", async () => {
+  const r = new Rig();
+  let changes = 0;
+  const stop = r.hub.onBrowsing(() => changes++);
+  const browse = (session: ReturnType<typeof r.claude.last>, id: string, tool: string) => session.events({ type: "live", event: { kind: "start", id, step: "tool", tool: `mcp__playwright__${tool}` } });
+  await r.accept(say("<@UBOT> look at the page"));
+  await settle();
+  const session = r.claude.last();
+  // Another tool opens no browser.
+  session.events({ type: "live", event: { kind: "start", id: "t1", step: "tool", tool: "Bash" } });
+  assert.deepEqual([r.hub.browsing(), changes], [false, 0]);
+  // The first browser tool does, said once.
+  browse(session, "t2", "browser_navigate");
+  browse(session, "t3", "browser_click");
+  assert.deepEqual([r.hub.browsing(), changes], [true, 1]);
+  // It closed the browser: nothing is on the display; another browser tool opens it again.
+  browse(session, "t4", "browser_close");
+  assert.deepEqual([r.hub.browsing(), changes], [false, 2]);
+  browse(session, "t5", "browser_navigate");
+  assert.deepEqual([r.hub.browsing(), changes], [true, 3]);
+  // The turn ended: a later turn that uses no browser shows nothing of it.
+  session.complete();
+  await settle();
+  assert.deepEqual([r.hub.browsing(), changes], [false, 4]);
+  // The runtime's process went while it used the browser.
+  await r.accept(say("<@UBOT> once more"));
+  await settle();
+  browse(r.claude.last(), "t6", "browser_navigate");
+  assert.deepEqual([r.hub.browsing(), changes], [true, 5]);
+  r.claude.last().events({ type: "closed", why: "exited" });
+  await settle();
+  assert.deepEqual([r.hub.browsing(), changes], [false, 6]);
+  stop();
   await r.close();
 });
 

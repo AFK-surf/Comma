@@ -6,7 +6,8 @@ import type { BftSession, BftWizardStep } from "./api";
  * first organization), `/orgs/:org`, `/orgs/:org/operations` (plus the old
  * `/orgs/:org/operations/:tab` bookmarks), `/orgs/:org/members`,
  * `/orgs/:org/fin` (Runners), `/orgs/:org/plugins`, the Settings pages,
- * the Meetings pages, `/orgs/:org/daily-brief`, the Slack triage pages, `/orgs/:org/information-flow` (Data policy),
+ * the Meetings pages, `/orgs/:org/daily-brief`, the Slack triage pages, the
+ * Feishu / Lark triage pages, `/orgs/:org/information-flow` (Data policy),
  * `/orgs/:org/projects`, every page of an Agent Swarm: Overview, Agents,
  * Devices, Plugins, Skills, Tasks, Connections and Settings
  * (`/orgs/:org/projects/:id[/agents|/devices|/plugins|/skills|/stillfail|/tasks|/connections|/settings]`,
@@ -38,6 +39,7 @@ const legacySections: Record<string, [SettingsPage, string]> = {
 
 export type MeetingsView = "upcoming" | "past" | "settings";
 export type TriageView = "overview" | "timeline" | "knowledge";
+export type LarkTriageView = "overview" | "timeline";
 
 export type BftRoute =
   | { name: "root" }
@@ -50,6 +52,7 @@ export type BftRoute =
   | { name: "org-data-policy"; org: string }
   | { name: "org-daily-brief"; org: string }
   | { name: "org-meetings"; org: string; view: MeetingsView }
+  | { name: "org-lark-triage"; org: string; view: LarkTriageView }
   | {
       name: "org-triage";
       org: string;
@@ -176,6 +179,14 @@ export function matchRoute(pathname: string): BftRoute {
         name: "org-meetings",
         org: decodeURIComponent(meetings[1]),
         view: (meetings[2] as MeetingsView | undefined) ?? "upcoming",
+      };
+    }
+    const larkTriage = /^\/orgs\/([^/]+)\/lark-triage(?:\/(timeline))?$/.exec(path);
+    if (larkTriage?.[1]) {
+      return {
+        name: "org-lark-triage",
+        org: decodeURIComponent(larkTriage[1]),
+        view: larkTriage[2] === "timeline" ? "timeline" : "overview",
       };
     }
     const triage =

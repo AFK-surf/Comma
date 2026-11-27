@@ -1,0 +1,63 @@
+{
+  "units": "millimetres; Blender axes (x across the open device, y along the hinge with the top at +y, z out of the inner display); glTF swaps to x, z, -y",
+  "half": {
+    "width": 82.4,
+    "height": 117.2,
+    "thickness": 5.0
+  },
+  "hinge": {
+    "node": "Hinge",
+    "axis": "+y",
+    "pivot": [0, 0, 0.475],
+    "angle": "180 - opening, degrees"
+  },
+  "spine": {
+    "node": "SpineHinge",
+    "angle": "(180 - opening) / 2, degrees",
+    "path": {
+      "0": [-0.875, 0, 0.475],
+      "15": [-1.052, 0, 0.28],
+      "30": [-1.229, 0, 0.086],
+      "45": [-1.406, 0, -0.109],
+      "60": [-1.308, 0, -0.282],
+      "75": [-1.201, 0, -0.449],
+      "90": [-1.049, 0, -0.574],
+      "105": [-0.856, 0, -0.766],
+      "120": [-0.687, 0, -0.87],
+      "135": [-0.68, 0, -1.165],
+      "150": [-0.453, 0, -1.435],
+      "165": [-0.227, 0, -1.705],
+      "180": [0.0, 0, -1.975]
+    }
+  },
+  "crease": {
+    "node": "ScreenInner_Crease",
+    "half_width": 7.9,
+    "lift": 0.12,
+    "segments": 18,
+    "rows": [-55.41065217391304, 55.41065217391304],
+    "morph": "Fold<theta> for theta = 5..180 step 5"
+  },
+  "screens": {
+    "inner": {
+      "nodes": ["ScreenInner_Camera", "ScreenInner_Crease", "ScreenInner_Cover"],
+      "uv_box": [
+        -78.76760869565217, -55.41065217391304, 78.76760869565217, 55.41065217391304
+      ],
+      "u": "across the open device from the cover half (u 0) to the camera half (u 1)",
+      "v": "along the hinge, top v 1"
+    },
+    "cover": {
+      "node": "ScreenCover",
+      "uv_box": [
+        2.6030434782608722, -56.15608695652173, 79.79695652173913, 56.15608695652173
+      ],
+      "u": "across, from the hinge (u 0) when closed and seen from outside",
+      "v": "along the hinge, top v 1"
+    }
+  },
+  "animation": {
+    "fps": 24,
+    "frame": "180 - opening"
+  }
+}

@@ -41,6 +41,7 @@ extension TaskBucket {
     var label: LocalizedStringResource {
         switch self {
         case .inProgress: "In progress"
+        case .loops: "Automated"
         case .needsReview: "Needs review"
         case .done: "Done"
         case .cancelled: "Cancelled"

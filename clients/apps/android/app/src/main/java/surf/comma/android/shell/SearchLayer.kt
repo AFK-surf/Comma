@@ -64,6 +64,9 @@ class SearchLayer(private val shell: Shell, private val onClosed: () -> Unit) : 
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(activity.dp(16), activity.dp(8), activity.dp(16), activity.dp(8))
+        // The field's and the close button's shadows reach past the bar's padding.
+        clipToPadding = false
+        clipChildren = false
     }
     private var results: List<TaskSummary>? = null
     private var failed = false
@@ -77,6 +80,8 @@ class SearchLayer(private val shell: Shell, private val onClosed: () -> Unit) : 
         id = R.id.search_field
         setBackgroundColor(activity.getColor(R.color.token_bg_primary))
         isClickable = true
+        // The bar's shadows fall below it, into the room kept for the navigation bar or the keyboard.
+        clipChildren = false
         addView(list, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(placeholder, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(hint, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL))

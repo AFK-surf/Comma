@@ -69,7 +69,7 @@ export const InboxRow = memo(function InboxRow({
   const menu = useInboxItemMenu();
   const openTasksFilter = useOpenTasksFilter();
   // Every Inbox row is a Task, so it draws the same status glyph as Properties.
-  const statusBucket = taskStatusBucket(status);
+  const statusBucket = taskStatusBucket(status, { loopState: loop?.state });
   const relativeTime = formatCompactRelative(updatedAt, locale);
 
   return (

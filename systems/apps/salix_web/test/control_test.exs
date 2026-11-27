@@ -111,6 +111,29 @@ defmodule SalixWeb.ControlTest do
     assert current["ifc"] == %{"mode" => "enforce", "language" => "en"}
   end
 
+  test "easy and hard are explicit modes and preserve the supervisor setting" do
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Easy and Hard"}, tenant_id())
+    supervisors = ["provider_user|cnx1|U_ADMIN"]
+
+    {:ok, _} =
+      Salix.Control.Groups.update(
+        group["group_id"],
+        %{"ifc" => %{"supervisors" => supervisors}},
+        tenant_id()
+      )
+
+    for mode <- ["easy", "hard"] do
+      assert {:ok, saved} =
+               Salix.Control.Groups.update(
+                 group["group_id"],
+                 %{"ifc" => %{"mode" => mode}},
+                 tenant_id()
+               )
+
+      assert saved["ifc"] == %{"mode" => mode, "supervisors" => supervisors}
+    end
+  end
+
   test "a group's supervisors are provider users, at most fifty" do
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Supervised"}, tenant_id())
     group_id = group["group_id"]

@@ -1,6 +1,7 @@
 import { PageLoading } from "@comma/ui/components/PageLoading";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
 import {
   PluginCatalog,
   PluginDetail,
@@ -32,6 +33,10 @@ import { SkillDetailPage } from "./SkillDetailPage";
 import { usePluginPersonalSources } from "./usePluginPersonalSources";
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
 import { useWorkspaceSkillsState } from "../chat/useWorkspaceSkills";
+import { openNativePlatformExternalUrl } from "../../nativePlatformActions";
+
+/** Where a person revokes the Google access granted to Google Colab. */
+const GOOGLE_PERMISSIONS_URL = "https://myaccount.google.com/permissions";
 
 export function PluginsRoute() {
   const installation = usePluginInstall();
@@ -85,6 +90,7 @@ export function PluginsRoute() {
   const [catalogTab, setCatalogTab] = useState<PluginCatalogTab>("plugins");
   const [selectedSkillId, setSelectedSkillId] = useState<string>();
   const [skillCategoryId, setSkillCategoryId] = useState<string>();
+  const [confirmUninstallColab, setConfirmUninstallColab] = useState(false);
 
   const workspaceId = state.status === "ready" ? state.workspace : undefined;
   useEffect(() => {
@@ -138,6 +144,10 @@ export function PluginsRoute() {
     }
     if (installed) {
       void installation.install({ pluginId, workspaceId });
+      return;
+    }
+    if (pluginId === "google-colab") {
+      setConfirmUninstallColab(true);
       return;
     }
     // The core stops an install under way first; a failure is its notice.
@@ -206,6 +216,54 @@ export function PluginsRoute() {
           url={scanning.scan.url}
         />
       ) : null}
+      {confirmUninstallColab ? (
+        <Dialog
+          isOpen
+          onOpenChange={(open) => {
+            if (!open) setConfirmUninstallColab(false);
+          }}
+          title={messages.plugins_colab_uninstall_title()}
+          actions={[
+            {
+              label: messages.plugins_personal_source_cancel(),
+              hierarchy: "secondary-gray",
+              onPress: () => setConfirmUninstallColab(false),
+            },
+            {
+              label: messages.plugins_uninstall(),
+              hierarchy: "destructive",
+              onPress: () => {
+                setConfirmUninstallColab(false);
+                void call("plugin.uninstall", {
+                  plugin: "google-colab",
+                  workspace: state.workspace,
+                }).catch(() => undefined);
+              },
+            },
+          ]}
+        >
+          <div className="flex w-full flex-col gap-md">
+            <p className="m-0 text-sm text-primary">
+              {messages.plugins_colab_uninstall_description()}
+            </p>
+            <div className="flex flex-col gap-xs border-t border-secondary pt-md">
+              <p className="m-0 text-xs text-tertiary">
+                {messages.plugins_colab_uninstall_revoke_hint()}
+              </p>
+              <Button
+                className="w-fit"
+                hierarchy="link-color"
+                onPress={() =>
+                  void openNativePlatformExternalUrl(GOOGLE_PERMISSIONS_URL)
+                }
+                size="sm"
+              >
+                {messages.plugins_colab_uninstall_revoke_link()}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      ) : null}
     </>
   );
 
@@ -267,12 +325,13 @@ export function PluginsRoute() {
 
   if (selectedPlugin) {
     const reauthorizingConnectionId = selectedPlugin.reauthorizing;
-    const reauthorize = (connectionId: string) => {
+    const reauthorize = (connectionId: string, bindingId?: string) => {
       personalSources.cancel();
       void installation.reauthorize({
         pluginId: selectedPlugin.id,
         workspaceId: state.workspace,
         connectionId,
+        ...(bindingId ? { bindingId } : {}),
       });
     };
     const plugin = withMcpGrants(definitionById.get(selectedPlugin.id)!, {
@@ -334,7 +393,6 @@ export function PluginsRoute() {
           <>
             {selectedPlugin.stations ? (
               <PluginStations
-                icon={plugin.icon}
                 plugin={selectedPlugin.id}
                 workspace={state.workspace}
                 onConnectAnother={() => void mutatePlugin(selectedPlugin.id, true)}

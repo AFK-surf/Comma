@@ -235,7 +235,10 @@ export function useTaskFileMenu({
     ) : null;
 
   // The file the menu is open on, by its place in the Task: a read of the list while it is open gives new objects.
-  const openOn = state.isOpen && file ? `${file.message_id}:${file.index}` : undefined;
+  const openOn =
+    state.isOpen && file
+      ? (file.path ?? `${file.message_id}:${file.index}`)
+      : undefined;
   return { menu, open, openOn };
 }
 

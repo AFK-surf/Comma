@@ -371,6 +371,61 @@ describe("ChatCoordinator", () => {
     coordinator.close();
   });
 
+  it("reads a collaborative task image through fetchGroupFile with its taskId", async () => {
+    const imageBytes = Uint8Array.of(137, 80, 78, 71);
+    const previewBytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
+    const renderGroupImagePreview = vi.fn(async () => previewBytes);
+    const api = {
+      fetchGroupFile: vi.fn(async () => new Blob([imageBytes], { type: "image/png" })),
+    } as Partial<PromiseChatApi> as PromiseChatApi;
+    const coordinator = new ChatCoordinator({
+      createApi: () => api,
+      renderGroupImagePreview,
+    });
+    const uploadedTaskPath = `/task/cnv1_collab/uploads/${"a".repeat(22)}-image.png`;
+    const workerTaskPath = "/task/charts/plot.png";
+
+    await expect(
+      coordinator.readGroupImage({
+        groupId: "grp_1",
+        path: uploadedTaskPath,
+        source: "group-file",
+      })
+    ).resolves.toEqual(previewBytes);
+    expect(api.fetchGroupFile).toHaveBeenCalledWith("grp_1", uploadedTaskPath, {
+      taskId: "cnv1_collab",
+    });
+
+    await expect(
+      coordinator.readGroupImage({
+        conversationId: "cnv1_collab",
+        groupId: "grp_1",
+        path: workerTaskPath,
+        source: "group-file",
+      })
+    ).resolves.toEqual(previewBytes);
+    expect(api.fetchGroupFile).toHaveBeenLastCalledWith("grp_1", workerTaskPath, {
+      taskId: "cnv1_collab",
+    });
+
+    await expect(
+      coordinator.readGroupImage({
+        groupId: "grp_1",
+        path: workerTaskPath,
+        source: "group-file",
+      })
+    ).rejects.toThrow("Workspace image response is unavailable.");
+    await expect(
+      coordinator.readGroupImage({
+        groupId: "grp_1",
+        path: "/task/cnv1_collab/../secret.png",
+        source: "group-file",
+      })
+    ).rejects.toThrow();
+    expect(api.fetchGroupFile).toHaveBeenCalledTimes(2);
+    coordinator.close();
+  });
+
   it("reads an Agent image by its blob reference without looking up a Message", async () => {
     const imageBytes = Uint8Array.of(137, 80, 78, 71);
     const previewBytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);

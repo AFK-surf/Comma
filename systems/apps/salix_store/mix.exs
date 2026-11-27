@@ -44,6 +44,7 @@ defmodule SalixStore.MixProject do
       {:systems_observability, in_umbrella: true},
       {:systems_clock, in_umbrella: true},
       {:systems_runtime, in_umbrella: true},
+      {:salix_verified_kernel, path: "../../native/verified_kernel"},
       {:ecto_sql, "~> 3.12"},
       {:oban, "~> 2.23"},
       {:phoenix_pubsub, "~> 2.1"},

@@ -157,8 +157,23 @@ defmodule SalixMeet.CommaProviderTest do
     assert {:ok, %{"meeting_id" => ^first, "status" => "already_active"}} =
              CommaProvider.join_from_router(again, %{})
 
-    elsewhere = %{again | "conversation_id" => SalixStore.Ids.new_conversation_id()}
-    assert {:ok, %{"meeting_id" => other}} = CommaProvider.join_from_router(elsewhere, %{})
+    elsewhere_same = %{again | "conversation_id" => SalixStore.Ids.new_conversation_id()}
+
+    assert {:ok,
+            %{"meeting_id" => ^first, "status" => "already_in_meeting", "provider" => "comma"}} =
+             CommaProvider.join_from_router(elsewhere_same, %{})
+
+    assert length(RuntimeDriver.calls()) == 1
+    assert length(Chat.posts()) == 1
+
+    elsewhere_other = %{
+      elsewhere_same
+      | "text" => "join https://meet.google.com/xyz-abcd-efg"
+    }
+
+    assert {:ok, %{"meeting_id" => other, "status" => "joining"}} =
+             CommaProvider.join_from_router(elsewhere_other, %{})
+
     assert other != first
     assert length(RuntimeDriver.calls()) == 2
     assert length(Chat.posts()) == 2

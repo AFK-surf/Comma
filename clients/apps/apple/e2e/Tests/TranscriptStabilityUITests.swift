@@ -67,6 +67,24 @@ import XCTest
         XCTAssertEqual(counts["blank"], 0, "The reader must never be left past the end of the content (\(counts))")
     }
 
+    /// Read far up a long chat, one tap goes back to the newest reply: the button shows only away from the end and
+    /// leaves once back there.
+    func testJumpToLatestReturnsFromFarUpTheChat() throws {
+        let app = XCUIApplication.fixture(arguments: ["--perf-varied-chat", "--hide-metrics"])
+        app.openRouterChat()
+        XCTAssertTrue(note(app, 599).waitUntilHittable(timeout: 10), "The chat opens on its newest reply")
+        let jump = app.buttons["jumpToLatest"]
+        XCTAssertFalse(jump.exists, "At the end there is nothing to jump to")
+        for _ in 0..<6 { app.swipeDown(velocity: .fast) }
+        XCTAssertTrue(jump.waitUntilHittable(), "Several screens up, the jump to the latest message shows")
+        XCTAssertFalse(note(app, 599).isHittable)
+        Thread.sleep(forTimeInterval: 1)
+        jump.tap()
+        XCTAssertTrue(note(app, 599).waitUntilHittable(timeout: 5), "The jump brings back the newest reply")
+        XCTAssertTrue(jump.waitUntilGone(), "Back at the end the button leaves")
+        Thread.sleep(forTimeInterval: 1)
+    }
+
     /// The newest reply answers a message far above the rows the transcript first shows; its quote takes the reader
     /// there.
     func testReplyPreviewRevealsATargetAboveTheShownRows() throws {

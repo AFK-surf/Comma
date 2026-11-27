@@ -89,4 +89,181 @@ defmodule CommaWeb.OpenThreadsTest do
     assert String.valid?(cut["text"]) and cut["text"] != ""
     assert byte_size(Jason.encode!(cut)) <= 24_000
   end
+
+  test "Slack member read paginates past one chatty thread and keeps more than ten distinct threads and DMs" do
+    alias CommaWeb.RecommendationSlackMemberSource
+
+    page_1_threads =
+      for i <- 1..15 do
+        %{
+          "text" => "noisy reply #{i}",
+          "user" => "UOTHER",
+          "ts" => "1761990#{String.pad_leading("#{i}", 3, "0")}.000100",
+          "channel" => %{"id" => "C1"},
+          "permalink" =>
+            "https://team.slack.com/archives/C1/p1761990#{i}?thread_ts=1761900001.000100"
+        }
+      end
+
+    page_2_threads =
+      for t <- 2..16 do
+        %{
+          "text" => "waiting on you in thread #{t}",
+          "user" => "UOTHER",
+          "ts" => "1761980#{String.pad_leading("#{t}", 3, "0")}.000100",
+          "channel" => %{"id" => "C1"},
+          "permalink" =>
+            "https://team.slack.com/archives/C1/p1761980#{t}?thread_ts=1761900#{String.pad_leading("#{t}", 3, "0")}.000100"
+        }
+      end
+
+    dms =
+      for d <- 1..14 do
+        %{
+          "text" => "dm #{d}",
+          "user" => "U#{d}",
+          "ts" => "1761970#{String.pad_leading("#{d}", 3, "0")}.000100",
+          "channel" => %{"id" => "D#{d}", "is_im" => true},
+          "permalink" => "https://team.slack.com/archives/D#{d}/p1761970#{d}"
+        }
+      end
+
+    request = fn "GET", url, _opts ->
+      uri = URI.parse(url)
+      params = URI.decode_query(uri.query || "")
+
+      case {uri.path, params["query"], params["page"]} do
+        {"/api/auth.test", _, _} ->
+          {:ok, %{"ok" => true, "user_id" => "UME1", "team_id" => "T1"}}
+
+        {"/api/search.messages", "<@UME1>" <> _, _} ->
+          {:ok, %{"ok" => true, "messages" => %{"matches" => [], "paging" => %{"pages" => 1}}}}
+
+        {"/api/search.messages", "to:me" <> _, "1"} ->
+          {:ok, %{"ok" => true, "messages" => %{"matches" => dms, "paging" => %{"pages" => 1}}}}
+
+        {"/api/search.messages", "is:thread" <> _, "1"} ->
+          {:ok,
+           %{
+             "ok" => true,
+             "messages" => %{"matches" => page_1_threads, "paging" => %{"pages" => 2}}
+           }}
+
+        {"/api/search.messages", "is:thread" <> _, "2"} ->
+          {:ok,
+           %{
+             "ok" => true,
+             "messages" => %{"matches" => page_2_threads, "paging" => %{"pages" => 2}}
+           }}
+      end
+    end
+
+    assert {:ok, %{"messages" => %{"matches" => matches}}, _subject} =
+             RecommendationSlackMemberSource.read(request, ~U[2026-11-19 00:00:00Z])
+
+    by_rel = Enum.group_by(matches, & &1["memberRelation"])
+    assert length(by_rel["direct_message_to_you"]) == 14
+    assert length(by_rel["replied_in_your_thread"]) == 16
+  end
+
+  test "own_messages paginates until since_ts and thread_news falls back to channel replies" do
+    alias CommaWeb.RecommendationSlackMemberSource
+
+    request = fn "GET", url, _opts ->
+      uri = URI.parse(url)
+      params = URI.decode_query(uri.query || "")
+
+      case {uri.path, params["page"]} do
+        {"/api/auth.test", _} ->
+          {:ok, %{"ok" => true, "user_id" => "UME1", "team_id" => "T1", "user" => "me"}}
+
+        {"/api/search.messages", "1"} ->
+          {:ok,
+           %{
+             "ok" => true,
+             "messages" => %{
+               "matches" => [
+                 %{
+                   "user" => "UME1",
+                   "text" => "newest",
+                   "ts" => "1761990300.000100",
+                   "channel" => %{"id" => "C1", "name" => "eng"},
+                   "permalink" => "https://team.slack.com/archives/C1/p1761990300000100"
+                 }
+               ],
+               "paging" => %{"pages" => 3}
+             }
+           }}
+
+        {"/api/search.messages", "2"} ->
+          {:ok,
+           %{
+             "ok" => true,
+             "messages" => %{
+               "matches" => [
+                 %{
+                   "user" => "UME1",
+                   "text" => "just after cursor",
+                   "ts" => "1761990200.000100",
+                   "channel" => %{"id" => "C1", "name" => "eng"},
+                   "permalink" => "https://team.slack.com/archives/C1/p1761990200000100"
+                 },
+                 %{
+                   "user" => "UME1",
+                   "text" => "at cursor",
+                   "ts" => "1761990100.000100",
+                   "channel" => %{"id" => "C1", "name" => "eng"},
+                   "permalink" => "https://team.slack.com/archives/C1/p1761990100000100"
+                 }
+               ],
+               "paging" => %{"pages" => 3}
+             }
+           }}
+
+        {"/api/conversations.replies", _} ->
+          # Only the root post itself, no thread replies.
+          {:ok,
+           %{
+             "ok" => true,
+             "messages" => [%{"user" => "UME1", "ts" => "1761990200.000100", "text" => "root"}]
+           }}
+
+        {"/api/conversations.history", _} ->
+          # Slack history returns newest first; a reply in another thread is ignored.
+          {:ok,
+           %{
+             "ok" => true,
+             "messages" => [
+               %{
+                 "user" => "UOTHER",
+                 "ts" => "1761990260.000100",
+                 "thread_ts" => "1761900000.000100",
+                 "text" => "other thread"
+               },
+               %{
+                 "user" => "UOTHER",
+                 "ts" => "1761990250.000100",
+                 "text" => "Answered directly in channel"
+               }
+             ]
+           }}
+      end
+    end
+
+    # Stops at page 2 once `since_ts` is reached (page 3 would fail CaseClauseError if called).
+    assert {:ok, own, _subject} =
+             RecommendationSlackMemberSource.own_messages(
+               request,
+               ~U[2026-11-19 00:00:00Z],
+               nil,
+               since_ts: "1761990100.000100"
+             )
+
+    assert Enum.map(own, & &1["text"]) == ["newest", "just after cursor", "at cursor"]
+
+    assert {:ok, %{"t1" => [%{"from" => "other", "text" => "Answered directly in channel"}]}} =
+             RecommendationSlackMemberSource.thread_news(request, %{
+               "t1" => {"C1", "1761990200.000100", "1761990200.000100"}
+             })
+  end
 end

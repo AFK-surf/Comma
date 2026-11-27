@@ -240,6 +240,7 @@ internal interface QuestionCardHost {
 internal class QuestionReceiptLabels(
     val sending: String,
     val skipped: String,
+    val dismissed: String = skipped,
     val replied: String,
     val replaced: String,
 )
@@ -258,7 +259,7 @@ internal fun questionAnswerLine(question: AgentQuestion): String {
 internal fun questionReceiptLine(question: AgentQuestion, labels: QuestionReceiptLabels): String = when (question.state.status) {
     QuestionStatus.ANSWERED -> questionAnswerLine(question)
     QuestionStatus.SENDING -> questionAnswerLine(question).let { if (it.isEmpty()) labels.sending else "$it · ${labels.sending}" }
-    QuestionStatus.SKIPPED -> labels.skipped
+    QuestionStatus.SKIPPED -> if (question.dismissOnSkip) labels.dismissed else labels.skipped
     QuestionStatus.REPLIED -> labels.replied
     QuestionStatus.REPLACED -> labels.replaced
     QuestionStatus.OPEN, QuestionStatus.FAILED -> ""

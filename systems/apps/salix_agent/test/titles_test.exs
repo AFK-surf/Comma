@@ -190,6 +190,7 @@ defmodule SalixAgent.TitlesTest do
     assert [%{role: "system", content: _sys}, %{role: "user", content: user}] = messages
     assert user =~ "<conversation_content>\nset up CI for the repo\n</conversation_content>"
   end
+
   # The staged Delivery engine is retired (docs/salix/conversation-owner-actor.md
   # §3.4): fixtures commit through the public rpc ingress instead. A wakeable
   # delivery now runs its round at deliver time (the rpc itself is the wake);

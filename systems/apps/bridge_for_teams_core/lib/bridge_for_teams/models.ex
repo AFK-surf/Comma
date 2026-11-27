@@ -20,6 +20,18 @@ defmodule BridgeForTeams.Models do
       model of its own (`SalixAgent.TaskModel`); Salix reads it when it makes
       the Task (`default_task_model/1`). nil = the platform model.
 
+  A Router of an org whose tenant has a platform Router
+  (`SalixAgent.PlatformRouter`) holds the marked catalog choice
+  `"platform" => true`. Only the platform admin stores it: no org write
+  offers, allows or stores a marked choice, and an org admin who gives the
+  Router another model cannot give the marked one back (`platform?/1`). The
+  platform admin's option decides whether the org's API keys follow its
+  subscriptions in the fallback; a marked choice then also carries
+  `"allow_paid" => true` (key suffix `+paid+platform`) and is still never
+  offered or allowed.
+  While the platform Router exists, every new Router takes it, so the default
+  Router model has no effect (`platform_router/1`).
+
   Each choice has a stable string `key/1` for UI state. The API exchanges the
   choice maps.
   """
@@ -75,11 +87,15 @@ defmodule BridgeForTeams.Models do
   sources, such as `"codex"`) and `key_sources` (the names of the Provider API
   key sources that serve it pay-per-use, such as `"OpenRouter"`). Custom
   endpoints add the model ids they list. Reads at most 100 accounts
-  (`SalixAgent.AccountPool.servable_models/2`).
+  (`SalixAgent.AccountPool.servable_models/2`); a cut list is an error
+  (`:truncated`), since a model it leaves out is not known to be unserved.
   """
   @spec servable(Organization.t()) :: {:ok, %{String.t() => map()}} | {:error, term()}
   def servable(%Organization{salix_tenant_id: tenant}) when is_binary(tenant) do
     case Client.call_optional(:servable_models, [tenant]) do
+      {:ok, %{"truncated" => true}} ->
+        {:error, :truncated}
+
       {:ok, %{"models" => models}} when is_list(models) ->
         {:ok,
          for %{"id" => id} = model <- models, is_binary(id), into: %{} do
@@ -105,6 +121,87 @@ defmodule BridgeForTeams.Models do
   def servable(%Organization{}), do: {:ok, %{}}
 
   @doc """
+  The choices a swarm model picker offers: those the org admins can give to
+  an Agent (`allowed?/3`) that an enabled account of the org serves now, by
+  `servable/1`'s result. A catalog choice no account serves stops every round
+  it runs (`model_unavailable`), so a picker does not offer it.
+
+  With an allowed list, its choices that an account serves, as the admins
+  stored them: a plain choice for a subscription, a pay-per-use choice
+  (`allow_paid`) for a Provider API key. Without one, each catalog model a
+  subscription serves as a plain choice and each model a key serves as a
+  pay-per-use choice, then the pay-per-use choices of the models only a
+  custom endpoint lists. `paid_label` labels each pay-per-use choice. When
+  what serves each model is unknown, the allowed choices are returned as
+  `allowed/2` gives them.
+  """
+  @spec offered(
+          Organization.t(),
+          {:ok, [option()]} | {:error, term()},
+          {:ok, map()} | {:error, term()},
+          (option() -> String.t())
+        ) :: [option()]
+  def offered(%Organization{allowed_models: [_ | _]} = org, catalog_result, served, paid_label) do
+    {:ok, options} = allowed(org, catalog_result)
+    catalog = with {:ok, catalog} <- catalog_result, do: catalog, else: (_error -> [])
+
+    for option <- options, served?(option["choice"], served) do
+      case option["choice"] do
+        %{"allow_paid" => true} = choice ->
+          plain = option(Map.put(choice, "allow_paid", false), catalog)
+          %{option | "label" => paid_label.(plain), "vendor" => plain["vendor"]}
+
+        _plain ->
+          option
+      end
+    end
+  end
+
+  def offered(%Organization{}, {:ok, catalog}, {:ok, served}, paid_label) do
+    names = MapSet.new(catalog, & &1["choice"]["model"])
+
+    listed =
+      for {id, model} <- served, not MapSet.member?(names, id) do
+        choice = normalize(%{"kind" => "catalog", "model" => id})
+
+        %{"key" => key(choice), "choice" => choice, "label" => model["label"] || id}
+        |> Map.put("vendor", model["vendor"])
+      end
+      |> Enum.sort_by(& &1["label"])
+
+    Enum.flat_map(catalog ++ listed, fn option ->
+      model = served[option["choice"]["model"]] || %{}
+      paid = Map.put(option["choice"], "allow_paid", true)
+
+      if(model["served_by"] == "subscription", do: [option], else: []) ++
+        if match?([_ | _], model["key_sources"]),
+          do: [%{option | "choice" => paid, "key" => key(paid), "label" => paid_label.(option)}],
+          else: []
+    end)
+  end
+
+  def offered(%Organization{}, {:ok, catalog}, _unknown, _paid_label), do: catalog
+  def offered(%Organization{}, {:error, _reason}, _served, _paid_label), do: []
+
+  @doc """
+  Whether an enabled account of the org serves `choice` now, by
+  `servable/1`'s result: a subscription for a plain catalog choice, a
+  Provider API key for a pay-per-use one. Other choices, and any choice when
+  what serves each model is unknown, count as served.
+  """
+  @spec served?(term(), {:ok, map()} | {:error, term()}) :: boolean()
+  def served?(%{"kind" => "catalog", "model" => id} = choice, {:ok, served}) do
+    case {choice["allow_paid"], served[id]} do
+      {true, %{"key_sources" => [_ | _]}} -> true
+      {true, _model} -> false
+      {_plain, %{"served_by" => "subscription"}} -> true
+      {_plain, _model} -> false
+    end
+  end
+
+  def served?(_choice, _servable), do: true
+
+  @doc """
   The choices that org admins can give to Agents: the allowed list, or the
   whole catalog when the list is empty.
   """
@@ -121,9 +218,26 @@ defmodule BridgeForTeams.Models do
   @doc """
   Whether the org admins can give `choice` to an Agent. An allowed choice
   without `reasoning_effort` allows the model at any effort; one with an
-  effort allows only that effort.
+  effort allows only that effort. Without an allowed list, any catalog model
+  at any effort, pay-per-use or not, and any model a custom endpoint of the
+  org lists (`choose/3`); never a marked choice.
   """
   @spec allowed?(Organization.t(), choice(), {:ok, [option()]} | {:error, term()}) :: boolean()
+  def allowed?(%Organization{allowed_models: allowed} = org, choice, catalog_result)
+      when allowed in [nil, []] and is_map(choice) do
+    case {choice, catalog_result} do
+      {%{"kind" => "catalog"}, {:ok, _catalog}} ->
+        bare = choice |> normalize() |> Map.delete("reasoning_effort")
+
+        not platform?(choice) and
+          (in_catalog?(bare, catalog_result) or
+             match?({:ok, _}, choose(org, choice, catalog_result)))
+
+      _other ->
+        false
+    end
+  end
+
   def allowed?(%Organization{} = org, choice, catalog_result) do
     case allowed(org, catalog_result) do
       {:ok, options} -> Enum.any?(options, &allows?(&1["choice"], choice))
@@ -131,14 +245,55 @@ defmodule BridgeForTeams.Models do
     end
   end
 
+  # A marked choice is never allowed: only the platform admin stores it.
   defp allows?(allowed, choice) do
     allowed = normalize(allowed)
     choice = normalize(choice)
 
-    if Map.has_key?(allowed, "reasoning_effort"),
-      do: allowed == choice,
-      else: allowed == Map.delete(choice, "reasoning_effort")
+    cond do
+      platform?(allowed) or platform?(choice) -> false
+      Map.has_key?(allowed, "reasoning_effort") -> allowed == choice
+      true -> allowed == Map.delete(choice, "reasoning_effort")
+    end
   end
+
+  @doc """
+  Whether `choice` carries the platform Router mark (`"platform" => true`,
+  `SalixAgent.ModelChoice.platform?/1`).
+  """
+  @spec platform?(term()) :: boolean()
+  def platform?(%{"kind" => "catalog", "platform" => true}), do: true
+  def platform?(_choice), do: false
+
+  @doc """
+  The org tenant's platform Router as the org may see it:
+  `%{"model" => id, "label" => name}`, or nil when it has none or Salix
+  cannot say. It names no billing and no platform Profile.
+  """
+  @spec platform_router(Organization.t()) :: map() | nil
+  def platform_router(%Organization{salix_tenant_id: tenant}) when is_binary(tenant) do
+    case Client.call_optional(:platform_router, [tenant]) do
+      {:ok, %{"model" => model} = router} when is_binary(model) ->
+        %{"model" => model, "label" => text(router["label"]) || model}
+
+      _none ->
+        nil
+    end
+  end
+
+  def platform_router(%Organization{}), do: nil
+
+  @doc """
+  Whether the platform provides `choice` now: it carries the mark and the
+  org's platform Router (`platform_router/1`) names its model. A marked
+  choice whose platform Router was removed is served by the org's
+  subscriptions, and its API keys only when the choice allows pay-per-use.
+  """
+  @spec platform_provided?(term(), map() | nil) :: boolean()
+  def platform_provided?(choice, %{"model" => model}),
+    do: platform?(choice) and choice["model"] == model
+
+  def platform_provided?(_choice, nil), do: false
 
   @doc "The org default choice for a new Router, or nil (the platform model)."
   @spec default_for(Organization.t(), String.t()) :: choice() | nil
@@ -172,13 +327,18 @@ defmodule BridgeForTeams.Models do
   effort otherwise. It must be in the org's allowed list unless the list is
   empty (matched as in `allowed?/3`); Salix then checks it against the
   catalog. The platform model and a station's runtime models need no
-  allowance.
+  allowance. A marked choice (`platform?/1`) is never allowed.
   """
   @spec router_choice(String.t(), choice() | nil) :: {:ok, choice() | nil} | {:error, term()}
   def router_choice(project_id, choice) do
     case Repo.get(Project, project_id) |> Repo.preload(:org) do
-      %Project{org: %Organization{} = org} -> org_router_choice(org, default_effort(choice))
-      _missing -> {:error, :target_not_found}
+      %Project{org: %Organization{} = org} ->
+        if platform?(choice),
+          do: {:error, :model_not_allowed},
+          else: org_router_choice(org, default_effort(choice))
+
+      _missing ->
+        {:error, :target_not_found}
     end
   end
 
@@ -235,7 +395,7 @@ defmodule BridgeForTeams.Models do
 
     case Repo.get(Project, project_id) |> Repo.preload(:org) do
       %Project{org: %Organization{allowed_models: [_ | _] = allowed}} ->
-        allowed = Enum.map(allowed, &normalize/1)
+        allowed = allowed |> Enum.map(&normalize/1) |> Enum.reject(&platform?/1)
         {:ok, fn models -> Enum.flat_map(models, &allowed_model(&1, allowed, pin)) end}
 
       %Project{org: %Organization{}} ->
@@ -300,7 +460,8 @@ defmodule BridgeForTeams.Models do
 
   @doc """
   Check `choice` against the org tenant (`SalixAgent.ModelChoice.choose/2`).
-  A plain catalog choice of a catalog model needs no Salix call.
+  A plain catalog choice of a catalog model needs no Salix call; a marked
+  choice is refused without one.
   """
   @spec choose(Organization.t(), term(), {:ok, [option()]} | {:error, term()}) ::
           {:ok, choice()} | {:error, term()}
@@ -308,9 +469,11 @@ defmodule BridgeForTeams.Models do
       when is_map(choice) do
     choice = normalize(choice)
 
-    if in_catalog?(choice, catalog_result),
-      do: {:ok, choice},
-      else: Client.impl().choose_model(choice, tenant_id)
+    cond do
+      platform?(choice) -> {:error, :invalid_model_configuration}
+      in_catalog?(choice, catalog_result) -> {:ok, choice}
+      true -> Client.impl().choose_model(choice, tenant_id)
+    end
   end
 
   def choose(_org, _choice, _catalog_result), do: {:error, :invalid_model_configuration}
@@ -342,7 +505,7 @@ defmodule BridgeForTeams.Models do
   @doc """
   A choice in the form that Salix stores it: a catalog choice always says
   whether pay-per-use Profiles may serve it (`allow_paid`, default false).
-  Compare choices in this form.
+  Compare choices in this form. The platform Router mark stays.
   """
   @spec normalize(choice()) :: choice()
   def normalize(%{"kind" => "catalog"} = choice), do: Map.put_new(choice, "allow_paid", false)
@@ -350,7 +513,9 @@ defmodule BridgeForTeams.Models do
 
   @doc """
   The stable UI key of a choice: `catalog:<model>`, `runtime:<provider>:<model>`
-  or `platform:<tier>`, then `@<effort>`, `+paid` and `#<profile_id>` when set.
+  or `platform:<tier>`, then `@<effort>`, `+paid`, `+platform` (the platform
+  Router mark) and `#<profile_id>` when set. A marked choice and the plain
+  choice of the same model have different keys.
   """
   @spec key(choice()) :: String.t()
   def key(%{"kind" => "catalog", "model" => model} = choice),
@@ -366,6 +531,7 @@ defmodule BridgeForTeams.Models do
     Enum.join([
       if(effort = text(choice["reasoning_effort"]), do: "@" <> effort, else: ""),
       if(choice["allow_paid"] == true, do: "+paid", else: ""),
+      if(choice["platform"] == true, do: "+platform", else: ""),
       if(profile = text(choice["profile_id"]), do: "#" <> profile, else: "")
     ])
   end

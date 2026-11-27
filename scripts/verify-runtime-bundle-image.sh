@@ -24,7 +24,7 @@ docker cp "${container_id}:/opt/comma/runtime-images/." "${verification_dir}/"
 
 test -f "${verification_dir}/manifest.json"
 jq -e --arg revision "${expected_revision}" '
-  .schemaVersion == 3 and
+  .schemaVersion == 4 and
   .sourceRevision == $revision and
   ([.images[].class] | sort == ["shell", "station"]) and
   all(.images[]; . as $image |

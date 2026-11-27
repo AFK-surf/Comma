@@ -4,6 +4,7 @@ import type {
   ModelCatalog,
   ModelProfile,
   ModelsValue,
+  QuotaResetOffer,
   SettingsAgent,
   ShownDevice,
   TaskModelSelection,
@@ -362,6 +363,61 @@ it("selects GPT-6.1 Sol from the released catalog with a Codex subscription", as
   expect(picker("router", "Router")).toHaveTextContent("GPT-6.1 Sol");
 });
 
+const NO_MATCH = "No model matches";
+
+/** The picker is closed and the provider picker is open in its place. */
+const expectProviderPicker = () => {
+  expect(screen.queryByRole("dialog", { name: TASK_MODEL })).toBeNull();
+  expect(
+    within(screen.getByRole("region", { name: "Local & custom" })).getByRole("button", {
+      name: "Ollama",
+    })
+  ).toBeInTheDocument();
+};
+
+it("offers Add profile, not a no-match note, when no profile serves a model", async () => {
+  const t = await openModels({ profiles: [] });
+  await t.user.click(taskPicker());
+  const open = panel(TASK_MODEL);
+  expect(open.getByRole("button", { name: "Comma built-in" })).toBeInTheDocument();
+  expect(open.queryByText(NO_MATCH)).toBeNull();
+  await t.user.click(open.getByRole("button", { name: "Add profile" }));
+  expectProviderPicker();
+});
+
+it("opens the provider picker from the model list while profiles serve models", async () => {
+  const t = await openModels({ profiles: [structuredClone(codex)] });
+  await t.user.click(taskPicker());
+  await t.user.click(panel(TASK_MODEL).getByRole("button", { name: "Add profile" }));
+  expectProviderPicker();
+  expect(t.called("models.setTaskModel")).toEqual([]);
+});
+
+it("says no model matches a search", async () => {
+  const released = JSON.parse(
+    readFileSync(
+      resolve(process.cwd(), "../systems/apps/salix_agent/priv/model_catalog.json"),
+      "utf8"
+    )
+  ) as ModelCatalog;
+  const t = await openModels({ catalog: released, profiles: [structuredClone(codex)] });
+  await t.user.click(taskPicker());
+  await t.user.type(
+    panel(TASK_MODEL).getByRole("textbox", { name: "Search models" }),
+    "zzz-no-such-model"
+  );
+  expect(panel(TASK_MODEL).getByText(NO_MATCH)).toBeInTheDocument();
+});
+
+it("shows no no-match note while a few models are listed without a search", async () => {
+  const t = await openModels({ profiles: [structuredClone(codex)] });
+  await t.user.click(taskPicker());
+  const open = panel(TASK_MODEL);
+  expect(open.queryByRole("textbox", { name: "Search models" })).toBeNull();
+  expect(open.getByRole("button", { name: "GPT-5.5" })).toBeInTheDocument();
+  expect(open.queryByText(NO_MATCH)).toBeNull();
+});
+
 /** A Codex plan with resets left, and `answer` for each reset the page asks for. */
 async function resettable(answer: Answer = () => null) {
   const member: ModelProfile = {
@@ -479,44 +535,95 @@ it("retries an unconfirmed quota reset until it is confirmed", async () => {
   ).toBeInTheDocument();
 });
 
-it("meters a Claude plan's Fable week and resets the kind picked", async () => {
-  const claude: ModelProfile = {
-    ...structuredClone(codex),
-    id: "profile-claude",
-    source: "claude",
-    provider: "claude",
-    name: "claude@example.com",
-    email: "claude@example.com",
-    quota: {
-      plan_type: "ultra",
-      windows: [
-        { period: "short", remaining_percent: 5 },
-        { period: "week", remaining_percent: 61 },
-        { period: "week", remaining_percent: 46, model: "fable" },
-      ],
-      resets: [
-        { kind: "session", left: 1, usable: true },
-        {
-          kind: "model",
-          model: "Fable",
-          left: 2,
-          expiries: ["2027-01-09T00:00:00Z"],
-          usable: true,
-        },
-        { kind: "full", left: 1, usable: false },
+/** A Claude plan holding `resets`. */
+const claudePlan = (resets: QuotaResetOffer[]): ModelProfile => ({
+  ...structuredClone(codex),
+  id: "profile-claude",
+  source: "claude",
+  provider: "claude",
+  name: "claude@example.com",
+  email: "claude@example.com",
+  quota: {
+    plan_type: "ultra",
+    windows: [
+      { period: "short", remaining_percent: 5 },
+      { period: "week", remaining_percent: 61 },
+      { period: "week", remaining_percent: 46, model: "fable" },
+    ],
+    resets,
+  },
+});
+/** A reset's expiry as the dialog writes it, in the reader's locale and time zone. */
+const expiry = (time: string) =>
+  new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(time));
+
+it("meters a Claude plan's Fable week, opens its reset on the kind that expires first, and resets the kind picked", async () => {
+  const t = await openModels(
+    {
+      profiles: [
+        claudePlan([
+          // No known expiry: usable, but after any that expires.
+          { kind: "session", left: 1, usable: true },
+          {
+            kind: "model",
+            model: "Fable",
+            left: 2,
+            expiries: ["2027-01-20T00:00:00Z", "2027-01-09T00:00:00Z"],
+            usable: true,
+          },
+          // Expires first, but not usable until the limit is reached.
+          {
+            kind: "full",
+            left: 2,
+            expiries: ["2027-01-05T00:00:00Z", "2027-01-05T00:00:00Z"],
+            usable: false,
+          },
+        ]),
       ],
     },
-  };
-  const t = await openModels(
-    { profiles: [claude] },
     { "models.resetQuota": () => ({ outcome: "reset", quota_refreshed: true }) }
   );
   expect(within(row("profile-claude")).getByText("Fable")).toBeInTheDocument();
   await openResetFromMenu(t.user, "profile-claude", "claude@example.com");
   const dialog = panel(/^Reset quota for /);
-  expect(dialog.getByRole("radio", { name: /5-hour limit/ })).toBeChecked();
-  expect(dialog.getByText(/usable once the limit is reached/)).toBeInTheDocument();
-  await t.user.click(dialog.getByRole("radio", { name: /Fable weekly use/ }));
+  expect(dialog.getByRole("radio", { name: /Fable weekly use/ })).toBeChecked();
+  // Every expiry, soonest first; resets that end together are counted.
+  expect(
+    dialog.getByText(
+      `Gives back to the weekly limit what Fable used this week. 2 left · expires ${expiry("2027-01-09T00:00:00Z")}; ${expiry("2027-01-20T00:00:00Z")}`
+    )
+  ).toBeInTheDocument();
+  expect(
+    dialog.getByText(
+      `Clears the 5-hour and weekly limits. 2 left · expires ${expiry("2027-01-05T00:00:00Z")} ×2 · usable once the limit is reached`
+    )
+  ).toBeInTheDocument();
+  expect(dialog.getByText("Clears the 5-hour limit. 1 left")).toBeInTheDocument();
+  await t.user.click(dialog.getByRole("radio", { name: /5-hour limit/ }));
+  await t.user.click(dialog.getByRole("button", { name: "Reset quota" }));
+  expect(await dialog.findByText(/Quota reset confirmed\./)).toBeInTheDocument();
+  expect(t.called("models.resetQuota")).toEqual([
+    { workspace, profile: "profile-claude", kind: "session" },
+  ]);
+});
+
+it("lists a Claude plan's only kind of reset in its dialog", async () => {
+  const t = await openModels(
+    {
+      profiles: [
+        claudePlan([{ kind: "model", model: "Fable", left: 1, usable: true }]),
+      ],
+    },
+    { "models.resetQuota": () => ({ outcome: "reset", quota_refreshed: true }) }
+  );
+  await openResetFromMenu(t.user, "profile-claude", "claude@example.com");
+  const dialog = panel(/^Reset quota for /);
+  expect(dialog.getByRole("radio", { name: /Fable weekly use/ })).toBeChecked();
   await t.user.click(dialog.getByRole("button", { name: "Reset quota" }));
   expect(await dialog.findByText(/Quota reset confirmed\./)).toBeInTheDocument();
   expect(t.called("models.resetQuota")).toEqual([
@@ -870,7 +977,7 @@ const familyState = (): State => ({
 
 it("chooses the default Task model by family, waits for its effort, and gates pay-per-use", async () => {
   const t = await openModels(familyState());
-  expect(picker("router", "Router")).toHaveTextContent("Comma built-in (recommended)");
+  expect(picker("router", "Router")).toHaveTextContent("Comma built-in");
   // The row shows the core's choice for the workspace.
   expect(row("task-model")).toHaveTextContent(
     "Tasks run this model unless they name another."
@@ -939,9 +1046,7 @@ it("chooses the default Task model by family, waits for its effort, and gates pa
 
   // Back to Comma's own model.
   await t.user.click(taskPicker());
-  await t.user.click(
-    panel(TASK_MODEL).getByRole("button", { name: /Comma built-in \(recommended\)/ })
-  );
+  await t.user.click(panel(TASK_MODEL).getByRole("button", { name: /Comma built-in/ }));
   expect(lastSelection(t.called)).toEqual({ kind: "builtin" });
 });
 

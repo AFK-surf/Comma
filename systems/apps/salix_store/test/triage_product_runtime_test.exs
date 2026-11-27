@@ -234,6 +234,173 @@ defmodule SalixStore.TriageProductRuntimeTest do
     assert {:ok, [%{state: :resolved}]} = TriageProductRuntime.list_context("project-1")
   end
 
+  test "agent_owned follow-up backs off exponentially up to 72h and stops on the 5th recheck" do
+    candidate =
+      context(
+        "follow_up",
+        "alert check",
+        "Watch pending deploy status",
+        "explicit",
+        ["slack://T1/C1/200.000001/200.000001"],
+        12
+      )
+
+    seed_obligation!("agent-owned-cap", [candidate])
+    assert {:ok, [opening]} = TriageProductRuntime.claim_obligations("cap-open")
+    assert {:ok, _} = TriageProductRuntime.settle_claim(opening, audit_effect(:applied))
+
+    expected_hours = [24, 48, 72, 72]
+
+    Enum.with_index(expected_hours, 1)
+    |> Enum.each(fn {hours, step} ->
+      assert {:ok, [entry]} = TriageProductRuntime.list_context("project-1")
+      assert entry.state == :active
+      due_ms = DateTime.to_unix(entry.next_check_at, :millisecond)
+
+      assert {:ok, :rescheduled} =
+               TriageProductRuntime.admit_follow_up_wakeup(
+                 entry.entry_id,
+                 entry.payload["authority_generation"],
+                 entry.payload["schedule_id"],
+                 due_ms,
+                 fn -> {:ok, "recheck:step-#{step}"} end
+               )
+
+      assert {:ok, [updated]} = TriageProductRuntime.list_context("project-1")
+      assert updated.state == :active
+      assert updated.payload["recheck_count"] == step
+      delta_s = DateTime.to_unix(updated.next_check_at, :second) - div(updated.updated_at, 1000)
+      assert_in_delta delta_s, hours * 3600, 2
+    end)
+
+    assert {:ok, [fifth]} = TriageProductRuntime.list_context("project-1")
+    %{rows: [[schedules_before]]} = Repo.query!("SELECT count(*) FROM schedules")
+
+    assert {:ok, :stopped} =
+             TriageProductRuntime.admit_follow_up_wakeup(
+               fifth.entry_id,
+               fifth.payload["authority_generation"],
+               fifth.payload["schedule_id"],
+               DateTime.to_unix(fifth.next_check_at, :millisecond),
+               fn -> {:ok, "recheck:step-5"} end
+             )
+
+    assert {:ok, [stopped]} = TriageProductRuntime.list_context("project-1")
+    assert stopped.state == :stopped
+    assert stopped.payload["recheck_count"] == 5
+    assert stopped.payload["resolved_reason"] == "follow_up_expired"
+    assert stopped.resolved_at == nil
+    assert stopped.next_check_at == nil
+    assert %DateTime{} = stopped.stopped_at
+    assert %{rows: [[^schedules_before]]} = Repo.query!("SELECT count(*) FROM schedules")
+  end
+
+  test "a previously woken follow-up older than 7 days stops before admission without invoking callback" do
+    candidate =
+      context(
+        "follow_up",
+        "stale zombie",
+        "Legacy check still open",
+        "explicit",
+        ["slack://T1/C1/210.000001/210.000001"],
+        12
+      )
+
+    seed_obligation!("zombie-ttl", [candidate])
+    assert {:ok, [opening]} = TriageProductRuntime.claim_obligations("zombie-open")
+    assert {:ok, _} = TriageProductRuntime.settle_claim(opening, audit_effect(:applied))
+    assert {:ok, [entry]} = TriageProductRuntime.list_context("project-1")
+
+    # Simulate a legacy/unlabeled entry inserted 22 days ago with a prior wakeup.
+    legacy_payload =
+      entry.payload
+      |> Map.delete("follow_up_basis")
+      |> Map.put("last_wakeup_scheduled_for_ms", 1_788_000_000_000)
+
+    Repo.query!(
+      """
+      UPDATE triage_context_entries
+      SET inserted_at = next_check_at - interval '22 days',
+          payload = $2
+      WHERE entry_id = $1
+      """,
+      [entry.entry_id, legacy_payload]
+    )
+
+    %{rows: [[schedules_before]]} = Repo.query!("SELECT count(*) FROM schedules")
+
+    assert {:ok, :stopped} =
+             TriageProductRuntime.admit_follow_up_wakeup(
+               entry.entry_id,
+               entry.payload["authority_generation"],
+               entry.payload["schedule_id"],
+               DateTime.to_unix(entry.next_check_at, :millisecond),
+               fn -> flunk("expired follow-up must not invoke admission callback") end
+             )
+
+    assert {:ok, [stopped]} = TriageProductRuntime.list_context("project-1")
+    assert stopped.state == :stopped
+    assert stopped.payload["resolved_reason"] == "follow_up_expired"
+    assert stopped.resolved_at == nil
+    assert stopped.next_check_at == nil
+    assert %{rows: [[^schedules_before]]} = Repo.query!("SELECT count(*) FROM schedules")
+  end
+
+  test "reminder_confirmed scheduled 10 days out still fires on first due occurrence and stops after 3 unsettled wakeups" do
+    candidate =
+      context(
+        "follow_up",
+        "ten day reminder",
+        "Remind me in 10 days",
+        "explicit",
+        ["slack://T1/C1/220.000001/220.000001"],
+        240
+      )
+      |> Map.put("follow_up_basis", "reminder_confirmed")
+
+    seed_obligation!("ten-day-reminder", [candidate])
+    assert {:ok, [opening]} = TriageProductRuntime.claim_obligations("rem-open")
+    assert {:ok, _} = TriageProductRuntime.settle_claim(opening, audit_effect(:applied))
+
+    # First two wakeups reschedule (even though due_ms - inserted_at is 10 days > 7 days).
+    for step <- 1..2 do
+      assert {:ok, [entry]} = TriageProductRuntime.list_context("project-1")
+
+      assert {:ok, :rescheduled} =
+               TriageProductRuntime.admit_follow_up_wakeup(
+                 entry.entry_id,
+                 entry.payload["authority_generation"],
+                 entry.payload["schedule_id"],
+                 DateTime.to_unix(entry.next_check_at, :millisecond),
+                 fn -> {:ok, "recheck:reminder-#{step}"} end
+               )
+
+      assert {:ok, [updated]} = TriageProductRuntime.list_context("project-1")
+      assert updated.state == :active
+      assert updated.payload["recheck_count"] == step
+    end
+
+    assert {:ok, [third]} = TriageProductRuntime.list_context("project-1")
+    %{rows: [[schedules_before]]} = Repo.query!("SELECT count(*) FROM schedules")
+
+    assert {:ok, :stopped} =
+             TriageProductRuntime.admit_follow_up_wakeup(
+               third.entry_id,
+               third.payload["authority_generation"],
+               third.payload["schedule_id"],
+               DateTime.to_unix(third.next_check_at, :millisecond),
+               fn -> {:ok, "recheck:reminder-3"} end
+             )
+
+    assert {:ok, [stopped]} = TriageProductRuntime.list_context("project-1")
+    assert stopped.state == :stopped
+    assert stopped.payload["recheck_count"] == 3
+    assert stopped.payload["resolved_reason"] == "follow_up_expired"
+    assert stopped.resolved_at == nil
+    assert stopped.next_check_at == nil
+    assert %{rows: [[^schedules_before]]} = Repo.query!("SELECT count(*) FROM schedules")
+  end
+
   test "claims partition a bounded batch and an expired claim is safely stolen" do
     Enum.each(1..3, &seed_obligation!("run-#{&1}", []))
 

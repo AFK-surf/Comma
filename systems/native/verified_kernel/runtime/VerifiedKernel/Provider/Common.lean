@@ -39,24 +39,26 @@ def mergeMaps (x y : Term) : Term :=
 def removeKey (m : Term) (key : Term) : Term :=
   match m with | .map entries => .map (entries.filter (·.1 != key)) | _ => m
 
-def scrubBytes (raw : ByteArray) : ByteArray := Id.run do
-  if (String.fromUTF8? raw).isSome then return raw
-  let mut output := ByteArray.empty
+private def scrubBytesInvalid (raw : ByteArray) : ByteArray := Id.run do
+  let mut output := ByteArray.emptyWithCapacity raw.size
   let mut pos := 0
   for _ in [:raw.size] do
     if pos ≥ raw.size then break
     let mut width := 0
     for n in [1:5] do
-      if pos + n ≤ raw.size && (String.fromUTF8? (raw.extract pos (pos + n))).isSome then
+      if pos + n ≤ raw.size && (raw.extract pos (pos + n)).validateUTF8 then
         width := n
         break
     if width == 0 then
       output := output ++ "�".toUTF8
       pos := pos + 1
     else
-      output := output ++ raw.extract pos (pos + width)
+      output := raw.copySlice pos output output.size width false
       pos := pos + width
   return output
+
+def scrubBytes (raw : ByteArray) : ByteArray :=
+  if raw.validateUTF8 then raw else scrubBytesInvalid raw
 
 def scrubFuel : Nat → Term → Term
   | 0, value => value
@@ -66,6 +68,72 @@ def scrubFuel : Nat → Term → Term
     if xs.any (·.1 == a "__struct__") then .map xs
     else .map (xs.map (fun pair => (scrubFuel fuel pair.1, scrubFuel fuel pair.2)))
   | _, value => value
+
+private def isCleanFuel : Nat → Term → Bool
+  | 0, _ => true
+  | _ + 1, .binary raw => raw.validateUTF8
+  | fuel + 1, .list xs => xs.all (isCleanFuel fuel)
+  | fuel + 1, .map xs =>
+    if xs.any (·.1 == a "__struct__") then true
+    else xs.all (fun pair => isCleanFuel fuel pair.1 && isCleanFuel fuel pair.2)
+  | _, _ => true
+
+private def isCleanDeferred : Nat → Term → Stackless Bool
+  | 0, _ => .done true
+  | fuel + 1, value => .delay fun _ =>
+    match value with
+    | .binary raw => .done raw.validateUTF8
+    | .list xs => Stackless.allM (isCleanDeferred fuel) xs
+    | .map xs =>
+      if xs.any (·.1 == a "__struct__") then .done true
+      else Stackless.allM (fun pair =>
+        Stackless.both (isCleanDeferred fuel pair.1) fun _ => isCleanDeferred fuel pair.2) xs
+    | _ => .done true
+
+private theorem isCleanDeferred_eq (fuel : Nat) (value : Term) :
+    (isCleanDeferred fuel value).run = isCleanFuel fuel value := by
+  induction fuel generalizing value with
+  | zero => rfl
+  | succ fuel ih =>
+    cases value <;>
+      simp only [isCleanDeferred, isCleanFuel, Stackless.run, Stackless.run_delay, Stackless.run_allM, ih]
+    split <;> simp [Stackless.run, ih]
+
+private theorem scrubFuel_eq_of_isClean (fuel : Nat) (value : Term)
+    (h : isCleanFuel fuel value = true) : scrubFuel fuel value = value := by
+  induction fuel generalizing value with
+  | zero => rfl
+  | succ fuel ih =>
+    cases value with
+    | binary raw =>
+      simp only [isCleanFuel] at h
+      simp [scrubFuel, scrubBytes, h]
+    | list xs =>
+      simp only [isCleanFuel, List.all_eq_true] at h
+      simp only [scrubFuel, list, Term.list.injEq]
+      induction xs with
+      | nil => rfl
+      | cons x xs ihxs =>
+        simp only [List.map_cons]
+        rw [ih x (h x (by simp)), ihxs (fun y hy => h y (by simp [hy]))]
+    | map xs =>
+      simp only [isCleanFuel] at h
+      simp only [scrubFuel]
+      by_cases hs : xs.any (·.1 == a "__struct__") = true
+      · simp [hs]
+      · rw [if_neg hs] at h ⊢
+        clear hs
+        simp only [List.all_eq_true, Bool.and_eq_true] at h
+        congr 1
+        induction xs with
+        | nil => rfl
+        | cons p ps ihps =>
+          cases p with
+          | mk k v =>
+            simp only [List.map_cons]
+            have hp := h (k, v) (by simp)
+            rw [ih k hp.1, ih v hp.2, ihps (fun q hq => h q (by simp [hq]))]
+    | _ => rfl
 
 private def scrubDeferred : Nat → Term → Stackless Term
   | 0, value => .done value
@@ -87,11 +155,18 @@ private theorem scrubDeferred_eq (fuel : Nat) (value : Term) :
     cases value <;> simp [scrubDeferred, scrubFuel, ih]
     split <;> simp [ih]
 
-def scrubFuelImpl (fuel : Nat) (value : Term) : Term := (scrubDeferred fuel value).run
+def scrubFuelImpl (fuel : Nat) (value : Term) : Term :=
+  if (isCleanDeferred fuel value).run then value
+  else (scrubDeferred fuel value).run
 
 @[csimp] theorem scrubFuel_eq_scrubFuelImpl : @scrubFuel = @scrubFuelImpl := by
   funext fuel value
-  exact (scrubDeferred_eq fuel value).symm
+  unfold scrubFuelImpl
+  split
+  · rename_i h
+    rw [isCleanDeferred_eq] at h
+    exact scrubFuel_eq_of_isClean fuel value h
+  · exact (scrubDeferred_eq fuel value).symm
 
 def scrub (value : Term) : Term := scrubFuel (value.depth + 1) value
 

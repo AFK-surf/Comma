@@ -41,6 +41,11 @@ defmodule SalixAgent.IFC.FileLabels do
   @spec one(term(), String.t(), map()) :: term()
   def one(result, path, ctx), do: join(result, [path], ctx)
 
+  @doc "Attach the audience captured with a file's bytes, without resolving its path again."
+  def from_read(result, label, ctx) do
+    if labelling?(ctx), do: attach(result, %{"label" => label}), else: result
+  end
+
   @doc "Attaches the join of several files' audiences to a tool result."
   @spec join(term(), [String.t()], map()) :: term()
   def join(result, paths, ctx) when is_list(paths) do

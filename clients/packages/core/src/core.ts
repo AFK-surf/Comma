@@ -26,6 +26,7 @@ import { Condensed } from "./condensed.ts";
 import { DeviceSetup } from "./device-setup/controller.ts";
 import { Devices } from "./devices.ts";
 import { AgentRequests } from "./agentRequests.ts";
+import { LocationSharing } from "./location-sharing.ts";
 import { Labels } from "./labels.ts";
 import { LinkPreviews } from "./link-previews.ts";
 import { TaskConversations } from "./task-conversations.ts";
@@ -101,10 +102,13 @@ import { WebSessionLifecycle } from "./session/web-lifecycle.ts";
 import { History } from "./history.ts";
 import { TaskOrder } from "./task-order.ts";
 import { TaskRequests } from "./task-requests.ts";
+import { Collaborations } from "./collaborations.ts";
+import { documentShares } from "./document-shares.ts";
 import { TaskShares } from "./task-shares.ts";
 import { MiniApps } from "./miniapps.ts";
 import { StationTasks } from "./station-tasks.ts";
 import { TaskSummaries } from "./task-summaries.ts";
+import { TaskFeed } from "./task-feed.ts";
 import { Tasks } from "./tasks.ts";
 import { TasksArchive } from "./tasks-archive.ts";
 import { Workspaces } from "./workspaces.ts";
@@ -141,6 +145,7 @@ export class Core {
   readonly workspaces: Workspaces;
   readonly plugins: Plugins;
   readonly tasks: Tasks;
+  readonly taskFeed: TaskFeed;
   readonly taskSummaries: TaskSummaries;
   readonly stationTasks: StationTasks;
   readonly tasksArchive: TasksArchive;
@@ -156,9 +161,11 @@ export class Core {
   readonly linear: Linear;
   readonly routerKeys: RouterKeys;
   readonly taskRequests: TaskRequests;
+  readonly collaborations: Collaborations;
   readonly tailnet: Tailnet;
   readonly labels: Labels;
   readonly agentRequests: AgentRequests;
+  readonly locationSharing: LocationSharing;
   readonly condensed: Condensed;
   readonly voice: Voice;
   readonly notifications: Notifications;
@@ -293,6 +300,9 @@ export class Core {
     this.workspaces = new Workspaces(ctx);
     this.plugins = new Plugins(ctx, this.workspaces);
     this.tasks = new Tasks(ctx, this.workspaces);
+    this.taskFeed = new TaskFeed(ctx, this.workspaces, this.tasks);
+    this.tasks.onFocusChanged = () => this.taskFeed.focusChanged();
+    this.tasks.onListChanged = (workspace) => this.taskFeed.changed(workspace);
     this.taskSummaries = new TaskSummaries(ctx);
     this.stations = new Stations(ctx);
     this.stationTasks = new StationTasks(ctx, this.workspaces, this.stations);
@@ -313,6 +323,7 @@ export class Core {
     );
     this.quickChat = new QuickChat(ctx, this.tasks, this.workspaces);
     this.taskShares = new TaskShares(ctx, this.tasks, this.workspaces);
+    documentShares(ctx);
     this.miniApps = new MiniApps(ctx, this.quickChat);
     this.taskOrder = new TaskOrder(ctx);
     this.billing = new Billing(ctx, this.workspaces);
@@ -323,15 +334,18 @@ export class Core {
     this.linear = new Linear(ctx);
     this.routerKeys = new RouterKeys(ctx, this.workspaces);
     this.taskRequests = new TaskRequests(ctx, this.workspaces);
+    this.collaborations = new Collaborations(ctx);
     this.tasks.onTaskRequestsChanged = () => this.taskRequests.changed();
     this.tailnet = new Tailnet(ctx, this.workspaces);
     this.labels = new Labels(ctx);
     this.agentRequests = new AgentRequests(ctx);
+    this.locationSharing = new LocationSharing(ctx);
     this.condensed = new Condensed(ctx, this.workspaces);
     this.voice = new Voice(ctx, this.workspaces);
     this.notifications = new Notifications(ctx);
     const deviceSetup = new DeviceSetup(ctx, registerConnectorCredentials(ctx));
     this.devices = new Devices(ctx, this.workspaces, deviceSetup);
+    // The sandboxes whose screen was asked for (`coding.screen`): a view of one asks again while it is open.
     registerScreenViews(ctx, this.stations);
     registerScreenLogs(ctx, this.stations);
     registerScreenDebug(ctx, this.stations);
@@ -343,7 +357,7 @@ export class Core {
       return row ? Boolean(row.card ?? row.decision ?? row.need) : null;
     };
     this.stationActivity.onChanged(() => this.stationTasks.askingChanged());
-    keepStationsLinked(ctx, this.workspaces, this.stationActivity);
+    keepStationsLinked(ctx, this.workspaces, this.stationTasks, this.stationActivity);
     const stationTaskActions = stationTaskCalls(
       ctx,
       this.stations,
@@ -427,6 +441,8 @@ export class Core {
     this.history = new History(ctx);
     this.chat = new Chat(ctx);
     this.chat.hosted = this.stationConversations;
+    // Each message the person sends carries this device's position while they share it.
+    this.chat.clientLocation = () => this.locationSharing.current();
     // A Task's own conversation, as a chat read it, is the newest word on the Task: its cards and docks take it.
     this.chat.onTaskRead = (task) => this.taskSummaries.record(task);
     this.quickChat.chat = this.chat;

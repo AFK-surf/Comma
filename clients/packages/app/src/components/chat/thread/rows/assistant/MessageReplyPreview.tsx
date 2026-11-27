@@ -78,7 +78,9 @@ export const MessageReplyPreview = memo(function MessageReplyPreview({
           preview
         />
       ) : null}
-      <span className="comma-chat-reply-preview-bubble">{text}</span>
+      <span className="comma-chat-reply-preview-bubble">
+        <span className="comma-chat-reply-preview-text">{text}</span>
+      </span>
     </button>
   );
 });

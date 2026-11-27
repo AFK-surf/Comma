@@ -114,14 +114,15 @@ defmodule SalixAgent.InternalSessionFenceTelemetryTest do
                      }}
   end
 
-  test "a slow fence names the kernel calls inside its freeze" do
+  test "a slow fence names the kernel calls inside its freeze and write steps" do
     {agent, staged} = owned_session()
 
     assert {:ok, _committed} =
              InternalSessionStore.durable_fence(agent, @session, staged, slow_prerequisite(:ok))
 
-    assert_received {:session_fence, %{freeze_steps: steps}}
+    assert_received {:session_fence, %{freeze_steps: steps, write_steps: write_steps}}
     assert Map.keys(steps) |> Enum.sort() == ~w(activity baseline delta reads view write)a
+    assert Map.keys(write_steps) |> Enum.sort() == ~w(kernel_commit notify pg_tx)a
   end
 
   test "a fast fence is measured and not logged, and a failure counts as one" do
@@ -158,10 +159,10 @@ defmodule SalixAgent.InternalSessionFenceTelemetryTest do
     assert_received {:session_fence, %{outcome: "error", prerequisite_ms: 1_200, write_ms: 0}}
   end
 
-  test "a started fence times its prerequisite apart from its freeze" do
+  test "a started fence times its prerequisite apart from its freeze and splits write steps" do
     {agent, staged} = owned_session()
 
-    assert {:ok, task} =
+    assert {:ok, %InternalSessionStore.FenceTask{} = task} =
              InternalSessionStore.start_durable_fence(
                agent,
                @session,
@@ -170,6 +171,43 @@ defmodule SalixAgent.InternalSessionFenceTelemetryTest do
              )
 
     assert {:ok, _committed} = InternalSessionStore.await_durable_fence(task)
-    assert_received {:session_fence, %{kind: "started", outcome: "ok", prerequisite_ms: 1_200}}
+
+    assert_received {:session_fence,
+                     %{
+                       kind: "started",
+                       outcome: "ok",
+                       prerequisite_ms: 1_200,
+                       write_steps: write_steps
+                     }}
+
+    assert Map.keys(write_steps) |> Enum.sort() == ~w(kernel_commit notify pg_tx)a
+  end
+
+  test "freeze caches archive_refs in Pending and started fence defers kernel commit until await" do
+    {agent, staged} = owned_session()
+    pending = InternalSessionStore.PG.freeze(staged, 1)
+    assert is_map(pending.archive_refs)
+
+    assert {:ok, %InternalSessionStore.FenceTask{task: bg_task} = fence} =
+             InternalSessionStore.start_durable_fence(agent, @session, staged)
+
+    # Background task returns the uncommitted storage outcome without calling
+    # kernel commit, so it completes cleanly without acquiring the kernel mutex.
+    assert {:ok,
+            {{:storage_committed, %InternalSessionStore.PG.Pending{}, rev}, _clock, bg_steps, _,
+             _}} =
+             SystemsClock.yield(bg_task, :infinity)
+
+    assert is_integer(rev)
+    assert Map.has_key?(bg_steps, :pg_tx)
+    assert Map.has_key?(bg_steps, :notify)
+    refute Map.has_key?(bg_steps, :kernel_commit)
+
+    # Finishing the storage outcome commits the revision in the kernel.
+    assert {:ok, committed} =
+             InternalSessionStore.PG.finish_storage({:storage_committed, pending, rev})
+
+    assert committed.revision == rev
+    _ = fence
   end
 end

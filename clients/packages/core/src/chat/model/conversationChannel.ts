@@ -5,6 +5,7 @@ import {
   type ChatCodingFacts,
   type ChatConversationFile,
   type ChatDeviceSetupOffer,
+  type ChatDraftEntry,
   type ChatMacAppItem,
   type ChatMessage as ContractChatMessage,
   type ChatMessagePart,
@@ -14,11 +15,12 @@ import {
   type ChatTaskAction,
   type ChatTaskRun,
   type ChatTaskRunChoice,
+  type ChatWorkerSession,
   type ConversationProjection,
   type ManualTaskStatus,
 } from "@comma/chat-contract";
 import type { CommaGroupFile, CommaTaskRun } from "../../comma/api-schemas";
-import { toPullRequest } from "../../coding-wire";
+import { toCodingUsage, toPullRequest } from "../../coding-wire";
 
 /** The message a Task's station writes when its model cannot start (`SalixWeb.StationTasks`). */
 const TASK_RUN_BLOCKED = "task_run_blocked";
@@ -36,7 +38,7 @@ import {
   type CommaMessagePage,
   type SalixMessage,
 } from "../api";
-import { share, type Runner, type Scoped } from "@comma/core-kernel";
+import { CoreError, share, type Runner, type Scoped } from "@comma/core-kernel";
 import { Duration, Effect, Fiber, Queue } from "effect";
 import { after, cancel, type ChatEnv, type TimerHandle } from "../env";
 import {
@@ -68,7 +70,7 @@ import {
   questionAnswerPartValue,
   questionPartValue,
 } from "./inlineElementContract";
-import { createQuestionStates } from "./questionStates";
+import { createQuestionStates, isSilentQuestionAnswerMessage } from "./questionStates";
 import { SeqCoverage } from "./seqCoverage";
 import {
   milestonesOfBlocks,
@@ -83,6 +85,7 @@ import {
 import { decodeUserMessage, userParts } from "./userMessageText";
 import { messageMarkdown } from "../../markdown/message";
 import { draftMarkdown } from "../../markdown/stream";
+import { parseMarkdown, type MarkdownNode } from "../../markdown/parse";
 
 const HOT_STREAM_RECONNECT_MS = 250;
 const WARM_STREAM_RECONNECT_MS = 3_000;
@@ -141,6 +144,8 @@ export type DraftAttachment = {
   status: DraftAttachmentStatus;
   /** Main-owned opaque local ref; generated chat projections strip this field. */
   localFile?: CommaLocalFileRef | undefined;
+  /** A file the message names by its path on this computer (`attachLocalPaths`), that path: ready at once, nothing uploads. */
+  localPath?: string | undefined;
   /** A message's attachment the server stores by reference (`attachConversationFiles`): no bytes are held for it. */
   byReference?: true | undefined;
   /** It failed for what the file is (too large, a type not taken): uploading it again changes nothing. */
@@ -200,7 +205,7 @@ export type ChatBoundWorker = {
   name: string;
 };
 
-export type { ChatTaskRun };
+export type { ChatTaskRun, ChatWorkerSession };
 
 export type ChatParticipantIssueDetail = {
   source?: string | undefined;
@@ -278,6 +283,8 @@ export type PendingSend = {
   failureAction?: "billing" | undefined;
   /** How the words came (`quick_chat`), sent with them. */
   messageType?: "quick_chat" | undefined;
+  /** Where the words were written when not in this app, sent with them and shown on the message at once. */
+  clientEntry?: ChatDraftEntry | undefined;
   skills: { location: string }[] | undefined;
   replyToMessageId?: string | undefined;
   localFiles?: CommaLocalFileRef[] | undefined;
@@ -336,6 +343,7 @@ export type ConversationChannelState = {
   pending: PendingSend[];
   participantStatus: ChatParticipantStatus | undefined;
   participantStatuses?: ChatParticipantStatus[] | undefined;
+  workerSessions?: ChatWorkerSession[] | undefined;
   boundWorker?: ChatBoundWorker | undefined;
   /** Where a Task runs and its model, which its panels show instead of its Agent. */
   taskRun?: ChatTaskRun | undefined;
@@ -618,6 +626,7 @@ export class ConversationChannel {
     pending: [],
     participantStatus: undefined,
     participantStatuses: undefined,
+    workerSessions: undefined,
     boundWorker: undefined,
     taskRun: undefined,
     serverMessages: [],
@@ -702,6 +711,7 @@ export class ConversationChannel {
       locallyAwaitingReply: false,
       participantStatus: undefined,
       participantStatuses: undefined,
+      workerSessions: undefined,
       boundWorker: undefined,
       taskRun: undefined,
     });
@@ -863,7 +873,7 @@ export class ConversationChannel {
     // their own 50-item budget, so a mixed selection admits identically
     // regardless of which class the dialog returned first.
     let projectedCount = this.attachmentsOf(questionMessageId).filter(
-      (attachment) => attachment.localFile === undefined
+      (attachment) => !isLocalAttachment(attachment)
     ).length;
 
     for (const file of files) {
@@ -964,13 +974,52 @@ export class ConversationChannel {
   }
 
   /**
+   * Adds files the message names by their path on this computer: each is ready at once, nothing of it uploads, and the
+   * message lists their paths for the agent to read them where they are. A path the draft names already is not added
+   * again. They count toward the draft's 50 local files, not its uploads.
+   */
+  attachLocalPaths(files: ReadonlyArray<{ name: string; path: string; size: number }>) {
+    if (files.length === 0) return;
+    const named = new Set(
+      this.state.draftAttachments.flatMap((attachment) =>
+        attachment.localPath ? [attachment.localPath] : []
+      )
+    );
+    const additions: DraftAttachment[] = [];
+    for (const file of files) {
+      if (named.has(file.path)) continue;
+      named.add(file.path);
+      additions.push({
+        error: undefined,
+        id: this.createClientRequestId(),
+        isImage: false,
+        localPath: file.path,
+        name: file.name,
+        path: undefined,
+        size: file.size,
+        status: "uploaded",
+      });
+    }
+    if (
+      this.state.draftAttachments.filter(isLocalAttachment).length + additions.length >
+      50
+    ) {
+      throw new Error("Local attachment draft limits exceeded.");
+    }
+    if (additions.length === 0) return;
+    this.setState({
+      draftAttachments: [...this.state.draftAttachments, ...additions],
+    });
+  }
+
+  /**
    * Adds attachments of messages in the Group to the draft, of any size: the server stores each as a composer file
    * by reference to its blob, so no bytes pass through here. They count toward the message's files as uploads do.
    */
   attachConversationFiles(files: ChatConversationFile[]) {
     if (files.length === 0) return;
     let projectedCount = this.state.draftAttachments.filter(
-      (attachment) => attachment.localFile === undefined
+      (attachment) => !isLocalAttachment(attachment)
     ).length;
     const additions = files.map<DraftAttachment>((file) => {
       const id = this.createClientRequestId();
@@ -1035,7 +1084,7 @@ export class ConversationChannel {
     if (this.conversationFiles.has(id)) {
       const error = this.tooManyAttachments(
         attachments.filter(
-          (attachment) => attachment.id !== id && attachment.localFile === undefined
+          (attachment) => attachment.id !== id && !isLocalAttachment(attachment)
         ).length
       );
       this.setAttachmentsOf(
@@ -1062,7 +1111,7 @@ export class ConversationChannel {
     const validationError = validateAttachment(
       file,
       attachments.filter(
-        (attachment) => attachment.id !== id && attachment.localFile === undefined
+        (attachment) => attachment.id !== id && !isLocalAttachment(attachment)
       ).length,
       this.locale,
       this.env.transcodeAttachment !== undefined
@@ -1134,7 +1183,9 @@ export class ConversationChannel {
     // Several picks join with the locale's separator, not Intl.ListFormat: the Hermes that runs the core on Android
     // and iOS has no ListFormat.
     const words = answer.skipped
-      ? commaMessages.chat_question_skip_reply({}, { locale: this.locale })
+      ? question.skipBehavior === "dismiss"
+        ? commaMessages.chat_question_dismiss_reply({}, { locale: this.locale })
+        : commaMessages.chat_question_skip_reply({}, { locale: this.locale })
       : [
           picked.length === 1
             ? (picked[0]!.reply ?? picked[0]!.label)
@@ -1174,7 +1225,9 @@ export class ConversationChannel {
       status: "sending",
       text,
     };
-    this.beginLocalReplyWait(clientRequestId);
+    if (question.skipBehavior !== "dismiss" && !question.independent) {
+      this.beginLocalReplyWait(clientRequestId);
+    }
     const firstObservedSequence = this.nextObservationSequence();
     setBoundedObservation(
       this.clientRequestFirstObservedSequences,
@@ -1274,6 +1327,7 @@ export class ConversationChannel {
       /** Files for this message alone, apart from the draft: they upload now and the message waits for them. */
       files?: AttachmentUploadInput[];
       messageType?: "quick_chat";
+      clientEntry?: ChatDraftEntry;
       skills?: { location: string }[];
       replyToMessageId?: string;
     } = {}
@@ -1329,14 +1383,32 @@ export class ConversationChannel {
             : []
         )
       : [];
+    // A file named by its path is listed now: the files still uploading are listed after it once they are up.
+    const localPaths = consumeDraft
+      ? this.state.draftAttachments.flatMap((attachment) =>
+          attachment.localPath
+            ? [
+                {
+                  name: attachment.name,
+                  path: attachment.localPath,
+                  local: true as const,
+                },
+              ]
+            : []
+        )
+      : [];
     if (
       hasBlockedAttachment ||
-      (!trimmed && uploads.length === 0 && localFiles.length === 0)
+      (!trimmed &&
+        uploads.length === 0 &&
+        localFiles.length === 0 &&
+        localPaths.length === 0)
     ) {
       return undefined;
     }
 
-    const sendText = uploading ? text : composeUploadedMessage(text, uploads);
+    const withPaths = composeMessageWithAttachments(text, localPaths);
+    const sendText = uploading ? withPaths : composeUploadedMessage(withPaths, uploads);
     const pending: PendingSend = {
       clientDeviceId: this.getClientDeviceId?.(),
       clientRequestId: options.clientRequestId ?? this.createClientRequestId(),
@@ -1344,6 +1416,7 @@ export class ConversationChannel {
       error: undefined,
       localFiles: localFiles.length > 0 ? localFiles : undefined,
       messageType: options.messageType,
+      ...(options.clientEntry ? { clientEntry: options.clientEntry } : {}),
       skills: options.skills?.length ? options.skills : undefined,
       replyToMessageId: options.replyToMessageId,
       status: "sending",
@@ -1628,6 +1701,7 @@ export class ConversationChannel {
       clientDeviceId?: string;
       localFiles?: CommaLocalFileRef[];
       messageType?: "quick_chat";
+      clientEntry?: ChatDraftEntry;
       skills?: { location: string }[];
       replyToMessageId?: string;
       questionAnswer?: QuestionAnswer;
@@ -1640,6 +1714,7 @@ export class ConversationChannel {
     if (pending.questionAnswer) attrs.questionAnswer = pending.questionAnswer;
     if (pending.clientDeviceId) attrs.clientDeviceId = pending.clientDeviceId;
     if (pending.messageType) attrs.messageType = pending.messageType;
+    if (pending.clientEntry) attrs.clientEntry = pending.clientEntry;
     if (pending.skills?.length) {
       attrs.skills = pending.skills;
     }
@@ -1778,6 +1853,7 @@ export class ConversationChannel {
             localFileRef: localFile.localFileRef,
             name: localFile.displayName,
             size: localFile.size,
+            conversation: this.conversationId,
           }),
           MAX_UPLOAD_BYTES
         );
@@ -1819,6 +1895,7 @@ export class ConversationChannel {
             this.api.uploadGroupFile(this.groupId, {
               data: ready.data,
               name: ready.name,
+              conversation: this.conversationId,
             }),
             MAX_ATTACHMENT_BYTES
           )
@@ -2163,16 +2240,18 @@ export class ConversationChannel {
           event.conversation_id !== this.conversationId
         )
           return;
-        this.setState({
-          boundWorker: event.bound_worker
-            ? {
-                participantId: event.bound_worker.participant_id,
-                actorId: event.bound_worker.actor_id,
-                name: event.bound_worker.name,
-              }
-            : undefined,
-          taskRun: this.rememberTaskRun(taskRun(event.run)),
-          participantStatuses: event.participants.map((p) => ({
+        const nextBoundWorker: ChatBoundWorker | undefined = event.bound_worker
+          ? {
+              participantId: event.bound_worker.participant_id,
+              actorId: event.bound_worker.actor_id,
+              name: event.bound_worker.name,
+            }
+          : undefined;
+        const boundWorker = sameBoundWorker(this.state.boundWorker, nextBoundWorker)
+          ? this.state.boundWorker
+          : nextBoundWorker;
+        const nextParticipantStatuses: ChatParticipantStatus[] = event.participants.map(
+          (p) => ({
             conversationId: p.conversation_id,
             participantId: p.participant_id,
             actorId: p.actor_id,
@@ -2185,7 +2264,54 @@ export class ConversationChannel {
             ...(p.issue && participantIssueDetail(p.issue_detail)
               ? { issueDetail: participantIssueDetail(p.issue_detail) }
               : {}),
-          })),
+          })
+        );
+        const participantStatuses = sameParticipantStatuses(
+          this.state.participantStatuses,
+          nextParticipantStatuses
+        )
+          ? this.state.participantStatuses
+          : nextParticipantStatuses;
+        const nextWorkerSessions: ChatWorkerSession[] | undefined =
+          event.worker_sessions && event.worker_sessions.length > 0
+            ? event.worker_sessions.map((ws) => ({
+                participantId: ws.participant_id,
+                ...(ws.actor_id ? { actorId: ws.actor_id } : {}),
+                slot: ws.slot,
+                label: ws.label,
+                ...(ws.model ? { model: ws.model } : {}),
+                ...(ws.runtime ? { runtime: ws.runtime } : {}),
+                isPrimary: ws.is_primary,
+                ...(ws.subscribed !== undefined ? { subscribed: ws.subscribed } : {}),
+                state: ws.state,
+                status: ws.status,
+                ...(ws.updated_at !== undefined ? { updatedAt: ws.updated_at } : {}),
+                ...(ws.issue ? { issue: ws.issue } : {}),
+                ...(ws.issue && participantIssueDetail(ws.issue_detail)
+                  ? { issueDetail: participantIssueDetail(ws.issue_detail) }
+                  : {}),
+              }))
+            : undefined;
+        const workerSessions = sameWorkerSessions(
+          this.state.workerSessions,
+          nextWorkerSessions
+        )
+          ? this.state.workerSessions
+          : nextWorkerSessions;
+        const nextTaskRun = this.rememberTaskRun(taskRun(event.run));
+        if (
+          boundWorker === this.state.boundWorker &&
+          participantStatuses === this.state.participantStatuses &&
+          workerSessions === this.state.workerSessions &&
+          nextTaskRun === this.state.taskRun
+        ) {
+          return;
+        }
+        this.setState({
+          boundWorker,
+          taskRun: nextTaskRun,
+          participantStatuses,
+          workerSessions,
         });
       },
       waitMs: TASK_EVENT_WAIT_MS,
@@ -2613,13 +2739,15 @@ export class ConversationChannel {
   private rememberTaskRun(run: ChatTaskRun | undefined): ChatTaskRun | undefined {
     if (!run) return run;
     const key = taskRunKey(this.groupId, this.conversationId);
+    const existing = this.state.taskRun ?? rememberedTaskRuns.get(key);
+    const stable = sameTaskRun(existing, run) ? existing! : run;
     rememberedTaskRuns.delete(key);
-    rememberedTaskRuns.set(key, run);
+    rememberedTaskRuns.set(key, stable);
     if (rememberedTaskRuns.size > REMEMBERED_TASK_RUNS) {
       const oldest = rememberedTaskRuns.keys().next().value;
       if (oldest !== undefined) rememberedTaskRuns.delete(oldest);
     }
-    return run;
+    return stable;
   }
 
   private applyConversation(
@@ -3034,6 +3162,7 @@ export class ConversationChannel {
         connection: "paused",
         errorKind,
         participantStatuses: undefined,
+        workerSessions: undefined,
         boundWorker: undefined,
         taskRun: undefined,
         status: "error",
@@ -3452,6 +3581,7 @@ export function toConversationProjection(
     ...(state.participantStatuses
       ? { participantStatuses: state.participantStatuses }
       : {}),
+    ...(state.workerSessions ? { workerSessions: state.workerSessions } : {}),
     serverMessages: transcriptMessages(state.serverMessages),
     status: state.status,
     ...(state.syncWarning ? { syncWarning: state.syncWarning } : {}),
@@ -3500,13 +3630,36 @@ export function normalizeServerMessages(
   const previousById = onlyNewer
     ? new Map<string, ChatMessage>()
     : new Map(previous.map((message) => [message.messageId, message]));
+  const hiddenWatchReplies = new Map<
+    string,
+    { replyTo: string | undefined; threadRoot: string | undefined }
+  >();
+  for (const message of rawMessages) {
+    if (
+      !message.platform_message &&
+      message.actor_type === "system" &&
+      isHiddenTaskWatchMessage(message.metadata?.message_type)
+    ) {
+      const replyTo =
+        message.reply_to_message_id &&
+        message.reply_to_message_id !== message.message_id
+          ? message.reply_to_message_id
+          : undefined;
+      const threadRoot =
+        message.thread_root_message_id &&
+        message.thread_root_message_id !== message.message_id
+          ? message.thread_root_message_id
+          : replyTo;
+      hiddenWatchReplies.set(message.message_id, { replyTo, threadRoot });
+    }
+  }
   const normalizedTail = rawMessages.flatMap((message) => {
     const platformMessage = message.platform_message;
     if (
       !platformMessage &&
       message.actor_type === "system" &&
       (message.agent_input != null ||
-        message.metadata?.message_type === TASK_STATUS_PENDING ||
+        isHiddenTaskWatchMessage(message.metadata?.message_type) ||
         (message.kind === "app_event" &&
           internalEvent(String(message.metadata?.event_type ?? ""))))
     ) {
@@ -3557,11 +3710,14 @@ export function normalizeServerMessages(
       !platformMessage && message.actor_type === "agent"
         ? milestonesOfBlocks(content)
         : undefined;
+    const current = previousById.get(message.message_id);
     const next: ChatMessage = {
       actorId: message.actor_type === "agent" ? message.agent_id : undefined,
       actorRole: messageActorRole(message, conversationKind),
       actorType: writerOf(message.actor_type),
+      ...(message.participant_id ? { participantId: message.participant_id } : {}),
       attachments: blockViews.attachments,
+      ...guestAuthorOf(message),
       blocksKey: blockViews.blocksKey,
       ...(isBrief(messageType, message.client_request_id, conversationId)
         ? { brief: true }
@@ -3577,6 +3733,7 @@ export function normalizeServerMessages(
       messageId: message.message_id,
       messageType,
       ...runBlockedOf(messageType, message.metadata),
+      ...memberChangeOf(message),
       ...noticeOf(
         role,
         platformMessage,
@@ -3584,14 +3741,24 @@ export function normalizeServerMessages(
         messageActorRole(message, conversationKind),
         conversationKind,
         strippedText,
-        blockViews.attachments.length > 0
+        blockViews.attachments.length > 0,
+        current
       ),
       ...(milestones ? { milestones } : {}),
       ...(routerRequest(message, conversationKind)
         ? { routerRequest: true as const }
         : {}),
-      replyToMessageId: message.reply_to_message_id,
-      threadRootMessageId: message.thread_root_message_id,
+      ...(endsTurn(message) ? { endsTurn: true as const } : {}),
+      replyToMessageId:
+        message.reply_to_message_id &&
+        hiddenWatchReplies.has(message.reply_to_message_id)
+          ? hiddenWatchReplies.get(message.reply_to_message_id)?.replyTo
+          : message.reply_to_message_id,
+      threadRootMessageId:
+        message.thread_root_message_id &&
+        hiddenWatchReplies.has(message.thread_root_message_id)
+          ? hiddenWatchReplies.get(message.thread_root_message_id)?.threadRoot
+          : message.thread_root_message_id,
       parts,
       refs: blockViews.refs,
       role,
@@ -3601,7 +3768,6 @@ export function normalizeServerMessages(
       status: "committed",
       text: strippedText,
     };
-    const current = previousById.get(next.messageId);
     // A message kept from before the core parsed messages, or before it read a person's Quick Chat, is read now.
     if (
       current &&
@@ -3639,6 +3805,7 @@ export function normalizeServerMessages(
   return ordered;
 }
 
+const COLLABORATION_MEMBER_CHANGED = "collaboration.member_changed";
 const DEVICE_SETUP_OFFER = "device_setup_offer";
 const DEVICE_SETUP_OFFER_UPDATED = "device_setup_offer.updated";
 
@@ -3647,10 +3814,19 @@ const DEVICE_SETUP_OFFER_UPDATED = "device_setup_offer.updated";
  * setup offer's later state, and `mail.*` changes to a Home mail interaction.
  */
 /**
- * The runtime's note to a Task's Router that it has not settled the Task's status (`SalixIM.TaskWorkerWatch`). The Task
- * stores it as a system Message for the Router; a person never reads it.
+ * Internal runtime notes written by `SalixIM.TaskWorkerWatch` / `SalixIM.StationTaskWatch`
+ * (reminding a stopped Worker, alerting the Task's Router, or prompting it to settle status);
+ * a person never reads them.
  */
-const TASK_STATUS_PENDING = "task_status_pending";
+const HIDDEN_TASK_WATCH_TYPES = new Set([
+  "task_status_pending",
+  "task_worker_nudge",
+  "task_worker_stopped",
+]);
+
+function isHiddenTaskWatchMessage(messageType: unknown): boolean {
+  return typeof messageType === "string" && HIDDEN_TASK_WATCH_TYPES.has(messageType);
+}
 
 function internalEvent(eventType: string) {
   return (
@@ -3784,8 +3960,13 @@ function canonicalMessageCreatedAtMs(message: SalixMessage) {
 
 // The server stamps the sending session's client kind and platform on user
 // messages. It is a display hint only: it names the Comma app the user typed in.
+// Words written in Raycast say so whichever session sent them: the extension's
+// own (`client_kind`), or the desktop app's after a link filled its draft
+// (`client_entry`).
 function messageClientSource(message: SalixMessage): ChatMessage["clientSource"] {
   const kind = message.metadata?.client_kind;
+  if (kind === "raycast" || message.metadata?.client_entry === "raycast")
+    return "raycast";
   if (kind === "ios") return "iphone";
   if (kind === "watch" || kind === "android" || kind === "web") return kind;
   if (kind !== "electron") return undefined;
@@ -3802,14 +3983,17 @@ function sameMessage(a: ChatMessage, b: ChatMessage) {
     a.actorId === b.actorId &&
     a.actorRole === b.actorRole &&
     a.actorType === b.actorType &&
+    a.participantId === b.participantId &&
     a.messageType === b.messageType &&
     a.brief === b.brief &&
     a.routerRequest === b.routerRequest &&
+    a.endsTurn === b.endsTurn &&
     a.clientRequestId === b.clientRequestId &&
     a.clientSource === b.clientSource &&
     a.blocksKey === b.blocksKey &&
     a.createdAt === b.createdAt &&
     a.createdBy === b.createdBy &&
+    a.authorName === b.authorName &&
     a.delivery === b.delivery &&
     a.error === b.error &&
     a.messageId === b.messageId &&
@@ -3869,6 +4053,18 @@ function routerRequest(message: SalixMessage, conversationKind: CommaConversatio
   return (
     messageActorRole(message, conversationKind) === "router" &&
     message.metadata?.task_request === true
+  );
+}
+
+/**
+ * A station's Worker's message that ends its turn. The server marks a station Task's post with what its Session
+ * declared (`SalixWeb.StationTasks.post/2`): `all_done` and `need_help` end the turn.
+ */
+function endsTurn(message: SalixMessage) {
+  const declared = message.metadata?.declared;
+  return (
+    message.metadata?.kind === "station_task" &&
+    (declared === "all_done" || declared === "need_help")
   );
 }
 
@@ -3973,10 +4169,13 @@ function deriveBlockViews(
         });
         continue;
       }
+      const rawTitle = stringValue(block.title)?.replace(/\s+/g, " ").trim();
+      const title = rawTitle ? rawTitle.slice(0, 200) : undefined;
       parts.push({
         kind: "dynamic-ui",
         contentId: blobRef.uuid,
         uiRef: stringValue(block.ui_ref) ?? "unavailable",
+        ...(title ? { title } : {}),
         summary: (
           stringValue(block.summary) ??
           stringValue(block.text) ??
@@ -4033,9 +4232,11 @@ function deriveBlockViews(
       }
       const referencedConversationId = stringValue(block.conversation_id);
       if (referencedConversationId) {
+        const referencedGroupId = stringValue(block.group_id);
         refs.push({
           activityStatus: stringValue(block.activity_status),
           conversationId: referencedConversationId,
+          ...(referencedGroupId === undefined ? {} : { groupId: referencedGroupId }),
           kind: conversationKindValue(block.kind),
           status: stringValue(block.status),
           title: stringValue(block.title),
@@ -4206,6 +4407,7 @@ function combineMessages(
         })) ?? []),
       ],
       blocksKey: undefined,
+      ...(item.clientEntry ? { clientSource: item.clientEntry } : {}),
       createdAt: item.createdAt,
       createdBy: undefined,
       delivery: item.status === "failed" ? "failed" : "sending",
@@ -4320,6 +4522,29 @@ function runBlockedOf(
   return error ? { runBlockedError: error } : {};
 }
 
+/** A guest's message in a Task together: the name the server stamped on it, as its writer has no account. */
+function guestAuthorOf(message: SalixMessage): Pick<ChatMessage, "authorName"> {
+  if (message.actor_type !== "user" || !message.user_id?.startsWith("guest:"))
+    return {};
+  const name = stringValue(message.metadata?.author_name)?.trim();
+  return name ? { authorName: name } : {};
+}
+
+/** A Task together's line for its people when a member left it or was taken out (a product event of the server's). */
+function memberChangeOf(message: SalixMessage): Pick<ChatMessage, "memberChange"> {
+  if (message.kind !== "app_event") return {};
+  if (message.metadata?.event_type !== COLLABORATION_MEMBER_CHANGED) return {};
+  const member = message.metadata.member as {
+    user_id?: unknown;
+    status?: unknown;
+  } | null;
+  const status = member?.status;
+  const userId = member?.user_id;
+  return (status === "left" || status === "removed") && typeof userId === "string"
+    ? { memberChange: { status, userId } }
+    : {};
+}
+
 /**
  * A Task whose model cannot start: the last word that counts is its station's `task_run_blocked` message, with no
  * switch to another model (`task_run_switched`) and no other word of its Worker after it.
@@ -4351,42 +4576,105 @@ function noticeOf(
   actorRole: ChatMessage["actorRole"],
   conversationKind: CommaConversationKind,
   text: string,
-  attached: boolean
+  attached: boolean,
+  previous: ChatMessage | undefined
 ): Pick<ChatMessage, "notice"> {
   if (role !== "assistant" || platformMessage || actorType === "system") return {};
   const router =
     actorRole === "router" ||
     (actorRole === undefined && conversationKind === "user_chat");
-  const preview = previewText(text);
+  // Only the Router's words are read for a preview: a Worker's are never shown in a banner.
+  if (!router) return {};
+  // The preview parses the text: a message read before with the same text keeps the one it has.
+  const preview =
+    previous?.notice && previous.text === text
+      ? previous.notice.preview
+      : previewText(text);
   // Files alone are worth a notice too; the preview is then empty.
-  return router && (preview || attached) ? { notice: { preview } } : {};
+  return preview || attached ? { notice: { preview } } : {};
 }
 
 /** Keeps a notification's payload small; it sits far past what a banner shows, which fades the rest itself. */
 const NOTICE_PREVIEW_MAX = 500;
-const LINE_MARKS = /^(#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)+/;
-const INLINE_MARKS = /\*\*|__|`|~~/g;
-const LINK = /!?\[([^\]]*)\]\([^)]*\)/g;
+/** A run of inline nodes as the words it shows: marks dropped, a link or image as its text, code as written. */
+function inlineWords(nodes: readonly MarkdownNode[] | undefined): string {
+  return (nodes ?? [])
+    .map((node) => {
+      switch (node.type) {
+        case "text":
+          return String(node.content ?? "");
+        case "inline_code":
+          return String(node.code ?? "");
+        case "math_inline":
+          return String(node.content ?? "");
+        case "image":
+          return String(node.alt ?? "");
+        case "hardbreak":
+          return "\n";
+        case "footnote_reference":
+        case "checkbox_input":
+          return "";
+        default:
+          return inlineWords(node.children);
+      }
+    })
+    .join("");
+}
+
+/** A table row's cells as words, an empty cell as "—" so every cell stays under its column. */
+function rowWords(row: MarkdownNode | undefined): string[] {
+  return ((row?.cells as MarkdownNode[] | undefined) ?? []).map(
+    (cell) => inlineWords(cell.children).replace(/\s+/g, " ").trim() || "—"
+  );
+}
 
 /**
- * Text as plain words for a notification: Markdown marks and code fences dropped, its paragraphs kept for the banner
- * to lay out, bounded without an ellipsis of its own.
+ * The lines a block shows in a banner: each paragraph, heading, list item and code line on its own line, an
+ * admonition's title before its body, a table's rows (its header row first) as their cells joined by " · ", and rules,
+ * footnotes and blank lines left out, since a banner shows only its first few lines.
+ */
+function blockLines(node: MarkdownNode): string[] {
+  switch (node.type) {
+    case "paragraph":
+    case "heading":
+      return inlineWords(node.children).split("\n");
+    case "list":
+      return ((node.items as MarkdownNode[] | undefined) ?? []).flatMap(blockLines);
+    case "code_block":
+      return String(node.code ?? "").split("\n");
+    case "math_block":
+      return String(node.content ?? "").split("\n");
+    case "admonition":
+      return [String(node.title ?? ""), ...(node.children ?? []).flatMap(blockLines)];
+    case "table": {
+      const rows = [
+        node.header as MarkdownNode | undefined,
+        ...((node.rows as MarkdownNode[] | undefined) ?? []),
+      ];
+      return rows.map((row) => rowWords(row).join(" · "));
+    }
+    case "html_block":
+      return String(node.content ?? node.raw ?? "")
+        .replace(/<[^>]*>/g, "")
+        .split("\n");
+    case "thematic_break":
+    case "footnote":
+      return [];
+    default:
+      return (node.children ?? []).flatMap(blockLines);
+  }
+}
+
+/**
+ * Text as plain words for a notification: the Markdown read as every client reads it, its marks dropped, one line per
+ * paragraph, item, code line or table row and no blank lines, bounded without an ellipsis of its own.
  */
 export function previewText(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => !line.startsWith("```"))
-    .map((line) =>
-      line
-        .replace(LINE_MARKS, "")
-        .replace(INLINE_MARKS, "")
-        .replace(LINK, "$1")
-        .replace(/[ \t]+/g, " ")
-    )
+  return parseMarkdown(text)
+    .flatMap(blockLines)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter((line) => line !== "")
     .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
     .slice(0, NOTICE_PREVIEW_MAX);
 }
 
@@ -4538,6 +4826,11 @@ function composeUploadedMessage(text: string, uploads: readonly DraftAttachment[
   );
 }
 
+/** A file the draft keeps on this computer (a local ref, or a path): it counts toward the local files, not the uploads. */
+function isLocalAttachment(attachment: DraftAttachment) {
+  return attachment.localFile !== undefined || attachment.localPath !== undefined;
+}
+
 function replaceAttachment(attachments: DraftAttachment[], next: DraftAttachment) {
   return attachments.map((attachment) =>
     attachment.id === next.id ? next : attachment
@@ -4629,7 +4922,16 @@ export function validateAttachment(
 /** The request a reply is owed to: the last message, when it asks the Router. */
 function awaitedRequest(serverMessages: readonly ChatMessage[]) {
   const last = serverMessages.at(-1);
-  return last && asksRouter(last) ? last : undefined;
+  if (!last || !asksRouter(last)) return undefined;
+  const independentQuestionIds = new Set<string>();
+  for (const message of serverMessages) {
+    const question = message.parts?.find((part) => part.kind === "question");
+    if (question?.kind === "question" && question.independent) {
+      independentQuestionIds.add(question.messageId);
+    }
+  }
+  if (isSilentQuestionAnswerMessage(last, independentQuestionIds)) return undefined;
+  return last;
 }
 
 function deriveAwaitingReply(
@@ -4889,6 +5191,13 @@ export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined 
               : {}),
             state: run.place.state,
             ...(run.place.reason ? { reason: run.place.reason } : {}),
+            ...(run.place.screen_owner ? { screenOwner: run.place.screen_owner } : {}),
+            ...(run.place.screen_owner && run.place.screen_device
+              ? { screenDevice: run.place.screen_device }
+              : {}),
+            ...(run.place.screen_owner && run.place.screen_active
+              ? { screenActive: true }
+              : {}),
             ...(run.place.task_models ? { taskModels: run.place.task_models } : {}),
           }
         : { kind: run.place.kind };
@@ -4916,7 +5225,9 @@ export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined 
 /** What a coding Task's sandbox and GitHub answered last, as the server kept it: each part once read. */
 function codingFacts(facts: NonNullable<CommaTaskRun["facts"]>): ChatCodingFacts {
   return {
-    ...(facts.usage !== undefined ? { usage: facts.usage } : {}),
+    ...(facts.usage !== undefined
+      ? { usage: facts.usage ? toCodingUsage(facts.usage) : null }
+      : {}),
     ...(facts.changes ? { changes: facts.changes } : {}),
     ...(facts.pull_request !== undefined
       ? {
@@ -4926,6 +5237,130 @@ function codingFacts(facts: NonNullable<CommaTaskRun["facts"]>): ChatCodingFacts
         }
       : {}),
   };
+}
+
+function sameTaskRun(a: ChatTaskRun | undefined, b: ChatTaskRun | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.vendor !== b.vendor) return false;
+  if (a.place !== b.place && JSON.stringify(a.place) !== JSON.stringify(b.place)) {
+    return false;
+  }
+  if (a.model !== b.model && JSON.stringify(a.model) !== JSON.stringify(b.model)) {
+    return false;
+  }
+  return sameCodingFacts(a.facts, b.facts);
+}
+
+function sameCodingFacts(
+  a: ChatCodingFacts | undefined,
+  b: ChatCodingFacts | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if ((a.usage === undefined) !== (b.usage === undefined)) return false;
+  if ((a.changes === undefined) !== (b.changes === undefined)) return false;
+  if ((a.pullRequest === undefined) !== (b.pullRequest === undefined)) return false;
+  if (a.usage !== b.usage && JSON.stringify(a.usage) !== JSON.stringify(b.usage)) {
+    return false;
+  }
+  if (
+    a.changes !== b.changes &&
+    JSON.stringify(a.changes) !== JSON.stringify(b.changes)
+  ) {
+    return false;
+  }
+  if (
+    a.pullRequest !== b.pullRequest &&
+    JSON.stringify(a.pullRequest) !== JSON.stringify(b.pullRequest)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function sameIssueDetail(
+  a: ChatParticipantIssueDetail | undefined,
+  b: ChatParticipantIssueDetail | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.source === b.source &&
+    a.profileId === b.profileId &&
+    a.profileName === b.profileName &&
+    a.resetAt === b.resetAt &&
+    a.credits === b.credits &&
+    a.trigger === b.trigger
+  );
+}
+
+function sameBoundWorker(
+  a: ChatBoundWorker | undefined,
+  b: ChatBoundWorker | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.participantId === b.participantId && a.actorId === b.actorId && a.name === b.name
+  );
+}
+
+function sameParticipantStatuses(
+  a: readonly ChatParticipantStatus[] | undefined,
+  b: readonly ChatParticipantStatus[] | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.conversationId !== y.conversationId ||
+      x.participantId !== y.participantId ||
+      x.actorId !== y.actorId ||
+      x.actorRole !== y.actorRole ||
+      x.name !== y.name ||
+      x.state !== y.state ||
+      x.status !== y.status ||
+      x.updatedAt !== y.updatedAt ||
+      x.issue !== y.issue ||
+      !sameIssueDetail(x.issueDetail, y.issueDetail)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameWorkerSessions(
+  a: readonly ChatWorkerSession[] | undefined,
+  b: readonly ChatWorkerSession[] | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.participantId !== y.participantId ||
+      x.actorId !== y.actorId ||
+      x.slot !== y.slot ||
+      x.label !== y.label ||
+      x.model !== y.model ||
+      x.runtime !== y.runtime ||
+      x.isPrimary !== y.isPrimary ||
+      x.subscribed !== y.subscribed ||
+      x.state !== y.state ||
+      x.status !== y.status ||
+      x.updatedAt !== y.updatedAt ||
+      x.issue !== y.issue ||
+      !sameIssueDetail(x.issueDetail, y.issueDetail)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function participantIssueDetail(
@@ -5126,6 +5561,15 @@ function uploadErrorMessage(error: unknown, locale: CommaLocale, limit: number) 
     }
     if (error.status === 415) {
       return commaMessages.chat_unsupported_attachment({}, { locale });
+    }
+  }
+
+  if (error instanceof CoreError) {
+    if (error.code === "timeout") {
+      return commaMessages.chat_upload_timed_out({}, { locale });
+    }
+    if (error.code === "network") {
+      return commaMessages.chat_upload_network_failed({}, { locale });
     }
   }
 

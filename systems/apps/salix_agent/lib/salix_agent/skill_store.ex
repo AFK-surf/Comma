@@ -67,13 +67,16 @@ defmodule SalixAgent.SkillStore do
   @doc "Build the ordered scopes that participate in a session projection."
   @spec projection_scopes(ctx()) :: [scope()]
   def projection_scopes(ctx) when is_map(ctx) do
+    # A Collaborative Task's Worker sees none of the host's Tenant or Group skills.
+    shared? = not SalixAgent.CollaborationPolicy.restricted?(ctx)
+
     [
       normalize_scope(:global, nil),
-      maybe_scope(:tenant, value(ctx, :tenant_id)),
-      maybe_scope(:group, value(ctx, :group_id)),
+      shared? && maybe_scope(:tenant, value(ctx, :tenant_id)),
+      shared? && maybe_scope(:group, value(ctx, :group_id)),
       maybe_scope(:agent, value(ctx, :agent_id))
     ]
-    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1 in [nil, false]))
   end
 
   @doc "Create a group-level skill event after validating local identifiers."

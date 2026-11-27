@@ -122,9 +122,20 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     private var chat: LiveChatScreen? = null
     private var chatLife: ChildLifecycle? = null
     private var taskId: String? = null
+    private var taskGroup: String? = null
     private var safeTop = 0
     private var safeBottom = 0
     private var dismissing = false
+    /** Where a closing sheet comes to rest: just past the foot of the screen, its shadow with it. */
+    private var leaveAt = 0f
+    /**
+     * How much of the minimized bar's room the dock takes at the foot of the app: 1 while the bar (or the sheet) is
+     * there, falling to 0 as a leaving sheet comes to rest below the screen and rising as a new one comes up. The app's foot
+     * follows it ([onFoot]), so nothing jumps when the Task goes.
+     */
+    var foot = 0f
+        private set
+    var onFoot: ((Float) -> Unit)? = null
     /** Whether the app is on screen; the Task's conversation keeps its stream only while it is, like the router's. */
     private var foreground = true
     private val back = object : OnBackPressedCallback(false) {
@@ -187,16 +198,17 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     }
 
     /** Shows [id]: a new Task builds its conversation; the open one only rises. [raise] false leaves it minimized. */
-    fun open(id: String, raise: Boolean = true) {
+    fun open(id: String, raise: Boolean = true, group: String? = null) {
         // The same Task opened again while it slides away stays.
         dismissing = false
-        if (taskId != id) {
+        if (taskId != id || taskGroup != group) {
             // Another Task closes the old one's browser viewer.
             closeBrowser()
             releaseChat()
             taskId = id
+            taskGroup = group
             details.reset()
-            val opened = TaskConversation.open(activity, id, foreground)
+            val opened = TaskConversation.open(activity, id, foreground, group)
             val life = ChildLifecycle(activity)
             val screen = LiveChatScreen(activity, opened.view, AuthGraph.get(activity).state, retrySession = { AuthGraph.get(activity).retry() },
                 onOpenAccount = {}, owner = life, embedded = true)
@@ -205,6 +217,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             chat = screen
             content.removeAllViews()
             content.addView(screen.root, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            // The window dispatched its insets before this chat existed; without them the composer sits on the gesture bar.
+            ViewCompat.requestApplyInsets(screen.root)
             screen.setTopChrome(activity.dp(BAR_DP))
             screen.onOpenTaskCard = { taskId, _ -> store.openTask(taskId) }
             screen.bind()
@@ -222,7 +236,7 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             }
             header.render()
             details.render()
-            activity.lifecycleScope.launch { details.load(id) }
+            if (group == null) activity.lifecycleScope.launch { details.load(id) }
         }
         if (visibility != VISIBLE) {
             visibility = VISIBLE
@@ -249,10 +263,13 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     /** The close button: the sheet slides away, then the Task is let go. */
     fun close() {
         if (taskId == null) return
+        // Not laid out yet: there is nothing on screen to slide.
+        if (height == 0) { gone(); return }
         dismissing = true
         chat?.dismissInput()
         back.isEnabled = false
-        slide.animateTo(-0.35f)
+        leaveAt = leaveProgress()
+        slide.animateTo(leaveAt)
         onState(false, false)
     }
 
@@ -273,12 +290,14 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
 
     /** The activity ends: the Task's conversation and chat stop, without telling the shell or the store. */
     fun release() {
+        slide.cancel()
         dismissing = false
         back.isEnabled = false
         closeBrowser()
         releaseChat()
         content.removeAllViews()
         taskId = null
+        taskGroup = null
     }
 
     private fun releaseChat() {
@@ -291,6 +310,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     }
 
     private fun gone() {
+        // The spring may still be settling past its target; a Task opened next starts from rest.
+        slide.cancel()
         dismissing = false
         back.isEnabled = false
         visibility = GONE
@@ -298,8 +319,16 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         releaseChat()
         content.removeAllViews()
         taskId = null
+        taskGroup = null
+        setFoot(0f)
         store.closeTask()
         onState(false, false)
+    }
+
+    private fun setFoot(value: Float) {
+        if (value == foot) return
+        foot = value
+        onFoot?.invoke(value)
     }
 
     // MARK: Remote browser
@@ -409,6 +438,12 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     private fun sheetTop(): Float = (safeTop + activity.dp(SHEET_TOP_GAP_DP)).toFloat()
     private fun barTop(): Float = (height - activity.dp(BAR_DP) - safeBottom).toFloat()
 
+    /** The progress that puts the panel's top edge [LEAVE_MARGIN_DP] below the screen. */
+    private fun leaveProgress(): Float {
+        val travel = (barTop() - sheetTop()).coerceAtLeast(1f)
+        return -(height - barTop() + activity.dpf(LEAVE_MARGIN_DP)) / travel
+    }
+
     private fun applyProgress() {
         if (height == 0) return
         val p = progress
@@ -425,9 +460,11 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         browserFrame.alpha = content.alpha
         // Minimized, the bar covers the conversation and the browser beside it alike.
         if (browserInline != null) browserFrame.visibility = if (content.alpha > 0f) VISIBLE else INVISIBLE
-        // [gone] clears [dismissing]: the spring keeps moving the sheet below this line until it settles, but the
-        // Task is let go only once.
-        if (dismissing && p <= -0.3f) gone()
+        // The foot reaches 0 where a closing sheet comes to rest, so it settles with the sheet's spring.
+        val rest = height + activity.dpf(LEAVE_MARGIN_DP)
+        setFoot(if (taskId == null) 0f else ((rest - top) / (rest - barTop()).coerceAtLeast(1f)).coerceIn(0f, 1f))
+        // The Task is let go once the sheet is off the screen; [gone] clears [dismissing], so only once.
+        if (dismissing && p <= leaveAt) gone()
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -540,7 +577,10 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             })
             addView(more, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL or Gravity.END))
             close.setOnClickListener { close() }
-            titleBlock.setOnClickListener { if (progress < 0.5f) expand() else details.toggle(!details.open) }
+            titleBlock.setOnClickListener {
+                if (progress < 0.5f) expand()
+                else if (task() != null && taskGroup == null) details.toggle(!details.open)
+            }
             more.setOnClickListener { anchor ->
                 val task = task() ?: return@setOnClickListener
                 shell.actions.menu(task, leading = {
@@ -567,10 +607,10 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         fun render() {
             val task = task()
             title.text = task?.title?.ifBlank { null } ?: activity.getString(R.string.task_title_fallback)
-            status.isVisible = task != null
-            statusText.isVisible = task != null
-            chevron.isVisible = task != null
-            more.isVisible = task != null
+            status.isVisible = task != null && taskGroup == null
+            statusText.isVisible = task != null && taskGroup == null
+            chevron.isVisible = task != null && taskGroup == null
+            more.isVisible = task != null && taskGroup == null
             if (task != null) {
                 val bucket = task.bucket.takeIf { it != TaskStatusBucket.ARCHIVED } ?: TaskStatusBucket.IN_PROGRESS
                 status.setStatus(bucket, statusTint(activity, bucket))
@@ -808,7 +848,9 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         fun render() {
             val task = task() ?: return
             val chatState = conversation?.view?.state?.value
-            val key = listOf(task, catalog, busy, open, conversation?.worker?.value, chatState?.codingSandbox, chatState?.participant != null)
+            val workerSessions = chatState?.workerSessions.orEmpty()
+            val workerSessionKey = workerSessionRenderKey(workerSessions)
+            val key = listOf(task, catalog, busy, open, conversation?.worker?.value, workerSessionKey, chatState?.codingSandbox, chatState?.participant != null)
             if (key == shown) return
             shown = key
             properties.removeAllViews()
@@ -831,14 +873,54 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             }
             worker.removeAllViews()
             val bound = conversation?.worker?.value
-            workerCaption.isVisible = bound != null
-            worker.isVisible = bound != null
+            val hasMultiSessions = workerSessions.size > 1
+            workerCaption.isVisible = bound != null || hasMultiSessions
+            worker.isVisible = bound != null || hasMultiSessions
             if (bound != null) {
                 val name = bound.name.ifEmpty { activity.getString(R.string.task_details_worker) }
                 worker.addView(pill(workerAvatar(bound.vendor, name), name, chevron = true, forward = true).apply {
                     stateDescription = activity.getString(R.string.task_details_worker_steps)
                     setOnClickListener { WorkerHistorySheet(activity, store, task.id, bound).show() }
                 })
+            }
+            if (hasMultiSessions) {
+                for (session in workerSessions) {
+                    val hasLiveState = hasLiveWorkerState(session)
+                    val trimmedLabel = session.label.trim()
+                    val showSlot = !trimmedLabel.equals(session.slot, ignoreCase = true) && !trimmedLabel.equals("@${session.slot}", ignoreCase = true)
+                    val base = if (showSlot) "$trimmedLabel @${session.slot}" else trimmedLabel
+                    val text = if (!session.model.isNullOrBlank()) "$base (${session.model})" else base
+                    if (hasLiveState) {
+                        val dot = View(activity).apply {
+                            val color = when (session.state) {
+                                "active" -> R.color.token_fg_success
+                                "waiting" -> R.color.token_label_warning
+                                "error" -> R.color.token_fg_error
+                                else -> R.color.token_text_quaternary
+                            }
+                            background = rounded(activity.getColor(color), activity.dpf(3f))
+                            layoutParams = LinearLayout.LayoutParams(activity.dp(6), activity.dp(6))
+                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        }
+                        val stateRes = when (session.state) {
+                            "active" -> R.string.task_worker_session_state_active
+                            "waiting" -> R.string.task_worker_session_state_waiting
+                            "error" -> R.string.task_worker_session_state_error
+                            else -> R.string.task_worker_session_state_idle
+                        }
+                        worker.addView(pill(dot, text).apply {
+                            contentDescription = "$text, ${activity.getString(stateRes)}"
+                        })
+                    } else {
+                        val spacer = View(activity).apply {
+                            layoutParams = LinearLayout.LayoutParams(0, 0)
+                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        }
+                        worker.addView(pill(spacer, text).apply {
+                            contentDescription = text
+                        })
+                    }
+                }
             }
             // Where a Task a station hosts runs: the machine, and whether it is reached.
             val host = task.host
@@ -886,7 +968,7 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
                     minHeight = activity.dp(32); gravity = Gravity.CENTER_VERTICAL
                 })
             }
-            if (known == null) labels.addView(android.widget.ProgressBar(activity), LayoutParams(activity.dp(20), activity.dp(20)))
+            if (known == null) labels.addView(surf.comma.android.ui.kit.ActivityIndicator(activity), LayoutParams(activity.dp(20), activity.dp(20)))
             else labels.addView(ImageView(activity).apply {
                 setImageResource(R.drawable.ic_plus_small)
                 imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_quaternary))
@@ -994,6 +1076,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         const val BAR_RADIUS_DP = 22f
         const val SHEET_RADIUS_DP = 38f
         const val SHEET_TOP_GAP_DP = 10
+        /** How far below the screen a closing sheet goes, its shadow included. */
+        private const val LEAVE_MARGIN_DP = 24f
         /** The narrowest column a wide screen splits into, as on iOS: below twice this, the browser is a sheet. */
         const val MIN_COLUMN_DP = 350
         /** Room the minimized bar takes at the foot of the app, with the gap above it. */
@@ -1025,3 +1109,16 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         }
     }
 }
+
+internal fun hasLiveWorkerState(session: surf.comma.android.conversation.WorkerSession): Boolean =
+    session.subscribed == true ||
+        session.state != "stopped" ||
+        session.status.isNotEmpty() ||
+        session.updatedAt != null ||
+        !session.issue.isNullOrEmpty()
+
+internal fun workerSessionRenderKey(
+    sessions: List<surf.comma.android.conversation.WorkerSession>,
+): List<List<Any?>>? = sessions
+    .takeIf { it.size > 1 }
+    ?.map { listOf(it.participantId, it.label, it.slot, it.model, it.state, hasLiveWorkerState(it)) }

@@ -283,6 +283,68 @@ describe("MeetingPresenceService", () => {
     await h.service.close();
   });
 
+  it("detects Lark and Feishu calls through each app's call process", async () => {
+    const h = harness();
+    h.native.apps = [
+      { bundleIdentifier: "com.larksuite.larkApp", name: "Lark", processId: 911 },
+      { bundleIdentifier: "com.larksuite.larkApp.iron", name: "", processId: 912 },
+      { bundleIdentifier: "com.electron.lark", name: "Feishu", processId: 921 },
+      { bundleIdentifier: "com.electron.lark.iron", name: "", processId: 922 },
+    ];
+    h.native.mic.add(912);
+    h.native.mic.add(922);
+    const state = await h.service.start();
+    expect(state.meetings).toMatchObject([
+      {
+        bundleIdentifier: "com.larksuite.larkApp",
+        kind: "native",
+        name: "Lark",
+        processId: 912,
+        status: "active",
+      },
+      {
+        bundleIdentifier: "com.electron.lark",
+        kind: "native",
+        name: "Feishu",
+        processId: 922,
+        status: "active",
+      },
+    ]);
+    await h.service.close();
+  });
+
+  it("detects calls in the Mac App Store builds of Feishu and Lark", async () => {
+    const h = harness();
+    h.native.apps = [
+      {
+        bundleIdentifier: "com.bytedance.macos.feishu",
+        name: "Feishu",
+        processId: 931,
+      },
+      { bundleIdentifier: "com.larksuite.macos.lark", name: "Lark", processId: 941 },
+    ];
+    h.native.mic.add(931);
+    h.native.mic.add(941);
+    const state = await h.service.start();
+    expect(state.meetings).toMatchObject([
+      {
+        bundleIdentifier: "com.bytedance.macos.feishu",
+        kind: "native",
+        name: "Feishu",
+        processId: 931,
+        status: "active",
+      },
+      {
+        bundleIdentifier: "com.larksuite.macos.lark",
+        kind: "native",
+        name: "Lark",
+        processId: 941,
+        status: "active",
+      },
+    ]);
+    await h.service.close();
+  });
+
   it("reads the OS product icon on demand without adding image payloads to presence", async () => {
     const readAppIcon = vi.fn(async () => "data:image/png;base64,cG5n");
     const h = harness({ readAppIcon });

@@ -32,6 +32,28 @@ enum PhoneRoutineUsageFixtures {
          "allowance": NSNull(), "planUsage": ["usedPercent": 40, "resetsAt": "2026-12-01T00:00:00.000Z", "ends": false, "otherCredits": 500_000], "unlimited": false]
     }
 
+    /// The billing page where the App Store sells two plans and a pack; `provider` sells the running subscription.
+    static func storeBilling(provider: String = "apple") -> [String: Any] {
+        var value = billing
+        value["plans"] = [plan,
+            ["plan_key": "pro_monthly", "package_code": "pro", "package_version": "v1", "mode": "subscription",
+             "name": "Pro", "currency": "USD", "amount_minor": 6000, "grant_credits": 60_000_000, "billing_period": "month"],
+            ["plan_key": "pro_yearly", "package_code": "pro", "package_version": "v2", "mode": "subscription",
+             "name": "Pro", "currency": "USD", "amount_minor": 60000, "grant_credits": 60_000_000, "billing_period": "year"],
+            ["plan_key": "pack_4m", "package_code": "pack", "package_version": "v1", "mode": "payment",
+             "name": "4M Pack", "currency": "USD", "amount_minor": 499, "grant_credits": 4_000_000],
+            ["plan_key": "web_only", "package_code": "web", "package_version": "v1", "mode": "subscription",
+             "name": "Web", "currency": "USD", "amount_minor": 100, "grant_credits": 1_000]]
+        value["store"] = ["provider": "apple", "prices": ["plus_monthly": "$23.99", "pro_monthly": "$69.99",
+                                                          "pro_yearly": "$699.99", "pack_4m": "$5.99"]]
+        var summary = summary
+        var subscription = summary["active_subscription"] as? [String: Any] ?? [:]
+        subscription["provider"] = provider
+        summary["active_subscription"] = subscription
+        value["summary"] = summary
+        return value
+    }
+
     static var suggestions: [[String: Any]] {
         [["id": "next", "label": "整理下一步", "prompt": "整理下一步"],
          ["id": "risks", "label": "检查风险", "prompt": "检查风险"],

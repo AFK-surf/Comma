@@ -1,10 +1,17 @@
 defmodule SalixCalendar.Recurrence do
-  @moduledoc "Bounded expansion for the initial JSCalendar recurrence subset."
+  @moduledoc """
+  Bounded expansion for a JSCalendar recurrence subset: one rule, daily or
+  weekly (with weekdays), monthly (on the start's day of month or on one
+  ordinal weekday), yearly (on the start's date), or minutely in UTC, with an
+  optional `until`. Instances keep the start's local wall time.
+  """
 
   @default_limit 200
   @max_limit 1_000
   @default_day_budget 3_660
   @weekday %{"mo" => 1, "tu" => 2, "we" => 3, "th" => 4, "fr" => 5, "sa" => 6, "su" => 7}
+  @calendar_frequencies ~w(daily weekly monthly yearly)
+  @count_day_budget 36_525
 
   def expand(item, range_start_ms, range_end_ms, opts \\ [])
 
@@ -81,6 +88,39 @@ defmodule SalixCalendar.Recurrence do
           match?({:ok, _}, NaiveDateTime.from_iso8601(value))
 
   def valid_key?(_key), do: false
+
+  @doc """
+  The JSCalendar `until` that ends `rule` after its first `count` instances
+  (RFC 5545 COUNT): the local start of the last one. The series start always
+  counts as the first instance. Excluded and moved instances keep their
+  original start, so they still count, as RFC 5545 requires.
+  """
+  def count_until(%NaiveDateTime{} = start, rule, count)
+      when is_map(rule) and is_integer(count) and count > 0 do
+    anchor = NaiveDateTime.to_date(start)
+
+    with {:ok, [%{"frequency" => frequency} = rule]} when frequency in @calendar_frequencies <-
+           validate_rule(rule),
+         nil <- rule["until"],
+         :ok <- validate_anchor_rules(%{time: NaiveDateTime.to_time(start)}, [rule]),
+         [date] <-
+           anchor
+           |> Stream.iterate(&Date.add(&1, 1))
+           |> Stream.take(@count_day_budget)
+           |> Stream.filter(&member?(&1, anchor, rule))
+           |> Stream.drop(count - 1)
+           |> Enum.take(1) do
+      {:ok,
+       date
+       |> NaiveDateTime.new!(NaiveDateTime.to_time(start))
+       |> NaiveDateTime.truncate(:second)
+       |> NaiveDateTime.to_iso8601()}
+    else
+      _ -> {:error, :unsupported_recurrence}
+    end
+  end
+
+  def count_until(_start, _rule, _count), do: {:error, :unsupported_recurrence}
 
   defp resolve_key(item, anchor, [%{"frequency" => "once"}], %{"kind" => "single"} = key) do
     if map_size(key) == 1 do
@@ -220,20 +260,12 @@ defmodule SalixCalendar.Recurrence do
       case frequency do
         "weekly" -> ~w(@type frequency interval byDay byHour byMinute firstDayOfWeek until)
         "daily" -> ~w(@type frequency interval byDay byHour byMinute until)
+        "monthly" -> ~w(@type frequency interval byDay until)
+        "yearly" -> ~w(@type frequency interval until)
         _ -> ~w(@type frequency interval)
       end
 
-    valid_by_day? =
-      is_nil(by_day) or
-        (frequency in ~w(daily weekly) and is_list(by_day) and by_day != [] and
-           Enum.all?(by_day, fn
-             %{"day" => day} = nday ->
-               Map.keys(nday) -- ~w(@type day) == [] and nday["@type"] in [nil, "NDay"] and
-                 Map.has_key?(@weekday, day)
-
-             _ ->
-               false
-           end))
+    valid_by_day? = is_nil(by_day) or valid_by_day?(frequency, by_day)
 
     valid_clock? =
       valid_single_integer?(by_hour, 0..23) and valid_single_integer?(by_minute, 0..59)
@@ -243,13 +275,35 @@ defmodule SalixCalendar.Recurrence do
         (frequency == "weekly" and Map.has_key?(@weekday, rule["firstDayOfWeek"]))
 
     if Map.keys(rule) -- allowed_keys == [] and rule["@type"] in [nil, "RecurrenceRule"] and
-         frequency in ~w(minutely daily weekly) and is_integer(interval) and interval > 0 and
+         frequency in ["minutely" | @calendar_frequencies] and is_integer(interval) and
+         interval > 0 and
          valid_by_day? and valid_clock? and valid_first_day? and valid_until?(rule["until"]) do
       {:ok, [Map.put(rule, "interval", interval)]}
     else
       {:error, :unsupported_recurrence}
     end
   end
+
+  # Daily and weekly rules name weekdays. A monthly rule names at most one
+  # weekday of the month by its position (`nthOfPeriod`, 1 to 5 from the
+  # start of the month or -1 to -5 from its end); without it, it repeats on
+  # the start's day of month.
+  defp valid_by_day?(frequency, [_ | _] = days) when frequency in ~w(daily weekly),
+    do: Enum.all?(days, &valid_nday?(&1, ~w(@type day)))
+
+  defp valid_by_day?("monthly", [%{"nthOfPeriod" => nth} = nday]),
+    do:
+      valid_nday?(nday, ~w(@type day nthOfPeriod)) and is_integer(nth) and nth in -5..5 and
+        nth != 0
+
+  defp valid_by_day?(_frequency, _days), do: false
+
+  defp valid_nday?(%{"day" => day} = nday, keys),
+    do:
+      Map.keys(nday) -- keys == [] and nday["@type"] in [nil, "NDay"] and
+        Map.has_key?(@weekday, day)
+
+  defp valid_nday?(_nday, _keys), do: false
 
   # JSCalendar `until`: the last local start the rule may generate, in the
   # item's time zone. A series that ends is generated up to it, inclusive.
@@ -287,7 +341,7 @@ defmodule SalixCalendar.Recurrence do
     do: {:error, :unsupported_recurrence}
 
   defp validate_anchor_rules(anchor, [%{"frequency" => frequency} = rule])
-       when frequency in ~w(daily weekly) do
+       when frequency in @calendar_frequencies do
     hour_matches? = is_nil(rule["byHour"]) or rule["byHour"] == [anchor.time.hour]
     minute_matches? = is_nil(rule["byMinute"]) or rule["byMinute"] == [anchor.time.minute]
 
@@ -402,6 +456,34 @@ defmodule SalixCalendar.Recurrence do
          (week >= 0 and rem(week, interval) == 0 and matches_by_day?(date, days)))
   end
 
+  # A month or year without the start's day (the 31st, February 29) has no
+  # instance, as in RFC 5545.
+  defp member?(date, anchor, %{"frequency" => "monthly", "interval" => interval} = rule) do
+    months = (date.year - anchor.year) * 12 + date.month - anchor.month
+
+    Date.compare(date, anchor) != :lt and
+      (date == anchor or
+         (rem(months, interval) == 0 and matches_month_day?(date, anchor, rule["byDay"])))
+  end
+
+  defp member?(date, anchor, %{"frequency" => "yearly", "interval" => interval}),
+    do:
+      Date.compare(date, anchor) != :lt and
+        (date == anchor or
+           (rem(date.year - anchor.year, interval) == 0 and date.month == anchor.month and
+              date.day == anchor.day))
+
+  defp matches_month_day?(date, anchor, nil), do: date.day == anchor.day
+
+  defp matches_month_day?(date, _anchor, [%{"day" => day, "nthOfPeriod" => nth}]) do
+    position =
+      if nth > 0,
+        do: div(date.day - 1, 7) + 1,
+        else: -(div(Date.days_in_month(date) - date.day, 7) + 1)
+
+    @weekday[day] == Date.day_of_week(date) and position == nth
+  end
+
   defp beginning_of_week(date, first_day) do
     offset = rem(Date.day_of_week(date) - first_day + 7, 7)
     Date.add(date, -offset)
@@ -416,7 +498,7 @@ defmodule SalixCalendar.Recurrence do
     do: naive == NaiveDateTime.new!(anchor.date, anchor.time)
 
   defp occurrence_member?(naive, anchor, %{"frequency" => frequency} = rule)
-       when frequency in ~w(daily weekly),
+       when frequency in @calendar_frequencies,
        do:
          NaiveDateTime.to_time(naive) == anchor.time and
            member?(NaiveDateTime.to_date(naive), anchor.date, rule) and within_until?(naive, rule)

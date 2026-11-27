@@ -156,3 +156,62 @@ fn a_stream_stopped_is_told_to_the_station_whose_writes_then_end() {
     assert_eq!(stopped.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), Some(5));
     drop(mesh);
 }
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn an_oversized_udp_datagram_does_not_spin_noq_udp() {
+    let receiver = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let address = receiver.local_addr().unwrap();
+    let state = noq_udp::UdpSocketState::new((&receiver).into()).unwrap();
+    let sender = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    sender.send_to(&[0u8; 2048], address).unwrap();
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut buf = [0u8; 1472];
+        let mut meta = [noq_udp::RecvMeta::default()];
+        let res = state.recv((&receiver).into(), &mut [std::io::IoSliceMut::new(&mut buf)], &mut meta);
+        let _ = done_tx.send(res);
+    });
+    let res = done_rx.recv_timeout(std::time::Duration::from_secs(1));
+    if res.is_err() {
+        // Release a regressed receive loop before failing the test.
+        let _ = sender.send_to(b"ok", address);
+        let _ = done_rx.recv_timeout(std::time::Duration::from_secs(1));
+    }
+    worker.join().unwrap();
+    assert!(matches!(res, Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock));
+}
+
+#[test]
+fn an_oversized_udp_datagram_does_not_hang_the_endpoint() {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let endpoint = runtime.block_on(async {
+        Endpoint::builder(Minimal)
+            .secret_key(SecretKey::from_bytes(&[9; 32]))
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    });
+    let v4 = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.bound_sockets().iter().find(|a| a.is_ipv4()).unwrap().port()));
+    let sender = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    // Exceeds noq's default 1472-byte receive buffer and triggers MSG_TRUNC in recv_single on Apple.
+    sender.send_to(&[0u8; 2048], v4).unwrap();
+    // Give EndpointDriver a moment to wake on the datagram before requesting close.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    runtime.spawn(async move {
+        endpoint.close().await;
+        let _ = closed_tx.send(());
+    });
+    let closed = closed_rx.recv_timeout(std::time::Duration::from_secs(2));
+    if closed.is_err() {
+        // Release a regressed recv_single loop so runtime shutdown does not hang.
+        let _ = sender.send_to(b"ok", v4);
+        let _ = closed_rx.recv_timeout(std::time::Duration::from_secs(2));
+    }
+    runtime.shutdown_background();
+    assert!(closed.is_ok(), "endpoint.close() hung after receiving an oversized UDP datagram");
+}

@@ -130,6 +130,7 @@ defmodule SalixAgent.MiniskillSelectorTest do
     assert stored[:id] == 2 and stored[:role] == "runtime" and stored[:no_wake] == true
     assert stored[:type] == "miniskill_selection"
     for n <- 1..5, do: assert(stored[:content] =~ "Build diagnostic #{n}")
+    assert stored[:content] =~ "/.runtime/skills/build-1/SKILL.md"
     refute stored[:content] =~ "Instruction "
 
     wire = SalixAgent.IFC.Context.build(session)
@@ -202,6 +203,25 @@ defmodule SalixAgent.MiniskillSelectorTest do
 
     assert {:ok, _args, indexed} = MiniskillSelector.request(worst_case, skills)
     assert map_size(indexed) == length(skills)
+    assert SalixAgent.SkillCatalog.miniskill_status(skills) == "ready"
+
+    # A catalog that fits a single message alone can still exceed the 64 KiB
+    # budget once 6 x 2 KiB recent_messages are included.
+    bloated =
+      for n <- 1..95 do
+        %{
+          "skill_id" => "bloated-#{n}",
+          "name" => "bloated-#{n}",
+          "description" => String.duplicate("a", 240),
+          "activation" => "per-message"
+        }
+      end
+
+    assert {:ok, _, _} =
+             MiniskillSelector.request(%{"content" => String.duplicate("x", 8192)}, bloated)
+
+    assert {:error, :catalog_over_budget} = MiniskillSelector.request(worst_case, bloated)
+    assert SalixAgent.SkillCatalog.miniskill_status(bloated) == "catalog_over_budget"
   end
 
   defmodule RestrictedFacts do

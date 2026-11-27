@@ -215,6 +215,51 @@ defmodule Comma.ChatSuggestionsTest do
       assert ChatSuggestions.recent_exchange(nil) == ""
       assert ChatSuggestions.recent_exchange([]) == ""
     end
+
+    test "returns empty when the conversation tail is a server-injected proactive notification" do
+      messages = [
+        %{"actor_type" => "user", "content" => [%{"type" => "text", "text" => "帮我看下 PR #1"}]},
+        %{
+          "actor_type" => "agent",
+          "content" => [%{"type" => "text", "text" => "PR #1 已通过，可以合并。"}]
+        },
+        %{
+          "actor_type" => "agent",
+          "content" => [%{"type" => "text", "text" => "磁盘清理待确认"}],
+          "metadata" => %{
+            "proactive_automatic" => true,
+            "mail_source" => ~s(["station_task","station:st-1:c-1"])
+          }
+        }
+      ]
+
+      assert ChatSuggestions.recent_exchange(messages) == ""
+    end
+
+    test "excludes proactive side-channel notifications when the latest turn is a live exchange" do
+      messages = [
+        %{
+          "actor_type" => "agent",
+          "content" => [%{"type" => "text", "text" => "磁盘清理 OrbStack 170GB"}],
+          "metadata" => %{
+            "proactive_automatic" => true,
+            "station_task_question" => %{"conversation_id" => "station:st-1:c-1"}
+          }
+        },
+        %{
+          "actor_type" => "user",
+          "content" => [%{"type" => "text", "text" => "查一下今天部署状态"}]
+        },
+        %{
+          "actor_type" => "agent",
+          "content" => [%{"type" => "text", "text" => "staging 已发到最新 main。"}]
+        }
+      ]
+
+      transcript = ChatSuggestions.recent_exchange(messages)
+      assert transcript == "user: 查一下今天部署状态\nassistant: staging 已发到最新 main。"
+      refute transcript =~ "OrbStack"
+    end
   end
 
   describe "generate_from_source/2" do

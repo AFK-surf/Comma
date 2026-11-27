@@ -131,7 +131,9 @@ export function LivePermissionsPanel({
       }}
       rows={rows.map((row) => ({
         ...panelRow(row, pendingId, answering?.ids ?? [], failed === row.id),
-        ...(unreadable && row.id !== "notifications" ? { unreadable: true } : {}),
+        ...((unreadable && row.id !== "notifications") || row.unreadable
+          ? { unreadable: true }
+          : {}),
       }))}
     />
   );

@@ -413,7 +413,15 @@ export function makeMeeting(host: MeetingHost) {
       const { status: code, body: answer } = yield* meet("POST", "/v1/meetings/join", body, Duration.seconds(15));
       if (code < 200 || code >= 300) return yield* Effect.fail(new Error(`meetnative join failed: HTTP ${code} ${bodyText(answer)}`));
       const out: Record<string, unknown> = answer && typeof answer === "object" && !Array.isArray(answer) ? { ...(answer as Record<string, unknown>) } : {};
-      if (text(out.session)) sessions.set(meetingId, text(out.session));
+      const returnedSession = text(out.session);
+      if (out.reused === true && returnedSession && returnedSession !== meetingId) {
+        return {
+          accepted: false,
+          reason_code: "already_in_meeting",
+          existing_meeting_id: returnedSession,
+        };
+      }
+      if (returnedSession) sessions.set(meetingId, returnedSession);
       out.accepted = true;
       return out;
     });

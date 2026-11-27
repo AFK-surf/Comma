@@ -10,7 +10,7 @@ import { opendir, readFile as readFileAsync } from "node:fs/promises";
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Semaphore } from "effect";
 import { type ConnectorClock, liveClock, testClock } from "./clock.ts";
 import { type ArchiveState, archiveStateDir, makeDurableArchive, signedStorageUrl } from "./durable-archive.ts";
-import { type DaemonResponse, makeComputerUse } from "./computer-use.ts";
+import { type ComputerUseDaemons, type DaemonResponse, makeComputerUse } from "./computer-use.ts";
 import type { ScreenHelpers } from "../screens/helper.ts";
 import { screenLinksOf } from "../screens/links.ts";
 import { windowsScreenBinary } from "../screens/win-desktop.ts";
@@ -140,7 +140,7 @@ export type ConnectionIdentity = { runId: string; deviceId: string; connectorId:
  */
 export type StationAndroid = { call(params: Record<string, unknown>, images: ((png: Buffer) => Promise<Record<string, unknown>>) | null): Promise<Record<string, unknown>> };
 
-export type StationParts = { android?: StationAndroid; simulators?: StationSimulators; tasks?: StationTasks; agentsIdle?: () => boolean; archive?: ArchiveState; relay?: StationRelay; profiles?: StationProfiles; place?: StationPlace; access?: AccessStore; index?: StationTaskIndex; stats?: StationStats; screens?: Pick<ScreenHelpers, "attach"> & Partial<Pick<ScreenHelpers, "catalog">>; accounts?: StationAccounts };
+export type StationParts = { android?: StationAndroid; simulators?: StationSimulators; tasks?: StationTasks; agentsIdle?: () => boolean; archive?: ArchiveState; relay?: StationRelay; profiles?: StationProfiles; place?: StationPlace; access?: AccessStore; index?: StationTaskIndex; stats?: StationStats; screens?: Pick<ScreenHelpers, "attach"> & Partial<Pick<ScreenHelpers, "catalog">>; computerUseDaemons?: ComputerUseDaemons; accounts?: StationAccounts };
 
 /**
  * A desktop Workspace's connection: Salix sets its Workspace's account source of a runtime to this machine's own login
@@ -175,7 +175,10 @@ export type StationTasks = {
   handle(method: string, params: Record<string, unknown>): Promise<unknown>;
   /// The models its Sessions can run, by runtime (what its profiles have enabled): what a Task may choose.
   models(): Record<string, string[]>;
-  /// Called when they may have changed (the station's profiles were edited): Salix is told them again.
+  /// Whether a Session here is using a browser on the machine's display now (sessions/hub.ts `browsing`).
+  browsing?(): boolean;
+  /// Called when either may have changed (the station's profiles were edited, a browser opened or went): Salix is
+  /// told again.
   listen?(changed: () => void): () => void;
   /// How to ask Salix now; null once the connection is gone.
   attach(ask: ((request: Record<string, unknown>) => Promise<unknown>) | null): void;
@@ -203,8 +206,17 @@ export type StationRelay = {
   sign(message: Buffer): Buffer;
   incoming(from: string, data: Buffer, via: object): void;
   attach(via: object, send: ((to: string, data: Buffer) => void) | null): void;
-  /** What Salix told the connection `via` of its Group for the mesh (mesh/device-mesh.ts); null: it admits no one. Asked only by a device connection whose file says to. */
+  /**
+   * What Salix told the connection `via` of its Group for the mesh (mesh/device-mesh.ts); null: it admits no one. Asked
+   * only by a device connection whose file says to. A Task's sandbox (`taskScreen`) asks nothing and hears it when its
+   * Task's owner asks Salix to see its screen.
+   */
   meshTold?(via: object, facts: unknown): void;
+  /**
+   * This station is a Task's sandbox that can show its display (mesh/salix-relay.ts): its connection says
+   * `screen_view`, and hears whom Salix says to show it to.
+   */
+  readonly taskScreen?: boolean;
 };
 
 /** A packet through Salix in a binary frame: kind 1, the peer's 32-byte endpoint id, the packet. */
@@ -413,8 +425,10 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   // Requests to Salix on the live connection (meeting callbacks and the LLM route share its bounded slots).
   /** The app's Debug setting, in this connection's own file. */
   const meshAsked = () => cfg.deviceMode && cfg.deviceMesh;
+  /** Whose word for the mesh is heard: one that asked, and a Task's sandbox, which Salix tells unasked (`taskScreen`). */
+  const meshHears = () => meshAsked() || station.relay?.taskScreen === true;
   const transport = makeRuntimeTransport({ proxySlots: MAX_CONCURRENT_REQUESTS });
-  const computerUse = makeComputerUse(cfg, (effect) => void fork(effect));
+  const computerUse = makeComputerUse(cfg, (effect) => void fork(effect), station.computerUseDaemons);
   // The mesh's views of the screen, on the helper; a device's only.
   const detachScreens = cfg.deviceMode && platform.hasComputerUse ? station.screens?.attach({ ensure: () => Effect.runPromise(provide(computerUse.ensureDaemon)), authToken: computerUse.authToken, socketPath: cfg.computerUseSocketPath }) : undefined;
   const meeting = makeMeeting({ meetUrl: cfg.meetUrl, callbackHost: cfg.meetCallbackHost, callbackPort: cfg.meetCallbackPort, transport, nowMs: clock.nowMs, run: (effect) => Effect.runPromiseExit(provide(effect)) });
@@ -848,6 +862,12 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     };
   };
 
+  /**
+   * A Task's sandbox that serves its display has something on it now: a Session is using its browser there, in the
+   * turn under way (sessions/hub.ts `browsing`). Never so for another station, or one with no display to serve.
+   */
+  const screenActive = (): boolean => station.relay?.taskScreen === true && hasLinuxDesktop() && station.tasks?.browsing?.() === true;
+
   const metadataMessage = (): Message => {
     const build = currentBuildInfo();
     const releases = { component_versions: { [COMPONENT_NAME]: build.release_id }, component_releases: { [COMPONENT_NAME]: build } };
@@ -896,6 +916,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     if (station.tasks) {
       // 2: task.invite/put/post/hello (1 was task.changed/read/post).
       capabilities.tasks = 2;
+      capabilities.multi_session_tasks = true;
       capabilities.task_models = station.tasks.models();
     }
     // 1: `task.index` pages once Salix has the station's endpoint id.
@@ -914,6 +935,14 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       // 1: Salix may set this Workspace's account source of a runtime to the local sign-in (`account_source`).
       if (station.accounts) capabilities.account_source = 1;
     }
+    // A Task's sandbox serves its display to the Task's owner, to look at (`taskScreen`). As a Linux computer's, it
+    // says what the station serves, not that a display is up now: a view says why it cannot open.
+    if (station.relay?.taskScreen) {
+      capabilities.screen_view = hasLinuxDesktop();
+      // There is something on that display to look at now (`screenActive`). Salix tells the Task's open conversations
+      // when this changes, so the owner's shows the screen while it is so and not otherwise.
+      if (screenActive()) capabilities.screen_active = true;
+    }
     capabilities.lan_gateway = lanGatewayCapability();
     extensions.capabilities(capabilities);
     return { type: "metadata", capabilities, skills: [], system_info: deviceSystemInfo(), connector_health: connectorHealth() };
@@ -930,10 +959,12 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       return session.send(metadataMessage());
     });
   // What a Task may choose to run here changed: Salix hears it now, not at the next connection.
-  let taskModels = JSON.stringify(station.tasks?.models() ?? {});
+  // (so does whether something is on the display, for a Task's sandbox that shows its screen)
+  const taskSays = () => JSON.stringify([station.tasks?.models() ?? {}, screenActive()]);
+  let taskModels = taskSays();
   const stopTaskModels =
     station.tasks?.listen?.(() => {
-      const next = JSON.stringify(station.tasks!.models());
+      const next = taskSays();
       if (next === taskModels) return;
       taskModels = next;
       fork(publishCachedMetadata().pipe(Effect.ignore));
@@ -1124,6 +1155,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   // The connection to Salix while it is up: its socket, and once Salix said `connected`, the carrier its requests ride
   // and whether Salix takes the device's next credential over it (`credential_renewal`).
   let live: { close: Effect.Effect<void>; carrier: RuntimeCarrier | null; renewal: boolean } | null = null;
+  /** The proxy the next dial goes through first (the app resolved the system's again): the live connection stays as it is. */
+  const setProxy = (proxy: string): Effect.Effect<void> => Effect.sync(() => void (cfg.proxy = proxy));
   /**
    * The device's next connector credential, which the app wrote before the current one expires: the next dial presents
    * it, and the live connection presents it to Salix (`connector_credential_renew`) so that it keeps serving, with its
@@ -1150,14 +1183,15 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         }),
       );
     });
-  // What this connection's Salix says for the mesh, heard only where the app's own setting asked for it (mesh-turn.ts).
+  // What this connection's Salix says for the mesh, heard only where the app's own setting asked for it, or in a Task's
+  // sandbox (mesh-turn.ts).
   // A word's number is the order Salix read its facts in, one read at a time on a connection.
   let meshTurn = noMeshTurn<object>();
   const meshStep = (step: MeshStep<object>) => {
     meshTurn = step.state;
     for (const { via, facts } of step.tell) station.relay?.meshTold?.(via, facts);
   };
-  const meshWord = (socket: object, facts: unknown, seq: number) => meshStep(meshHeard(meshTurn, { socket, seq, facts }, !!meshAsked()));
+  const meshWord = (socket: object, facts: unknown, seq: number) => meshStep(meshHeard(meshTurn, { socket, seq, facts }, !!meshHears()));
   // Salix as a relay: the station proves its endpoint id, then its packets go in binary frames.
   let relaySocket: { sendBinary?(data: Buffer): Effect.Effect<void, Error> } | null = null;
   const registerRelay = (carrier: RuntimeCarrier, challenge: string): Effect.Effect<void> =>
@@ -1333,7 +1367,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     const sockets = yield* SocketsService;
     // A sticky fatal error gives up a pending dial at once rather than at the dial timeout.
     const socket = yield* Effect.raceFirst(
-      sockets.dial(url, { ...credentialHeaders(), [CONNECTOR_INSTANCE_HEADER]: processInstanceId, [STREAM_FRAMES_HEADER]: "binary" }).pipe(
+      sockets.dial(url, { ...credentialHeaders(), [CONNECTOR_INSTANCE_HEADER]: processInstanceId, [STREAM_FRAMES_HEADER]: "binary" }, cfg.proxy).pipe(
         Effect.timeoutOrElse({
           duration: WEBSOCKET_DIAL_TIMEOUT,
           orElse: () => Effect.fail(new Error(`websocket dial deadline exceeded: no connection to Salix in ${Duration.toSeconds(WEBSOCKET_DIAL_TIMEOUT)} seconds`)),
@@ -1510,6 +1544,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     systemInfoLoop: (publish: () => Effect.Effect<void, unknown>) => provide(systemInfoLoop(publish)),
     setCurrentScope: (next: string) => provide(setCurrentScope(next)),
     renewCredential,
+    setProxy,
     watchScopeControl: (input: AsyncIterable<unknown> | NodeJS.ReadableStream) => provide(watchScopeControl(input)),
     connectUrl,
     writeStatus: status.writeStatus,

@@ -902,12 +902,9 @@ defmodule BridgeForTeams.Auth do
     if exists? do
       {:ok, nil}
     else
-      membership =
-        %OrgMembership{}
-        |> OrgMembership.changeset(%{org_id: org_id, user_id: user.id, role: role || "member"})
-        |> Repo.insert!()
-
-      with {:ok, _audit} <- maybe_record_sso_membership_audit(conn, user, membership, opts) do
+      with {:ok, membership} <-
+             BridgeForTeams.Memberships.put_org_member(org_id, user.id, role || "member"),
+           {:ok, _audit} <- maybe_record_sso_membership_audit(conn, user, membership, opts) do
         {:ok, membership}
       end
     end

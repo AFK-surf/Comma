@@ -40,6 +40,11 @@ import {
   type TaskView,
 } from "../task-board";
 import { TaskChatPanel } from "../task-chat-panel";
+import {
+  TaskFeedView,
+  type TaskFeedColumnId,
+  type TaskFeedViewProps,
+} from "../task-feed";
 import { TaskListGroup, TaskListItem, type TaskListGroupProps } from "../TaskListItem";
 import { Tooltip } from "../tooltip";
 import { cx } from "../utils";
@@ -72,6 +77,8 @@ export type TaskWorkspaceTask = TaskSummaryViewModel & {
 export type TaskWorkspaceProps = {
   capabilityState?: "ready" | "planned";
   className?: string;
+  /** Feed view state and callbacks when the user switches to `view === "feed"`. */
+  feed?: TaskFeedViewProps | undefined;
   /** Extra filter dimensions (labels, platforms, dates) the caller resolves and narrows by. */
   filterSections?: readonly (TaskFilterSection | TaskFilterSectionGroup)[] | undefined;
   /** Chips under a card's title, e.g. its labels and where it was asked for. */
@@ -80,6 +87,8 @@ export type TaskWorkspaceProps = {
   initialTaskId?: string;
   initialStatus?: TaskStatusBucket | undefined;
   initialView?: TaskView;
+  onPrepareView?: ((view: TaskView) => void) | undefined;
+  onViewChange?: ((view: TaskView) => void) | undefined;
   isDark?: boolean;
   loadError?: string | undefined;
   loadMoreError?: string | undefined;
@@ -130,6 +139,12 @@ export type TaskWorkspaceProps = {
 
 const TASKS_NOT_CONNECTED_TOAST_ID = "tasks-not-connected";
 const TASKS_SYNC_ERROR_TOAST_ID = "tasks-sync-error";
+const FEED_COLUMN_IDS: readonly TaskFeedColumnId[] = [
+  "needs_review",
+  "in_progress",
+  "done",
+  "cancelled",
+];
 
 /**
  * Complete Tasks product surface. Runtime owners supply task projections and
@@ -139,6 +154,7 @@ const TASKS_SYNC_ERROR_TOAST_ID = "tasks-sync-error";
 export function TaskWorkspace({
   capabilityState = "ready",
   className,
+  feed,
   filterSections = [],
   renderTaskBadges,
   hasMore = false,
@@ -158,6 +174,8 @@ export function TaskWorkspace({
   onLoadMore,
   onAskComma,
   onOpenTask,
+  onPrepareView,
+  onViewChange,
   onVisibleTasksChange,
   onRetry,
   onSendMessage,
@@ -174,6 +192,9 @@ export function TaskWorkspace({
     initialTaskId
   );
   const [view, setView] = useState<TaskView>(initialView);
+  useEffect(() => {
+    setView((current) => (current === initialView ? current : initialView));
+  }, [initialView]);
   const [selectedStatuses, setSelectedStatuses] = useState<
     ReadonlySet<TaskStatusBucket>
   >(
@@ -221,16 +242,22 @@ export function TaskWorkspace({
     }
   }, [selectedTaskId, tasks]);
 
-  const filteredTasks = useMemo(() => {
-    const filtersByWorker =
-      availableWorkers.length > 0 && selectedWorkers.size < availableWorkers.length;
-    return tasks.filter(
-      (task) =>
-        selectedStatuses.has(task.statusBucket) &&
-        (!filtersByWorker ||
-          (task.worker !== undefined && selectedWorkers.has(task.worker)))
-    );
-  }, [availableWorkers.length, selectedStatuses, selectedWorkers, tasks]);
+  const isStatusFiltered = selectedStatuses.size < TASK_STATUS_COLUMNS.length;
+  const isWorkerFiltered =
+    availableWorkers.length > 0 && selectedWorkers.size < availableWorkers.length;
+  const isSectionFiltered = filterSections.some(isTaskFilterSectionNarrowed);
+  const isFiltered = isStatusFiltered || isWorkerFiltered || isSectionFiltered;
+
+  const filteredTasks = useMemo(
+    () =>
+      tasks.filter(
+        (task) =>
+          selectedStatuses.has(task.statusBucket) &&
+          (!isWorkerFiltered ||
+            (task.worker !== undefined && selectedWorkers.has(task.worker)))
+      ),
+    [isWorkerFiltered, selectedStatuses, selectedWorkers, tasks]
+  );
   // A column with nothing in it says nothing the toolbar's filter does not
   // already say, so the board only shows the ones holding cards.
   const sections = useMemo(
@@ -243,8 +270,52 @@ export function TaskWorkspace({
         }),
     [filteredTasks, manualOrder, selectedStatuses]
   );
-  const statusCounts = useMemo(() => countTasksByStatus(tasks), [tasks]);
+  const statusCounts = useMemo(() => {
+    if (view === "feed" && tasks.length === 0 && (feed?.entries.length ?? 0) > 0) {
+      return countTasksByStatus(feed!.entries);
+    }
+    return countTasksByStatus(tasks);
+  }, [feed, tasks, view]);
   const workerCounts = useMemo(() => countTasksByWorker(tasks), [tasks]);
+  const tasksByConversationId = useMemo(
+    () => new Map(tasks.map((task) => [task.conversationId, task])),
+    [tasks]
+  );
+  const filteredFeedEntries = useMemo(() => {
+    const source = feed?.entries ?? [];
+    if (!isStatusFiltered && !isWorkerFiltered) return source;
+    return source.filter((entry) => {
+      if (isStatusFiltered && !selectedStatuses.has(entry.statusBucket)) {
+        return false;
+      }
+      if (isWorkerFiltered) {
+        const worker = tasksByConversationId.get(entry.conversationId)?.worker;
+        if (worker === undefined || !selectedWorkers.has(worker)) return false;
+      }
+      return true;
+    });
+  }, [
+    feed?.entries,
+    isStatusFiltered,
+    isWorkerFiltered,
+    selectedStatuses,
+    selectedWorkers,
+    tasksByConversationId,
+  ]);
+  const allowedFeedColumns = useMemo(
+    () =>
+      isStatusFiltered
+        ? FEED_COLUMN_IDS.filter((col) => selectedStatuses.has(col))
+        : undefined,
+    [isStatusFiltered, selectedStatuses]
+  );
+  const showFeedFilterEmptyState =
+    view === "feed" &&
+    !feed?.loading &&
+    !feed?.loadError &&
+    isFiltered &&
+    (filteredFeedEntries.length === 0 ||
+      (allowedFeedColumns !== undefined && allowedFeedColumns.length === 0));
   const visibleError = loadError ?? loadMoreError ?? actionError;
   const showEmptyState = !hasTasks && !loading && !visibleError;
   const showLoadingState = !hasTasks && loading;
@@ -412,6 +483,7 @@ export function TaskWorkspace({
     <>
       <TaskWorkspaceToolbarActions
         filterSections={filterSections}
+        onPrepareView={onPrepareView}
         onSelectedStatusesChange={setSelectedStatuses}
         onSelectedWorkersChange={(workers) =>
           setExcludedWorkers(
@@ -420,7 +492,10 @@ export function TaskWorkspace({
         }
         // The menu closes in this event; the other view mounts every loaded
         // Task, so it renders without holding that response.
-        onViewChange={(next) => startTransition(() => setView(next))}
+        onViewChange={(next) => {
+          startTransition(() => setView(next));
+          onViewChange?.(next);
+        }}
         selectedStatuses={selectedStatuses}
         selectedWorkers={selectedWorkers}
         statusCounts={statusCounts}
@@ -429,10 +504,10 @@ export function TaskWorkspace({
         workerCounts={workerCounts}
       />
       {/* The empty state offers it itself. */}
-      {onCreateTask && !showEmptyState ? (
+      {onCreateTask && (view === "feed" || !showEmptyState) ? (
         // Sized as Drive's Transfer button, the toolbar button beside its filters.
         <Button
-          className="h-auto gap-xs py-xs pr-lg pl-md text-xs"
+          className="h-auto gap-xs py-xs pr-lg pl-sm text-xs"
           hierarchy="secondary-gray"
           iconLeading={<PlusSmallIcon className="size-4 text-quaternary" />}
           onPress={onCreateTask}
@@ -558,17 +633,23 @@ export function TaskWorkspace({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TaskBoardToolbar
             actions={toolbarActions}
-            label={
-              selectedStatuses.size === TASK_STATUS_COLUMNS.length &&
-              selectedWorkers.size === availableWorkers.length &&
-              !filterSections.some(isTaskFilterSectionNarrowed)
-                ? messages.tasks_all()
-                : messages.tasks_filtered()
-            }
+            label={isFiltered ? messages.tasks_filtered() : messages.tasks_all()}
           />
 
           <div className="min-h-0 min-w-0 flex-1">
-            {showLoadingState ? (
+            {view === "feed" ? (
+              showFeedFilterEmptyState ? (
+                <TaskWorkspaceFilterEmptyState />
+              ) : (
+                <TaskFeedView
+                  onCreateTask={onCreateTask}
+                  {...feed}
+                  allowedColumns={allowedFeedColumns}
+                  entries={filteredFeedEntries}
+                  filterActive={isFiltered}
+                />
+              )
+            ) : showLoadingState ? (
               <TaskWorkspaceLoadingState />
             ) : showErrorState ? (
               <TaskWorkspaceErrorState onRetry={onRetry} />
@@ -625,7 +706,7 @@ export function TaskWorkspace({
             ) : (
               <ScrollArea
                 className="size-full bg-primary"
-                contentClassName="@container flex min-h-full flex-col gap-xs p-md"
+                contentClassName="@container/tasks-list flex min-h-full flex-col gap-xs p-md"
                 data-testid="tasks-list"
                 edgeEffect="mask"
                 orientation="vertical"
@@ -898,13 +979,14 @@ function groupTasksByStatus(
 }
 
 function countTasksByStatus(
-  tasks: readonly TaskWorkspaceTask[]
+  tasks: readonly Pick<TaskWorkspaceTask, "statusBucket">[]
 ): Record<TaskStatusBucket, number> {
   const counts: Record<TaskStatusBucket, number> = {
     in_progress: 0,
     needs_review: 0,
     done: 0,
     cancelled: 0,
+    loops: 0,
     archived: 0,
   };
   for (const task of tasks) counts[task.statusBucket] += 1;
@@ -939,7 +1021,11 @@ const TaskWorkspaceBoardRow = memo(function TaskWorkspaceBoardRow({
 }: TaskWorkspaceRowProps) {
   return (
     <TaskCardReorderItem id={task.id}>
-      <TaskArchiveMenu action={task.archiveAction} overlay="task-card">
+      <TaskArchiveMenu
+        action={task.archiveAction}
+        openExternalAction={task.openExternalAction}
+        overlay="task-card"
+      >
         <button
           aria-label={task.title}
           className="group/task-card w-full border-0 bg-transparent p-0 text-left"
@@ -978,7 +1064,10 @@ const TaskWorkspaceListRow = memo(function TaskWorkspaceListRow({
   // not hold another control.
   const rowAs = onToggleChecked ? "div" : "button";
   return (
-    <TaskArchiveMenu action={task.archiveAction}>
+    <TaskArchiveMenu
+      action={task.archiveAction}
+      openExternalAction={task.openExternalAction}
+    >
       <TaskListItem
         aria-label={task.title}
         as={rowAs}
@@ -989,13 +1078,18 @@ const TaskWorkspaceListRow = memo(function TaskWorkspaceListRow({
         }}
         checked={checked}
         data-task-navigation-id={task.id}
-        icon={taskStatusIcon(task.statusBucket, { loopStop: task.loopStop })}
+        icon={taskStatusIcon(task.statusBucket, {
+          loopStop: task.loopStop,
+          loopStanding: task.loopStanding,
+        })}
         iconKey={
           task.loopStop
             ? task.loopStop.failed
               ? "loop-failed"
               : "loop-paused"
-            : task.statusBucket
+            : task.loopStanding
+              ? `loop-standing-${task.loopStanding.kind}`
+              : task.statusBucket
         }
         layout="content"
         titleIdentity={task.id}
@@ -1149,8 +1243,9 @@ const TASK_STATUS_GROUP_ACCENTS = {
   in_progress: "neutral",
   needs_review: "warning",
   done: "success",
-  archived: "neutral",
   cancelled: "error",
+  loops: "neutral",
+  archived: "neutral",
 } satisfies Record<TaskStatusBucket, NonNullable<TaskListGroupProps["accent"]>>;
 
 function taskStatusGroupAccent(bucket: TaskStatusBucket) {

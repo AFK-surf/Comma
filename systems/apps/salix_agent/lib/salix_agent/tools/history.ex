@@ -1,15 +1,17 @@
 defmodule SalixAgent.Tools.History do
   @moduledoc "Agent-only retrieval of original records in the current internal Session."
   require Logger
-  alias SalixAgent.SessionHistory.{Source, Document, Hot, Worker}
+  alias SalixAgent.SessionHistory.{Source, Document, Episodes, Hot, Worker}
   @normal SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
+  @max_terms 8
   @search %{
     "type" => "object",
     "additionalProperties" => false,
     "properties" => %{
       "query" => %{
         "type" => "string",
-        "description" => "Literal text, 2 to 128 Unicode code points."
+        "description" =>
+          "Literal terms separated by spaces, 2 to 128 Unicode code points, at most 8 terms."
       },
       "cursor" => %{"type" => "string", "description" => "Continuation from this query."},
       "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 20}
@@ -42,7 +44,7 @@ defmodule SalixAgent.Tools.History do
   def entries do
     [
       {"history.search",
-       "Search original messages and tool results in this Session, including content removed from model context by compaction.\n\nNo cross-Session search. Literal normalized substring matching. Inspect complete and indexed_through: no matches in an incomplete index does not establish absence. Use history.get on a hit to read its original text.",
+       "Search original messages and tool results in this Session, including content removed from model context by compaction.\n\nNo cross-Session search. A hit contains every space-separated term as a normalized substring, in any order. Search for one or two distinctive words (a name, a path, a tool), not a sentence. Inspect complete and indexed_through: no matches in an incomplete index does not establish absence. Use history.get on a hit to read its original text.\n\nResults hold original records only. The first page may also list up to 3 episodes: summaries written at earlier compactions that a later compaction replaced in context, ranked by how many terms they contain. An episode states what was done or decided; history.get on its seq reads the whole summary.",
        @search, &__MODULE__.search/2, @normal, [safety: "read", runtimes: [:internal]]},
       {"history.list",
        "List brief original-history records in this Session, newest first. One entry per record, with seq, type, tool name and a short preview. Inspect complete for index coverage. Use history.get for details.",
@@ -58,9 +60,11 @@ defmodule SalixAgent.Tools.History do
       with true <- Map.keys(args) -- ~w(query cursor limit) == [],
            query when is_binary(query) <- args["query"],
            query <- query |> String.trim() |> Document.fold(),
+           terms <- query |> String.split() |> Enum.uniq(),
            true <-
-             length(String.codepoints(query)) in 2..128 and not String.contains?(query, <<0>>) do
-        lookup(args, ctx, query)
+             length(String.codepoints(query)) in 2..128 and not String.contains?(query, <<0>>) and
+               length(terms) in 1..@max_terms do
+        lookup(args, ctx, query, terms)
       else
         _ -> failure(:invalid_arguments, ctx)
       end
@@ -69,11 +73,12 @@ defmodule SalixAgent.Tools.History do
 
   def list(args, ctx) do
     if Map.keys(args) -- ~w(cursor limit) == [],
-      do: lookup(args, ctx, nil),
+      do: lookup(args, ctx, nil, nil),
       else: failure(:invalid_arguments, ctx)
   end
 
-  defp lookup(args, ctx, query) do
+  # The cursor carries the query text; the indexes match its terms.
+  defp lookup(args, ctx, query, terms) do
     Worker.hint(ctx.agent_id, ctx.session_id)
 
     protect(ctx, fn ->
@@ -86,7 +91,7 @@ defmodule SalixAgent.Tools.History do
              Hot.snapshot(
                ctx.agent_id,
                ctx.session_id,
-               query,
+               terms,
                ceiling,
                before_seq,
                before_part,
@@ -96,7 +101,7 @@ defmodule SalixAgent.Tools.History do
            {:ok, cold} <-
              cold(
                ctx,
-               query,
+               terms,
                cold_ceiling(ceiling, position, resume),
                before_seq,
                before_part,
@@ -109,7 +114,7 @@ defmodule SalixAgent.Tools.History do
         next = if length(rows) > limit, do: List.last(page), else: resume_row(resume)
 
         response = %{
-          "results" => Enum.map(page, &hit(&1, query)),
+          "results" => Enum.map(page, &hit(&1, terms)),
           "scope" => "current_session",
           "source_through" => ceiling,
           "indexed_through" => position.indexed,
@@ -118,11 +123,54 @@ defmodule SalixAgent.Tools.History do
           "next_cursor" => if(next, do: encode_cursor(query, ceiling, next))
         }
 
-        labelled(response, page, ctx)
+        # Episodes are summaries a later compaction replaced: the summary still
+        # in model context sits above compacted_seq and is not one.
+        episode_ceiling = min(ceiling, state[:compacted_seq] || 0)
+        {episodes, rows} = episodes(ctx, terms, args["cursor"], episode_ceiling)
+        response = if episodes, do: Map.put(response, "episodes", episodes), else: response
+        # items index results first, then episodes, one each.
+        labelled(response, page ++ rows, ctx)
       else
         error -> failure(error, ctx)
       end
     end)
+  end
+
+  # The first page of a search also lists the best matching compaction
+  # summaries that a later compaction replaced. The episode lookup is
+  # additive: no match or a failure leaves it out.
+  defp episodes(_ctx, nil, _cursor, _ceiling), do: {nil, []}
+  defp episodes(_ctx, _terms, cursor, _ceiling) when not is_nil(cursor), do: {nil, []}
+  defp episodes(_ctx, _terms, nil, ceiling) when ceiling <= 0, do: {nil, []}
+
+  defp episodes(ctx, terms, nil, ceiling) do
+    kind = Episodes.kind()
+    limit = Episodes.scan_limit()
+
+    with {:ok, hot} <- Hot.summaries(ctx.agent_id, ctx.session_id, kind, terms, ceiling, limit),
+         {:ok, cold} <-
+           Worker.cold().summaries(ctx.agent_id, ctx.session_id, kind, terms, ceiling, limit) do
+      case Episodes.rank(hot ++ cold, terms) do
+        [] ->
+          {nil, []}
+
+        ranked ->
+          {Enum.map(ranked, &Map.delete(&1, "label")),
+           Enum.map(ranked, &%{"label" => &1["label"]})}
+      end
+    else
+      error ->
+        Logger.warning(
+          "history episodes skipped detail=#{inspect(error, limit: 8)} " <>
+            "agent=#{ctx[:agent_id]} session=#{ctx[:session_id]}"
+        )
+
+        {nil, []}
+    end
+  rescue
+    exception ->
+      Logger.warning("history episodes skipped exception=#{inspect(exception.__struct__)}")
+      {nil, []}
   end
 
   def get(args, ctx) do
@@ -149,11 +197,7 @@ defmodule SalixAgent.Tools.History do
           "next_offset" => if(offset + 8000 < length, do: offset + 8000)
         }
 
-        labelled(
-          result,
-          [%{"label" => get_in(record.data, ["ifc", "label"]) || ["agent_private"]}],
-          ctx
-        )
+        labelled(result, [%{"label" => Document.label(record)}], ctx)
       else
         error -> failure(error, ctx)
       end
@@ -178,8 +222,8 @@ defmodule SalixAgent.Tools.History do
     |> Map.put("preview", String.slice(row["text"], 0, 160))
   end
 
-  defp hit(row, q) do
-    {byte, _} = :binary.match(row["text"], q)
+  defp hit(row, [first | _]) do
+    {byte, _} = :binary.match(row["text"], first)
     prefix = binary_part(row["text"], 0, byte) |> String.length()
 
     row

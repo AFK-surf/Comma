@@ -3,9 +3,10 @@ import type { ProviderBrandLogoProps } from "./ProviderBrandLogos";
 
 /**
  * Brand marks of the hosted MCP services in mainland China
- * (`SalixMCP.ChinaServices`). The raster marks are each vendor's published
+ * (`SalixMCP.HostedServices`). The raster marks are each vendor's published
  * App Store app icon at 96 px, rounded like an app tile; Gitee publishes no
- * app, so its mark is the vector logo.
+ * app, so its mark is the vector logo, and Feishu Project and Meegle use their
+ * sites' transparent mark.
  */
 function AppIconLogo({
   brand,
@@ -131,4 +132,42 @@ export function GiteeProviderLogo(props: ProviderBrandLogoProps) {
       />
     </svg>
   );
+}
+
+const feishuProjectMark =
+  "data:image/webp;base64,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";
+
+/**
+ * Feishu Project's published mark at 96 px, shared by Meegle (its
+ * international edition). It is a transparent mark, not an app tile, so it is
+ * drawn as it is, without a tile or clip.
+ */
+function FeishuProjectMark({
+  brand,
+  ...props
+}: ProviderBrandLogoProps & { brand: string }) {
+  return (
+    <svg
+      width="24"
+      height="24"
+      {...props}
+      aria-hidden="true"
+      focusable="false"
+      data-provider-logo={brand}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <image href={feishuProjectMark} width="24" height="24" />
+    </svg>
+  );
+}
+
+/** 飞书项目 mark. */
+export function FeishuProjectProviderLogo(props: ProviderBrandLogoProps) {
+  return <FeishuProjectMark {...props} brand="feishu-project" />;
+}
+
+/** Meegle mark (the same artwork as Feishu Project). */
+export function MeegleProviderLogo(props: ProviderBrandLogoProps) {
+  return <FeishuProjectMark {...props} brand="meegle" />;
 }

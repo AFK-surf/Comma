@@ -7,6 +7,22 @@ defmodule SalixAgent.CompactionOffActorTest do
   alias SalixAgent.InternalSessionStore
 
   @session "ses1_0000000000000000940"
+  @pid_key {__MODULE__, :test_pid}
+
+  defmodule TestNotifier do
+    @moduledoc false
+    @behaviour SalixAgent.Notifier
+
+    @impl true
+    def notify(agent_id, event) do
+      case SystemsRuntime.PersistentTerm.get({SalixAgent.CompactionOffActorTest, :test_pid}, nil) do
+        nil -> :ok
+        pid -> SystemsRuntime.Proc.send(pid, {:notified, agent_id, event})
+      end
+
+      :ok
+    end
+  end
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
@@ -43,8 +59,15 @@ defmodule SalixAgent.CompactionOffActorTest do
     prev = SystemsRuntime.get_env(:salix_agent, :summarizer)
     prev_threshold = SystemsRuntime.get_env(:salix_agent, :compaction_threshold)
     prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_notifier = SystemsRuntime.get_env(:salix_agent, :notifier)
 
     on_exit(fn ->
+      SystemsRuntime.PersistentTerm.erase(@pid_key)
+
+      if prev_notifier,
+        do: SystemsRuntime.put_env(:salix_agent, :notifier, prev_notifier),
+        else: SystemsRuntime.delete_env(:salix_agent, :notifier)
+
       if prev,
         do: SystemsRuntime.put_env(:salix_agent, :summarizer, prev),
         else: SystemsRuntime.delete_env(:salix_agent, :summarizer)
@@ -145,6 +168,46 @@ defmodule SalixAgent.CompactionOffActorTest do
     assert session.summary =~ "blocked compaction"
     assert session.compacted_through == 6
     assert :sys.get_state(pid, :infinity).pending_compaction == nil
+  end
+
+  test "status shows the running summary and returns to idle when it ends", %{
+    agent_id: agent_id
+  } do
+    pid = passive_actor_pid(agent_id)
+    blocking_summarizer(SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :notifier, TestNotifier)
+    # Only hints sent after this sync reach the test.
+    _ = :sys.get_state(pid, :infinity)
+    SystemsRuntime.PersistentTerm.put(@pid_key, SystemsRuntime.Proc.self())
+
+    assert {:ok, %{"state" => "stopped"}} =
+             SalixAgent.InternalAgentRuntime.get_session_activity(agent_id, @session)
+
+    caller =
+      SystemsRuntime.Task.async(fn ->
+        InternalSessionActor.compact_session(pid, :compact, context(agent_id), [])
+      end)
+
+    settle_receive({:summarizing, summarizer})
+    settle_receive({:notified, ^agent_id, {:session_activity_updated, @session}})
+
+    assert {:ok, %{"state" => "active", "status" => "is compacting context..."}} =
+             SalixAgent.InternalAgentRuntime.get_session_activity(agent_id, @session)
+
+    # An overlapping compact control forgets the retained revision
+    # (`forget/1`); status still shows the running summary.
+    :sys.replace_state(pid, &%{&1 | revision: nil})
+
+    assert {:ok, %{"state" => "active", "status" => "is compacting context..."}} =
+             SalixAgent.InternalAgentRuntime.get_session_activity(agent_id, @session)
+
+    SystemsRuntime.Proc.send(summarizer, :release)
+    assert {:ok, _context, %{"status" => "compacted"}} = settled_await(caller)
+
+    settle_receive({:notified, ^agent_id, {:session_activity_updated, @session}})
+
+    assert {:ok, %{"state" => "stopped", "status" => ""}} =
+             SalixAgent.InternalAgentRuntime.get_session_activity(agent_id, @session)
   end
 
   test "a terminal that lands through the actor during the park is not swallowed", %{

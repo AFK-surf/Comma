@@ -147,7 +147,7 @@ describe("Side Chat UI", () => {
         view.container
           .querySelector("status-indicator")
           ?.shadowRoot?.querySelectorAll('[role="radio"]')
-      ).toHaveLength(4)
+      ).toHaveLength(5)
     );
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveAttribute(

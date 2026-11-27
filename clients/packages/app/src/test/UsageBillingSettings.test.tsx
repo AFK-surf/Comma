@@ -5,6 +5,7 @@ import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useUsageBillingCategory } from "../components/billing/useUsageBillingCategory";
+import { openNativePlatformExternalUrlFromUserAction } from "../nativePlatformActions";
 
 vi.mock("../nativePlatformActions", () => ({
   openNativePlatformExternalUrl: vi.fn(async () => undefined),
@@ -15,8 +16,15 @@ vi.mock("../nativePlatformActions", () => ({
   ),
 }));
 
+const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
+vi.mock("../analytics/client", async (original) => ({
+  ...(await original<typeof import("../analytics/client")>()),
+  captureCommaBilling: analytics.capture,
+}));
+
 afterEach(() => {
   window.location.hash = "";
+  analytics.capture.mockReset();
 });
 
 /** The category as Settings renders it: its rows through the shared panel. */
@@ -176,6 +184,111 @@ describe("useUsageBillingCategory", () => {
     });
     await act(async () => {});
     expect(page.named("billing.returned")).toHaveLength(2);
+    // This app opened no checkout: a return to a web checkout is not its funnel step.
+    expect(
+      analytics.capture.mock.calls.filter(
+        ([event]) => event === "comma_billing_returned"
+      )
+    ).toHaveLength(0);
+  });
+
+  it("reports each payment funnel step it sees: entry, checkout request, failures and return", async () => {
+    window.location.hash = "#/settings?category=usage-billing&from=out_of_credits";
+    let refuse = false;
+    renderUsageBilling(ready(billingSummary(), [valuePlan]), (name) => {
+      if (name !== "billing.checkout") return null;
+      if (refuse) throw Object.assign(new Error("refused"), { code: "conflict" });
+      return { url: "https://checkout.stripe.com/test" };
+    });
+    await waitFor(() =>
+      expect(analytics.capture).toHaveBeenCalledWith("comma_billing_opened", {
+        billing_entry: "out_of_credits",
+      })
+    );
+    // The entry is read once, so a later open of the page is Settings itself.
+    expect(window.location.hash).toBe("#/settings?category=usage-billing");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Subscribe" }));
+    expect(analytics.capture).toHaveBeenCalledWith("comma_checkout_requested", {
+      plan_key: "comma_value_v1",
+    });
+
+    refuse = true;
+    await userEvent.click(screen.getByRole("button", { name: "Subscribe" }));
+    await waitFor(() =>
+      expect(analytics.capture).toHaveBeenCalledWith("comma_checkout_open_failed", {
+        plan_key: "comma_value_v1",
+        error_kind: "request_failed",
+      })
+    );
+
+    // The server created this checkout, so only the browser can say why it did not open.
+    refuse = false;
+    vi.mocked(openNativePlatformExternalUrlFromUserAction).mockImplementationOnce(
+      async (resolveUrl) => {
+        await resolveUrl();
+        throw new Error("no browser");
+      }
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Subscribe" }));
+    await waitFor(() =>
+      expect(analytics.capture).toHaveBeenCalledWith("comma_checkout_open_failed", {
+        plan_key: "comma_value_v1",
+        error_kind: "open_failed",
+      })
+    );
+
+    // A notice followed while the page is open opens nothing new, and its entry leaves.
+    act(() => {
+      window.location.hash = "#/settings?category=usage-billing&from=credit_warning";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(window.location.hash).toBe("#/settings?category=usage-billing");
+    expect(
+      analytics.capture.mock.calls.filter(([event]) => event === "comma_billing_opened")
+    ).toHaveLength(1);
+
+    // A cancelled checkout reads nothing again, but it is a step of the funnel.
+    act(() => {
+      window.location.hash = "#/settings?category=usage-billing&billing-return=cancel";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(analytics.capture).toHaveBeenCalledWith("comma_billing_returned", {
+      state: "cancel",
+    });
+  });
+
+  it("reports a return on the web once the checkout window has closed", async () => {
+    renderUsageBilling(ready(billingSummary(), [valuePlan]), (name) =>
+      name === "billing.checkout" ? { url: "https://checkout.stripe.com/test" } : null
+    );
+    // The web's checkout opens in a window of its own; the desktop app has none.
+    const checkout = { closed: false };
+    vi.mocked(openNativePlatformExternalUrlFromUserAction).mockImplementationOnce(
+      async (resolveUrl) => {
+        await resolveUrl();
+        return checkout as Window;
+      }
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Subscribe" }));
+    const returns = () =>
+      analytics.capture.mock.calls.filter(
+        ([event]) => event === "comma_billing_returned"
+      );
+
+    // Looking at Comma while the checkout is still open is no return.
+    act(() => {
+      window.dispatchEvent(new FocusEvent("focus"));
+    });
+    expect(returns()).toHaveLength(0);
+
+    checkout.closed = true;
+    act(() => {
+      window.dispatchEvent(new FocusEvent("focus"));
+      window.dispatchEvent(new FocusEvent("focus"));
+    });
+    // The web cannot tell a paid checkout from a closed one: the event has no state.
+    expect(returns()).toEqual([["comma_billing_returned"]]);
   });
 
   it("asks the core to read the balance again on entering and when the window regains focus", async () => {

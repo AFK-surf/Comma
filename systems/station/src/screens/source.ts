@@ -39,6 +39,13 @@ export type DeviceInput =
   | { t: "text"; text: string }
   /// A foldable's hinge, to one of `ScreenSource.poseNames`.
   | { t: "pose"; name: DevicePose }
+  /// A foldable's hinge to any angle, 0 closed to 180 open, swept over `ms` (a simulator's, `ScreenSource.hingeAngles`).
+  | { t: "hinge"; degrees: number; ms: number }
+  /// Straight to a picture's way up, degrees clockwise (a simulator's, with `hingeAngles`): one turn, not quarters.
+  | { t: "orient"; degrees: 0 | 90 | 180 | 270; screen?: "cover" | "inner"; hinge?: number }
+  /// The picture as its panel draws it, never turned (a client that draws the device turned, its 3D iPhone Duo): the
+  /// view's stands then say `panel`.
+  | { t: "frames"; panel: boolean }
   | { t: "device"; name: "volume_up" | "volume_down" | "rotate" }
   /// One of a simulator's hardware buttons by its HID usage (`ScreenSource.chrome`), as it goes down and comes up.
   | { t: "button"; page: number; usage: number; down: boolean };
@@ -47,7 +54,7 @@ export type DeviceInput =
 export type ScreenInput = { type: string; [field: string]: unknown } | DeviceInput;
 
 /// How a device stands, as far as it says: which way it is turned, a foldable's pose.
-export type DeviceStands = { orientation?: 0 | 90 | 180 | 270; pose?: DevicePose };
+export type DeviceStands = { orientation?: 0 | 90 | 180 | 270; pose?: DevicePose; hinge?: number; panel?: true };
 
 /// A panel of a device's screen, its corners' radii as shares of its width, top left and then round it. `curves`, where
 /// the shape is known closer (a simulator's mask: sim-mask.ts): each corner as CSS's `superellipse(k)` on a radius of
@@ -68,7 +75,7 @@ export type PanelCurve = { reach: number; k: number };
 /// `audio`: the machine's system output too (never a microphone's), where the source captures it (`ScreenView.nextAudio`);
 /// never a preview's (still.fail's `ViewOptions.audio`).
 /// `opus`: the client takes the sound as Opus, where the source encodes it (else PCM).
-export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; bitrate?: number; peek?: boolean; cursor?: boolean; audio?: boolean; opus?: boolean; timing?: boolean };
+export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; bitrate?: number; peek?: boolean; cursor?: boolean; audio?: boolean; opus?: boolean; timing?: boolean; panel?: boolean };
 
 /// How a view's pictures are made, for the viewer's statistics (still.fail's `ScreenVideo`): what captures them, the
 /// encoder as it names itself, and whether that is the hardware's.
@@ -197,6 +204,8 @@ export interface ScreenSource {
   readonly chrome?: readonly ChromeSource[];
   /// The poses a foldable takes.
   poseNames?(): DevicePose[];
+  /// Its hinge takes any angle (`{t:"hinge"}`), not only its poses: an iPhone Duo Simulator's.
+  hingeAngles?(): boolean;
   /// Closes it for good (an emulator); none: it is not closed from a person's app.
   discard?(): Promise<void>;
   /// A real phone, a person's.

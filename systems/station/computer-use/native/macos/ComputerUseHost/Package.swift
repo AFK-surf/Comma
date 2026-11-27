@@ -29,36 +29,14 @@ let package = Package(
             ]
         ),
         .target(
-            name: "CUForeground",
-            dependencies: ["CUShared"],
-            resources: [
-                .process("Resources"),
-            ],
-            swiftSettings: [
-                .swiftLanguageMode(.v5),
-                // Match Swift 6 dependencies' ObjC async continuation ABI.
-                // https://github.com/swiftlang/swift/issues/81846
-                .unsafeFlags(["-Xfrontend", "-checked-async-objc-bridging=on"]),
-            ],
-            linkerSettings: [
-                .linkedFramework("AppKit"),
-                .linkedFramework("ApplicationServices"),
-                .linkedFramework("Metal"),
-                .linkedFramework("QuartzCore"),
-                .linkedFramework("ScreenCaptureKit"),
-                .unsafeFlags([
-                    "-F", "/System/Library/PrivateFrameworks",
-                    "-framework", "SkyLight",
-                ]),
-            ]
-        ),
-        .target(
             name: "CUBackground",
             dependencies: ["CUShared"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("SwiftUI"),
             ]
         ),
         .target(
@@ -85,7 +63,6 @@ let package = Package(
             dependencies: [
                 "CUShared",
                 "CUBackground",
-                "CUForeground",
                 "CUStream",
                 .product(name: "PermissionFlow", package: "PermissionFlow"),
                 .product(name: "SystemSettingsKit", package: "PermissionFlow"),
@@ -105,7 +82,7 @@ let package = Package(
         .testTarget(
             name: "CUTests",
             dependencies: [
-                "CUShared", "CUBackground", "CUForeground", "CUStream", "CommaComputerUseDaemon",
+                "CUShared", "CUBackground", "CUStream", "CommaComputerUseDaemon",
                 .product(name: "PermissionFlow", package: "PermissionFlow"),
             ]
         ),

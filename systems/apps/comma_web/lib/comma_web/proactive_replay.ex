@@ -68,20 +68,22 @@ defmodule CommaWeb.ProactiveReplay do
       items ->
         items = items ++ injected(kase, scenario, items, now)
         pending = Enum.filter(items, &pending?(&1, since))
+        synthetic = calendar_prep_items(kase, scenario, now) ++ web_radar_items(kase, scenario, now)
 
         views =
-          pending
-          |> Enum.with_index(1)
-          |> Enum.map(&view/1)
-          |> CommaWeb.ProactiveMatters.group()
+          (pending
+           |> Enum.with_index(1)
+           |> Enum.map(&view/1)
+           |> CommaWeb.ProactiveMatters.group()) ++ synthetic
 
+        collected_urls = Enum.map(items, & &1["url"]) ++ Enum.map(synthetic, & &1["url"])
         judgment = judge_items(kase, views, portrait, now, judge)
 
         report =
           %{
             "scenario" => scenario["name"],
             "queries" => Enum.reverse(Agent.get(requests, & &1, :infinity)),
-            "collected" => Enum.map(items, &(labels[&1["url"]] || &1["url"])),
+            "collected" => Enum.map(collected_urls, &(labels[&1] || &1)),
             "pending" =>
               Enum.map(CommaWeb.ProactiveMatters.items(views), &(labels[&1["url"]] || &1["url"])),
             "matters" =>
@@ -216,12 +218,24 @@ defmodule CommaWeb.ProactiveReplay do
   end
 
   # A case without Slack recordings reads only its other sources.
-  defp slack_items(%{"slack" => _}, scenario, request, portrait, now) do
+  defp slack_items(%{"slack" => _} = kase, scenario, request, portrait, now) do
     case RecommendationSlackMemberSource.read(request, now, nil,
            targets: targets(scenario, portrait, now)
          ) do
-      {:ok, data, subject} -> pool_items(data, subject, now)
-      {:error, reason} -> {:error, reason}
+      {:ok, data, subject} ->
+        items = pool_items(data, subject, now)
+
+        case scenario["only_slack"] do
+          labels when is_list(labels) ->
+            urls = MapSet.new(labels, &kase["labels"][&1])
+            Enum.filter(items, &MapSet.member?(urls, &1["url"]))
+
+          _ ->
+            items
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -260,6 +274,38 @@ defmodule CommaWeb.ProactiveReplay do
   end
 
   defp outlook_items(_kase, _scenario, _now), do: []
+
+  defp calendar_prep_items(%{"calendar" => events} = kase, scenario, now) when is_list(events) do
+    events =
+      case scenario["only_calendar"] do
+        labels when is_list(labels) ->
+          urls = MapSet.new(labels, &kase["labels"][&1])
+          Enum.filter(events, &MapSet.member?(urls, &1["htmlLink"] || &1["webUrl"] || &1["url"]))
+
+        _ ->
+          events
+      end
+
+    CommaWeb.ProactiveMeetingPrep.from_events(events, DateTime.to_unix(now, :millisecond))
+  end
+
+  defp calendar_prep_items(_kase, _scenario, _now), do: []
+
+  defp web_radar_items(%{"web_radar" => entries} = kase, scenario, now) when is_list(entries) do
+    entries =
+      case scenario["only_web_radar"] do
+        labels when is_list(labels) ->
+          urls = MapSet.new(labels, &kase["labels"][&1])
+          Enum.filter(entries, &MapSet.member?(urls, &1["url"]))
+
+        _ ->
+          entries
+      end
+
+    CommaWeb.ProactiveWebRadar.from_replay(entries, now)
+  end
+
+  defp web_radar_items(_kase, _scenario, _now), do: []
 
   # A scenario's injected messages enter as the member source would admit
   # them, with the owner's identity and no relationship to the owner.
@@ -331,18 +377,39 @@ defmodule CommaWeb.ProactiveReplay do
   # A scenario's memory file statements: the case's `user_md`, with the
   # portrait section refreshed from the recorded own messages by the judge
   # when the scenario asks ("refresh").
-  defp portrait(kase, %{"portrait" => "refresh"}, request, now, judge) do
-    note = kase["user_md"] || ""
+  defp portrait(kase, %{"portrait" => "refresh"} = scenario, request, now, judge) do
+    note =
+      if Map.has_key?(scenario, "user_md"),
+        do: scenario["user_md"] || "",
+        else: kase["user_md"] || ""
+
     locale = kase["locale"] || "en"
 
-    with {:ok, own, subject} <- RecommendationSlackMemberSource.own_messages(request, now),
-         input =
+    {own, handle} =
+      case kase["slack"] do
+        %{} ->
+          case RecommendationSlackMemberSource.own_messages(request, now) do
+            {:ok, msgs, subject} -> {msgs, subject["handle"]}
+            {:error, _} -> {[], get_in(kase, ["owner", "handle"])}
+          end
+
+        _ ->
+          {[], get_in(kase, ["owner", "handle"])}
+      end
+
+    extra = %{
+      "memory" => kase["memory"] || [],
+      "tasks" => kase["tasks"] || []
+    }
+
+    with input =
            MemberPortrait.input(
              own,
              home(kase),
              MemberPortrait.statements(note),
-             subject["handle"],
-             kase["own_work"] || []
+             handle,
+             kase["own_work"] || [],
+             extra
            ),
          messages = RecommendationRenderer.portrait_messages(input, locale, now),
          {:ok, text} <- judge.(messages),
@@ -398,67 +465,146 @@ defmodule CommaWeb.ProactiveReplay do
       )
 
     view = if linked == [], do: view, else: Map.put(view, "linked", linked)
+    portrait_terms = MemberPortrait.targets(portrait)["terms"] || []
+    view = ProactiveCheck.attach_portrait_terms(view, portrait_terms)
 
     input =
       ProactiveCheck.attention_input([view], home(kase), portrait, now, matters, kase["notebook"])
+
+    allow_investigate? = view["relationship"] != "in_your_junk_folder"
+    env = CommaWeb.ProactiveResearch.from_replay(kase, view["url"])
+
+    local =
+      if allow_investigate?,
+        do: CommaWeb.ProactiveResearch.local_context(view, env),
+        else: []
+
+    input = if local == [], do: input, else: Map.put(input, "relatedContext", local)
 
     messages =
       RecommendationRenderer.attention_messages(
         input,
         kase["locale"] || "en",
         kase["timezone"] || "UTC",
-        now
+        now,
+        allow_investigate: allow_investigate?
       )
 
     bytes = Enum.reduce(messages, 0, &(&2 + byte_size(&1.content)))
 
-    report =
+    {decided, total_bytes, research, last_messages} =
       with {:ok, text} <- judge.(messages),
            {:ok, answer} <- decode(text),
-           {:ok, decided} <- ProactiveCheck.decide(answer, view, now, matters) do
-        case decided do
-          :unclear ->
-            %{"outcome" => "deferred", "url" => view["url"], "decision" => "unclear"}
+           {:ok, round1} <-
+             ProactiveCheck.decide(answer, view, now, matters,
+               allow_investigate: allow_investigate?,
+               related_context: local,
+               notebook: kase["notebook"]
+             ) do
+        case round1 do
+          {:investigate, queries} ->
+            findings =
+              CommaWeb.ProactiveResearch.run(queries, env,
+                allow_web_read: CommaWeb.ProactiveEvidence.unfurl_allowed_item?(view)
+              )
 
-          {:settle, decision, assessment} ->
-            %{
-              "outcome" => "quiet",
-              "url" => view["url"],
-              "decision" => decision,
-              "role" => assessment["role"],
-              "assessment" => Map.drop(assessment, ~w(continues reason)),
-              "continues" => get_in(assessment, ["continues", "subject"]),
-              "linked" => view["linked"]
-            }
+            round2_input = Map.put(input, "research", findings)
 
-          # As the check: only the owner's move reaches the Router, and the
-          # reserve goes by the assessment.
-          {:handoff, item, message} ->
-            %{
-              "outcome" => "routed",
-              "url" => item["url"],
-              "decision" => item["decision"],
-              "urgency" => item["urgency"],
-              "role" => item["role"],
-              "reserve" => ProactiveCheck.reserve_eligible?(item, now),
-              "assessment" => Map.delete(item["assessment"], "continues"),
-              "continues" => get_in(item, ["assessment", "continues", "subject"]),
-              "message" => message,
-              "linked" => view["linked"],
-              "due_ms" => due_ms(item)
-            }
+            messages2 =
+              RecommendationRenderer.attention_messages(
+                round2_input,
+                kase["locale"] || "en",
+                kase["timezone"] || "UTC",
+                now,
+                allow_investigate: false
+              )
+
+            bytes2 = Enum.reduce(messages2, 0, &(&2 + byte_size(&1.content)))
+            research_log = %{"local" => local, "queries" => queries, "findings" => findings}
+
+            case with(
+                   {:ok, text2} <- judge.(messages2),
+                   {:ok, answer2} <- decode(text2),
+                   do:
+                     ProactiveCheck.decide(answer2, view, now, matters,
+                       allow_investigate: false,
+                       related_context: local,
+                       research: findings,
+                       notebook: kase["notebook"]
+                     )
+                 ) do
+              {:ok, final} -> {{:ok, final}, bytes + bytes2, research_log, messages2}
+              {:error, reason} -> {{:error, reason}, bytes + bytes2, research_log, messages2}
+            end
+
+          other ->
+            research_log = if local == [], do: nil, else: %{"local" => local}
+            {{:ok, other}, bytes, research_log, messages}
         end
       else
+        {:error, reason} -> {{:error, reason}, bytes, nil, messages}
+      end
+
+    report =
+      case decided do
+        {:ok, :unclear} ->
+          %{
+            "outcome" => "deferred",
+            "url" => view["url"],
+            "decision" => "unclear",
+            "research" => research
+          }
+
+        {:ok, {:settle, decision, assessment}} ->
+          %{
+            "outcome" => "quiet",
+            "url" => view["url"],
+            "decision" => decision,
+            "role" => assessment["role"],
+            "assessment" => Map.drop(assessment, ~w(continues reason)),
+            "continues" => get_in(assessment, ["continues", "subject"]),
+            "linked" => view["linked"],
+            "research" => research
+          }
+
+        # As the check: only the owner's move reaches the Router, and the
+        # reserve goes by the assessment.
+        {:ok, {:handoff, item, message}} ->
+          pool =
+            cond do
+              get_in(item, ["assessment", "code"]) == true -> "code"
+              get_in(item, ["assessment", "signal"]) == true -> "signal"
+              ProactiveCheck.reserve_eligible?(item, now) -> "reserve"
+              true -> "ordinary"
+            end
+
+          %{
+            "outcome" => "routed",
+            "url" => item["url"],
+            "decision" => item["decision"],
+            "urgency" => item["urgency"],
+            "role" => item["role"],
+            "pool" => pool,
+            "reserve" => ProactiveCheck.reserve_eligible?(item, now),
+            "assessment" => Map.delete(item["assessment"], "continues"),
+            "continues" => get_in(item, ["assessment", "continues", "subject"]),
+            "message" => message,
+            "linked" => view["linked"],
+            "research" => research,
+            "due_ms" => due_ms(item)
+          }
+
         {:error, reason} ->
           %{
             "outcome" => "error",
             "url" => view["url"],
             "error" => inspect(reason),
-            "messages" => messages
+            "research" => research,
+            "messages" => last_messages
           }
       end
 
-    %{report: Map.reject(report, fn {_key, value} -> is_nil(value) end), bytes: bytes}
+    %{report: Map.reject(report, fn {_key, value} -> is_nil(value) end), bytes: total_bytes}
   end
 
   defp due_ms(item) do
@@ -478,7 +624,14 @@ defmodule CommaWeb.ProactiveReplay do
     end)
   end
 
-  # Recorded provider API responses by URL.
+  # Recorded provider API responses by URL, and recorded web pages for `:web`.
+  defp http(kase, :web, url) do
+    case Enum.find(kase["web"] || [], &(&1["url"] == url)) do
+      %{} = page -> {:ok, page}
+      nil -> {:error, :unrecorded}
+    end
+  end
+
   defp http(kase, _provider, url) do
     case Enum.find(kase["http"] || [], &same_request?(&1["url"], url)) do
       %{"body" => body} -> {:ok, body}
@@ -540,7 +693,18 @@ defmodule CommaWeb.ProactiveReplay do
       {"role", expect["role_any"], fn roles -> judgment["role"] in roles end},
       {"reserve", expect["reserve"], fn reserve -> judgment["reserve"] == true == reserve end},
       {"repeats", expect["repeats"],
-       fn repeats -> get_in(judgment, ["assessment", "repeats"]) == repeats end}
+       fn repeats -> get_in(judgment, ["assessment", "repeats"]) == repeats end},
+      {"researched", expect["researched"],
+       fn expected ->
+         match?([_ | _], get_in(judgment, ["research", "queries"])) == expected
+       end},
+      {"used_context", expect["used_context"],
+       fn expected -> is_map(judgment["research"]) == expected end},
+      {"message_contains", expect["message_contains_any"],
+       fn needles ->
+         msg = String.downcase(judgment["message"] || "")
+         Enum.any?(needles, &String.contains?(msg, String.downcase(&1)))
+       end}
     ]
     |> Enum.reject(fn {_name, labels, _check} -> is_nil(labels) end)
     |> Enum.map(fn {name, labels, check} ->

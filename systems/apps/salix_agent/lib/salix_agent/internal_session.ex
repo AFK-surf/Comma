@@ -295,6 +295,7 @@ defmodule SalixAgent.InternalSession do
   def yieldable_provider_wait?(session), do: query(session, :yieldable_provider_wait?)
   def wait_identity(session), do: query(session, :wait_identity)
   def active_human_source_ids(session), do: query(session, :active_human_source_ids)
+  def active_unanswered_thread(session), do: query(session, :active_unanswered_thread)
 
   def needs_transcript_continuation?(session), do: query(session, :needs_transcript_continuation?)
   def visible_reply_repair_required?(session), do: query(session, :visible_reply_repair_required?)
@@ -431,6 +432,7 @@ defmodule SalixAgent.InternalSession do
 
   def compaction_context_prefix(session), do: query(session, :compaction_context_prefix)
   def provider_compaction_items(session), do: query(session, :provider_compaction_items)
+  def handoff_window(session, opts \\ %{}), do: query(session, :handoff_window, opts)
 
   def unfinished_activation_start_id(session, messages) when is_list(messages),
     do: query(session, :unfinished_activation_start_id, messages)
@@ -471,6 +473,7 @@ defmodule SalixAgent.InternalSession do
   ## Stateless helpers served by the kernel
 
   def human_source_origin?(origin), do: stateless(:human_source_origin?, origin)
+  def origin_thread(origin), do: stateless(:origin_thread, origin)
   def valid_activation_scope?(scope), do: stateless(:valid_activation_scope?, scope)
   def scopes_equivalent?(left, right), do: stateless(:scopes_equivalent?, {left, right})
   def normalize_obligation(raw), do: stateless(:normalize_obligation, raw)

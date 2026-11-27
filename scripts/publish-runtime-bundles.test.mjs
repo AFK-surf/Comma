@@ -16,10 +16,10 @@ test("runtime bundle publication is content-addressed and immutable", () => {
   mkdirSync(fakeBin);
 
   const images = ["shell", "station"].map((className, index) => {
-    const bytes = Buffer.from(`${className}-oci-archive`);
+    const bytes = Buffer.from(`${className}-erofs-archive`);
     const sha = createHash("sha256").update(bytes).digest("hex");
     const manifestDigest = `sha256:${String(index + 4).repeat(64)}`;
-    writeFileSync(join(bundleDir, `${className}.oci.tar`), bytes);
+    writeFileSync(join(bundleDir, `${className}.erofs.zst`), bytes);
     return {
       class: className,
       inputDigest: `sha256:${String(index + 1).repeat(64)}`,
@@ -31,7 +31,7 @@ test("runtime bundle publication is content-addressed and immutable", () => {
     };
   });
   writeFileSync(join(bundleDir, "manifest.json"), JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     sourceRevision: "revision",
     images,
   }));
@@ -80,21 +80,21 @@ esac
     const published = spawnSync("bash", [script, bundleDir], { encoding: "utf8", env });
     assert.equal(published.status, 0, published.stderr);
     for (const image of images) {
-      const object = join(transport, "runtime-bundles", "sha256", `${image.archiveSha256}.oci.tar`);
-      assert.equal(readFileSync(object, "utf8"), `${image.class}-oci-archive`);
+      const object = join(transport, "runtime-bundles", "sha256", `${image.archiveSha256}.erofs.zst`);
+      assert.equal(readFileSync(object, "utf8"), `${image.class}-erofs-archive`);
     }
 
     const repeated = spawnSync("bash", [script, bundleDir], { encoding: "utf8", env });
     assert.equal(repeated.status, 0, repeated.stderr);
 
     const changed = images[0];
-    writeFileSync(join(bundleDir, `${changed.class}.oci.tar`), "mutated local bytes");
+    writeFileSync(join(bundleDir, `${changed.class}.erofs.zst`), "mutated local bytes");
     const rejected = spawnSync("bash", [script, bundleDir], { encoding: "utf8", env });
     assert.notEqual(rejected.status, 0);
     assert.match(rejected.stderr, /runtime bundle does not match manifest/);
     assert.equal(
-      readFileSync(join(transport, "runtime-bundles", "sha256", `${changed.archiveSha256}.oci.tar`), "utf8"),
-      `${changed.class}-oci-archive`,
+      readFileSync(join(transport, "runtime-bundles", "sha256", `${changed.archiveSha256}.erofs.zst`), "utf8"),
+      `${changed.class}-erofs-archive`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

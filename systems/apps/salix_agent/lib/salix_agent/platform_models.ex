@@ -233,6 +233,22 @@ defmodule SalixAgent.PlatformModels do
   def record(_tier), do: {:error, :invalid_model_configuration}
 
   @doc """
+  The `worker` tier's record when Codex can run it: a Workload's station is
+  lent it as a Codex profile (`SalixWeb.StationLLM`), so its endpoint must
+  speak `responses`.
+  """
+  @spec station_tier() :: {:ok, map()} | {:error, term()}
+  def station_tier do
+    with {:ok, template} <- record("worker"),
+         "responses" <- get_in(template, ["provider_config", "protocol"]) do
+      {:ok, template}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :platform_model_not_responses}
+    end
+  end
+
+  @doc """
   The model record of a model the platform route table returned for the
   `worker` tier: the catalog model (or a platform Custom endpoint's) at the
   first enabled platform API key that serves it, with that key. Like
@@ -275,6 +291,16 @@ defmodule SalixAgent.PlatformModels do
   end
 
   def routed_record(_model, _effort), do: {:error, :invalid_model_configuration}
+
+  @doc """
+  What the platform knows of a model its keys may serve: the catalog entry,
+  else the platform Custom endpoint's, shaped like a catalog entry.
+  """
+  @spec model_info(String.t()) :: {:ok, map()} | {:error, term()}
+  def model_info(model) when is_binary(model),
+    do: model_info(AccountPool.platform_tenant(), model)
+
+  def model_info(_model), do: {:error, :platform_model_unavailable}
 
   defp model_info(platform, model) do
     case SalixAgent.Models.get(model) do

@@ -1,8 +1,13 @@
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- A source's Routine cards are one labelled group of actions, not a form, so fieldset does not fit. */
 import { uiClock } from "@comma/ui/clock";
+import { RoutinesCleared } from "./RoutinesCleared";
 import { SourceContext } from "./SourceContext";
-import { useTaskSummary, useArchiveAction } from "../tasks/useTaskArchive";
-import { useProductInboxSnapshot } from "../../product-inbox";
+import {
+  useArchiveAction,
+  useTaskSummariesState,
+  useTaskSummary,
+} from "../tasks/useTaskArchive";
+import { useProductInboxGroupId } from "../../product-inbox";
 import { TaskArchiveMenu } from "@comma/ui/components/task-workspace/TaskArchiveMenu";
 import type {
   RecommendationAction,
@@ -13,21 +18,15 @@ import type {
   RecommendationQuoteLine,
   RecommendationSource,
 } from "@comma/recommendation-contract";
-import {
-  recommendationGeneratedCardSchema,
-  recommendationLimits,
-} from "@comma/recommendation-contract";
+import { recommendationGeneratedCardSchema } from "@comma/recommendation-contract";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import {
   CircleMinusOutlineIcon,
-  DragHandleIcon,
   LoadingCircleIcon,
   PinIcon,
   ReloadIcon,
-  SettingsSliderThreeIcon,
 } from "@comma/ui/components/icons";
-import { Dropdown } from "@comma/ui/components/dropdown";
 import {
   GithubProviderLogo,
   GoogleDriveProviderLogo,
@@ -41,14 +40,10 @@ import {
   motionDuration,
   motionEasing,
   motionScale,
-  spacing,
 } from "@comma/ui/tokens";
 import {
   LinkContextMenu,
   type LinkContextMenuAction,
-  Menu,
-  MenuItem,
-  MenuPopover,
   useTextEditContextMenuState,
 } from "@comma/ui/components/menu";
 import { MarkdownStream } from "@comma/ui/components/markdown-stream";
@@ -57,7 +52,6 @@ import { copyWithFeedback, toast } from "@comma/ui/components/toast";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import {
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
   type RefObject,
@@ -71,16 +65,8 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Button as AriaButton,
-  Dialog as AriaDialog,
-  DialogTrigger,
-  type DragAndDropHooks,
-  GridList,
-  GridListItem,
-  useDragAndDrop,
-} from "react-aria-components";
-import { useCall, useTopic } from "@comma/core-client";
+import { Button as AriaButton } from "react-aria-components";
+import { type TaskSummary, useCall, useTopic } from "@comma/core-client";
 import {
   nativePlatformClipboard,
   openNativePlatformExternalUrl,
@@ -88,12 +74,6 @@ import {
 import { ShellIconButtonControl } from "../ShellIconButton";
 import { useHeldWhileDisabled } from "../useHeldWhileDisabled";
 import { showOutOfCreditsToast } from "../billing/outOfCredits";
-import {
-  boundPointerReorderTranslation,
-  cancelFlipAnimations,
-  pointerReorderOverdragCap,
-  sameStringOrder,
-} from "../pointerReorder";
 import { compileTrustedInlineDocument } from "../inline-elements/compileTrustedInlineDocument";
 import {
   describeLinkDestination,
@@ -157,147 +137,6 @@ type RecommendationRailProps = {
   onUsePrompt: (prompt: RecommendationComposerPrompt) => void;
   workspaceId: string;
 };
-
-type RoutineCardPreferences = {
-  hiddenIds: ReadonlySet<string>;
-  order: readonly string[];
-  snapshotKey: string;
-};
-
-type RoutineDropPosition = "after" | "before";
-
-/**
- * The autoscroll speed a routine drag asks for at its pointer, in px/ms: up to
- * `spacing.md` a frame at 60Hz near an edge, once the drag has passed its
- * threshold.
- */
-function routineScrollSpeed(drag: RoutinePointerDrag) {
-  const viewport = drag.scrollViewport;
-  const moved = Math.abs(drag.currentClientY - drag.startClientY) >= spacing.xs;
-  if (!viewport || !(drag.active || moved)) return 0;
-  const bounds = viewport.getBoundingClientRect();
-  const edge = spacing["3xl"];
-  const maxStep = spacing.md;
-  const distanceFromTop = drag.currentClientY - bounds.top;
-  const distanceFromBottom = bounds.bottom - drag.currentClientY;
-  const step =
-    distanceFromTop < edge
-      ? -Math.ceil(maxStep * Math.min(1, (edge - distanceFromTop) / edge))
-      : distanceFromBottom < edge
-        ? Math.ceil(maxStep * Math.min(1, (edge - distanceFromBottom) / edge))
-        : 0;
-  return (step * 60) / 1000;
-}
-
-/** Where a routine drag's autoscroll has taken its viewport by `time`. */
-function routineScrollTop(drag: RoutinePointerDrag, time: number) {
-  const viewport = drag.scrollViewport;
-  if (!viewport) return 0;
-  const scroll = drag.scroll;
-  if (!scroll) return viewport.scrollTop;
-  return Math.max(
-    0,
-    Math.min(
-      viewport.scrollHeight - viewport.clientHeight,
-      scroll.scrollTop + scroll.speed * (time - scroll.time)
-    )
-  );
-}
-
-type RoutinePointerDrag = {
-  active: boolean;
-  captureTarget: HTMLElement;
-  currentClientY: number;
-  draggedId: string;
-  initialOrder: readonly string[];
-  initialTops: ReadonlyMap<string, number>;
-  pointerId: number;
-  rowHeight: number;
-  /**
-   * Autoscroll since its speed last changed: where it was then, when, and at
-   * what speed (px/ms). A frame scrolls to where that puts it now, the same
-   * at any frame rate.
-   */
-  scroll: { scrollTop: number; speed: number; time: number } | null;
-  scrollViewport: HTMLElement | null;
-  sourceIndex: number;
-  startClientY: number;
-  startRowTop: number;
-  startScrollTop: number;
-  targetIndex: number;
-};
-
-const emptyRoutineCardIds: ReadonlySet<string> = new Set<string>();
-const routineCardDragType = "application/x-comma-routine-card-id";
-
-function setRoutineDragCursor(active: boolean) {
-  if (typeof document === "undefined") return;
-  if (active) {
-    document.documentElement.setAttribute("data-comma-routine-dragging", "true");
-  } else {
-    document.documentElement.removeAttribute("data-comma-routine-dragging");
-  }
-}
-
-function withoutNativePointerDrag<T>(hooks: DragAndDropHooks<T>): DragAndDropHooks<T> {
-  const useDraggableItem = hooks.useDraggableItem;
-  if (!useDraggableItem) return hooks;
-
-  return {
-    ...hooks,
-    useDraggableItem(props, state) {
-      const result = useDraggableItem(props, state);
-      return {
-        ...result,
-        dragProps: {
-          ...result.dragProps,
-          draggable: false,
-          onDrag: undefined,
-          onDragEnd: undefined,
-          onDragStart: undefined,
-        },
-      };
-    },
-  };
-}
-
-export function reconcileRoutineCardOrder(
-  currentOrder: readonly string[],
-  currentCardIds: readonly string[]
-) {
-  const currentCardIdSet = new Set(currentCardIds);
-  const retained = currentOrder.filter((id) => currentCardIdSet.has(id));
-  const retainedSet = new Set(retained);
-  return [...retained, ...currentCardIds.filter((id) => !retainedSet.has(id))];
-}
-
-export function reorderRoutineCardIds(
-  currentOrder: readonly string[],
-  draggedIds: Iterable<string>,
-  targetId: string,
-  dropPosition: RoutineDropPosition
-) {
-  const draggedIdSet = new Set(draggedIds);
-  if (draggedIdSet.size === 0 || draggedIdSet.has(targetId)) return currentOrder;
-
-  const dragged = currentOrder.filter((id) => draggedIdSet.has(id));
-  const remaining = currentOrder.filter((id) => !draggedIdSet.has(id));
-  const targetIndex = remaining.indexOf(targetId);
-  if (dragged.length === 0 || targetIndex === -1) return currentOrder;
-
-  const insertionIndex = targetIndex + (dropPosition === "after" ? 1 : 0);
-  return [
-    ...remaining.slice(0, insertionIndex),
-    ...dragged,
-    ...remaining.slice(insertionIndex),
-  ];
-}
-
-/** Asymptotic ceiling for dragging past the row band, in px. */
-export const routineDragOverdragCap = pointerReorderOverdragCap;
-
-/** Rubber-band bounded translation; shared with the icon rail's reorder. */
-export const boundRoutineDragTranslation = boundPointerReorderTranslation;
 
 // Why the rail has no briefing to show: the projection could not be read, a
 // manual refresh was refused by the hourly budget, or the server reports that
@@ -404,7 +243,10 @@ export const RecommendationRail = memo(function RecommendationRail({
     ) {
       if (creditNoticeWorkspaceRef.current !== workspaceId) {
         creditNoticeWorkspaceRef.current = workspaceId;
-        showOutOfCreditsToast(locale);
+        showOutOfCreditsToast(locale, undefined, {
+          title: messagesRef.current.recommendations_out_of_credits_title(),
+          description: messagesRef.current.recommendations_out_of_credits_detail(),
+        });
       }
     } else {
       creditNoticeWorkspaceRef.current = null;
@@ -423,89 +265,59 @@ export const RecommendationRail = memo(function RecommendationRail({
       }) ?? [],
     [snapshotCards]
   );
-  const renderableCardIds = useMemo(
-    () => renderableCards.map((card) => card.id),
+  // The rows the rail shows: what the status line counts. A row that stands
+  // for a Task is gone once the Task ends, as the card hides it.
+  const taskGroup = useProductInboxGroupId(workspaceId);
+  const linkedTaskIds = useMemo(
+    () =>
+      renderableCards.flatMap((card) =>
+        card.template === "text-list@1"
+          ? card.items.flatMap((item) => linkedRowTask(item)?.conversationId ?? [])
+          : []
+      ),
     [renderableCards]
   );
-  const [cardPreferences, setCardPreferences] = useState<RoutineCardPreferences>(
-    () => ({ hiddenIds: emptyRoutineCardIds, order: [], snapshotKey: "" })
+  const { summaries: taskSummaries, settled: tasksSettled } = useTaskSummariesState(
+    taskGroup,
+    linkedTaskIds
+  );
+  const rowCount = useMemo(
+    () =>
+      renderableCards.reduce(
+        (count, card) =>
+          count +
+          (card.template === "text-list@1"
+            ? card.items.filter((item) => {
+                const task = linkedRowTask(item);
+                return !task || isTaskRowShown(taskSummaries.get(task.conversationId));
+              }).length
+            : card.items.length),
+        0
+      ),
+    [renderableCards, taskSummaries]
   );
 
-  useEffect(() => {
-    if (!snapshotKey) return;
-    setCardPreferences((current) => {
-      if (current.snapshotKey !== snapshotKey) {
-        return {
-          hiddenIds: new Set<string>(),
-          order: renderableCardIds,
-          snapshotKey,
-        };
-      }
-
-      const order = reconcileRoutineCardOrder(current.order, renderableCardIds);
-      const currentCardIdSet = new Set(renderableCardIds);
-      const hiddenIds = new Set(
-        [...current.hiddenIds].filter((id) => currentCardIdSet.has(id))
-      );
-      if (
-        sameStringOrder(order, current.order) &&
-        hiddenIds.size === current.hiddenIds.size
-      ) {
-        return current;
-      }
-      return { hiddenIds, order, snapshotKey };
-    });
-  }, [renderableCardIds, snapshotKey]);
-
-  const preferencesMatchSnapshot = cardPreferences.snapshotKey === snapshotKey;
-  const effectiveCardOrder = preferencesMatchSnapshot
-    ? reconcileRoutineCardOrder(cardPreferences.order, renderableCardIds)
-    : renderableCardIds;
-  const effectiveHiddenCardIds = preferencesMatchSnapshot
-    ? cardPreferences.hiddenIds
-    : emptyRoutineCardIds;
-  const orderedCards = useMemo(() => {
-    const cardsById = new Map(renderableCards.map((card) => [card.id, card]));
-    return effectiveCardOrder.flatMap((id) => {
-      const card = cardsById.get(id);
-      return card ? [card] : [];
-    });
-  }, [effectiveCardOrder, renderableCards]);
-
-  const setCardVisibility = useCallback(
-    (cardId: string, visible: boolean) => {
-      if (!snapshotKey) return;
-      setCardPreferences((current) => {
-        const matchesSnapshot = current.snapshotKey === snapshotKey;
-        const hiddenIds = new Set(matchesSnapshot ? current.hiddenIds : []);
-        if (visible) hiddenIds.delete(cardId);
-        else hiddenIds.add(cardId);
-        return {
-          hiddenIds,
-          order: matchesSnapshot
-            ? reconcileRoutineCardOrder(current.order, renderableCardIds)
-            : renderableCardIds,
-          snapshotKey,
-        };
-      });
-    },
-    [renderableCardIds, snapshotKey]
-  );
-
-  const setCardOrder = useCallback(
-    (nextOrder: readonly string[]) => {
-      if (!snapshotKey) return;
-      setCardPreferences((current) => {
-        const matchesSnapshot = current.snapshotKey === snapshotKey;
-        return {
-          hiddenIds: matchesSnapshot ? current.hiddenIds : new Set<string>(),
-          order: reconcileRoutineCardOrder(nextOrder, renderableCardIds),
-          snapshotKey,
-        };
-      });
-    },
-    [renderableCardIds, snapshotKey]
-  );
+  // A briefing with no row left to show is cleared. The member who clears the
+  // last row of the briefing on screen sees it celebrated once; a briefing that
+  // is read already cleared, or published without a card, is not. Rows that
+  // stand for Tasks count once the core has settled what it knows of them: a
+  // Task the server left out is gone, one still being read is not.
+  const shownRows = envelope?.snapshot && tasksSettled ? rowCount : undefined;
+  const cleared = shownRows === 0;
+  const seenCardsRef = useRef<{ count: number; snapshotKey: string }>(undefined);
+  const [celebratedKey, setCelebratedKey] = useState<string>();
+  useLayoutEffect(() => {
+    const seen = seenCardsRef.current;
+    seenCardsRef.current =
+      snapshotKey !== undefined && shownRows !== undefined
+        ? { count: shownRows, snapshotKey }
+        : undefined;
+    if (seen && seen.snapshotKey === snapshotKey && seen.count > 0 && shownRows === 0)
+      setCelebratedKey(snapshotKey);
+    // Another briefing (or workspace) on screen ends the celebration, so
+    // coming back to the cleared one does not throw the confetti again.
+    else if (seen?.snapshotKey !== snapshotKey) setCelebratedKey(undefined);
+  }, [shownRows, snapshotKey]);
 
   // Each new briefing (another generation) is announced once.
   const shownGeneration = envelope?.snapshot?.generation ?? null;
@@ -678,19 +490,25 @@ export const RecommendationRail = memo(function RecommendationRail({
         }).format(generatedAt)
       : undefined;
 
+  // Over a briefing the heading says what is left to do; with none to show
+  // it names the rail.
   const routinesToolbar = (
     <RoutinesToolbar
-      cards={orderedCards}
-      hiddenCardIds={effectiveHiddenCardIds}
       // An unreadable projection lists no sources; refresh is the way back.
       isRefreshDisabled={isRefreshing || (!canRefresh && failure !== "unavailable")}
       // Only a briefing on screen swaps its skeleton for the spinner; with no
       // briefing yet the rail keeps its loading and generating states.
       isRefreshing={isRefreshing && Boolean(envelope?.snapshot)}
       onRefresh={() => void refresh()}
-      onOrderChange={setCardOrder}
-      onVisibilityChange={setCardVisibility}
-      sources={envelope?.settings.sources ?? []}
+      status={
+        !envelope?.snapshot
+          ? messages.recommendations_title()
+          : cleared
+            ? messages.recommendations_status_cleared()
+            : shownRows !== undefined && shownRows > 0
+              ? messages.recommendations_status_count({ count: shownRows })
+              : messages.recommendations_title()
+      }
     />
   );
 
@@ -712,23 +530,28 @@ export const RecommendationRail = memo(function RecommendationRail({
         {envelope?.snapshot || initialLoading ? (
           <ScrollArea
             className="comma-recommendations-scroll"
-            contentClassName="comma-recommendations-content"
+            // Cleared, the content fills the rail: its copy sits in the middle
+            // of what the cards left, and the burst has the whole rail.
+            contentClassName={
+              cleared && !initialLoading
+                ? "comma-recommendations-content comma-recommendations-content-cleared"
+                : "comma-recommendations-content"
+            }
             edgeEffect="mask"
             orientation="vertical"
             scrollbarVisibility="scroll"
           >
             {reconnectNotice}
-            <RecommendationSummary
-              fallbackTitle={messages.recommendations_fallback_title()}
-              greetingName={greetingName}
-              onAction={performAction}
-              onOpenTask={onOpenTask}
-              onOpenUrl={onOpenUrl}
-              parts={envelope?.snapshot?.summary ?? []}
-              pending={initialLoading}
-              sources={envelope?.settings.sources ?? []}
-            />
-            {routinesToolbar}
+            <div className="comma-recommendations-header">
+              {/* The greeting is the client's, not the briefing's: it is there
+                  before the first read answers. */}
+              <h1 className="comma-recommendations-greeting">
+                {greetingName
+                  ? briefingGreeting(messages, greetingName)
+                  : messages.recommendations_fallback_title()}
+              </h1>
+              {routinesToolbar}
+            </div>
             {staleSince ? (
               <p
                 className="comma-recommendations-stale"
@@ -744,20 +567,20 @@ export const RecommendationRail = memo(function RecommendationRail({
                 groups={cardSkeletonLines}
                 testId="recommendations-loading"
               />
+            ) : cleared ? (
+              <RoutinesCleared celebrate={celebratedKey === snapshotKey} />
             ) : (
-              orderedCards
-                .filter((card) => !effectiveHiddenCardIds.has(card.id))
-                .map((card) => (
-                  <RecommendationGeneratedCardView
-                    card={card}
-                    key={card.id}
-                    onAction={(action) => performAction(action, card)}
-                    onDismiss={dismiss}
-                    onOpenTask={onOpenTask}
-                    onOpenUrl={onOpenUrl}
-                    sources={envelope?.settings.sources ?? []}
-                  />
-                ))
+              renderableCards.map((card) => (
+                <RecommendationGeneratedCardView
+                  card={card}
+                  key={card.id}
+                  onAction={(action) => performAction(action, card)}
+                  onDismiss={dismiss}
+                  onOpenTask={onOpenTask}
+                  onOpenUrl={onOpenUrl}
+                  sources={envelope?.settings.sources ?? []}
+                />
+              ))
             )}
           </ScrollArea>
         ) : (
@@ -877,9 +700,8 @@ function RecommendationsEmptyState({
   );
 }
 
-// Line widths for the briefing's placeholder: one group for the summary body,
-// and one per card (its title, then its rows).
-const summarySkeletonLines = [["w-full", "w-5/6", "w-2/3"]] as const;
+// Line widths for the briefing's placeholder: one group per card (its title,
+// then its rows).
 const cardSkeletonLines = [
   ["w-1/3", "w-5/6", "w-3/4", "w-2/5"],
   ["w-1/4", "w-2/3", "w-5/6"],
@@ -914,540 +736,41 @@ function RecommendationsSkeleton({
   );
 }
 
+// The rail's heading row: what the Routines hold now, and the refresh that
+// asks for a new briefing, on one line.
 function RoutinesToolbar({
-  cards,
-  hiddenCardIds,
   isRefreshDisabled,
   isRefreshing,
   onRefresh,
-  onOrderChange,
-  onVisibilityChange,
-  sources,
+  status,
 }: {
-  cards: readonly RecommendationGeneratedCard[];
-  hiddenCardIds: ReadonlySet<string>;
   isRefreshDisabled: boolean;
   /** The refresh control turns into a spinner instead of the briefing turning into a skeleton. */
   isRefreshing: boolean;
   onRefresh: () => void;
-  onOrderChange: (orderedIds: readonly string[]) => void;
-  onVisibilityChange: (cardId: string, visible: boolean) => void;
-  sources: readonly RecommendationSource[];
+  /** The heading: the rail's name, or how many cards are left to handle. */
+  status: string;
 }) {
   const messages = useCommaMessages();
-  const [isOpen, setIsOpen] = useState(false);
-  const cardsRef = useRef(cards);
-  cardsRef.current = cards;
-  const hasRoutineCards = cards.length > 0;
-  const routineScrollViewportRef = useRef<HTMLDivElement>(null);
-  const routineListRef = useRef<HTMLDivElement>(null);
-  const routineRowRefs = useRef(new Map<string, HTMLElement>());
-  const previousRoutineRowTops = useRef(new Map<string, number>());
-  const pendingRoutineLayoutAnimation = useRef(false);
-  const routinePointerDrag = useRef<RoutinePointerDrag | null>(null);
-  const routinePointerFrame = useRef<(() => void) | null>(null);
-  const visibilityItems = useMemo(
-    () => [
-      { id: "show", label: messages.recommendations_card_show() },
-      { id: "hidden", label: messages.recommendations_card_hidden() },
-    ],
-    [messages]
-  );
-  const registerRoutineRow = useCallback(
-    (cardId: string, element: HTMLElement | null) => {
-      if (element) routineRowRefs.current.set(cardId, element);
-      else routineRowRefs.current.delete(cardId);
-    },
-    []
-  );
-  const measureRoutineRowTops = useCallback(() => {
-    const tops = new Map<string, number>();
-    routineRowRefs.current.forEach((element, cardId) => {
-      if (element.isConnected) {
-        tops.set(cardId, element.getBoundingClientRect().top);
-      }
-    });
-    return tops;
-  }, []);
-  const animateRoutineRowsFromTops = useCallback(
-    (previousTops: ReadonlyMap<string, number>) => {
-      const nextTops = measureRoutineRowTops();
-      previousRoutineRowTops.current = nextTops;
-      pendingRoutineLayoutAnimation.current = false;
-      if (isReducedMotionEnabled()) return;
-
-      for (const card of cardsRef.current) {
-        const before = previousTops.get(card.id);
-        const after = nextTops.get(card.id);
-        if (before === undefined || after === undefined || before === after) continue;
-        const row = routineRowRefs.current.get(card.id);
-        if (row) cancelFlipAnimations(row);
-        row?.animate(
-          [
-            { transform: `translateY(${before - after}px)` },
-            { transform: "translateY(0)" },
-          ],
-          {
-            // Travel back into the slot; matches the row's lift-fade transition
-            // so the drop reads as one settle.
-            duration: motionDuration.spatialMove,
-            easing: motionEasing.surfaceSmoothOut,
-          }
-        );
-      }
-    },
-    [measureRoutineRowTops]
-  );
-  useLayoutEffect(() => {
-    const list = routineListRef.current;
-    if (!list) return;
-
-    const observer = new MutationObserver(() => {
-      if (!pendingRoutineLayoutAnimation.current) return;
-      animateRoutineRowsFromTops(previousRoutineRowTops.current);
-    });
-    observer.observe(list, { childList: true });
-    return () => observer.disconnect();
-  }, [animateRoutineRowsFromTops, hasRoutineCards, isOpen]);
-  const clearRoutinePointerTransforms = useCallback(() => {
-    routineListRef.current?.style.removeProperty("--comma-routines-drag-shift");
-    routineRowRefs.current.forEach((row) => {
-      row.removeAttribute("data-pointer-dragging");
-      row.removeAttribute("data-routine-drag-shift");
-      row.style.removeProperty("transform");
-    });
-  }, []);
-  const updateRoutinePointerDrag = useCallback((clientY: number) => {
-    const drag = routinePointerDrag.current;
-    if (!drag) return;
-    drag.currentClientY = clientY;
-
-    let pointerDeltaY = clientY - drag.startClientY;
-    if (!drag.active) {
-      if (Math.abs(pointerDeltaY) < spacing.xs) return;
-      drag.active = true;
-      // Consume the activation threshold so the row starts from rest under the
-      // pointer instead of jumping by the accumulated slack.
-      const consumedThreshold = Math.sign(pointerDeltaY) * spacing.xs;
-      drag.startClientY += consumedThreshold;
-      pointerDeltaY -= consumedThreshold;
-      routineListRef.current?.style.setProperty(
-        "--comma-routines-drag-shift",
-        `${drag.rowHeight}px`
-      );
-      setRoutineDragCursor(true);
-    }
-    const scrollDelta =
-      (drag.scrollViewport?.scrollTop ?? drag.startScrollTop) - drag.startScrollTop;
-    const translatedY = boundRoutineDragTranslation(
-      pointerDeltaY + scrollDelta,
-      drag.initialTops,
-      drag.startRowTop
-    );
-    const draggedCenter = drag.startRowTop + pointerDeltaY + drag.rowHeight / 2;
-    const remainingOrder = drag.initialOrder.filter((id) => id !== drag.draggedId);
-    const targetIndex = remainingOrder.reduce((index, id) => {
-      const top = drag.initialTops.get(id);
-      return top !== undefined && draggedCenter > top - scrollDelta + drag.rowHeight / 2
-        ? index + 1
-        : index;
-    }, 0);
-    drag.targetIndex = targetIndex;
-
-    routineRowRefs.current.forEach((row, cardId) => {
-      if (cardId === drag.draggedId) {
-        row.setAttribute("data-pointer-dragging", "true");
-        row.style.transform = `translate3d(0, ${translatedY}px, 0)`;
-        return;
-      }
-
-      const index = drag.initialOrder.indexOf(cardId);
-      const shiftsUp =
-        targetIndex > drag.sourceIndex &&
-        index > drag.sourceIndex &&
-        index <= targetIndex;
-      const shiftsDown =
-        targetIndex < drag.sourceIndex &&
-        index >= targetIndex &&
-        index < drag.sourceIndex;
-      if (shiftsUp) row.setAttribute("data-routine-drag-shift", "up");
-      else if (shiftsDown) row.setAttribute("data-routine-drag-shift", "down");
-      // "none" keeps the shift transition armed: dropping the attribute would
-      // fall back to the base rule, which has no transform transition, and the
-      // row would snap home instead of gliding when the drag reverses.
-      else row.setAttribute("data-routine-drag-shift", "none");
-    });
-  }, []);
-  const queueRoutinePointerDrag = useCallback(
-    (clientY: number) => {
-      const drag = routinePointerDrag.current;
-      if (!drag) return;
-      drag.currentClientY = clientY;
-      // The autoscroll starts again from here, at the speed this pointer asks.
-      const movedAt = uiClock.monotonic();
-      drag.scroll = {
-        scrollTop: routineScrollTop(drag, movedAt),
-        speed: routineScrollSpeed(drag),
-        time: movedAt,
-      };
-      if (routinePointerFrame.current !== null) return;
-
-      const runFrame = (now: number) => {
-        const current = routinePointerDrag.current;
-        if (!current) {
-          routinePointerFrame.current = null;
-          return;
-        }
-
-        updateRoutinePointerDrag(current.currentClientY);
-        const viewport = current.scrollViewport;
-        let didScroll = false;
-        if (
-          current.active &&
-          viewport &&
-          current.scroll &&
-          current.scroll.speed !== 0
-        ) {
-          const before = viewport.scrollTop;
-          viewport.scrollTop = routineScrollTop(current, now);
-          didScroll = viewport.scrollTop !== before;
-          if (didScroll) updateRoutinePointerDrag(current.currentClientY);
-        }
-
-        routinePointerFrame.current = didScroll ? uiClock.frame(runFrame) : null;
-      };
-
-      routinePointerFrame.current = uiClock.frame(runFrame);
-    },
-    [updateRoutinePointerDrag]
-  );
-  const finishRoutinePointerDrag = useCallback(
-    (commit: boolean) => {
-      const drag = routinePointerDrag.current;
-      if (!drag) return;
-      if (routinePointerFrame.current !== null) {
-        routinePointerFrame.current();
-        routinePointerFrame.current = null;
-        updateRoutinePointerDrag(drag.currentClientY);
-      }
-      routinePointerDrag.current = null;
-      if (drag.captureTarget.hasPointerCapture(drag.pointerId)) {
-        drag.captureTarget.releasePointerCapture(drag.pointerId);
-      }
-
-      if (!drag.active) {
-        clearRoutinePointerTransforms();
-        setRoutineDragCursor(false);
-        return;
-      }
-
-      const visualTops = measureRoutineRowTops();
-      routineRowRefs.current.forEach((row) => {
-        cancelFlipAnimations(row);
-      });
-      const remainingOrder = drag.initialOrder.filter((id) => id !== drag.draggedId);
-      const nextOrder = [...remainingOrder];
-      nextOrder.splice(drag.targetIndex, 0, drag.draggedId);
-      clearRoutinePointerTransforms();
-      setRoutineDragCursor(false);
-      const settlingRow = routineRowRefs.current.get(drag.draggedId);
-      if (settlingRow) {
-        // The card is still opaque while its lift fades; keep it above the
-        // rows it may cross during the settle travel.
-        settlingRow.setAttribute("data-routine-drag-settling", "true");
-        uiClock.after(motionDuration.spatialMove, () => {
-          settlingRow.removeAttribute("data-routine-drag-settling");
-        });
-      }
-
-      if (commit && !sameStringOrder(nextOrder, drag.initialOrder)) {
-        previousRoutineRowTops.current = visualTops;
-        pendingRoutineLayoutAnimation.current = true;
-        onOrderChange(nextOrder);
-      } else {
-        animateRoutineRowsFromTops(visualTops);
-      }
-    },
-    [
-      animateRoutineRowsFromTops,
-      clearRoutinePointerTransforms,
-      measureRoutineRowTops,
-      onOrderChange,
-      updateRoutinePointerDrag,
-    ]
-  );
-  const startRoutinePointerDrag = useCallback(
-    (cardId: string, event: ReactPointerEvent<HTMLSpanElement>) => {
-      if (!event.isPrimary || event.button !== 0 || routinePointerDrag.current) return;
-      const row = routineRowRefs.current.get(cardId);
-      if (!row) return;
-
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      routineRowRefs.current.forEach((routineRow) => {
-        cancelFlipAnimations(routineRow);
-      });
-      const initialOrder = cardsRef.current.map((card) => card.id);
-      const initialTops = measureRoutineRowTops();
-      const rowBounds = row.getBoundingClientRect();
-      const scrollViewport = routineScrollViewportRef.current;
-      routinePointerDrag.current = {
-        active: false,
-        captureTarget: event.currentTarget,
-        currentClientY: event.clientY,
-        draggedId: cardId,
-        initialOrder,
-        initialTops,
-        pointerId: event.pointerId,
-        rowHeight: rowBounds.height,
-        scroll: null,
-        scrollViewport,
-        sourceIndex: initialOrder.indexOf(cardId),
-        startClientY: event.clientY,
-        startRowTop: rowBounds.top,
-        startScrollTop: scrollViewport?.scrollTop ?? 0,
-        targetIndex: initialOrder.indexOf(cardId),
-      };
-    },
-    [measureRoutineRowTops]
-  );
-  useEffect(() => {
-    const cancelFromKeyboard = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && routinePointerDrag.current) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        finishRoutinePointerDrag(false);
-      }
-    };
-    document.addEventListener("keydown", cancelFromKeyboard, true);
-    return () => document.removeEventListener("keydown", cancelFromKeyboard, true);
-  }, [finishRoutinePointerDrag]);
-  useEffect(() => {
-    const drag = routinePointerDrag.current;
-    if (
-      drag &&
-      (!isOpen ||
-        !sameStringOrder(
-          drag.initialOrder,
-          cards.map((card) => card.id)
-        ))
-    ) {
-      finishRoutinePointerDrag(false);
-    }
-  }, [cards, finishRoutinePointerDrag, isOpen]);
-  useEffect(
-    () => () => {
-      if (routinePointerFrame.current !== null) {
-        routinePointerFrame.current();
-        routinePointerFrame.current = null;
-      }
-      routinePointerDrag.current = null;
-      clearRoutinePointerTransforms();
-      setRoutineDragCursor(false);
-    },
-    [clearRoutinePointerTransforms]
-  );
-  const { dragAndDropHooks } = useDragAndDrop<RecommendationGeneratedCard>({
-    getAllowedDropOperations: () => ["move"],
-    getItems: (_keys, items) =>
-      items.map((item) => ({
-        [routineCardDragType]: item.id,
-        "text/plain": recommendationCardDisplayTitle(item, sources),
-      })),
-    onDragEnd: () => setRoutineDragCursor(false),
-    onDragStart: () => setRoutineDragCursor(true),
-    onReorder: (event) => {
-      const position = event.target.dropPosition;
-      if (position !== "before" && position !== "after") return;
-      const currentOrder = cardsRef.current.map((card) => card.id);
-      const nextOrder = reorderRoutineCardIds(
-        currentOrder,
-        [...event.keys].map(String),
-        String(event.target.key),
-        position
-      );
-      if (sameStringOrder(nextOrder, currentOrder)) return;
-      previousRoutineRowTops.current = measureRoutineRowTops();
-      pendingRoutineLayoutAnimation.current = true;
-      onOrderChange(nextOrder);
-    },
-  });
-  const directManipulationDragAndDropHooks = useMemo(
-    () => withoutNativePointerDrag(dragAndDropHooks),
-    [dragAndDropHooks]
-  );
-
   return (
     <div className="comma-recommendations-heading">
-      <h2>{messages.recommendations_title()}</h2>
-      <div className="comma-recommendations-heading-actions">
-        <Tooltip
-          content={messages.recommendations_refresh_tooltip()}
-          placement="bottom"
-        >
-          <ShellIconButtonControl
-            aria-label={messages.common_refresh()}
-            className="comma-recommendations-refresh-control"
-            data-no-press-feedback
-            icon={
-              isRefreshing ? (
-                <LoadingCircleIcon className="comma-input-icon motion-safe:animate-spin" />
-              ) : (
-                <ReloadIcon className="comma-input-icon" />
-              )
-            }
-            isDisabled={isRefreshDisabled}
-            onPress={onRefresh}
-          />
-        </Tooltip>
-        <DialogTrigger isOpen={isOpen} onOpenChange={setIsOpen}>
-          <Tooltip
-            content={messages.recommendations_customize_tooltip()}
-            placement="bottom"
-          >
-            <ShellIconButtonControl
-              aria-label={messages.recommendations_customize()}
-              className="comma-recommendations-heading-control"
-              data-no-press-feedback
-              icon={<SettingsSliderThreeIcon className="comma-input-icon" />}
-            />
-          </Tooltip>
-          <MenuPopover
-            className="comma-routines-popover"
-            offset={spacing.md}
-            placement="right top"
-          >
-            <AriaDialog
-              aria-label={messages.recommendations_customize()}
-              className="comma-routines-panel"
-              data-has-cards={cards.length > 0 ? "true" : "false"}
-            >
-              {cards.length > 0 ? (
-                <ScrollArea
-                  className="comma-routines-card-scroll"
-                  contentClassName="comma-routines-card-scroll-content"
-                  edgeEffect="mask"
-                  orientation="vertical"
-                  ref={routineScrollViewportRef}
-                  scrollbarVisibility="scroll"
-                  viewportProps={{ tabIndex: -1 }}
-                >
-                  <GridList
-                    aria-label={messages.recommendations_customize()}
-                    className="comma-routines-card-list"
-                    dependencies={[hiddenCardIds, sources, visibilityItems]}
-                    dragAndDropHooks={directManipulationDragAndDropHooks}
-                    items={cards}
-                    keyboardNavigationBehavior="tab"
-                    ref={routineListRef}
-                    selectionMode="none"
-                  >
-                    {(card) => {
-                      const displayTitle = recommendationCardDisplayTitle(
-                        card,
-                        sources
-                      );
-                      return (
-                        <GridListItem
-                          className="comma-routines-card-row"
-                          id={card.id}
-                          ref={(element) => registerRoutineRow(card.id, element)}
-                          textValue={displayTitle}
-                        >
-                          <span
-                            className="comma-routines-card-drag-hit-area"
-                            onLostPointerCapture={(event) => {
-                              if (
-                                routinePointerDrag.current?.pointerId ===
-                                event.pointerId
-                              ) {
-                                finishRoutinePointerDrag(false);
-                              }
-                            }}
-                            onPointerCancel={(event) => {
-                              if (
-                                routinePointerDrag.current?.pointerId ===
-                                event.pointerId
-                              ) {
-                                finishRoutinePointerDrag(false);
-                              }
-                            }}
-                            onPointerDown={(event) =>
-                              startRoutinePointerDrag(card.id, event)
-                            }
-                            onPointerMove={(event) => {
-                              if (
-                                routinePointerDrag.current?.pointerId !==
-                                event.pointerId
-                              ) {
-                                return;
-                              }
-                              event.preventDefault();
-                              queueRoutinePointerDrag(event.clientY);
-                            }}
-                            onPointerUp={(event) => {
-                              if (
-                                routinePointerDrag.current?.pointerId !==
-                                event.pointerId
-                              ) {
-                                return;
-                              }
-                              event.preventDefault();
-                              routinePointerDrag.current.currentClientY = event.clientY;
-                              finishRoutinePointerDrag(true);
-                            }}
-                          >
-                            <AriaButton
-                              aria-label={messages.recommendations_card_reorder({
-                                title: displayTitle,
-                              })}
-                              className="comma-routines-card-drag-handle"
-                              slot="drag"
-                            >
-                              <DragHandleIcon aria-hidden="true" />
-                            </AriaButton>
-                          </span>
-                          <RecommendationCardLogo card={card} sources={sources} />
-                          <span className="comma-routines-card-title">
-                            {displayTitle}
-                          </span>
-                          <Dropdown
-                            ariaLabel={messages.recommendations_card_visibility({
-                              title: displayTitle,
-                            })}
-                            className="comma-routines-card-visibility"
-                            items={visibilityItems}
-                            onChange={(value) =>
-                              onVisibilityChange(card.id, value === "show")
-                            }
-                            size="xs"
-                            value={hiddenCardIds.has(card.id) ? "hidden" : "show"}
-                            width="content"
-                          />
-                        </GridListItem>
-                      );
-                    }}
-                  </GridList>
-                </ScrollArea>
-              ) : null}
-              <Menu
-                aria-label={messages.recommendations_settings()}
-                className="comma-routines-panel-actions"
-                onAction={() => setIsOpen(false)}
-                variant="embedded"
-              >
-                <MenuItem
-                  className="block"
-                  href="/#/settings?category=recommendations"
-                  id="settings"
-                >
-                  {messages.recommendations_settings()}
-                </MenuItem>
-              </Menu>
-            </AriaDialog>
-          </MenuPopover>
-        </DialogTrigger>
-      </div>
+      <h2>{status}</h2>
+      <Tooltip content={messages.recommendations_refresh_tooltip()} placement="bottom">
+        <ShellIconButtonControl
+          aria-label={messages.common_refresh()}
+          className="comma-recommendations-refresh-control"
+          data-no-press-feedback
+          icon={
+            isRefreshing ? (
+              <LoadingCircleIcon className="comma-input-icon motion-safe:animate-spin" />
+            ) : (
+              <ReloadIcon className="comma-input-icon" />
+            )
+          }
+          isDisabled={isRefreshDisabled}
+          onPress={onRefresh}
+        />
+      </Tooltip>
     </div>
   );
 }
@@ -1713,23 +1036,6 @@ function recommendationComposerText(
   return messages.recommendations_task_request({ task });
 }
 
-// A briefing summary's task link has no row action: it stands for the member's
-// task its prompt names, so it stages that prompt the way the task's row does.
-function linkTaskAction(
-  link: Extract<RecommendationDocumentPart, { kind: "inline-link" }>["link"],
-  prompt: string
-): RecommendationAction {
-  return {
-    label: link.label,
-    memberTask: true,
-    prompt,
-    requiresConfirmation: true,
-    ...(link.sourceId ? { sourceId: link.sourceId } : {}),
-    sourceUrl: link.href,
-    type: "send_to_comma",
-  };
-}
-
 // The server turns every row into a prompt, except a row that stands for an
 // existing Task (mail with a confirmed Task): that row keeps a source link
 // action and names exactly one Task. It opens the Task and leaves once the Task
@@ -1818,7 +1124,6 @@ function RecommendationTextItem({
           onOpenUrl={onOpenUrl}
           parts={item.parts}
           sources={sources}
-          variant="card"
         />
       )}
       {sourceLink?.quote ? (
@@ -2071,65 +1376,7 @@ function RecommendationLinkHoverCard({
   );
 }
 
-export function RecommendationSummary({
-  fallbackTitle,
-  greetingName,
-  heading: Heading = "h1",
-  onAction,
-  onOpenTask,
-  onOpenUrl,
-  parts,
-  pending = false,
-  sources = [],
-}: {
-  fallbackTitle: string;
-  greetingName?: string | undefined;
-  /** The greeting's level: the Home screen's title, or a lower one on a page that embeds it. */
-  heading?: "h1" | "h2";
-  /** Stages a task link's prompt; without it, a task link opens its source. */
-  onAction?: ((action: RecommendationAction) => void) | undefined;
-  onOpenTask: (conversationId: string) => void;
-  onOpenUrl: (url: string) => void;
-  parts: readonly RecommendationDocumentPart[];
-  /** A refresh is regenerating the body; the greeting stays, it is not model output. */
-  pending?: boolean;
-  sources?: readonly RecommendationSource[];
-}) {
-  const messages = useCommaMessages();
-  const split = splitRecommendationSummary(parts, fallbackTitle);
-  const body = split.body;
-  // The briefing heading is a fixed greeting, not model output. The split still
-  // runs so an authored title line is stripped from the body instead of being
-  // rendered twice; only isolated surfaces without a signed-in name (stories,
-  // tests) fall back to what the model wrote.
-  const title = greetingName ? briefingGreeting(messages, greetingName) : split.title;
-
-  return (
-    <section className="comma-recommendations-summary">
-      <Heading className="comma-recommendations-summary-title">{title}</Heading>
-      {pending ? (
-        <RecommendationsSkeleton groups={summarySkeletonLines} />
-      ) : body.length > 0 ? (
-        <RecommendationDocument
-          className="comma-recommendations-summary-body"
-          onAction={onAction}
-          onOpenTask={onOpenTask}
-          onOpenUrl={onOpenUrl}
-          parts={body}
-          sources={sources}
-          variant="summary"
-        />
-      ) : null}
-    </section>
-  );
-}
-
-/**
- * The briefing heading, always "<time-of-day greeting>, <name>". Rendering the
- * model's own opener here made the heading drift ("Here's your clearest path
- * through today"); the greeting is chrome, so the client owns it and the
- * model's prose stays in the body.
- */
+/** The rail's heading, always "<time-of-day greeting>, <name>". */
 export function briefingGreeting(
   messages: ReturnType<typeof useCommaMessages>,
   name: string,
@@ -2141,38 +1388,6 @@ export function briefingGreeting(
   return messages.recommendations_greeting_evening({ name });
 }
 
-function splitRecommendationSummary(
-  parts: readonly RecommendationDocumentPart[],
-  fallbackTitle: string
-): { body: readonly RecommendationDocumentPart[]; title: string } {
-  const first = parts[0];
-  if (first?.kind !== "markdown") return { body: parts, title: fallbackTitle };
-
-  const separator = /\r?\n\s*\r?\n/.exec(first.text);
-  const candidate = (
-    separator ? first.text.slice(0, separator.index) : first.text
-  ).trim();
-  const validTitle =
-    candidate.length > 0 &&
-    candidate.length <= recommendationLimits.summaryTitleCharacters &&
-    !candidate.includes("\n") &&
-    !candidate.includes("\r");
-
-  const remainder = separator
-    ? first.text.slice(separator.index + separator[0].length)
-    : undefined;
-  const hasBody = Boolean(remainder?.trim()) || parts.length > 1;
-  // A title with its paragraph break and nothing after it is a briefing whose
-  // prose the server left out, after a row was dismissed or handled.
-  if (validTitle && separator && !hasBody) return { body: [], title: candidate };
-  if (!validTitle || !hasBody) return { body: parts, title: fallbackTitle };
-
-  const body = remainder?.trim()
-    ? [{ kind: "markdown" as const, text: remainder }, ...parts.slice(1)]
-    : parts.slice(1);
-  return { body, title: candidate };
-}
-
 export function RecommendationDocument({
   className,
   onAction,
@@ -2181,7 +1396,6 @@ export function RecommendationDocument({
   onOpenUrl,
   parts,
   sources = [],
-  variant = "card",
 }: {
   className?: string;
   onAction?: ((action: RecommendationAction) => void) | undefined;
@@ -2191,7 +1405,6 @@ export function RecommendationDocument({
   onOpenUrl: (url: string) => void;
   parts: readonly RecommendationDocumentPart[];
   sources?: readonly RecommendationSource[];
-  variant?: "card" | "summary";
 }) {
   const compiled = useMemo(
     () =>
@@ -2208,14 +1421,10 @@ export function RecommendationDocument({
               >
                 <button
                   className="comma-recommendation-inline comma-recommendation-inline-link comma-recommendation-inline-source"
-                  data-variant={variant}
                   data-source-detail={part.link.quote ? "true" : undefined}
                   onClick={() =>
-                    part.link.taskPrompt && onAction
-                      ? onAction(
-                          fallbackAction ??
-                            linkTaskAction(part.link, part.link.taskPrompt)
-                        )
+                    part.link.taskPrompt && onAction && fallbackAction
+                      ? onAction(fallbackAction)
                       : onOpenUrl(part.link.href)
                   }
                   type="button"
@@ -2238,7 +1447,6 @@ export function RecommendationDocument({
               <VisibleRecommendationTask id={part.task.conversationId}>
                 <button
                   className={`comma-recommendation-inline${sourceClassName}`}
-                  data-variant={variant}
                   onClick={() => onOpenTask(part.task.conversationId)}
                   type="button"
                 >
@@ -2251,7 +1459,7 @@ export function RecommendationDocument({
           return null;
         },
       }),
-    [fallbackAction, onAction, onOpenTask, onOpenUrl, parts, sources, variant]
+    [fallbackAction, onAction, onOpenTask, onOpenUrl, parts, sources]
   );
 
   return (
@@ -2271,32 +1479,26 @@ function normalizeRecommendationIntegrationName(value: string | undefined) {
   return normalizeProviderBrandName(value);
 }
 
+const builtInRecommendationSources: Readonly<Record<string, RecommendationSource>> = {
+  stillfail: {
+    appId: "stillfail",
+    appName: "Monoid",
+    connectionId: "stillfail",
+    enabled: true,
+    kind: "im_connect",
+    label: "Monoid",
+  },
+};
+
 function resolveRecommendationSource(
   sources: readonly RecommendationSource[],
   sourceId: string | undefined
 ) {
   if (!sourceId) return undefined;
-  return sources.find(
-    (source) => source.connectionId === sourceId || source.appId === sourceId
-  );
-}
-
-function RecommendationCardLogo({
-  card,
-  sources,
-}: {
-  card: Pick<RecommendationCard, "sourceIds">;
-  sources: readonly RecommendationSource[];
-}) {
-  const source =
-    card.sourceIds.length === 1
-      ? resolveRecommendationSource(sources, card.sourceIds[0])
-      : undefined;
-
   return (
-    <span className="comma-recommendation-card-logo" aria-hidden="true">
-      <LinkProviderIcon source={source} />
-    </span>
+    sources.find(
+      (source) => source.connectionId === sourceId || source.appId === sourceId
+    ) ?? builtInRecommendationSources[sourceId]
   );
 }
 
@@ -2360,6 +1562,14 @@ function recommendationCardDisplayTitle(
   return card.title;
 }
 
+// A row that stands for a Task shows while the Task is known and still open.
+function isTaskRowShown(summary: TaskSummary | undefined) {
+  return (
+    summary !== undefined &&
+    !["completed", "cancelled", "archived", "ready_for_review"].includes(summary.status)
+  );
+}
+
 function VisibleRecommendationTaskRow({
   id,
   children,
@@ -2368,19 +1578,9 @@ function VisibleRecommendationTaskRow({
   children: ReactNode;
 }) {
   const context = useContext(RecommendationLinkPreviewContext);
-  const projection = useProductInboxSnapshot();
-  const group =
-    projection?.workspaces?.find((workspace) => workspace.id === context?.workspaceId)
-      ?.group_id ?? "";
+  const group = useProductInboxGroupId(context?.workspaceId);
   const summary = useTaskSummary(context ? group : "", id);
-  if (
-    context &&
-    (!summary ||
-      ["completed", "cancelled", "archived", "ready_for_review"].includes(
-        summary.status
-      ))
-  )
-    return null;
+  if (context && !isTaskRowShown(summary)) return null;
   return children;
 }
 
@@ -2392,10 +1592,7 @@ function VisibleRecommendationTask({
   children: ReactNode;
 }) {
   const context = useContext(RecommendationLinkPreviewContext);
-  const projection = useProductInboxSnapshot();
-  const group =
-    projection?.workspaces?.find((workspace) => workspace.id === context?.workspaceId)
-      ?.group_id ?? "";
+  const group = useProductInboxGroupId(context?.workspaceId);
   const summary = useTaskSummary(context ? group : "", id);
   const action = useArchiveAction(context ? group : "", id);
   if (!context) return children;

@@ -117,6 +117,9 @@ defmodule SalixAgent.Tools.OAuthTest do
     :oauth_store_stub,
     :oauth_store_test_pid,
     :oauth_adapters_fn,
+    :oauth_refresher_fn,
+    :owner_alerts,
+    :owner_alerts_test_pid,
     :capability_request_store_mod,
     :capability_request_store_test_pid,
     :telegram_interaction_mod
@@ -250,6 +253,8 @@ defmodule SalixAgent.Tools.OAuthTest do
     refute Map.has_key?(home, "provider_account_name")
     refute Map.has_key?(home, "scopes")
     assert home["status"] == "reauthorization_required"
+    assert home["usable"] == false
+    assert work["usable"] == true
 
     refute out =~ "access_token\": \"tok"
   end
@@ -314,6 +319,50 @@ defmodule SalixAgent.Tools.OAuthTest do
     # A connect reading as a signed-in member labels what it reads.
     assert {:ok, %{"T" => "tok-ann-secret"}} =
              Credentials.resolve(ctx.agent_id, [credential_ref()])
+  end
+
+  defmodule OwnerAlerts do
+    @moduledoc false
+    def owner_alert(group_id, kind, ref, facts) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :owner_alerts_test_pid),
+        {:owner_alert, group_id, kind, ref, facts}
+      )
+
+      :ok
+    end
+  end
+
+  test "a refused refresh marks the connection and tells the group's owners", %{ctx: ctx} do
+    use_real_shape_adapter()
+    conn = "conn-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    :ok =
+      SalixStore.OAuth.put(conn, %{
+        "access_token" => "old",
+        "refresh_token" => "refresh",
+        "expires_at" => 1,
+        "status" => "active"
+      })
+
+    binding = owned_binding() |> Map.delete("owner") |> Map.put("connection_id", conn)
+    put_stub(Map.put(configured_stub(), :bindings, [binding]))
+
+    SystemsRuntime.put_env(:salix_agent, :oauth_refresher_fn, fn _adapter, _app, _conn ->
+      {:error, :reauthorization_required}
+    end)
+
+    SystemsRuntime.put_env(:salix_agent, :owner_alerts, OwnerAlerts)
+    SystemsRuntime.put_env(:salix_agent, :owner_alerts_test_pid, SystemsRuntime.Proc.self())
+
+    assert {:error, reason} =
+             SalixAgent.OAuthCredentials.resolve_for_call(ctx, ctx.agent_id, [credential_ref()])
+
+    assert reason =~ "reauthorization required"
+    assert {:ok, %{"status" => "reauthorization_required"}} = SalixStore.OAuth.get(conn)
+
+    assert_received {:owner_alert, "g1", "reauthorization_required", "github/ann",
+                     %{"provider" => "github", "alias" => "ann"}}
   end
 
   test "a binding without an owner stays the group's", %{ctx: ctx} do
@@ -482,7 +531,7 @@ defmodule SalixAgent.Tools.OAuthTest do
     refute content =~ "s3cr3t-value"
   end
 
-  test "a secret with fields keeps them with its request, and its card gives the form's link",
+  test "a secret with fields keeps them with its request, and its card asks for each",
        %{ctx: ctx} do
     use_secret_adapter()
     put_stub(configured_stub())
@@ -513,7 +562,15 @@ defmodule SalixAgent.Tools.OAuthTest do
     fields = [%{"name" => "app_id", "secret" => false}, %{"name" => "app_secret"}]
     oauth = request.(%{"fields" => fields})
 
-    refute Map.has_key?(oauth, "input")
+    # The card asks for each field; a surface without cards keeps the form's link.
+    assert oauth["input"] == %{
+             "kind" => "secret_fields",
+             "fields" => [
+               %{"name" => "app_id", "label" => "app_id", "secret" => false},
+               %{"name" => "app_secret", "label" => "app_secret", "secret" => true}
+             ]
+           }
+
     assert oauth["authorization_url"] =~ "/v1/oauth/secret/callback?state="
     {:ok, record} = AuthState.get(oauth["state"])
 

@@ -308,6 +308,146 @@ test("preview navigation moves one connected filmstrip and aligns the stack", as
   ).toBe(0);
 });
 
+// What the filmstrip frame shows at one moment of the shared-element handoff,
+// read in the page so no command delay lets a fade finish before it is seen.
+type FrameHandoff = {
+  opacity: string;
+  opacityTransitions: number;
+  visibility: string;
+};
+
+test("the opening shared flight hands over to a fully shown filmstrip frame", async ({
+  page,
+}) => {
+  await openStack(page);
+  const playAnimations = await holdAnimations(page);
+  await page.locator('.chat-panel-image-group-card[data-stack-pos="0"]').click();
+
+  const dialog = page.getByRole("dialog", { name: "Preview image" });
+  const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
+  const modal = page.locator(".chat-panel-media-preview-modal");
+  await expect(modal).toHaveAttribute("data-shared-transition", "opening");
+  await expect(filmstrip).toHaveAttribute("data-ready", "true");
+
+  // Record the frame in the same task that removes the transition attribute.
+  await modal.evaluate((element) => {
+    const record = window as unknown as {
+      frameHandoff?: Promise<FrameHandoff & { animations: number }>;
+    };
+    record.frameHandoff = new Promise((resolve, reject) => {
+      const observer = new MutationObserver(() => {
+        if (element.hasAttribute("data-shared-transition")) return;
+        observer.disconnect();
+        const frame = element.querySelector<HTMLElement>(
+          '[data-filmstrip-layer="clip"]'
+        );
+        if (!frame) {
+          reject(new Error("Expected the filmstrip frame."));
+          return;
+        }
+        const style = getComputedStyle(frame);
+        const animations = frame.getAnimations();
+        resolve({
+          animations: animations.length,
+          opacity: style.opacity,
+          opacityTransitions: animations.filter(
+            (animation) =>
+              animation instanceof CSSTransition &&
+              animation.transitionProperty === "opacity"
+          ).length,
+          visibility: style.visibility,
+        });
+      });
+      observer.observe(element, {
+        attributeFilter: ["data-shared-transition"],
+        attributes: true,
+      });
+    });
+  });
+  await playAnimations();
+
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            frameHandoff: Promise<FrameHandoff & { animations: number }>;
+          }
+        ).frameHandoff
+    )
+  ).toEqual({
+    animations: 0,
+    opacity: "1",
+    opacityTransitions: 0,
+    visibility: "visible",
+  });
+});
+
+test("browsing during the opening shared flight hands over to the filmstrip at once", async ({
+  page,
+}) => {
+  await openStack(page);
+  const playAnimations = await holdAnimations(page);
+  await page.locator('.chat-panel-image-group-card[data-stack-pos="0"]').click();
+
+  const dialog = page.getByRole("dialog", { name: "Preview image" });
+  const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
+  const modal = page.locator(".chat-panel-media-preview-modal");
+  await expect(modal).toHaveAttribute("data-shared-transition", "opening");
+  await expect(filmstrip).toHaveAttribute("data-ready", "true");
+  await expect(page.locator(".chat-panel-image-group-shared-flight")).toHaveCount(1);
+
+  // React commits a click in the microtask queued by its handler, before the
+  // next frame, so the state right after that microtask is the handoff the
+  // viewer sees.
+  const handoff = await dialog
+    .getByRole("button", { name: "Show next image" })
+    .evaluate(async (button) => {
+      (button as HTMLButtonElement).click();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      const modalElement = button.closest(".chat-panel-media-preview-modal");
+      const frame = modalElement?.querySelector<HTMLElement>(
+        '[data-filmstrip-layer="clip"]'
+      );
+      if (!modalElement || !frame) throw new Error("Expected the preview frame.");
+      const style = getComputedStyle(frame);
+      return {
+        flight: document.querySelectorAll(".chat-panel-image-group-shared-flight")
+          .length,
+        frame: {
+          opacity: style.opacity,
+          opacityTransitions: frame
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation instanceof CSSTransition &&
+                animation.transitionProperty === "opacity"
+            ).length,
+          visibility: style.visibility,
+        } satisfies FrameHandoff,
+        sharedTransition: modalElement.getAttribute("data-shared-transition"),
+      };
+    });
+  expect(handoff).toEqual({
+    flight: 0,
+    frame: { opacity: "1", opacityTransitions: 0, visibility: "visible" },
+    sharedTransition: null,
+  });
+  await playAnimations();
+
+  await expect(filmstrip).toHaveAttribute("data-active-index", "1");
+  await expect(filmstrip).not.toHaveAttribute("data-motion");
+  expect(
+    await filmstrip.evaluate((stage) =>
+      Array.from(
+        stage.querySelectorAll<HTMLElement>(
+          '[data-filmstrip-layer="clip"], [data-filmstrip-layer="strip"]'
+        )
+      ).reduce((total, layer) => total + layer.getAnimations().length, 0)
+    )
+  ).toBe(0);
+});
+
 test("a delayed neighbouring image does not block the current preview", async ({
   page,
 }) => {

@@ -1,3 +1,6 @@
+import Std.Data.HashMap.Basic
+import VerifiedKernel.Json
+import VerifiedKernel.Encoding
 import VerifiedKernel.Session.Ops
 import VerifiedKernel.Session.Kernel
 import VerifiedKernel.Session.Query.StateCore
@@ -153,7 +156,8 @@ def contextPrefix (state : Term) : KernelM Term := do
       (a "provider_meta", .map [(b "responses_items", items)])]]
   let summary ← field state "summary"
   if summary.truthy then
-    return list [.map [(a "id", i 0), (a "role", b "summary"), (a "content", summary)]]
+    return list [.map [(a "id", i 0), (a "role", b "summary"), (a "content", summary),
+      (a "ifc_view_label", state.get (a "summary_ifc_view_label"))]]
   return list []
 
 /-! ### `Compaction.unfinished_activation_start_id/2`
@@ -426,6 +430,131 @@ def requestConversationTail (state limit : Term) : KernelM Term := do
       return acc ++ sends
     else return acc)
   return list (entries.drop (entries.length - n))
+
+/-! ### Living handoff tool-closed grouping and prefix digest -/
+
+private def termKey : Term → Option String
+  | .binary bytes => if bytes.isEmpty then none else String.fromUTF8? bytes
+  | .atom name => if name == "nil" || name.isEmpty then none else some name
+  | _ => none
+
+/-- Call ids answered by `message`, covering both native `role: "tool"` results
+and `provider_meta.responses_items` `function_call_output` entries. -/
+def messageOutputCallIds (message : Term) : KernelM (List String) := do
+  let mut ids : Array String := #[]
+  if (← messageRole message) == b "tool" then
+    if let some key := termKey (toolResultCallId message) then
+      ids := ids.push key
+  let providerMeta := both message "provider_meta"
+  if providerMeta.isMap then
+    let items := listItems
+      ((providerMeta.get (b "responses_items")).default (providerMeta.get (a "responses_items")))
+    for item in items do
+      if item.isMap && both item "type" == b "function_call_output" then
+        if let some key := termKey (both item "call_id") then
+          ids := ids.push key
+  return ids.toList
+
+/-- Call ids emitted by an assistant message (native `tool_calls` and
+`provider_meta.responses_items` `function_call`). -/
+def messageInputCallIds (message : Term) : KernelM (List String) := do
+  if (← messageRole message) != b "assistant" then return []
+  return (assistantToolCallIds message).filterMap termKey
+
+/-- Partition `live` into contiguous tool-closed groups using stackless loops.
+A boundary between message `i` and `i+1` is valid iff no tool call from `<= i`
+has a matching tool result or `function_call_output` at `> i`, AND message
+`i+1` has `role == "user"` or `role == "assistant"`. -/
+def toolClosedGroups (live : List Term) : KernelM (List (List Term)) := do
+  let arr := live.toArray
+  if arr.isEmpty then return []
+  let mut latestOutput : Std.HashMap String Nat := {}
+  for idx in [:arr.size] do
+    for cid in ← messageOutputCallIds arr[idx]! do
+      latestOutput := latestOutput.insert cid idx
+  let mut groups : Array (List Term) := #[]
+  let mut current : Array Term := #[]
+  let mut maxNeeded : Nat := 0
+  for idx in [:arr.size] do
+    let msg := arr[idx]!
+    for cid in ← messageInputCallIds msg do
+      match latestOutput.get? cid with
+      | some outIdx => if outIdx > maxNeeded then maxNeeded := outIdx
+      | none => pure ()
+    current := current.push msg
+    let isBoundary ←
+      if idx + 1 == arr.size then pure true
+      else if maxNeeded <= idx then do
+        let nextRole ← messageRole arr[idx + 1]!
+        pure (nextRole == b "user" || nextRole == b "assistant")
+      else pure false
+    if isBoundary then
+      groups := groups.push current.toList
+      current := #[]
+  if !current.isEmpty then
+    groups := groups.push current.toList
+  return groups.toList
+
+/-- Group `toolClosedGroups` into hot-tail spans (stackless).
+When at least two tool-closed groups start with a `"user"` message (multi-user
+Router session), each `"user"`-starting group is paired with all immediately
+following non-`"user"` groups so hot-tail protection counts whole user turns
+without splitting a user question from its answer. Otherwise (single-user
+Worker session), each tool-closed group is its own span. -/
+def hotTailSpans (groups : List (List Term)) : KernelM (List (List (List Term))) := do
+  let mut userStarts : Nat := 0
+  for grp in groups do
+    if let some first := grp.head? then
+      if (← messageRole first) == b "user" then
+        userStarts := userStarts + 1
+  if userStarts < 2 then
+    let mut single : Array (List (List Term)) := #[]
+    for grp in groups do
+      single := single.push [grp]
+    return single.toList
+  let mut spans : Array (List (List Term)) := #[]
+  let mut current : Array (List Term) := #[]
+  for grp in groups do
+    let startsUser ← match grp.head? with
+      | some first => pure ((← messageRole first) == b "user")
+      | none => pure false
+    if startsUser && !current.isEmpty then
+      spans := spans.push current.toList
+      current := #[grp]
+    else
+      current := current.push grp
+  if !current.isEmpty then
+    spans := spans.push current.toList
+  return spans.toList
+
+/-- True iff `through` is the last message id of a tool-closed group in `live`. -/
+def isToolClosedBoundary (live : List Term) (through : Term) : KernelM Bool := do
+  let groups ← toolClosedGroups live
+  for grp in groups do
+    if let some lastMsg := grp.getLast? then
+      if Term.numericEq (compactionMessageId lastMsg) through then
+        return true
+  return false
+
+/-- Sum of `messageBytes` for every message in `messages` (stackless). -/
+def messagesByteSize (messages : List Term) : KernelM Nat := do
+  let mut total : Nat := 0
+  for msg in messages do
+    let sz ← messageBytes msg
+    let n := integerValue sz
+    if n > 0 then total := total + n.toNat
+  return total
+
+/-- Deterministic SHA-256 hex digest over canonical deterministic ETF encoding of
+`[state.summary, messages(<= through)]`, independent of map insertion order. -/
+def prefixDigest (state : Term) (live : List Term) (through : Term) : KernelM Term := do
+  let mut kept : Array Term := #[]
+  for msg in live do
+    if ← atMost (compactionMessageId msg) through then
+      kept := kept.push msg
+  let payload := list [← field state "summary", list kept.toList]
+  let bytes ← deterministic payload
+  return .binary (hex (← digest bytes))
 
 /-- Name → operation. Names match the Elixir functions they replace. -/
 def table : OpTable :=

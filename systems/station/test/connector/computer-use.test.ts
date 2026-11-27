@@ -22,6 +22,8 @@ import {
   computerUseSocketIdentity,
   computerUseSocketPathForRuntime,
   defaultComputerUseSocketPath,
+  makeComputerUse,
+  makeComputerUseDaemons,
 } from "../../src/connector/computer-use.ts";
 import { tempDir } from "./support/temp.ts";
 
@@ -89,15 +91,20 @@ test("TestComputerUseStartSendsDaemonRequestAndReturnsHelp", macOnly, async () =
   assert.deepEqual(request.action.start, { apps: ["Safari"], mode: "background" });
 });
 
-test("TestComputerUseStartForegroundOnRequest", macOnly, async () => {
+test("TestComputerUseStartForwardsTaskTitleForTheNotch", macOnly, async () => {
   const daemon = await fakeDaemon('{"kind":"final","response":{"ok":true}}');
   const c = computerUseConnector(daemon.path);
-  const result = await run(c.computerUse({ action: "start", args: { mode: "foreground" } }));
-  assert.equal(result.mode, "foreground");
-  assert.match(String(result.help), /get_screenshot/);
-  assert.equal((await daemon.request).action.start.mode, "foreground");
-  const bad = await run(c.computerUse({ action: "start", args: { mode: "sideways" } }));
-  assert.equal(bad.ok, false);
+  await run(c.computerUse({ action: "start", args: { apps: ["Comma Studio"], title: "  Fix the\n login form " } }));
+  assert.deepEqual((await daemon.request).action.start, { apps: ["Comma Studio"], mode: "background", title: "Fix the login form" });
+});
+
+test("TestComputerUseStartRejectsRemovedForegroundMode", async () => {
+  // Rejected before any daemon request, so no socket is needed.
+  for (const mode of ["foreground", "sideways"]) {
+    const result = await run(makeConnector({}).computerUse({ action: "start", args: { mode } }));
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /background mode only/);
+  }
 });
 
 for (const [action, args, payload] of [
@@ -133,6 +140,38 @@ test("TestComputerUseBackgroundStateReturnsTreeWithScreenshot", macOnly, async (
   assert.equal(typeof result.image_path, "string");
   assert.match(String(result.text), /<app_state>tree<\/app_state>/);
   await daemon.request;
+});
+
+/** Fills the connector's screenshot store to its count limit. */
+async function fillImageStore(c: Connector) {
+  const dir = await run(c.computerUseImageDirectory);
+  for (let i = 0; i < COMPUTER_USE_IMAGE_MAX_COUNT; i++) writeFileSync(join(dir, `capture-${i}.png`), "x", { mode: 0o600 });
+}
+
+test("TestComputerUseActionThatRanIsNotFailedByAFullScreenshotStore", macOnly, async () => {
+  const daemon = await fakeDaemon(
+    '{"kind":"final","response":{"ok":true,"text":"Computer Use state (ComputerUseNext Snapshot: s2)\\n<app_state>tree</app_state>","imageData":"AQID","imageContentType":"image/png","imageWidth":10,"imageHeight":20}}',
+  );
+  const c = computerUseConnector(daemon.path);
+  await fillImageStore(c);
+  const result = await run(c.computerUse({ action: "click", args: { snapshot_id: "s1", element_index: 7 } }));
+  // The daemon ran the click, so the result says it completed: the agent must not click again.
+  assert.ok("click" in (await daemon.request).action);
+  assert.equal(result.ok, true);
+  assert.equal(result.image_path, undefined);
+  assert.match(String(result.text), /<app_state>tree<\/app_state>/);
+  assert.match(String(result.text), /computer_use screenshot storage is full/);
+});
+
+test("TestComputerUseCaptureFailsWhenScreenshotStoreIsFull", macOnly, async () => {
+  const daemon = await fakeDaemon('{"kind":"final","response":{"ok":true,"imageData":"AQID","imageContentType":"image/png","imageWidth":10,"imageHeight":20}}');
+  const c = computerUseConnector(daemon.path);
+  await fillImageStore(c);
+  // A capture changed nothing on the device: without its screenshot it has no result.
+  const result = await run(c.computerUse({ action: "get_screenshot" }));
+  await daemon.request;
+  assert.equal(result.ok, false);
+  assert.match(String(result.error), /storage is full/);
 });
 
 test("TestComputerUseScreenshotConvertsImageEnvelope", macOnly, async () => {
@@ -300,8 +339,182 @@ test("TestComputerUseImageExpiryAndIsolation", async () => {
 test("TestComputerUseImageStorageBound", async () => {
   const c = makeConnector({ computerUseRuntimePath: tempDir() });
   assert.ok(Exit.isFailure(await Effect.runPromiseExit(c.storeComputerUseImage({ imageData: Buffer.alloc(COMPUTER_USE_IMAGE_MAX_BYTES + 1), imageContentType: "image/png" }))), "an oversized image was accepted");
-  const dir = await run(c.computerUseImageDirectory);
-  for (let i = 0; i < COMPUTER_USE_IMAGE_MAX_COUNT; i++) writeFileSync(join(dir, `capture-${i}.png`), "x", { mode: 0o600 });
+  await fillImageStore(c);
   assert.ok(Exit.isFailure(await Effect.runPromiseExit(c.storeComputerUseImage({ imageData: Buffer.from("new"), imageContentType: "image/png" }))), "an image above the count limit was accepted");
   assert.equal((await run(c.readComputerUseImage("capture-0.png"))).ok, true);
+});
+
+let nextTestSocket = 0;
+const testSocketPath = (label: string) => join("/tmp", `cu-${label}-${process.pid}-${++nextTestSocket}.sock`);
+
+test("TestComputerUseConcurrentEnsureLaunchesHelperOnce", macOnly, async () => {
+  const dir = tempDir();
+  const socketPath = testSocketPath("once");
+  const launchSignalPath = testSocketPath("launched");
+  const helperApp = join(dir, "Comma Computer Use.app");
+  const executable = join(helperApp, "Contents", "MacOS", "CommaComputerUseDaemon");
+  const binDir = join(dir, "bin");
+  const startsFile = join(dir, "starts.txt");
+  mkdirSync(join(executable, ".."), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(executable, `#!/bin/sh\n[ "$1" = --prepare-app ] || exit 1\nprintf '1\\n' >> "${startsFile}"\nprintf '%s\\n' "$0.standalone.app"\n`, { mode: 0o755 });
+
+  const cu = makeComputerUse(
+    {
+      computerUseHelperApp: helperApp,
+      computerUseSocketPath: socketPath,
+      computerUseRuntimePath: tempDir(),
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}`, HOME: dir },
+    },
+    () => {},
+  );
+  const token = cu.authToken();
+  const server: Server = createServer((conn) => {
+    let buffer = "";
+    conn.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const parsed = JSON.parse(buffer.slice(0, newline));
+      const ok = parsed.auth_token === token && parsed.control === "hello";
+      conn.end(`${JSON.stringify({ kind: "final", response: ok ? { ok: true, message: COMPUTER_USE_HELLO_MESSAGE } : { ok: false, error: "unauthorized" } })}\n`);
+    });
+  });
+
+  // Publish the daemon socket once `open` runs, while the second `ensureDaemon` caller waits on the mutex.
+  let resolveLaunched: () => void = () => {};
+  const launched = new Promise<void>((resolve) => (resolveLaunched = resolve));
+  const launchNoticeServer = createServer((conn) => {
+    conn.end();
+    resolveLaunched();
+  });
+  await new Promise<void>((resolve) => launchNoticeServer.listen(launchSignalPath, () => resolve()));
+  writeFileSync(
+    join(binDir, "open"),
+    `#!/bin/sh\n"${process.execPath}" -e 'const s = require("node:net").connect(${JSON.stringify(launchSignalPath)}, () => s.end())'\n`,
+    { mode: 0o755 },
+  );
+  const publishWhenLaunched = (async () => {
+    await launched;
+    await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+  })();
+
+  try {
+    await Promise.all([run(cu.ensureDaemon), run(cu.ensureDaemon), publishWhenLaunched]);
+    const starts = readFileSync(startsFile, "utf8").trim().split("\n").filter(Boolean);
+    assert.equal(starts.length, 1, `expected 1 helper preparation, got ${starts.length}`);
+  } finally {
+    await new Promise<void>((resolve) => launchNoticeServer.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(launchSignalPath, { force: true });
+    rmSync(socketPath, { force: true });
+  }
+});
+
+test("TestComputerUseWorkspaceConnectorsShareOneDaemonTokenAndLifetime", macOnly, async () => {
+  const socketPath = testSocketPath("shared");
+  const seenTokens: string[] = [];
+  const seenControls: string[] = [];
+  let acceptedToken = "";
+  const server: Server = createServer((conn) => {
+    let buffer = "";
+    conn.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const parsed = JSON.parse(buffer.slice(0, newline));
+      acceptedToken ||= parsed.auth_token;
+      if (parsed.auth_token !== acceptedToken) {
+        conn.end('{"kind":"final","response":{"ok":false,"error":"Unauthorized computer_use request"}}\n');
+        return;
+      }
+      if (parsed.control === "hello") {
+        conn.end(`${JSON.stringify({ kind: "final", response: { ok: true, message: COMPUTER_USE_HELLO_MESSAGE } })}\n`);
+        return;
+      }
+      seenTokens.push(parsed.auth_token);
+      if (parsed.control) seenControls.push(parsed.control);
+      conn.end('{"kind":"final","response":{"ok":true,"text":"[]"}}\n');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+  try {
+    const daemons = makeComputerUseDaemons();
+    const helperApp = join(tempDir(), "Comma Computer Use.app");
+    mkdirSync(helperApp, { recursive: true });
+    const first = makeConnector({ name: "laptop", root: tempDir(), computerUseHelperApp: helperApp, computerUseSocketPath: socketPath, computerUseRuntimePath: tempDir(), env: { HOME: tempDir() } }, undefined, { computerUseDaemons: daemons });
+    const second = makeConnector({ name: "laptop", root: tempDir(), computerUseHelperApp: helperApp, computerUseSocketPath: socketPath, computerUseRuntimePath: tempDir(), env: { HOME: tempDir() } }, undefined, { computerUseDaemons: daemons });
+
+    assert.equal((await run(first.computerUse({ action: "list-applications" }))).ok, true);
+    assert.equal((await run(second.computerUse({ action: "list-applications" }))).ok, true);
+    assert.equal(seenTokens.length, 2);
+    assert.equal(seenTokens[0], seenTokens[1], "workspace connectors on the same socket used different auth tokens");
+
+    await run(first.shutdownComputerUseDaemon);
+    assert.deepEqual(seenControls, [], "closing one workspace stopped the shared daemon while another still ran");
+    assert.ok(existsSync(socketPath), "closing one workspace unlinked the shared socket");
+    assert.equal((await run(second.computerUse({ action: "list-applications" }))).ok, true);
+
+    await run(second.shutdownComputerUseDaemon);
+    assert.deepEqual(seenControls, ["shutdown"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(socketPath, { force: true });
+  }
+});
+
+test("TestComputerUseForwardsSessionIdAndIsolatesWorkspaceConnectors", macOnly, async () => {
+  const socketPath = testSocketPath("session-isolation");
+  const seen: Array<Record<string, any>> = [];
+  const server: Server = createServer((conn) => {
+    let buffer = "";
+    conn.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const parsed = JSON.parse(buffer.slice(0, newline));
+      if (parsed.control === "hello") {
+        conn.end(`${JSON.stringify({ kind: "final", response: { ok: true, message: COMPUTER_USE_HELLO_MESSAGE } })}\n`);
+        return;
+      }
+      seen.push(parsed);
+      conn.end('{"kind":"final","response":{"ok":true,"text":"ok"}}\n');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+  try {
+    const daemons = makeComputerUseDaemons();
+    const helperApp = join(tempDir(), "Comma Computer Use.app");
+    mkdirSync(helperApp, { recursive: true });
+    const first = makeConnector({ name: "laptop", root: tempDir(), computerUseHelperApp: helperApp, computerUseSocketPath: socketPath, computerUseRuntimePath: tempDir(), env: { HOME: tempDir() } }, undefined, { computerUseDaemons: daemons });
+    const second = makeConnector({ name: "laptop", root: tempDir(), computerUseHelperApp: helperApp, computerUseSocketPath: socketPath, computerUseRuntimePath: tempDir(), env: { HOME: tempDir() } }, undefined, { computerUseDaemons: daemons });
+
+    assert.equal((await run(first.computerUse({ action: "start", args: { title: "Task A" } }))).ok, true);
+    assert.equal((await run(second.computerUse({ action: "start", args: { title: "Task B" } }))).ok, true);
+    assert.equal((await run(first.computerUse({ action: "click", session_id: "agent-explicit", args: { snapshot_id: "s1", element_index: 1, session_id: "spoofed-in-args" } }))).ok, true);
+    assert.equal((await run(first.computerUse({ action: "click", args: { snapshot_id: "s1", element_index: 1, session_id: "spoofed-in-args" } }))).ok, true);
+
+    assert.equal(typeof seen[0].session_id, "string");
+    assert.equal(typeof seen[1].session_id, "string");
+    assert.notEqual(seen[0].session_id, seen[1].session_id, "distinct connectors on one daemon must carry distinct session_ids");
+    assert.equal(seen[2].session_id, "agent-explicit", "top-level dispatcher session_id must take precedence over args.session_id");
+    assert.equal(seen[3].session_id, seen[0].session_id, "untrusted args.session_id must never override connector default session_id");
+
+    // Closing the first connector releases only its own session and does not shut down the shared daemon.
+    await run(first.shutdownComputerUseDaemon);
+    assert.equal(seen.length, 5);
+    assert.ok("end" in seen[4].action);
+    assert.equal(seen[4].session_id, seen[0].session_id);
+    assert.equal(seen[4].control, undefined);
+
+    // Closing the last connector releases its session and shuts down the daemon.
+    await run(second.shutdownComputerUseDaemon);
+    assert.equal(seen.length, 7);
+    assert.ok("end" in seen[5].action);
+    assert.equal(seen[5].session_id, seen[1].session_id);
+    assert.equal(seen[6].control, "shutdown");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(socketPath, { force: true });
+  }
 });

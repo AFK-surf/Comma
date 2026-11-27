@@ -14,6 +14,7 @@ defmodule Salix.Bindings.LarkBotTest do
   alias SalixIM.{LarkInbound, ProviderHTTP}
   alias SalixMeet.{CalendarAutojoin, Delivery, JoinDispatch, LarkBot, Runtime, Store}
   alias SalixStore.{CasRecord, Keys}
+  import ExUnit.CaptureLog
 
   defmodule FakeLark do
     @moduledoc "Lark as far as the bot needs it. A test scripts the answers of `bots/*`."
@@ -52,9 +53,15 @@ defmodule Salix.Bindings.LarkBotTest do
           send_resp(conn, 200, canvas_document())
 
         _ ->
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(answer(path, request)))
+          case answer(path, request) do
+            {:raw, status, headers, raw_body} ->
+              conn |> merge_resp_headers(headers) |> send_resp(status, raw_body)
+
+            answer ->
+              conn
+              |> put_resp_content_type("application/json")
+              |> send_resp(200, Jason.encode!(answer))
+          end
       end
     end
 
@@ -174,6 +181,11 @@ defmodule Salix.Bindings.LarkBotTest do
 
     def no_events, do: %{"code" => 0, "data" => %{"events" => [], "has_more" => false}}
     def refused(code, msg), do: %{"code" => code, "msg" => msg}
+
+    # A refusal of the gateway: HTTP 403 with no platform code, and the
+    # request's id in its header.
+    def forbidden(log_id),
+      do: {:raw, 403, [{"content-type", "text/plain"}, {"x-tt-logid", log_id}], "Forbidden"}
   end
 
   defmodule RecordingCopilot do
@@ -776,6 +788,37 @@ defmodule Salix.Bindings.LarkBotTest do
 
       assert summary.text =~ "Lark Minutes: https://sample.larksuite.com/minutes/obcn7001"
       assert Enum.all?(RecordingDelivery.records(), &(&1.target["chat_id"] == "oc_team"))
+    end
+
+    test "a join forbidden with no code waits as a refusal and tells the chat once", %{id: id} do
+      FakeLark.script(:join, [FakeLark.forbidden("20261112A1"), FakeLark.forbidden("20261112A2")])
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:join_deferred, {:lark_meeting_blocked, "refused"}}} =
+                   JoinDispatch.run(id)
+        end)
+
+      # The log names Lark's request.
+      assert log =~ "log_id 20261112A1"
+      assert [%{text: blocked, target: %{"chat_id" => "oc_team"}}] = RecordingDelivery.records()
+      assert blocked =~ "HTTP 403"
+
+      # Inside the wait no request is made.
+      assert {:error, {:join_deferred, {:lark_meeting_blocked, "refused"}}} = JoinDispatch.run(id)
+      assert [_] = FakeLark.requests("/bots/join")
+
+      # Refused again later: still pending, no attempt spent, no second notice.
+      {:ok, _doc, _etag} =
+        Store.update_state_retrying(id, &put_in(&1, ["lark_bot", "retry_at"], 0))
+
+      assert {:error, {:join_deferred, {:lark_meeting_blocked, "refused"}}} = JoinDispatch.run(id)
+      assert [_, _] = FakeLark.requests("/bots/join")
+
+      state = state!(id)
+      assert state["status"] == "provisioning"
+      assert %{"status" => "pending", "attempt_count" => 0} = state["join_dispatch"]
+      assert [_] = RecordingDelivery.records()
     end
 
     test "a meeting that ended or does not exist is given up", %{id: id} do

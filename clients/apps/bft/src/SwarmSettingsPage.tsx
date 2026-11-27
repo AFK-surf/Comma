@@ -3,6 +3,7 @@ import { Dropdown } from "@comma/ui/components/dropdown";
 import { InputField } from "@comma/ui/components/input";
 import { useEffect, useState } from "react";
 import type {
+  BftSearchTargetInput,
   BftSwarmAccessPage,
   BftSwarmAccessRole,
   BftSwarmAccessWrite,
@@ -17,6 +18,11 @@ import { messages } from "./messages";
 import { State } from "./ProjectOverviewPage";
 import { useApi } from "./resource";
 import { navigate } from "./router";
+import {
+  formatTargetSummary,
+  sameTargetInputs,
+  SearchTargetPicker,
+} from "./SearchTargetPicker";
 import {
   PlaceFields,
   TargetsUnavailable,
@@ -103,6 +109,9 @@ export function SwarmSettingsPage({
         org={org}
         project={project}
       />
+      {data.cross_search.status === "ok" && data.cross_search.can_manage ? (
+        <CrossSearch data={data} onSaved={setData} org={org} project={project} />
+      ) : null}
       {manage ? <DangerZone data={data} org={org} project={project} /> : null}
     </>
   );
@@ -228,6 +237,9 @@ function TaskModel({
             models={model.models}
             onChange={setChosen}
           />
+          {model.unserved && chosen === model.key ? (
+            <p className="bft-form-section-note">{t.taskModelUnserved}</p>
+          ) : null}
           <FormActions write={write}>
             <SaveButton
               busy={write.busy}
@@ -243,12 +255,17 @@ function TaskModel({
           </FormActions>
         </>
       ) : (
-        <dl className="bft-kv">
-          <div>
-            <dt>{t.taskModelLabel}</dt>
-            <dd title={model.label ?? undefined}>{model.label ?? "—"}</dd>
-          </div>
-        </dl>
+        <>
+          <dl className="bft-kv">
+            <div>
+              <dt>{t.taskModelLabel}</dt>
+              <dd title={model.label ?? undefined}>{model.label ?? "—"}</dd>
+            </div>
+          </dl>
+          {model.unserved ? (
+            <p className="bft-form-section-note">{t.taskModelUnserved}</p>
+          ) : null}
+        </>
       )}
     </FormSection>
   );
@@ -646,6 +663,109 @@ function useAccessPages(org: string, project: string, first: BftSwarmAccessPage)
     failed: current.failed,
     load,
   };
+}
+
+const unassignedDeptOption = "__unassigned__";
+
+const toTargetInputs = (
+  targets: BftSwarmSettings["cross_search"]["explicit_targets"]
+): BftSearchTargetInput[] =>
+  targets.map((item) =>
+    item.kind === "self" || item.kind === "all_departments"
+      ? { kind: item.kind }
+      : { kind: item.kind, id: item.id }
+  );
+
+function CrossSearch({
+  org,
+  project,
+  data,
+  onSaved,
+}: {
+  org: string;
+  project: string;
+  data: BftSwarmSettings;
+  onSaved: (data: BftSwarmSettings) => void;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const cross = data.cross_search;
+  const savedDeptOption = cross.department_id ?? unassignedDeptOption;
+  const savedTargets = toTargetInputs(cross.explicit_targets);
+
+  const [deptOption, setDeptOption] = useState(savedDeptOption);
+  const [targets, setTargets] = useState<BftSearchTargetInput[]>(savedTargets);
+
+  useEffect(() => {
+    setDeptOption(cross.department_id ?? unassignedDeptOption);
+    setTargets(toTargetInputs(cross.explicit_targets));
+  }, [cross.department_id, cross.explicit_targets]);
+
+  const sameDept = deptOption === savedDeptOption;
+  const unchanged = sameDept && sameTargetInputs(targets, savedTargets);
+
+  const inheritedNote =
+    deptOption === unassignedDeptOption
+      ? t.inheritedNone
+      : sameDept && cross.department_name
+        ? cross.inherited_targets.length > 0
+          ? t.inheritedSummary(
+              cross.department_name,
+              formatTargetSummary(cross.inherited_targets)
+            )
+          : t.inheritedEmpty(cross.department_name)
+        : undefined;
+
+  return (
+    <FormSection description={t.crossSearchNote} title={t.crossSearchTitle}>
+      <Dropdown
+        className="bft-form-field"
+        disabled={write.busy}
+        {...(inheritedNote ? { hint: inheritedNote } : {})}
+        items={[
+          { id: unassignedDeptOption, label: t.unassigned },
+          ...cross.departments.map((dept) => ({
+            id: dept.id,
+            label: dept.name,
+          })),
+        ]}
+        label={t.departmentLabel}
+        onChange={setDeptOption}
+        size="sm"
+        value={deptOption}
+      />
+      <div className="bft-form-field">
+        <p className="bft-field-label">{t.extraSearchLabel}</p>
+        <SearchTargetPicker
+          catalogSwarms={cross.catalog_swarms}
+          departments={cross.departments}
+          disabled={write.busy}
+          inheritedDepartmentId={sameDept ? cross.department_id : null}
+          inheritedTargets={sameDept ? cross.inherited_targets : []}
+          onChange={setTargets}
+          searcherIfcOff={cross.ifc_on === false}
+          value={targets}
+        />
+      </div>
+      <FormActions write={write}>
+        <SaveButton
+          busy={write.busy}
+          disabled={unchanged}
+          onPress={() =>
+            write.run(
+              () =>
+                api.setSwarmSearchGrants(org, project, {
+                  department_id:
+                    deptOption === unassignedDeptOption ? null : deptOption,
+                  targets,
+                }),
+              onSaved
+            )
+          }
+        />
+      </FormActions>
+    </FormSection>
+  );
 }
 
 function DangerZone({

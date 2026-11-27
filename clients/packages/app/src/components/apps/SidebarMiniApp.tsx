@@ -132,7 +132,11 @@ export function SidebarMiniApp({
             }
             variant="flush"
             version={page.version}
-            via={{ workspace: page.workspaceId }}
+            via={
+              page.collaboration
+                ? { collaboration: page.collaboration }
+                : { workspace: page.workspaceId }
+            }
           />
         )}
       </div>

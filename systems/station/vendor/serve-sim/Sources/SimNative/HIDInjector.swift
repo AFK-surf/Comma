@@ -612,6 +612,15 @@ public actor HIDInjector {
         return duoBridge?.send("angle \(degrees)") == true
     }
 
+    /// Moves the hinge from `fromDegrees` to `toDegrees` over `milliseconds` (at once when 0): the device sees every
+    /// angle on the way, as a hand folding it, and its system fold animation and apps' hinge angle follow.
+    public func sweepHinge(fromDegrees: Double, toDegrees: Double, milliseconds: Int) -> Bool {
+        guard fromDegrees.isFinite, toDegrees.isFinite, (0...180).contains(fromDegrees), (0...180).contains(toDegrees)
+        else { return false }
+        if milliseconds <= 0 { return setHingeAngle(degrees: toDegrees) }
+        return duoBridge?.send("sweep \(fromDegrees) \(toDegrees) \(min(milliseconds, 5000))") == true
+    }
+
     /// Toggle the on-screen software keyboard, exactly like Simulator.app's
     /// I/O → Keyboard → Toggle Software Keyboard (⌘K): a momentary Indigo HID
     /// button press (event source 0x3f0) sent through the legacy HID client.

@@ -332,7 +332,8 @@ defmodule SalixIM.Provider.Slack.ConversationIngress do
          {:ok, staged_attachments, failed_attachments} <-
            ProviderConversationInput.stage_worker_attachments(
              worker_agent_id,
-             List.wrap(attrs["attachments"] || [])
+             List.wrap(attrs["attachments"] || []),
+             SalixIM.ProviderAttachments.ingress_label(group_id, attrs["metadata"] || %{})
            ),
          message <-
            Map.merge(

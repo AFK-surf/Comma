@@ -1,0 +1,229 @@
+{
+  "name": "proactive_research_2026_11_25",
+  "description": "Evaluates Phase 2 cross-source read-only research (investigate -> memory/pool/web -> synthesize), external URL unfurling in ProactiveEvidence, and entity/link-aware recall in watched Slack channels, plus negative controls.",
+  "now": "2026-11-25T03:05:00Z",
+  "pending_since": "2026-11-25T00:00:00Z",
+  "locale": "zh-CN",
+  "timezone": "Asia/Shanghai",
+  "owner": {
+    "user": "U0OWNER001",
+    "team": "T0TEAM0001",
+    "handle": "kai",
+    "mail": "kai@example.com"
+  },
+  "user_md": "<!-- comma:portrait -->\n- 关于你 · 职责: 维护 3D 勋章制作应用 Medalsmith（将涂鸦、照片或 SVG 生成金属和珐琅质感 3D 勋章） · 2026-11-24 · watch: #watercooler, term:Medalsmith\n- 关于你 · 进行中: 推进 Comma iOS 1.0.4 Usage 页订阅与积分包上线测试 · 2026-11-24 · watch: term:Comma\n- 关于你 · 进行中: 推进 v2 计费客户端接入方案 · 2026-11-24\n<!-- /comma:portrait -->\n",
+  "memory": [
+    {
+      "path": "/memory/episodes/2026-11-23.md",
+      "text": "Comma 1.0.4 Usage 页内购后端沙盒规则：TestFlight 沙盒购买积分包时，后端仅对所有者邮箱为 cue.surf 或 comma.surf 的工作区放行入账；普通测试邮箱购买会显示 Apple 扣款成功弹窗但 Comma 余额不会增加。"
+    }
+  ],
+  "pool_items": [
+    {
+      "app": "GitHub",
+      "toolkit": "github",
+      "title": "feat(billing): gate TestFlight sandbox credit fulfillment to cue.surf and comma.surf workspace owners",
+      "url": "https://github.com/AFK-surf/Cue/pull/5590",
+      "excerpt": "Restricts Apple sandbox IAP credit pack fulfillment on staging/TestFlight to workspaces owned by @cue.surf or @comma.surf accounts. Non-allowlisted owners get 200 receipt ack without balance credit.",
+      "relationship": "authored_by_you"
+    },
+    {
+      "app": "Notion",
+      "toolkit": "notion",
+      "title": "v2 计费客户端接入设计稿",
+      "url": "https://www.notion.so/billingv2draft001",
+      "excerpt": "Webhook 回调鉴权设计：服务端回调客户端采用静态 Bearer Token 校验 Authorization 头，上线前保持不变。",
+      "relationship": "edited_by_you"
+    }
+  ],
+  "web": [
+    {
+      "url": "https://dexweekly.example/issues/373",
+      "title": "DEX 周刊 #373：设计工具与独立产品精选",
+      "text": "本周产品推荐：1. Medalsmith —— dingyi 特别推荐了这款 3D 勋章制作应用，能把涂鸦、照片或 SVG 做成带金属和珐琅质感的 3D 勋章，光影和材质细节非常惊艳。2. 其他两款字体与配色工具。"
+    },
+    {
+      "url": "https://coffee.example/guides/latte-art",
+      "title": "家庭意式浓缩拉花入门指南",
+      "text": "手把手教你打发绵密奶泡、控制萃取温度与郁金香拉花角度，适合周末在家练习。"
+    }
+  ],
+  "web_search": [
+    {
+      "match": ["testflight", "sandbox", "in-app", "billing", "扣费", "内购", "apple"],
+      "results": [
+        {
+          "title": "TestFlight Help — Testing In-App Purchases",
+          "url": "https://developer.apple.com/testflight/in-app-purchases",
+          "text": "In-app purchases in TestFlight beta builds run in the App Store sandbox environment and are free for testers; testers are not charged real money."
+        }
+      ]
+    }
+  ],
+  "home": [],
+  "labels": {
+    "testflight_comma_23": "https://outlook.office.com/mail/inbox/id/testflight_comma_23",
+    "webhook_auth_conflict": "https://outlook.office.com/mail/inbox/id/webhook_auth_conflict",
+    "generic_k8s_digest": "https://outlook.office.com/mail/inbox/id/generic_k8s_digest",
+    "slack_bare_dex_link": "https://example.slack.com/archives/C0WATER01/p1795575600000100",
+    "slack_medalsmith_ph": "https://example.slack.com/archives/C0WATER01/p1795575900000200",
+    "slack_casual_chatter": "https://example.slack.com/archives/C0WATER01/p1795576000000300",
+    "slack_coffee_link": "https://example.slack.com/archives/C0WATER01/p1795576100000400"
+  },
+  "slack": {
+    "search": [
+      {"query": "<@U0OWNER001> after:2026-11-18", "matches": []},
+      {"query": "to:me after:2026-11-18", "matches": []},
+      {"query": "is:thread with:<@U0OWNER001> after:2026-11-18", "matches": []},
+      {
+        "query": "in:#watercooler after:2026-11-24",
+        "matches": [
+          {
+            "user": "U0PEER001",
+            "username": "alex",
+            "ts": "1795575600.000100",
+            "channel": {"id": "C0WATER01", "name": "watercooler"},
+            "text": "分享一下今天这期周刊 <https://dexweekly.example/issues/373>",
+            "permalink": "https://example.slack.com/archives/C0WATER01/p1795575600000100"
+          },
+          {
+            "user": "U0PEER002",
+            "username": "maya",
+            "ts": "1795575900.000200",
+            "channel": {"id": "C0WATER01", "name": "watercooler"},
+            "text": "刚看到 Medalsmith 上了今天的 Product Hunt 首页精选，评论区好几个设计师在夸材质细节",
+            "permalink": "https://example.slack.com/archives/C0WATER01/p1795575900000200"
+          },
+          {
+            "user": "U0PEER003",
+            "username": "ben",
+            "ts": "1795576000.000300",
+            "channel": {"id": "C0WATER01", "name": "watercooler"},
+            "text": "中午楼下拉面新出豚骨口味不错",
+            "permalink": "https://example.slack.com/archives/C0WATER01/p1795576000000300"
+          },
+          {
+            "user": "U0PEER004",
+            "username": "sam",
+            "ts": "1795576100.000400",
+            "channel": {"id": "C0WATER01", "name": "watercooler"},
+            "text": "周末想试试这个 <https://coffee.example/guides/latte-art>",
+            "permalink": "https://example.slack.com/archives/C0WATER01/p1795576100000400"
+          }
+        ]
+      }
+    ],
+    "replies": []
+  },
+  "outlook": [
+    {
+      "id": "testflight_comma_23",
+      "conversationId": "c-tf-comma-23",
+      "subject": "TestFlight: Comma 1.0.4 (23) is ready to test",
+      "from": {"emailAddress": {"address": "no_reply@email.apple.com"}},
+      "receivedDateTime": "2026-11-25T02:55:00Z",
+      "bodyPreview": "Comma 1.0.4 (23) is now available to test in TestFlight. What to Test: Usage page subscriptions and credit pack in-app purchases.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/testflight_comma_23",
+      "importance": "normal",
+      "toRecipients": [{"emailAddress": {"address": "kai@example.com"}}],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Comma 1.0.4 (23) is now available to test in TestFlight.\r\nWhat to Test:\r\n- Usage page subscriptions and credit pack purchases.\r\nExpires in 89 days. Open TestFlight on iOS to install."
+      }
+    },
+    {
+      "id": "webhook_auth_conflict",
+      "conversationId": "c-webhook-auth",
+      "subject": "[Engineering] v2 计费 webhook 鉴权变更公告",
+      "from": {"emailAddress": {"address": "eng-updates@example.com"}},
+      "receivedDateTime": "2026-11-25T02:40:00Z",
+      "bodyPreview": "通知：v2 计费 webhook 已切换为 HMAC-SHA256 签名校验，静态 Bearer Token 方案已废弃，请相关接入方知悉。",
+      "webLink": "https://outlook.office.com/mail/inbox/id/webhook_auth_conflict",
+      "importance": "normal",
+      "toRecipients": [{"emailAddress": {"address": "kai@example.com"}}],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Hi all,\r\n\r\nv2 计费 webhook 已于今天合入主线并统一切换为 HMAC-SHA256 签名校验（X-Billing-Signature），原定静态 Bearer Token 校验方式已移除，不再支持。仅供各接入方同步。"
+      }
+    },
+    {
+      "id": "generic_k8s_digest",
+      "conversationId": "c-k8s-88",
+      "subject": "Weekly Cloud Roundup #88: 10 Kubernetes tips & Terraform tricks",
+      "from": {"emailAddress": {"address": "digest@cloudroundup.example"}},
+      "receivedDateTime": "2026-11-25T02:15:00Z",
+      "bodyPreview": "This week: 10 Kubernetes pod disruption budget tips, Terraform state locking tricks, and cloud cost benchmarks.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/generic_k8s_digest",
+      "importance": "normal",
+      "toRecipients": [{"emailAddress": {"address": "kai@example.com"}}],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Weekly Cloud Roundup #88\r\nTop stories: Kubernetes pod disruption budgets, Terraform state locking best practices, and quarterly cloud benchmark numbers."
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "testflight_cross_source_research",
+      "read_channels": false,
+      "only": ["testflight_comma_23"],
+      "expect": {
+        "routed_any": ["testflight_comma_23"],
+        "decision_any": ["signal", "interrupt"],
+        "used_context": true,
+        "message_contains_any": ["cue.surf", "comma.surf"]
+      }
+    },
+    {
+      "name": "slack_bare_link_unfurl_medalsmith",
+      "only": [],
+      "only_slack": ["slack_bare_dex_link"],
+      "expect": {
+        "collected_any": ["slack_bare_dex_link"],
+        "routed_any": ["slack_bare_dex_link"],
+        "decision_any": ["signal"]
+      }
+    },
+    {
+      "name": "slack_watched_channel_term_mention",
+      "only": [],
+      "only_slack": ["slack_medalsmith_ph"],
+      "expect": {
+        "collected_any": ["slack_medalsmith_ph"],
+        "routed_any": ["slack_medalsmith_ph"],
+        "decision_any": ["signal"]
+      }
+    },
+    {
+      "name": "draft_conflict_discovered_via_research",
+      "read_channels": false,
+      "only": ["webhook_auth_conflict"],
+      "expect": {
+        "routed_any": ["webhook_auth_conflict"],
+        "decision_any": ["signal", "interrupt"],
+        "used_context": true,
+        "message_contains_any": ["Bearer", "设计稿"]
+      }
+    },
+    {
+      "name": "negative_control_slack_chatter_and_unrelated_link",
+      "only": [],
+      "only_slack": ["slack_casual_chatter", "slack_coffee_link"],
+      "expect": {
+        "not_routed": ["slack_casual_chatter", "slack_coffee_link"],
+        "decision_any": ["briefing"]
+      }
+    },
+    {
+      "name": "negative_control_generic_digest_no_research",
+      "read_channels": false,
+      "only": ["generic_k8s_digest"],
+      "expect": {
+        "not_routed": ["generic_k8s_digest"],
+        "decision_any": ["briefing"],
+        "used_context": false,
+        "researched": false
+      }
+    }
+  ]
+}

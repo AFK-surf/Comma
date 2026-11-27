@@ -19,8 +19,8 @@ const test = base.extend({
 });
 const screen = (page: Page, name: string) =>
   expect(page.locator(`[data-compute-screen="${name}"]`)).toBeVisible();
-/** Local settings: in this computer's menu on its card. */
-const openLocalSettings = async (page: Page, label = "本机设置") => {
+/** Sandbox storage & maintenance: in this computer's menu on its card. */
+const openLocalSettings = async (page: Page, label = "沙箱存储与维护…") => {
   await page
     .locator('article[data-slot="device-card"]')
     .first()
@@ -34,19 +34,28 @@ const shot = async (page: Page, name: string) => {
     animations: "disabled",
   });
 };
-test("local settings render software and storage together", async ({ page }) => {
+test("sandbox storage and maintenance render storage and three maintenance actions", async ({
+  page,
+}) => {
   await page.goto("/preview.html?scene=ready");
   await screen(page, "home");
   await shot(page, "home");
   await openLocalSettings(page);
   await screen(page, "settings");
   await expect(
-    page.getByRole("heading", { name: "计算组件", exact: true })
+    page.getByRole("heading", { name: "存储空间", exact: true })
   ).toBeVisible();
-  await page.getByText("清除所有计算数据", { exact: true }).click();
-  await expect(page.getByText("本机数据", { exact: true }).first()).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "在本机确认清除…", exact: true })
+    page.getByRole("heading", { name: "维护与恢复", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "重启并修复…", exact: true })
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "重置环境…", exact: true })
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "卸载组件…", exact: true })
   ).toBeEnabled();
   await shot(page, "settings");
   await page.getByRole("button", { name: "返回", exact: true }).click();
@@ -127,7 +136,7 @@ for (const locale of ["en", "zh-CN"])
 
 test("diagnostic status action calls the native owner", async ({ page }) => {
   await page.goto("/preview.html?scene=offline&locale=en");
-  await openLocalSettings(page, "Local settings");
+  await openLocalSettings(page, "Sandbox storage & maintenance…");
   await page.getByText("Diagnostic details", { exact: true }).click();
   const refreshCount = () =>
     page.evaluate(() => Number(document.documentElement.dataset.refreshCount || 0));
@@ -211,7 +220,7 @@ test("a refused reinstall names the data and offers only the reset", async ({
   await openLocalSettings(page);
   await screen(page, "settings");
   await expect(
-    page.getByRole("button", { name: "删除数据并重新安装", exact: true })
+    page.getByRole("button", { name: "重置环境…", exact: true })
   ).toBeEnabled();
   await expect(page.getByRole("button", { name: "继续维护", exact: true })).toHaveCount(
     0
@@ -289,19 +298,6 @@ test("absent policy remains distinct from a failed network", async ({ page }) =>
     .first();
   await expect(network.locator("dd")).toHaveText("—");
   await shot(page, "missing-policy");
-});
-
-test("local connection cleanup stays in its group menu", async ({ page }) => {
-  await page.goto("/preview.html?scene=ready&locale=en");
-  await openLocalSettings(page, "Local settings");
-  await expect(page.getByText("Local data", { exact: true }).first()).toBeVisible();
-  await page
-    .getByRole("button", { name: "other123 Node actions", exact: true })
-    .click();
-  await expect(
-    page.getByRole("menuitem", { name: "Delete local data", exact: true })
-  ).toBeVisible();
-  await shot(page, "connection-menu");
 });
 
 test("long workload names stay readable in a narrow list and detail", async ({
@@ -427,17 +423,13 @@ test("paused observation uses the existing refresh control to continue checking"
   await page.goto("/preview.html?scene=observation-paused&locale=en");
   const resume = page.getByRole("button", { name: "Continue checking", exact: true });
   await expect(resume).toBeVisible();
+  await expect(
+    page
+      .getByRole("button", { name: "Default Shell", exact: true })
+      .locator("output.compute-status")
+  ).toHaveAttribute("data-pending", "false");
   await shot(page, "observation-paused");
   await resume.click();
-});
-
-test("unknown local deletion reports its receipt uncertainty", async ({ page }) => {
-  await page.goto("/preview.html?scene=local-delete-unknown&locale=en");
-  await openLocalSettings(page, "Local settings");
-  await expect(
-    page.getByText("Local deletion result unconfirmed.", { exact: true })
-  ).toBeVisible();
-  await shot(page, "local-delete-unknown");
 });
 
 test("a legacy deletion opens the existing confirmation for the displayed workload", async ({
@@ -463,4 +455,29 @@ test("a legacy deletion opens the existing confirmation for the displayed worklo
   await reconfirm.click();
   await dialog.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(page.getByText("Deleting", { exact: true })).toBeVisible();
+});
+
+test("an uninstalled Agent VMM shows one reinstall action and no unresolvable local state", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=host-uninstalled");
+  await screen(page, "home");
+  const row = page.getByRole("region", { name: "沙箱", exact: true });
+  await expect(row.getByText("Agent VMM 已卸载", { exact: true })).toBeVisible();
+  await expect(
+    row.getByRole("button", { name: "保留数据并重新安装", exact: true })
+  ).toBeVisible();
+  await expect(row.getByRole("button", { name: "检查状态", exact: true })).toHaveCount(
+    0
+  );
+  await shot(page, "host-uninstalled-home");
+  await openLocalSettings(page);
+  await screen(page, "settings");
+  await expect(
+    page.getByText("重新安装后可查看数据盘用量。", { exact: true })
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "保留数据并重新安装", exact: true })
+  ).toBeVisible();
+  await shot(page, "host-uninstalled-settings");
 });

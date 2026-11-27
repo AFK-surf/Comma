@@ -92,6 +92,16 @@ defmodule SalixAgent.AsyncToolResults do
     type = if status == "failed", do: "async_tool_call_failed", else: "async_tool_call_completed"
     now = completed_at_ms || SystemsClock.system_time(:millisecond)
 
+    result =
+      case raw_field(pending, :ifc_view_label) do
+        label when is_list(label) ->
+          ifc = raw_field(result, :ifc) || %{"label" => ["agent_private"]}
+          result |> Map.delete(:ifc) |> Map.put("ifc", Map.put(ifc, "view_label", label))
+
+        _ ->
+          result
+      end
+
     %{
       "type" => type,
       "session_id" => session_id(pending),
@@ -178,6 +188,31 @@ defmodule SalixAgent.AsyncToolResults do
     |> drop_duplicate_output()
   end
 
+  # These are transport projections, not storage records. Keep application JSON
+  # inside content/output opaque; only the runtime envelope has a field allowlist.
+  @model_result_fields ~w(id name tool_call_id tool_name status input content output error is_error
+    error_class error_message message duration_ms guidance_reason public_summary)
+  @model_record_fields ~w(tool_call_id tool_name status input started_at updated_at completed_at
+    cancelled_at duration_ms error is_error error_class error_message cancel_reason auto_wait_seconds)
+
+  @doc false
+  def model_result(result) when is_map(result), do: model_fields(result, @model_result_fields)
+  def model_result(result), do: result
+
+  @doc false
+  def model_record(record) when is_map(record) do
+    projected = model_fields(record, @model_record_fields)
+
+    case Map.fetch(record, "result") do
+      {:ok, result} -> Map.put(projected, "result", model_result(result))
+      :error -> projected
+    end
+  end
+
+  defp model_fields(record, fields) do
+    Map.new(for {key, value} <- record, to_string(key) in fields, do: {to_string(key), value})
+  end
+
   @doc false
   def notification_result_payload(result) do
     result_payload(result, 0, @notification_result_preview_chars)
@@ -235,6 +270,7 @@ defmodule SalixAgent.AsyncToolResults do
   @doc false
   def result_payload(result, offset, limit, force_page \\ false)
       when is_integer(offset) and offset >= 0 and is_integer(limit) and limit > 0 do
+    result = model_result(result)
     encoded = Jason.encode!(result)
     total_chars = String.length(encoded)
 
@@ -274,6 +310,17 @@ defmodule SalixAgent.AsyncToolResults do
   def result_page_envelope(record, offset, limit, max_bytes \\ @result_response_max_bytes)
       when is_map(record) and is_integer(offset) and offset >= 0 and is_integer(limit) and
              limit > 0 and is_integer(max_bytes) and max_bytes > 0 do
+    # Stored result_json is already the canonical application content. Legacy
+    # async records instead hold a runtime result envelope with private metadata.
+    record =
+      if is_binary(raw_field(record, :result_json)) do
+        record
+      else
+        record
+        |> model_record()
+        |> Map.put("result_json", Jason.encode!(model_result(raw_field(record, :result))))
+      end
+
     result_json = canonical_result_json(record)
     total_chars = canonical_result_chars(record, result_json)
     total_bytes = canonical_result_bytes(record, result_json)

@@ -291,7 +291,7 @@ defmodule SalixWeb.LLMProxy do
 
   defp billing_owner(agent_id) do
     with {:ok, agent} <- Control.get(agent_id),
-         {:ok, group} <- Groups.get(agent["group_id"], agent["tenant_id"]),
+         {:ok, group} <- Groups.get_for_runtime(agent["group_id"], agent["tenant_id"]),
          owner when is_map(owner) <- group["billing_owner"] do
       %{
         billing_account_id: owner["billing_account_id"],

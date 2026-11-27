@@ -22,7 +22,7 @@ import type { Account } from "./account.ts";
 
 const DEBOUNCE_MS = 180;
 const LIMIT = 20;
-const MIN_CODEPOINTS = 2;
+const MIN_CODEPOINTS = 1;
 const MAX_CODEPOINTS = 128;
 
 export class Search {

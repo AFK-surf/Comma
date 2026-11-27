@@ -94,7 +94,11 @@ export function applyInboxFilters(
         filters.platforms.has(inboxPlatformKey(item))) &&
       (filters.requests === undefined || filters.requests.has(itemRequestKey(item))) &&
       (item.kind !== "agent_task" ||
-        (filters.statuses.has(taskStatusBucket(item.status)) &&
+        (filters.statuses.has(
+          taskStatusBucket(item.status, {
+            loopState: item.loop?.state,
+          })
+        ) &&
           (filters.loopRule === undefined ||
             taskLoopRuleKey(item.loop) === filters.loopRule) &&
           (filters.schedules === undefined ||
@@ -115,6 +119,24 @@ function requestRowFacts(row: InboxRequestEntry): {
       request: requestPersonKey("from", {
         id: row.request.sender?.id,
         name: senderName(row.request),
+      }),
+      bucket: "needs_review",
+    };
+  // Someone joining the person's People came from them, and ended there.
+  if (row.kind === "people_joined")
+    return {
+      request: requestPersonKey("from", {
+        id: row.person.id,
+        name: row.person.name ?? "",
+      }),
+      bucket: "done",
+    };
+  // An invitation waits for the person as a request does, from its host.
+  if (row.kind === "collaboration_invite")
+    return {
+      request: requestPersonKey("from", {
+        id: row.invitation.host?.id,
+        name: row.invitation.host?.name ?? "",
       }),
       bucket: "needs_review",
     };
@@ -198,6 +220,10 @@ export function countInboxRequests(
             }
           : {}),
       });
+    } else if (row.kind === "collaboration_invite") {
+      from.add(key, { name: row.invitation.host?.name || unnamed });
+    } else if (row.kind === "people_joined") {
+      from.add(key, { name: row.person.name || unnamed, email: row.person.email });
     } else {
       const { sent } = row;
       const owner = sent.workspace?.owner;
@@ -226,7 +252,12 @@ export function countInboxTasksByStatus(
     taskStatusBuckets.map((bucket) => [bucket, 0])
   ) as TaskStatusCounts;
   for (const item of items) {
-    if (item.kind === "agent_task") counts[taskStatusBucket(item.status)] += 1;
+    if (item.kind === "agent_task")
+      counts[
+        taskStatusBucket(item.status, {
+          loopState: item.loop?.state,
+        })
+      ] += 1;
   }
   return counts;
 }

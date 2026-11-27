@@ -16,7 +16,7 @@
 # for gRPC 1.83.2 and golang.org/x/crypto 0.55.0. A build module raises
 # golang.org/x/net to 0.62.0 for CVE-2026-78669 and CVE-2026-78661; v2.26.0
 # still pins 0.59.0.
-FROM golang:1.26.10-trixie AS cloud-sql-proxy-builder
+FROM golang:1.26.11-trixie AS cloud-sql-proxy-builder
 
 ARG CLOUD_SQL_PROXY_VERSION=7905bdd628cd80cfb15714a7197f5bbd4a49d844
 ARG CLOUD_SQL_PROXY_X_NET_VERSION=v0.62.0
@@ -29,7 +29,7 @@ RUN go mod init cloud-sql-proxy-build \
       github.com/GoogleCloudPlatform/cloud-sql-proxy/v2
 
 # ---- Subscription worker builder ------------------------------------------
-FROM golang:1.26.10-trixie AS subscription-worker-builder
+FROM golang:1.26.11-trixie AS subscription-worker-builder
 WORKDIR /src
 COPY systems/account-proxy/go.mod systems/account-proxy/go.sum systems/account-proxy/bootstrap.sh ./
 COPY systems/account-proxy/patches ./patches
@@ -51,11 +51,23 @@ COPY systems/profiles/nif/src profiles/nif/src
 RUN cargo build --release --locked --manifest-path profiles/nif/Cargo.toml \
     && cp profiles/nif/target/release/libcomma_profiles_nif.so /comma_profiles_nif.so
 
+# ---- Agent VMM worker builder ----------------------------------------------
+# One process per Salix node for the node's Agent VMM Host connections
+# (SalixStore.AgentVMM.Worker). Only the worker ships: the test Host stays out
+# of the image. The protos are compiled in the build script, without protoc.
+FROM rust:1.95.0-slim-trixie AS salix-vmm-worker-builder
+WORKDIR /src
+COPY systems/gateway/salix-vmm-worker/Cargo.toml systems/gateway/salix-vmm-worker/Cargo.lock systems/gateway/salix-vmm-worker/build.rs ./
+COPY systems/gateway/salix-vmm-worker/proto proto
+COPY systems/gateway/salix-vmm-worker/src src
+RUN cargo build --release --locked --bin salix_vmm_worker \
+    && cp target/release/salix_vmm_worker /salix_vmm_worker
+
 # ---- Tailcat gateway builder ----------------------------------------------
 # One process per Salix node for outbound SSH over Tailcat
 # (SalixAgent.Tailcat.Gateway). Only the gateway command ships; the test peer
 # stays out of the image.
-FROM golang:1.27.3-trixie AS tailcat-gateway-builder
+FROM golang:1.27.4-trixie AS tailcat-gateway-builder
 WORKDIR /src
 COPY systems/tailcat-gateway/go.mod systems/tailcat-gateway/go.sum ./
 RUN go mod download
@@ -66,7 +78,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /tailcat_gateway ./cmd/
 # ---- Tailnet gateway builder -----------------------------------------------
 # One process per Salix node for the tailnet nodes of the Agent Groups that
 # node owns (SalixAgent.Tailnet.Gateway).
-FROM golang:1.27.3-trixie AS tailnet-gateway-builder
+FROM golang:1.27.4-trixie AS tailnet-gateway-builder
 WORKDIR /src
 COPY systems/tailnet-gateway/go.mod systems/tailnet-gateway/go.sum ./
 RUN go mod download
@@ -161,6 +173,7 @@ COPY systems/mix.exs systems/mix.lock ./
 COPY systems/apps/alert_router/mix.exs apps/alert_router/
 COPY systems/apps/comma/mix.exs apps/comma/
 COPY systems/apps/comma_log/mix.exs apps/comma_log/
+COPY systems/apps/product_analytics/mix.exs apps/product_analytics/
 COPY systems/apps/comma_ssh/mix.exs apps/comma_ssh/
 COPY systems/apps/comma_tui/mix.exs apps/comma_tui/
 COPY systems/apps/systems_observability/mix.exs apps/systems_observability/
@@ -169,6 +182,7 @@ COPY systems/apps/systems_runtime/mix.exs apps/systems_runtime/
 COPY systems/apps/billing_core/mix.exs apps/billing_core/
 COPY systems/apps/billing_commerce/mix.exs apps/billing_commerce/
 COPY systems/apps/billing_stripe/mix.exs apps/billing_stripe/
+COPY systems/apps/billing_apple/mix.exs apps/billing_apple/
 COPY systems/apps/comma_core/mix.exs apps/comma_core/
 COPY systems/apps/comma_web/mix.exs apps/comma_web/
 COPY systems/apps/salix_store/mix.exs apps/salix_store/
@@ -218,6 +232,7 @@ COPY systems/config config
 COPY systems/apps apps
 COPY --from=subscription-worker-builder /subscription_worker apps/salix_agent/priv/subscription_worker
 COPY --from=tailcat-gateway-builder /tailcat_gateway apps/salix_agent/priv/tailcat_gateway
+COPY --from=salix-vmm-worker-builder /salix_vmm_worker apps/salix_store/priv/salix_vmm_worker
 COPY --from=tailnet-gateway-builder /tailnet_gateway apps/salix_agent/priv/tailnet_gateway
 COPY --from=spinfoam-fetcher /out/spinfoam apps/salix_agent/priv/spinfoam
 COPY --from=profiles-nif-builder /comma_profiles_nif.so apps/salix_agent/priv/native/comma_profiles_nif.so
@@ -292,7 +307,7 @@ ENV SALIX_APP_REVISION=${SALIX_APP_REVISION} \
 # Alert Router ingress, Salix HTTP/SSE, Salix transfer, BridgeForTeams
 # dashboard, EPMD, BEAM distribution (pin a range in your orchestrator; see
 # DEPLOYMENT.md).
-EXPOSE 4300 4000 4400 4101 4369 9100-9110
+EXPOSE 4300 4000 4400 4101 4369 7443 9100-9110
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
   CMD curl -sf http://127.0.0.1:${SALIX_HTTP_PORT}/health || exit 1

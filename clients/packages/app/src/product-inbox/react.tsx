@@ -136,6 +136,19 @@ export function useProductInboxItem(groupId: string, conversationId: string) {
   );
 }
 
+/**
+ * The Group of a workspace in the focused list: the caller renders again only
+ * when it changes, not on every change to the list's Tasks.
+ */
+export function useProductInboxGroupId(workspaceId: string | undefined): string {
+  return useTopicSelect(
+    { topic: "tasks", workspace: "" },
+    (value) =>
+      value?.workspaces?.find((workspace) => workspace.id === workspaceId)?.group_id ??
+      ""
+  );
+}
+
 /** The focused list, without asking for a workspace. */
 export function useProductInboxSnapshot(): ProductInboxListResult | null {
   return useTopic({ topic: "tasks", workspace: "" }).value ?? null;

@@ -9,6 +9,8 @@ ConditionPathExists=/run/sbx/secrets/SALIX_WORKLOAD_CREDENTIAL
 User=comma
 Group=comma
 Environment=DISPLAY=:99 CHROMIUM_BIN=/usr/bin/chromium
+# The browser tools the station gives its agents (systems/station/src/agents/browser-mcp.ts).
+Environment=COMMA_BROWSER_MCP_CONFIG=/etc/comma/browser-mcp.json
 EnvironmentFile=-/etc/sbx/env
 ExecStart=/usr/local/bin/comma-station-start
 Restart=always

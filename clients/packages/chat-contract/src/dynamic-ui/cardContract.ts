@@ -47,6 +47,18 @@ const state = z.enum(["done", "current", "upcoming"]).meta({ title: "state" });
 const status = z
   .union([text, z.object({ label: text, tone: tone.optional() })])
   .meta({ title: "status" });
+// A point on the map as the map service gave it: GCJ-02 from Amap in mainland
+// China, WGS-84 elsewhere.
+const lat = lazySchema(() => z.number().min(-85).max(85));
+const lng = lazySchema(() => z.number().min(-180).max(180));
+const spot = z
+  .object({
+    name: text,
+    address: text.optional(),
+    lat: lat,
+    lng: lng,
+  })
+  .meta({ title: "spot" });
 const delta = z
   .object({
     value: text.describe('the change as shown, with its unit and no sign: "37.6%"'),
@@ -94,7 +106,7 @@ const forecast = z
     days: z
       .array(
         z.object({
-          label: text,
+          label: text.describe('a short day name: "今天", "明天", "周五"'),
           condition,
           conditionLabel: text,
           high: number,
@@ -103,7 +115,8 @@ const forecast = z
         })
       )
       .meta({ limit: 7 })
-      .optional(),
+      .optional()
+      .describe("from today on; with current, days[0] is today"),
     highlight: text.optional(),
   })
   .describe("weather for one place: now, today or the coming days")
@@ -380,13 +393,19 @@ const place = z
           distance: text.optional(),
           eta: text.optional(),
           href: url.optional(),
+          lat: lat
+            .optional()
+            .describe("with lng on every place, shows the places on a map"),
+          lng: lng.optional(),
         })
       )
       .min(1)
       .meta({ limit: 8 }),
   })
   .describe("places to go: nearby results or recommendations")
-  .meta({ layouts: "single (1 place), nearby (2 or more)" });
+  .meta({
+    layouts: "map (every place has lat and lng), single (1 place), nearby (2 or more)",
+  });
 
 const feed = z
   .object({
@@ -552,6 +571,31 @@ const ride = z
   })
   .describe("a ride on its way or under way; title names the service")
   .meta({ layouts: "pickup (plate), trip (pickup and dropoff)" });
+
+const route = z
+  .object({
+    ...cardFrame,
+    origin: spot.describe('where the trip starts, such as the viewer\'s "当前位置"'),
+    destination: spot,
+    mode: z.enum(["drive", "walk", "transit", "cycle"]).optional(),
+    duration: untimed.describe('the travel time, such as "20 分钟"'),
+    distance: text.optional().describe('such as "11.7 公里"'),
+    note: text
+      .optional()
+      .describe('one line on the route, such as "经情侣北路，路况畅通"'),
+    path: z
+      .array(z.tuple([lat, lng]))
+      .meta({ limit: 400 })
+      .optional()
+      .describe(
+        "the route's points as [lat, lng], in order; without it a straight line"
+      ),
+    href: url.optional().describe("opens navigation, such as an uri.amap.com link"),
+  })
+  .describe(
+    "how to get from one place to another: the route on a map and its travel time"
+  )
+  .meta({ layouts: "map" });
 
 const product = z
   .object({
@@ -755,6 +799,7 @@ export const cardDataSchemas = {
   order,
   ticket,
   ride,
+  route,
   product,
   booking,
   device,
@@ -791,6 +836,8 @@ export const cardKindLevels: Record<keyof typeof cardDataSchemas, number> = {
   order: 1,
   ticket: 2,
   ride: 1,
+  // Level 3: a new kind.
+  route: 3,
   product: 1,
   booking: 2,
   device: 1,

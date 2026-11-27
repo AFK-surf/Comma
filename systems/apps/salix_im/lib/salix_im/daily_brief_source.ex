@@ -9,6 +9,7 @@ defmodule SalixIM.DailyBriefSource do
   """
 
   alias SalixIM.Provider.Slack.API, as: SlackAPI
+  alias SalixIM.Provider.Slack.Permalink, as: SlackPermalink
   alias SalixIM.ProviderConnects
   alias SalixIM.SlackMessageMirror
   alias SalixIM.Triage.ClickHouseReader
@@ -20,6 +21,12 @@ defmodule SalixIM.DailyBriefSource do
   @max_window_limit 200
   @max_member_threads 500
   @max_emails 50
+  @max_concurrency 8
+  @task_timeout_ms 15_000
+  @cache_table :salix_daily_brief_source_cache
+  @channel_ttl_ms 300_000
+  @user_name_ttl_ms 3_600_000
+  @cache_max_entries 2_048
 
   @type error ::
           :invalid_request
@@ -42,6 +49,13 @@ defmodule SalixIM.DailyBriefSource do
         # users.conversations lists only the bot's own channels and omits is_member.
         readable = Enum.filter(bot_channels, &public_unshared?/1)
         readable_ids = MapSet.new(readable, & &1["id"])
+
+        Enum.each(bot_channels, fn ch ->
+          if is_binary(ch["id"]) do
+            status = if MapSet.member?(readable_ids, ch["id"]), do: :readable, else: :ineligible
+            cache_put(channel_cache_key(connect, ch["id"]), status, @channel_ttl_ms)
+          end
+        end)
 
         gaps =
           Map.new(member_ids, fn member_id ->
@@ -113,6 +127,8 @@ defmodule SalixIM.DailyBriefSource do
                limit: limit
              ] ++ cursor_opts(request[:cursor])
            ) do
+      Enum.each(page.messages, &seed_message_user_name(connect, &1))
+
       {:ok,
        %{
          messages: Enum.map(page.messages, &message_view/1),
@@ -139,14 +155,17 @@ defmodule SalixIM.DailyBriefSource do
          :ok <- channel_readable(connect, channel_id),
          {:ok, rows} <-
            latest_states(Map.put(scope(connect), "channel_id", channel_id), keys) do
+      live_rows =
+        rows
+        |> Map.values()
+        |> Enum.reject(&(&1["deleted"] == true))
+        |> Enum.sort_by(& &1["message_ts_us"])
+
+      Enum.each(live_rows, &seed_row_user_name(connect, &1))
+
       {:ok,
        %{
-         messages:
-           rows
-           |> Map.values()
-           |> Enum.reject(&(&1["deleted"] == true))
-           |> Enum.sort_by(& &1["message_ts_us"])
-           |> Enum.map(&row_view/1)
+         messages: Enum.map(live_rows, &row_view/1)
        }}
     end
   rescue
@@ -239,16 +258,49 @@ defmodule SalixIM.DailyBriefSource do
   @spec user_names(map()) :: {:ok, %{String.t() => String.t()}} | {:error, error()}
   def user_names(%{user_ids: ids} = request) when is_list(ids) and length(ids) <= 200 do
     with {:ok, connect} <- fetch_connect(request) do
-      names =
+      valid_ids =
         for id <- Enum.uniq(ids),
             is_binary(id) and Regex.match?(~r/^[UW][A-Z0-9]{2,32}$/, id),
-            profile = SalixIM.ProviderHTTP.slack_api_user_profile(connect, id),
-            name = profile["user_display_name"] || profile["user_real_name"],
-            is_binary(name) and name != "",
-            into: %{},
-            do: {id, name}
+            do: id
 
-      {:ok, names}
+      {hits, misses} =
+        Enum.reduce(valid_ids, {%{}, []}, fn id, {hits, misses} ->
+          case cache_get(user_name_cache_key(connect, id)) do
+            {:ok, name} when is_binary(name) -> {Map.put(hits, id, name), misses}
+            _ -> {hits, [id | misses]}
+          end
+        end)
+
+      fetched =
+        case Enum.reverse(misses) do
+          [] ->
+            %{}
+
+          missing_ids ->
+            missing_ids
+            |> SystemsClock.async_stream(
+              fn id ->
+                profile = SalixIM.ProviderHTTP.slack_api_user_profile(connect, id)
+                # A bot, or a person who set none, has a blank display name.
+                name =
+                  present(profile["user_display_name"]) || present(profile["user_real_name"])
+
+                if name do
+                  seed_user_name(connect, id, name)
+                  {id, name}
+                end
+              end,
+              max_concurrency: @max_concurrency,
+              timeout: @task_timeout_ms,
+              on_timeout: :kill_task
+            )
+            |> Enum.reduce(%{}, fn
+              {:ok, {id, name}}, acc -> Map.put(acc, id, name)
+              _other, acc -> acc
+            end)
+        end
+
+      {:ok, Map.merge(hits, fetched)}
     end
   end
 
@@ -265,18 +317,52 @@ defmodule SalixIM.DailyBriefSource do
         messages
         |> Enum.map(& &1.channel_id)
         |> Enum.uniq()
-        |> Enum.filter(&(channel_readable(connect, &1) == :ok))
-        |> MapSet.new()
+        |> readable_channel_set(connect)
 
-      {:ok,
-       messages
-       |> Enum.filter(&MapSet.member?(readable, &1.channel_id))
-       |> Enum.reduce(%{}, fn %{channel_id: channel_id, ts: ts}, acc ->
-         case permalink(token, channel_id, ts) do
-           nil -> acc
-           url -> Map.put(acc, {channel_id, ts}, url)
-         end
-       end)}
+      eligible = Enum.filter(messages, &MapSet.member?(readable, &1.channel_id))
+
+      if eligible == [] do
+        {:ok, %{}}
+      else
+        base_url = workspace_base_url(connect, token)
+
+        {local, fallback} =
+          Enum.reduce(eligible, {%{}, []}, fn msg, {local, fallback} ->
+            case local_permalink(base_url, msg.channel_id, msg.ts, msg[:thread_ts]) do
+              url when is_binary(url) ->
+                {Map.put(local, {msg.channel_id, msg.ts}, url), fallback}
+
+              nil ->
+                {local, [msg | fallback]}
+            end
+          end)
+
+        fetched =
+          case Enum.reverse(fallback) do
+            [] ->
+              %{}
+
+            remaining ->
+              remaining
+              |> SystemsClock.async_stream(
+                fn %{channel_id: channel_id, ts: ts} ->
+                  case permalink(token, channel_id, ts) do
+                    nil -> nil
+                    url -> {{channel_id, ts}, url}
+                  end
+                end,
+                max_concurrency: @max_concurrency,
+                timeout: @task_timeout_ms,
+                on_timeout: :kill_task
+              )
+              |> Enum.reduce(%{}, fn
+                {:ok, {key, url}}, acc -> Map.put(acc, key, url)
+                _other, acc -> acc
+              end)
+          end
+
+        {:ok, Map.merge(local, fetched)}
+      end
     end
   rescue
     error in SlackAPI.Error -> provider_error(error)
@@ -332,12 +418,62 @@ defmodule SalixIM.DailyBriefSource do
   # A public, non-shared channel the bot is in: the only kind a brief reads
   # or posts the team brief to.
   def channel_readable(connect, channel_id) do
-    channel = SlackAPI.conversation_info(SlackAPI.installation(connect), channel_id)
+    key = channel_cache_key(connect, channel_id)
 
-    if channel["id"] == channel_id and readable?(channel),
-      do: :ok,
-      else: {:error, :channel_ineligible}
+    case cache_get(key) do
+      {:ok, :readable} ->
+        :ok
+
+      {:ok, :ineligible} ->
+        {:error, :channel_ineligible}
+
+      :miss ->
+        channel = SlackAPI.conversation_info(SlackAPI.installation(connect), channel_id)
+
+        if channel["id"] == channel_id and readable?(channel) do
+          cache_put(key, :readable, @channel_ttl_ms)
+          :ok
+        else
+          cache_put(key, :ineligible, @channel_ttl_ms)
+          {:error, :channel_ineligible}
+        end
+    end
   end
+
+  defp readable_channel_set(channel_ids, connect) do
+    {known, misses} =
+      Enum.reduce(channel_ids, {MapSet.new(), []}, fn channel_id, {known, misses} ->
+        case cache_get(channel_cache_key(connect, channel_id)) do
+          {:ok, :readable} -> {MapSet.put(known, channel_id), misses}
+          {:ok, :ineligible} -> {known, misses}
+          :miss -> {known, [channel_id | misses]}
+        end
+      end)
+
+    case Enum.reverse(misses) do
+      [] ->
+        known
+
+      uncached ->
+        uncached
+        |> SystemsClock.async_stream(
+          fn channel_id -> if channel_readable(connect, channel_id) == :ok, do: channel_id end,
+          max_concurrency: @max_concurrency,
+          timeout: @task_timeout_ms,
+          on_timeout: :kill_task
+        )
+        |> Enum.reduce(known, fn
+          {:ok, channel_id}, acc when is_binary(channel_id) -> MapSet.put(acc, channel_id)
+          _other, acc -> acc
+        end)
+    end
+  end
+
+  defp workspace_base_url(connect, token),
+    do: SlackPermalink.resolve_workspace_url(connect, token)
+
+  defp local_permalink(base_url, channel_id, ts, thread_ts),
+    do: SlackPermalink.build(base_url, channel_id, ts, thread_ts)
 
   defp readable?(channel), do: channel["is_member"] == true and public_unshared?(channel)
 
@@ -465,16 +601,20 @@ defmodule SalixIM.DailyBriefSource do
          ) do
       profile = user["profile"] || %{}
 
+      names =
+        [profile["display_name"], profile["real_name"], user["real_name"], user["name"]]
+        |> Enum.map(&present/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
+      if names != [], do: seed_user_name(connect, user["id"], hd(names))
+
       {:ok,
        %{
          slack_user_id: user["id"],
          workspace_id: connect["workspace_id"],
          timezone: present(user["tz"]) || "Etc/UTC",
-         names:
-           [profile["display_name"], profile["real_name"], user["real_name"], user["name"]]
-           |> Enum.map(&present/1)
-           |> Enum.reject(&is_nil/1)
-           |> Enum.uniq()
+         names: names
        }}
     else
       :error
@@ -555,4 +695,91 @@ defmodule SalixIM.DailyBriefSource do
   defp present(_value), do: nil
 
   defp blank?(value), do: is_nil(present(value))
+
+  defp channel_cache_key(connect, channel_id) do
+    {:channel, connect["tenant_id"], connect["connect_id"], connect["connect_generation"],
+     channel_id}
+  end
+
+  defp user_name_cache_key(connect, user_id) do
+    {:user_name, connect["tenant_id"], connect["workspace_id"], user_id}
+  end
+
+  defp seed_message_user_name(connect, message) when is_map(message) do
+    if is_nil(present(message["bot_id"])) and message["subtype"] != "bot_message" do
+      label =
+        present(message["actor_label"]) ||
+          present(get_in(message, ["user_profile", "display_name"])) ||
+          present(get_in(message, ["user_profile", "real_name"])) ||
+          present(message["username"])
+
+      seed_user_name(connect, message["user"], label)
+    end
+  end
+
+  defp seed_message_user_name(_connect, _message), do: :ok
+
+  defp seed_row_user_name(connect, row) when is_map(row) do
+    if row["actor_kind"] not in ["bot", "app"] and row["subtype"] != "bot_message" do
+      seed_user_name(connect, row["actor_id"], row["actor_label"])
+    end
+  end
+
+  defp seed_row_user_name(_connect, _row), do: :ok
+
+  defp seed_user_name(connect, user_id, raw_name) do
+    if is_binary(user_id) and Regex.match?(~r/^[UW][A-Z0-9]{2,32}$/, user_id) do
+      if name = present(raw_name) do
+        cache_put(user_name_cache_key(connect, user_id), name, @user_name_ttl_ms)
+      end
+    end
+
+    :ok
+  end
+
+  defp cache_table do
+    case SystemsRuntime.ETS.whereis(@cache_table) do
+      :undefined ->
+        try do
+          SystemsRuntime.ETS.new(@cache_table, [
+            :named_table,
+            :public,
+            :set,
+            read_concurrency: true,
+            write_concurrency: true
+          ])
+        rescue
+          ArgumentError -> @cache_table
+        end
+
+      _ ->
+        @cache_table
+    end
+  end
+
+  defp cache_get(key) do
+    now = SystemsClock.monotonic_time(:millisecond)
+
+    case SystemsRuntime.ETS.lookup(cache_table(), key) do
+      [{^key, value, expires_at}] when expires_at > now -> {:ok, value}
+      _ -> :miss
+    end
+  rescue
+    ArgumentError -> :miss
+  end
+
+  defp cache_put(key, value, ttl_ms) do
+    tab = cache_table()
+    now = SystemsClock.monotonic_time(:millisecond)
+    _ = SystemsRuntime.ETS.select_delete(tab, [{{:_, :_, :"$1"}, [{:"=<", :"$1", now}], [true]}])
+
+    if SystemsRuntime.ETS.info(tab, :size) >= @cache_max_entries do
+      _ = SystemsRuntime.ETS.delete_all_objects(tab)
+    end
+
+    SystemsRuntime.ETS.insert(tab, {key, value, now + ttl_ms})
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
 end

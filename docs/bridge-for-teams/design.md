@@ -68,15 +68,11 @@ Deleting or rebinding a Connect does not uninstall its old App. Remove aliases a
 
 ## Triage collaboration
 
-Triage batches input for its Worker. The Worker owns research, context suggestions, and participation, including social and resolved threads.
-Use Router-authorized reads for other channels and relevant linked threads before any decision, including silence.
-A reply, preview, or promise does not prove correctness or resolution.
-Correct consequential errors with reliable evidence. Stay silent when a correct, complete answer needs no addition.
-Check useful next actions. Do not audit every exchange or duplicate owned investigations.
-Unsolicited replies need more than agreement or paraphrase. Invited, specific humor is valid.
-For silence, the Worker records `already_handled`, `no_useful_addition`, or `insufficient_evidence` as its `reason_code`.
-A material unread source is insufficient evidence, not proof that the question is handled.
-Code records assessments without verification or automatic retries.
+Triage batches input for its Worker (`VerifiedKernel.Proactive` checks recipient route, intake, double-freshness commit, and 3-attempt stale completion). The Worker owns research, context suggestions, and participation; `station_task.list` (`agent_private` read) lets it defer (`already_handled`) to active same-thread `still.fail` sessions or track blocked ones without leaking private chat text.
+Use Router-authorized reads for other channels and linked threads before any decision, including silence.
+A reply, preview, or promise does not prove correctness or resolution; correct consequential errors with reliable evidence and stay silent when a complete answer needs no addition.
+Check useful next actions without auditing every exchange or duplicating owned investigations. Unaddressed messages default to silence unless verified workspace facts warrant a reply.
+For silence, the Worker records `already_handled`, `no_useful_addition`, or `insufficient_evidence` as its `reason_code`; an unread material source is `insufficient_evidence`, and code records assessments without automatic retries.
 
 After investigation, a help request for unresolved work must include an explicit `agent_owned` follow-up through `internal.triage.complete`.
 Set and cite `follow_up_ref` to update an active follow-up. Identity, interval, and Schedule stay unchanged.
@@ -149,24 +145,25 @@ Do not scan every historical thread on an interactive status request.
 
 ## Daily brief
 
-`BridgeForTeams.DailyBrief` owns the settings, members, aliases, and runs. A run is the team's brief (`team_brief`) or a member's (`personal_brief`), with its window, tokens, coverage, and the text the model wrote.
-Briefs read the bot's public, non-shared channels in the Salix Slack mirror, to 10 minutes ago; they store no message text.
-A member may turn on their direct messages (`DailyBrief.DirectMessages`) from the link at the end of their brief, with a read-only grant to the Swarm's bot app (`SalixIM.SlackScopes.daily_brief_user/0`; an admin adds these user scopes to the app and reinstalls it). The brief finds the window's direct and group direct messages through the member's Slack search when it is written and stores none; a revoked grant turns it off.
-Once a day, one per Swarm at a time, the team brief is written from the window since the last one, with that brief as context. Each member's brief reads the member's messages since their last sent brief (mentions, aliases, threads they are in with a bot's replies there, their own) and the human messages of their main channels (`DailyBrief.Focus`: the 6 public channels they wrote most in over 14 days, changed by asking the bot), and the model writes it by topic with the team brief and their last brief.
-The bot sends each member's brief on org workdays after `deliver_at` in their zone; an extra send keeps the next. The team brief goes to the team channel at `team_post_at`, once.
-A brief waits as `pending` until Slack takes it; a failed send is resent without another model call. A brief the model cannot write is not sent; a passing failure is tried again in about an hour, over the same window.
-Retention deletes runs older than the org's period (at most 90 days). Admin pages show counts, states, and errors, no brief text.
+`BridgeForTeams.DailyBrief` owns settings, members, aliases, and runs (`team_brief`/`personal_brief`: window, tokens, coverage, text).
+An org picks one Slack, Feishu, or Lark bot (`provider`, `connect_id`). Members link per provider by email; only its members get briefs.
+Briefs read public unshared Slack channels or internal public Feishu/Lark groups in the Salix mirror up to 10 minutes ago; no message text is stored.
+A Slack member can enable direct messages (`DailyBrief.DirectMessages`) via their brief link (`SlackScopes.daily_brief_user/0`); revocation disables it. Where briefs post, only replies are read; search adds shared-channel messages. Feishu and Lark read none.
+Daily per Swarm, the team brief covers since the last run. A member's brief reads, since their last brief, their mentions, aliases, own messages/threads, bot notes naming them, and human messages in their 6 most active 14-day channels (`DailyBrief.Focus`), grouped by topic with the team brief and prior run.
+Open items carry 7 days without news; done items stay closed 7 days. Named and member PRs come from GitHub.
+Member briefs send on workdays after `deliver_at` in their zone; manual sends keep the next schedule. Team briefs post at `team_post_at` once. Members adjust settings via the bot. Recent (30m) `still.fail` stops (`need`/`failed`/`done`) send one personal DM per stop (`DailyBrief.StationTaskNotifier`, `daily_brief_members.station_task_notified`).
+Pending briefs retry on transient errors; unwritable ones skip. Retention prunes runs (≤ 90 days); admin shows counts/states/errors only.
 
 ## Feishu
 
-Dashboard SSO and bot-message routing are separate setup workflows.
-Organization Settings stores the app ID and secret once. Select that binding for login or bot messaging.
+Dashboard SSO and bot routing are separate setups. Settings stores each app's ID and secret once.
+Login uses one app. The bot can use several, one per department; each connects to one Agent Swarm.
 Selecting Feishu SSO replaces the organization's other active SSO provider. Membership still controls organization and Project access.
 See [Identity and security](../identity-security.md).
 
-For a bot connection, verify the selected app, published permissions, installation, callback configuration, and Group routing.
-A bot in a chat with members of another organization needs the app's External Sharing turned on in the provider console. Lark still refuses the app history reads there with error 230027, even with it on, so the bot reads what was delivered to it from the local index.
-Use the callback and redirect values that the product shows. Check the current provider console before setup.
+For a bot connection, verify the selected app, published permissions, installation, callbacks, and Group routing.
+A bot in a chat with members of another organization needs the app's External Sharing turned on in the provider console. Lark still refuses the app history reads there (error 230027) even with it on, so the bot reads what was delivered to it from the local index.
+Use the callback and redirect values the product shows, and check the current provider console first.
 Never paste app secrets into a support thread or screenshot.
 
 The bot finds and reads content as the app and as people of the Agent Swarm who signed in with their Feishu account (under Connections → Accounts, or through the link the bot posts in a chat). A person sees what they took part in or may open; the app sees what was shared with it.
@@ -189,12 +186,11 @@ Managed repair runs as the non-root service user. It can restart the existing VM
 
 An Agent model is a Salix model choice. Without one, the Agent follows the platform model of its role.
 Allowed models limit admin choices. An empty list allows every model.
-The AI models page groups the catalog by what serves each model for the org: a subscription plan, pay-per-use Provider API keys, or no account.
+The AI models page groups the catalog by what serves each model: a subscription plan, pay-per-use API keys, or no account.
 Pay-per-use (`allow_paid` true) is a separate choice for the allowed list and the defaults. It names the key sources that can serve it, and the account pool picks one.
 Models that no account serves stay hidden until requested and cannot be newly allowed. An account change reloads what serves each model.
 A new Router or internal Worker gets a copy of the org default for its role. An empty default follows the platform.
-Salix checks choices in the org tenant. Only that tenant's Profiles serve a catalog model. Never expose other tenants' credentials.
-See [Billing and models](../billing-models.md).
+Only org tenant Profiles serve catalog models, except a [platform Router](../billing-models.md) (darksky@cue.surf, 2026-11-12). Salix checks choices there and never exposes other tenants' credentials.
 
 ## Operations
 

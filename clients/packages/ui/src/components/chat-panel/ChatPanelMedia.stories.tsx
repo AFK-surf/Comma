@@ -6,6 +6,7 @@ import {
   Button,
   ChatPanelAudio,
   ChatPanelFile,
+  ChatPanelPreviewCard,
   ChatPanelVideo,
   Tooltip,
   downloadMediaSource,
@@ -215,6 +216,32 @@ const FileActionsPreview = () => {
 };
 
 export const FileActions: Story = { render: () => <FileActionsPreview /> };
+
+/** What opens beside the chat, as one card: its name and Open, then a picture of it. */
+export const PreviewCard: Story = {
+  render: () => (
+    <div className="flex flex-col items-start gap-xl bg-main-panel-bg p-3xl">
+      <ChatPanelPreviewCard
+        fades
+        onOpen={() => undefined}
+        subtitle="Markdown · 12 KB"
+        title="Comma 插件接入方案.md"
+      >
+        <div className="flex flex-col gap-md p-xl">
+          <p className="m-0 text-md font-semibold text-primary">Comma 插件接入方案</p>
+          <p className="m-0 text-xs text-secondary">
+            本文说明第三方插件如何接入 Comma，以及桌面端与服务端各自承担的职责。
+          </p>
+        </div>
+      </ChatPanelPreviewCard>
+      <ChatPanelPreviewCard
+        onOpen={() => undefined}
+        subtitle="example.com"
+        title="A page with a long title that runs past the card's edge and is cut"
+      />
+    </div>
+  ),
+};
 
 /** One file of every type that has artwork, then one without. */
 const fileTypeSamples = [

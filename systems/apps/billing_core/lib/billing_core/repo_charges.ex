@@ -91,6 +91,15 @@ defmodule BillingCore.RepoCharges do
     lock_account(repo, sql, event.billing_account_id)
     entitlement = active_entitlement(repo, sql, event)
 
+    entitlement = %{
+      entitlement
+      | mode:
+          BillingCore.FeeControl.settle(
+            entitlement.mode,
+            BillingCore.FeeControl.settlement(event)
+          )
+    }
+
     if entitlement.mode == :unlimited_metered do
       commit_unlimited_charge(repo, sql, event, components, calculated, entitlement)
     else

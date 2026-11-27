@@ -49,6 +49,23 @@ const screen = (note: string, more: Partial<ChatDraftSelection> = {}) =>
     ...more,
   });
 
+/** A passage of plan.md a reader asked to have changed. */
+const passage = (note: string, quote: string) =>
+  createChatDraftSelection({
+    note,
+    about: {
+      kind: "document",
+      fileName: "plan.md",
+      reference: '["grp","cnv","msg",0,"plan.md"]',
+      quote,
+      start: 12,
+      end: 12 + quote.length,
+      before: "Plan",
+      after: "Risks",
+      heading: "Plan",
+    },
+  });
+
 describe("a message with staged selections", () => {
   it("is the typed text alone when nothing is staged", () => {
     expect(composeMessageWithSelections("Hello", [])).toBe("Hello");
@@ -112,6 +129,63 @@ describe("a message with staged selections", () => {
     expect(message.indexOf("Selector: main > a")).toBeGreaterThan(
       message.indexOf("Selection 2 of 3")
     );
+  });
+
+  it("asks for a change to a document's passage: the words for the chat, the file and the place for the agent", () => {
+    const selections = [
+      passage("Make this shorter", "The plugin talks to the desktop."),
+      passage("", "None yet."),
+    ];
+    const text = composeMessageWithSelections("Two changes:", selections);
+    // The chat shows what the person asked; a passage staged with no note is asked about as itself.
+    expect(decodeUserMessage(text).body).toBe(
+      "Two changes:\n\n1. Make this shorter\n2. “None yet.”"
+    );
+    expect(text).toContain(
+      [
+        "<document_selection_context>",
+        "Selection 1 of 2",
+        "File: plan.md",
+        'Attachment: ["grp","cnv","msg",0,"plan.md"]',
+        "Under the heading: Plan",
+        "Selected text (as the rendered document shows it; Markdown markup is removed):",
+        "The plugin talks to the desktop.",
+        'Text just before it: "Plan"',
+        'Text just after it: "Risks"',
+        "",
+        "Selection 2 of 2",
+      ].join("\n")
+    );
+    // A passage is words alone: it adds no file to the message.
+    expect(selectionFiles(selections)).toEqual([]);
+  });
+
+  it("carries a person's edits of a document as the message's file, and says nothing of them in the chat", () => {
+    const bytes = new TextEncoder().encode("# Plan\n\nMine.\n");
+    const version = createChatDraftSelection({
+      note: "",
+      about: {
+        kind: "document-version",
+        fileName: "plan.md",
+        reference: '["grp","cnv","msg",0,"plan.md"]',
+        file: { bytes, name: "plan.md", size: bytes.length },
+      },
+    });
+    const asked = passage("Make this shorter", "The plugin talks to the desktop.");
+    const text = composeMessageWithSelections("Go on from this.", [asked, version]);
+    // The edits take no number and add no words: the one passage is asked about unnumbered.
+    expect(decodeUserMessage(text).body).toBe("Go on from this.\n\nMake this shorter");
+    // The agent is told the file replaces the attachment.
+    expect(text).toContain(
+      "The person edited this document. Their version is attached as plan.md."
+    );
+    expect(selectionFiles([asked, version])).toEqual([
+      { bytes, name: "plan.md", size: bytes.length },
+    ]);
+    // Edits alone still make a message: its file, and what the agent reads of it.
+    const alone = composeMessageWithSelections("", [version]);
+    expect(decodeUserMessage(alone).body).toBe("");
+    expect(alone).toContain("<document_selection_context>");
   });
 
   it("names a screen once by its link, with its areas' pictures and its app's logs", () => {
@@ -195,5 +269,27 @@ describe("a message with staged selections", () => {
       );
     expect(selectionsFit(elements(3), 5)).toBe(true);
     expect(selectionsFit(elements(4), 5)).toBe(false);
+  });
+
+  it("sends a person's version of a document with the pictures they put in it, and says which they are", () => {
+    const bytes = new TextEncoder().encode("# Plan\n\n![Chart](chart.png)\n");
+    const picture = new Uint8Array([1, 2, 3]);
+    const version = createChatDraftSelection({
+      note: "",
+      about: {
+        kind: "document-version",
+        fileName: "plan.md",
+        reference: "attachment-1",
+        file: { bytes, name: "plan.md", size: bytes.length },
+        images: [{ bytes: picture, name: "chart.png", size: picture.length }],
+      },
+    });
+    expect(selectionFiles([version]).map((file) => file.name)).toEqual([
+      "plan.md",
+      "chart.png",
+    ]);
+    expect(composeMessageWithSelections("Use this.", [version])).toContain(
+      "It names each by its file name, and they are attached: chart.png."
+    );
   });
 });

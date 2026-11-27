@@ -49,7 +49,12 @@ defmodule SalixAgent.SessionToolExecution do
 
       tool_call =
         %{id: "http-tool:" <> random_id(), name: tool_name, args: args}
-        |> then(&if(ifc, do: Map.put(&1, :ifc, ifc), else: &1))
+        |> then(
+          &if(SalixAgent.IFC.Declaration.present?(%{args: attrs}),
+            do: Map.put(&1, :ifc, ifc),
+            else: &1
+          )
+        )
 
       ctx =
         tool_context(

@@ -62,6 +62,7 @@ defmodule SalixIM.IFC.ReadLabels do
   @spec for_space(map()) :: map() | nil
   def for_space(connect) when is_map(connect) do
     case labelling_scope(connect) do
+      %{ifc_mode: "easy"} -> %{"label" => ["unclassified_non_im"]}
       %{} = scope -> %{"label" => encoded_atoms([{:space, scope.connect_id}])}
       _off -> nil
     end
@@ -134,6 +135,7 @@ defmodule SalixIM.IFC.ReadLabels do
   @spec for_document(map(), (-> {:ok, map()} | {:error, term()})) :: map() | nil
   def for_document(connect, audience) when is_map(connect) and is_function(audience, 0) do
     case labelling_scope(connect) do
+      %{ifc_mode: "easy"} -> %{"label" => ["unclassified_non_im"]}
       %{} = scope -> %{"label" => document_label(scope, audience.())}
       _off -> nil
     end
@@ -247,10 +249,12 @@ defmodule SalixIM.IFC.ReadLabels do
     group_id = text(connect["group_id"])
     connect_id = text(connect["connect_id"])
 
-    if group_id == "" or connect_id == "" or Facts.mode(tenant_id, group_id) == "off" do
+    mode = Facts.mode(tenant_id, group_id)
+
+    if group_id == "" or connect_id == "" or mode == "off" do
       nil
     else
-      %{tenant_id: tenant_id, group_id: group_id, connect_id: connect_id}
+      %{tenant_id: tenant_id, group_id: group_id, connect_id: connect_id, ifc_mode: mode}
     end
   rescue
     exception ->

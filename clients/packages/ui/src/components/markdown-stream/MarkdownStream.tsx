@@ -177,7 +177,17 @@ export interface MarkdownStreamProps extends Omit<
   clipboard?: MarkdownStreamClipboard;
   inlineElements?: MarkdownStreamInlineElements;
   /** File documents cannot acquire resources from URLs embedded in their text. */
-  documentResourcePolicy?: { onOpenLink: (url: string) => void };
+  documentResourcePolicy?: {
+    onOpenLink: (url: string) => void;
+    /**
+     * Draws a picture the document writes: a Markdown picture (`src`, `alt`), or the line of `html` a document
+     * writes for one. The host draws only a file it reads itself, never an address in the text. Without it, or
+     * where it gives undefined, the picture is named in words.
+     */
+    renderPicture?: (
+      picture: { src: string; alt: string } | { html: string }
+    ) => ReactNode | undefined;
+  };
 }
 
 const MarkdownDocumentResourceContext =
@@ -2120,11 +2130,16 @@ function CommaImageNode(props: CommaNodeProps<MarkdownNode>) {
 
   const src = safeHref(props.node.src);
   const pending = Boolean(props.node.loading);
+  const alt = asString(props.node.alt);
+  // A document's own picture is drawn by the host, which reads its file; its address is never loaded.
+  const own = pending
+    ? undefined
+    : documentPolicy?.renderPicture?.({ src: asString(props.node.src), alt });
+  if (own !== undefined) return <>{own}</>;
   if (!src && !pending) return null;
 
   // Markdown carries no intrinsic dimensions. A consistent preview frame keeps
   // later prose anchored while bytes load; the original remains one click away.
-  const alt = asString(props.node.alt);
   if (documentPolicy)
     return <span>{messages.file_preview_remote_image({ name: alt || "image" })}</span>;
   const standIn =
@@ -2610,8 +2625,66 @@ function CommaReferenceNode(props: CommaNodeProps<MarkdownNode>) {
   );
 }
 
+const coloredHtml = /^<(span|mark)\s+data-color="([a-z]{1,16})"\s*>/u;
+// A picture a document sets to a side or gives a width is written as one line of HTML (the app's
+// `documentEditorModel`): the picture's file, and the words that stand for it.
+const pictureHtml =
+  /^<p(?: align="(?:left|center|right)")?>\s*<(?:img|video) src="([^"]+)"(?: alt="([^"]*)")?/u;
+
+const htmlOf = (node: MarkdownNode) =>
+  node.type === "html_inline" || node.type === "html_block"
+    ? (asString(node.content) || asString(node.raw)).trim()
+    : undefined;
+
+/**
+ * What a coloured element holds. A document gives text a colour and a ground at once as one element in the other
+ * (`<mark data-color><span data-color>text</span></mark>`). The parser pairs the outer tags alone and leaves the
+ * inner pair as loose HTML among the children: the pair is drawn here as its element, around what is between it.
+ */
+function renderColoredChildren(
+  props: CommaNodeProps,
+  children: MarkdownNode[],
+  keyPrefix: string
+): ReactNode[] {
+  const drawn: ReactNode[] = [];
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index]!;
+    const html = nodeChildren(child).length === 0 ? htmlOf(child) : undefined;
+    const opened = html === undefined ? null : coloredHtml.exec(html);
+    const closed =
+      opened && opened[0].length === html!.length
+        ? children.findIndex(
+            (later, at) => at > index && htmlOf(later) === `</${opened[1]}>`
+          )
+        : -1;
+    if (opened && closed > index) {
+      const Tag = opened[1] as "span" | "mark";
+      drawn.push(
+        <Tag
+          className="markdown-stream-colored"
+          data-color={opened[2]}
+          key={`${keyPrefix}-${index}`}
+        >
+          {renderColoredChildren(
+            props,
+            children.slice(index + 1, closed),
+            `${keyPrefix}-${index}`
+          )}
+        </Tag>
+      );
+      index = closed;
+    } else
+      drawn.push(
+        renderNode(props.renderNode, props.ctx, child, `${keyPrefix}-${index}`)
+      );
+  }
+  return drawn;
+}
+
 function CommaHtmlNode(props: CommaNodeProps<MarkdownNode>) {
   const config = useContext(MarkdownStreamContext);
+  const messages = useCommaMessages();
+  const documentPolicy = useContext(MarkdownDocumentResourceContext);
   const content = asString(props.node.content) || asString(props.node.raw);
   if (
     !shouldRenderCompleteBlurContent(
@@ -2622,6 +2695,32 @@ function CommaHtmlNode(props: CommaNodeProps<MarkdownNode>) {
   ) {
     return null;
   }
+
+  // A colour a document gives to text (`<span data-color>`) or to its ground (`<mark data-color>`): the one HTML
+  // drawn as an element. Its tag and name are written anew, and it holds the text between its tags as the
+  // renderer draws it. The page that shows it sets what each name looks like.
+  const colored = coloredHtml.exec(content);
+  const children = nodeChildren(props.node);
+  if (colored && children.length > 0) {
+    const Tag = colored[1] as "span" | "mark";
+    return (
+      <Tag className="markdown-stream-colored" data-color={colored[2]}>
+        {renderColoredChildren(props, children, childKeyPrefix(props, "colored"))}
+      </Tag>
+    );
+  }
+
+  // In a document a picture written so is drawn by the host or named, as a picture written in Markdown is: not
+  // shown as its HTML.
+  const picture = documentPolicy ? pictureHtml.exec(content.trim()) : null;
+  const own = picture ? documentPolicy?.renderPicture?.({ html: content }) : undefined;
+  if (own !== undefined) return <>{own}</>;
+  if (picture)
+    return (
+      <span>
+        {messages.file_preview_remote_image({ name: picture[2] || picture[1]! })}
+      </span>
+    );
 
   return (
     <code className="markdown-stream-inline-code bg-markdown-bg-inline-code font-mono text-markdown-text-inline-code">
@@ -4473,6 +4572,7 @@ export const MarkdownStream = ({
                 <MarkdownDocumentRenderer
                   {...props}
                   blockPresentation={blockPresentation}
+                  hasPictureRenderer={Boolean(documentResourcePolicy?.renderPicture)}
                   {...(customHtmlTags ? { customHtmlTags } : {})}
                   customId={customId}
                   fade={false}

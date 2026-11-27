@@ -49,8 +49,14 @@ defmodule SalixStore.HeadlessInstallE2ETest do
       esac
       shift
     done
-    if [ -n "$output" ]; then
-      cp /fixture/host.tar.gz "$output"
+    if [ -n "$output" ] && [ -e /fixture/drop-download ]; then
+      rm /fixture/drop-download
+      head -c "$(($(wc -c < /fixture/host.tar.gz) / 2))" /fixture/host.tar.gz > "$output"
+      exit 18
+    elif [ -n "$output" ]; then
+      received=0
+      [ ! -f "$output" ] || received=$(wc -c < "$output" | tr -d ' ')
+      tail -c "+$((received + 1))" /fixture/host.tar.gz >> "$output"
     elif [ "$post" = 1 ]; then
       if [ -e /fixture/fail-download ]; then exit 22; fi
       cat /fixture/install.sh
@@ -143,6 +149,25 @@ defmodule SalixStore.HeadlessInstallE2ETest do
         assert File.read!(Path.join(ctx.root, "result")) == "resumed\n"
         File.write!(Path.join(ctx.root, "state/plan"), "corrupt")
         assert {_, 23} = run(ctx.image, ctx.root, ["sh", "/fixture/command.sh"])
+      end
+
+      test "an interrupted archive download resumes from the received bytes", ctx do
+        {:ok, script} =
+          Headless.script(
+            ctx.handoff,
+            "secret",
+            "linux-arm64",
+            ctx.target,
+            "https://api.example.test"
+          )
+
+        File.write!(Path.join(ctx.root, "install.sh"), script)
+        File.touch!(Path.join(ctx.root, "drop-download"))
+        assert {output, 17} = run(ctx.image, ctx.root, ["sh", "/fixture/install.sh"])
+        assert output =~ "Retry 1 of 5 continues it."
+        refute File.exists?(Path.join(ctx.root, "drop-download"))
+        assert File.read!(Path.join(ctx.root, "lifecycle-argv")) =~ "lifecycle\ninstall\n"
+        assert File.read!(Path.join(ctx.root, "curl-argv")) =~ "--continue-at\n-\n"
       end
 
       test "a wrong expected digest fails verification before the installer runs", ctx do

@@ -31,10 +31,10 @@ describe("desktop app prompt", () => {
       screen.getByRole("dialog", { name: "Get the Comma desktop app" })
     ).toHaveTextContent("Voice input needs the Comma desktop app.");
 
-    act(() => requestDesktopApp("computer-use"));
+    act(() => requestDesktopApp("permissions"));
     expect(
       screen.getByRole("dialog", { name: "Get the Comma desktop app" })
-    ).toHaveTextContent("Computer use needs the Comma app for Mac.");
+    ).toHaveTextContent("Granting macOS permissions needs the Comma app for Mac.");
   });
 
   it("starts the macOS download only for a Mac reader", () => {

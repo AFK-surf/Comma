@@ -49,6 +49,7 @@ import { firstLine } from "./views.ts";
 import type { ChatAttachmentIntakeClaim } from "../chat/coordinator/hostContract.ts";
 import {
   COMMA_PROTOCOL_MARKER,
+  composeMessageWithAttachments,
   stripCommaProtocolMarkers,
 } from "../chat/model/protocol.ts";
 import { decodeUserMessage, userParts } from "../chat/model/userMessageText.ts";
@@ -82,7 +83,8 @@ function shownFile(f: ComposerFile) {
       : f.error
         ? ("failed" as const)
         : ("uploading" as const),
-    ...(f.done ? { path: f.done.path } : {}),
+    // A file named by its path on this computer shows that path, not a path on the station.
+    ...(f.local ? { localPath: f.done!.path } : f.done ? { path: f.done.path } : {}),
     ...(f.error ? { error: f.error } : {}),
   };
 }
@@ -451,15 +453,15 @@ export class StationConversations
             try: () => composer.take(at),
             catch: (e) => e as CoreError,
           })
-        : { attachments: [] };
+        : { attachments: [], localFiles: [] };
       const restore = Effect.sync(() => {
-        if (drafted) composer.restore(at, text, taken.attachments);
+        if (drafted) composer.restore(at, text, taken.attachments, taken.localFiles);
       });
       const given = input.files?.length
         ? yield* composer.put(at, input.files).pipe(Effect.tapError(() => restore))
         : [];
       const attachments = [...taken.attachments, ...given];
-      if (text === "" && attachments.length === 0)
+      if (text === "" && attachments.length === 0 && taken.localFiles.length === 0)
         return yield* restore.pipe(
           Effect.andThen(Effect.fail(CoreError.invalid("text is required")))
         );
@@ -474,7 +476,11 @@ export class StationConversations
       yield* chats
         .send(
           at,
-          text.replaceAll(COMMA_PROTOCOL_MARKER, "[[comma-protocol-user]]"),
+          // The files named by their path on this computer are listed after the words, as a Salix message lists them.
+          composeMessageWithAttachments(
+            text.replaceAll(COMMA_PROTOCOL_MARKER, "[[comma-protocol-user]]"),
+            taken.localFiles.map((f) => ({ name: f.name, path: f.path, local: true }))
+          ),
           attachments,
           {
             ...(input.clientRequestId ? { id: input.clientRequestId } : {}),
@@ -658,6 +664,12 @@ export class StationConversations
     return this.#receipt(at);
   }
 
+  attachLocalPaths(input: In<"attachLocalPaths">): ChatCommandReceipt {
+    const at = this.#leased(input);
+    this.#composer.addLocalPaths(at, input.files);
+    return this.#receipt(at);
+  }
+
   /**
    * Files of another conversation's messages: each is read from where it is kept (`files.read`: Comma's server, or the
    * station of a Task one hosts), then goes up as a file given whole.
@@ -751,6 +763,15 @@ export class StationConversations
 
   room(target: ConversationTarget): PickRoom | null {
     return this.#composer.room(this.#at(target));
+  }
+
+  /** Whether the Task runs here, on the station of device `deviceId`: listed as that device's, and not moved to another. */
+  runsOnDevice(target: ConversationTarget, deviceId: string | undefined): boolean {
+    if (deviceId === undefined) return false;
+    const account = this.#ctx.session.current();
+    if (!account || this.#chats.value(this.#at(target)).runsOn) return false;
+    const listed = this.#tasks.task(account, target.workspace, target.conversation);
+    return listed?.device === deviceId || listed?.station === deviceId;
   }
 
   /** The files of the answer to the card `questionMessageId` names (`thread:seq`). */

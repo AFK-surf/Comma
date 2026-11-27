@@ -1,17 +1,23 @@
 defmodule SalixStore.AgentVMMHostClient do
   @moduledoc """
-  Resolves the current Workload-bound host.v1 reverse-proxy session.
+  Resolves the current Workload-bound host.v1 session and runs typed runtime
+  operations in it.
 
-  The returned CONNECT target is derived from Salix's current durable session
-  projection. Gateway connection/session maps remain transport-only state.
-  The URL carries the current allocation generation and Host connection epoch.
+  The target is derived from Salix's current durable session projection:
+  the gateway instance that holds the Host connection, the allocation
+  generation and the Host connection epoch. Gateway connection and session
+  maps remain transport-only state.
+
+  An operation runs on the node whose Agent VMM worker has that instance id
+  (`SalixStore.AgentVMM.Worker.session_call/5`).
   """
 
   alias SalixStore.{AgentVMM, Compute}
+  alias SalixStore.AgentVMM.Worker
 
   defstruct [
     :session_id,
-    :connect_url,
+    :registration_id,
     :expires_at,
     :gateway_instance_id,
     :allocation_id,
@@ -19,8 +25,20 @@ defmodule SalixStore.AgentVMMHostClient do
     :allocation_generation,
     :workload_generation,
     :container_id,
-    :container_instance_id
+    :container_instance_id,
+    :workspace_volume_id
   ]
+
+  @workspace_volume_operations ~w(
+    compute.workspace.list
+    compute.workspace.read
+    compute.workspace.write
+  )
+
+  @max_process_tail_wait_ms 30_000
+  @default_exec_timeout_ms 60_000
+  @min_exec_timeout_ms 1_000
+  @max_exec_timeout_ms 300_000
 
   @side_effecting ~w(
 	  workspace_write build_run image_delete volume_create volume_delete
@@ -30,13 +48,13 @@ defmodule SalixStore.AgentVMMHostClient do
 	)a
 
   @request_id_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}\z/
-  # salix-vmm-gateway bounds the import RPC to ten minutes. Acquire enough
-  # authority before opening the stream; authority is never renewed mid-stream.
-  @image_import_timeout_seconds 600
-  @image_import_authority_margin_seconds 60
+  # Claim lease (900s) > authority (780s) > client (760s) > worker (750s) > Host (720s).
+  # Authority is acquired before the import and is never renewed mid-stream.
+  @image_import_authority_seconds 780
+  @operation_timeout_ms 95_000
+  @image_import_timeout_ms 760_000
 
-  def image_import_authority_seconds,
-    do: @image_import_timeout_seconds + @image_import_authority_margin_seconds
+  def image_import_authority_seconds, do: @image_import_authority_seconds
 
   @doc false
   def gateway_error_code(error), do: __MODULE__.HTTP.gateway_error_code(error)
@@ -144,10 +162,7 @@ defmodule SalixStore.AgentVMMHostClient do
         {"x-comma-platform", image["platform"]}
       ]
 
-      case http_client().post_import(
-             resolved.connect_url <> "/compute.image.import",
-             headers
-           ) do
+      case post_import(resolved, headers) do
         {:error, :stale_session} = error ->
           _ = AgentVMM.invalidate_host_session(workload_id, Map.from_struct(resolved))
           error
@@ -177,6 +192,7 @@ defmodule SalixStore.AgentVMMHostClient do
 
   def tail_process(args, workload_id) when is_map(args) do
     with :ok <- validate_process_io(args, nil),
+         :ok <- validate_process_tail_wait_ms(args),
          {:ok, response} <- typed_call("process.tail", args, workload_id, &resolve_current/1) do
       {:ok, response}
     end
@@ -184,6 +200,7 @@ defmodule SalixStore.AgentVMMHostClient do
 
   def stop_process(args, workload_id) when is_map(args) do
     with :ok <- validate_process_io(args, nil),
+         :ok <- validate_process_stop_signal(args),
          {:ok, response} <- typed_call("process.stop", args, workload_id, &resolve_current/1) do
       {:ok, response}
     end
@@ -259,67 +276,97 @@ defmodule SalixStore.AgentVMMHostClient do
   end
 
   defp resolve_session(%{session: session, workload: workload, allocation: allocation}) do
-    with {:ok, base_url} <- gateway_url(session.gateway_instance_id) do
-      container = allocation.provider_observation["current_container"] || %{}
-      container_id = container["id"]
-      container_instance_id = container["instance_id"]
+    container = allocation.provider_observation["current_container"] || %{}
 
-      path =
-        Enum.map_join(
-          [
-            session.registration_id,
-            session.allocation_id,
-            Integer.to_string(session.allocation_generation),
-            session.connection_epoch
-          ],
-          "/",
-          &URI.encode/1
-        )
-
+    # A node that runs workers reaches every session through them. Whether the
+    # holding worker answers is known only when an operation runs.
+    if not is_nil(session_caller()) or Worker.enabled?() or
+         Worker.online?(session.gateway_instance_id) do
       {:ok,
        %__MODULE__{
          session_id: session.id,
-         connect_url: base_url <> "/v1/sessions/" <> path,
+         registration_id: session.registration_id,
          expires_at: session.expires_at,
          gateway_instance_id: session.gateway_instance_id,
          allocation_id: session.allocation_id,
          connection_epoch: session.connection_epoch,
          allocation_generation: session.allocation_generation,
          workload_generation: workload.generation,
-         container_id: container_id,
-         container_instance_id: container_instance_id
+         container_id: container["id"],
+         container_instance_id: container["instance_id"],
+         workspace_volume_id: workspace_volume_id(workload)
        }}
     else
-      _ -> {:error, :runtime_execution_target_unavailable}
+      {:error, :runtime_execution_target_unavailable}
     end
   end
 
-  defp gateway_url(instance_id) do
-    case SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_instances, %{}) do
-      %{^instance_id => url} when is_binary(url) -> {:ok, String.trim_trailing(url, "/")}
-      _ -> gateway_url_from_template(instance_id)
+  defp post(resolved, operation, args) do
+    resolved
+    |> worker_call(operation, args, operation_timeout_ms(operation, args))
+    |> worker_result(&__MODULE__.HTTP.operation_result/2)
+  end
+
+  defp operation_timeout_ms("compute.exec", args) when is_map(args) do
+    timeout_ms =
+      case Map.get(args, "timeout_ms") do
+        ms when is_integer(ms) and ms in @min_exec_timeout_ms..@max_exec_timeout_ms -> ms
+        _ -> @default_exec_timeout_ms
+      end
+
+    max(@operation_timeout_ms, timeout_ms + 20_000)
+  end
+
+  defp operation_timeout_ms(_operation, _args), do: @operation_timeout_ms
+
+  defp post_import(resolved, headers) do
+    resolved
+    |> worker_call("compute.image.import", Map.new(headers), @image_import_timeout_ms)
+    |> worker_result(&__MODULE__.HTTP.import_result/2)
+  end
+
+  defp worker_call(resolved, operation, payload, timeout_ms) do
+    session = %{
+      registration_id: resolved.registration_id,
+      allocation_id: resolved.allocation_id,
+      allocation_generation: resolved.allocation_generation,
+      connection_epoch: resolved.connection_epoch
+    }
+
+    case session_caller() do
+      fun when is_function(fun, 5) ->
+        fun.(resolved.gateway_instance_id, session, operation, payload, timeout_ms)
+
+      mod when is_atom(mod) and not is_nil(mod) ->
+        mod.session_call(resolved.gateway_instance_id, session, operation, payload, timeout_ms)
+
+      nil ->
+        if Worker.online?(resolved.gateway_instance_id) do
+          Worker.session_call(
+            resolved.gateway_instance_id,
+            session,
+            operation,
+            payload,
+            timeout_ms
+          )
+        else
+          {:error, :gateway_unavailable}
+        end
     end
   end
 
-  defp gateway_url_from_template(instance_id) do
-    template = SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_url_template)
+  defp worker_result({:ok, status, body}, interpret), do: interpret.(status, body)
+  defp worker_result({:error, _} = error, _interpret), do: error
 
-    if is_binary(template) and Regex.match?(~r/\A[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\z/, instance_id) and
-         String.contains?(template, "{instance_id}") do
-      {:ok,
-       template
-       |> String.replace("{instance_id}", instance_id)
-       |> String.trim_trailing("/")}
-    else
-      {:error, :gateway_unavailable}
-    end
-  end
+  defp session_caller, do: SystemsRuntime.get_env(:salix_store, :agent_vmm_session_caller)
 
   defp typed_call(operation, args, workload_id, resolver) do
     with {:ok, _required_capability} <- capability_for_transport_operation(operation),
          {:ok, resolved} <- resolver.(workload_id),
          :ok <- unexpired(resolved.expires_at) do
-      case http_client().post(resolved.connect_url <> "/" <> URI.encode(operation), args) do
+      args = maybe_bind_workspace_volume(operation, args, resolved)
+
+      case post(resolved, operation, args) do
         {:error, :stale_session} = error ->
           _ = AgentVMM.invalidate_host_session(workload_id, Map.from_struct(resolved))
           error
@@ -336,7 +383,7 @@ defmodule SalixStore.AgentVMMHostClient do
   defp typed_call_resolved(operation, args, resolved) do
     with {:ok, _required_capability} <- capability_for_transport_operation(operation),
          :ok <- unexpired(resolved.expires_at) do
-      case http_client().post(resolved.connect_url <> "/" <> URI.encode(operation), args) do
+      case post(resolved, operation, args) do
         {:error, :stale_session} = error ->
           error
 
@@ -563,13 +610,30 @@ defmodule SalixStore.AgentVMMHostClient do
   defp operation_name(_operation), do: {:error, :unsupported_workload_operation}
 
   defp validate_exec(%{"command" => command} = args)
-       when is_list(command) and length(command) in 1..64 and map_size(args) <= 5 do
+       when is_list(command) and length(command) in 1..64 and map_size(args) <= 8 do
     if Enum.all?(command, &(is_binary(&1) and byte_size(&1) in 1..4096)),
-      do: :ok,
+      do: validate_exec_timeout_ms(args),
       else: {:error, :invalid_command}
   end
 
   defp validate_exec(_), do: {:error, :invalid_command}
+
+  defp validate_exec_timeout_ms(args) do
+    case Map.fetch(args, "timeout_ms") do
+      :error ->
+        :ok
+
+      {:ok, nil} ->
+        :ok
+
+      {:ok, timeout_ms}
+      when is_integer(timeout_ms) and timeout_ms in @min_exec_timeout_ms..@max_exec_timeout_ms ->
+        :ok
+
+      _ ->
+        {:error, :invalid_timeout_ms}
+    end
+  end
 
   defp validate_process_start(%{"command" => command, "request_id" => request_id} = args)
        when is_list(command) and length(command) in 1..64 and map_size(args) <= 5 and
@@ -606,6 +670,60 @@ defmodule SalixStore.AgentVMMHostClient do
 
   defp validate_process_io(_, _), do: {:error, :invalid_process_id}
 
+  defp validate_process_tail_wait_ms(args) do
+    case Map.fetch(args, "wait_ms") do
+      :error -> :ok
+      {:ok, nil} -> :ok
+      {:ok, wait_ms} when is_integer(wait_ms) and wait_ms in 0..@max_process_tail_wait_ms -> :ok
+      _ -> {:error, :invalid_wait_ms}
+    end
+  end
+
+  defp validate_process_stop_signal(args) do
+    case Map.fetch(args, "signal") do
+      :error ->
+        :ok
+
+      {:ok, nil} ->
+        :ok
+
+      {:ok, ""} ->
+        :ok
+
+      {:ok, signal} when is_binary(signal) ->
+        if String.downcase(signal) in ["term", "int", "kill"],
+          do: :ok,
+          else: {:error, :invalid_process_signal}
+
+      _ ->
+        {:error, :invalid_process_signal}
+    end
+  end
+
+  defp workspace_volume_id(%{spec: %{"volume_requirements" => requirements}})
+       when is_list(requirements) do
+    Enum.find_value(requirements, fn
+      %{"destination" => "/workspace", "volume_id" => volume_id}
+      when is_binary(volume_id) and volume_id != "" ->
+        volume_id
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp workspace_volume_id(_workload), do: nil
+
+  defp maybe_bind_workspace_volume(operation, args, %__MODULE__{workspace_volume_id: volume_id})
+       when operation in @workspace_volume_operations and is_binary(volume_id) and volume_id != "" do
+    case Map.get(args, "volume_id") do
+      explicit when is_binary(explicit) and explicit != "" -> args
+      _ -> Map.put(args, "volume_id", volume_id)
+    end
+  end
+
+  defp maybe_bind_workspace_volume(_operation, args, _resolved), do: args
+
   defp validate_image_import(%{
          "class" => class,
          "reference" => reference,
@@ -626,7 +744,8 @@ defmodule SalixStore.AgentVMMHostClient do
          hex?(archive_sha256) and hex?(manifest_sha256) and uri.scheme == "https" and
          is_binary(uri.host) and uri.host != "" and is_nil(uri.userinfo) and is_nil(uri.query) and
          is_nil(uri.fragment) and
-         String.ends_with?(uri.path || "", "/runtime-bundles/sha256/#{archive_sha256}.oci.tar"),
+         (String.ends_with?(uri.path || "", "/runtime-bundles/sha256/#{archive_sha256}.erofs.zst") or
+            String.ends_with?(uri.path || "", "/runtime-bundles/sha256/#{archive_sha256}.oci.tar")),
        do: :ok,
        else: {:error, :invalid_image_import}
   end
@@ -678,9 +797,6 @@ defmodule SalixStore.AgentVMMHostClient do
 
   defp maybe_request_id(_, args), do: args
 
-  defp http_client,
-    do: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_http_client, __MODULE__.HTTP)
-
   defmodule HTTP do
     @moduledoc false
     @gateway_error_codes ~w(
@@ -688,6 +804,8 @@ defmodule SalixStore.AgentVMMHostClient do
       already_exists
       canceled
       deadline_exceeded
+      data_loss
+      import_in_progress
       failed_precondition
       image_import_failed
       invalid_argument
@@ -709,87 +827,34 @@ defmodule SalixStore.AgentVMMHostClient do
     def gateway_error_code(%{"code" => code}) when code in @gateway_error_codes, do: code
     def gateway_error_code(_), do: nil
 
-    def post(url, body) do
-      options = [
-        json: body,
-        receive_timeout: 95_000,
-        retry: false
-      ]
+    @doc false
+    # What a worker's answer to a typed operation means.
+    def operation_result(status, result) when status in 200..299 and is_map(result),
+      do: {:ok, result}
 
-      options =
-        case SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_tls, []) do
-          tls when is_list(tls) and tls != [] ->
-            Keyword.put(options, :connect_options, transport_opts: tls)
-
-          _ ->
-            options
-        end
-
-      case Req.post(url, options) do
-        {:ok, %{status: status, body: result}} when status in 200..299 and is_map(result) ->
-          {:ok, result}
-
-        {:ok, %{status: status, body: result}} when is_map(result) ->
-          case normalize_gateway_error(result) do
-            {:ok, error} -> {:error, {:gateway_error, error}}
-            :error -> runtime_status_error(status)
-          end
-
-        {:ok, %{status: 404}} ->
-          {:error, :stale_session}
-
-        {:ok, %{status: status}} when status in [401, 403] ->
-          {:error, :unauthorized}
-
-        {:ok, %{status: status}} ->
-          {:error, {:gateway_status, status}}
-
-        {:error, _} ->
-          {:error, :gateway_unavailable}
+    def operation_result(status, result) when is_map(result) do
+      case normalize_gateway_error(result) do
+        {:ok, error} -> {:error, {:gateway_error, error}}
+        :error -> runtime_status_error(status)
       end
     end
 
-    def post_import(url, headers) do
-      options = [
-        headers: headers,
-        body: "",
-        receive_timeout: 605_000,
-        retry: false
-      ]
+    def operation_result(status, _result), do: runtime_status_error(status)
 
-      options =
-        case SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_tls, []) do
-          tls when is_list(tls) and tls != [] ->
-            Keyword.put(options, :connect_options, transport_opts: tls)
+    @doc false
+    # What a worker's answer to an image import means.
+    def import_result(status, result) when status in 200..299 and is_map(result),
+      do: {:ok, result}
 
-          _ ->
-            options
-        end
-
-      case Req.post(url, options) do
-        {:ok, %{status: status, body: result}} when status in 200..299 and is_map(result) ->
-          {:ok, result}
-
-        {:ok, %{status: status, body: result}} when is_map(result) ->
-          case normalize_gateway_error(result) do
-            {:ok, %{"code" => "stale_session"}} -> {:error, :stale_session}
-            {:ok, error} -> {:error, {:gateway_error, error}}
-            :error -> import_status_error(status)
-          end
-
-        {:ok, %{status: status}} when status in [404, 409] ->
-          {:error, :stale_session}
-
-        {:ok, %{status: status}} when status in [401, 403] ->
-          {:error, :unauthorized}
-
-        {:ok, %{status: status}} ->
-          {:error, {:gateway_status, status}}
-
-        {:error, _} ->
-          {:error, :gateway_unavailable}
+    def import_result(status, result) when is_map(result) do
+      case normalize_gateway_error(result) do
+        {:ok, %{"code" => "stale_session"}} -> {:error, :stale_session}
+        {:ok, error} -> {:error, {:gateway_error, error}}
+        :error -> import_status_error(status)
       end
     end
+
+    def import_result(status, _result), do: import_status_error(status)
 
     defp runtime_status_error(404), do: {:error, :stale_session}
     defp runtime_status_error(status) when status in [401, 403], do: {:error, :unauthorized}
@@ -845,7 +910,9 @@ defmodule SalixStore.AgentVMMHostClient do
          ),
          do: true
 
-    defp canonical_gateway_error_shape?("image_import_failed", "image_import", "image"), do: true
+    defp canonical_gateway_error_shape?(code, "image_import", "image")
+         when code in ~w(image_import_failed data_loss invalid_argument not_found permission_denied),
+         do: true
 
     defp canonical_gateway_error_shape?(code, "image_import", "runtime"),
       do:
@@ -856,7 +923,7 @@ defmodule SalixStore.AgentVMMHostClient do
          when stage in ~w(runtime container_start execution_acquire container_quiesce container_stop),
          do:
            code in @gateway_error_codes and
-             code not in ~w(resource_capacity_exhausted image_import_failed stale_session)
+             code not in ~w(resource_capacity_exhausted image_import_failed import_in_progress stale_session)
 
     defp canonical_gateway_error_shape?(_, _, _), do: false
   end

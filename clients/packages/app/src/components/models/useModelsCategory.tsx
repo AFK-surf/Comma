@@ -106,12 +106,37 @@ const resetsLeft = (account: ShownProfile): number | undefined =>
     ? account.quota.resets.reduce((sum, offer) => sum + offer.left, 0)
     : (account.quota?.reset_credits?.available_count ?? undefined);
 
+/** When a kind's first reset expires, in ms; one with no known expiry sorts last. */
+const firstExpiry = (offer: QuotaResetOffer) =>
+  Math.min(...(offer.expiries ?? []).map((time) => Date.parse(time)), Infinity);
+
+/** The kind the reset dialog opens on: of those usable now, the one that expires first; else the first. */
+const defaultResetOffer = (offers: QuotaResetOffer[]) =>
+  offers
+    .filter((offer) => offer.usable)
+    .reduce<
+      QuotaResetOffer | undefined
+    >((soonest, offer) => (soonest && firstExpiry(soonest) <= firstExpiry(offer) ? soonest : offer), undefined) ??
+  offers[0];
+
 const expiryTime = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
 });
+
+/** Each time a kind's resets expire, soonest first, with how many end then where more than one does. */
+const expiryTimes = (offer: QuotaResetOffer) => {
+  const counts = new Map<number, number>();
+  for (const time of offer.expiries ?? []) {
+    const at = Date.parse(time);
+    counts.set(at, (counts.get(at) ?? 0) + 1);
+  }
+  return [...counts]
+    .toSorted(([a], [b]) => a - b)
+    .map(([at, count]) => expiryTime.format(at) + (count > 1 ? ` ×${count}` : ""));
+};
 
 /** Which form a view is, whatever its field values. */
 const formKey = (view: View) =>
@@ -507,14 +532,14 @@ export function useModelsCategory(enabled: boolean): {
     beginSignIn(entry, { account_id: account.id, version: account.version });
   };
 
-  // The dialog opens on the first kind there to use now.
+  // A plan that names its kinds lists each, even one; reset credits alone pick nothing.
   const openReset = (account: ShownProfile) => {
-    const offers = resetOffers(account);
-    const first = offers.find((offer) => offer.usable) ?? offers[0];
     setResetting({
       id: account.id,
       busy: false,
-      kind: offers.length > 1 || first?.kind !== "credit" ? first?.kind : undefined,
+      kind: account.quota?.resets?.length
+        ? defaultResetOffer(account.quota.resets)?.kind
+        : undefined,
     });
   };
 
@@ -548,14 +573,14 @@ export function useModelsCategory(enabled: boolean): {
 
   const resetOfferDetail = (offer: QuotaResetOffer) => {
     const [, hint] = resetOfferLabel(offer);
-    const first = offer.expiries?.[0];
+    const times = expiryTimes(offer);
     return [
       hint,
       [
         m.settings_providers_reset_left({ count: offer.left }),
-        first
-          ? m.settings_providers_reset_expires({
-              time: expiryTime.format(new Date(first)),
+        times.length
+          ? m.settings_providers_reset_expiries({
+              times: times.join(m.settings_providers_reset_expiries_separator()),
             })
           : "",
         offer.usable ? "" : m.settings_providers_reset_at_limit(),
@@ -1009,6 +1034,10 @@ export function useModelsCategory(enabled: boolean): {
           }
           labels={pickerLabels}
           disabled={!workspace || !catalog}
+          action={{
+            label: m.settings_providers_add_profile(),
+            onPress: () => setView({ kind: "pick" }),
+          }}
           onChange={(next) =>
             onChange(
               next.model === null
@@ -1740,8 +1769,14 @@ export function useModelsCategory(enabled: boolean): {
                 <Button
                   size="sm"
                   onPress={() => {
+                    // Start the copy before the browser opens the sign-in tab:
+                    // that tab takes focus, and a write started after it never
+                    // settles, which leaves the tab on about:blank.
+                    const copied = nativePlatformClipboard.writeText(
+                      attempt.user_code ?? ""
+                    );
                     void openNativePlatformExternalUrlFromUserAction(async () => {
-                      await nativePlatformClipboard.writeText(attempt.user_code ?? "");
+                      await copied;
                       toast.success(m.common_copied(), { id: COPY_FEEDBACK_TOAST_ID });
                       return attempt.url;
                     }).catch(() => {

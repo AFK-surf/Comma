@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { motionDuration } from "../../tokens/motion";
 import { Login } from "./Login";
 
 const meta = {
@@ -108,6 +107,7 @@ export const Error: Story = {
 };
 
 const INVALID_CODE_ERROR = "Please enter a valid verification code";
+const ERROR_ANIMATION_DELAY_MS = 300;
 
 const ErrorAnimationDemo = () => {
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
@@ -115,7 +115,7 @@ const ErrorAnimationDemo = () => {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setErrorMessage(INVALID_CODE_ERROR);
-    }, motionDuration.loginStageEnter);
+    }, ERROR_ANIMATION_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -129,7 +129,7 @@ const ErrorAnimationDemo = () => {
   );
 };
 
-/** Play the invalid-code shake after the stage enter settles. */
+/** Pause briefly so the resting cells paint before the invalid-code shake plays. */
 export const ErrorAnimation: Story = {
   args: {
     mode: "verification",

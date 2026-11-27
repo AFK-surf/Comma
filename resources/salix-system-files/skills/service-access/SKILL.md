@@ -1,6 +1,7 @@
 ---
 name: service-access
 description: "Shared access procedure for third-party consumer services such as ride-hailing, maps, food delivery, shopping, travel, reservations, media, and payments. Covers official MCP, Composio, web.http_request, the cloud browser (browser.*), the Comma in-app browser, and purchase safety."
+prompt_summary: "Route external site/service access across MCP, Composio, web.http_request, cloud browser (browser.*), and Comma in-app browser; confirm before purchases."
 ---
 
 # Service Access
@@ -17,6 +18,25 @@ them with `call(tool="<name>", params={...})`.
 ## 1. Direct API
 
 Direct APIs return structured data and do not depend on page layout.
+
+### Comma plugin
+
+Comma plugins are built-in integrations on the Comma Plugins page, such as
+Notion, GitHub, Gmail, or Stripe. Use one before MCP when it covers the service.
+Only a Router installs plugins. A Worker asks its Router.
+
+1. Call `plugin.request_install` with `plugin_id` (for example `notion`) and
+   `reason`: one sentence, in the user's language, that says what the plugin is
+   for here. You do not need to check first: an installed plugin returns
+   `installed` immediately, and an unknown `plugin_id` returns the plugin
+   catalog.
+2. Otherwise the Comma chat shows the user an install card. Do not send a link
+   or steps. The call returns `installed`, `declined`, or `expired`. On
+   `installed`, the plugin is already enabled in this Workspace: if the user
+   only asked to install or connect it, confirm directly without calling
+   `plugin.definition_get` or re-checking connections.
+3. On `forbidden`, `not_in_comma_chat`, or `device_plugin`, tell the user what
+   the tool result says to do.
 
 ### Official or community MCP server
 
@@ -107,7 +127,15 @@ A video the user will watch must play on any device. Download H.264 video with
 AAC audio in MP4: `yt-dlp -S "vcodec:h264,res,acodec:m4a" --merge-output-format mp4`.
 AV1, VP9, HEVC and Opus, which sites serve at their best qualities, can show no
 picture on older iPhones and in Safari. Take the best available quality only
-when the user asks for it, and say that it may not play everywhere.
+when the user asks for it: keep the source streams, and say that it may not
+play everywhere.
+
+For the default download, `-S` only sets an order, and a single-file format
+ignores `--merge-output-format`. Check the result with `ffprobe`:
+- Container is not MP4, but video is H.264 and audio is AAC: remux it with
+  `ffmpeg -i <in> -c copy -movflags +faststart <out>.mp4`.
+- Video is not H.264 or audio is not AAC: convert it with
+  `ffmpeg -i <in> -c:v libx264 -crf 20 -pix_fmt yuv420p -c:a aac -movflags +faststart <out>.mp4`.
 
 ## 2. Cloud browser (`browser.*`)
 
@@ -181,6 +209,8 @@ Use it for sites that block the cloud browser or need the user's own device.
    commands above cannot do the step.
 8. When the page shows a login form, log in with the credentials that the
    user gives you, or ask the user to log in inside the Comma browser tab.
+9. When the task is done, close each tab you opened with `close-tab`
+   (`{"tabId":"..."}`). Do not close tabs that the user opened.
 
 If Comma reports that permission is required, ask the user to turn on Allow
 operations in Settings > Devices.

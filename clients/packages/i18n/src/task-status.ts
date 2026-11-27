@@ -13,6 +13,7 @@ export const visibleTaskStatusBuckets = [
   "needs_review",
   "done",
   "cancelled",
+  "loops",
 ] as const;
 
 export const taskStatusBuckets = [...visibleTaskStatusBuckets, "archived"] as const;
@@ -35,7 +36,10 @@ export function taskStatusFailed(status: string): boolean {
  * The bucket a raw server status folds into, in every client surface and Electron Main. The server starts every Task
  * `active`, so a status this list does not name is work under way, not work waiting to start.
  */
-export function taskStatusBucket(status: string): TaskStatusBucket {
+export function taskStatusBucket(
+  status: string,
+  options?: { loopState?: string | undefined }
+): TaskStatusBucket {
   const normalized = normalizeTaskStatus(status);
   if (normalized === "archived") return "archived";
   if (["cancelled", "canceled", ...failedTaskStatuses].includes(normalized)) {
@@ -59,6 +63,9 @@ export function taskStatusBucket(status: string): TaskStatusBucket {
   ) {
     return "needs_review";
   }
+  if (options?.loopState !== undefined) {
+    return options.loopState !== "ended" ? "loops" : "in_progress";
+  }
   return "in_progress";
 }
 
@@ -71,6 +78,8 @@ export function taskStatusBucketLabel(
       return messages.tasks_archived(undefined, { locale });
     case "in_progress":
       return messages.tasks_in_progress(undefined, { locale });
+    case "loops":
+      return messages.tasks_status_loops(undefined, { locale });
     case "needs_review":
       return messages.tasks_needs_review(undefined, { locale });
     case "done":

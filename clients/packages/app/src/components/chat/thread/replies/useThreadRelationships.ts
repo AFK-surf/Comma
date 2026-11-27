@@ -111,7 +111,11 @@ export function useThreadRelationships({
       ...timestamped,
       ...(historyBoundaryMessageId ? [historyBoundaryMessageId] : []),
     ]);
-    const layout = messageRelationships(visibleMessages, groupBreaks);
+    const layout = messageRelationships(
+      visibleMessages,
+      groupBreaks,
+      defaultAssistantActorRole
+    );
     const tailMessageIds = new Set(
       visibleMessages
         .filter((message, index) => {
@@ -126,8 +130,26 @@ export function useThreadRelationships({
         })
         .map((message) => message.messageId)
     );
-    return { ...layout, tailMessageIds };
+    // In a Task together, a person's run of messages, which share one name and one face. Committed messages each
+    // root their own thread, so the sender groups above never join them.
+    const writerRunStarts = new Set(
+      visibleMessages
+        .filter((message, index) => {
+          if (message.role !== "user" || !message.createdBy) return false;
+          const previous = visibleMessages[index - 1];
+          return (
+            !previous ||
+            groupBreaks.has(message.messageId) ||
+            previous.role !== "user" ||
+            previous.platformSource !== message.platformSource ||
+            previous.createdBy !== message.createdBy
+          );
+        })
+        .map((message) => message.messageId)
+    );
+    return { ...layout, tailMessageIds, writerRunStarts };
   }, [
+    defaultAssistantActorRole,
     draftRelationship,
     draftTimestamped,
     historyBoundaryMessageId,
@@ -142,13 +164,18 @@ export function useThreadRelationships({
     (relationshipId: string | undefined): RowRelationshipProps => {
       if (!relationshipId) return { bubbleTail: false };
       const position = relationships.positions.get(relationshipId);
+      const writer = messageById.get(relationshipId);
       const reply = relationships.replies.get(relationshipId);
       const replyPreviewTargetId =
         reply?.presentation === "preview" ? reply.targetId : undefined;
       return {
         bubbleTail: relationships.tailMessageIds.has(relationshipId),
-        groupFirst: position?.first,
-        groupLast: position?.last,
+        ...(writer?.role === "user" && writer.createdBy
+          ? {
+              groupFirst: relationships.writerRunStarts.has(relationshipId),
+              groupLast: relationships.tailMessageIds.has(relationshipId),
+            }
+          : { groupFirst: position?.first, groupLast: position?.last }),
         replyPreviewTarget: replyPreviewTargetId
           ? messageById.get(replyPreviewTargetId)
           : undefined,

@@ -1,4 +1,6 @@
 import { readTaskLoopRuleKey } from "@comma/core/task-loop-filter";
+import { visibleTaskStatusBuckets } from "@comma/i18n";
+import type { TaskView } from "@comma/ui/components/task-board";
 import { isTaskLoopFilterKey, type TaskLoopFilterKey } from "./taskLoopLabels";
 
 /** The query fields that a link to Tasks can carry. */
@@ -12,9 +14,31 @@ export interface TasksSearch {
   loopRule?: string;
   /** A person whose request Tasks came from (`requestPersonKey`). */
   request?: string;
+  /** Initial Tasks surface view (`feed`, `list`, or `board`). */
+  view?: TaskView;
 }
 
-const STATUSES = ["in_progress", "needs_review", "done", "cancelled"];
+const VIEWS: readonly TaskView[] = ["feed", "list", "board"];
+const taskViewStorageKey = "comma.tasks.view";
+
+/** The view that the user last chose on this device. */
+export function readStoredTaskView(): TaskView | undefined {
+  try {
+    const stored = globalThis.localStorage?.getItem(taskViewStorageKey);
+    return VIEWS.find((view) => view === stored);
+  } catch {
+    return undefined;
+  }
+}
+
+export function storeTaskView(view: TaskView) {
+  try {
+    globalThis.localStorage?.setItem(taskViewStorageKey, view);
+  } catch {
+    // Browser storage is best effort; the open page keeps its view.
+  }
+}
+const STATUSES: readonly string[] = visibleTaskStatusBuckets;
 const CLIENT_PLATFORMS = [
   "macos",
   "windows",
@@ -41,6 +65,7 @@ export function validateTasksSearch(search: Record<string, unknown>): TasksSearc
     schedule,
     loopRule: rule,
     request,
+    view,
   } = search;
   const loopRule = readTaskLoopRuleKey(rule);
   return {
@@ -53,5 +78,8 @@ export function validateTasksSearch(search: Record<string, unknown>): TasksSearc
     ...(isTaskLoopFilterKey(schedule) || schedule === "loop" ? { schedule } : {}),
     ...(loopRule ? { loopRule } : {}),
     ...(typeof request === "string" && request.startsWith("from:") ? { request } : {}),
+    ...(typeof view === "string" && VIEWS.includes(view as TaskView)
+      ? { view: view as TaskView }
+      : {}),
   };
 }

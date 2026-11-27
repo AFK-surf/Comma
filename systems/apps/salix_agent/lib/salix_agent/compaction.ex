@@ -17,11 +17,6 @@ defmodule SalixAgent.Compaction do
   module does the I/O: it resolves the model configuration and session prompt,
   calls the model, and commits the kernel's events through the store.
 
-  The prepare/summarize/commit semantic fence is modeled in
-  `tla/salix/CompactionFence.tla`. Preservation of fresh user input and
-  resumption of a runnable suffix across compaction are modeled in
-  `tla/salix/CompactionContinuation.tla`.
-
   ## Auto trigger (willow `ShouldCompact`)
 
   Willow compacts when `usage.total_tokens / context_window > 0.9`, with the
@@ -37,9 +32,9 @@ defmodule SalixAgent.Compaction do
 
   ## Summarization (willow `Compact`)
 
-  The request is built EXACTLY like a normal round (same system-prompt parts,
-  same tool specs, same image inlining) so it hits the same prompt-cache
-  prefix; the only new content is willow's appended summarize instruction.
+  The request uses the session tool specs and image reader with an appended
+  summarize instruction. Hard mode uses the static prompt and the full-input
+  visibility bound. It does not reuse a lower-domain request projection.
   The model must answer with a `<compaction-summary>...</compaction-summary>`
   block; the extracted summary is stored wrapped in willow's
   `<compacted-context>` tags. Explicit compaction soft-fails on a failed or
@@ -66,6 +61,7 @@ defmodule SalixAgent.Compaction do
   alias SalixAgent.InternalSessionStore
   alias SalixAgent.InternalSessionStore.Revision
   alias SalixAgent.SessionDriver
+  alias SalixAgent.SessionHistory.Episodes
 
   # The model configuration fields the kernel reads.
   @config_fields [
@@ -185,7 +181,7 @@ defmodule SalixAgent.Compaction do
   @doc false
   # The driver event that starts a compaction.
   def event(mode, opts, continuation) when mode in [:compact, :maybe_compact],
-    do: {:compact, mode, prepare_facts(opts), continuation}
+    do: {:compact, mode, prepare_facts(mode, opts), continuation}
 
   @doc false
   # One compaction effect. `{:answer, value, host, driver}` answers the driver;
@@ -194,14 +190,15 @@ defmodule SalixAgent.Compaction do
   # the compaction's result for its continuation.
   def perform(host, driver, effect) do
     case effect do
-      {:compaction_facts, _mode} ->
-        {:answer, prepare_facts(host.opts), host, driver}
+      {:compaction_facts, mode} ->
+        {:answer, prepare_facts(mode, host.opts), host, driver}
 
       :compaction_config ->
         case compaction_llm_opts(host) do
           {:ok, llm_opts} ->
             host = %{host | opts: Keyword.put(host.opts, :llm_opts, llm_opts)}
-            {:answer, {:ok, kernel_config(llm_opts)}, host, driver}
+            config = kernel_config(llm_opts) |> maybe_attach_handoff(host)
+            {:answer, {:ok, config}, host, driver}
 
           {:error, {:session_config, reason}} ->
             {:answer, {:error, kernel_term(reason)}, host, driver}
@@ -211,7 +208,12 @@ defmodule SalixAgent.Compaction do
         compaction_prompt(host, driver)
 
       {:summarize, kernel_plan, prompt} ->
-        {:summarize, Map.merge(host, %{kernel: kernel_plan, prompt: prompt})}
+        if is_binary(kernel_plan["handoff"]) do
+          log_compaction_outcome(host, {:ok, {:summary, kernel_plan["handoff"]}})
+          {:answer, {:summary, kernel_plan["handoff"]}, host, driver}
+        else
+          {:summarize, Map.merge(host, %{kernel: kernel_plan, prompt: prompt})}
+        end
 
       {:commit, events, opts, mode} ->
         commit(host, driver, events, opts, mode)
@@ -243,13 +245,26 @@ defmodule SalixAgent.Compaction do
             _missing -> "agent:" <> agent_id
           end
 
+        projection? =
+          SalixAgent.IFC.mode_for(session_config[:tenant_id], session_config[:group_id]) ==
+            :enforce
+
         prompts = %{
           "prompt" => session_system_prompt(host.context, session, session_config),
           "refreshed" => session_config.system_prompt || build_session_prompt(host.context)
         }
 
+        prompts =
+          if projection?,
+            do: %{
+              "prompt" => session_config[:ifc_static_prompt] || "",
+              "refreshed" => session_config[:ifc_static_prompt] || ""
+            },
+            else: prompts
+
         host =
           host
+          |> Map.put(:ifc_projection?, projection?)
           |> Map.put(:opts, Keyword.put(host.opts, :runtime_session_config, session_config))
           |> Map.put(:tenant_id, tenant_id)
 
@@ -266,8 +281,32 @@ defmodule SalixAgent.Compaction do
 
   # The kernel's events: a plain commit, or the summary commit, which the
   # driver checks against the summarized view again when the session moved.
+  # A summary commit also keeps a redacted copy of the summary as a Session
+  # fact for replay and history search. The fact is computed against the state
+  # the events finally commit over, so a rebuilt commit keeps it too.
   defp commit(host, driver, events, opts, mode) do
     %{agent_id: agent_id, session_id: session_id, context: context} = host
+
+    augment = fn state, events ->
+      events =
+        if host[:ifc_projection?] do
+          upper =
+            InternalSession.query(state, :ifc_projection_input)
+            |> Enum.map(&SalixAgent.IFC.ContextProjection.label/1)
+            |> SalixIFC.Label.join_all()
+            |> SalixIFC.Codec.encode_label()
+
+          Enum.map(events, fn event ->
+            if event["type"] in ["compaction", "provider_compaction"],
+              do: Map.put(event, "ifc_view_label", upper),
+              else: event
+          end)
+        else
+          events
+        end
+
+      events ++ Episodes.facts(events, state, SystemsClock.system_time(:second))
+    end
 
     committed =
       SalixAgent.SubscriptionLog.context([agent_id: agent_id, session_id: session_id], fn ->
@@ -277,7 +316,9 @@ defmodule SalixAgent.Compaction do
             session_id,
             context[:revision],
             driver,
-            {events, opts, mode}
+            {events, opts, mode},
+            nil,
+            augment
           )
         end)
       end)
@@ -316,7 +357,7 @@ defmodule SalixAgent.Compaction do
   defp revision_state(%{revision: %Revision{state: state}}), do: state
   defp revision_state(_context), do: nil
 
-  defp prepare_facts(opts) do
+  defp prepare_facts(mode, opts) do
     facts = %{
       "threshold" => opts[:threshold],
       "context_tokens" => opts[:context_tokens],
@@ -329,9 +370,22 @@ defmodule SalixAgent.Compaction do
       "source_message_id" => opts[:result_source_message_id]
     }
 
+    summarizer = opts[:summarizer] || SystemsRuntime.get_env(:salix_agent, :summarizer)
+
+    defer_for_handoff? =
+      mode == :maybe_compact and is_nil(summarizer) and SalixAgent.LivingHandoff.enabled?()
+
     case Keyword.get(opts, :llm_opts) do
-      nil -> facts
-      llm_opts -> Map.put(facts, "config", kernel_config(llm_opts))
+      nil ->
+        facts
+
+      llm_opts when defer_for_handoff? ->
+        facts
+        |> Map.put("context_tokens", opts[:context_tokens] || context_window(llm_opts))
+        |> Map.put("model", opts[:model] || llm_opt(llm_opts, :model))
+
+      llm_opts ->
+        Map.put(facts, "config", kernel_config(llm_opts))
     end
   end
 
@@ -556,6 +610,79 @@ defmodule SalixAgent.Compaction do
     end)
   end
 
+  defp maybe_attach_handoff(config, host) do
+    summarizer = host.opts[:summarizer] || SystemsRuntime.get_env(:salix_agent, :summarizer)
+
+    has_provider_compaction? =
+      InternalSession.is_session(host.state) and
+        not is_nil(InternalSession.provider_compaction_items(host.state))
+
+    if is_nil(summarizer) and SalixAgent.LivingHandoff.enabled?() and
+         not has_provider_compaction? and summary_strategy?(config, host.opts) do
+      case SalixStore.SessionHandoffs.get(host.agent_id, host.session_id) do
+        {:ok, %{statements: [_ | _] = statements} = handoff} ->
+          summary = SalixStore.SessionHandoffs.render_for_cutover(statements)
+
+          if summary != "" do
+            Map.put(config, "handoff", %{
+              "summary" => summary,
+              "covered_message_id" => handoff.covered_message_id,
+              "base_summary_sequence" => handoff.base_summary_sequence,
+              "base_compacted_through" => handoff.base_compacted_through,
+              "prefix_digest" => handoff.prefix_digest
+            })
+          else
+            config
+          end
+
+        _ ->
+          config
+      end
+    else
+      config
+    end
+  end
+
+  defp summary_strategy?(config, opts) do
+    candidates = [
+      opts[:compaction_strategy],
+      SystemsRuntime.get_env(:salix_agent, :compaction_strategy),
+      config["compaction_strategy"],
+      config["context_compaction_strategy"],
+      case config["compaction"] do
+        %{} = map -> Map.get(map, "strategy", Map.get(map, :strategy))
+        other -> other
+      end
+    ]
+
+    effective = Enum.find_value(candidates, "summary", &normalize_strategy/1)
+    effective == "summary"
+  end
+
+  defp normalize_strategy(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      name when name in ["summary", "salix", "local_summary"] ->
+        "summary"
+
+      name
+      when name in [
+             "openai",
+             "openai_responses",
+             "responses_compact",
+             "openai_context_compaction"
+           ] ->
+        "openai_responses"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp normalize_strategy(value) when is_atom(value) and not is_nil(value),
+    do: value |> Atom.to_string() |> normalize_strategy()
+
+  defp normalize_strategy(_), do: nil
+
   # The window and model read the text key first, as the retired
   # `context_window/1` and `model_name/1` did.
   defp llm_opt(opts, key) when is_map(opts) and key in [:context_tokens, :model],
@@ -568,7 +695,19 @@ defmodule SalixAgent.Compaction do
   defp image_context(%{context: context, session: session} = plan) do
     session_config = plan.opts[:runtime_session_config]
 
+    # Late bytes must fit the full-input bound recorded on the summary.
+    projection =
+      if SalixAgent.IFC.mode_for(session_config.tenant_id, session_config.group_id) == :enforce do
+        upper =
+          InternalSession.query(session, :ifc_projection_input)
+          |> Enum.map(&SalixAgent.IFC.ContextProjection.label/1)
+          |> SalixIFC.Label.join_all()
+
+        %{destinations: [upper], facts: SalixIFC.Facts.new()}
+      end
+
     %{
+      ifc_projection: projection,
       agent_id: context.agent_id,
       session_id: plan.session_id,
       tenant_id: session_config.tenant_id,

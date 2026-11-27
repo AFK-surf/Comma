@@ -93,6 +93,8 @@ func inputFixture(t *testing.T) string {
 		"scripts/build-runtime-images.sh":                         "shared build recipe",
 		"systems/runtime-images/go.mod":                           "module fixture",
 		"systems/runtime-images/cmd/comma-shell-runtime/main.go":  "shell source",
+		"systems/runtime-images/cmd/erofs-bundle/main.go":         "erofs bundle cli",
+		"systems/runtime-images/internal/erofsbundle/bundle.go":   "erofs bundle lib",
 		"systems/station/computer-use/native/ignored-native-file": "ignored",
 		"systems/runtime-images/station/Dockerfile":               "station",
 		"systems/runtime-images/station/apt-package-recovery.mjs": "package recovery",
@@ -108,8 +110,9 @@ func inputFixture(t *testing.T) string {
 	lock := map[string]any{
 		"schemaVersion": float64(1),
 		"baseImages": map[string]any{
-			"go":      "go@sha256:1",
-			"station": "node@sha256:5",
+			"go":            "go@sha256:1",
+			"station":       "node@sha256:5",
+			"codingSandbox": "node-trixie@sha256:6",
 		},
 		"packageSnapshot":    "20260101T000000Z",
 		"npm":                map[string]any{"integrity": "npm"},

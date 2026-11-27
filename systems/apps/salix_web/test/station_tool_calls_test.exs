@@ -480,12 +480,40 @@ defmodule SalixWeb.StationToolCallsTest do
         else: SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod)
     end)
 
+    assert {:ok, %{"tools" => tools}} = StationTasks.tools(view, params(%{}))
+    write_schema = Enum.find(tools, &(&1["name"] == "fs.write_file"))["input_schema"]
+
+    assert {:error, _} =
+             SalixAgent.Tools.validate_schema(%{"path" => "/x", "content" => "x"}, write_schema)
+
+    assert :ok =
+             SalixAgent.Tools.validate_schema(
+               %{"path" => "/x", "content" => "x", "ifc" => %{"sources" => []}},
+               write_schema
+             )
+
+    assert {:ok, %{"content" => rejected}} =
+             StationTasks.tool_call(
+               view,
+               params(%{
+                 "tool" => "fs.write_file",
+                 "args" => %{"path" => "/enforced.md", "content" => "undeclared"}
+               })
+             )
+
+    assert Jason.decode!(rejected)["guidance_reason"] == "invalid_params"
+    refute Jason.decode!(rejected)["clause"]
+
     assert {:ok, %{"error" => false} = written} =
              StationTasks.tool_call(
                view,
                params(%{
                  "tool" => "fs.write_file",
-                 "args" => %{"path" => "/enforced.md", "content" => "kept under the Task's label"}
+                 "args" => %{
+                   "path" => "/enforced.md",
+                   "content" => "kept under the Task's label",
+                   "ifc" => %{"sources" => ["src:q-1"]}
+                 }
                })
              )
 
@@ -494,7 +522,10 @@ defmodule SalixWeb.StationToolCallsTest do
     assert {:ok, %{"error" => false, "content" => read}} =
              StationTasks.tool_call(
                view,
-               params(%{"tool" => "fs.read_file", "args" => %{"path" => "/enforced.md"}})
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/enforced.md", "ifc" => %{"sources" => []}}
+               })
              )
 
     assert read =~ "kept under the Task's label"
@@ -518,7 +549,10 @@ defmodule SalixWeb.StationToolCallsTest do
     assert {:ok, %{"error" => false, "content" => manual}} =
              StationTasks.tool_call(
                view,
-               params(%{"tool" => "help", "args" => %{"tool" => "fs.read_file"}})
+               params(%{
+                 "tool" => "help",
+                 "args" => %{"tool" => "fs.read_file", "ifc" => %{"sources" => []}}
+               })
              )
 
     assert manual =~ "fs.read_file"
@@ -529,7 +563,10 @@ defmodule SalixWeb.StationToolCallsTest do
     assert {:ok, %{"error" => "label_not_this_task"}} =
              StationTasks.tool_call(
                view,
-               params(%{"tool" => "fs.read_file", "args" => %{"path" => "/enforced.md"}})
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/enforced.md", "ifc" => %{"sources" => []}}
+               })
              )
   end
 
@@ -567,7 +604,11 @@ defmodule SalixWeb.StationToolCallsTest do
                view,
                params(%{
                  "tool" => "fs.write_file",
-                 "args" => %{"path" => "/asked.md", "content" => "for the person who asked"}
+                 "args" => %{
+                   "path" => "/asked.md",
+                   "content" => "for the person who asked",
+                   "ifc" => %{"sources" => ["src:q-1"]}
+                 }
                })
              )
 
@@ -576,7 +617,10 @@ defmodule SalixWeb.StationToolCallsTest do
     assert {:ok, %{"error" => false, "content" => read}} =
              StationTasks.tool_call(
                view,
-               params(%{"tool" => "fs.read_file", "args" => %{"path" => "/asked.md"}})
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/asked.md", "ifc" => %{"sources" => []}}
+               })
              )
 
     assert read =~ "for the person who asked"
@@ -592,8 +636,175 @@ defmodule SalixWeb.StationToolCallsTest do
     assert {:ok, %{"error" => "no_requester"}} =
              StationTasks.tool_call(
                view,
-               params(%{"tool" => "fs.read_file", "args" => %{"path" => "/asked.md"}})
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/asked.md", "ifc" => %{"sources" => []}}
+               })
              )
+  end
+
+  test "easy returns non-IM Task content without the hard Task audience rule", %{view: view} do
+    previous = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, Facts)
+
+    {:ok, _} =
+      Salix.Control.Groups.update(view.group_id, %{"ifc" => %{"mode" => "easy"}}, view.tenant_id)
+
+    on_exit(fn ->
+      if previous,
+        do: SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod)
+    end)
+
+    assert {:ok, %{"error" => false}} =
+             StationTasks.tool_call(
+               view,
+               params(%{
+                 "tool" => "fs.write_file",
+                 "args" => %{
+                   "path" => "/easy.md",
+                   "content" => "Task content",
+                   "ifc" => %{"sources" => ["src:q-1"]}
+                 }
+               })
+             )
+
+    Process.put(:ifc_test_task_members, ["comma_user|usr_other"])
+
+    assert {:ok, %{"error" => false, "content" => read}} =
+             StationTasks.tool_call(
+               view,
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/easy.md", "ifc" => %{"sources" => []}}
+               })
+             )
+
+    assert read =~ "Task content"
+  end
+
+  test "easy does not return IM content from a file without requester membership", %{
+    view: view,
+    r: r
+  } do
+    previous = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, Facts)
+
+    {:ok, _} =
+      Salix.Control.Groups.update(view.group_id, %{"ifc" => %{"mode" => "easy"}}, view.tenant_id)
+
+    on_exit(fn ->
+      if previous,
+        do: SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod)
+    end)
+
+    {_result, events} =
+      SalixAgent.Tools.write_file(
+        %{"path" => "/private-im.md", "content" => "private IM message"},
+        %{
+          agent_id: r.agent_id,
+          ifc: %{"items" => []},
+          ifc_evidence: %{"sources_label" => ["scope|missing_connection|private_channel"]}
+        }
+      )
+
+    assert {:ok, _} =
+             SalixAgent.AgentWorkspace.seed_operation(
+               r.agent_id,
+               "seed-private-im",
+               %{},
+               events
+             )
+
+    assert {:ok, %{"error" => "label_not_this_task"} = denied} =
+             StationTasks.tool_call(
+               view,
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/private-im.md"}
+               })
+             )
+
+    refute inspect(denied) =~ "private IM message"
+  end
+
+  test "an enforce Task can query local help without sources", %{view: view} do
+    previous = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, Facts)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, previous) end)
+
+    {:ok, _} =
+      Salix.Control.Groups.update(
+        view.group_id,
+        %{"ifc" => %{"mode" => "enforce"}},
+        view.tenant_id
+      )
+
+    assert {:ok, %{"error" => false, "content" => content}} =
+             StationTasks.tool_call(
+               view,
+               params(%{
+                 "tool" => "help",
+                 "args" => %{"tool" => "ifc"}
+               })
+             )
+
+    assert Jason.decode!(content)["manual"]
+    # An explicitly malformed declaration must not become a metadata default.
+    assert {:ok, result} =
+             StationTasks.tool_call(
+               view,
+               params(%{
+                 "tool" => "help",
+                 "args" => %{"tool" => "ifc", "ifc" => nil}
+               })
+             )
+
+    refute result["content"] && Jason.decode!(result["content"])["manual"]
+  end
+
+  test "a staged attachment reaches only its Task's reader", %{view: view, r: r} do
+    old_facts = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    old_workspace = SystemsRuntime.get_env(:salix_im, :agent_workspace_mod)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, Facts)
+    SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, Salix.Bindings.IMAgentWorkspace)
+
+    on_exit(fn ->
+      SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, old_facts)
+      SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, old_workspace)
+    end)
+
+    {:ok, _} =
+      Salix.Control.Groups.update(
+        view.group_id,
+        %{"ifc" => %{"mode" => "enforce"}},
+        view.tenant_id
+      )
+
+    {:ok, ref} = SalixStore.Blob.put_stream(r.agent_id, ["private task attachment"])
+
+    assert {:ok, [_], []} =
+             SalixIM.ProviderAttachments.stage(
+               r.agent_id,
+               [%{"path" => "/staged.bin", "to_blob" => fn _ -> {:ok, ref} end}],
+               Facts.task_label()
+             )
+
+    call =
+      params(%{
+        "tool" => "fs.read_file",
+        "args" => %{"path" => "/staged.bin", "ifc" => %{"sources" => []}}
+      })
+
+    assert {:ok, %{"error" => false, "content" => content}} = StationTasks.tool_call(view, call)
+    assert content =~ "private task attachment"
+    Process.put(:ifc_test_task_members, ["comma_user|usr_other"])
+
+    assert {:ok, %{"error" => "label_not_this_task"} = denied} =
+             StationTasks.tool_call(view, call)
+
+    refute inspect(denied) =~ "private task attachment"
   end
 
   test "under audit, a result for someone else still goes back: the refusal is only recorded",
@@ -615,7 +826,11 @@ defmodule SalixWeb.StationToolCallsTest do
                view,
                params(%{
                  "tool" => "fs.write_file",
-                 "args" => %{"path" => "/audited.md", "content" => "someone else's"}
+                 "args" => %{
+                   "path" => "/audited.md",
+                   "content" => "someone else's",
+                   "ifc" => %{"sources" => ["src:q-1"]}
+                 }
                })
              )
 
@@ -624,7 +839,10 @@ defmodule SalixWeb.StationToolCallsTest do
     assert {:ok, %{"error" => false, "content" => read}} =
              StationTasks.tool_call(
                view,
-               params(%{"tool" => "fs.read_file", "args" => %{"path" => "/audited.md"}})
+               params(%{
+                 "tool" => "fs.read_file",
+                 "args" => %{"path" => "/audited.md", "ifc" => %{"sources" => []}}
+               })
              )
 
     assert read =~ "someone else's"

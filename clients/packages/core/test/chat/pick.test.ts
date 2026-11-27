@@ -134,6 +134,8 @@ describe("a window's file pick", () => {
       maxFiles: 50,
       maxTotalSize: 1024 * 1024 * 1024,
       maxUploadFiles: 8,
+      // This computer is not connected to the workspace: every file uploads.
+      localPathMode: "none",
     });
     expect(t.shown()?.attachmentIntakeInFlight).toBe(true);
     const intake = { intakeId: request!.intakeId };
@@ -271,6 +273,83 @@ describe("a window's file pick", () => {
     await again.start();
     expect(await again.ask(again.main, "chat.intake.check", { intakeId })).toEqual({
       error: "not_found",
+    });
+  });
+
+  it("names the files Main routes by their path, and sends their paths with this computer's device", async () => {
+    const t = setup();
+    t.host.api.on(
+      "POST",
+      files,
+      json(200, {
+        name: "shot.png",
+        path: `/uploads/${"u".repeat(22)}-shot.png`,
+        size: 3,
+      })
+    );
+    t.host.api.on("POST", `${base}/messages`, (request) => {
+      const body = request.body as { client_request_id: string };
+      return json(200, {
+        group_id: "grp_1",
+        id: "cnv_1",
+        kind: "user_chat",
+        title: "Thread",
+        status: "waiting",
+        messages: [],
+        client_request_id: body.client_request_id,
+      });
+    });
+    await t.start();
+    await t.ask(t.main, "chat.clientDevices", { devices: { wsp_1: "dev_mac" } });
+
+    t.desktop.pick = () =>
+      Promise.resolve({
+        cancelled: false,
+        errors: [],
+        items: [
+          {
+            kind: "local_path",
+            file: {
+              name: "项目 资料 (1).zip",
+              path: "/Users/me/项目 资料 (1).zip",
+              size: 40_000_000,
+            },
+          },
+          { kind: "upload", name: "shot.png", size: 3, bytes: Uint8Array.of(1, 2, 3) },
+        ],
+      });
+    expect(await t.ask(t.window, "chatView.pickAttachments", t.pick)).toEqual({
+      value: true,
+    });
+    expect(t.desktop.picks[0]?.localPathMode).toBe("routed");
+    expect(
+      t.shown()?.draftAttachments.map(({ name, localPath, status }) => ({
+        name,
+        localPath,
+        status,
+      }))
+    ).toEqual([
+      {
+        name: "项目 资料 (1).zip",
+        localPath: "/Users/me/项目 资料 (1).zip",
+        status: "uploaded",
+      },
+      { name: "shot.png", localPath: undefined, status: "uploaded" },
+    ]);
+    // Only the image went up.
+    expect(t.host.api.seen("POST", files)).toHaveLength(1);
+
+    await t.ask(t.window, "chatView.send", { ...t.pick, text: "Unpack it" });
+    const [sent] = t.host.api.seen("POST", `${base}/messages`);
+    expect(sent?.body).toMatchObject({
+      client_device_id: "dev_mac",
+      message: {
+        text:
+          "Unpack it\n\nAttached local files on the sender's computer:\n" +
+          "- 项目 资料 (1).zip (local path: /Users/me/项目 资料 (1).zip)\n\n" +
+          "Attached files in your workspace:\n" +
+          `- shot.png (workspace file: /uploads/${"u".repeat(22)}-shot.png)`,
+      },
     });
   });
 

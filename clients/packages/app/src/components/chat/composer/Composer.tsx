@@ -1,3 +1,4 @@
+import { commaProductMarkPathData } from "@comma/config";
 import { modelMentionMenu } from "./modelMentionMenu";
 import { slackMentionMenu as buildSlackMentionMenu } from "./slackMentionMenu";
 import { uiClock } from "@comma/ui/clock";
@@ -56,6 +57,7 @@ import { RequestPersonAvatar } from "../../tasks/RequestPersonAvatar";
 import {
   linkMentionPlainText,
   requestMentionPlainText,
+  shareMentionPlainText,
   taskMentionPlainText,
 } from "@comma/core/chat";
 import {
@@ -64,7 +66,13 @@ import {
   type ProjectedSkill,
 } from "./mentionProjection";
 import { renderToStaticMarkup } from "react-dom/server";
-import { attachmentMeta, useFileIntake, useUploadFailureToast } from "./fileIntake";
+import {
+  attachmentMeta,
+  localDirectory,
+  formatAttachmentSize,
+  useFileIntake,
+  useUploadFailureToast,
+} from "./fileIntake";
 import { draftUploadPreviewRef, isGroupImagePreviewPath } from "@comma/core/chat";
 import type {
   AttachmentUploadInput,
@@ -207,6 +215,7 @@ export const Composer = memo(function Composer({
   draftSnippets = EMPTY_SNIPPETS,
   fill,
   mentionSources,
+  workerMention = false,
   onAcceptSuggestion,
   onAttachFiles,
   onDraftChange,
@@ -243,6 +252,11 @@ export const Composer = memo(function Composer({
   fill?: ComposerDraftFill | undefined;
   /** Tasks, routines, and plugins for the "@" panel; Add works without it. */
   mentionSources?: ComposerMentionSources | undefined;
+  /**
+   * A shared task: "@" offers its Worker (Comma) alone, named as `@Comma`, which wakes it; none of the account's own
+   * Tasks, Routines, Plugins or Drive, which are no one else's there.
+   */
+  workerMention?: boolean | undefined;
   onAcceptSuggestion?: (() => void) | undefined;
   suggestion?: string | undefined;
   onAttachFiles?: (files: AttachmentUploadInput[]) => void;
@@ -517,6 +531,13 @@ export const Composer = memo(function Composer({
           messages.chat_uploading(),
           messages.chat_upload_failed()
         );
+        // A file named by its path on this computer: the folder it is in; on hover, its full path and size.
+        const local =
+          attachment.localPath &&
+          attachment.status !== "uploading" &&
+          attachment.status !== "failed"
+            ? attachment.localPath
+            : undefined;
         const preview = localImagePreviews.get(attachment.id);
         // Keep the loading tile until the thumbnail is ready or unavailable.
         // Upload completion can precede the separate thumbnail request.
@@ -542,7 +563,12 @@ export const Composer = memo(function Composer({
                 : "ready",
           type: attachment.isImage ? "image" : "file",
         };
-        if (meta) {
+        if (local) {
+          inputAttachment.meta = localDirectory(local);
+          inputAttachment.metaMiddleTruncate = true;
+          inputAttachment.detail = local;
+          inputAttachment.detailMeta = formatAttachmentSize(attachment.size, locale);
+        } else if (meta) {
           inputAttachment.meta = meta;
         }
         if (preview?.status === "ready") {
@@ -705,6 +731,8 @@ export const Composer = memo(function Composer({
   const pluginsGroupLabel = messages.chat_plugin_menu_group();
   const modelsGroupLabel = messages.chat_menu_models_group();
   const requestsGroupLabel = messages.chat_menu_requests_group();
+  const sharesGroupLabel = messages.chat_menu_shares_group();
+  const workerGroupLabel = messages.chat_menu_worker_group();
   const effortLabel = messages.settings_providers_picker_effort();
   const defaultEffortLabel = messages.settings_providers_picker_default_effort();
   const noResultsLabel = messages.ui_ai_menu_no_results();
@@ -822,6 +850,29 @@ export const Composer = memo(function Composer({
         ],
       });
     }
+    if (workerMention)
+      mentionGroups.push({
+        id: "worker",
+        label: workerGroupLabel,
+        items: [
+          {
+            id: "worker:comma",
+            label: "Comma",
+            icon: (
+              <svg
+                aria-hidden
+                className="size-4"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path d={commaProductMarkPathData} />
+              </svg>
+            ),
+            plainText: "@Comma",
+            data: { kind: "worker" },
+          },
+        ],
+      });
     // In the Router chat, a model named starts a Task with it and the rest of the message.
     if (
       mentionSources?.models.items.length ||
@@ -835,6 +886,32 @@ export const Composer = memo(function Composer({
           noResultsLabel,
         }),
         status: mentionSources.models.status,
+      });
+    }
+    // In the Router chat, people of the account's People named here start one shared task with the rest of the
+    // message; a person named in the next group gets it as a Task request instead.
+    if (
+      mentionSources?.shares?.items.length ||
+      mentionSources?.shares?.status === "loading"
+    ) {
+      mentionGroups.push({
+        id: "shares",
+        label: sharesGroupLabel,
+        status: mentionSources.shares.status,
+        items: mentionSources.shares.items.map((person) => ({
+          id: `share:${person.userId}`,
+          label: person.name,
+          icon: (
+            <RequestPersonAvatar
+              email={person.email}
+              name={person.name}
+              source={person.avatar ?? undefined}
+            />
+          ),
+          keywords: person.email ? [person.email] : [],
+          plainText: shareMentionPlainText(person.name, person.userId),
+          data: { kind: "share", userId: person.userId },
+        })),
       });
     }
     // In the Router chat, a person named gets the rest of the message as a Task request.
@@ -908,7 +985,9 @@ export const Composer = memo(function Composer({
             mentionSources.openSlackChannel
           )
         : null;
-    if (mentionSources) {
+    // A shared task's "@" names its Worker alone: the account's own Tasks, Routines, Plugins and Drive are no one
+    // else's there.
+    if (mentionSources && !workerMention) {
       mentionGroups.push(
         {
           id: "tasks",
@@ -972,7 +1051,7 @@ export const Composer = memo(function Composer({
     // Drive rows attach, so the section exists only where an attachment can
     // land. The menu shows the newest files; the whole tree, one section per
     // folder with its newest file first, sits behind "View more".
-    if (mentionSources && onAttachFiles) {
+    if (mentionSources && onAttachFiles && !workerMention) {
       const driveRow = (
         entry: ComposerDriveMentionItem,
         description: string
@@ -1075,6 +1154,9 @@ export const Composer = memo(function Composer({
     slackSearchLabel,
     modelsGroupLabel,
     requestsGroupLabel,
+    sharesGroupLabel,
+    workerGroupLabel,
+    workerMention,
     effortLabel,
     defaultEffortLabel,
     noResultsLabel,

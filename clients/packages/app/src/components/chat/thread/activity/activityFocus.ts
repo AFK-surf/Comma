@@ -64,6 +64,15 @@ export type ActivityFocus = {
   tasks: readonly ActivityFocusTask[];
 };
 
+/** A Task that ended or was archived: nothing works on it any more. */
+function isEndedTaskStatus(statusBucket: TaskStatusBucket | undefined): boolean {
+  return (
+    statusBucket === "done" ||
+    statusBucket === "cancelled" ||
+    statusBucket === "archived"
+  );
+}
+
 /** The turn the Router answers: the person's last message to it, a Quick Chat included. */
 export function focusTurnKey(messages: readonly ChatMessage[]): string | undefined {
   const request = messages.findLast(asksRouter);
@@ -73,26 +82,40 @@ export function focusTurnKey(messages: readonly ChatMessage[]): string | undefin
 /**
  * What the chat's reply slot can say about Task work, from facts the surface
  * already has: the Router's canonical status and the Tasks this chat created.
- * It never infers a Task from timing.
+ * It never infers a Task from timing. A Task that ended (done, cancelled) or
+ * was archived is never followed: its stale id in `workingConversationIds`
+ * neither names the work nor takes a feed.
  */
 export function selectActivityFocusTarget({
   createdTasks,
   currentTurnKey,
   participantStatus,
+  resolvedTasks,
 }: {
   createdTasks: readonly ActivityFocusTaskRef[];
   currentTurnKey: string | undefined;
   participantStatus: ChatParticipantStatus | undefined;
+  /** Facts of Tasks this chat did not create, as the core knows them. */
+  resolvedTasks?:
+    | ReadonlyMap<
+        string,
+        Omit<ActivityFocusTaskRef, "conversationId" | "requestTurnKey">
+      >
+    | undefined;
 }): ActivityFocusTarget | undefined {
   const running = createdTasks.filter((task) => task.statusBucket === "in_progress");
   if (participantStatus?.state === "active" && participantStatus.loopWake !== true) {
     const ids = participantStatus.workingConversationIds;
     if (ids?.length) {
       const known = new Map(createdTasks.map((task) => [task.conversationId, task]));
-      return {
-        mode: "following",
-        tasks: ids.map((id) => known.get(id) ?? { conversationId: id }),
-      };
+      const following: ActivityFocusTaskRef[] = [];
+      for (const id of ids) {
+        const task = known.get(id);
+        const resolved = resolvedTasks?.get(id);
+        if (isEndedTaskStatus(task?.statusBucket ?? resolved?.statusBucket)) continue;
+        following.push(task ?? { conversationId: id, ...resolved });
+      }
+      if (following.length) return { mode: "following", tasks: following };
     }
     if (participantStatus.waiting) {
       // The Router's Session takes part in every Task it delegated, so a
@@ -126,7 +149,8 @@ export function focusFeedIds(target: ActivityFocusTarget | undefined): string[] 
 }
 
 /**
- * Join a target with resolved titles and followed Workers. A `working` state
+ * Join a target with resolved titles and followed Workers, without Tasks that
+ * ended or were archived. A `following` state with none left says nothing. A `working` state
  * shows only Tasks whose Worker works now: an idle Router with a waiting or
  * stopped Worker leaves the slot empty.
  */
@@ -142,16 +166,19 @@ export function resolveActivityFocus(
   }
 ): ActivityFocus | undefined {
   if (!target) return undefined;
-  const tasks = target.tasks.map((task): ActivityFocusTask => {
-    const known = facts.titles.get(task.conversationId);
-    return {
-      ...task,
-      statusBucket: task.statusBucket ?? known?.statusBucket,
-      title: task.title || known?.title || undefined,
-      updatedAt: task.updatedAt ?? known?.updatedAt,
-      worker: facts.workers.get(task.conversationId),
-    };
-  });
+  const tasks = target.tasks
+    .map((task): ActivityFocusTask => {
+      const known = facts.titles.get(task.conversationId);
+      return {
+        ...task,
+        statusBucket: task.statusBucket ?? known?.statusBucket,
+        title: task.title || known?.title || undefined,
+        updatedAt: task.updatedAt ?? known?.updatedAt,
+        worker: facts.workers.get(task.conversationId),
+      };
+    })
+    .filter((task) => !isEndedTaskStatus(task.statusBucket));
+  if (target.mode === "following" && !tasks.length) return undefined;
   if (target.mode !== "working")
     return { groupId: facts.groupId, mode: target.mode, tasks };
   const working = tasks.filter((task) => task.worker?.active === true);

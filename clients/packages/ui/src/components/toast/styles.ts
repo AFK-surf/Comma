@@ -29,7 +29,7 @@ export const toastStatusIcon = "size-2xl shrink-0";
 
 export const toastCloseButton =
   "relative inline-flex size-3xl shrink-0 items-center justify-center rounded-sm text-toast-icon-primary " +
-  "transition-colors hover:text-secondary focus:outline-none focus-visible:shadow-focus-gray-shadow-xs";
+  "transition-colors hover:bg-quaternary hover:text-primary focus:outline-none focus-visible:shadow-focus-gray-shadow-xs";
 
 /** Indent keeps content below the title flush with it: status icon + row gap. */
 export const toastContentRow =

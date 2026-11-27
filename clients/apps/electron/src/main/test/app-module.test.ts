@@ -1,5 +1,13 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
@@ -279,7 +287,8 @@ describe("Electron main composition root", () => {
 
   it("applies the reader's Notch settings to the Notch host at startup and on each change", async () => {
     const notch = createNotchProvider();
-    const app = await createTestElectronMainContext({ notch });
+    const connectorRuntimeRoot = await mkdtemp(join(tmpdir(), "comma-cu-prefs-"));
+    const app = await createTestElectronMainContext({ connectorRuntimeRoot, notch });
 
     try {
       // Before any window can write a scene, the saved choice is in force.
@@ -287,13 +296,25 @@ describe("Electron main composition root", () => {
         sideWidth: 156,
         visible: true,
       });
-      await app.appPreferences.update({ notchSideWidth: 96, showInNotch: false });
+      await app.appPreferences.update({
+        notchSideWidth: 96,
+        showComputerUseInNotch: false,
+        showInNotch: false,
+      });
       expect(notch.setPresentation).toHaveBeenLastCalledWith({
         sideWidth: 96,
         visible: false,
       });
     } finally {
       await app.close();
+      const prefs = JSON.parse(
+        await readFile(
+          join(connectorRuntimeRoot, "computer-use", "preferences.json"),
+          "utf8"
+        )
+      );
+      expect(prefs).toEqual({ showInNotch: false });
+      await rm(connectorRuntimeRoot, { force: true, recursive: true });
     }
   });
 
@@ -307,6 +328,10 @@ describe("Electron main composition root", () => {
         openNotificationSettings: (input) => provider.openNotificationSettings(input),
         requestNotificationAuthorization: (input) =>
           provider.requestNotificationAuthorization(input),
+        requestLocationAuthorization: (input) =>
+          provider.requestLocationAuthorization(input),
+        requestMicrophoneAuthorization: (input) =>
+          provider.requestMicrophoneAuthorization(input),
         refreshLaunchAtLogin: (input) => provider.refreshLaunchAtLogin(input),
         relaunch: (input) => provider.relaunch(input),
         state: (input) => provider.state(input),
@@ -934,11 +959,20 @@ describe("Electron main composition root", () => {
               name: "third.webp",
               size: 2,
             },
+            {
+              file: {
+                name: "fourth.zip",
+                path: "/Users/me/fourth.zip",
+                size: 40_000_000,
+              },
+              kind: "local_path",
+            },
           ],
         });
       // The core holds the intake and the draft; Main attaches what the picker registered, in order.
       vi.spyOn(app.chat, "claim").mockResolvedValue({
         intakeId: "intake-1",
+        localPathMode: "routed",
         refresh: vi.fn(async () => undefined),
         assertCurrent: vi.fn(),
         markDialogClosed: vi.fn(),
@@ -952,6 +986,9 @@ describe("Electron main composition root", () => {
       const attachLocalFiles = vi
         .spyOn(app.chat, "attachLocalFiles")
         .mockResolvedValue({ revision: 11 });
+      const attachLocalPaths = vi
+        .spyOn(app.chat, "attachLocalPaths")
+        .mockResolvedValue({ revision: 13 });
       registerNativeBridgeHandlersFromContext(app);
       const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
         handle.mock.calls.map(([channel, handler]) => [channel, handler])
@@ -985,7 +1022,7 @@ describe("Electron main composition root", () => {
             },
           ],
           intakeId: "intake-1",
-          revision: 12,
+          revision: 13,
         },
       });
       expect(JSON.stringify(result)).not.toContain("1,2,3");
@@ -998,7 +1035,16 @@ describe("Electron main composition root", () => {
         maxUploadFiles: 7,
         onDialogClosed: expect.any(Function),
         workspaceId: "wsp_pick",
+        // The core said which files the conversation names by their path.
+        localPathMode: "routed",
       });
+      expect(attachLocalPaths).toHaveBeenCalledWith(
+        expect.objectContaining({
+          files: [
+            { name: "fourth.zip", path: "/Users/me/fourth.zip", size: 40_000_000 },
+          ],
+        })
+      );
       expect(attach.mock.calls).toEqual([
         [
           expect.objectContaining({

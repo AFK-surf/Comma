@@ -22,7 +22,7 @@ anyhow = "1"
 base64 = "0.22"
 hex = "0.4"
 iroh = { version = "=1.0.3", features = ["unstable-custom-transports"] }
-iroh-base = "=1.0.3"
+iroh-base = "=1.3.0"
 n0-watcher = "1"
 # A connection's paths as they change (lib.rs `next_via`).
 futures-core = "0.3"
@@ -58,7 +58,9 @@ napi-build = "2"
 swarm-discovery = { path = "../../vendor/swarm-discovery" }
 iroh-mdns-address-lookup = { path = "../../vendor/iroh-mdns-address-lookup" }
 noq-udp = { path = "../../vendor/noq-udp" }
-iroh = { path = "../../vendor/iroh" }
+noq-proto = { git = "https://github.com/zzj3720/noq", rev = "d578f818ad7580c49691f26d5ccf8cc3afcc026a" }
+iroh = { git = "https://github.com/zzj3720/iroh", rev = "6ecd06898cadd879c89fc6d917750ccc6a6100a7" }
+iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "6ecd06898cadd879c89fc6d917750ccc6a6100a7" }
 
 [profile.release]
 strip = true

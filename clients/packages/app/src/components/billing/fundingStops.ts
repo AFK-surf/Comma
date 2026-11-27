@@ -123,7 +123,7 @@ export function fundingStopActions(
     return [
       {
         label: messages.chat_add_credits(undefined, { locale }),
-        run: openUsageBillingSettings,
+        run: () => openUsageBillingSettings("funding_stop"),
       },
     ];
   }

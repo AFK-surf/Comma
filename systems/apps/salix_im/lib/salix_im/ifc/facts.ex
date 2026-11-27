@@ -187,9 +187,13 @@ defmodule SalixIM.IFC.Facts do
 
     scope_facts = scope_facts(tenant_id, group_id, atoms)
     resolved = Enum.map(atoms, &resolve_atom(tenant_id, group_id, &1, requester, scope_facts))
+    resolved = if mode == "easy", do: Enum.map(resolved, &easy_bot_access/1), else: resolved
     policy = policy(group, resolved)
     supervisors = supervisors(group)
-    supervised = supervised_atoms(supervisors, resolved, group_id, connects)
+    supervised = supervised_atoms(supervisors, resolved, group_id, connects, mode)
+
+    placements =
+      placements(tenant_id, group_id, connects, resolved, requester, request["trusted_origin"])
 
     %{
       "mode" => mode,
@@ -200,17 +204,12 @@ defmodule SalixIM.IFC.Facts do
       "destination" => %{"label" => destination_atoms, "writers" => writers},
       "scopes" => scopes(resolved, group_id, connects),
       "membership" =>
-        resolved |> membership(request) |> with_supervisors(supervisors, supervised),
+        resolved
+        |> membership(request)
+        |> easy_public_membership(mode, resolved, requester, placements)
+        |> with_supervisors(supervisors, supervised),
       "cleared" => Map.new(supervised, &{&1, supervisors}),
-      "placements" =>
-        placements(
-          tenant_id,
-          group_id,
-          connects,
-          resolved,
-          requester,
-          request["trusted_origin"]
-        ),
+      "placements" => placements,
       "receipts" => receipts(tenant_id, group_id, requester, now),
       "policy" => policy,
       "display_names" => display_names(resolved),
@@ -272,8 +271,50 @@ defmodule SalixIM.IFC.Facts do
     end
   end
 
+  # Channel reads require both the requester's authority and the connected bot.
+  # Unknown bot presence grants neither members nor supervisor clearance.
+  defp easy_bot_access(%{kind: :scope, row: row} = resolved) do
+    if row.kind == "direct" or Map.get(row, :bot_present) == true do
+      resolved
+    else
+      %{resolved | canonical_members: nil, row: %{row | members: :unknown}}
+      |> Map.put(:bot_unavailable, true)
+    end
+  end
+
+  defp easy_bot_access(resolved), do: resolved
+
+  # Easy reads a public room the bot is in as Hard reads its space: the
+  # requester reads it exactly when placed inside that workspace. Its full
+  # roster is never listed. Easy asks only about the requester's reading, so
+  # the entry names the requester alone; an unplaced requester stays unknown.
+  # A public room whose operator gave it its own audience keeps that roster.
+  defp easy_public_membership(membership, "easy", resolved, requester, placements) do
+    Enum.reduce(resolved, membership, fn
+      %{
+        kind: :scope,
+        atom: atom,
+        connect_id: connect_id,
+        row: %{kind: "public", bot_present: true, revision: revision} = row
+      },
+      acc ->
+        case Projection.space_audience?(row) && get_in(placements, [requester, connect_id]) do
+          "internal" -> Map.put(acc, atom, entry([requester], revision))
+          "external" -> Map.put(acc, atom, entry([], revision))
+          _unknown -> acc
+        end
+
+      _other, acc ->
+        acc
+    end)
+  end
+
+  defp easy_public_membership(membership, _mode, _resolved, _requester, _placements),
+    do: membership
+
   defp elem_kind(:public), do: :public
   defp elem_kind(:agent_private), do: :agent_private
+  defp elem_kind(:unclassified_non_im), do: :unclassified_non_im
   defp elem_kind(atom) when is_tuple(atom), do: elem(atom, 0)
 
   # A scope's structure. `public` is deliberately absent: a public room's
@@ -364,13 +405,25 @@ defmodule SalixIM.IFC.Facts do
   # known keeps that roster complete, which is what lets a destination's
   # roster prove flow: content reaches a room only if its supervisors may read
   # it too.
-  defp supervised_atoms([], _resolved, _group_id, _connects), do: []
+  defp supervised_atoms([], _resolved, _group_id, _connects, _mode), do: []
 
-  defp supervised_atoms(_supervisors, resolved, group_id, connects) do
+  defp supervised_atoms(_supervisors, resolved, group_id, connects, mode) do
     resolved
-    |> Enum.filter(&supervised?(&1, group_id, connects))
+    |> Enum.filter(
+      &(not Map.get(&1, :bot_unavailable, false) and
+          (supervised?(&1, group_id, connects) or
+             (mode == "easy" and easy_public_scope?(&1, connects))))
+    )
     |> Enum.map(& &1.atom)
   end
+
+  defp easy_public_scope?(
+         %{kind: :scope, connect_id: connect_id, row: %{kind: "public"}},
+         connects
+       ),
+       do: connect_id in connects
+
+  defp easy_public_scope?(_resolved, _connects), do: false
 
   defp supervised?(%{kind: :scope, connect_id: connect_id, row: %{kind: kind}}, _group, connects)
        when kind in ["room", "direct", "shared"],
@@ -633,6 +686,12 @@ defmodule SalixIM.IFC.Facts do
       # cross-scope relay that needs a receipt. Writers are any member, as
       # any device of theirs already publishes into the same folder.
       %{"kind" => "drive"} ->
+        {encode([{:group, group_id}]), "any"}
+
+      # Generalized Live Activity (`live_status_v1`) renders only on the Group's
+      # authorized Workspace owner devices (APNs + owner-only GET). Its audience is
+      # `{:group, group_id}`, matching connector reads and Group memory.
+      %{"kind" => "live_activity"} ->
         {encode([{:group, group_id}]), "any"}
 
       # The per-audience memory home (§8). Its audience is the effect's own

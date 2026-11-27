@@ -21,9 +21,9 @@ defmodule SalixStore.ConfigJson do
       transfer   port, advertise_host, advertise_port
       decide     api_key, endpoint, model, provider (Jev-compatible decisions)
       search     exa_api_key                    (willow SearchConfig)
-      email      postmark_server_token, owner_notification_from_email,
-                 magic_link_from_email
-                 (Postmark: agent owner notifications + BFT magic-link login)
+      email      postmark_server_token (shared Postmark server),
+                 teams_postmark_server_token, teams_from_email,
+                 teams_reply_to_email (Comma for Teams system email)
       im         identity_scan_max_concurrency (hard bound on concurrent
                  identity fallback scans; over-bound webhook events get a
                  retryable 503; default 4)
@@ -40,7 +40,7 @@ defmodule SalixStore.ConfigJson do
                  outbox.*, backfill.*
       slack_semantic_search url, client_id, client_secret (connection settings only;
                  activation follows COMMA_ENVIRONMENT, off only in prod/production)
-      billing   database.*, stripe.*, storage_metering.*
+      billing   database.*, stripe.*, storage_metering.*, m2square.*
       comma        database.*, auth.{secret,rate_limit_secret,redis_url},
                  email.from,
                  web.{web_cookie_origin,admin_cookie_origin,allowed_origins},
@@ -186,13 +186,14 @@ defmodule SalixStore.ConfigJson do
         # search (salix_agent tools)
         {:salix_agent, :exa_api_key, str(json, ~w(search exa_api_key))},
 
-        # email (Postmark): one shared server token (SalixStore.Postmark);
-        # each sender has its own From address.
+        # email (Postmark, SalixStore.Postmark): the shared server token, and
+        # the Comma for Teams server and sender for its system email.
         {:salix_store, :postmark_server_token, str(json, ~w(email postmark_server_token))},
-        {:salix_agent, :owner_notification_from_email,
-         str(json, ~w(email owner_notification_from_email))},
-        {:bridge_for_teams_core, :magic_link_from_email,
-         str(json, ~w(email magic_link_from_email))},
+        {:bridge_for_teams_core, :teams_postmark_server_token,
+         str(json, ~w(email teams_postmark_server_token))},
+        {:bridge_for_teams_core, :teams_from_email, str(json, ~w(email teams_from_email))},
+        {:bridge_for_teams_core, :teams_reply_to_email,
+         str(json, ~w(email teams_reply_to_email))},
 
         # cluster (salix_cluster)
         {:salix_cluster, :strategy, str(json, ~w(cluster strategy))},
@@ -239,8 +240,10 @@ defmodule SalixStore.ConfigJson do
     |> Kernel.++(r2_env(json))
     |> Kernel.++(calendar_autojoin_env(json))
     |> Kernel.++(sourced_context_env(json))
+    |> Kernel.++(m2square_env(json))
     |> Kernel.++(trajectory_eval_env(json))
     |> Kernel.++(station_task_watch_env(json))
+    |> Kernel.++(proactive_env(json))
     |> Enum.reject(fn {_app, _key, value} -> is_nil(value) end)
   end
 
@@ -570,6 +573,26 @@ defmodule SalixStore.ConfigJson do
     if kw == [], do: [], else: [{:salix_im, :station_task_watch, kw}]
   end
 
+  # `CommaWeb.ProactiveWebRadar`: gated behind `comma.proactive.web_radar_enabled`
+  # (default `false`). Absent preserves the compiled default; an explicit
+  # non-boolean or malformed section fails closed to `false`.
+  defp proactive_env(json) do
+    case json_get(json, ~w(comma proactive)) do
+      nil ->
+        []
+
+      %{} = section ->
+        case Map.fetch(section, "web_radar_enabled") do
+          :error -> []
+          {:ok, true} -> [{:comma_web, :proactive_web_radar_enabled, true}]
+          {:ok, _other} -> [{:comma_web, :proactive_web_radar_enabled, false}]
+        end
+
+      _malformed ->
+        [{:comma_web, :proactive_web_radar_enabled, false}]
+    end
+  end
+
   # The judge-model allowlist (`SalixAgent.TrajectoryEval.JudgeProviders`). ops
   # add/remove selectable judge models here without a deploy; entries carry
   # api_key_env (a var NAME) rather than a secret. A whole-map REPLACE (not a
@@ -642,6 +665,118 @@ defmodule SalixStore.ConfigJson do
       {:bridge_for_teams_core, BridgeForTeams.SlackHistoryOnboarding.Reconciler, enabled: false}
     ]
   end
+
+  @m2square_country_codes ~w(PE EC BR CL)
+
+  @doc """
+  App env for M2square Teams billing (`billing.m2square`).
+
+  Absent or empty sections omit the env entry so `BridgeForTeams.M2square.Config`
+  defaults apply (all countries `enabled: false`).
+  """
+  @spec m2square_env(map()) :: [{:bridge_for_teams_core, :m2square, map()}]
+  def m2square_env(json) do
+    case json_get(json, ~w(billing m2square)) do
+      %{} = section when map_size(section) > 0 ->
+        mapped = build_m2square_config(section)
+
+        if map_size(mapped) > 0 do
+          [{:bridge_for_teams_core, :m2square, mapped}]
+        else
+          []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp build_m2square_config(section) do
+    %{}
+    |> maybe_put(:base_url, str(section, ~w(base_url)))
+    |> maybe_put(:mch_id, str(section, ~w(mch_id)))
+    |> maybe_put(:secret_key, str(section, ~w(secret_key)))
+    |> maybe_put(:fx_stripe_version, str(section, ~w(fx_stripe_version)))
+    |> maybe_put(:fx_soft_ttl_ms, positive_int(section, ~w(fx_soft_ttl_ms)))
+    |> maybe_put(:fx_hard_ttl_ms, positive_int(section, ~w(fx_hard_ttl_ms)))
+    |> maybe_put(:fx_failure_backoff_ms, positive_int(section, ~w(fx_failure_backoff_ms)))
+    |> maybe_put(:markup_rate, m2square_decimal_str(section, ~w(markup_rate)))
+    |> maybe_put(:no_pay_page, m2square_bool_str(section, ~w(no_pay_page)))
+    |> maybe_put(:countries, build_m2square_countries(Map.get(section, "countries")))
+  end
+
+  defp build_m2square_countries(%{} = countries) do
+    mapped =
+      Enum.reduce(@m2square_country_codes, %{}, fn code, acc ->
+        raw = Map.get(countries, code) || Map.get(countries, String.downcase(code))
+
+        if is_map(raw) do
+          country_cfg = build_m2square_country(raw)
+
+          if map_size(country_cfg) > 0 do
+            Map.put(acc, code, country_cfg)
+          else
+            acc
+          end
+        else
+          acc
+        end
+      end)
+
+    if map_size(mapped) > 0, do: mapped, else: nil
+  end
+
+  defp build_m2square_countries(_), do: nil
+
+  defp build_m2square_country(raw) do
+    %{}
+    |> maybe_put(:min_amount, m2square_decimal_str(raw, ~w(min_amount)))
+    |> maybe_put(:max_amount, m2square_decimal_str(raw, ~w(max_amount)))
+    |> maybe_put(:fee_rate, m2square_decimal_str(raw, ~w(fee_rate)))
+    |> maybe_put(:id_types, string_list(raw, ~w(id_types)))
+    |> maybe_put(:brazil_doc_type, str(raw, ~w(brazil_doc_type)))
+    |> maybe_put(:extra_pay_fields, object(raw, ~w(extra_pay_fields)))
+    |> maybe_put(:payment_method, str(raw, ~w(payment_method)))
+  end
+
+  defp positive_int(json, path) do
+    case int(json, path) do
+      v when is_integer(v) and v > 0 -> v
+      _ -> nil
+    end
+  end
+
+  defp m2square_decimal_str(json, path) do
+    case json_get(json, path) do
+      v when is_binary(v) and v != "" -> String.trim(v)
+      v when is_integer(v) -> Integer.to_string(v)
+      v when is_float(v) -> :erlang.float_to_binary(v, [:compact, decimals: 10])
+      _ -> nil
+    end
+  end
+
+  defp m2square_bool_str(json, path) do
+    case json_get(json, path) do
+      true -> "true"
+      false -> "false"
+      "true" -> "true"
+      "false" -> "false"
+      _ -> nil
+    end
+  end
+
+  defp string_list(json, path) do
+    case json_get(json, path) do
+      list when is_list(list) ->
+        if Enum.all?(list, &(is_binary(&1) and &1 != "")), do: list, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp parse_num(v) do
     case Float.parse(v) do

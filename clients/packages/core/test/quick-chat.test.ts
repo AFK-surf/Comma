@@ -115,7 +115,7 @@ describe("a Quick Chat message", () => {
     expect(tasks()?.items).toEqual([]);
     expect(
       t.api.requests.filter((r) => r.method === "POST").map((r) => r.path)
-    ).toEqual([`${ensureHome}?message_limit=1`, messages]);
+    ).toEqual([`${ensureHome}?message_limit=1`, `${messages}?message_limit=24`]);
     expect(t.api.seen("POST", messages).map((r) => r.body)).toEqual([body]);
     expect(t.api.seen("GET", "/v1/comma/groups/g/task-summaries")).toEqual([]);
   });

@@ -150,13 +150,16 @@ const gate = (
 
 type Handler = (
   request: RecordedRequest
-) => { status: number; body: unknown } | undefined;
+) =>
+  | { status: number; body: unknown }
+  | undefined
+  | Promise<{ status: number; body: unknown } | undefined>;
 
 async function open(page: Page, handle: Handler = () => undefined, path = base) {
   await injectCsrfToken(page);
-  const requests = await routeApi(page, (request) => {
+  const requests = await routeApi(page, async (request) => {
     if (request.path === "/orgs/acme/context") return ok(context);
-    const answer = handle(request);
+    const answer = await handle(request);
     if (answer) return answer;
     if (request.method === "GET" && request.path === api) return ok(connections());
     return undefined;
@@ -457,6 +460,146 @@ test("adds a QQ bot by its credentials, then shows the callback address to save"
   ).toEqual([
     ["POST", `${api}/qq`, { app_id: "1900012345", app_secret: "bot-secret" }],
   ]);
+});
+
+test("adds a WeCom bot by its Bot ID and Secret, with nothing to paste back", async ({
+  page,
+}) => {
+  let connected = false;
+  // The page's read after the write waits until the test lets it answer.
+  const read = Promise.withResolvers<void>();
+  const wecom = () => ({
+    connects: connected
+      ? [
+          {
+            connect_id: "imc1_wecom",
+            status: "connected",
+            disabled: false,
+            bot_id: "aibTestBot",
+            online: false,
+            secret_configured: true,
+            updated_at: null,
+          },
+        ]
+      : [],
+    route: {
+      status: connected ? "ready" : "not_connected",
+      connect_id: connected ? "imc1_wecom" : null,
+      router: connected ? "Router" : null,
+    },
+  });
+  const requests = await open(page, async (request) => {
+    if (request.method === "POST" && request.path === `${api}/wecom`) {
+      connected = true;
+      return {
+        status: 201,
+        body: {
+          ok: true,
+          data: {
+            notice:
+              "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it.",
+          },
+        },
+      };
+    }
+    if (request.method === "GET" && request.path === api) {
+      const body = connections({
+        messaging: { ...connections().messaging, wecom: wecom() },
+      });
+      if (connected) await read.promise;
+      return ok(body);
+    }
+    return undefined;
+  });
+  const wecomSection = section(page, "WeCom");
+  await expect(wecomSection.getByText("No WeCom bots connected yet.")).toBeVisible();
+
+  await wecomSection.getByRole("button", { name: "Add WeCom bot" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add WeCom bot" });
+  await dialog.getByRole("textbox", { name: "Bot ID" }).fill(" aibTestBot ");
+  await dialog.getByLabel("Secret").fill("bot-secret");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+
+  // The result is said in the WeCom section; the dialog stays busy until the
+  // page, read again, shows the new bot.
+  await expect(
+    wecomSection.getByText(
+      "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it."
+    )
+  ).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Saving" })).toBeDisabled();
+  await expect(wecomSection.getByText("No WeCom bots connected yet.")).toBeVisible();
+  read.resolve();
+  await expect(dialog).toBeHidden();
+  const bots = wecomSection.getByRole("list", { name: "WeCom bots" });
+  await expect(bots.getByText("aibTestBot")).toBeVisible();
+  await expect(bots.getByText("Secret set")).toBeVisible();
+  // Saved credentials are not a live connection.
+  await expect(bots.getByText("Offline, reconnecting")).toBeVisible();
+
+  expect(
+    writes(requests).map((request) => [request.method, request.path, request.body])
+  ).toEqual([["POST", `${api}/wecom`, { bot_id: "aibTestBot", secret: "bot-secret" }]]);
+});
+
+test("a WeCom bot saved while the page cannot be read again closes the dialog and says the list may be old", async ({
+  page,
+}) => {
+  let connected = false;
+  await open(page, (request) => {
+    if (request.method === "POST" && request.path === `${api}/wecom`) {
+      connected = true;
+      return {
+        status: 201,
+        body: {
+          ok: true,
+          data: {
+            notice:
+              "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it.",
+          },
+        },
+      };
+    }
+    if (request.method === "GET" && request.path === api)
+      return connected
+        ? {
+            status: 503,
+            body: { ok: false, error: { code: "unavailable", message: "Unavailable" } },
+          }
+        : ok(
+            connections({
+              messaging: {
+                ...connections().messaging,
+                wecom: {
+                  connects: [],
+                  route: { status: "not_connected", connect_id: null, router: null },
+                },
+              },
+            })
+          );
+    return undefined;
+  });
+  const wecomSection = section(page, "WeCom");
+
+  await wecomSection.getByRole("button", { name: "Add WeCom bot" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add WeCom bot" });
+  await dialog.getByRole("textbox", { name: "Bot ID" }).fill("aibTestBot");
+  await dialog.getByLabel("Secret").fill("bot-secret");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+
+  // The bot was saved: the dialog closes and the section says so; the page
+  // keeps what it last read and says it may be out of date, with a retry.
+  await expect(dialog).toBeHidden();
+  await expect(
+    wecomSection.getByText(
+      "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it."
+    )
+  ).toBeVisible();
+  await expect(wecomSection.getByText("No WeCom bots connected yet.")).toBeVisible();
+  const stale = main(page).getByRole("alert").filter({
+    hasText: "Could not refresh. What you see may be out of date.",
+  });
+  await expect(stale.getByRole("button", { name: "Retry" })).toBeVisible();
 });
 
 test("a Telegram bot is connected by token and serves only the groups allowed", async ({

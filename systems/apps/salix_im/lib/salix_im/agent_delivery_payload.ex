@@ -86,6 +86,32 @@ defmodule SalixIM.AgentDeliveryPayload do
     |> reject_blank()
   end
 
+  @doc """
+  Session birth attributes (`session_id`, `created_at`, `name`,
+  `billing_context`, `model`) shared by full agent deliveries and
+  `conversation_scan_only` frontier advances so a scan-only birth sets the
+  exact same initial attributes as a regular delivery.
+  """
+  @spec session_birth_attrs(map()) :: map()
+  def session_birth_attrs(attrs) when is_map(attrs) do
+    participant_payload =
+      case attrs["participant_payload"] do
+        %{} = map -> map
+        _ -> %{}
+      end
+
+    %{
+      session_id: attrs["session_id"] || participant_payload["session_id"],
+      created_at: attrs["message_created_at"],
+      name: attrs["delivery_session_name"] || attrs["conversation_title"] || "Conversation",
+      billing_context: attrs["delivery_billing_context"],
+      # Read only when this delivery creates the Session.
+      model: participant_payload["session_model"]
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" or value == %{} end)
+    |> Map.new()
+  end
+
   @spec provider_router_delivery(map(), map(), term(), map(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def provider_router_delivery(group, router_agent, content, metadata, opts \\ []) do
@@ -98,11 +124,14 @@ defmodule SalixIM.AgentDeliveryPayload do
          {:ok, trusted_origin} <-
            provider_router_trusted_origin(group, metadata, source_message_id, trusted_source_text)
            |> bind_triage_handoff(Keyword.get(opts, :trusted_triage_handoff), router_agent) do
+      {rendered_content, trusted_origin} =
+        router_message_content(group, content, metadata, trusted_origin)
+
       {:ok,
        %{
          "participant_payload" => %{"session_id" => session_id},
          "delivery_session_name" => Keyword.get(opts, :session_name, "Comma"),
-         "content" => task_creation_context(group) <> provider_message_content(content, metadata),
+         "content" => rendered_content,
          "trusted_origin" => trusted_origin,
          "source_sent_at_ms" => provider_source_time(metadata),
          "provider_reply_obligation" =>
@@ -197,7 +226,7 @@ defmodule SalixIM.AgentDeliveryPayload do
         "provider_context" =>
           metadata
           |> Map.take(
-            ~w(connect_id workspace_id channel_id channel_type thread_ts message_ts event_ts user_id event_type event_id app_authored meeting_id summary_request_id meeting_activation_ref lark_meeting_activation_ref chat_id chat_type conversation_id message_thread_id message_id root_message_id trigger_message_id tenant_key sender_open_id sender_union_id sender_user_id sender_type from_user_id from_username from_member_role from_is_bot wechat_id api_key_id api_key_name sender_name sender_id)
+            ~w(connect_id workspace_id channel_id channel_type thread_ts message_ts event_ts user_id event_type event_id app_authored meeting_id summary_request_id meeting_activation_ref lark_meeting_activation_ref chat_id chat_type conversation_id message_thread_id message_id reply_to_message_id source_message_ids root_message_id trigger_message_id tenant_key sender_open_id sender_union_id sender_user_id sender_type from_user_id from_username from_member_role from_is_bot wechat_id api_key_id api_key_name sender_name sender_id)
           )
           |> stringify()
           |> reject_blank()
@@ -312,6 +341,30 @@ defmodule SalixIM.AgentDeliveryPayload do
     end
   end
 
+  defp router_message_content(group, content, metadata, origin) do
+    if SalixIM.IFC.Ingress.enabled?(group) do
+      ingress = get_in(origin || %{}, ["ifc", "label"])
+
+      segments =
+        [
+          %{"content" => to_string_safe(content), "label" => ingress},
+          %{
+            "content" => String.trim_trailing(task_creation_context(group), "\n"),
+            "label" => ["group|" <> group["group_id"]]
+          },
+          %{"content" => source_context(metadata), "label" => ingress}
+        ]
+        |> Enum.reject(&(&1["content"] == ""))
+
+      origin =
+        if is_map(origin), do: Map.put(origin, "projection_segments", segments), else: origin
+
+      {Enum.map_join(segments, "\n", & &1["content"]), origin}
+    else
+      {task_creation_context(group) <> provider_message_content(content, metadata), origin}
+    end
+  end
+
   def provider_message_content(content, metadata) do
     content = to_string_safe(content)
 
@@ -384,7 +437,8 @@ defmodule SalixIM.AgentDeliveryPayload do
   end
 
   defp materialize_worker_session_payload(participant, opts) do
-    existing = participant |> existing_participant_payload() |> Map.get("session_id") |> trim()
+    existing_payload = existing_participant_payload(participant)
+    existing = existing_payload |> Map.get("session_id") |> trim()
 
     origin =
       if participant["role_label"] == "delegator" do
@@ -396,7 +450,10 @@ defmodule SalixIM.AgentDeliveryPayload do
     cond do
       existing != "" and Keyword.get(opts, :preallocated, false) and
           Ids.valid_session_id?(existing) ->
-        {:ok, %{"session_id" => existing}}
+        {:ok,
+         %{"session_id" => existing}
+         |> put_session_model(opts, existing_payload)
+         |> preserve_worker_slot_payload(existing_payload, opts)}
 
       existing != "" ->
         {:error, :participant_session_id_not_accepted}
@@ -410,20 +467,37 @@ defmodule SalixIM.AgentDeliveryPayload do
       true ->
         {:ok,
          %{"session_id" => Ids.new_session_id()}
-         |> put_session_model(opts)}
+         |> put_session_model(opts, existing_payload)
+         |> preserve_worker_slot_payload(existing_payload, opts)}
     end
   end
 
   # A new Worker Session takes its own model choice at birth: the first
   # delivery to it carries `session_model` (`SalixAgent.ModelChoice`).
-  defp put_session_model(payload, opts) do
-    case Keyword.get(opts, :session_model) do
+  defp put_session_model(payload, opts, existing_payload) do
+    case Keyword.get(opts, :session_model) || existing_payload["session_model"] do
       model when is_map(model) and map_size(model) > 0 ->
         Map.put(payload, "session_model", model)
 
       _none ->
         payload
     end
+  end
+
+  defp preserve_worker_slot_payload(payload, existing_payload, opts) do
+    slot_fields = %{
+      "session_slot" =>
+        trim(Keyword.get(opts, :session_slot) || existing_payload["session_slot"]),
+      "session_label" =>
+        trim(Keyword.get(opts, :session_label) || existing_payload["session_label"]),
+      "role_instructions" =>
+        trim(Keyword.get(opts, :role_instructions) || existing_payload["role_instructions"])
+    }
+
+    Enum.reduce(slot_fields, payload, fn
+      {_key, ""}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
   end
 
   defp group_router_session_id(group, router_agent) do
@@ -579,6 +653,13 @@ defmodule SalixIM.AgentDeliveryPayload do
         "LINE shows plain text without Markdown and cannot edit a sent message. The first send after this message is a free reply; later sends are push messages that use the account's monthly quota, so answer in one message and do not send placeholders. " <>
         "Read help for im_api.line operations before their first call."
 
+  defp provider_reply_help_hint("wecom", _metadata),
+    do:
+      "Reply in this WeCom chat with im_api.wecom.send_message using the source connect_id and chat_id. " <>
+        "WeCom shows Markdown and cannot edit a sent message, and it takes at most 30 messages a minute per chat: answer in few messages and send the result when you have it. " <>
+        "A group message reaches you only when it mentions the bot; the rest of the group is not available. " <>
+        "Read help for im_api.wecom operations before their first call."
+
   defp provider_reply_help_hint("lark", metadata),
     do:
       "Reply in this Lark chat with im_api.lark.send_message using the source connect_id; chat_id defaults to this chat. In a group, pass reply_to with the source message_id so the answer goes into the thread of that message. " <>
@@ -591,6 +672,7 @@ defmodule SalixIM.AgentDeliveryPayload do
           &if(&1 == "", do: "", else: &1 <> " ")
         ) <>
         "If this human request creates a Task with im_api.internal.task.create, the runtime publishes its live Task card as a reply to this source. Check task_card.status in the result; do not publish again when it is queued. If publication failed, retry only im_api.lark.post_task_card for the existing conversation_id; never create another Task to repair the card. " <>
+        "When people in this thread tell you to stop following it or to be quiet (stop watching, 别跟了, 闭嘴), staying silent is not enough: reply there in one short line that a mention brings you back, then call im_api.lark.leave_thread with the chat_id and message_thread_id as your last action in this thread. " <>
         "Read help for im_api.lark operations before their first call. " <>
         SalixIM.Provider.Lark.RouterGuidance.meetings_and_calendar(metadata)
 
@@ -610,6 +692,7 @@ defmodule SalixIM.AgentDeliveryPayload do
   defp source_context_title("qq"), do: "QQ message context."
   defp source_context_title("lark"), do: "Lark message context."
   defp source_context_title("line"), do: "LINE message context."
+  defp source_context_title("wecom"), do: "WeCom message context."
   defp source_context_title(_provider), do: "IM provider message context."
 
   defp slack_thread_context_lines("slack", %{"slack_thread_context" => context})

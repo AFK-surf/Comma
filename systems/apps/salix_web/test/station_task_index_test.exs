@@ -270,4 +270,19 @@ defmodule SalixWeb.StationTaskIndexTest do
 
     assert [%Row{rev: 1}] = Repo.all(from(r in Row, where: r.station_id == ^station))
   end
+
+  test "subscribe_all/1 receives {:station_tasks_invalidated, group_id} when any group's index changes",
+       %{tenant_id: tenant, group_id: group} do
+    {public, private, station} = station_key()
+    {:ok, _station, nil} = Stations.admit(tenant, group, station)
+    conn = connect(tenant, group)
+    register(conn, {public, private})
+
+    assert :ok = StationTaskIndex.subscribe_all(SystemsRuntime.Proc.self())
+
+    assert %{"type" => "response"} =
+             request(conn, "all-sub", "task.index", reset_page([row("EMBER/9", 1)]))
+
+    assert_received {:station_tasks_invalidated, ^group}
+  end
 end

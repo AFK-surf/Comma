@@ -4,6 +4,7 @@ import {
   CircleDashedIcon,
   HomeIcon,
   LockIcon,
+  MacbookIcon,
   PhoneDynamicIslandIcon,
   ReloadIcon,
   TabletIcon,
@@ -11,6 +12,7 @@ import {
   VolumeOffIcon,
   VolumeUpIcon,
 } from "@comma/ui/components/icons";
+import { TentPostureIcon } from "./devices/TentPostureIcon";
 import type { TooltipPlacement } from "@comma/ui/components/tooltip";
 import { isReducedMotionEnabled } from "@comma/ui/tokens";
 import {
@@ -44,6 +46,7 @@ import {
   type ScreenTurn,
 } from "./screenDevice";
 import { viewOf } from "./screenWindows";
+import type { DuoPosture, DuoPostureId } from "./devices/duoScreens";
 
 const percent = (part: number, whole: number) => `${(part / whole) * 100}%`;
 
@@ -470,8 +473,17 @@ export function ScreenDeviceButtons({
   placement = "left",
   poses,
   pose = "open",
+  postures,
   trailing,
 }: {
+  /** The postures of a device that folds (an iPhone Duo), while they can be chosen: in place of `poses`. */
+  postures?:
+    | {
+        list: readonly DuoPosture[];
+        shown: DuoPostureId | undefined;
+        onChoose(posture: DuoPostureId): void;
+      }
+    | undefined;
   /** What stands last among them (Watch or Control, in the row under a device wider than tall). */
   trailing?: ReactNode;
   /** The ways a foldable can stand, while they can be chosen, and how it stands. */
@@ -483,7 +495,34 @@ export function ScreenDeviceButtons({
   placement?: TooltipPlacement | undefined;
 }) {
   const messages = useCommaMessages();
-  if (actions.length === 0 && !poses?.length && !trailing) return null;
+  if (actions.length === 0 && !poses?.length && !postures?.list.length && !trailing)
+    return null;
+  const postureFaces: Record<DuoPostureId, { icon: ReactNode; label: string }> = {
+    coverPortrait: {
+      icon: <PhoneDynamicIslandIcon aria-hidden />,
+      label: messages.remote_screen_posture_cover_portrait(),
+    },
+    coverLandscape: {
+      icon: <PhoneDynamicIslandIcon aria-hidden className="rotate-90" />,
+      label: messages.remote_screen_posture_cover_landscape(),
+    },
+    tent: {
+      icon: <TentPostureIcon aria-hidden />,
+      label: messages.remote_screen_posture_tent(),
+    },
+    laptop: {
+      icon: <MacbookIcon aria-hidden />,
+      label: messages.remote_screen_posture_laptop(),
+    },
+    innerLandscape: {
+      icon: <TabletIcon aria-hidden className="rotate-90" />,
+      label: messages.remote_screen_posture_inner_landscape(),
+    },
+    innerPortrait: {
+      icon: <TabletIcon aria-hidden />,
+      label: messages.remote_screen_posture_inner_portrait(),
+    },
+  };
   const faces: Record<ScreenDeviceAction, { icon: ReactNode; label: string }> = {
     home: { icon: <HomeIcon aria-hidden />, label: messages.remote_screen_home() },
     lock: { icon: <LockIcon aria-hidden />, label: messages.remote_screen_lock() },
@@ -532,6 +571,25 @@ export function ScreenDeviceButtons({
   return (
     <div className="comma-remote-screen-device-buttons">
       {BUTTON_GROUPS.map(group)}
+      {postures?.list.length ? (
+        <div
+          className="comma-remote-screen-device-group"
+          data-testid="remote-screen-postures"
+        >
+          {postures.list.map(({ id }) => (
+            <ScreenStreamAction
+              key={id}
+              icon={postureFaces[id].icon}
+              label={postureFaces[id].label}
+              onClick={() => {
+                if (id !== postures.shown) postures.onChoose(id);
+              }}
+              placement={placement}
+              pressed={id === postures.shown}
+            />
+          ))}
+        </div>
+      ) : null}
       {poses?.length ? (
         <div className="comma-remote-screen-device-group">
           {poses.map((one) => (

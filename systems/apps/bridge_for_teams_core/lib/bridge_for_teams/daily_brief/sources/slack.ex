@@ -29,7 +29,8 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
       items
       |> Enum.chunk_every(@permalink_batch)
       |> Enum.reduce(%{}, fn batch, acc ->
-        messages = Enum.map(batch, &%{channel_id: &1.container_id, ts: &1.id})
+        messages =
+          Enum.map(batch, &%{channel_id: &1.container_id, ts: &1.id, thread_ts: &1.thread_id})
 
         case Salix.impl().daily_brief_permalinks(Map.put(salix, :messages, messages)) do
           {:ok, links} ->
@@ -75,14 +76,32 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
 
   def mentions(_text), do: []
 
+  # Slack writes a bare host someone typed ("youdid.wtf") as a link to it;
+  # copied as such into a code span, the markup shows. It stays the host.
+  @autolink ~r/<(https?:\/\/|mailto:)([^|>\s]+)\|([^>]+)>/
+  @user_id ~r/^[UW][A-Z0-9]{2,32}$/
+  @bot_label ~r/^@B[A-Z0-9]{2,32}(-\d+)?$/
+
   @doc "The text with each Slack mention written as its people label."
   @spec label_text(String.t(), People.t()) :: String.t()
   def label_text(text, people) do
     text = Regex.replace(@chip, text, fn _whole, _id, name -> "@" <> String.capitalize(name) end)
+    text = Regex.replace(@autolink, text, &unlink/4)
 
     Regex.replace(@mention, text, fn whole, id ->
       People.label(people, ActorRef.slack(id)) || whole
     end)
+  end
+
+  defp unlink(whole, "mailto:", target, label),
+    do: if(target == label, do: label, else: whole)
+
+  defp unlink(whole, _scheme, target, label) do
+    host = String.trim_trailing(target, "/")
+
+    if host == label and not String.contains?(host, ["/", "?", "#"]),
+      do: label,
+      else: whole
   end
 
   @doc """
@@ -92,14 +111,23 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
   @spec mention_people(String.t(), People.t()) :: String.t()
   def mention_people(text, %People{by_label: by_label}) do
     labels =
-      for {label, {ref, _member}} <- by_label, id = ActorRef.slack_id(ref), id, do: {label, id}
+      for {label, {ref, _member}} <- by_label, id = ActorRef.slack_id(ref), id do
+        replacement =
+          cond do
+            Regex.match?(@user_id, id) -> "<@#{id}>"
+            Regex.match?(@bot_label, label) -> "机器人"
+            true -> label |> String.trim_leading("@") |> String.replace("_", " ")
+          end
+
+        {label, replacement}
+      end
 
     case labels do
       [] ->
         text
 
       labels ->
-        ids = Map.new(labels)
+        replacements = Map.new(labels)
 
         pattern =
           labels
@@ -109,13 +137,14 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
 
         # A label ends where the ASCII name does: Chinese text may follow it directly.
         Regex.replace(~r/(#{pattern})(?![A-Za-z0-9_-])/u, text, fn _whole, label ->
-          "<@#{ids[label]}>"
+          replacements[label]
         end)
     end
   end
 
   @doc "Where an item was said, for the model: a channel name or a kind of direct message."
   @spec conversation(SourceItem.t(), %{String.t() => String.t()}) :: String.t()
+  def conversation(%SourceItem{origin: %{kind: "brief_reply"}}, _names), do: "回复简报"
   def conversation(%SourceItem{origin: %{kind: "im"}}, _names), do: "私信"
   def conversation(%SourceItem{origin: %{kind: "mpim"}}, _names), do: "群私信"
 
@@ -163,6 +192,10 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
   end
 
   @doc "The names of the bot's channels, by id; empty when Slack cannot list them."
+  @spec channel_names(DailyBriefSetting.t(), map() | nil) :: %{String.t() => String.t()}
+  def channel_names(_settings, %{channel_names: names}) when is_map(names), do: names
+  def channel_names(settings, _shared), do: channel_names(settings)
+
   @spec channel_names(DailyBriefSetting.t()) :: %{String.t() => String.t()}
   def channel_names(settings) do
     with {:ok, source} <- Members.source(settings),

@@ -15,6 +15,10 @@ struct PhoneModelOption: Identifiable, Sendable {
         vendor = json.string("vendor") ?? ""
         efforts = json.strings("efforts"); serving = json.strings("serving")
     }
+
+    init(id: String, name: String, vendor: String) {
+        self.id = id; self.name = name; self.vendor = vendor; efforts = []; serving = []
+    }
 }
 
 struct PhoneModelSelection: Equatable {

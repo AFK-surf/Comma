@@ -75,7 +75,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
       {@gmail <> "/profile", {:ok, %{"emailAddress" => "member@example.com"}}},
       {@gmail <> "/threads",
        fn query ->
-         assert query["q"] =~ "to:me"
+         refute query["q"] =~ "to:me"
          refute query["q"] =~ "is:unread"
          refute query["q"] =~ "-category:social"
          assert query["maxResults"] == if(query["q"] =~ "in:spam", do: "10", else: "15")
@@ -225,6 +225,112 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
     assert item["context"]["truncated"]
   end
 
+  test "Gmail ingests shared-alias group mail with recipient context and keeps attachment-only mail with a subject" do
+    now = SystemsClock.utc_now()
+    at = DateTime.to_unix(now, :millisecond) - 60_000
+
+    group_mail = %{
+      "id" => "support_1",
+      "internalDate" => Integer.to_string(at),
+      "labelIds" => ~w(INBOX UNREAD),
+      "snippet" => "Found Comma on the AI Agent landscape map.",
+      "payload" => %{
+        "mimeType" => "text/plain",
+        "headers" => [
+          %{"name" => "From", "value" => "Edan <edan@agentkey.example>"},
+          %{"name" => "To", "value" => "Comma Support <support@comma.surf>"},
+          %{"name" => "Subject", "value" => "Partnership inquiry"}
+        ],
+        "body" => %{
+          "data" =>
+            Base.url_encode64(
+              "Saw Comma on David Pawlan's AI Agent map and want to discuss password vault integration.",
+              padding: false
+            )
+        }
+      }
+    }
+
+    direct_mail = %{
+      "id" => "direct_1",
+      "internalDate" => Integer.to_string(at - 1_000),
+      "labelIds" => ~w(INBOX),
+      "snippet" => "Quick sync tomorrow?",
+      "payload" => %{
+        "mimeType" => "text/plain",
+        "headers" => [
+          %{"name" => "From", "value" => "Alice <alice@example.com>"},
+          %{"name" => "To", "value" => "Member <member@example.com>"},
+          %{"name" => "Subject", "value" => "Sync"}
+        ],
+        "body" => %{"data" => Base.url_encode64("Quick sync tomorrow?", padding: false)}
+      }
+    }
+
+    attachment_only = %{
+      "id" => "attach_1",
+      "internalDate" => Integer.to_string(at - 2_000),
+      "labelIds" => ~w(INBOX),
+      "snippet" => "",
+      "payload" => %{
+        "mimeType" => "multipart/mixed",
+        "headers" => [
+          %{"name" => "From", "value" => "Billing <billing@vendor.example>"},
+          %{"name" => "To", "value" => "member@example.com"},
+          %{"name" => "Subject", "value" => "November invoice PDF"}
+        ],
+        "parts" => [
+          %{
+            "mimeType" => "application/pdf",
+            "filename" => "invoice-2026-11.pdf",
+            "body" => %{"attachmentId" => "att_1"}
+          }
+        ]
+      }
+    }
+
+    routes = [
+      {@gmail <> "/profile", {:ok, %{"emailAddress" => "member@example.com"}}},
+      {@gmail <> "/threads",
+       fn query ->
+         refute query["q"] =~ "to:me"
+
+         if query["q"] =~ "in:inbox" and not (query["q"] =~ "is:important") do
+           {:ok,
+            %{
+              "threads" => [
+                %{"id" => "support_1"},
+                %{"id" => "direct_1"},
+                %{"id" => "attach_1"}
+              ]
+            }}
+         else
+           {:ok, %{"threads" => []}}
+         end
+       end},
+      {@gmail <> "/threads/support_1", thread("support_1", [group_mail])},
+      {@gmail <> "/threads/direct_1", thread("direct_1", [direct_mail])},
+      {@gmail <> "/threads/attach_1", thread("attach_1", [attachment_only])}
+    ]
+
+    assert {:ok, %{"messages" => [support, direct, attach]} = data, _} =
+             Source.read("gmail", request(routes), now)
+
+    refute Map.has_key?(data, :source_warnings)
+
+    assert support["messageId"] == "support_1"
+    assert support["to"] == "Comma Support <support@comma.surf>"
+    assert support["context"]["text"] =~ "to: Comma Support <support@comma.surf>"
+
+    assert direct["messageId"] == "direct_1"
+    refute Map.has_key?(direct, "to")
+    refute direct["context"]["text"] =~ "to:"
+
+    assert attach["messageId"] == "attach_1"
+    assert attach["context"]["attachments"] == "unread"
+    assert attach["context"]["text"] =~ "subject: November invoice PDF"
+  end
+
   test "Gmail spam joins the inbox mail, marked as junk" do
     now = SystemsClock.utc_now()
     at = DateTime.to_unix(now, :millisecond) - 60_000
@@ -251,6 +357,51 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
     assert report["messageId"] == "report"
     assert report["memberRelation"] == "in_your_junk_folder"
     assert report["webUrl"] =~ "#spam/report"
+  end
+
+  test "Gmail rescues promotions-tab newsletters matching watched portrait entity terms while ignoring unrelated promotions" do
+    now = SystemsClock.utc_now()
+    at = DateTime.to_unix(now, :millisecond) - 60_000
+
+    dex =
+      mail(
+        "dex_373",
+        at,
+        ~w(INBOX CATEGORY_PROMOTIONS),
+        "DEX Weekly #373 featured Medalsmith by dingyi."
+      )
+
+    sale =
+      mail(
+        "sale_promo",
+        at,
+        ~w(INBOX CATEGORY_PROMOTIONS),
+        "50% off summer sale on shoes!"
+      )
+
+    routes = [
+      {@gmail <> "/profile", {:ok, %{"emailAddress" => "member@example.com"}}},
+      {@gmail <> "/threads",
+       fn query ->
+         cond do
+           query["q"] =~ "category:promotions" and not (query["q"] =~ "-category:promotions") ->
+             assert query["q"] =~ ~s("Medalsmith")
+             assert query["maxResults"] == "5"
+             {:ok, %{"threads" => [%{"id" => "dex_373"}, %{"id" => "sale_promo"}]}}
+
+           true ->
+             {:ok, %{"threads" => []}}
+         end
+       end},
+      {@gmail <> "/threads/dex_373", thread("dex_373", [dex])},
+      {@gmail <> "/threads/sale_promo", thread("sale_promo", [sale])}
+    ]
+
+    assert {:ok, %{"messages" => [rescued]}, _} =
+             Source.read("gmail", request(routes), now, targets: %{"terms" => ["Medalsmith"]})
+
+    assert rescued["messageId"] == "dex_373"
+    assert rescued["memberRelation"] == "mentions_your_work"
   end
 
   test "Calendar keeps the coming week's self attendance and excludes declined, cancelled, and unrelated events" do

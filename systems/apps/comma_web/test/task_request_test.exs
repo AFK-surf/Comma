@@ -243,6 +243,9 @@ defmodule CommaWeb.TaskRequestTest do
                &(inspect(&1["content"]) =~ "has a result for the Task request")
              )
 
+    assert inspect(told["content"]) =~ sent["id"]
+    assert inspect(told["content"]) =~ "in the recipient's workspace"
+    assert inspect(told["content"]) =~ "not a Task of this workspace"
     refute inspect(told["content"]) =~ "Ignore the person"
   end
 
@@ -1793,16 +1796,24 @@ defmodule CommaWeb.TaskRequestTest do
              )
              |> expect_status(200)
 
-    # Bob granted Alice his Workspace: every request waits for him.
+    # Bob granted Alice his Workspace: every request waits for him. That grant
+    # is made back, not taken from Bob's own link: Bob's Inbox has no news of it.
     assert [
              %{
                "id" => alice_to_bob,
                "status" => "active",
                "mode" => "review",
-               "grantee" => %{"name" => "alice"}
+               "grantee" => %{"name" => "alice"},
+               "from_invite" => false
              }
            ] =
              req(bob, :get, bob_grants) |> expect_status(200)
+
+    # Alice's own link was taken: her Inbox tells her Bob joined.
+    assert Enum.any?(
+             req(alice, :get, alice_grants) |> expect_status(200),
+             &match?(%{"grantee" => %{"name" => "bob"}, "from_invite" => true}, &1)
+           )
 
     assert %{"data" => [%{"grant_id" => ^alice_to_bob, "workspace" => %{"id" => bob_ws}}]} =
              req(alice, :get, "/v1/comma/task-request-targets") |> expect_status(200)
@@ -1856,6 +1867,218 @@ defmodule CommaWeb.TaskRequestTest do
 
     assert %{"data" => [%{"grant_id" => ^bob_to_alice}]} =
              req(bob, :get, "/v1/comma/task-request-targets") |> expect_status(200)
+  end
+
+  test "a sender can hide a decided request without touching the owner's Task, and cannot hide a pending one" do
+    owner = person("hide-owner", workspace: true)
+    sender = person("hide-sender")
+    stranger = person("hide-stranger")
+    %{grant_id: grant_id} = grant!(owner, sender, %{})
+    sender_id = sender.user["id"]
+    :ok = Comma.TaskRequests.subscribe_sent(sender.user)
+
+    # Owner can reach the active grant's avatar route; outsiders are refused.
+    req(
+      stranger,
+      :get,
+      "/v1/comma/workspaces/#{owner.workspace["id"]}/task-request-grants/#{grant_id}/avatar/avt_x"
+    )
+    |> expect_status(403)
+
+    req(
+      owner,
+      :get,
+      "/v1/comma/workspaces/#{owner.workspace["id"]}/task-request-grants/#{grant_id}/avatar/avt_x"
+    )
+    |> expect_status(404)
+
+    sent =
+      req(sender, :post, "/v1/comma/task-request-targets/#{grant_id}/requests",
+        json: %{"content" => "Check weather", "client_request_id" => "hide-1"}
+      )
+      |> expect_status(201)
+
+    sent_path = "/v1/comma/sent-task-requests/#{sent["id"]}"
+
+    # A pending request must be withdrawn, not hidden.
+    assert %{"error" => "task_request_pending"} =
+             req(sender, :delete, sent_path) |> expect_status(409)
+
+    incoming = "/v1/comma/workspaces/#{owner.workspace["id"]}/task-requests"
+
+    assert %{"task" => %{"id" => task_id}} =
+             req(owner, :post, "#{incoming}/#{sent["id"]}/accept") |> expect_status(200)
+
+    assert_received {:sent_task_requests_changed, ^sender_id}
+
+    # Another user cannot hide the sender's request.
+    req(stranger, :delete, sent_path) |> expect_status(404)
+
+    # Hiding removes it from the sender's lists and broadcasts the change, leaving the owner's Task intact.
+    assert %{"hidden" => true} = req(sender, :delete, sent_path) |> expect_status(200)
+    assert_received {:sent_task_requests_changed, ^sender_id}
+
+    # Hiding again is idempotent.
+    assert %{"hidden" => true} = req(sender, :delete, sent_path) |> expect_status(200)
+
+    assert %{"data" => []} =
+             req(sender, :get, "/v1/comma/sent-task-requests") |> expect_status(200)
+
+    req(sender, :get, sent_path) |> expect_status(404)
+    assert task_ids(owner) == [task_id]
+  end
+
+  test "a Task created by the owner's Router binds to the request and syncs its status to the sender" do
+    SalixAgent.TestSupport.configure_platform_models!()
+    owner = person("router-sync-owner", workspace: true)
+    sender = person("router-sync-sender")
+    grant_credits!(owner.workspace)
+    %{grant_id: grant_id} = grant!(owner, sender, %{})
+    sender_id = sender.user["id"]
+    :ok = Comma.TaskRequests.subscribe_sent(sender.user)
+
+    sent =
+      req(sender, :post, "/v1/comma/task-request-targets/#{grant_id}/requests",
+        json: %{"content" => "Check iOS progress", "client_request_id" => "router-sync-1"}
+      )
+      |> expect_status(201)
+
+    Mock.script([
+      {:assistant, "",
+       [
+         %{
+           id: "make-router-task",
+           name: "call",
+           args: %{
+             "tool" => "im_api.internal.task.create",
+             "params" => %{
+               "connect_id" => "internal",
+               "runs_on" => %{"kind" => "default"},
+               "task_request_id" => sent["id"],
+               "content" => "Check iOS progress.",
+               "title" => "iOS progress"
+             }
+           }
+         }
+       ]}
+    ])
+
+    incoming = "/v1/comma/workspaces/#{owner.workspace["id"]}/task-requests"
+
+    req(owner, :post, "#{incoming}/#{sent["id"]}/accept", json: %{"to" => "router"})
+    |> expect_status(200)
+
+    {:ok, scope} = CommaWeb.SalixClient.resolve_workspace_scope(owner.workspace)
+    group = scope["default_group_id"]
+
+    settle_until(fn ->
+      match?(
+        %Comma.Data.TaskRequest{task_id: id} when is_binary(id),
+        Comma.Repo.get(Comma.Data.TaskRequest, sent["id"])
+      )
+    end)
+
+    settle()
+    bound = Comma.Repo.get!(Comma.Data.TaskRequest, sent["id"])
+    assert is_binary(bound.task_id)
+    assert bound.group_id == group
+    assert_received {:sent_task_requests_changed, ^sender_id}
+
+    assert {:ok, _} =
+             SalixIM.Provider.call_api(
+               scope["router_agent_id"],
+               "internal",
+               "internal.update_conversation",
+               %{
+                 "connect_id" => "internal",
+                 "params" => %{"conversation_id" => bound.task_id, "status" => "completed"}
+               }
+             )
+
+    settle()
+
+    jobs = all_enqueued(worker: CommaWeb.TaskRequestReceipts, args: %{"task_id" => bound.task_id})
+    assert jobs != []
+    for job <- jobs, do: assert(:ok = perform_job(CommaWeb.TaskRequestReceipts, job.args))
+
+    assert_received {:sent_task_requests_changed, ^sender_id}
+
+    assert %{"task_status" => "completed"} =
+             req(sender, :get, "/v1/comma/sent-task-requests/#{sent["id"]}") |> expect_status(200)
+  end
+
+  test "an accepted request with missing task_status backfills its Task's status" do
+    owner = person("backfill-owner", workspace: true)
+    sender = person("backfill-sender")
+    %{grant_id: grant_id} = grant!(owner, sender, %{})
+    sender_id = sender.user["id"]
+
+    sent =
+      req(sender, :post, "/v1/comma/task-request-targets/#{grant_id}/requests",
+        json: %{"content" => "Old weather check", "client_request_id" => "backfill-1"}
+      )
+      |> expect_status(201)
+
+    incoming = "/v1/comma/workspaces/#{owner.workspace["id"]}/task-requests"
+
+    assert %{"task" => %{"id" => task_id}} =
+             req(owner, :post, "#{incoming}/#{sent["id"]}/accept") |> expect_status(200)
+
+    {:ok, scope} = CommaWeb.SalixClient.resolve_workspace_scope(owner.workspace)
+
+    assert {:ok, _} =
+             SalixIM.Provider.call_api(
+               scope["router_agent_id"],
+               "internal",
+               "internal.update_conversation",
+               %{
+                 "connect_id" => "internal",
+                 "params" => %{"conversation_id" => task_id, "status" => "completed"}
+               }
+             )
+
+    settle()
+
+    {:ok, %{"updated_at" => task_updated_ms}} =
+      SalixIM.Conversations.get_group_conversation_record(scope["default_group_id"], task_id)
+
+    # Simulate a historical pre-receipt row whose task_status was never recorded,
+    # then advance virtual time so backfill must preserve the Task's historical timestamp.
+    {1, _} =
+      Comma.Repo.update_all(
+        Ecto.Query.where(Comma.Data.TaskRequest, id: ^sent["id"]),
+        set: [task_status: nil, task_updated_at: nil]
+      )
+
+    SystemsClock.advance(60_000)
+    :ok = Comma.TaskRequests.subscribe_sent(sender.user)
+
+    assert [%{"id" => id, "task_status" => nil}] =
+             req(sender, :get, "/v1/comma/sent-task-requests")
+             |> expect_status(200)
+             |> Map.fetch!("data")
+
+    assert id == sent["id"]
+
+    assert [backfill] =
+             all_enqueued(
+               worker: CommaWeb.TaskRequestReceipts,
+               args: %{"task_id" => task_id, "backfill" => true}
+             )
+
+    assert :ok = perform_job(CommaWeb.TaskRequestReceipts, backfill.args)
+    assert_received {:sent_task_requests_changed, ^sender_id}
+
+    assert [%{"task_status" => "completed", "task_updated_at" => backfilled_at}] =
+             req(sender, :get, "/v1/comma/sent-task-requests")
+             |> expect_status(200)
+             |> Map.fetch!("data")
+
+    assert backfilled_at == div(task_updated_ms, 1_000)
+
+    # Once task_status is recorded, a repeat backfill is a silent no-op.
+    assert :ok = perform_job(CommaWeb.TaskRequestReceipts, backfill.args)
+    refute_received {:sent_task_requests_changed, ^sender_id}
   end
 
   defp run_tell do

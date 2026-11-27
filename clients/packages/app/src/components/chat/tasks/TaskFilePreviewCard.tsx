@@ -21,12 +21,17 @@ import {
   type ConversationFileSource,
 } from "../../../runtime-files/fileSources";
 import { streamMediaType } from "../../chat-sidebar/FilePreviewPanel";
-import { filePreviewKind } from "../../file-preview/FilePreviewContent";
+import {
+  filePreviewKind,
+  isolatedHtmlDocument,
+} from "../../file-preview/FilePreviewContent";
 import { openPdfDocument } from "../../file-preview/PdfFilePreview";
 import { formatAttachmentSize } from "../thread/attachments/attachmentLabels";
 
 /** Enough of a text file for the lines the card shows. */
 const headBytes = 2048;
+/** Enough of an HTML file for a thumbnail preview inside a sandboxed iframe. */
+const htmlPreviewBytes = 32_768;
 /** The longest side a PDF's cover is drawn at, in CSS pixels: the card's width. */
 const coverEdge = 320;
 /** The covers a Task panel keeps, the oldest dropped first: tens of KB each. */
@@ -59,6 +64,8 @@ export function taskFileSource(
     conversationId: file.conversation_id,
     messageId: file.message_id,
     attachmentIndex: file.index,
+    // A Task together's file is read from its own folder.
+    ...(file.path ? { workspacePath: file.path } : {}),
     fileName: file.file_name,
     ...(file.mime_type ? { mimeType: file.mime_type } : {}),
     size: file.size,
@@ -82,7 +89,10 @@ export function TaskFilePreviewCard({
   const details = [
     extension,
     formatAttachmentSize(file.size, locale),
-    formatDate(file.created_at, locale, { dateStyle: "medium", timeStyle: "short" }),
+    // A Task together's folder keeps no time for its files.
+    file.created_at > 0
+      ? formatDate(file.created_at, locale, { dateStyle: "medium", timeStyle: "short" })
+      : undefined,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -92,7 +102,13 @@ export function TaskFilePreviewCard({
       <TaskFileMedia kind={kind} source={source} />
     ) : kind === "pdf" ? (
       <TaskFileCover cache={cache} source={source} />
-    ) : kind === "text" || kind === "markdown" ? (
+    ) : kind === "html" ? (
+      <TaskFileHtmlPreview heads={cache.heads} source={source} />
+    ) : kind === "text" ||
+      kind === "markdown" ||
+      kind === "csv" ||
+      kind === "json" ||
+      kind === "jsonl" ? (
       <TaskFileHead heads={cache.heads} source={source} />
     ) : null;
   return (
@@ -160,6 +176,60 @@ function TaskFileMedia({
           />
         )
       ) : null}
+    </div>
+  );
+}
+
+/** A scaled, read-only sandboxed HTML thumbnail preview. */
+function TaskFileHtmlPreview({
+  heads,
+  source,
+}: {
+  heads: Map<string, string>;
+  source: ConversationFileSource;
+}) {
+  const call = useCall();
+  const key = `html:${conversationFileSourceKey(source)}`;
+  const [html, setHtml] = useState(() => heads.get(key));
+  const [late] = useState(() => !heads.has(key));
+  useEffect(() => {
+    if (heads.has(key)) return undefined;
+    const controller = new AbortController();
+    readConversationFileRange(
+      call,
+      source,
+      0,
+      htmlPreviewBytes,
+      controller.signal
+    ).then(
+      (span) => {
+        const text = new TextDecoder()
+          .decode(span.bytes)
+          .replace(/\uFFFD+$/, "")
+          .trim();
+        heads.set(key, text);
+        if (!controller.signal.aborted) setHtml(text);
+      },
+      () => undefined
+    );
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [call, heads, key]);
+  if (!html) return null;
+  return (
+    <div
+      className="comma-task-file-arrival relative aspect-video w-full overflow-hidden rounded-lg border border-secondary bg-primary"
+      data-arrival={late ? "late" : undefined}
+      data-testid="task-file-preview-html"
+    >
+      <iframe
+        className="pointer-events-none h-[360px] w-[640px] origin-top-left scale-[0.45] border-0"
+        referrerPolicy="no-referrer"
+        sandbox=""
+        srcDoc={isolatedHtmlDocument(html)}
+        tabIndex={-1}
+        title={source.fileName}
+      />
     </div>
   );
 }

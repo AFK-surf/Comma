@@ -18,8 +18,28 @@ defmodule Comma.Analytics do
   `comma_task_ended` observes an owned Task reaching completed, cancelled or failed
   (`CommaWeb.TaskEndedAnalytics`), with its duration and, for a sandbox Task, the
   token use, change totals and pull request state its sandbox last reported.
-  `comma_integration_connected` observes tracked plugin OAuth commits. Other
+  `comma_integration_connected` observes tracked plugin OAuth commits
+  (`integration`: plugin) and iMessage bindings (`integration`: imessage). Other
   connection mechanisms are outside that event's coverage.
+  `comma_channel_message_received` observes a bound person's iMessage that
+  reached their Router (`integration`: imessage). It is not a committed Comma
+  Message, and messages from unbound senders are not observed.
+  `comma_checkout_created` and `comma_checkout_failed` observe one Workspace
+  checkout request of the requesting User (`CommaWeb.CheckoutAnalytics`).
+  `comma_checkout_completed` observes a paid Stripe Checkout of a Comma Workspace,
+  attributed to the Workspace owner. An abandoned checkout has no event of its
+  own: it is a created checkout without a completion of its `plan_key` within
+  the 24-hour session. A DNT checkout request also hides its completion.
+  `comma_code_redeemed` observes a redeem code a User applied to a Workspace.
+  `comma_store_purchase_started` and `comma_store_purchase_completed` observe an
+  App Store purchase of the requesting User (`CommaWeb.CheckoutAnalytics`).
+
+  The person property `plan` names the active subscription of the User's
+  Workspace (its package code, or `free`) and `plan_source` names how it was
+  got: `stripe`, `apple`, `google`, `redeem`, `other` or `none`.
+  Credit packs and manual credit grants are not a plan. A profile refresh
+  (sign-in, the daily sweep, and each purchase event above) reads both, so they
+  can trail a renewal that ended or a refund by one day.
 
   Engaged-user metrics count committed human Messages and accepted reviews.
   Profile updates, imports, background Tasks, and app opens are not engagement.
@@ -31,10 +51,13 @@ defmodule Comma.Analytics do
   alias Comma.Accounts.SessionClientMetadata
   alias Comma.Analytics.Worker
 
-  @events ~w(comma_workspace_ready comma_user_message_committed comma_task_review_accepted comma_integration_connected comma_task_created comma_task_ended)
+  @events ~w(comma_workspace_ready comma_user_message_committed comma_task_review_accepted comma_integration_connected comma_channel_message_received comma_task_created comma_task_ended comma_checkout_created comma_checkout_failed comma_checkout_completed
+            comma_code_redeemed comma_store_purchase_started comma_store_purchase_completed)
   @properties ~w(workspace_id conversation_id message_id conversation_kind initiator_kind integration
                  task_kind runtime model mini_app status duration_ms model_calls input_tokens
-                 cached_tokens output_tokens files_changed lines_added lines_deleted pull_request_state)
+                 cached_tokens output_tokens files_changed lines_added lines_deleted pull_request_state
+                 plan_key package_code checkout_mode payment_status failure_kind redeem_kind
+                 provider)
   @counts ~w(duration_ms model_calls input_tokens cached_tokens output_tokens files_changed lines_added lines_deleted)
 
   def excluded_user_ids(value), do: value |> List.wrap() |> Enum.filter(&is_binary/1)
@@ -192,11 +215,25 @@ defmodule Comma.Analytics do
 
   defp valid_property?("initiator_kind", value), do: value in ~w(human agent system)
   defp valid_property?("conversation_kind", value), do: value in ~w(user_chat agent_task)
-  defp valid_property?("integration", value), do: value == "plugin"
+  defp valid_property?("integration", value), do: value in ~w(plugin imessage)
   defp valid_property?("task_kind", value), do: value in ~w(coding sandbox station cloud)
   defp valid_property?("runtime", value), do: value in ~w(claude codex salix default)
   defp valid_property?("mini_app", value), do: is_boolean(value)
   defp valid_property?("status", value), do: value in ~w(completed cancelled failed)
+
+  # Plan and package keys are product catalog names, never provider ids.
+  defp valid_property?(key, value) when key in ~w(plan_key package_code),
+    do: is_binary(value) and Regex.match?(~r/^[a-z0-9][a-z0-9_.-]{0,63}$/, value)
+
+  defp valid_property?("checkout_mode", value), do: value in ~w(subscription payment)
+  defp valid_property?("payment_status", value), do: value in ~w(paid no_payment_required)
+
+  defp valid_property?("redeem_kind", value), do: value in ~w(subscription one_time)
+  defp valid_property?("provider", value), do: value in ~w(apple)
+
+  defp valid_property?("failure_kind", value),
+    do: value in ~w(plan_unavailable already_subscribed checkout_pending checkout_expired
+                  provider_unavailable provider_error invalid_request other)
 
   defp valid_property?("pull_request_state", value),
     do: value in ~w(none open draft closed merged)

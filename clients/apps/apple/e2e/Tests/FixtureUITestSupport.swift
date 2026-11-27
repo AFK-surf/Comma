@@ -22,6 +22,17 @@ import UIKit
     /// Any element by accessibility identifier, whatever its type.
     func element(_ id: String) -> XCUIElement { descendants(matching: .any).matching(identifier: id).firstMatch }
 
+    /// Shows a tab's page. From iOS 26 the pages after People are rows in the menu the bar's last slot opens.
+    func openTab(_ id: String) {
+        XCTAssertTrue(buttons["tab-home"].waitForExistence(timeout: 15))
+        let slot = buttons[id]
+        if !slot.exists {
+            buttons["tab-more"].tap()
+            XCTAssertTrue(slot.waitUntilHittable(), "The menu shows \(id)")
+        }
+        slot.tap()
+    }
+
     /// The router chat's composer while no Task is open; an open Task's composer shares the identifier.
     var routerComposer: XCUIElement { element("chatComposer") }
 
@@ -53,6 +64,12 @@ import UIKit
         let reference = element("task-ref-task0")
         XCTAssertTrue(reference.waitForExistence(timeout: 5))
         reference.tap()
+    }
+
+    /// Drags the transcript down from its upper part into the keyboard, which follows the finger and goes down.
+    func dragKeyboardDown() {
+        coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            .press(forDuration: 0.05, thenDragTo: coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97)))
     }
 
     /// Drags the open transcript down a few screens' worth, into earlier messages.

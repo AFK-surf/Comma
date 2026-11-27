@@ -102,7 +102,8 @@ defmodule SalixAgent.SkillCatalog do
     end
   end
 
-  defp miniskill_status(skills) do
+  @doc false
+  def miniskill_status(skills) do
     candidates = Enum.filter(skills, &(&1["activation"] == "per-message"))
 
     case candidates do
@@ -110,10 +111,15 @@ defmodule SalixAgent.SkillCatalog do
         "empty"
 
       _ ->
-        case SalixAgent.MiniskillSelector.request(
-               %{"content" => String.duplicate("x", 8192)},
-               candidates
-             ) do
+        recent =
+          List.duplicate(%{"role" => "user", "content" => String.duplicate("y", 8192)}, 6)
+
+        worst_case = %{
+          "content" => String.duplicate("x", 8192),
+          "recent_messages" => recent
+        }
+
+        case SalixAgent.MiniskillSelector.request(worst_case, candidates) do
           {:ok, _, _} -> "ready"
           {:error, _} -> "catalog_over_budget"
         end

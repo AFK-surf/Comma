@@ -10,6 +10,13 @@ import { useActiveWorkspaceId } from "../../activeWorkspace";
 import { useIsGuestSession } from "../../auth-context";
 import { NewStationTaskDialog } from "./NewStationTaskDialog";
 
+type NewTaskCreated = { conversationId: string; groupId: string };
+
+type NewTaskOpenOptions = {
+  onCreated?: (task: NewTaskCreated) => void;
+  requestTo?: string;
+};
+
 type NewTaskDialogContextValue = {
   /** A Task can be made now: the app works in a workspace. */
   available: boolean;
@@ -18,7 +25,7 @@ type NewTaskDialogContextValue = {
    * one it shows, else in the workspace the app works in. With `requestTo` (a
    * request target's grant) it opens as a New request to it.
    */
-  open: (workspace?: string, options?: { requestTo?: string }) => void;
+  open: (workspace?: string, options?: NewTaskOpenOptions) => void;
 };
 
 const NewTaskDialogContext = createContext<NewTaskDialogContextValue | null>(null);
@@ -31,10 +38,14 @@ const NewTaskDialogContext = createContext<NewTaskDialogContextValue | null>(nul
 export function NewTaskDialogProvider({ children }: { children: ReactNode }) {
   const guest = useIsGuestSession();
   const workspace = useActiveWorkspaceId(!guest);
-  const [openIn, setOpenIn] = useState<{ workspace: string; requestTo?: string }>();
+  const [openIn, setOpenIn] = useState<{
+    workspace: string;
+    onCreated?: (task: NewTaskCreated) => void;
+    requestTo?: string;
+  }>();
   const available = !guest && !!workspace;
   const open = useCallback(
-    (shown?: string, options?: { requestTo?: string }) => {
+    (shown?: string, options?: NewTaskOpenOptions) => {
       const target = guest ? undefined : (shown ?? workspace);
       if (target) setOpenIn({ workspace: target, ...options });
     },
@@ -49,6 +60,7 @@ export function NewTaskDialogProvider({ children }: { children: ReactNode }) {
           // Opened again for another target, it starts over.
           key={`${openIn.workspace}\t${openIn.requestTo ?? ""}`}
           onClose={() => setOpenIn(undefined)}
+          onCreated={openIn.onCreated}
           requestTo={openIn.requestTo}
           workspace={openIn.workspace}
         />

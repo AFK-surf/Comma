@@ -332,6 +332,7 @@ defmodule SalixMeet.MeetingPlanTest do
 
     assert {:ok, _, _} = SalixMeet.Store.create_once(meeting_id, state: state)
     assert SalixMeet.Delivery.deliver_one(meeting_id) in [:activated, :activation_skipped]
+
     assert {:ok, %{"status" => "cancelled"}} =
              MeetingPlan.cancel(group_id, occurrence["occurrence_ref"])
   end
@@ -464,8 +465,10 @@ defmodule SalixMeet.MeetingPlanTest do
     end
 
     # Team-only: nothing is left to prepare, but the plan stays live for joining.
+    # It runs nothing, so it has no Task.
     assert {:ok, team_only} = ensure.(7, false)
     assert team_only["status"] == "planned"
+    assert is_nil(team_only["conversation_id"])
     assert team_only["calendar_writeback"] == false
     assert team_only["preparation"]["research_decision"] == "not_required"
 
@@ -479,16 +482,49 @@ defmodule SalixMeet.MeetingPlanTest do
                now: team_only["preparation"]["card_at"]
              )
 
-    # Personal reminders still get research and their DM schedule.
+    # Personal reminders still get research and their DM schedule, and the
+    # plan gets its Task once it has them.
     assert {:ok, personal} = ensure.(8, true)
     prep = personal["preparation"]
     assert personal["status"] == "planned"
+
+    assert {:ok, %{"kind" => "agent_task"}} =
+             Conversations.get_group_conversation(ctx.group_id, personal["conversation_id"])
+
     assert personal["calendar_writeback"] == false
     assert prep["research_decision"] == "pending"
     assert {:error, :not_found} = Schedules.get(prep["schedule_ids"]["card"])
     assert {:ok, _} = Schedules.get(prep["schedule_ids"]["decision"])
     assert {:ok, reminder} = Schedules.get(prep["schedule_ids"]["personal"])
     assert reminder["run_at"] == prep["card_at"]
+  end
+
+  # A meeting that is only joined (no channel notice, no reminders) makes no
+  # Task, and a trigger call for it settles without one.
+  test "a join-only plan is planned without a Task and opens no trigger",
+       %{group_id: group_id, item: item, occurrence: occurrence} do
+    assert {:ok, plan} =
+             MeetingPlan.ensure(group_id, item, occurrence,
+               now: @start_ms - :timer.hours(2),
+               publication_target: slack_publication_target("join-only"),
+               channel_notice: false,
+               personal_preparation: false
+             )
+
+    assert plan["status"] == "planned"
+    assert is_nil(plan["conversation_id"])
+
+    assert {:ok, %{"data" => []}} =
+             Conversations.list_group_conversations(group_id, kind: "agent_task", limit: 10)
+
+    assert {:ok, %{"status" => "disabled", "conversation_id" => nil}} =
+             MeetingPlan.open_trigger(
+               group_id,
+               plan["meeting_plan_id"],
+               "decision",
+               plan["preparation"]["dispatch_revision"],
+               now: plan["preparation"]["decision_at"]
+             )
   end
 
   test "reschedule allocates replacement ids, deletes old definitions, and fences raced prompts",
@@ -523,6 +559,129 @@ defmodule SalixMeet.MeetingPlanTest do
                "decision",
                old_revision
              )
+  end
+
+  # Every setting that enters the dispatch revision is read back from the
+  # plan at trigger time; a setting the recompute missed would settle each
+  # trigger as stale.
+  test "the trigger-time check and a reconcile keep the revision of every setting combination",
+       %{group_id: group_id, tenant_id: tenant_id, item: item, occurrence: occurrence} do
+    on_exit(fn ->
+      Ecto.Adapters.SQL.query!(
+        SalixStore.Repo,
+        "DELETE FROM meeting_calendar_settings WHERE group_id = $1",
+        [group_id]
+      )
+    end)
+
+    # A team preparation saved in the dashboard (managed) is authorized by
+    # the saved settings' revision; a deployment one by having none.
+    for managed <- [false, true],
+        research <- [true, false],
+        personal <- [true, false],
+        channel_notice <- [true, false],
+        recipients <- [nil, ["member@example.com"]],
+        writeback <- [true, false] do
+      policy_revision =
+        if managed do
+          assert {:ok, saved} =
+                   SalixStore.MeetingCalendarSettings.put(
+                     group_id,
+                     tenant_id,
+                     %{"enabled" => true, "connect_id" => "pc-matrix-" <> group_id},
+                     fn -> :ok end
+                   )
+
+          saved["settings_revision"]
+        else
+          1
+        end
+
+      combination =
+        [
+          managed_calendar: managed,
+          research_enabled: research,
+          personal_preparation: personal,
+          channel_notice: channel_notice,
+          personal_recipients: recipients,
+          calendar_writeback: writeback
+        ]
+
+      assert {:ok, plan} =
+               MeetingPlan.ensure(
+                 group_id,
+                 item,
+                 occurrence,
+                 combination ++
+                   [
+                     now: @start_ms - :timer.hours(2),
+                     policy_revision: policy_revision,
+                     publication_target: slack_publication_target("matrix")
+                   ]
+               )
+
+      assert MeetingPlan.validate_report(plan) == :ok, inspect(combination)
+
+      assert {:ok, reconciled} =
+               MeetingPlan.reconcile_occurrence(group_id, occurrence["occurrence_ref"])
+
+      assert reconciled["preparation"]["dispatch_revision"] ==
+               plan["preparation"]["dispatch_revision"],
+             inspect(combination)
+    end
+  end
+
+  test "a notice settled without a send is logged and counted unless the meeting no longer wants it",
+       %{group_id: group_id, item: item, occurrence: occurrence} do
+    assert {:ok, plan} =
+             MeetingPlan.ensure(group_id, item, occurrence,
+               now: @start_ms - :timer.hours(2),
+               publication_target: slack_publication_target("settle")
+             )
+
+    plan_id = plan["meeting_plan_id"]
+    handler_id = "meeting-notice-settle-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    parent = SystemsRuntime.Proc.self()
+
+    :ok =
+      SystemsRuntime.Telemetry.attach(
+        handler_id,
+        [:salix, :operation, :stop],
+        fn _event, _measurements, metadata, _config ->
+          if metadata.operation == "meeting_notice_settle",
+            do: SystemsRuntime.Proc.send(parent, {:settled, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler_id) end)
+
+    # The notice is no longer wanted: no warning.
+    quiet =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:settle, :channel_notice_off} =
+                 MeetingPlan.settle_card(group_id, plan_id, :channel_notice_off, kind: "card")
+      end)
+
+    refute quiet =~ "meeting notice not sent"
+
+    assert_received {:settled,
+                     %{component: "salix_meet", surface: "schedule", outcome: "skipped"}}
+
+    # A due reminder that is not sent says so, with its kind and reason.
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:settle, :not_card_qualified} =
+                 MeetingPlan.settle_card(group_id, plan_id, :not_card_qualified, kind: "personal")
+      end)
+
+    assert log =~ "meeting notice not sent"
+    assert log =~ "kind=personal reason=:not_card_qualified"
+    assert_received {:settled, %{surface: "schedule", outcome: "dropped"}}
+
+    assert {:ok, current} = MeetingPlan.get(group_id, plan_id)
+    assert current["preparation"]["card_status"] == "abandoned"
+    assert current["preparation"]["personal_status"] == "abandoned"
   end
 
   test "publication trigger reads internal evidence and returns one fixed report submission action",

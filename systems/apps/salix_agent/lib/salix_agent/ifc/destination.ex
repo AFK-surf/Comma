@@ -35,6 +35,8 @@ defmodule SalixAgent.IFC.Destination do
     "slack.upload_file" => "channel",
     "slack.post_task_card" => "channel",
     "slack.bind_thread_to_task" => "channel",
+    "feishu.bind_thread_to_task" => "chat_id",
+    "lark.bind_thread_to_task" => "chat_id",
     "slack.post_map_card" => "channel",
     "slack.post_stock_card" => "channel",
     "slack.post_weather_card" => "channel",
@@ -71,6 +73,11 @@ defmodule SalixAgent.IFC.Destination do
   # to the chat of the current LINE source, so the default resolves to the
   # same atom as the inbound.
   @line_egress ~w(line.send_message)
+
+  # A WeCom send addresses a chat that wrote to the bot. `chat_id` defaults
+  # to the chat of the current WeCom source, so the default resolves to the
+  # same atom as the inbound.
+  @wecom_egress ~w(wecom.send_message)
 
   # A Lark send or edit names a chat the bot is in. `chat_id` defaults to the
   # chat of the current Lark source, so the default resolves to the same atom
@@ -139,14 +146,14 @@ defmodule SalixAgent.IFC.Destination do
     feishu.add_reaction feishu.remove_reaction feishu.pin_message
     feishu.unpin_message feishu.delete_message
     feishu.resolve_doc_comment feishu.remove_doc_member feishu.delete_doc
-    feishu.request_minute_access feishu.join_chat
+    feishu.request_minute_access feishu.join_chat feishu.leave_thread
     signal.react signal.delete_message signal.join_group signal.add_members
     signal.remove_members signal.leave_group
     qq.delete_message
     lark.add_reaction lark.remove_reaction lark.pin_message lark.unpin_message
     lark.delete_message
     lark.resolve_doc_comment lark.remove_doc_member lark.delete_doc
-    lark.request_minute_access lark.join_chat
+    lark.request_minute_access lark.join_chat lark.leave_thread
   ))
 
   # Reads. Labelled at the result, never filtered.
@@ -180,9 +187,31 @@ defmodule SalixAgent.IFC.Destination do
       else: [{:persist, %{"kind" => "memory"}}]
   end
 
+  def additional_destinations("colab.download", args, ctx) do
+    dest = arg(args, "destination")
+
+    if is_binary(dest) and SalixAgent.DriveMount.matches?(dest) do
+      [{:persist, %{"kind" => "drive", "path" => dest, "group_id" => group_id(ctx)}}]
+    else
+      [{:persist, %{"kind" => "agent_private"}}]
+    end
+  end
+
   def additional_destinations("im_api.internal.update_conversation_titles", args, _ctx) do
     args
     |> title_batch_ids()
+    |> Enum.drop(1)
+    |> Enum.map(&{:egress, %{"kind" => "conversation", "conversation_id" => &1}})
+  end
+
+  def additional_destinations(tool, args, _ctx)
+      when tool in [
+             "im_api.internal.task.archive",
+             "im_api.internal.task.unarchive",
+             "im_api.internal.task.dismiss"
+           ] do
+    args
+    |> conversation_batch_ids()
     |> Enum.drop(1)
     |> Enum.map(&{:egress, %{"kind" => "conversation", "conversation_id" => &1}})
   end
@@ -297,6 +326,9 @@ defmodule SalixAgent.IFC.Destination do
       api in @line_egress ->
         {:egress, source_chat("line", args, ctx)}
 
+      api in @wecom_egress ->
+        {:egress, source_chat("wecom", args, ctx)}
+
       api in @lark_document_egress ->
         if api == "lark.update_doc" and arg(args, "command") in @lark_document_reshape,
           do: {:none, %{}},
@@ -328,7 +360,15 @@ defmodule SalixAgent.IFC.Destination do
       Map.has_key?(@direct_egress, api) ->
         {:egress, provider_direct(api, Map.fetch!(@direct_egress, api), args, ctx)}
 
-      api in ~w(internal.triage.read_source internal.triage.read_memory internal.triage.read_context) ->
+      api in ~w(
+        internal.triage.read_source
+        internal.triage.read_memory
+        internal.triage.read_context
+        internal.station_task.list
+        internal.task.list
+        internal.usage.query
+        internal.label.list
+      ) ->
         {:read, %{}}
 
       api == "internal.triage.complete" ->
@@ -357,6 +397,13 @@ defmodule SalixAgent.IFC.Destination do
         {:egress,
          %{"kind" => "conversation", "conversation_id" => title_batch_ids(args) |> List.first("")}}
 
+      api in ["internal.task.archive", "internal.task.unarchive", "internal.task.dismiss"] ->
+        {:egress,
+         %{
+           "kind" => "conversation",
+           "conversation_id" => conversation_batch_ids(args) |> List.first("")
+         }}
+
       api in ["internal.task.create"] ->
         {:persist, pending_task(ctx)}
 
@@ -366,7 +413,7 @@ defmodule SalixAgent.IFC.Destination do
       api == "internal.apps.create" ->
         {:persist, %{"kind" => "agent_configuration", "group_id" => group_id(ctx)}}
 
-      api in ["internal.task.update"] ->
+      api in ["internal.task.update", "internal.task.add_session"] ->
         {:egress, %{"kind" => "conversation", "conversation_id" => arg(args, "conversation_id")}}
 
       true ->
@@ -379,6 +426,15 @@ defmodule SalixAgent.IFC.Destination do
     |> arg_list("titles")
     |> Enum.map(&(is_map(&1) && to_string(&1["conversation_id"] || "")))
     |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp conversation_batch_ids(args) do
+    args
+    |> arg_list("conversation_ids")
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
 
@@ -930,6 +986,22 @@ defmodule SalixAgent.IFC.Destination do
   # resolves the actual audience and checks the artifact's source label.
   defp tool("ui.create", _args, _ctx), do: {:persist, %{"kind" => "agent_private"}}
 
+  # Generalized Live Activity (`live_status_v1`) renders on the Group's
+  # authorized Workspace owner devices. Listing is a read; upserting or ending
+  # publishes content to that Group audience.
+  defp tool("live_activity.list", _args, _ctx), do: {:read, %{}}
+
+  defp tool(name, _args, ctx) when name in ~w(live_activity.upsert live_activity.end),
+    do: {:egress, %{"kind" => "live_activity", "group_id" => group_id(ctx)}}
+
+  # Google Colab GPU compute tools match `ssh.*` egress semantics; `colab.stop`
+  # carries no content so billing can always be stopped under `:enforce`.
+  defp tool("colab.status", _args, _ctx), do: {:read, %{}}
+  defp tool("colab.stop", _args, _ctx), do: {:none, %{}}
+
+  defp tool(name, _args, _ctx) when name in ~w(colab.exec colab.upload colab.download),
+    do: {:egress, %{"kind" => "public"}}
+
   defp tool(name, _args, _ctx), do: canonical(name)
 
   # The visible filesystem is a closed set of operations, and every one of them
@@ -965,8 +1037,11 @@ defmodule SalixAgent.IFC.Destination do
 
   defp canonical(name) do
     cond do
-      name in ~w(help wait_for end_turn agent.list im.connects_list im.provider_apis_list) ->
+      name in ~w(help wait_for end_turn agent.list im.connects_list) ->
         {:none, %{}}
+
+      name == "im.provider_apis_list" ->
+        {:read, %{}}
 
       name in @fs_reads or String.starts_with?(name, "fs.read") or
           String.starts_with?(name, "fs.list") ->
@@ -975,7 +1050,7 @@ defmodule SalixAgent.IFC.Destination do
       String.starts_with?(name, "fs.") ->
         {:persist, %{"kind" => "agent_private"}}
 
-      name in ~w(memory.get memory.search memory.ask_worker) ->
+      name in ~w(memory.get memory.search memory.ask_worker group.search_conversations group.read_conversation) ->
         {:read, %{}}
 
       String.starts_with?(name, "web.") ->
@@ -1020,7 +1095,8 @@ defmodule SalixAgent.IFC.Destination do
 
       # They write a time of day or the requester's own brief settings; no
       # content leaves.
-      name in ~w(daily_brief.set_time daily_brief.set_channel daily_brief.set_project) ->
+      name in ~w(daily_brief.set_time daily_brief.set_channel daily_brief.set_project
+                 daily_brief.set_github) ->
         {:none, %{}}
 
       String.starts_with?(name, "calendar.") ->

@@ -169,7 +169,7 @@ defmodule SalixIM.FeishuChecks do
   First-message smoke for an active Feishu connect.
 
   Connect-aware: takes a `connect_id` identity, resolves the connect's router
-  agent + bot secrets inside Salix, delivers ONE synthetic @Bridge user message
+  agent + bot secrets inside Salix, delivers ONE synthetic @Comma user message
   to the canonical group router session, then polls that session for an
   assistant reply to confirm the first-message round-trip works.
 
@@ -198,7 +198,7 @@ defmodule SalixIM.FeishuChecks do
              router_agent_id,
              connect["group_id"]
            ),
-         content = "@Bridge first-message smoke ping " <> nonce(),
+         content = "@Comma first-message smoke ping " <> nonce(),
          metadata = %{
            "provider" => "feishu",
            "connect_id" => connect["connect_id"],
@@ -263,17 +263,17 @@ defmodule SalixIM.FeishuChecks do
   # The tenant Feishu app store is the only source of Feishu bot secrets.
   # Connect records intentionally do not carry verification_token/encrypt_key.
   defp resolve_bot_secrets(connect) do
-    with {:ok, secrets} <- tenant_app_secrets(trim(connect["tenant_id"])),
+    with {:ok, secrets} <- tenant_app_secrets(trim(connect["tenant_id"]), trim(connect["app_id"])),
          :ok <- ensure_app_match(connect, secrets),
          :ok <- ensure_secret_material(secrets) do
       {:ok, secrets}
     end
   end
 
-  defp tenant_app_secrets(""), do: {:error, :secrets_not_configured}
+  defp tenant_app_secrets("", _app_id), do: {:error, :secrets_not_configured}
 
-  defp tenant_app_secrets(tenant_id) do
-    case ProviderAppStore.get_feishu_tenant_app(tenant_id) do
+  defp tenant_app_secrets(tenant_id, app_id) do
+    case ProviderAppStore.get_feishu_tenant_app(tenant_id, app_id) do
       {:ok, app} ->
         {:ok,
          %{

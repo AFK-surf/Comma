@@ -9,7 +9,7 @@ defmodule Salix.Control.OAuthBindings do
   """
 
   alias Salix.Control.Store
-  alias SalixStore.{Crypto, Keys}
+  alias SalixStore.{Crypto, Ids, Keys}
 
   def list(group_id) do
     group_id
@@ -367,6 +367,42 @@ defmodule Salix.Control.OAuthBindings do
           other ->
             other
         end
+    end
+  end
+
+  @doc """
+  Connection ids the bindings of `tenant_id` for `provider` point at. Reads
+  only the tenant's Groups (their ids carry the tenant's prefix). Any read
+  that fails makes the whole answer an error, never a shorter list.
+  """
+  def connection_ids(tenant_id, provider) do
+    if Ids.valid_tenant_id?(tenant_id) do
+      prefix = "ctl/oauth/group_bindings/" <> Ids.group_id_prefix_for_tenant!(tenant_id)
+
+      with {:ok, objects} <- SalixStore.S3.list_all(prefix) do
+        Enum.reduce_while(objects, {:ok, []}, fn %{key: key}, {:ok, ids} ->
+          case Store.get_record(key) do
+            {:ok, %{"tenant_id" => ^tenant_id, "provider" => ^provider, "connection_id" => id}}
+            when is_binary(id) and id != "" ->
+              {:cont, {:ok, [id | ids]}}
+
+            {:ok, _other} ->
+              {:cont, {:ok, ids}}
+
+            {:error, :not_found} ->
+              {:cont, {:ok, ids}}
+
+            {:error, reason} ->
+              {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, ids} -> {:ok, Enum.uniq(ids)}
+          error -> error
+        end
+      end
+    else
+      {:error, :invalid_tenant}
     end
   end
 

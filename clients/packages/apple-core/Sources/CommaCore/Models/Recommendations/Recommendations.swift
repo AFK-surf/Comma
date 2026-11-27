@@ -1,7 +1,7 @@
 import Foundation
 
-/// The workspace's Routines briefing as the phone shows it: a summary, a few cards, and the connected
-/// sources they come from. Decoded from `GET /workspaces/:id/recommendations`. Prompt references are
+/// The workspace's Routines briefing as the phone shows it: a few cards, and the connected sources they
+/// come from. The briefing's summary prose stays on the wire and is not read. Decoded from `GET /workspaces/:id/recommendations`. Prompt references are
 /// resolved here, as the desktop contract does at its API boundary; unknown card templates keep only
 /// their server-authored fallback text.
 public struct RecommendationFeed: Equatable, Sendable {
@@ -9,7 +9,6 @@ public struct RecommendationFeed: Equatable, Sendable {
     public let state: String
     public let lastError: String?
     public let sources: [RecommendationSource]
-    public let summary: [RecommendationPart]
     public let cards: [RecommendationCard]
     public let generatedAt: Date?
     /// Identifies the snapshot; a new briefing has a new generation.
@@ -21,18 +20,10 @@ public struct RecommendationFeed: Equatable, Sendable {
     public var canRefresh: Bool { sources.contains(where: \.enabled) }
     /// Sources only the member can repair, by reconnecting them.
     public var sourcesNeedingReconnect: [RecommendationSource] { sources.filter(\.needsReconnect) }
-    public var summaryText: String { RecommendationPart.plainText(summary) }
-    /// The summary's prose without the briefing's title ("Your work briefing"), which the server puts first as
-    /// a paragraph of its own.
-    public var summaryBody: [RecommendationPart] {
-        guard case .text(let first)? = summary.first, let title = first.range(of: "\n\n") else { return summary }
-        let rest = String(first[title.upperBound...])
-        return (rest.isEmpty ? [] : [.text(rest)]) + summary.dropFirst()
-    }
 
-    public init(state: String, lastError: String? = nil, sources: [RecommendationSource] = [], summary: [RecommendationPart] = [],
+    public init(state: String, lastError: String? = nil, sources: [RecommendationSource] = [],
                 cards: [RecommendationCard] = [], generatedAt: Date? = nil, generation: Int? = nil) {
-        self.state = state; self.lastError = lastError; self.sources = sources; self.summary = summary
+        self.state = state; self.lastError = lastError; self.sources = sources
         self.cards = cards; self.generatedAt = generatedAt; self.generation = generation
     }
 
@@ -42,13 +33,12 @@ public struct RecommendationFeed: Equatable, Sendable {
         lastError = root["lastError"]?.string
         sources = (root["settings"]?.object?["sources"]?.array ?? []).prefix(12).compactMap(RecommendationSource.init(json:))
         guard let snapshot = root["snapshot"]?.object else {
-            summary = []; cards = []; generatedAt = nil; generation = nil; return
+            cards = []; generatedAt = nil; generation = nil; return
         }
         let prompts = (snapshot["prompts"]?.object ?? [:]).compactMapValues { value -> String? in
             guard let prompt = value.object, let objective = prompt["objective"]?.string else { return nil }
             return prompt["sourceUrl"]?.string.map { objective + "\n\n" + $0 } ?? objective
         }
-        summary = RecommendationPart.parts(snapshot["summary"], prompts: prompts)
         generatedAt = snapshot["generatedAt"]?.number.map(Date.init(wireTimestamp:))
         generation = snapshot["generation"]?.number.map { Int($0) }
         cards = (snapshot["cards"]?.array ?? []).prefix(6).compactMap { RecommendationCard(json: $0, prompts: prompts) }

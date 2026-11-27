@@ -55,6 +55,12 @@ defmodule SalixAgent.ToolsHttpRequestTest do
         "/fail" ->
           json(conn, 503, %{"error" => "down"})
 
+        "/slack/users.list" ->
+          json(conn, 200, %{"ok" => false, "error" => "token_revoked"})
+
+        "/github/user" ->
+          json(conn, 401, %{"message" => "Bad credentials"})
+
         "/redirect" ->
           conn |> put_resp_header("location", "/echo") |> send_resp(302, "")
 
@@ -97,13 +103,45 @@ defmodule SalixAgent.ToolsHttpRequestTest do
   end
 
   defmodule OAuthStore do
-    @moduledoc "One bound GitHub credential for the calling agent's group."
+    @moduledoc "One bound GitHub and one bound Slack credential for the calling agent's group."
     def agent_oauth_context(_agent_id), do: {:ok, %{tenant: "tenant", group_id: "group"}}
 
     def bindings_for_group("group") do
       {:ok,
-       [%{"provider" => "github", "alias" => "github", "connection_id" => "http-request-oauth"}]}
+       [
+         %{"provider" => "github", "alias" => "github", "connection_id" => "http-request-oauth"},
+         %{"provider" => "slack", "alias" => "slack", "connection_id" => "http-request-slack"}
+       ]}
     end
+  end
+
+  defmodule AuditFacts do
+    def mode(_, _), do: "audit"
+    def resolve(_), do: {:ok, %{"destination" => %{"label" => ["public"], "writers" => "any"}}}
+  end
+
+  test "script calls must correct missing declarations even in audit", %{base: base, ctx: ctx} do
+    previous = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, AuditFacts)
+    on_exit(fn -> restore(:salix_agent, :ifc_facts_mod, previous) end)
+    ctx = Map.merge(ctx, %{role: "worker", runtime_kind: :script, ifc_mode: :audit})
+    ctx = Map.put(ctx, :tool_disclosure, ToolDisclosure.materialize("worker", :script, ctx))
+    state = SalixAgent.ScriptRun.new(ctx)
+    args = %{"url" => base <> "/echo"}
+
+    assert {{:ok, %{"guidance_reason" => "invalid_params"}}, state} =
+             SalixAgent.ScriptRun.host_call("web.http_request", args, state)
+
+    assert MockApi.last_request() == nil
+
+    assert {{:ok, %{"status" => 200}}, _} =
+             SalixAgent.ScriptRun.host_call(
+               "web.http_request",
+               Map.put(args, "ifc", %{"sources" => []}),
+               state
+             )
+
+    assert MockApi.last_request().path == "/echo"
   end
 
   setup do
@@ -225,9 +263,19 @@ defmodule SalixAgent.ToolsHttpRequestTest do
   describe "credential_env placeholders" do
     setup do
       previous = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+      previous_endpoints = SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides)
       SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, OAuthStore)
 
-      on_exit(fn -> restore(:salix_agent, :oauth_store_mod, previous) end)
+      # The mock stands in for the providers' own API hosts.
+      SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, %{
+        "github" => %{"api_host" => "127.0.0.1"},
+        "slack" => %{"api_host" => "127.0.0.1"}
+      })
+
+      on_exit(fn ->
+        restore(:salix_agent, :oauth_store_mod, previous)
+        restore(:salix_store, :oauth_endpoint_overrides, previous_endpoints)
+      end)
 
       :ok =
         SalixStore.OAuth.put("http-request-oauth", %{
@@ -294,6 +342,100 @@ defmodule SalixAgent.ToolsHttpRequestTest do
       end
 
       assert MockApi.last_request() == nil
+    end
+
+    test "a token Slack reports revoked is marked for reauthorization and not used again", %{
+      base: base,
+      ctx: ctx
+    } do
+      :ok =
+        SalixStore.OAuth.put("http-request-slack", %{
+          "access_token" => "xoxp-revoked",
+          "slack_user_token" => "xoxp-revoked",
+          "status" => "active"
+        })
+
+      request = %{
+        "url" => base <> "/slack/users.list",
+        "headers" => %{"Authorization" => "Bearer ${SLACK_TOKEN}"},
+        "credential_env" => [
+          %{
+            "env_var" => "SLACK_TOKEN",
+            "provider" => "slack",
+            "alias" => "slack",
+            "value" => "access_token"
+          }
+        ]
+      }
+
+      assert %{"status" => 200, "body" => %{"error" => "token_revoked"}} = call(request, ctx)
+
+      assert {:ok, %{"status" => "reauthorization_required"}} =
+               SalixStore.OAuth.get("http-request-slack")
+
+      assert_raise RuntimeError, ~r/requires reauthorization/, fn ->
+        HttpRequest.request(request, ctx)
+      end
+    end
+
+    test "a refusal marks only a credential the request carried, and only from the provider's host",
+         %{base: base, ctx: ctx} do
+      :ok =
+        SalixStore.OAuth.put("http-request-slack", %{
+          "access_token" => "xoxp-live",
+          "status" => "active"
+        })
+
+      slack = %{
+        "env_var" => "SLACK_TOKEN",
+        "provider" => "slack",
+        "alias" => "slack",
+        "value" => "access_token"
+      }
+
+      # Only GH_TOKEN is in the request; the Slack entry rides along unused.
+      call(
+        %{
+          "url" => base <> "/slack/users.list",
+          "headers" => %{"Authorization" => "Bearer ${GH_TOKEN}"},
+          "credential_env" => [@ref, slack]
+        },
+        ctx
+      )
+
+      assert {:ok, %{"status" => "active"}} = SalixStore.OAuth.get("http-request-slack")
+
+      # The same answer from a host that is not Slack's API is not Slack's.
+      SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, %{})
+
+      call(
+        %{
+          "url" => base <> "/slack/users.list",
+          "headers" => %{"Authorization" => "Bearer ${SLACK_TOKEN}"},
+          "credential_env" => [slack]
+        },
+        ctx
+      )
+
+      assert {:ok, %{"status" => "active"}} = SalixStore.OAuth.get("http-request-slack")
+    end
+
+    test "a GitHub token answered with Bad credentials is marked for reauthorization", %{
+      base: base,
+      ctx: ctx
+    } do
+      assert %{"status" => 401} =
+               call(
+                 %{
+                   "url" => base <> "/github/user",
+                   "headers" => %{"Authorization" => "Bearer ${GH_TOKEN}"},
+                   "credential_env" => [@ref]
+                 },
+                 ctx
+               )
+
+      assert {:ok, %{"status" => "reauthorization_required"}} =
+               SalixStore.OAuth.get("http-request-oauth")
     end
   end
 

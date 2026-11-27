@@ -315,6 +315,18 @@ describe("AdminApp", () => {
               device_label: null,
               restricted: false,
             },
+            {
+              id: "sess_raycast",
+              auth_method: "raycast_pairing",
+              session_source: "user_login",
+              authenticated_at: 1_784_850_000,
+              expires_at: 4_102_444_800,
+              last_seen_at: 1_784_859_500,
+              revoked_at: 1_784_865_000,
+              client_kind: "raycast",
+              device_label: null,
+              restricted: false,
+            },
           ],
           has_more: false,
           next_cursor: null,
@@ -492,6 +504,11 @@ describe("AdminApp", () => {
     expect(within(userPage).getByText("Comma Android app")).toBeInTheDocument();
     expect(within(userPage).getByText(/Reported Android · Google/)).toBeInTheDocument();
     expect(within(userPage).getByText("Comma on Apple Watch")).toBeInTheDocument();
+    // A session the Raycast extension paired is one more row: the list still reads, and names it.
+    expect(within(userPage).getByText("Comma for Raycast")).toBeInTheDocument();
+    expect(
+      within(userPage).getByText(/Reported Raycast · Paired Raycast/)
+    ).toBeInTheDocument();
     expect(
       within(userPage).getByText(/Reported Apple Watch · Paired Watch/)
     ).toBeInTheDocument();

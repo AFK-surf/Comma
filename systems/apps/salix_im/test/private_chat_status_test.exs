@@ -165,6 +165,7 @@ defmodule SalixIM.PrivateChatStatusTest do
       private_chat_status: true,
       telegram_api_base_url: "http://127.0.0.1:#{port}",
       wechat_api_base_url: "http://127.0.0.1:#{port}",
+      line_api_base_url: "http://127.0.0.1:#{port}",
       session_activity_mod: Runtime,
       agent_delivery_mod: Runtime,
       private_chat_status_placement: Runtime,
@@ -266,6 +267,21 @@ defmodule SalixIM.PrivateChatStatusTest do
         connect
       end
 
+    connect =
+      if context[:line_chat] do
+        connect
+        |> Map.drop(~w(bot_token))
+        |> Map.merge(%{
+          "provider" => "line",
+          "connect_id" => "line-status",
+          "runtime_mode" => "webhook",
+          "managed_peer_id" => "Uline-peer",
+          "channel_access_token" => "line-token"
+        })
+      else
+        connect
+      end
+
     {:ok, _} = CasRecord.create(Keys.ctl_im_connect(group_id, connect["connect_id"]), connect)
 
     target = %{
@@ -301,6 +317,16 @@ defmodule SalixIM.PrivateChatStatusTest do
           "provider" => "imessage",
           "connect_id" => connect["connect_id"],
           "chat_id" => "pho_spc_status",
+          "chat_type" => "private"
+        },
+        else: target
+
+    target =
+      if context[:line_chat],
+        do: %{
+          "provider" => "line",
+          "connect_id" => connect["connect_id"],
+          "chat_id" => "user:Uline-peer",
           "chat_type" => "private"
         },
         else: target
@@ -534,6 +560,38 @@ defmodule SalixIM.PrivateChatStatusTest do
              )
 
     settle_refute_receive({:api, "typing", _}, 100)
+  end
+
+  @tag line_chat: true
+  test "LINE shows the loading animation in the bound user's private chat only", c do
+    Runtime.put({:ok, active(c, "is thinking...")})
+
+    assert :ok =
+             PrivateChatStatus.record_inbound(
+               c.connect["group_id"],
+               c.target,
+               c.source,
+               c.agent_id,
+               c.session_id
+             )
+
+    settle_receive({:api, "start", %{"chatId" => "Uline-peer", "loadingSeconds" => 20}})
+
+    # A group, or another user's chat, is not this connect's private chat.
+    refute SalixIM.LineStatusTransport.authorized?(
+             c.connect,
+             Map.merge(c.target, %{"chat_id" => "group:Cgroup", "chat_type" => "group"})
+           )
+
+    refute SalixIM.LineStatusTransport.authorized?(
+             c.connect,
+             Map.put(c.target, "chat_id", "user:Uother")
+           )
+
+    API.respond("start", 429)
+
+    assert {:error, {:retry_after, _}} =
+             SalixIM.LineStatusTransport.send(c.connect, c.target, :typing, nil, "")
   end
 
   defp start_actor(c, refresh_ms \\ 20),

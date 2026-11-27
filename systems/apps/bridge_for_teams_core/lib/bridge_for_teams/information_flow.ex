@@ -32,7 +32,7 @@ defmodule BridgeForTeams.InformationFlow do
 
   @type result :: {:ok, term()} | {:error, term()}
 
-  @modes ~w(off audit enforce)
+  @modes ~w(off audit enforce hard easy)
   @languages ~w(zh en)
 
   @doc "The languages the runtime's own sentences can be written in."
@@ -52,6 +52,26 @@ defmodule BridgeForTeams.InformationFlow do
     with {:ok, tenant_id, group_id} <- scope(org, project_id),
          {:ok, overview} <- client().ifc_overview(tenant_id, group_id) do
       {:ok, Map.put(overview, "ssh_hosts", client().ssh_known_hosts(tenant_id, group_id))}
+    end
+  end
+
+  @doc """
+  The ids of the org's projects whose Group has information-flow control on,
+  among `projects` (each with `id` and `salix_group_id`). A Swarm with it off
+  cannot search these. Empty when the read fails: the answer only adds hints.
+  """
+  @spec ifc_on_project_ids(Organization.t() | String.t(), [map()]) :: MapSet.t(String.t())
+  def ifc_on_project_ids(org, projects) when is_list(projects) do
+    with {:ok, %Organization{} = org} <- fetch_org(org),
+         {:ok, tenant_id} <- tenant_id(org),
+         {:ok, group_ids} <- Client.call_optional(:ifc_on_group_ids, [tenant_id]) do
+      on = MapSet.new(group_ids)
+
+      projects
+      |> Enum.filter(&MapSet.member?(on, &1.salix_group_id))
+      |> MapSet.new(& &1.id)
+    else
+      _unavailable -> MapSet.new()
     end
   end
 
@@ -113,6 +133,29 @@ defmodule BridgeForTeams.InformationFlow do
   end
 
   def set_supervisors(_org, _project_id, _supervisors), do: {:error, :invalid_principal}
+
+  @doc """
+  Says who may make the assistant change its memory. While `restricted` is
+  false anyone may; while it is true only the people in `writers`. Each entry
+  names one of this Group's connects and a provider user id in it. The list is
+  kept when the switch is off.
+  """
+  @spec set_memory_writers(Organization.t() | String.t(), String.t(), term(), term()) ::
+          result()
+  def set_memory_writers(org, project_id, restricted, writers)
+      when is_boolean(restricted) and is_list(writers) do
+    with {:ok, tenant_id, group_id} <- scope(org, project_id),
+         {:ok, overview} <- client().ifc_overview(tenant_id, group_id),
+         connects = MapSet.new(overview["connects"] || [], & &1["connect_id"]),
+         {:ok, keys} <- supervisor_keys(writers, connects) do
+      client().update_group(group_id, tenant_id, %{
+        "memory_writers" => %{"restricted" => restricted, "writers" => keys}
+      })
+    end
+  end
+
+  def set_memory_writers(_org, _project_id, _restricted, _writers),
+    do: {:error, :invalid_principal}
 
   @doc "People of one connect whose name, email or id matches `query`."
   def people(org, project_id, connect_id, query) do
@@ -227,7 +270,7 @@ defmodule BridgeForTeams.InformationFlow do
   # internal
   # ---------------------------------------------------------------------------
 
-  # Each supervisor must be a user of one of this Group's own connects.
+  # Each supervisor or memory writer must be a user of one of this Group's own connects.
   defp supervisor_keys(supervisors, connects) do
     supervisors
     |> Enum.reduce_while({:ok, []}, fn supervisor, {:ok, keys} ->

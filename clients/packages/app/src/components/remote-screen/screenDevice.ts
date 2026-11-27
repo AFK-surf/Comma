@@ -1,3 +1,4 @@
+import type { DuoPosture } from "./devices/duoScreens";
 import type { ScreenStreamChrome } from "./screenCase";
 import type { ScreenStreamInput } from "./screenStreamInput";
 
@@ -23,6 +24,11 @@ export type ScreenStreamCapabilities = {
    * once its pictures have come; none where its Mac has none, or for an Android device.
    */
   chrome?: ScreenStreamChrome | undefined;
+  /**
+   * How a device that both closes and opens (an iPhone Duo) can be shown and held: the stage draws it as a 3D model and
+   * moves it between these. None for other devices.
+   */
+  postures?: readonly DuoPosture[] | undefined;
 };
 
 export type ScreenDevicePose = "closed" | "book" | "open";
@@ -31,6 +37,10 @@ export type ScreenDevicePose = "closed" | "book" | "open";
 export type ScreenDeviceState = {
   orientation?: ScreenTurn | undefined;
   pose?: ScreenDevicePose | undefined;
+  /** Its picture is its panel's own, never turned: `orientation` says how its UI stands on it. */
+  panel?: boolean | undefined;
+  /** A foldable's hinge angle, 0 closed to 180 flat, where its station says: what tells a tent or a laptop apart. */
+  hinge?: number | undefined;
 };
 
 export type ScreenDeviceButton = "home" | "lock" | "volume" | "rotate";

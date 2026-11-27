@@ -1172,7 +1172,6 @@ export const ChatPanelMediaPlayer = ({
           <ChatPanelMediaDownloadControl
             buttonClassName={mediaControlClassName}
             controller={downloadController}
-            feedbackPlacement="above"
             icon={<MediaDownloadIcon className="size-2xl" />}
             kind={kind}
           />

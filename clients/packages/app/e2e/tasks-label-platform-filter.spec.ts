@@ -759,7 +759,7 @@ test("new Task labels share server approval permissions with Settings and can re
     ).toBeChecked();
     expect(decisions).toHaveLength(2);
 
-    await page.goto("/#/settings?category=general");
+    await page.goto("/#/settings?category=labels");
     const permission = page.locator('[data-setting-id="permissions.label-changes"]');
     const dropdown = permission.getByRole("button");
     await expect(dropdown).toHaveText("Auto approve");

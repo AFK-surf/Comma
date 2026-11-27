@@ -9,6 +9,7 @@ export function useImageGroupReveal({
     failedPreviewKeys,
     groupedImages,
     groupedPreviews,
+    latePreviewKeys,
     pendingPreviewKeys,
     previews,
   },
@@ -51,6 +52,7 @@ export function useImageGroupReveal({
           return [];
         const preview = previews.get(previewImage.key);
         return failedPreviewKeys.has(previewImage.key) ||
+          latePreviewKeys.has(previewImage.key) ||
           preview?.status === "unavailable"
           ? [{ attachment, position }]
           : [];

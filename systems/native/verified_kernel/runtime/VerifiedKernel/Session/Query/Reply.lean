@@ -201,9 +201,12 @@ def trustedAsyncContinuation (message : Term) (messages : List Term)
     (sources common : Term) : Bool :=
   let toolCallId := sv message "source_tool_call_id"
   let kind := sv message "type"
+  let inherited := wrap (sv message "trusted_origin_source_message_ids" (list []))
+  let allowed := wrap sources
   (kind == b "tool_call_completed" || kind == b "tool_call_failed") &&
     presentBinary toolCallId &&
-    sv message "trusted_origin_source_message_ids" (list []) == sources &&
+    !inherited.isEmpty &&
+    inherited.all (fun id => allowed.contains id) &&
     trustedOriginMatches (sv message "trusted_origin") common &&
     messages.any (fun candidate =>
       sv candidate "role" == b "tool" &&
@@ -228,7 +231,10 @@ def persistedCompactedScope (state : Term) (messages : List Term) (sources : Ter
     let noWake := sv message "no_wake"
     if role == b "user" then return noWake == a "true"
     if role == b "runtime" && noWake != a "true" then
-      return sv message "trusted_origin_source_message_ids" (list []) == scopeIds &&
+      let inherited := wrap (sv message "trusted_origin_source_message_ids" (list []))
+      let allowed := wrap scopeIds
+      return !inherited.isEmpty &&
+        inherited.all (fun id => allowed.contains id) &&
         trustedOriginMatches (sv message "trusted_origin") scope
     return true) messages
   if (← phase state) != a "clean" then return a "none"

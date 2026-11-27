@@ -143,8 +143,23 @@ class ChatTimelineView @JvmOverloads constructor(
         // The host draws the composer above this content and frosts the rows underneath it.
         if (!drawsBehindComposer) canvas.clipRect(0, 0, width, chatBottomPx.coerceAtLeast(0))
         super.draw(canvas)
+        sourceReveal.draw(canvas)
         canvas.restoreToCount(save)
     }
+
+    /** The row [child] shows, while it is bound. */
+    internal fun rowOf(child: View): PreparedChatMessage? =
+        getChildAdapterPosition(child).takeIf { it != NO_POSITION }?.let(timelineAdapter.currentList::getOrNull)
+
+    /** A drag to the left shows where people's messages came from. */
+    private val sourceReveal = SourceReveal(this)
+
+    override fun onInterceptTouchEvent(event: MotionEvent): Boolean =
+        sourceReveal.intercepts(event) || super.onInterceptTouchEvent(event)
+
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean =
+        sourceReveal.onTouch(event) || super.onTouchEvent(event)
 
     private fun updateBottomPadding() {
         val inset = composerInsetPx ?: return
@@ -272,6 +287,7 @@ class ChatTimelineView @JvmOverloads constructor(
     private var scrolledPx = 0L
 
     init {
+        addItemDecoration(SpeakerAvatars(this))
         // Keyboard focus may rest on the list (after a hardware key, once the composer lets go);
         // the system's focus highlight would then grey the whole list until the next touch.
         defaultFocusHighlightEnabled = false
@@ -551,10 +567,17 @@ class ChatTimelineView @JvmOverloads constructor(
     }
 
     /** What a chat media tile does when tapped: open the viewer at it. */
-    internal var onOpenMedia: ((PreparedChatMessage) -> Unit)?
+    internal var onOpenMedia: ((PreparedChatMessage, Int) -> Unit)?
         get() = timelineAdapter.onOpenMedia
         set(value) {
             timelineAdapter.onOpenMedia = value
+        }
+
+    /** Persistent expanded/browse state for multi-image group rows. */
+    internal var imageGroupHost: surf.comma.android.chat.live.ImageGroupHost?
+        get() = timelineAdapter.imageGroupHost
+        set(value) {
+            timelineAdapter.imageGroupHost = value
         }
 
     fun followLatest() {
@@ -802,12 +825,14 @@ class ChatTimelineView @JvmOverloads constructor(
     override fun onChildAttachedToWindow(child: View) {
         super.onChildAttachedToWindow(child)
         child.translationY = glidePx
+        sourceReveal.place(child)
     }
 
     override fun onChildDetachedFromWindow(child: View) {
         super.onChildDetachedFromWindow(child)
         // A recycled row is bound again somewhere else; it starts from its layout.
         child.translationY = 0f
+        child.translationX = 0f
     }
 
     private fun applyGlide() {

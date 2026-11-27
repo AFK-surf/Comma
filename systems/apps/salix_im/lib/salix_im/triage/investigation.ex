@@ -9,8 +9,17 @@ defmodule SalixIM.Triage.Investigation do
 
   alias SalixIM.{ConversationServer, Conversations, GroupDirectory, ProviderConnects}
   alias SalixIM.Ports.TriageDelegation
-  alias SalixIM.Triage.{ClickHouseReader, ProductDecision, ProductObligation, SlackEffectAdapter}
-  alias SalixStore.TriageProductRuntime
+  alias SalixIM.Provider.Util
+
+  alias SalixIM.Triage.{
+    ClickHouseReader,
+    ProductDecision,
+    ProductObligation,
+    SlackEffectAdapter,
+    StillfailCoordination
+  }
+
+  alias SalixStore.{StationTaskIndex, TriageProductRuntime}
 
   @grant "triage_investigation"
   @result "triage_investigation_result"
@@ -18,6 +27,11 @@ defmodule SalixIM.Triage.Investigation do
   @retry "triage_investigation_retry"
   @state "triage_investigation_state"
   @sink_role "triage_result"
+  @channel_context_before_limit 10
+  @channel_context_after_limit 5
+  @channel_context_text_max_bytes 300
+  @stillfail_coordination_limit 200
+  @status_or_help_re ~r/(?:\b(?:status|update|progress|blocked|stuck|landed|merged)\b|land yet|进展|进度|卡住|合了吗|合并了吗|修好了吗|好了没|怎么样了)/iu
 
   def grant_key, do: @grant
   def result_key, do: @result
@@ -47,6 +61,8 @@ defmodule SalixIM.Triage.Investigation do
              :ok <- TriageDelegation.authorize_target(original, router_id, worker_id) do
           {:ok, original}
         else
+          {:error, reason} when reason in [:unavailable, :timeout] -> {:error, reason}
+          {:error, reason, true} -> {:error, reason}
           _ -> denied()
         end
     end
@@ -97,6 +113,8 @@ defmodule SalixIM.Triage.Investigation do
          :ok <- TriageDelegation.authorize_target(original, router_id, agent_id) do
       {:ok, conversation, original}
     else
+      {:error, reason} when reason in [:unavailable, :timeout] -> {:error, reason}
+      {:error, reason, true} -> {:error, reason}
       _ -> denied()
     end
   end
@@ -151,13 +169,14 @@ defmodule SalixIM.Triage.Investigation do
              target["connect_id"],
              "slack"
            ),
+         channel_scope <- %{
+           "tenant_id" => group["tenant_id"],
+           "workspace_id" => target["workspace_id"],
+           "channel_id" => target["channel_id"]
+         },
          {:ok, page} <-
            ClickHouseReader.impl().read_thread(
-             %{
-               "tenant_id" => group["tenant_id"],
-               "workspace_id" => target["workspace_id"],
-               "channel_id" => target["channel_id"]
-             },
+             channel_scope,
              target["thread_ts"],
              limit: 200,
              max_bytes: 1_048_576
@@ -173,18 +192,172 @@ defmodule SalixIM.Triage.Investigation do
              scope.agent_id,
              snapshot
            ) do
-      {:ok,
-       %{
-         "source_snapshot" => result["message_id"],
-         "messages" => source_messages(original.payload, messages),
-         "expression_context" => original.payload["expression_context"],
-         "__ifc__" => SalixIM.IFC.ReadLabels.for_scope(connect, target["channel_id"])
-       }}
+      response = %{
+        "source_snapshot" => result["message_id"],
+        "messages" => source_messages(original.payload, messages),
+        "expression_context" => original.payload["expression_context"],
+        "__ifc__" => SalixIM.IFC.ReadLabels.for_scope(connect, target["channel_id"])
+      }
+
+      response =
+        case read_channel_context(channel_scope, target["thread_ts"], connect) do
+          nil -> response
+          channel_context -> Map.put(response, "channel_context", channel_context)
+        end
+
+      response =
+        case read_stillfail_coordination(scope.group_id, target, messages, connect) do
+          nil -> response
+          coordination -> Map.put(response, "stillfail_coordination", coordination)
+        end
+
+      {:ok, response}
     else
       false -> {:error, :triage_source_incomplete}
+      {:ok, %{status: :stale}} -> {:error, :triage_source_stale}
       error -> error
     end
   end
+
+  defp read_stillfail_coordination(group_id, target, messages, connect) do
+    case StationTaskIndex.page_group(group_id,
+           source: "stillfail",
+           limit: @stillfail_coordination_limit
+         ) do
+      {[], _more?} ->
+        nil
+
+      {rows, _more?} when is_list(rows) ->
+        source_texts = Enum.map(messages, & &1["text"])
+        asks? = asks_status_or_help?(messages, connect)
+        result = StillfailCoordination.evaluate(rows, target, source_texts, asks?)
+
+        if result.disposition == :no_overlap do
+          nil
+        else
+          %{"disposition" => Atom.to_string(result.disposition)}
+          |> Util.put_present("card_kind", result.card_kind)
+          |> put_positive_int("recommended_recheck_hours", result.recommended_recheck_hours)
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp asks_status_or_help?(messages, connect) do
+    bot_mention =
+      case connect["bot_user_id"] do
+        id when is_binary(id) and id != "" -> "<@#{id}>"
+        _ -> nil
+      end
+
+    Enum.any?(messages, fn msg ->
+      msg["actor_kind"] == "human" and is_binary(msg["text"]) and
+        ((is_binary(bot_mention) and String.contains?(msg["text"], bot_mention)) or
+           Regex.match?(@status_or_help_re, msg["text"]))
+    end)
+  end
+
+  defp put_positive_int(map, key, value) when is_integer(value) and value > 0,
+    do: Map.put(map, key, value)
+
+  defp put_positive_int(map, _key, _value), do: map
+
+  defp read_channel_context(channel_scope, thread_ts, connect) do
+    reader = ClickHouseReader.impl()
+
+    if is_atom(reader) and function_exported?(reader, :history, 2) do
+      before_msgs =
+        read_channel_window(
+          reader,
+          channel_scope,
+          thread_ts,
+          connect,
+          latest: thread_ts,
+          inclusive: false,
+          limit: @channel_context_before_limit
+        )
+
+      after_msgs =
+        read_channel_window(
+          reader,
+          channel_scope,
+          thread_ts,
+          connect,
+          oldest: thread_ts,
+          inclusive: false,
+          limit: @channel_context_after_limit
+        )
+
+      if before_msgs != [] or after_msgs != [] do
+        %{"before" => before_msgs, "after" => after_msgs}
+      else
+        nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp read_channel_window(reader, channel_scope, thread_ts, connect, opts) do
+    case reader.history(channel_scope, opts) do
+      {:ok, %{messages: messages}} when is_list(messages) ->
+        messages
+        |> Enum.filter(fn msg ->
+          is_map(msg) and (msg["ts"] || msg["message_ts"]) != thread_ts
+        end)
+        |> Enum.reverse()
+        |> Enum.map(&project_channel_context_message(&1, connect))
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp project_channel_context_message(msg, connect) do
+    text =
+      if is_binary(msg["text"]),
+        do: Util.truncate_utf8(msg["text"], @channel_context_text_max_bytes),
+        else: ""
+
+    %{
+      "actor_kind" => channel_context_actor_kind(msg, connect),
+      "text" => text
+    }
+    |> Util.put_present("ts", msg["ts"] || msg["message_ts"])
+    |> Util.put_present("thread_ts", msg["thread_ts"])
+    |> Util.put_present("user", msg["user"])
+    |> Util.put_present("bot_id", msg["bot_id"])
+    |> Util.put_present("subtype", msg["subtype"])
+    |> put_positive_reply_count(msg["reply_count"])
+  end
+
+  defp channel_context_actor_kind(msg, connect) do
+    raw = %{
+      "user" => msg["user"] || if(msg["actor_kind"] == "user", do: msg["actor_id"]),
+      "bot_id" => msg["bot_id"] || if(msg["actor_kind"] == "bot", do: msg["actor_id"]),
+      "is_bot" => msg["is_bot"] == true or msg["actor_kind"] in ["bot", "app"],
+      "bot_profile_name" => msg["bot_profile_name"],
+      "bot_profile" => msg["bot_profile"],
+      "subtype" => msg["subtype"]
+    }
+
+    SalixIM.Triage.IdentityContract.actor_kind(raw, connect)
+  end
+
+  defp put_positive_reply_count(map, count) when is_integer(count) and count > 0,
+    do: Map.put(map, "reply_count", count)
+
+  defp put_positive_reply_count(map, _count), do: map
 
   defp classify_source_actor(row, connect) do
     # The mirror stores provider kinds (user/bot/app), not Triage's classified
@@ -254,7 +427,7 @@ defmodule SalixIM.Triage.Investigation do
 
   def complete(scope, params) do
     with {:ok, conversation, _original} <- context(scope),
-         true <- Enum.sort(Map.keys(params)) == Enum.sort(~w(source_snapshot decision)),
+         :ok <- validate_completion_params(params),
          true <- valid_decision?(params["decision"]),
          {:ok, source} <-
            Conversations.get_group_conversation_message(
@@ -289,6 +462,113 @@ defmodule SalixIM.Triage.Investigation do
       nil -> {:error, :invalid_triage_source_snapshot}
       error -> error
     end
+  end
+
+  defp validate_completion_params(
+         %{"source_snapshot" => snapshot, "decision" => decision} = params
+       )
+       when map_size(params) == 2 and is_binary(snapshot) and is_map(decision) do
+    if String.trim(snapshot) != "" do
+      validate_decision_params(decision)
+    else
+      {:error,
+       "invalid_triage_completion: expected params with exact keys source_snapshot (non-empty string) and decision (object)"}
+    end
+  end
+
+  defp validate_completion_params(_params) do
+    {:error,
+     "invalid_triage_completion: expected params with exact keys source_snapshot (non-empty string) and decision (object)"}
+  end
+
+  defp validate_decision_params(%{"context_candidates" => candidates} = decision) do
+    if is_list(candidates) and length(candidates) <= 3 do
+      validate_decision_kind(Map.delete(decision, "context_candidates"))
+    else
+      {:error,
+       "invalid_triage_completion: decision.context_candidates must be an array of at most 3 items"}
+    end
+  end
+
+  defp validate_decision_params(decision), do: validate_decision_kind(decision)
+
+  defp validate_decision_kind(%{"kind" => "reply"} = decision) do
+    case decision do
+      %{"kind" => "reply", "text" => text, "source_refs" => refs}
+      when map_size(decision) == 3 and is_binary(text) ->
+        if String.trim(text) != "" and byte_size(text) <= 16_000 and valid_refs?(refs) do
+          :ok
+        else
+          reply_decision_error()
+        end
+
+      _ ->
+        reply_decision_error()
+    end
+  end
+
+  defp validate_decision_kind(%{"kind" => "reaction"} = decision) do
+    case decision do
+      %{"kind" => "reaction", "emoji" => emoji, "source_refs" => [_] = refs}
+      when map_size(decision) == 3 and is_binary(emoji) ->
+        if Regex.match?(~r/\A[a-z0-9][a-z0-9_+\-]{0,63}\z/, emoji) and valid_refs?(refs) do
+          :ok
+        else
+          reaction_decision_error()
+        end
+
+      _ ->
+        reaction_decision_error()
+    end
+  end
+
+  defp validate_decision_kind(%{"kind" => "silence"} = decision) do
+    with :ok <- validate_silence_reason_code(decision),
+         trimmed <- Map.delete(decision, "reason_code") do
+      case trimmed do
+        %{"kind" => "silence", "reason" => reason, "source_refs" => refs}
+        when map_size(trimmed) == 3 and is_binary(reason) ->
+          if String.trim(reason) != "" and byte_size(reason) <= 2000 and valid_refs?(refs) do
+            :ok
+          else
+            silence_decision_error()
+          end
+
+        _ ->
+          silence_decision_error()
+      end
+    end
+  end
+
+  defp validate_decision_kind(_decision) do
+    {:error,
+     "invalid_triage_completion: decision.kind must be one of reply, reaction, or silence"}
+  end
+
+  defp validate_silence_reason_code(%{"reason_code" => code}) do
+    if code in ~w(already_handled no_useful_addition insufficient_evidence) do
+      :ok
+    else
+      {:error,
+       "invalid_triage_completion: silence decision reason_code must be one of already_handled, no_useful_addition, or insufficient_evidence"}
+    end
+  end
+
+  defp validate_silence_reason_code(_decision), do: :ok
+
+  defp reply_decision_error do
+    {:error,
+     "invalid_triage_completion: reply decision requires exact keys kind, text (1..16000 bytes), and source_refs (array of strings); optional context_candidates only (no reason or reason_code)"}
+  end
+
+  defp reaction_decision_error do
+    {:error,
+     "invalid_triage_completion: reaction decision requires exact keys kind, emoji (canonical name), and source_refs (array of exactly 1 ref); optional context_candidates only"}
+  end
+
+  defp silence_decision_error do
+    {:error,
+     "invalid_triage_completion: silence decision requires exact keys kind, reason (1..2000 bytes), and source_refs (array of strings); optional reason_code (already_handled|no_useful_addition|insufficient_evidence) and context_candidates only"}
   end
 
   def valid_decision?(%{"context_candidates" => candidates} = decision) do
@@ -763,13 +1043,17 @@ defmodule SalixIM.Triage.Investigation do
       true ->
         stale = effect[:outcome] == :stale
 
-        next =
-          cond do
-            effect[:outcome] == :failed -> "failed"
-            stale and state["attempts"] < 3 -> "retry"
-            stale -> "failed"
-            true -> "completed"
+        outcome_atom =
+          case effect[:outcome] do
+            :failed -> :failed
+            :stale -> :stale
+            _ -> :applied
           end
+
+        next =
+          outcome_atom
+          |> SalixVerifiedKernel.Proactive.settle_investigation_outcome(state["attempts"] || 0)
+          |> Atom.to_string()
 
         state =
           state

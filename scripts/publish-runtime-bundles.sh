@@ -20,7 +20,7 @@ command -v jq >/dev/null
 command -v sha256sum >/dev/null
 
 jq -e '
-  .schemaVersion == 3 and
+  .schemaVersion == 4 and
   (.sourceRevision | type == "string" and length > 0) and
   ([.images[].class] | sort == ["shell", "station"]) and
   (all(.images[]; . as $image |
@@ -34,8 +34,8 @@ jq -e '
 endpoint="https://${CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 while IFS=$'\t' read -r class expected size; do
-  archive="$bundle_dir/$class.oci.tar"
-  key="runtime-bundles/sha256/${expected}.oci.tar"
+  archive="$bundle_dir/$class.erofs.zst"
+  key="runtime-bundles/sha256/${expected}.erofs.zst"
   observed="$(sha256sum "$archive" | awk '{print $1}')"
   observed_size="$(wc -c < "$archive" | tr -d ' ')"
   if [[ "$observed" != "$expected" || "$observed_size" != "$size" ]]; then
@@ -51,7 +51,7 @@ while IFS=$'\t' read -r class expected size; do
       --bucket "$CLOUDFLARE_R2_BUCKET" \
       --key "$key" \
       --body "$archive" \
-      --content-type application/vnd.oci.image.layer.v1.tar \
+      --content-type application/octet-stream \
       --cache-control public,max-age=31536000,immutable \
       --if-none-match '*' >/dev/null; then
       published_size="$(aws --endpoint-url "$endpoint" s3api head-object \

@@ -20,10 +20,14 @@ defmodule Comma.Conversations do
   sanitization are modeled in `tla/salix/ActivitySummaryAuthority.tla`.
   """
 
+  require SystemsRuntime.Proc
+
   alias Comma.{AgentPolicies, Workspaces}
   alias SalixStore.SearchDocumentEnvelope
 
   @transcript_limit 1000
+  @suggestion_page_limit 50
+  @suggestion_max_pages 20
   @task_order_bucket_name_limit 64
   @task_order_id_limit 500
   @conversation_page_default 50
@@ -69,10 +73,24 @@ defmodule Comma.Conversations do
         with {:ok, page} <-
                salix_list_group_conversations(workspace,
                  kind: "agent_task",
+                 archive: archive,
                  limit: limit,
                  cursor: Keyword.get(opts, :cursor)
                ),
              {:ok, conversations} <- present_tasks(workspace, page["data"] || [], user, archive) do
+          conversations =
+            if is_nil(Keyword.get(opts, :cursor)) and is_nil(workspace["home_group_id"]) do
+              collab_tasks =
+                hosted_collaboration_tasks(workspace, user, archive, limit)
+
+              (conversations ++ collab_tasks)
+              |> Enum.uniq_by(& &1["id"])
+              |> Enum.sort_by(&(&1["updated_at"] || 0), :desc)
+              |> Enum.take(limit)
+            else
+              conversations
+            end
+
           {:ok,
            %{
              "data" => conversations,
@@ -374,6 +392,11 @@ defmodule Comma.Conversations do
          {:ok, subscription} <- subscribe_task_list(workspace),
          true <- subscription["resync_required"] == true,
          version when is_binary(version) and version != "" <- subscription["version"] do
+      task_participants = subscribe_task_participants(workspace, conversation_id)
+
+      {worker_sessions, worker_roster_sync_pending, worker_roster_sync_halted} =
+        subscribe_task_worker_sessions(workspace, conversation_id, task_participants)
+
       {:ok,
        %{
          group_id: group_id,
@@ -383,8 +406,11 @@ defmodule Comma.Conversations do
          version: version,
          workspace: workspace,
          conversation_id: conversation_id,
-         task_participants: subscribe_task_participants(workspace, conversation_id),
-         task_run: task_run(workspace, conversation_id)
+         task_participants: task_participants,
+         worker_sessions: worker_sessions,
+         worker_roster_sync_pending: worker_roster_sync_pending,
+         worker_roster_sync_halted: worker_roster_sync_halted,
+         task_run: subscribed_task_run(workspace, conversation_id)
        }}
     else
       {:error, _reason} = error -> error
@@ -396,23 +422,56 @@ defmodule Comma.Conversations do
   The Tasks the Group's stations host, as the stations last sent them
   (`SalixWeb.StationTaskIndex`), the latest activity first: each one's
   station, Device, thread, title, status, creator, times, runtime and model,
-  never its messages. A session restricted to one conversation sees none.
+  never its messages. Of a still.fail station only the chats Comma's Router
+  wrote in, each with `url`, its page in still.fail, where a client opens it
+  (null for any other station's). A session restricted to one conversation
+  sees none.
   """
   def station_tasks(user, session, group_id) do
     client = Comma.Salix.Client.impl()
 
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
          :ok <- Workspaces.group_session_scope(session, group_id, nil),
-         true <-
-           callback_exported?(client, :list_station_tasks, 1) ||
-             {:error, :station_tasks_not_supported},
-         {:ok, rows} <- client.list_station_tasks(workspace) do
+         {:ok, rows} <- fetch_station_tasks(client, workspace, user) do
       {:ok, %{"tasks" => Enum.map(rows, &public_station_task/1)}}
     end
   end
 
+  defp fetch_station_tasks(client, workspace, user) do
+    cond do
+      callback_exported?(client, :list_station_tasks, 2) ->
+        member_scope = %{
+          email: resolve_station_member_email(user),
+          is_owner: is_binary(user["id"]) and workspace["owner_user_id"] == user["id"]
+        }
+
+        client.list_station_tasks(workspace, member_scope)
+
+      callback_exported?(client, :list_station_tasks, 1) ->
+        client.list_station_tasks(workspace)
+
+      true ->
+        {:error, :station_tasks_not_supported}
+    end
+  end
+
+  defp resolve_station_member_email(%{"email" => email}) when is_binary(email) and email != "",
+    do: email |> String.trim() |> String.downcase()
+
+  defp resolve_station_member_email(%{"id" => user_id}) when is_binary(user_id) do
+    case Comma.Accounts.get_user(user_id) do
+      {:ok, %{"email" => email}} when is_binary(email) and email != "" ->
+        email |> String.trim() |> String.downcase()
+
+      _ ->
+        nil
+    end
+  end
+
+  defp resolve_station_member_email(_user), do: nil
+
   defp public_station_task(row) do
-    ~w(station_id device_id thread task title status created_by created_at last_activity_at runtime model rev)a
+    ~w(station_id device_id thread task title status created_by created_at last_activity_at runtime model url rev)a
     |> Map.new(&{Atom.to_string(&1), Map.get(row, &1)})
     |> Map.put("labels", Map.get(row, :labels) || [])
   end
@@ -543,6 +602,12 @@ defmodule Comma.Conversations do
   # (`set_task_run/6`), which changes the Task, so each stream reads them once:
   # clients open the stream again after reading a changed Task. Nil when they
   # cannot be read: Task panels then show neither.
+  # The exception: what a coding Task's sandbox says of itself (what it
+  # serves, what is on its display) changes with no change of the Task. A
+  # stream of a Task hears when it does (`subscribed_task_run/2`) and
+  # reads the run again (`refresh_task_run/1`): one read for each change, of
+  # which a sandbox's connection has one as it connects and one each time a
+  # Session's browser opens or goes.
   defp task_run(_workspace, nil), do: nil
 
   defp task_run(workspace, conversation_id) do
@@ -555,6 +620,29 @@ defmodule Comma.Conversations do
       _ -> nil
     end
   end
+
+  # Subscribed before the read, so a change between the two is not missed. A
+  # Task that runs on no sandbox is never told anything.
+  defp subscribed_task_run(_workspace, nil), do: nil
+
+  defp subscribed_task_run(workspace, conversation_id) do
+    client = Comma.Salix.Client.impl()
+
+    if callback_exported?(client, :subscribe_task_run, 3),
+      do: client.subscribe_task_run(workspace, conversation_id, SystemsRuntime.Proc.self())
+
+    task_run(workspace, conversation_id)
+  end
+
+  @doc """
+  A Task stream's context with its Task's run read again, for a stream told
+  that the Task's sandbox said something new (`{:coding_sandbox_said, id}`).
+  """
+  def refresh_task_run(%{workspace: workspace, conversation_id: conversation_id} = context)
+      when is_binary(conversation_id),
+      do: %{context | task_run: task_run(workspace, conversation_id)}
+
+  def refresh_task_run(context), do: context
 
   defp subscribe_task_participants(_workspace, nil), do: %{}
 
@@ -623,14 +711,222 @@ defmodule Comma.Conversations do
     if agent_id == workspace["router_agent_id"], do: "router", else: "worker"
   end
 
-  def task_participant_statuses(stream_context) do
-    bound_worker =
-      Enum.find_value(stream_context.task_participants, fn {id, participant} ->
-        if participant.actor_role == "worker" do
-          %{"participant_id" => id, "name" => participant.name}
-          |> put_optional("actor_id", participant.actor_id)
+  defp subscribe_task_worker_sessions(_workspace, nil, _task_participants), do: {[], false, false}
+
+  defp subscribe_task_worker_sessions(workspace, conversation_id, task_participants) do
+    client = Comma.Salix.Client.impl()
+
+    if callback_exported?(client, :task_worker_sessions, 2) do
+      case client.task_worker_sessions(workspace, conversation_id) do
+        {:ok, sessions} when is_list(sessions) ->
+          entries =
+            sessions
+            |> Enum.take(6)
+            |> Enum.map(
+              &build_worker_session_entry(&1, workspace, conversation_id, task_participants, %{})
+            )
+
+          {entries, false, false}
+
+        {:error, reason} when reason in [:not_found, :forbidden, :unauthorized] ->
+          {[], false, true}
+
+        _error ->
+          {[], true, false}
+      end
+    else
+      {[], false, false}
+    end
+  end
+
+  @doc """
+  Re-reads the Task's active worker session roster (max 6) and reconciles
+  subscriptions on an already-open SSE stream (`task.add_session`, `:DOWN`
+  recovery, or roster removals).
+  Returns `{next_context, changed?, new_entries, removed_refs}` where
+  `new_entries` are newly subscribed (or recovered) entries whose `owner_pid`
+  must be monitored by the stream process, and `removed_refs` are monitor refs
+  of entries removed from the roster to demonitor.
+  """
+  def sync_task_worker_sessions(
+        %{workspace: workspace, conversation_id: conversation_id} = context
+      )
+      when is_binary(conversation_id) do
+    client = Comma.Salix.Client.impl()
+    existing_list = Map.get(context, :worker_sessions, [])
+    existing_by_id = Map.new(existing_list, &{&1.participant_id, &1})
+    task_participants = Map.get(context, :task_participants, %{})
+
+    if callback_exported?(client, :task_worker_sessions, 2) do
+      case client.task_worker_sessions(workspace, conversation_id) do
+        {:ok, sessions} when is_list(sessions) ->
+          next_list =
+            sessions
+            |> Enum.take(6)
+            |> Enum.map(
+              &build_worker_session_entry(
+                &1,
+                workspace,
+                conversation_id,
+                task_participants,
+                existing_by_id
+              )
+            )
+
+          next_ids = MapSet.new(next_list, & &1.participant_id)
+
+          new_entries =
+            Enum.filter(next_list, fn entry ->
+              entry.owner_ref == nil and
+                not match?(
+                  %{owner_pid: pid} when pid != nil,
+                  task_participants[entry.participant_id]
+                ) and
+                SystemsRuntime.Proc.is_process(entry.owner_pid)
+            end)
+
+          removed_refs =
+            existing_list
+            |> Enum.reject(fn entry ->
+              MapSet.member?(next_ids, entry.participant_id) or
+                Map.has_key?(task_participants, entry.participant_id)
+            end)
+            |> Enum.map(& &1.owner_ref)
+            |> Enum.filter(&is_reference/1)
+
+          changed? =
+            worker_session_roster_signature(existing_list) !=
+              worker_session_roster_signature(next_list)
+
+          next_context =
+            context
+            |> Map.put(:worker_sessions, next_list)
+            |> Map.put(:worker_roster_sync_pending, false)
+            |> Map.put(:worker_roster_sync_halted, false)
+
+          {next_context, changed?, new_entries, removed_refs}
+
+        {:error, reason} when reason in [:not_found, :forbidden, :unauthorized] ->
+          next_context =
+            context
+            |> Map.put(:worker_roster_sync_pending, false)
+            |> Map.put(:worker_roster_sync_halted, true)
+
+          {next_context, false, [], []}
+
+        _error ->
+          next_context =
+            context
+            |> Map.put(:worker_roster_sync_pending, true)
+            |> Map.put(:worker_roster_sync_halted, false)
+
+          {next_context, false, [], []}
+      end
+    else
+      next_context =
+        context
+        |> Map.put(:worker_roster_sync_pending, false)
+        |> Map.put(:worker_roster_sync_halted, false)
+
+      {next_context, false, [], []}
+    end
+  end
+
+  def sync_task_worker_sessions(context), do: {context, false, [], []}
+
+  defp worker_session_roster_signature(sessions) do
+    Enum.map(sessions, fn s ->
+      {s.participant_id, s.slot, s.label, s.model, s.runtime, s.is_primary, s.owner_pid != nil,
+       s.status}
+    end)
+  end
+
+  defp build_worker_session_entry(
+         session,
+         workspace,
+         conversation_id,
+         task_participants,
+         existing_by_id
+       ) do
+    participant_id = session["participant_id"]
+    agent_id = session["agent_id"]
+
+    base = %{
+      workspace: workspace,
+      conversation_id: conversation_id,
+      source_conversation_id: conversation_id,
+      participant_id: participant_id,
+      agent_id: agent_id,
+      actor_id:
+        public_actor_id(
+          %{"actor_type" => "agent", "agent_id" => agent_id},
+          %{"kind" => "agent_task"}
+        ),
+      actor_role: "worker",
+      name: session["name"] || session["label"] || "Agent",
+      slot: session["slot"] || "lead",
+      label: session["label"] || session["name"] || "Agent",
+      model: session["model"],
+      runtime: session["runtime"],
+      is_primary: session["is_primary"] == true,
+      owner_pid: nil,
+      owner_ref: nil,
+      status: nil
+    }
+
+    cond do
+      match?(%{owner_pid: pid} when pid != nil, existing_by_id[participant_id]) ->
+        existing = existing_by_id[participant_id]
+
+        Map.merge(base, %{
+          owner_pid: existing.owner_pid,
+          owner_ref: existing.owner_ref,
+          status: existing.status
+        })
+
+      match?(%{owner_pid: pid} when pid != nil, task_participants[participant_id]) ->
+        tp = task_participants[participant_id]
+
+        Map.merge(base, %{
+          owner_pid: tp[:owner_pid],
+          owner_ref: tp[:owner_ref],
+          status: tp[:status]
+        })
+
+      true ->
+        client = Comma.Salix.Client.impl()
+
+        case client.subscribe_group_conversation_participant(
+               workspace,
+               conversation_id,
+               participant_id,
+               SystemsRuntime.Proc.self()
+             ) do
+          {:ok, %{"owner_pid" => owner, "status" => status}} ->
+            Map.merge(base, %{owner_pid: owner, status: status})
+
+          {:error, _} ->
+            base
         end
-      end)
+    end
+  end
+
+  def task_participant_statuses(stream_context) do
+    worker_sessions_entries = Map.get(stream_context, :worker_sessions, [])
+
+    bound_worker =
+      Enum.find_value(worker_sessions_entries, fn session ->
+        if session.is_primary do
+          %{"participant_id" => session.participant_id, "name" => session.name}
+          |> put_optional("actor_id", session.actor_id)
+        end
+      end) ||
+        Enum.find_value(stream_context.task_participants, fn {id, participant} ->
+          if participant.actor_role == "worker" do
+            %{"participant_id" => id, "name" => participant.name}
+            |> put_optional("actor_id", participant.actor_id)
+          end
+        end)
 
     participants =
       stream_context.task_participants
@@ -661,6 +957,12 @@ defmodule Comma.Conversations do
             ]
         end
       end)
+      |> Enum.take(2)
+
+    worker_sessions =
+      worker_sessions_entries
+      |> Enum.take(6)
+      |> Enum.map(&public_worker_session/1)
 
     %{
       "type" => "task_participant_statuses",
@@ -669,7 +971,50 @@ defmodule Comma.Conversations do
       "bound_worker" => bound_worker,
       "participants" => participants
     }
+    |> then(fn payload ->
+      if worker_sessions == [],
+        do: payload,
+        else: Map.put(payload, "worker_sessions", worker_sessions)
+    end)
     |> put_optional("run", stream_context[:task_run])
+  end
+
+  defp public_worker_session(session) do
+    waiting? = match?(%{"activity" => %{"state" => "active"}, "wait" => %{}}, session.status)
+
+    activity_status =
+      if is_map(session.status) do
+        public_participant_status(session.status["activity"], session)
+      end
+
+    base =
+      %{
+        "participant_id" => session.participant_id,
+        "slot" => session.slot,
+        "label" => session.label,
+        "is_primary" => session.is_primary,
+        "subscribed" => session.owner_pid != nil
+      }
+      |> put_optional("actor_id", session.actor_id)
+      |> put_optional("model", session.model)
+      |> put_optional("runtime", session.runtime)
+
+    case activity_status do
+      %{"state" => state, "status" => status, "updated_at" => updated_at} = st ->
+        projected_state = if waiting? and state == "active", do: "waiting", else: state
+
+        base
+        |> Map.put("state", projected_state)
+        |> Map.put("status", status)
+        |> Map.put("updated_at", updated_at)
+        |> put_optional("issue", st["issue"])
+        |> put_optional("issue_detail", st["issue_detail"])
+
+      _ ->
+        base
+        |> Map.put("state", "stopped")
+        |> Map.put("status", "")
+    end
   end
 
   defp list_scoped_conversation_page(user, workspace, conversation_id) do
@@ -776,6 +1121,10 @@ defmodule Comma.Conversations do
           {:ok,
            preview
            |> Map.put("bound_worker", task_preview_worker(workspace, salix_conversation))
+           |> put_optional(
+             "worker_sessions",
+             task_preview_worker_sessions(workspace, salix_conversation)
+           )
            |> put_optional("run", task_run(workspace, conversation_id))
            |> put_optional("loop", looped["loop"])}
         end
@@ -844,9 +1193,24 @@ defmodule Comma.Conversations do
     with true <- Enum.all?(ids, &is_binary/1),
          {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
          {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace) do
-      Enum.reduce_while(Enum.uniq(ids), {:ok, []}, fn id, {:ok, bindings} ->
+      unique_ids = Enum.uniq(ids)
+      collab_groups = hosted_collaboration_group_map(workspace, user, unique_ids)
+
+      Enum.reduce_while(unique_ids, {:ok, []}, fn id, {:ok, bindings} ->
+        target_workspace =
+          case Map.get(collab_groups, id) do
+            nil ->
+              workspace
+
+            collab_group_id ->
+              workspace
+              |> Map.put("default_group_id", collab_group_id)
+              |> Map.put("home_group_id", workspace["default_group_id"])
+          end
+
         with :ok <- Workspaces.group_session_scope(session, group_id, id),
-             {:ok, %{"kind" => "agent_task"} = binding} <- authorized_binding(user, workspace, id) do
+             {:ok, %{"kind" => "agent_task"} = binding} <-
+               authorized_binding(user, target_workspace, id) do
           {:cont, {:ok, [binding | bindings]}}
         else
           {:error, :not_found} -> {:cont, {:ok, bindings}}
@@ -895,6 +1259,62 @@ defmodule Comma.Conversations do
       _ -> {:error, :invalid_salix_task_activity_projection}
     end
   end
+
+  defp hosted_collaboration_tasks(workspace, %{"id" => user_id} = user, archive, limit)
+       when is_binary(user_id) do
+    import Ecto.Query
+
+    default_group_id = workspace["default_group_id"]
+
+    pairs =
+      from(c in Comma.Data.TaskCollaborator,
+        where:
+          c.workspace_id == ^workspace["id"] and c.host_user_id == ^user_id and
+            c.group_id != ^default_group_id,
+        group_by: [c.group_id, c.conversation_id],
+        order_by: [desc: max(c.inserted_at)],
+        limit: ^limit,
+        select: {c.group_id, c.conversation_id}
+      )
+      |> Comma.Repo.all()
+
+    Enum.flat_map(pairs, fn {collab_group_id, conversation_id} ->
+      collab_ws =
+        workspace
+        |> Map.put("default_group_id", collab_group_id)
+        |> Map.put("home_group_id", default_group_id)
+
+      with {:ok, resolved} <- Comma.Salix.Client.impl().resolve_workspace_scope(collab_ws),
+           {:ok, %{"kind" => "agent_task"} = salix_conv} <-
+             Comma.Salix.Client.impl().get_group_conversation(resolved, conversation_id),
+           {:ok, [presented]} <- present_tasks(resolved, [salix_conv], user, archive) do
+        [presented]
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  defp hosted_collaboration_tasks(_workspace, _user, _archive, _limit), do: []
+
+  defp hosted_collaboration_group_map(workspace, %{"id" => user_id}, ids)
+       when is_binary(user_id) and is_list(ids) and ids != [] do
+    import Ecto.Query
+
+    default_group_id = workspace["default_group_id"]
+
+    from(c in Comma.Data.TaskCollaborator,
+      where:
+        c.workspace_id == ^workspace["id"] and c.host_user_id == ^user_id and
+          c.group_id != ^default_group_id and c.conversation_id in ^ids,
+      distinct: c.conversation_id,
+      select: {c.conversation_id, c.group_id}
+    )
+    |> Comma.Repo.all()
+    |> Map.new()
+  end
+
+  defp hosted_collaboration_group_map(_workspace, _user, _ids), do: %{}
 
   defp archive_filter(nil), do: {:ok, "exclude"}
   defp archive_filter(value) when value in ["exclude", "only", "include"], do: {:ok, value}
@@ -1059,6 +1479,135 @@ defmodule Comma.Conversations do
     end
   end
 
+  ## A Collaborative Task's member (`Comma.Collaborations`)
+  #
+  # A member is not a member of the host's Workspace: their one authority is
+  # their active Task Collaborator row for this Task. These read, write and
+  # follow that one Task, and nothing else of the host's Group.
+
+  @doc "The Task a member of it reads: as `get/5`, for the Task alone."
+  def member_get(user, session, group_id, conversation_id, opts \\ []) do
+    with {:ok, workspace, binding} <- authorize_member(user, session, group_id, conversation_id),
+         {:ok, conversation} <- read_conversation(workspace, binding, opts) do
+      {:ok, messages_after(conversation, Keyword.get(opts, :after_seq))}
+    end
+  end
+
+  @doc "One page of the Task's transcript for a member: as `message_page/5`."
+  def member_message_page(user, session, group_id, conversation_id, opts) do
+    {view, opts} = Keyword.pop(opts, :view)
+
+    with {:ok, slim} <- page_view(view),
+         {:ok, workspace, binding} <- authorize_member(user, session, group_id, conversation_id),
+         {:ok, page} <-
+           Comma.Salix.Client.impl().list_group_conversation_message_page(
+             workspace,
+             salix_conversation_id(binding),
+             opts
+           ) do
+      {:ok, if(slim, do: Map.update(page, "messages", [], &Enum.map(&1, slim)), else: page)}
+    end
+  end
+
+  @doc """
+  A member writes in the Task, as themselves: words alone. Nothing of the
+  host's Workspace comes with them: no skill, device, message type or local
+  file, which `send_message/6` resolves in the Workspace for its owner.
+  """
+  def member_send_message(user, session, group_id, conversation_id, attrs, opts \\ []) do
+    with {:ok, attrs} <- member_message_attrs(stringify(attrs)),
+         {:ok, workspace, binding} <- authorize_member(user, session, group_id, conversation_id),
+         :ok <- validate_message_source(attrs, workspace, binding) do
+      request_id = normalize_request_id(attrs["client_request_id"]) || new_request_id()
+      send_salix_message(user, session, workspace, binding, attrs, request_id, opts)
+    end
+  end
+
+  @doc """
+  The change stream of a member's one Task: as `list_events/4` with that Task
+  named. It ends once their membership does (`member?/1` on each change of
+  their memberships).
+  """
+  def member_list_events(user, session, group_id, conversation_id) do
+    # Subscribed before the membership is checked: a removal between the two
+    # still ends the stream.
+    with :ok <- Comma.Collaborations.subscribe(user),
+         {:ok, workspace, _binding} <- authorize_member(user, session, group_id, conversation_id),
+         {:ok, subscription} <- subscribe_task_list(workspace),
+         true <- subscription["resync_required"] == true,
+         version when is_binary(version) and version != "" <- subscription["version"] do
+      {:ok,
+       %{
+         group_id: group_id,
+         kind: "agent_task",
+         owner_pid: subscription["owner_pid"],
+         resync_required: true,
+         version: version,
+         workspace: workspace,
+         conversation_id: conversation_id,
+         member: %{user: user, session: session, group_id: group_id, task_id: conversation_id},
+         task_participants: subscribe_task_participants(workspace, conversation_id),
+         task_run: subscribed_task_run(workspace, conversation_id)
+       }}
+    else
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :invalid_salix_conversation_list_subscription}
+    end
+  end
+
+  @doc "Whether a member still reaches their Task."
+  def member?(%{user: user, session: session, group_id: group_id, task_id: task_id}),
+    do: match?({:ok, _}, Comma.Collaborations.authorize_member(user, session, group_id, task_id))
+
+  # A member sends what the app sends to any Task (`message`, as text or as
+  # content blocks), or bare `content` text. Only its text and an answer to an
+  # Agent's question card pass: no skills, device, message type or local
+  # files of the host's.
+  defp member_message_attrs(attrs) do
+    message =
+      case attrs["message"] do
+        %{} = message -> message
+        _ -> %{"content" => attrs["content"]}
+      end
+
+    text = text_content(message)
+
+    answers =
+      case message["content"] do
+        content when is_list(content) ->
+          Enum.filter(content, &(is_map(&1) and &1["type"] == "question_answer"))
+
+        _ ->
+          []
+      end
+
+    content =
+      if(is_binary(text) and String.trim(text) != "",
+        do: [%{"type" => "text", "text" => text}],
+        else: []
+      ) ++ answers
+
+    if content == [],
+      do: {:error, {:bad_request, "message is required"}},
+      else:
+        {:ok,
+         %{"message" => %{"content" => content}}
+         |> put_optional("client_request_id", attrs["client_request_id"])}
+  end
+
+  defp authorize_member(user, session, group_id, conversation_id) do
+    with {:ok, workspace} <-
+           Comma.Collaborations.authorize_member(user, session, group_id, conversation_id),
+         {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+         {:ok, %{"kind" => "agent_task"} = binding} <-
+           authorized_binding(user, workspace, conversation_id) do
+      {:ok, workspace, binding}
+    else
+      {:ok, _other_kind} -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp page_view(nil), do: {:ok, nil}
   defp page_view("activity"), do: {:ok, &Comma.TaskActivityMessages.slim/1}
   defp page_view(_view), do: {:error, {:bad_request, "view must be activity"}}
@@ -1095,13 +1644,75 @@ defmodule Comma.Conversations do
          :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
          {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
          {:ok, binding} <- authorized_binding(user, workspace, conversation_id),
-         {:ok, conversation} <- read_conversation(workspace, binding, []) do
+         {:ok, messages} <- read_suggestion_messages(workspace, binding) do
       {:ok,
        %{
          agent_id: workspace["router_agent_id"],
          billing_context: billing_context(workspace, binding["id"], user["id"]),
-         messages: conversation["messages"] || []
+         messages: messages
        }}
+    end
+  end
+
+  defp read_suggestion_messages(workspace, %{"kind" => kind} = binding)
+       when kind in ["user_chat", "agent_task"] do
+    client = Comma.Salix.Client.impl()
+
+    if callback_exported?(client, :list_group_conversation_message_page, 3) do
+      collect_suggestion_pages(
+        client,
+        workspace,
+        salix_conversation_id(binding),
+        nil,
+        [],
+        @suggestion_max_pages
+      )
+    else
+      with {:ok, conversation} <-
+             read_conversation(workspace, binding, message_limit: @suggestion_page_limit) do
+        {:ok, conversation["messages"] || []}
+      end
+    end
+  end
+
+  defp read_suggestion_messages(_workspace, _binding), do: {:error, :not_found}
+
+  defp collect_suggestion_pages(_client, _workspace, _salix_id, _before, acc, 0), do: {:ok, acc}
+
+  defp collect_suggestion_pages(client, workspace, salix_id, before_seq, acc, pages_left) do
+    opts =
+      if is_integer(before_seq),
+        do: [before: before_seq, limit: @suggestion_page_limit],
+        else: [limit: @suggestion_page_limit]
+
+    with {:ok, page} <- client.list_group_conversation_message_page(workspace, salix_id, opts) do
+      page_messages = page["messages"] || []
+      combined = page_messages ++ acc
+      first_seq = get_in(page, ["covered", "first_seq"])
+
+      cond do
+        Comma.ChatSuggestions.sufficient_context?(combined) ->
+          {:ok, combined}
+
+        page["has_older"] != true ->
+          {:ok, combined}
+
+        not is_integer(first_seq) or first_seq <= 1 ->
+          {:ok, combined}
+
+        is_integer(before_seq) and first_seq >= before_seq ->
+          {:ok, combined}
+
+        true ->
+          collect_suggestion_pages(
+            client,
+            workspace,
+            salix_id,
+            first_seq,
+            combined,
+            pages_left - 1
+          )
+      end
     end
   end
 
@@ -1219,7 +1830,11 @@ defmodule Comma.Conversations do
       "id" => conversation_id,
       "group_id" => workspace["default_group_id"],
       "kind" => salix_conversation["kind"],
-      "title" => salix_conversation["title"] || default_title(salix_conversation),
+      "title" =>
+        normalize_user_chat_title(
+          salix_conversation["kind"],
+          salix_conversation["title"] || default_title(salix_conversation)
+        ),
       "status" =>
         if(salix_conversation["kind"] == "agent_task",
           do: conversation_status(salix_conversation),
@@ -1536,26 +2151,26 @@ defmodule Comma.Conversations do
   defp read_conversation(_workspace, _binding, _opts), do: {:error, :not_found}
 
   defp read_user_chat_conversation(workspace, binding, opts) do
-    with {:ok, %{"conversation" => salix_conversation, "messages" => messages}} <-
+    with {:ok, %{"conversation" => salix_conversation, "messages" => messages} = result} <-
            salix_get_group_conversation_with_messages(
              workspace,
              salix_conversation_id(binding),
-             tail:
-               min(
-                 max(Keyword.get(opts, :message_limit, @transcript_limit), 1),
-                 @transcript_limit
-               )
+             snapshot_read_opts(opts)
            ),
          true <- salix_conversation["kind"] == "user_chat",
          {:ok, refreshed} <- project_binding_from_salix(binding, salix_conversation) do
       {:ok,
        refreshed
        |> public_summary()
-       |> Map.put("title", salix_conversation["title"] || refreshed["title"] || "聊天")
+       |> Map.put(
+         "title",
+         normalize_user_chat_title("user_chat", salix_conversation["title"] || refreshed["title"]) ||
+           "聊天"
+       )
        |> Map.put("status", salix_conversation["status"] || "active")
        |> Map.put("message_count", salix_conversation["message_count"] || length(messages))
        |> Map.put("messages", messages)
-       |> Map.put("final_message_id", final_message_id(messages))}
+       |> Map.put("final_message_id", result["final_message_id"] || final_message_id(messages))}
     else
       false -> {:error, :not_found}
       {:error, _} = error -> error
@@ -1567,11 +2182,7 @@ defmodule Comma.Conversations do
            salix_get_group_conversation_with_messages(
              workspace,
              salix_conversation_id(binding),
-             tail:
-               min(
-                 max(Keyword.get(opts, :message_limit, @transcript_limit), 1),
-                 @transcript_limit
-               )
+             snapshot_read_opts(opts)
            ),
          true <- salix_conversation["kind"] == "agent_task",
          {:ok, refreshed} <- project_binding_from_salix(binding, salix_conversation),
@@ -1589,6 +2200,22 @@ defmodule Comma.Conversations do
     else
       false -> {:error, :not_found}
       {:error, _} = error -> error
+    end
+  end
+
+  defp snapshot_read_opts(opts) do
+    tail =
+      min(
+        max(Keyword.get(opts, :message_limit, @transcript_limit), 1),
+        @transcript_limit
+      )
+
+    case Keyword.get(opts, :after_seq) do
+      after_seq when is_integer(after_seq) and after_seq >= 0 ->
+        [tail: tail, after_seq: after_seq]
+
+      _ ->
+        [tail: tail]
     end
   end
 
@@ -1660,6 +2287,7 @@ defmodule Comma.Conversations do
                  client_metadata,
                  reply_to_message_id
                )
+               |> put_server_requester_email(user)
              ),
            message_id when is_binary(message_id) <- result["message_id"],
            true <- SalixStore.Ids.valid_message_id?(message_id) do
@@ -1770,6 +2398,17 @@ defmodule Comma.Conversations do
     |> put_message_client_metadata(client_metadata)
   end
 
+  # Server-trusted sender email for Home card answers forwarded to stations.
+  # Always overwrites/strips any pre-existing key so clients cannot spoof it.
+  defp put_server_requester_email(attrs, %{"email" => email}) when is_binary(email) do
+    case String.trim(email) do
+      "" -> Map.delete(attrs, "requester_email")
+      trimmed -> Map.put(attrs, "requester_email", trimmed)
+    end
+  end
+
+  defp put_server_requester_email(attrs, _user), do: Map.delete(attrs, "requester_email")
+
   # The append receipt identifies this send even if another Message reached
   # the tail before the following read. A retry returns the original receipt.
   defp accepted_message({:ok, conversation}, message_id),
@@ -1807,7 +2446,9 @@ defmodule Comma.Conversations do
       session
       |> session_client_metadata()
       |> put_optional("client_timezone", client_timezone(attrs["client_timezone"]))
+      |> put_optional("client_location", client_location(attrs["client_location"]))
       |> put_optional("message_type", attrs["message_type"])
+      |> put_optional("client_entry", client_entry(attrs["client_entry"]))
 
     device_id = attrs["client_device_id"]
 
@@ -1842,6 +2483,12 @@ defmodule Comma.Conversations do
 
   defp session_client_metadata(_session), do: %{}
 
+  # Where the person wrote this Message when it was not the sending app: the
+  # Raycast extension put the words in the app's draft. A client-reported
+  # display hint with a closed set of values, never authority.
+  defp client_entry("raycast"), do: "raycast"
+  defp client_entry(_entry), do: nil
+
   # The sending device's IANA timezone, so the Agent can write local times.
   # Like the device, it is a display hint, never authority.
   defp client_timezone(zone) when is_binary(zone) and byte_size(zone) in 1..64 do
@@ -1852,6 +2499,29 @@ defmodule Comma.Conversations do
   end
 
   defp client_timezone(_zone), do: nil
+
+  # The sending phone's position, given only while its person shares it
+  # (Settings on the phone). Like the timezone, a hint for the Agent's answer,
+  # never authority; `read_at` says when the phone read it.
+  defp client_location(%{"latitude" => lat, "longitude" => lon, "read_at" => read_at} = location)
+       when is_number(lat) and lat >= -90 and lat <= 90 and is_number(lon) and lon >= -180 and
+              lon <= 180 and is_binary(read_at) and byte_size(read_at) <= 64 do
+    with {:ok, read_at, _offset} <- DateTime.from_iso8601(read_at) do
+      %{
+        "latitude" => lat,
+        "longitude" => lon,
+        "read_at" => DateTime.to_iso8601(read_at)
+      }
+      |> put_optional("accuracy_m", location_accuracy(location["accuracy_m"]))
+    else
+      _ -> nil
+    end
+  end
+
+  defp client_location(_location), do: nil
+
+  defp location_accuracy(metres) when is_number(metres) and metres >= 0, do: metres
+  defp location_accuracy(_metres), do: nil
 
   defp put_message_client_metadata(attrs, client_metadata)
        when is_map(client_metadata) and map_size(client_metadata) > 0,
@@ -1914,7 +2584,10 @@ defmodule Comma.Conversations do
        binding
        |> Map.put(
          "title",
-         salix_conversation["title"] || binding["title"] || default_title(binding)
+         normalize_user_chat_title(
+           binding["kind"],
+           salix_conversation["title"] || binding["title"] || default_title(binding)
+         )
        )
        |> Map.put("status", projected_status(binding, salix_conversation))
        |> put_optional("activity_status", salix_conversation["activity_status"])
@@ -1939,6 +2612,12 @@ defmodule Comma.Conversations do
 
   defp default_title(%{"kind" => "agent_task"}), do: "Task"
   defp default_title(_binding), do: "聊天"
+
+  defp normalize_user_chat_title("user_chat", title) when is_binary(title) do
+    if String.downcase(String.trim(title)) == "bridge chat", do: "Comma", else: title
+  end
+
+  defp normalize_user_chat_title(_kind, title), do: title
   defp default_status(%{"kind" => "agent_task"}), do: "unknown"
   defp default_status(_binding), do: "active"
 
@@ -2091,6 +2770,10 @@ defmodule Comma.Conversations do
     # (`Comma.TaskRequests.sender_avatar/5`): the request and the revision
     # the Task was made with.
     |> put_optional("requested_by_avatar", requested_by_avatar(salix_conversation))
+    # A Task together: the User ids of the people it was started with
+    # (`Comma.Collaborations`), fixed then. A card shows their faces; it
+    # grants nothing.
+    |> put_optional("together", together(salix_conversation))
     # The Message the Task was created from, such as the person's Home request
     # that the Router answered with this Task. A client reads it to show that
     # request becoming the Task; it grants nothing.
@@ -2138,6 +2821,7 @@ defmodule Comma.Conversations do
       "requested_by",
       "requested_by_id",
       "requested_by_avatar",
+      "together",
       "parent_message_id",
       "loop",
       "pull_request",
@@ -2678,6 +3362,37 @@ defmodule Comma.Conversations do
 
   # Opt-in for one open panel. The existing role lookup reads at most the
   # creator and bound Worker; it does not load messages or subscribe to Sessions.
+  defp task_preview_worker_sessions(workspace, conversation) do
+    client = Comma.Salix.Client.impl()
+    conversation_id = conversation["conversation_id"]
+
+    with true <- is_binary(conversation_id) and conversation_id != "",
+         true <- callback_exported?(client, :task_worker_sessions, 2),
+         {:ok, sessions} when is_list(sessions) and sessions != [] <-
+           client.task_worker_sessions(workspace, conversation_id) do
+      sessions
+      |> Enum.take(6)
+      |> Enum.map(fn session ->
+        slot = session["slot"] || "lead"
+
+        %{
+          "participant_id" => session["participant_id"],
+          "slot" => slot,
+          "label" => session["label"] || slot,
+          "is_primary" => session["is_primary"] == true,
+          "subscribed" => false,
+          "state" => "stopped",
+          "status" => ""
+        }
+        |> put_optional("actor_id", session["actor_id"])
+        |> put_optional("model", session["model"])
+        |> put_optional("runtime", session["runtime"])
+      end)
+    else
+      _ -> nil
+    end
+  end
+
   defp task_preview_worker(workspace, conversation) do
     client = Comma.Salix.Client.impl()
     worker_id = conversation["task_worker_agent_id"]
@@ -2719,6 +3434,21 @@ defmodule Comma.Conversations do
     do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
   defp stringify(_attrs), do: %{}
+
+  defp together(salix_conversation) do
+    # Its host first, then everyone it was started with (none on Comma yet
+    # when it went to addresses alone: then its host alone).
+    case get_in(salix_conversation, ["metadata", "collaboration"]) do
+      %{"host_user_id" => host} = collaboration when is_binary(host) ->
+        [host | List.wrap(collaboration["members"])]
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.take(8)
+
+      _other ->
+        nil
+    end
+  end
 
   defp requested_by_avatar(salix_conversation) do
     case get_in(salix_conversation, ["metadata", "task_request"]) do

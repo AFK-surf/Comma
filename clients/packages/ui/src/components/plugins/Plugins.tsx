@@ -1337,23 +1337,28 @@ export const PluginResourceRow = ({ resource }: { resource: PluginResource }) =>
 
 export interface PluginDetailSectionProps {
   title: string;
+  titleId?: string;
   action?: ReactNode;
   children: ReactNode;
 }
 
 export const PluginDetailSection = ({
   title,
+  titleId,
   action,
   children,
 }: PluginDetailSectionProps) => (
   <section className="flex w-full flex-col gap-md">
     <div
       className={cx(
-        "flex items-center justify-between pl-md",
+        // (its action's right edge on the header's actions' and the rows' controls')
+        "flex items-center justify-between px-md",
         action ? "min-h-7" : "min-h-5"
       )}
     >
-      <h2 className="m-0 text-sm font-medium text-quaternary">{title}</h2>
+      <h2 className="m-0 text-sm font-medium text-quaternary" id={titleId}>
+        {title}
+      </h2>
       {action}
     </div>
     {children}

@@ -67,6 +67,7 @@ internal abstract class WorkspacePage(
         gravity = Gravity.CENTER
     }
     private val renderer: () -> Unit = { if (scope?.current != false) render() }
+    private var unlisten: (() -> Unit)? = null
     private var closed = false
 
     init {
@@ -82,7 +83,7 @@ internal abstract class WorkspacePage(
             showError(PageError.Text(R.string.ds_error_no_workspace), null)
             return
         }
-        scope.onChange(renderer)
+        unlisten = scope.onChange(renderer)
         retryAction = retry
         render()
     }
@@ -114,6 +115,8 @@ internal abstract class WorkspacePage(
     override fun onRemoved() {
         if (closed) return
         closed = true
+        unlisten?.invoke()
+        unlisten = null
         onClose()
         if (owns) scope?.close()
     }

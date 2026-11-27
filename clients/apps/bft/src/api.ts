@@ -329,7 +329,49 @@ export const cliSchema = z.object({
 
 const optionSchema = z.object({ value: z.string(), label: z.string() });
 
+export const m2squareCountrySchema = z.object({
+  code: z.string(),
+  name_en: z.string(),
+  name_zh: z.string(),
+  currency: z.string(),
+  display_currency: z.string(),
+  scale: z.number(),
+  min_seats: z.number(),
+  max_seats: z.number(),
+  sample_min_amount: z.string(),
+  fee_rate: z.string(),
+  fx_rate: z.string(),
+  markup_rate: z.string(),
+  payment_types: z.array(z.string()),
+  id_types: z.array(z.string()),
+});
+
+export const teamsBillingSchema = z.object({
+  active: z.boolean(),
+  licensed_seats: z.number(),
+  available: z.boolean(),
+  provider: z.enum(["stripe", "m2square"]).nullable().optional(),
+  has_stripe_customer: z.boolean().optional(),
+  expires_at: nullableText.optional(),
+  next_period_end: nullableText.optional(),
+  expiring_soon: z.boolean().optional(),
+  can_renew_stripe: z.boolean().optional(),
+  can_renew_m2square: z.boolean().optional(),
+  member_count: z.number().optional(),
+  detected_country: nullableText.optional(),
+  m2square_countries: z.array(m2squareCountrySchema).optional(),
+  quote_token: nullableText.optional(),
+  quote_ttl_seconds: z.number().optional(),
+});
+
+export const billingPolicySchema = z.object({
+  mode: z.enum(["managed", "unmanaged"]),
+  member_count: z.number().optional(),
+});
+
 export const settingsGeneralSchema = z.object({
+  billing: teamsBillingSchema.nullable().optional(),
+  billing_policy: billingPolicySchema.optional(),
   organization: z.object({
     name: z.string(),
     slug: z.string(),
@@ -383,6 +425,14 @@ export const settingsModelsSchema = z.object({
   platform_defaults: z
     .object({ router: platformDefaultSchema, task: platformDefaultSchema })
     .catch({ router: null, task: null }),
+  /**
+   * The organization's platform Router, which every new Router takes: while
+   * it is set the default Router model has no effect and is not saved.
+   */
+  platform_router: z
+    .object({ model: z.string(), label: z.string() })
+    .nullable()
+    .catch(null),
 });
 
 export const subscriptionProviders = ["codex", "claude"] as const;
@@ -714,6 +764,26 @@ export const settingsIntegrationsSchema = z.object({
   feishu: feishuSectionSchema,
 });
 
+export const searchTargetSchema = z.object({
+  kind: z.enum(["all_departments", "self", "department", "project"]),
+  id: z.string(),
+  name: z.string(),
+});
+
+export const departmentSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  targets: z.array(searchTargetSchema).catch([]),
+});
+
+export const catalogSwarmSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  department_id: nullableText,
+  /** Information-flow control is on: a searching Swarm with it off cannot search this one. */
+  ifc_on: z.boolean().catch(false),
+});
+
 /** One Agent Swarm row; a create answers with the new row. */
 export const swarmSchema = z.object({
   id: z.string(),
@@ -722,13 +792,28 @@ export const swarmSchema = z.object({
   salix_group_id: nullableText,
   status: z.string().catch("active"),
   created_at: nullableText,
+  department_id: nullableText,
+  department_name: nullableText,
+  extra_targets: z.array(searchTargetSchema).catch([]),
 });
 
-/** One page of 50 visible Agent Swarms by name; `cursor` continues it. */
+/**
+ * One page of 50 visible Agent Swarms, grouped by department (departments by
+ * name, then Swarms without one); `cursor` continues it. `department_counts`
+ * and `unassigned_count` count every matching Swarm of each group, also those
+ * on later pages.
+ */
 export const swarmsPageSchema = z.object({
-  viewer: z.object({ can_create: z.boolean().catch(false) }),
+  viewer: z.object({
+    can_create: z.boolean().catch(false),
+    can_manage_departments: z.boolean().catch(false),
+  }),
+  departments: z.array(departmentSchema).catch([]),
+  catalog_swarms: z.array(catalogSwarmSchema).catch([]),
   projects: z.array(swarmSchema),
   next_cursor: nullableText,
+  department_counts: z.record(z.string(), z.number()).catch({}),
+  unassigned_count: z.number().nullable().catch(null),
 });
 
 const swarmStatusSchema = z.enum(["ok", "unavailable"]).catch("unavailable");
@@ -768,6 +853,8 @@ export const swarmAgentSchema = z.object({
     created_at: nullableText,
     runtime_id: nullableText,
     model: nullableText,
+    // The organization's platform Router provides the model.
+    model_platform_provided: z.boolean().catch(false),
     system_prompt: nullableText,
     // Least privilege when the server leaves it out.
     read_only: z.boolean().catch(true),
@@ -798,6 +885,8 @@ export const agentConfigSchema = z.object({
   // Only an org owner changes the Router's instructions; others see them.
   prompt_editable: z.boolean().catch(false),
   available: z.boolean().catch(false),
+  // The platform Router provides the current model; choosing another leaves it.
+  platform_provided: z.boolean().catch(false),
   // The first entry, key "" and choice `null`, follows the default model.
   models: z.array(modelPickerRowSchema).catch([]),
 });
@@ -1218,6 +1307,8 @@ export const swarmTaskModelSchema = z.object({
   status: z.enum(["ok", "unavailable"]).catch("unavailable"),
   key: z.string().catch(""),
   label: nullableText,
+  // No enabled account serves the model a Task that names none runs.
+  unserved: z.boolean().catch(false),
   models: z.array(modelPickerRowSchema).catch([]),
 });
 
@@ -1239,9 +1330,23 @@ export const swarmTaskPlaceSettingSchema = z.object({
   label: nullableText,
 });
 
+export const swarmCrossSearchSchema = z.object({
+  status: z.enum(["ok", "unavailable"]).catch("unavailable"),
+  can_manage: z.boolean().catch(false),
+  department_id: nullableText,
+  department_name: nullableText,
+  inherited_targets: z.array(searchTargetSchema).catch([]),
+  explicit_targets: z.array(searchTargetSchema).catch([]),
+  departments: z.array(z.object({ id: z.string(), name: z.string() })).catch([]),
+  /** This Swarm has information-flow control on; null when unknown. */
+  ifc_on: z.boolean().nullable().catch(null),
+  catalog_swarms: z.array(catalogSwarmSchema).catch([]),
+});
+
 /**
- * Identity, runtime ids, the default Task model, the default place to run
- * Tasks and the first page of explicit access grants.
+ * Identity, runtime ids, department and cross-Swarm search permissions, the
+ * default Task model, the default place to run Tasks and the first page of
+ * explicit access grants.
  */
 export const swarmSettingsSchema = z.object({
   project: swarmPageProjectSchema.extend({
@@ -1250,10 +1355,22 @@ export const swarmSettingsSchema = z.object({
     runtime_id: nullableText,
   }),
   org_runtime_id: nullableText,
+  cross_search: swarmCrossSearchSchema.catch({
+    status: "unavailable",
+    can_manage: false,
+    department_id: null,
+    department_name: null,
+    inherited_targets: [],
+    explicit_targets: [],
+    departments: [],
+    ifc_on: null,
+    catalog_swarms: [],
+  }),
   task_model: swarmTaskModelSchema.catch({
     status: "unavailable",
     key: "",
     label: null,
+    unserved: false,
     models: [],
   }),
   task_place: swarmTaskPlaceSettingSchema.catch({
@@ -1325,12 +1442,33 @@ export const pluginsSchema = z.object({
 
 export const pluginScopes = ["system", "tenant", "group"] as const;
 
-/** One credential of a plugin: managed OAuth, native MCP OAuth, Composio or messaging. */
+/**
+ * One Google account connected to an `oauth_code_paste` (Google Colab)
+ * credential, as `DashboardSwarmPlugins` lists it. A write to the account
+ * names its `binding_id`.
+ */
+const colabAccountSchema = z.object({
+  binding_id: z.string(),
+  alias: nullableText,
+  email: nullableText,
+  /** `ok` or `reauthorization_required`. */
+  status: nullableText,
+  /** `active` or `draining`. */
+  state: nullableText,
+  ccu_balance: z.number().nullable().catch(null),
+  ccu_rate_hourly: z.number().nullable().catch(null),
+  eligible_gpus: z.array(z.string()).catch([]),
+  active_vm_count: z.number().catch(0),
+});
+
+/** One credential of a plugin: managed OAuth, native MCP OAuth, Composio, OAuth code paste or messaging. */
 const pluginConnectionSchema = z.object({
   id: z.string(),
   kind: z.string(),
   label: z.string(),
   state: nullableText,
+  /** The connected Google accounts of an `oauth_code_paste` credential. */
+  accounts: z.array(colabAccountSchema).optional(),
   dependent_mcps: z.array(z.string()).catch([]),
   credential_setup: z
     .object({
@@ -1401,9 +1539,23 @@ export const swarmPluginDetailSchema = z.object({
   android: pluginAndroidSchema,
 });
 
-/** A started connection opens the provider; one already connected says so. */
+export const oauthCodeConfigurationSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  help_url: z
+    .string()
+    .url()
+    .refine((url) => url.startsWith("https://")),
+  format: z.literal("oauth_code"),
+  attempt_id: z.string(),
+  binding_id: nullableText.optional(),
+  error: nullableText.optional(),
+});
+
+/** A started connection opens the provider, asks for an OAuth code, or says it is connected. */
 export const connectionStartSchema = z.union([
   z.object({ redirect_url: z.string() }),
+  z.object({ configuration: oauthCodeConfigurationSchema }),
   noticeSchema,
 ]);
 
@@ -1500,6 +1652,37 @@ const qqMenuItemSchema = z.object({
   admin_only: z.boolean().catch(false),
 });
 
+/**
+ * Whose people a Slack workspace or a Feishu or Lark tenant holds: the
+ * organization's own, who may have the agents use the swarm's computers, or
+ * external people, who may chat but use the computers only by a grant.
+ */
+export const memberScopes = ["organization", "external"] as const;
+
+/** A person of an external connect who may have the agents use the swarm's computers. */
+const memberGrantSchema = z.object({
+  subject: z.string(),
+  name: nullableText,
+  email: nullableText,
+  /** Unix ms; null: no expiry. */
+  expires_at: z.number().nullable().catch(null),
+  granted_at: z.number().catch(0),
+});
+
+const memberScopeFields = {
+  member_scope: z.enum(memberScopes).catch("organization"),
+  member_grants: z.array(memberGrantSchema).catch([]),
+};
+
+/** People of one connect whose name, email or id matches a search. */
+export const connectPeopleSchema = z.object({
+  people: z
+    .array(z.object({ subject: z.string(), name: nullableText, email: nullableText }))
+    .catch([]),
+  /** False: more people match than the answer holds. */
+  complete: z.boolean().catch(true),
+});
+
 export const swarmConnectionsSchema = z.object({
   project: swarmPageProjectSchema,
   /** Owner or admin of the organization: may open its settings. */
@@ -1523,6 +1706,7 @@ export const swarmConnectionsSchema = z.object({
             events: z.enum(["webhook", "socket"]).catch("webhook"),
             /** The scopes Feishu refused the app for; a scan updates an app made by a scan. */
             missing_scopes: z.array(z.string()).catch([]),
+            ...memberScopeFields,
             updated_at: nullableText,
           })
         ),
@@ -1567,6 +1751,7 @@ export const swarmConnectionsSchema = z.object({
             signing_secret_configured: z.boolean().catch(false),
             /** Whether the app joins each new public channel by itself. */
             auto_join_public_channels: z.boolean().catch(true),
+            ...memberScopeFields,
             updated_at: nullableText,
           })
         ),
@@ -1597,6 +1782,7 @@ export const swarmConnectionsSchema = z.object({
             encrypt_key_configured: z.boolean().catch(false),
             /** The scopes Lark refused the app for; a scan updates an app made by a scan. */
             missing_scopes: z.array(z.string()).catch([]),
+            ...memberScopeFields,
             updated_at: nullableText,
           })
         ),
@@ -1658,6 +1844,29 @@ export const swarmConnectionsSchema = z.object({
             command_menu: z.array(qqMenuItemSchema).catch([]),
             /** Whether QQ took the menu: `synced`, `owner_panel` or `failed`, by chat type. */
             command_menu_sync: z.record(z.string(), z.string()).catch({}),
+            updated_at: nullableText,
+          })
+        ),
+        route: z.object({
+          status: z.enum(feishuRouteStatuses).catch("unknown"),
+          connect_id: nullableText,
+          router: nullableText,
+        }),
+      })
+      .nullable()
+      .catch(null),
+    /** The swarm's WeCom AI bots; each connect holds its bot's Bot ID and Secret. */
+    wecom: z
+      .object({
+        connects: z.array(
+          z.object({
+            connect_id: z.string(),
+            status: z.string().catch("configured"),
+            disabled: z.boolean().catch(false),
+            bot_id: nullableText,
+            /** Its long connection is subscribed now; the saved status only says the credentials were accepted. */
+            online: z.boolean().catch(false),
+            secret_configured: z.boolean().catch(false),
             updated_at: nullableText,
           })
         ),
@@ -1759,7 +1968,25 @@ export const swarmSkillDetailSchema = z.object({
  * The skills of an Agent Swarm's Router (or first agent): its custom skills
  * and the read-only system skills projected into it, and the upload limits.
  */
-/** The swarm's still.fail stations, and the usage they sent by person (`page` of DashboardSwarmStillfail). */
+/**
+ * The swarm's still.fail stations, each one still.fail workspace, and the usage
+ * they sent by person, of one station when asked (`page` of DashboardSwarmStillfail).
+ */
+const swarmStillfailTaskSchema = z.object({
+  id: z.string(),
+  station_id: z.string(),
+  device_id: nullableText.optional().transform((value) => value ?? null),
+  title: z.string(),
+  url: z.string(),
+  status: nullableText.optional().transform((value) => value ?? null),
+  attention: nullableText.optional().transform((value) => value ?? null),
+  note: nullableText.optional().transform((value) => value ?? null),
+  card_kind: nullableText.optional().transform((value) => value ?? null),
+  waits_for: z.array(z.string()).catch([]),
+  created_by: nullableText.optional().transform((value) => value ?? null),
+  last_activity_at: z.number().nullable().catch(null),
+});
+
 export const swarmStillfailSchema = z.object({
   project: z.object({ id: z.string(), name: z.string(), role: z.string() }),
   days: z.number(),
@@ -1767,10 +1994,12 @@ export const swarmStillfailSchema = z.object({
     z.object({
       id: z.string(),
       name: z.string().nullable(),
+      workspace_id: z.string().nullable().optional(),
       connected: z.boolean(),
       connected_at: z.number().nullable(),
     })
   ),
+  tasks: z.array(swarmStillfailTaskSchema).default([]),
   usage: z.array(
     z.object({
       key: z.string().nullable(),
@@ -1811,6 +2040,8 @@ export const meetingStatuses = [
   "timed_out",
   "preparing",
   "scheduled",
+  // Members' calendars with reminders off: the bot only joins.
+  "join_only",
 ] as const;
 
 export const meetingProviders = ["slack", "feishu", "lark"] as const;
@@ -1871,6 +2102,18 @@ export const meetingsOverviewSchema = z.object({
       title: nullableText,
       start_ms: nullableNumber,
       status: z.enum(meetingStatuses).catch("scheduled"),
+      /**
+       * Members' calendars: the members who get the reminder DM, by email.
+       * `slack_unmatched`: Slack has no member with that email, so no DM.
+       */
+      recipients: z
+        .array(
+          z.object({
+            email: z.string(),
+            slack_unmatched: z.boolean().catch(false),
+          })
+        )
+        .catch([]),
     })
   ),
   calendar_health: nullableText,
@@ -1883,6 +2126,7 @@ export const meetingsOverviewSchema = z.object({
 /** One cursor page of past meetings shared in the team channel. */
 export const meetingHistorySchema = z.object({
   channel: nullableText,
+  provider: nullableText,
   meetings: z.array(
     z.object({
       meeting_id: z.string(),
@@ -1943,9 +2187,17 @@ const calendarSchema = z
   .catch([])
   .transform((days) => days.filter((day): day is string => typeof day === "string"));
 
+/** The IM a daily brief reads and posts through. */
+export const dailyBriefProviders = ["slack", "feishu", "lark"] as const;
+export type BftDailyBriefProvider = (typeof dailyBriefProviders)[number];
+
 const dailyBriefSettingsShape = {
   project_id: z.string(),
-  slack_connect_id: z.string(),
+  /** A setting saved before providers is Slack's. */
+  provider: z.enum(dailyBriefProviders).catch("slack"),
+  connect_id: nullableText,
+  /** Slack's connect, kept beside `connect_id`; `null` for Feishu and Lark. */
+  slack_connect_id: nullableText,
   enabled: z.boolean().catch(false),
   retention_days: z.number().catch(90),
   team_names: z.enum(["hidden", "shown"]).catch("hidden"),
@@ -1955,16 +2207,34 @@ const dailyBriefSettingsShape = {
   team_post_at: z.string().catch("10:20:00"),
 };
 
-/** The organization's daily brief: settings, linked members, today and the latest runs. */
+/**
+ * One Agent Swarm's daily brief: settings, the organization's linked members,
+ * today and the latest runs.
+ */
 export const dailyBriefSchema = z.object({
   settings: z.object(dailyBriefSettingsShape).nullable(),
+  /** Every Agent Swarm of the organization with daily brief settings. */
+  configured_projects: z
+    .array(
+      z.object({
+        project_id: z.string(),
+        provider: z.enum(dailyBriefProviders).catch("slack"),
+        enabled: z.boolean().catch(false),
+      })
+    )
+    .catch([]),
   members: z.array(
     z.object({
       id: z.string(),
       email: nullableText,
       name: nullableText,
+      provider: z.enum(dailyBriefProviders).catch("slack"),
+      /** The member's Slack user id, or Feishu/Lark open id. */
+      provider_user_id: nullableText,
       slack_user_id: nullableText,
       enabled: z.boolean().catch(true),
+      /** The Agent Swarm whose bot sends the member's one brief. */
+      project_id: nullableText,
       timezone: nullableText,
       deliver_at: nullableText,
       last_brief_at: nullableText,
@@ -2013,9 +2283,20 @@ export const dailyBriefRequestSchema = z.object({
 /** The saved settings. */
 export const dailyBriefSavedSchema = z.object(dailyBriefSettingsShape);
 
+/** The groups or channels a bot can post the team brief to. */
+export const dailyBriefChannelsSchema = z.object({
+  channels: z.array(z.object({ id: z.string(), name: z.string() })).catch([]),
+  complete: z.boolean().catch(true),
+});
+
 export const dailyBriefSyncSchema = z.object({
   linked: z.number(),
   unresolved: z.array(z.string()).catch([]),
+});
+
+export const dailyBriefMemberSwarmSchema = z.object({
+  id: z.string(),
+  project_id: nullableText,
 });
 
 const dataPolicyScopeSchema = z.object({
@@ -2046,11 +2327,22 @@ export const dataPolicyDescribedSchema = z.object({
 });
 
 export const dataPolicySchema = z.object({
-  mode: z.enum(["off", "audit", "enforce"]).catch("off"),
+  mode: z
+    .enum(["off", "audit", "enforce", "hard", "easy"])
+    .catch("off")
+    .transform((mode) => (mode === "enforce" ? "hard" : mode)),
   language: z.enum(["zh", "en"]).catch("zh"),
   audience_modes: z.array(z.string()).catch(["space", "members"]),
   // People who read everything in the Agent Swarm that is not sealed.
   supervisors: z.array(z.object({ connect_id: z.string(), id: z.string() })).catch([]),
+  // Who may make the assistant change its memory: anyone until `restricted`,
+  // then only `writers`.
+  memory_writers: z
+    .object({
+      restricted: z.boolean().catch(false),
+      writers: z.array(z.object({ connect_id: z.string(), id: z.string() })).catch([]),
+    })
+    .catch({ restricted: false, writers: [] }),
   connects: z.array(
     z.object({
       connect_id: z.string(),
@@ -2150,6 +2442,96 @@ export const triageChannelsSchema = z.object({
 });
 
 export const triageNoticeSchema = z.object({ notice: z.string().catch("") });
+
+/* Feishu / Lark triage (`/orgs/:org/lark-triage`): the Swarms' Feishu and
+ * Lark connects, their watched group chats and the settled batches. */
+export const larkTriageProviders = ["feishu", "lark"] as const;
+export type BftLarkTriageProvider = (typeof larkTriageProviders)[number];
+
+const larkTriageChatSchema = z.object({
+  id: z.string(),
+  name: nullableText,
+  enabled: z.boolean().catch(false),
+});
+
+const larkTriageSourceSchema = z.object({
+  connect_id: z.string(),
+  provider: z.enum(larkTriageProviders).catch("feishu"),
+  app_name: nullableText,
+  enabled: z.boolean().catch(false),
+  chats: z.array(larkTriageChatSchema).catch([]),
+});
+
+export const larkTriageOverviewSchema = z.object({
+  agents: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        project_name: nullableText,
+        state: z.enum(["ready", "empty", "unavailable"]).catch("unavailable"),
+        sources: z.array(larkTriageSourceSchema).catch([]),
+      })
+    )
+    .catch([]),
+});
+
+export const larkTriageChatsSchema = z.object({
+  chats: z.array(z.object({ id: z.string(), name: nullableText })).catch([]),
+  complete: z.boolean().catch(true),
+});
+
+export const larkTriageKinds = ["reply", "reaction", "silence", "delegate"] as const;
+
+export const larkTriageActivitySchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.string(),
+        provider: z.enum(larkTriageProviders).catch("feishu"),
+        chat_id: z.string(),
+        chat_name: nullableText,
+        state: z.enum(["applied", "stale", "failed"]).catch("failed"),
+        kind: z.enum(larkTriageKinds).nullable().catch(null),
+        reason_code: nullableText,
+        reaction: nullableText,
+        task_title: nullableText,
+        task_conversation_id: nullableText,
+        error_code: nullableText,
+        at_ms: nullableNumber,
+        message_count: z.number().catch(0),
+        target: z
+          .object({ sender_name: nullableText, sent_at_ms: nullableNumber })
+          .nullable()
+          .catch(null),
+        messages: z
+          .array(
+            z.object({
+              id: z.string(),
+              sender_name: nullableText,
+              sent_at_ms: nullableNumber,
+            })
+          )
+          .catch([]),
+      })
+    )
+    .catch([]),
+  next_cursor: nullableText,
+});
+
+export const larkTriageRevealSchema = z.object({
+  messages: z
+    .array(
+      z.object({
+        id: z.string(),
+        sender_name: nullableText,
+        sent_at_ms: nullableNumber,
+        text: z.string().catch(""),
+      })
+    )
+    .catch([]),
+  reply_text: nullableText,
+});
 
 /**
  * Where the Agent's Triage Tasks run: on its swarm, at the default place and
@@ -2464,6 +2846,26 @@ export type BftRunnerOnboarding = z.infer<typeof runnerOnboardingSchema>;
 export type BftInstallCommand = z.infer<typeof installCommandSchema>;
 export type BftCli = z.infer<typeof cliSchema>;
 export type BftSettingsGeneral = z.infer<typeof settingsGeneralSchema>;
+export type BftM2squareCountry = z.infer<typeof m2squareCountrySchema>;
+export type BftM2squareRenewal = {
+  provider: "m2square";
+  seats: string | number;
+  country: string;
+  payment_type: string;
+  firstname: string;
+  lastname: string;
+  email: string;
+  phone: string;
+  beneficiary_type?: string;
+  beneficiary_id?: string;
+  doc_number?: string;
+  quote_token?: string;
+};
+type TeamsBillingRenewal =
+  | string
+  | number
+  | { seats: string | number; provider?: "stripe"; quote_token?: string }
+  | BftM2squareRenewal;
 export type BftSettingsModels = z.infer<typeof settingsModelsSchema>;
 export type BftSubscriptionProvider = (typeof subscriptionProviders)[number];
 export type BftModelChoice = z.infer<typeof modelChoiceSchema>;
@@ -2491,6 +2893,13 @@ export type BftComposioSection = z.infer<typeof composioSectionSchema>;
 export type BftSignalSection = z.infer<typeof signalSectionSchema>;
 export type BftFeishuSection = z.infer<typeof feishuSectionSchema>;
 export type BftFeishuApp = BftFeishuSection["apps"][number];
+export type BftSearchTarget = z.infer<typeof searchTargetSchema>;
+export type BftSearchTargetInput = {
+  kind: "all_departments" | "self" | "department" | "project";
+  id?: string;
+};
+export type BftDepartment = z.infer<typeof departmentSchema>;
+export type BftCatalogSwarm = z.infer<typeof catalogSwarmSchema>;
 export type BftSwarm = z.infer<typeof swarmSchema>;
 export type BftSwarmsPage = z.infer<typeof swarmsPageSchema>;
 export type BftSwarmAgents = z.infer<typeof swarmAgentsSchema>;
@@ -2546,7 +2955,15 @@ export type BftSwarmPlugins = z.infer<typeof swarmPluginsSchema>;
 export type BftSwarmPlugin = BftSwarmPlugins["plugins"][number];
 export type BftSwarmPluginDetail = z.infer<typeof swarmPluginDetailSchema>;
 export type BftPluginConnection = z.infer<typeof pluginConnectionSchema>;
+export type BftColabAccount = z.infer<typeof colabAccountSchema>;
+export type BftOAuthCodeConfiguration = z.infer<typeof oauthCodeConfigurationSchema>;
 export type BftConnectionStart = z.infer<typeof connectionStartSchema>;
+export interface BftConnectPluginOptions {
+  action?: "connect" | "reconnect";
+  configValues?: Record<string, string>;
+  attemptId?: string;
+  bindingId?: string;
+}
 /** One named value of an API key or secret: agents use it by `name`; a `secret` one is never shown. */
 export interface BftSecretField {
   name: string;
@@ -2576,7 +2993,15 @@ export interface BftSlackCredentials {
 export type BftSlackInbound =
   | { inbound_agent_id: string | null }
   | { inbound_tasks: { model: BftModelChoice | null } };
-export type BftSlackConnectDraft = BftSlackCredentials & BftSlackInbound;
+export type BftSlackConnectDraft = BftSlackCredentials &
+  BftSlackInbound & { member_scope?: BftMemberScope };
+export type BftMemberScope = (typeof memberScopes)[number];
+export type BftMemberGrant = z.infer<typeof memberGrantSchema>;
+/** The connects that have a member scope. */
+export type BftMemberProvider = "slack" | "feishu" | "lark";
+/** How long a grant lasts, in days; null: until it is removed. */
+export type BftGrantDays = 1 | 7 | 30 | null;
+export type BftConnectPeople = z.infer<typeof connectPeopleSchema>;
 export type BftSwarmSkills = z.infer<typeof swarmSkillsSchema>;
 export type BftSwarmStillfail = z.infer<typeof swarmStillfailSchema>;
 export type BftSwarmSkill = BftSwarmSkills["custom"][number];
@@ -2593,6 +3018,7 @@ export type BftDailyBriefSettings = NonNullable<BftDailyBrief["settings"]>;
 export type BftDailyBriefMember = BftDailyBrief["members"][number];
 export type BftDailyBriefSaved = z.infer<typeof dailyBriefSavedSchema>;
 export type BftDailyBriefSync = z.infer<typeof dailyBriefSyncSchema>;
+export type BftDailyBriefChannels = z.infer<typeof dailyBriefChannelsSchema>;
 export type BftDailyBriefRun = BftDailyBrief["runs"][number];
 export type BftDataPolicy = z.infer<typeof dataPolicySchema>;
 export type BftDataPolicyConnect = BftDataPolicy["connects"][number];
@@ -2605,6 +3031,19 @@ export type BftTriageEvaluation = z.infer<typeof triageEvaluationSchema>;
 export type BftTriageChannels = z.infer<typeof triageChannelsSchema>;
 export type BftTriageTaskSettings = z.infer<typeof triageTaskSettingsSchema>;
 export type BftTriageActivity = z.infer<typeof triageActivitySchema>;
+export type BftLarkTriageOverview = z.infer<typeof larkTriageOverviewSchema>;
+export type BftLarkTriageAgent = BftLarkTriageOverview["agents"][number];
+export type BftLarkTriageSource = BftLarkTriageAgent["sources"][number];
+export type BftLarkTriageChats = z.infer<typeof larkTriageChatsSchema>;
+export type BftLarkTriageActivity = z.infer<typeof larkTriageActivitySchema>;
+export type BftLarkTriageItem = BftLarkTriageActivity["items"][number];
+export type BftLarkTriageKind = (typeof larkTriageKinds)[number];
+export type BftLarkTriageReveal = z.infer<typeof larkTriageRevealSchema>;
+export interface BftLarkTriageFilter {
+  kind: BftLarkTriageKind | null;
+  chat: string | null;
+  cursor: string | null;
+}
 export type BftTriageItem = BftTriageActivity["items"][number];
 export type BftTriageOutcome = z.infer<typeof triageOutcomeSchema>;
 export type BftTriageContext = z.infer<typeof triageContextSchema>;
@@ -2647,6 +3086,11 @@ export type BftMeetingSettingsDraft =
 export type BftDataPolicyChange =
   | { kind: "group"; mode?: string; language?: string }
   | { kind: "supervisors"; supervisors: { connect_id: string; id: string }[] }
+  | {
+      kind: "memory_writers";
+      restricted: boolean;
+      writers: { connect_id: string; id: string }[];
+    }
   | {
       kind: "classify";
       connect: string;
@@ -2804,7 +3248,27 @@ export interface BftApi {
     cursor: string | null,
     signal?: AbortSignal
   ): Promise<BftSwarmsPage>;
-  createSwarm(org: string, swarm: { name: string; slug: string }): Promise<BftSwarm>;
+  createSwarm(
+    org: string,
+    swarm: { name: string; slug: string; department_id?: string | null }
+  ): Promise<BftSwarm>;
+  /** Department writes answer the first page again, filtered by `query`. */
+  createDepartment(
+    org: string,
+    body: { name: string; targets: BftSearchTargetInput[] },
+    query?: string
+  ): Promise<BftSwarmsPage>;
+  updateDepartment(
+    org: string,
+    departmentId: string,
+    body: { name: string; targets: BftSearchTargetInput[] },
+    query?: string
+  ): Promise<BftSwarmsPage>;
+  deleteDepartment(
+    org: string,
+    departmentId: string,
+    query?: string
+  ): Promise<BftSwarmsPage>;
   /** The swarm's agents: its Router. */
   swarmAgents(
     org: string,
@@ -3002,6 +3466,16 @@ export interface BftApi {
     signal?: AbortSignal
   ): Promise<BftSwarmSettings>;
   renameSwarm(org: string, project: string, name: string): Promise<BftSwarmSettings>;
+  setSwarmDepartment(
+    org: string,
+    project: string,
+    departmentId: string | null
+  ): Promise<BftSwarmSettings>;
+  setSwarmSearchGrants(
+    org: string,
+    project: string,
+    body: { department_id?: string | null; targets: BftSearchTargetInput[] }
+  ): Promise<BftSwarmSettings>;
   /** Set the default Task model to one of `task_model.models`' choices. */
   setSwarmTaskModel(
     org: string,
@@ -3075,13 +3549,14 @@ export interface BftApi {
     project: string,
     pluginId: string,
     connectionId: string,
-    configValues?: Record<string, string>
+    options?: BftConnectPluginOptions
   ): Promise<BftConnectionStart>;
   disconnectPlugin(
     org: string,
     project: string,
     pluginId: string,
-    connectionId: string
+    connectionId: string,
+    bindingId?: string
   ): Promise<{ notice: string }>;
   swarmConnections(
     org: string,
@@ -3098,7 +3573,7 @@ export interface BftApi {
   createFeishuConnect(
     org: string,
     project: string,
-    connect: { app_id: string; app_name: string }
+    connect: { app_id: string; app_name: string; member_scope?: BftMemberScope }
   ): Promise<{ notice: string }>;
   /**
    * Connects a Lark app by its App ID and App Secret, with the Verification
@@ -3112,6 +3587,7 @@ export interface BftApi {
       app_secret: string;
       verification_token: string;
       encrypt_key: string;
+      member_scope?: BftMemberScope;
     }
   ): Promise<{ notice: string }>;
   /**
@@ -3123,11 +3599,15 @@ export interface BftApi {
     project: string,
     connectId?: string
   ): Promise<BftLarkRegistration>;
-  /** Asks once whether the scan made the app; it is connected when it did. */
+  /**
+   * Asks once whether the scan made the app; it is connected when it did. A
+   * new app's connect gets `memberScope`; a scan that updates a connect sends none.
+   */
   pollLarkRegistration(
     org: string,
     project: string,
-    registration: string
+    registration: string,
+    memberScope?: BftMemberScope
   ): Promise<BftLarkRegistrationPoll>;
   /** Begins making a Feishu app by a scan, as `beginLarkRegistration`. */
   beginFeishuRegistration(
@@ -3139,7 +3619,8 @@ export interface BftApi {
   pollFeishuRegistration(
     org: string,
     project: string,
-    registration: string
+    registration: string,
+    memberScope?: BftMemberScope
   ): Promise<BftLarkRegistrationPoll>;
   /** Connects a Telegram bot by its BotFather token. */
   createTelegramConnect(
@@ -3159,6 +3640,12 @@ export interface BftApi {
     org: string,
     project: string,
     connect: { app_id: string; app_secret: string }
+  ): Promise<{ notice: string }>;
+  /** Connects a WeCom AI bot by its Bot ID and Secret. */
+  createWecomConnect(
+    org: string,
+    project: string,
+    connect: { bot_id: string; secret: string }
   ): Promise<{ notice: string }>;
   /** Replaces the shortcuts of a QQ bot's command menu; QQ gets the menu at once. */
   updateQqMenu(
@@ -3182,6 +3669,37 @@ export interface BftApi {
     connectId: string,
     enabled: boolean
   ): Promise<{ notice: string }>;
+  /** Says whether a Slack, Feishu or Lark connect's people are the organization's or external. */
+  setMemberScope(
+    org: string,
+    project: string,
+    provider: BftMemberProvider,
+    connectId: string,
+    scope: BftMemberScope
+  ): Promise<{ notice: string }>;
+  /** Lets one person of an external connect have the agents use the swarm's computers. */
+  grantMemberAccess(
+    org: string,
+    project: string,
+    provider: BftMemberProvider,
+    connectId: string,
+    grant: { subject: string; expires_in_days: BftGrantDays }
+  ): Promise<{ notice: string }>;
+  revokeMemberAccess(
+    org: string,
+    project: string,
+    provider: BftMemberProvider,
+    connectId: string,
+    subject: string
+  ): Promise<{ notice: string }>;
+  /** People of one Slack, Feishu or Lark connect whose name, email or id matches `query`. */
+  connectPeople(
+    org: string,
+    project: string,
+    provider: BftMemberProvider,
+    connectId: string,
+    query: string
+  ): Promise<BftConnectPeople>;
   setImConnectEnabled(
     org: string,
     project: string,
@@ -3247,15 +3765,23 @@ export interface BftApi {
     project: string,
     signal?: AbortSignal
   ): Promise<BftSwarmSkills>;
+  /** The page; with `station`, the usage of that still.fail station only. */
   swarmStillfail(
     org: string,
     project: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    station?: string
   ): Promise<BftSwarmStillfail>;
   /** A new still.fail station's line, `comma <server> <token>`, pasted into the station's Comma connect. */
   stillfailLine(org: string, project: string): Promise<{ line: string }>;
   /** Removes the swarm's still.fail stations and what they sent. */
   removeStillfail(org: string, project: string): Promise<{ notice: string }>;
+  /** Removes one still.fail station of the swarm and what it sent. */
+  removeStillfailStation(
+    org: string,
+    project: string,
+    station: string
+  ): Promise<{ notice: string }>;
   swarmSkill(
     org: string,
     project: string,
@@ -3338,8 +3864,15 @@ export interface BftApi {
     project: string,
     draft: BftMeetingSettingsDraft
   ): Promise<unknown>;
-  /** The daily brief's settings, members and last 7 days (owner/admin). */
-  dailyBrief(org: string, signal?: AbortSignal): Promise<BftDailyBrief>;
+  /**
+   * One Agent Swarm's daily brief (`project`; the organization's current one
+   * when `null`): settings, members and last 7 days (owner/admin).
+   */
+  dailyBrief(
+    org: string,
+    project: string | null,
+    signal?: AbortSignal
+  ): Promise<BftDailyBrief>;
   /**
    * `prepare_slack_app` asks again for the bot App's Slack access while the
    * brief stays on; turning it on always asks.
@@ -3348,8 +3881,26 @@ export interface BftApi {
     org: string,
     settings: BftDailyBriefSettings
   ): Promise<BftDailyBriefSaved>;
-  /** Links organization members to their Slack users by email. */
-  syncDailyBriefMembers(org: string): Promise<BftDailyBriefSync>;
+  /** The public groups or channels one bot can post the team brief to. */
+  dailyBriefChannels(
+    org: string,
+    bot: { project_id: string; provider: BftDailyBriefProvider; connect_id: string },
+    signal?: AbortSignal
+  ): Promise<BftDailyBriefChannels>;
+  /**
+   * Links organization members to their Slack, Feishu or Lark users by email,
+   * through one Agent Swarm's bot.
+   */
+  syncDailyBriefMembers(
+    org: string,
+    project: string | null
+  ): Promise<BftDailyBriefSync>;
+  /** Sends a member's one brief through another Agent Swarm's bot. */
+  setDailyBriefMemberSwarm(
+    org: string,
+    member: string,
+    project: string
+  ): Promise<unknown>;
   /** Sends one member's brief on the delivery worker's next minute. */
   requestDailyBrief(org: string, member: string): Promise<unknown>;
   /** Router Agents and their Slack sources (owner/admin). */
@@ -3408,6 +3959,47 @@ export interface BftApi {
     refs: string[],
     nav: BftTriageNav | null
   ): Promise<BftTriageReveal>;
+  /** Router Agents and their Feishu and Lark connects (owner/admin). */
+  larkTriage(org: string, signal?: AbortSignal): Promise<BftLarkTriageOverview>;
+  /** The bot's group chats, or the one chat a pasted `oc_` ID names. */
+  larkTriageChats(
+    org: string,
+    agent: string,
+    connect: string,
+    chatId: string | null
+  ): Promise<BftLarkTriageChats>;
+  setLarkTriageSource(
+    org: string,
+    agent: string,
+    connect: string,
+    enabled: boolean
+  ): Promise<string>;
+  setLarkTriageChat(
+    org: string,
+    agent: string,
+    connect: string,
+    chat: string,
+    enabled: boolean
+  ): Promise<string>;
+  /** A chat another Swarm watches answers 409 `chat_already_claimed`. */
+  addLarkTriageChats(
+    org: string,
+    agent: string,
+    connect: string,
+    chats: { id: string; name: string | null }[]
+  ): Promise<string>;
+  larkTriageActivity(
+    org: string,
+    agent: string,
+    filter: BftLarkTriageFilter,
+    signal?: AbortSignal
+  ): Promise<BftLarkTriageActivity>;
+  /** One batch's message text, audited per message before it is returned. */
+  revealLarkTriageText(
+    org: string,
+    agent: string,
+    batch: string
+  ): Promise<BftLarkTriageReveal>;
   triageHeatmap(
     org: string,
     agent: string,
@@ -3481,6 +4073,11 @@ export interface BftApi {
   revokeRunnerKey(org: string, keyId: string): Promise<{ id: string }>;
   removeRunner(org: string, runnerId: string): Promise<{ id: string }>;
   settingsGeneral(org: string, signal?: AbortSignal): Promise<BftSettingsGeneral>;
+  teamsBillingPortal(org: string): Promise<{ url: string }>;
+  teamsBillingRenew(
+    org: string,
+    renewal: TeamsBillingRenewal
+  ): Promise<{ url: string }>;
   updateSettingsGeneral(
     org: string,
     changes: Partial<BftSettingsGeneral["organization"]>
@@ -3589,16 +4186,25 @@ export interface BftApi {
   approveCliLogin(code: string, orgIds: string[]): Promise<BftCliLogin>;
   denyCliLogin(code: string): Promise<BftCliLogin>;
   /** The first-run wizard; reading it creates the user's own Agent Swarm if needed. */
-  wizard(signal?: AbortSignal): Promise<BftWizard>;
-  wizardIntegrations(signal?: AbortSignal): Promise<BftWizardIntegrations>;
+  wizard(signal?: AbortSignal, org?: string): Promise<BftWizard>;
+  wizardIntegrations(
+    signal?: AbortSignal,
+    org?: string
+  ): Promise<BftWizardIntegrations>;
   /** Saves the grants and moves on to the profile step. */
-  saveWizardCapabilities(capabilities: Record<string, boolean>): Promise<BftWizard>;
+  saveWizardCapabilities(
+    capabilities: Record<string, boolean>,
+    org?: string
+  ): Promise<BftWizard>;
   /** Captures the profile and moves on to the integrations step. */
-  saveWizardProfile(): Promise<BftWizard>;
+  saveWizardProfile(org?: string): Promise<BftWizard>;
   /** The Composio Connect Link for one toolkit. */
-  connectWizardToolkit(toolkit: string): Promise<{ redirect_url: string }>;
-  completeWizard(): Promise<BftWizardFinish>;
-  skipWizard(): Promise<BftWizardFinish>;
+  connectWizardToolkit(
+    toolkit: string,
+    org?: string
+  ): Promise<{ redirect_url: string }>;
+  completeWizard(org?: string): Promise<BftWizardFinish>;
+  skipWizard(org?: string): Promise<BftWizardFinish>;
 }
 
 export const apiBasePath = "/dashboard/api/v1";
@@ -3606,6 +4212,10 @@ export const apiBasePath = "/dashboard/api/v1";
 const orgPath = (org: string) => `/orgs/${encodeURIComponent(org)}`;
 const cliLoginPath = (code: string, rest = "") =>
   `/cli/device-login/${encodeURIComponent(code)}${rest}`;
+const onboardingPath = (rest: string, org?: string) =>
+  org !== undefined
+    ? `/onboarding${rest}?org=${encodeURIComponent(org)}`
+    : `/onboarding${rest}`;
 
 /** `a=1&b=2` from the set parameters; empty and null ones are left out. */
 const searchOf = (params: Record<string, string | null>) =>
@@ -3628,6 +4238,10 @@ interface Write<T> {
   body?: unknown;
   changes?: boolean | ((data: T) => boolean);
 }
+
+/** `?query=…` for a non-blank Agent Swarms filter, else nothing. */
+const queryString = (query: string | undefined) =>
+  query?.trim() ? `?${new URLSearchParams({ query: query.trim() }).toString()}` : "";
 
 export function createBftApi(options: BftApiOptions = {}): BftApi {
   const fetchImpl = options.fetch ?? ((...args) => globalThis.fetch(...args));
@@ -3737,6 +4351,18 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
     swarmPath(org, project, `/plugins/${encodeURIComponent(pluginId)}${rest}`);
   const connectionsPath = (org: string, project: string, rest = "") =>
     swarmPath(org, project, `/connections${rest}`);
+  const memberPath = (
+    org: string,
+    project: string,
+    provider: BftMemberProvider,
+    connectId: string,
+    rest: string
+  ) =>
+    connectionsPath(
+      org,
+      project,
+      `/${provider}/${encodeURIComponent(connectId)}${rest}`
+    );
   const meetingsPath = (org: string, project: string, rest = "") =>
     `${orgPath(org)}/meetings/${encodeURIComponent(project)}${rest}`;
   const triagePath = (
@@ -3746,6 +4372,14 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
   ) => {
     const search = searchOf(params);
     return `${orgPath(org)}/triage${rest}${search ? `?${search}` : ""}`;
+  };
+  const larkTriagePath = (
+    org: string,
+    rest = "",
+    params: Record<string, string | null> = {}
+  ) => {
+    const search = searchOf(params);
+    return `${orgPath(org)}/lark-triage${rest}${search ? `?${search}` : ""}`;
   };
   const dataPolicyPath = (org: string, project: string, rest = "") =>
     `${orgPath(org)}/data-policy/${encodeURIComponent(project)}${rest}`;
@@ -3792,6 +4426,26 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
     },
     createSwarm: (org, swarm) =>
       send("POST", `${orgPath(org)}/projects`, swarmSchema, swarm),
+    createDepartment: (org, body, query) =>
+      send(
+        "POST",
+        `${orgPath(org)}/departments${queryString(query)}`,
+        swarmsPageSchema,
+        body
+      ),
+    updateDepartment: (org, departmentId, body, query) =>
+      send(
+        "PATCH",
+        `${orgPath(org)}/departments/${encodeURIComponent(departmentId)}${queryString(query)}`,
+        swarmsPageSchema,
+        body
+      ),
+    deleteDepartment: (org, departmentId, query) =>
+      send(
+        "DELETE",
+        `${orgPath(org)}/departments/${encodeURIComponent(departmentId)}${queryString(query)}`,
+        swarmsPageSchema
+      ),
     swarmAgents: (org, project, signal) =>
       getJson(swarmPath(org, project, "/agents"), swarmAgentsSchema, signal),
     swarmAgent: (org, project, agentId, signal) =>
@@ -3956,6 +4610,20 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       send("PATCH", swarmPath(org, project, "/settings"), swarmSettingsSchema, {
         name,
       }),
+    setSwarmDepartment: (org, project, departmentId) =>
+      send(
+        "PUT",
+        swarmPath(org, project, "/settings/department"),
+        swarmSettingsSchema,
+        { department_id: departmentId }
+      ),
+    setSwarmSearchGrants: (org, project, body) =>
+      send(
+        "PUT",
+        swarmPath(org, project, "/settings/search-grants"),
+        swarmSettingsSchema,
+        body
+      ),
     setSwarmTaskModel: (org, project, model) =>
       send(
         "PUT",
@@ -4014,8 +4682,14 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       id === null
         ? send("POST", swarmPath(org, project, "/plugins"), noticeSchema, plugin)
         : send("PUT", pluginPath(org, project, id), noticeSchema, plugin),
-    connectPlugin: (org, project, pluginId, connectionId, configValues) =>
-      send(
+    connectPlugin: (org, project, pluginId, connectionId, connectOptions) => {
+      const body: Record<string, unknown> = {};
+      if (connectOptions?.action) body.action = connectOptions.action;
+      if (connectOptions?.configValues)
+        body.config_values = connectOptions.configValues;
+      if (connectOptions?.attemptId) body.attempt_id = connectOptions.attemptId;
+      if (connectOptions?.bindingId) body.binding_id = connectOptions.bindingId;
+      return send(
         "POST",
         pluginPath(
           org,
@@ -4024,9 +4698,10 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
           `/connections/${encodeURIComponent(connectionId)}/connect`
         ),
         connectionStartSchema,
-        configValues ? { config_values: configValues } : undefined
-      ),
-    disconnectPlugin: (org, project, pluginId, connectionId) =>
+        Object.keys(body).length > 0 ? body : undefined
+      );
+    },
+    disconnectPlugin: (org, project, pluginId, connectionId, bindingId) =>
       send(
         "POST",
         pluginPath(
@@ -4035,7 +4710,8 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
           pluginId,
           `/connections/${encodeURIComponent(connectionId)}/disconnect`
         ),
-        noticeSchema
+        noticeSchema,
+        bindingId ? { binding_id: bindingId } : undefined
       ),
     swarmConnections: (org, project, signal) =>
       getJson(connectionsPath(org, project), swarmConnectionsSchema, signal),
@@ -4061,12 +4737,12 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         connectId ? { connect_id: connectId } : {},
         false
       ),
-    pollLarkRegistration: (org, project, registration) =>
+    pollLarkRegistration: (org, project, registration, memberScope) =>
       send(
         "POST",
         connectionsPath(org, project, "/lark/registration/poll"),
         larkRegistrationPollSchema,
-        { registration },
+        memberScope ? { registration, member_scope: memberScope } : { registration },
         (data) => data.state === "connected"
       ),
     beginFeishuRegistration: (org, project, connectId) =>
@@ -4077,12 +4753,12 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         connectId ? { connect_id: connectId } : {},
         false
       ),
-    pollFeishuRegistration: (org, project, registration) =>
+    pollFeishuRegistration: (org, project, registration, memberScope) =>
       send(
         "POST",
         connectionsPath(org, project, "/feishu/registration/poll"),
         larkRegistrationPollSchema,
-        { registration },
+        memberScope ? { registration, member_scope: memberScope } : { registration },
         (data) => data.state === "connected"
       ),
     createTelegramConnect: (org, project, connect) =>
@@ -4100,6 +4776,8 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       ),
     createQqConnect: (org, project, connect) =>
       send("POST", connectionsPath(org, project, "/qq"), noticeSchema, connect),
+    createWecomConnect: (org, project, connect) =>
+      send("POST", connectionsPath(org, project, "/wecom"), noticeSchema, connect),
     updateQqMenu: (org, project, connectId, items) =>
       send(
         "PUT",
@@ -4119,6 +4797,39 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         ),
         noticeSchema,
         { enabled }
+      ),
+    setMemberScope: (org, project, provider, connectId, scope) =>
+      send(
+        "PUT",
+        memberPath(org, project, provider, connectId, "/member-scope"),
+        noticeSchema,
+        {
+          scope,
+        }
+      ),
+    grantMemberAccess: (org, project, provider, connectId, grant) =>
+      send(
+        "POST",
+        memberPath(org, project, provider, connectId, "/member-grants"),
+        noticeSchema,
+        grant
+      ),
+    revokeMemberAccess: (org, project, provider, connectId, subject) =>
+      send(
+        "DELETE",
+        memberPath(
+          org,
+          project,
+          provider,
+          connectId,
+          `/member-grants/${encodeURIComponent(subject)}`
+        ),
+        noticeSchema
+      ),
+    connectPeople: (org, project, provider, connectId, query) =>
+      getJson(
+        memberPath(org, project, provider, connectId, `/people?${searchOf({ query })}`),
+        connectPeopleSchema
       ),
     setImConnectEnabled: (org, project, connectId, enabled) =>
       send(
@@ -4221,12 +4932,26 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       send("DELETE", connectionsPath(org, project, "/tailnet"), tailnetWriteSchema),
     swarmSkills: (org, project, signal) =>
       getJson(swarmPath(org, project, "/skills"), swarmSkillsSchema, signal),
-    swarmStillfail: (org, project, signal) =>
-      getJson(swarmPath(org, project, "/stillfail"), swarmStillfailSchema, signal),
+    swarmStillfail: (org, project, signal, station) =>
+      getJson(
+        swarmPath(
+          org,
+          project,
+          station ? `/stillfail?device_id=${encodeURIComponent(station)}` : "/stillfail"
+        ),
+        swarmStillfailSchema,
+        signal
+      ),
     stillfailLine: (org, project) =>
       send("POST", swarmPath(org, project, "/stillfail/line"), stillfailLineSchema),
     removeStillfail: (org, project) =>
       send("DELETE", swarmPath(org, project, "/stillfail/stations"), noticeSchema),
+    removeStillfailStation: (org, project, station) =>
+      send(
+        "DELETE",
+        swarmPath(org, project, `/stillfail/stations/${encodeURIComponent(station)}`),
+        noticeSchema
+      ),
     swarmSkill: (org, project, skillId, signal) =>
       getJson(
         swarmPath(org, project, `/skills/${encodeURIComponent(skillId)}`),
@@ -4320,8 +5045,12 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       ).then((detail) => detail.report),
     saveMeetings: (org, project, draft) =>
       send("PUT", meetingsPath(org, project, "/settings"), z.unknown(), draft),
-    dailyBrief: (org, signal) =>
-      getJson(`${orgPath(org)}/daily-brief`, dailyBriefSchema, signal),
+    dailyBrief: (org, project, signal) =>
+      getJson(
+        `${orgPath(org)}/daily-brief${project ? `?${searchOf({ project_id: project })}` : ""}`,
+        dailyBriefSchema,
+        signal
+      ),
     saveDailyBrief: (org, settings) =>
       send(
         "PUT",
@@ -4329,8 +5058,26 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         dailyBriefSavedSchema,
         settings
       ),
-    syncDailyBriefMembers: (org) =>
-      send("POST", `${orgPath(org)}/daily-brief/members/sync`, dailyBriefSyncSchema),
+    dailyBriefChannels: (org, bot, signal) =>
+      getJson(
+        `${orgPath(org)}/daily-brief/channels?${searchOf(bot)}`,
+        dailyBriefChannelsSchema,
+        signal
+      ),
+    syncDailyBriefMembers: (org, project) =>
+      send(
+        "POST",
+        `${orgPath(org)}/daily-brief/members/sync`,
+        dailyBriefSyncSchema,
+        project ? { project_id: project } : undefined
+      ),
+    setDailyBriefMemberSwarm: (org, member, project) =>
+      send(
+        "PUT",
+        `${orgPath(org)}/daily-brief/members/${encodeURIComponent(member)}`,
+        dailyBriefMemberSwarmSchema,
+        { project_id: project }
+      ),
     requestDailyBrief: (org, member) =>
       send(
         "POST",
@@ -4398,6 +5145,56 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         { agent, refs, ...(nav ? { activity: nav } : {}) },
         false
       ).then((data) => data.messages),
+    larkTriage: (org, signal) =>
+      getJson(larkTriagePath(org), larkTriageOverviewSchema, signal),
+    larkTriageChats: (org, agent, connect, chatId) =>
+      getJson(
+        larkTriagePath(org, "/chats", { agent, connect, chat_id: chatId }),
+        larkTriageChatsSchema
+      ),
+    setLarkTriageSource: (org, agent, connect, enabled) =>
+      send(
+        "PUT",
+        larkTriagePath(org, `/sources/${encodeURIComponent(connect)}`),
+        triageNoticeSchema,
+        { agent, enabled }
+      ).then((data) => data.notice),
+    setLarkTriageChat: (org, agent, connect, chat, enabled) =>
+      send(
+        "PUT",
+        larkTriagePath(
+          org,
+          `/sources/${encodeURIComponent(connect)}/chats/${encodeURIComponent(chat)}`
+        ),
+        triageNoticeSchema,
+        { agent, enabled }
+      ).then((data) => data.notice),
+    addLarkTriageChats: (org, agent, connect, chats) =>
+      send(
+        "POST",
+        larkTriagePath(org, `/sources/${encodeURIComponent(connect)}/chats`),
+        triageNoticeSchema,
+        { agent, chats }
+      ).then((data) => data.notice),
+    larkTriageActivity: (org, agent, filter, signal) =>
+      getJson(
+        larkTriagePath(org, "/activity", {
+          agent,
+          kind: filter.kind,
+          chat: filter.chat,
+          cursor: filter.cursor,
+        }),
+        larkTriageActivitySchema,
+        signal
+      ),
+    revealLarkTriageText: (org, agent, batch) =>
+      send(
+        "POST",
+        larkTriagePath(org, "/reveal"),
+        larkTriageRevealSchema,
+        { agent, batch },
+        false
+      ),
     triageHeatmap: (org, agent, signal) =>
       getJson(triagePath(org, "/heatmap", { agent }), triageHeatmapSchema, signal),
     triageProcessing: (org, agent, ref, signal) =>
@@ -4452,6 +5249,10 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         case "supervisors":
           return send("PATCH", dataPolicyPath(org, project), dataPolicySchema, {
             supervisors: change.supervisors,
+          });
+        case "memory_writers":
+          return send("PATCH", dataPolicyPath(org, project), dataPolicySchema, {
+            memory_writers: { restricted: change.restricted, writers: change.writers },
           });
         case "classify":
           return send(
@@ -4536,10 +5337,35 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         runnersPath(org, `/${encodeURIComponent(runnerId)}`),
         removedRunnerSchema
       ),
-    settingsGeneral: (org, signal) =>
-      getJson(settingsPath(org, "/general"), settingsGeneralSchema, signal),
+    settingsGeneral: (org, signal) => {
+      const query = new URLSearchParams(
+        typeof window === "undefined" ? "" : window.location.search
+      );
+      const order = query.get("m2_order");
+      const suffix =
+        order === null ? "" : `?${new URLSearchParams({ m2_order: order })}`;
+      return getJson(
+        settingsPath(org, `/general${suffix}`),
+        settingsGeneralSchema,
+        signal
+      );
+    },
+    teamsBillingPortal: (org) =>
+      send(
+        "POST",
+        settingsPath(org, "/billing/portal"),
+        z.object({ url: z.string() }),
+        {}
+      ),
     updateSettingsGeneral: (org, changes) =>
       send("PATCH", settingsPath(org, "/general"), settingsGeneralSchema, changes),
+    teamsBillingRenew: (org, renewal) =>
+      send(
+        "POST",
+        settingsPath(org, "/billing/renew"),
+        z.object({ url: z.string() }),
+        typeof renewal === "object" ? renewal : { seats: renewal }
+      ),
     revokeCliSession: (org, sessionId) =>
       send(
         "DELETE",
@@ -4624,21 +5450,25 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
     approveCliLogin: (code, orgIds) =>
       send("POST", cliLoginPath(code, "/approve"), cliLoginSchema, { org_ids: orgIds }),
     denyCliLogin: (code) => send("POST", cliLoginPath(code, "/deny"), cliLoginSchema),
-    wizard: (signal) => getJson("/onboarding", wizardSchema, signal),
-    wizardIntegrations: (signal) =>
-      getJson("/onboarding/integrations", wizardIntegrationsSchema, signal),
-    saveWizardCapabilities: (capabilities) =>
-      send("PUT", "/onboarding/capabilities", wizardSchema, { capabilities }),
-    saveWizardProfile: () => send("POST", "/onboarding/profile", wizardSchema),
-    connectWizardToolkit: (toolkit) =>
+    wizard: (signal, org) => getJson(onboardingPath("", org), wizardSchema, signal),
+    wizardIntegrations: (signal, org) =>
+      getJson(onboardingPath("/integrations", org), wizardIntegrationsSchema, signal),
+    saveWizardCapabilities: (capabilities, org) =>
+      send("PUT", onboardingPath("/capabilities", org), wizardSchema, {
+        capabilities,
+      }),
+    saveWizardProfile: (org) =>
+      send("POST", onboardingPath("/profile", org), wizardSchema),
+    connectWizardToolkit: (toolkit, org) =>
       send(
         "POST",
-        "/onboarding/connect",
+        onboardingPath("/connect", org),
         z.object({ redirect_url: z.string() }),
         { toolkit },
         false
       ),
-    completeWizard: () => send("POST", "/onboarding/complete", wizardFinishSchema),
-    skipWizard: () => send("POST", "/onboarding/skip", wizardFinishSchema),
+    completeWizard: (org) =>
+      send("POST", onboardingPath("/complete", org), wizardFinishSchema),
+    skipWizard: (org) => send("POST", onboardingPath("/skip", org), wizardFinishSchema),
   };
 }

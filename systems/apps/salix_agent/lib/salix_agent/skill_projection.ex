@@ -123,42 +123,87 @@ defmodule SalixAgent.SkillProjection do
   def prompt_section(ctx) do
     case materialize(ctx) do
       {:ok, projection} ->
-        render_prompt_section(projection.skills)
+        render_prompt_section(projection.skills, role: value(ctx, :role))
 
       {:error, _reason} ->
         ""
     end
   end
 
-  @doc false
-  @spec render_prompt_section([map()]) :: String.t()
-  def render_prompt_section([]), do: ""
+  @doc "Render only runtime-selected built-in packages, excluding custom overrides."
+  def builtin_prompt_section(%{skills: skills}) do
+    skills
+    |> Enum.filter(&(&1[:builtin_package?] == true))
+    |> render_prompt_section()
+  end
 
-  def render_prompt_section(skills) when is_list(skills) do
-    regular = Enum.reject(skills, &(&1["activation"] == "per-message"))
+  def builtin_prompt_section(_projection), do: ""
+
+  @doc false
+  @spec render_prompt_section([map()], keyword()) :: String.t()
+  def render_prompt_section(skills, opts \\ [])
+  def render_prompt_section([], _opts), do: ""
+
+  def render_prompt_section(skills, opts) when is_list(skills) do
+    role = normalize_role(Keyword.get(opts, :role))
+
+    regular =
+      skills
+      |> Enum.reject(&(&1["activation"] == "per-message"))
+      |> Enum.filter(&role_visible?(&1, role))
+
     render_regular_prompt_section(regular)
+  end
+
+  defp normalize_role(role) when is_atom(role) and not is_nil(role),
+    do: role |> Atom.to_string() |> normalize_role()
+
+  defp normalize_role(role) when is_binary(role) do
+    case String.trim(role) do
+      "" -> nil
+      trimmed -> String.downcase(trimmed)
+    end
+  end
+
+  defp normalize_role(_role), do: nil
+
+  defp role_visible?(_skill, nil), do: true
+
+  defp role_visible?(skill, role) when is_map(skill) do
+    case skill["roles"] do
+      roles when is_list(roles) and roles != [] -> role in roles
+      _ -> true
+    end
   end
 
   defp render_regular_prompt_section([]), do: ""
 
   defp render_regular_prompt_section(skills) do
     [
-      "Available skills are exposed as session runtime files. Read a skill before applying it.",
+      "Available skills are exposed as session runtime files. Read a skill before applying it: " <>
+        "#{skill_path("<skill_id>", "SKILL.md")}.",
       "",
       "Skill index: #{@index_path}",
       "",
       skills
       |> Enum.map(fn skill ->
-        [
-          "- #{skill["name"]} (#{skill["skill_id"]})",
-          "  description: #{skill["description"]}",
-          "  location: #{skill_path(skill["skill_id"], "SKILL.md")}"
-        ]
-        |> Enum.join("\n")
+        label =
+          if skill["name"] == skill["skill_id"],
+            do: skill["skill_id"],
+            else: "#{skill["skill_id"]} (#{skill["name"]})"
+
+        "- #{label}: #{prompt_summary(skill)}"
       end)
       |> Enum.join("\n")
     ]
     |> Enum.join("\n")
+  end
+
+  defp prompt_summary(skill) do
+    case skill["prompt_summary"] do
+      summary when is_binary(summary) and summary != "" -> summary
+      _ -> skill["description"]
+    end
   end
 
   @doc "Return all virtual file paths visible under a prefix."
@@ -187,6 +232,37 @@ defmodule SalixAgent.SkillProjection do
 
         %{"kind" => "file", "entry" => entry} ->
           SkillStore.read_entry(agent_id, entry)
+
+        _ ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  @doc "Whether this exact path selects a runtime-owned builtin package file."
+  def builtin_file?(ctx, path) when is_binary(path) do
+    with true <- matches?(path),
+         {:ok, projection} <- materialize(ctx),
+         %{"kind" => "file", :builtin_package? => true} <- Map.get(projection.paths, path) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  @doc "Read bytes and their audience from the same selected projection entry."
+  def read_with_label(ctx, path) do
+    with {:ok, projection} <- materialize(ctx),
+         {:ok, agent_id} <- required(ctx, :agent_id) do
+      case Map.get(projection.paths, clean(path)) do
+        %{"kind" => "index", "body" => body} ->
+          {:ok, body, ["agent_private"]}
+
+        %{"kind" => "file", "entry" => entry} = file ->
+          with {:ok, body} <- SkillStore.read_entry(agent_id, entry) do
+            label = if file[:builtin_package?] == true, do: ["public"], else: ["agent_private"]
+            {:ok, body, label}
+          end
 
         _ ->
           {:error, :not_found}
@@ -357,7 +433,7 @@ defmodule SalixAgent.SkillProjection do
   defp build_projection(states, ctx) do
     with {:ok, builtin} <- BuiltinSkills.snapshot() do
       persisted = Enum.map(states, &without_stored_builtins/1)
-      {:ok, do_build_projection([builtin | persisted], ctx)}
+      {:ok, do_build_projection([{builtin, true} | Enum.map(persisted, &{&1, false})], ctx)}
     end
   end
 
@@ -365,7 +441,8 @@ defmodule SalixAgent.SkillProjection do
     {skills, _seen_ids, _seen_names} =
       states
       |> Enum.reverse()
-      |> Enum.reduce({[], MapSet.new(), MapSet.new()}, fn state, {skills, ids, names} ->
+      |> Enum.reduce({[], MapSet.new(), MapSet.new()}, fn {state, builtin?},
+                                                          {skills, ids, names} ->
         state.skills
         |> Map.values()
         |> Enum.filter(&SalixAgent.PluginPolicy.visible_skill?(ctx, &1["skill_id"]))
@@ -375,6 +452,7 @@ defmodule SalixAgent.SkillProjection do
             skill
             |> Map.put("scope", state.scope)
             |> Map.put("layer", state.scope["layer"])
+            |> Map.put(:builtin_package?, builtin?)
 
           skill_id = skill["skill_id"]
           name = SkillStore.normalize_name(skill["name"])
@@ -399,6 +477,7 @@ defmodule SalixAgent.SkillProjection do
           # A path names its skill, not a copy of it: copying the projection
           # out of ETS would copy the skill once for each of its files.
           Map.put(acc, skill_path(skill["skill_id"], rel_path), %{
+            :builtin_package? => skill[:builtin_package?],
             "kind" => "file",
             "skill_id" => skill["skill_id"],
             "editable" => skill["editable"] == true,
@@ -409,7 +488,7 @@ defmodule SalixAgent.SkillProjection do
       end)
 
     %{
-      revision: projection_revision(states),
+      revision: projection_revision(Enum.map(states, &elem(&1, 0))),
       skills: skills,
       paths: paths
     }

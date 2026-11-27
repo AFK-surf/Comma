@@ -1,0 +1,69 @@
+defmodule CommaWeb.LiveStatusEndpoints do
+  @moduledoc false
+  import Plug.Conn
+
+  def list(conn, group_id) do
+    with %{comma_user: user, comma_session: session} <- conn.assigns,
+         {:ok, result} <- Comma.LiveStatuses.list_active_authorized(user, session, group_id) do
+      json(conn, 200, result)
+    else
+      {:error, :forbidden} ->
+        json(conn, 403, %{error: "forbidden"})
+
+      {:error, :not_found} ->
+        json(conn, 404, %{error: "not_found"})
+
+      {:error, reason} when reason in [:revoked, :expired, :invalid_token, :disabled] ->
+        json(conn, 401, %{error: "unauthorized"})
+
+      {:error, _} ->
+        json(conn, 503, %{error: "live_status_unavailable"})
+
+      _ ->
+        json(conn, 401, %{error: "unauthorized"})
+    end
+  end
+
+  def register(conn, kind) do
+    with %{comma_user: user, comma_session: session} <- conn.assigns,
+         {:ok, result} <- Comma.LiveStatuses.register(user, session, kind, conn.body_params) do
+      json(conn, 200, result)
+    else
+      {:error, :push_unavailable} -> json(conn, 503, %{error: "push_unavailable"})
+      {:error, :forbidden} -> json(conn, 403, %{error: "forbidden"})
+      {:error, :not_found} -> json(conn, 404, %{error: "not_found"})
+      {:error, _} -> json(conn, 422, %{error: "invalid_push_registration"})
+      _ -> json(conn, 401, %{error: "unauthorized"})
+    end
+  end
+
+  def unregister(conn, id) do
+    conn = fetch_query_params(conn)
+    reason = conn.query_params["reason"]
+
+    with %{comma_session: session} <- conn.assigns,
+         true <-
+           reason in [
+             nil,
+             "dismissed",
+             "expired",
+             "finished",
+             "stopped",
+             "disabled",
+             "authority_changed"
+           ],
+         :ok <- Comma.LiveStatuses.unregister(session, id, reason) do
+      send_resp(conn, 204, "")
+    else
+      false -> json(conn, 422, %{error: "invalid_notification_reason"})
+      _ -> json(conn, 404, %{error: "not_found"})
+    end
+  end
+
+  defp json(conn, status, body) do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_content_type("application/json")
+    |> send_resp(status, Jason.encode!(body))
+  end
+end

@@ -11,13 +11,23 @@ final class CommaComputerUseSocketServer {
     private let stopLock = NSLock()
     private let activeConnectionsLock = NSLock()
     private var activeConnections: Set<Int32> = []
+    /// The file this server published at `socketPath`, while it is published. Guarded by `stopLock`.
+    private var published: (device: dev_t, inode: ino_t)?
+    private var ownershipTimer: DispatchSourceTimer?
+    private let ownershipInterval: DispatchTimeInterval
 
     var onRequest: (@MainActor (CommaComputerUseRequest) async -> CommaComputerUseResponse)?
     var onShutdownRequested: (() -> Void)?
+    /// The socket path no longer names this server's socket: another daemon took it, or it was removed. No connector
+    /// can reach this process again. Called once, off the main thread.
+    var onSocketLost: (() -> Void)?
 
-    init(socketPath: String, authToken: String) {
+    /// `ownershipInterval`: how often the path is checked (one `stat`), on a utility queue that a busy main thread
+    /// does not delay.
+    init(socketPath: String, authToken: String, ownershipInterval: DispatchTimeInterval = .seconds(2)) {
         self.socketPath = socketPath
         self.authToken = authToken
+        self.ownershipInterval = ownershipInterval
     }
 
     func start() throws {
@@ -44,6 +54,7 @@ final class CommaComputerUseSocketServer {
         let pathBytes = stagingPath.utf8CString
         guard socketPath.utf8CString.count <= 104, pathBytes.count <= 104 else {
             close(serverSocket)
+            serverSocket = -1
             throw CommaSocketError("Socket path is too long")
         }
         withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
@@ -60,30 +71,85 @@ final class CommaComputerUseSocketServer {
         }
 
         guard bindResult == 0 else {
+            let bindError = errno
             close(serverSocket)
-            throw CommaSocketError("Failed to bind socket: \(String(cString: strerror(errno)))")
+            serverSocket = -1
+            throw CommaSocketError("Failed to bind socket: \(String(cString: strerror(bindError)))")
         }
         guard chmod(stagingPath, S_IRUSR | S_IWUSR) == 0 else {
+            let chmodError = errno
             close(serverSocket)
+            serverSocket = -1
             unlink(stagingPath)
-            throw CommaSocketError("Failed to chmod socket: \(String(cString: strerror(errno)))")
+            throw CommaSocketError("Failed to chmod socket: \(String(cString: strerror(chmodError)))")
         }
 
         guard listen(serverSocket, 5) == 0 else {
             close(serverSocket)
+            serverSocket = -1
             unlink(stagingPath)
             throw CommaSocketError("Failed to listen on socket")
         }
-        guard rename(stagingPath, socketPath) == 0 else {
+        // Read the identity from the private name: after the rename, the path can already name another daemon's socket.
+        var info = stat()
+        guard lstat(stagingPath, &info) == 0 else {
+            let statError = errno
             close(serverSocket)
+            serverSocket = -1
             unlink(stagingPath)
-            throw CommaSocketError("Failed to publish socket: \(String(cString: strerror(errno)))")
+            throw CommaSocketError("Failed to stat socket: \(String(cString: strerror(statError)))")
         }
+        guard rename(stagingPath, socketPath) == 0 else {
+            let renameError = errno
+            close(serverSocket)
+            serverSocket = -1
+            unlink(stagingPath)
+            throw CommaSocketError("Failed to publish socket: \(String(cString: strerror(renameError)))")
+        }
+
+        stopLock.lock()
+        published = (info.st_dev, info.st_ino)
+        stopLock.unlock()
 
         isRunning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.acceptLoop()
         }
+        watchOwnership()
+    }
+
+    /// A connector that cannot reach this daemon starts another one, which replaces the socket path. The replaced
+    /// daemon must end: otherwise it stays as an orphan with its sessions, overlays and memory.
+    private func watchOwnership() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + ownershipInterval, repeating: ownershipInterval, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in self?.checkOwnership() }
+        stopLock.lock()
+        ownershipTimer = timer
+        stopLock.unlock()
+        timer.resume()
+    }
+
+    /// Calls `onSocketLost` once when the socket path no longer names the socket this server published.
+    func checkOwnership() {
+        stopLock.lock()
+        guard serverSocket >= 0, published != nil, !ownsSocketPath() else {
+            stopLock.unlock()
+            return
+        }
+        published = nil
+        ownershipTimer?.cancel()
+        ownershipTimer = nil
+        stopLock.unlock()
+        onSocketLost?()
+    }
+
+    /// Whether `socketPath` is still the file this server published. Caller holds `stopLock`.
+    private func ownsSocketPath() -> Bool {
+        guard let published else { return false }
+        var info = stat()
+        guard lstat(socketPath, &info) == 0 else { return false }
+        return info.st_dev == published.device && info.st_ino == published.inode
     }
 
     func stop() {
@@ -173,6 +239,19 @@ final class CommaComputerUseSocketServer {
             return
         }
 
+        // Answer `hello` and `shutdown` on the connection queue once `authToken` matched: `computer-use.ts` gives both
+        // a 2 s deadline, so a busy main thread must neither make a connector replace a live daemon nor block shutdown.
+        if request.isHelloControl {
+            sendStreamMessage(.final(.success(message: "comma-computer-use-daemon")), to: clientSocket)
+            return
+        }
+
+        if request.isShutdownControl {
+            sendStreamMessage(.final(.success()), to: clientSocket)
+            beginProcessShutdown(excluding: clientSocket)
+            return
+        }
+
         let semaphore = DispatchSemaphore(value: 0)
         let resultStateQueue = DispatchQueue(label: "CommaComputerUse.SocketServer.ResultState")
         var response = CommaComputerUseResponse.failure("No handler")
@@ -252,7 +331,7 @@ final class CommaComputerUseSocketServer {
             shutdown(connection, SHUT_RDWR)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.onShutdownRequested?()
         }
     }
@@ -264,10 +343,14 @@ final class CommaComputerUseSocketServer {
         // may already own this path after the first stop releases it.
         guard serverSocket >= 0 else { return }
         isRunning = false
+        ownershipTimer?.cancel()
+        ownershipTimer = nil
         shutdown(serverSocket, SHUT_RDWR)
         close(serverSocket)
         serverSocket = -1
-        unlink(socketPath)
+        // Only its own socket: a replacement daemon may own the path now.
+        if ownsSocketPath() { unlink(socketPath) }
+        published = nil
     }
 }
 
@@ -280,12 +363,20 @@ struct CommaComputerUseRequest {
     let kind: Kind
     let display: Int?
     let thinking: String?
+    let sessionId: String?
     /// Set for the `screen.view` control: the connection becomes a screen view (ScreenStreamConnection.swift).
     let viewOptions: [String: Any]?
 
     var isWaitAction: Bool {
         if case let .action(action) = kind {
             return action.name == "wait"
+        }
+        return false
+    }
+
+    var isHelloControl: Bool {
+        if case let .control(control) = kind {
+            return control.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "hello"
         }
         return false
     }
@@ -310,6 +401,8 @@ struct CommaComputerUseRequest {
 
         display = CommaComputerUseAction.intValue(object["display"])
         thinking = (object["thinking"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawSessionId = (object["session_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionId = (rawSessionId?.isEmpty == false) ? rawSessionId : nil
 
         let control = (object["control"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         viewOptions = control == "screen.view" ? (object["view"] as? [String: Any] ?? [:]) : nil
@@ -359,6 +452,10 @@ struct CommaComputerUseAction {
         default:
             return nil
         }
+    }
+
+    func bool(_ key: String) -> Bool? {
+        args[key] as? Bool
     }
 
     func string(_ key: String) -> String? {

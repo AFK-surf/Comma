@@ -41,6 +41,18 @@ private def validCall (operation payload : Term) : Bool :=
 def invoke (operation payload : Term) : Term :=
   match operation, payload with
   | .atom "decide", .tuple [effect, activation, items, facts] => result (decide effect activation items facts)
+  | .atom "decide_easy", .tuple [effect, activation, items, facts] => result (decideEasy effect activation items facts)
+  | .atom "easy_protected", .tuple [.list items, sources] =>
+    let validSources := match sources with
+      | .atom "context" => true
+      | .list refs => refs.all Term.isBinary
+      | _ => false
+    if dataValid payload && items.all itemValid && validSources then
+      result ((Tri.ofBool (easyProtected (list items) sources)).term)
+    else .tuple [a "error", a "invalid_input"]
+  | .atom "easy_reader", .tuple [p, source, facts] =>
+    if principalValid p && labelValid source && factsValid facts then result ((easyReader p source facts).term)
+    else .tuple [a "error", a "invalid_input"]
   | .atom "transfer_start", .tuple [evidence] => result (Transfer.start evidence)
   | .atom "transfer_resume", .tuple [cursor, observation] => result (Transfer.resume cursor observation)
   | op, args =>

@@ -1,7 +1,8 @@
 // Rich previews of the links in a briefing or a chat: read each time a hover card opens on one. Every rich link can be
-// private, so a preview is dropped as soon as no card shows it and the next card reads again (the server reauthorizes
-// each read). Only a 404, which carries no provider content, is kept for this account (1 minute): it spares links the
-// server never previews (most Outlook URLs) a provider round-trip on every hover.
+// private, so the server reauthorizes each read. A preview read in the last 5 minutes shows at once while the card's
+// read runs, and that read replaces it or takes it away (any failure shows the generic card). A 404, which carries no
+// provider content, is kept for this account (1 minute) and not read again: it spares links the server never previews
+// (most Outlook URLs) a provider round-trip on every hover. A change of account drops everything kept.
 //
 // Bounds: one read in flight per link; at most 64 links kept (the least recently shown go first, never one shown now).
 import { type CoreError, type Topic, type Value } from "@comma/core-kernel";
@@ -12,6 +13,7 @@ import type { LinkPreview, LinkPreviewValue } from "./contract.ts";
 import { type Ctx, Live } from "./ctx.ts";
 
 const MISSING_KEEP_MS = 60_000;
+const PREVIEW_KEEP_MS = 5 * 60_000;
 const MAX_KEPT = 64;
 
 type Kept = { expiresAt: number; preview?: LinkPreview; missing?: boolean };
@@ -35,21 +37,23 @@ export class LinkPreviews {
       start: (topic) => {
         const key = keyOf(topic);
         const kept = this.#kept.get(key);
-        if (kept?.missing && kept.expiresAt > ctx.now()) {
+        const forceRefresh = Boolean(topic.read && String(topic.read) !== "0");
+        if (!forceRefresh && kept?.missing && kept.expiresAt > ctx.now()) {
           // Shown again: it goes to the back of the line.
           this.#kept.delete(key);
           this.#kept.set(key, kept);
           return;
         }
         this.#kept.delete(key);
+        // A recent preview shows while this read asks the server again.
+        if (kept?.preview && kept.expiresAt > ctx.now()) this.#kept.set(key, kept);
         this.#live.run(topic, this.#read(topic));
       },
       stop: (topic) => {
         this.#live.stop(topic);
         const key = keyOf(topic);
         const kept = this.#kept.get(key);
-        if (kept && !(kept.missing && kept.expiresAt > ctx.now()))
-          this.#kept.delete(key);
+        if (kept && !(kept.expiresAt > ctx.now())) this.#kept.delete(key);
         this.#evict();
       },
       compute: (topic): Value => ({ ok: this.#value(keyOf(topic)) }),
@@ -96,9 +100,10 @@ export class LinkPreviews {
       this.#kept.set(
         key,
         Result.isSuccess(answer)
-          ? { expiresAt: now, preview: answer.success as LinkPreview }
+          ? { expiresAt: now + PREVIEW_KEEP_MS, preview: answer.success as LinkPreview }
           : {
-              // Other failures (no access, outage) show the generic card now but are asked again next time.
+              // Other failures (no access, outage) take a kept preview away and show the generic card now, but are
+              // asked again next time.
               expiresAt:
                 now +
                 ((answer.failure as CoreError).status === 404 ? MISSING_KEEP_MS : 0),
@@ -106,7 +111,11 @@ export class LinkPreviews {
             }
       );
       this.#evict();
-      ctx.kernel.store.invalidate(topic);
+      for (const live of ctx.kernel.store.liveTopics()) {
+        if (live.topic === "linkPreview" && keyOf(live) === key) {
+          ctx.kernel.store.invalidate(live);
+        }
+      }
     });
   }
 

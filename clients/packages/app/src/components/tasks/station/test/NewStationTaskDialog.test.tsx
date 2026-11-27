@@ -200,6 +200,91 @@ it("makes the Task in Comma's cloud when no machine is reached, with a model of 
   expect(onClose).toHaveBeenCalled();
 });
 
+it("makes a cloud Task with Comma's built-in model, sent as no model, where no profile serves one", async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              ...workspaceModels,
+              models: [],
+              agents: {
+                workspace_id: "w1",
+                agents: { router: {} },
+                task_model: { selection: { kind: "builtin" } },
+                task_place: { place: { kind: "salix" } },
+              },
+            }
+          : undefined,
+    calls: (name) => (name === "chat.startTask" ? cloudTask : null),
+  });
+  renderDialog(core);
+  await flush();
+
+  const modelButton = screen.getByRole("button", { name: "Model" });
+  expect(modelButton).toHaveTextContent("Comma built-in");
+  expect(modelButton.querySelector('[data-slot="comma-mark"]')).toBeInTheDocument();
+  expect(modelButton.querySelector("[data-comma-icon]")).toBeNull();
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "plan the offsite"
+  );
+  await user().keyboard("{Meta>}{Enter}{/Meta}");
+  await flush();
+  expect(core.sentTo("chat.startTask")).toEqual([
+    { workspaceId: "w1", key: expect.any(String), text: "plan the offsite" },
+  ]);
+});
+
+it('sends a catalog model whose id is "default" as that model, not as the built-in one', async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              ...workspaceModels,
+              models: [
+                {
+                  id: "default",
+                  name: "My endpoint",
+                  vendor: "openai",
+                  efforts: [],
+                  serving: ["p1"],
+                },
+              ],
+              agents: {
+                workspace_id: "w1",
+                agents: { router: {} },
+                task_model: { selection: { kind: "builtin" } },
+                task_place: { place: { kind: "salix" } },
+              },
+            }
+          : undefined,
+    calls: (name) => (name === "chat.startTask" ? cloudTask : null),
+  });
+  renderDialog(core);
+  await flush();
+
+  await user().click(screen.getByRole("button", { name: "Model" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "My endpoint" }));
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "plan the offsite"
+  );
+  await user().keyboard("{Meta>}{Enter}{/Meta}");
+  await flush();
+  expect(core.sentTo("chat.startTask")).toEqual([
+    {
+      workspaceId: "w1",
+      key: expect.any(String),
+      model: { id: "default", name: "My endpoint" },
+      text: "plan the offsite",
+    },
+  ]);
+});
+
 /** The cloud Task `chat.startTask` made. */
 const cloudTask = { groupId: "g1", conversationId: "c_task" };
 
@@ -387,6 +472,63 @@ it("says why no cloud Task was made, and tries again as another Task", async () 
   const [first, again] = core.sentTo("chat.startTask") as { key: string }[];
   expect(again?.key).toBeDefined();
   expect(again?.key).not.toBe(first?.key);
+});
+
+it("localizes 402 billing denials with a fresh retry key and never leaks raw selection error codes", async () => {
+  let attempt = 0;
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? workspaceModels
+          : undefined,
+    calls: (name) => {
+      if (name !== "chat.startTask") return null;
+      attempt += 1;
+      if (attempt === 1) {
+        throw Object.assign(new Error("billing_unavailable"), {
+          code: "billing_unavailable",
+          status: 402,
+          detail: { error: "billing_unavailable", reason: "insufficient_credits" },
+        });
+      }
+      if (attempt === 2) {
+        throw Object.assign(new Error("task_model_selection_failed"), {
+          code: "task_model_selection_failed",
+          status: 503,
+        });
+      }
+      return cloudTask;
+    },
+  });
+  renderDialog(core);
+  await flush();
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "fix the build"
+  );
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  await advance(50);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Unable to create task: out of Comma credits. Add credits, then retry."
+  );
+
+  // Billing refusal rotates the key; a non-refusal selection outage stays localized and keeps the key.
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  await advance(50);
+  expect(screen.getByRole("alert")).not.toHaveTextContent(
+    "task_model_selection_failed"
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not create the task.");
+
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  const [first, second, third] = core.sentTo("chat.startTask") as { key: string }[];
+  expect(second?.key).not.toBe(first?.key);
+  expect(third?.key).toBe(second?.key);
 });
 
 it("tries a cloud Task that failed without a refusal again as the same Task", async () => {
@@ -770,7 +912,97 @@ it("runs a coding session on the subscription and model chosen, or the runtime's
   ]);
 });
 
-it("as a request's card, accepts it with the chosen model, or sends it to the Router", async () => {
+it("offers a sandbox a runtime without its own subscription only where the accounts Salix lends it run that runtime", async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              ...workspaceModels,
+              models: [],
+              agents: {
+                workspace_id: "w1",
+                agents: {},
+                task_model: { selection: { kind: "builtin" } },
+                task_place: {
+                  place: { kind: "salix" },
+                  sandboxes: true,
+                  sandbox_runtimes: ["codex"],
+                },
+              },
+            }
+          : undefined,
+    calls: (name) =>
+      name === "coding.start" ? { taskId: "cnv_box", groupId: "grp_1" } : null,
+  });
+  renderDialog(core);
+  await flush();
+  await user().click(screen.getByRole("button", { name: "Machine" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "Sandbox" }));
+  await flush();
+
+  // Claude Code has no subscription here, and Salix lends the sandbox nothing that runs it: it is not offered.
+  // Codex runs on the platform's model.
+  await user().click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual([
+    "Codex",
+  ]);
+  await user().click(screen.getByRole("menuitemradio", { name: "Codex" }));
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "convert the videos to mp4"
+  );
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  expect(core.sentTo("coding.start")).toEqual([
+    expect.objectContaining({ model: { provider: "codex" } }),
+  ]);
+});
+
+it("reads the models again as it opens, and holds a sandbox Task that nothing lent can run, saying why", async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              ...workspaceModels,
+              models: [],
+              agents: {
+                workspace_id: "w1",
+                agents: {},
+                task_model: { selection: { kind: "builtin" } },
+                task_place: {
+                  place: { kind: "salix" },
+                  sandboxes: true,
+                  sandbox_runtimes: [],
+                },
+              },
+            }
+          : undefined,
+    calls: () => null,
+  });
+  renderDialog(core);
+  await flush();
+  expect(core.sentTo("models.refresh")).toEqual([{}]);
+  await user().click(screen.getByRole("button", { name: "Machine" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "Sandbox" }));
+  await flush();
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "convert the videos to mp4"
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "No account here can run a sandbox. Add one in Settings › Model & API."
+  );
+  expect(screen.getByRole("button", { name: "Create task" })).toBeDisabled();
+  await user().keyboard("{Meta>}{Enter}{/Meta}");
+  await flush();
+  expect(core.sentTo("coding.start")).toEqual([]);
+});
+
+it("as a request's card, declines it or accepts it with the chosen model", async () => {
   const sent: [string, unknown][] = [];
   const core = createScriptedCore({
     values: (topic) =>
@@ -829,13 +1061,11 @@ it("as a request's card, accepts it with the chosen model, or sends it to the Ro
   );
   expect(screen.queryByTestId("new-station-task-attach")).toBeNull();
 
-  await user().click(screen.getByRole("button", { name: "Send to Router" }));
+  await user().click(screen.getByRole("button", { name: "Decline" }));
   await flush();
-  expect(sent.find(([name]) => name === "taskRequests.accept")?.[1]).toEqual({
+  expect(sent.find(([name]) => name === "taskRequests.decline")?.[1]).toEqual({
     workspace: "w1",
     request: "trq_1",
-    to: "router",
-    content: "Summarize Q3",
   });
   expect(onClose).toHaveBeenCalledTimes(1);
 
@@ -845,9 +1075,69 @@ it("as a request's card, accepts it with the chosen model, or sends it to the Ro
   expect(sent.find(([name]) => name === "taskRequests.accept")?.[1]).toEqual({
     workspace: "w1",
     request: "trq_1",
-    to: "task",
     content: "Summarize Q3",
     run: { kind: "cloud", model: "gpt-5.5" },
+  });
+  expect(decodeURIComponent(router.state.location.pathname)).toBe("/tasks/w1/g1/c9");
+});
+
+it("as a request's card, accepts into Comma's cloud with the built-in Task model where no profile serves one", async () => {
+  const sent: [string, unknown][] = [];
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              ...workspaceModels,
+              models: [],
+              agents: {
+                workspace_id: "w1",
+                agents: { router: {} },
+                task_model: { selection: { kind: "builtin" } },
+                task_place: { place: { kind: "salix" } },
+              },
+            }
+          : undefined,
+    calls: (name, params) => {
+      sent.push([name, params]);
+      if (name === "taskRequests.accept") return { task: { group_id: "g1", id: "c9" } };
+      return null;
+    },
+  });
+  const onClose = vi.fn();
+  const request = { id: "trq_1", title: "From Sam", content: "Summarize Q3" };
+  const rootRoute = createRootRoute({
+    component: () =>
+      core.wrap(
+        <NewStationTaskDialog onClose={onClose} request={request} workspace="w1" />
+      ),
+  });
+  const page = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tasks/$workspaceId/$groupId/$conversationId",
+    component: () => null,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([page]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  await flush();
+
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent(
+    "Comma built-in"
+  );
+  expect(screen.getByRole("button", { name: "Model" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Create task" })).toBeEnabled();
+
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  expect(sent.find(([name]) => name === "taskRequests.accept")?.[1]).toEqual({
+    workspace: "w1",
+    request: "trq_1",
+    content: "Summarize Q3",
+    run: { kind: "cloud" },
   });
   expect(decodeURIComponent(router.state.location.pathname)).toBe("/tasks/w1/g1/c9");
 });
@@ -1007,4 +1297,191 @@ it("keeps the recipient it was opened for when they can take no more today, and 
     "review the deck"
   );
   expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+});
+
+it("lists Monoid workspaces in the machine picker, runs on workspace default or a reported runtime model, and opens the Task", async () => {
+  const path = `/uploads/${"f".repeat(22)}-spec.pdf`;
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? workspaceModels
+          : topic.topic === "pluginStations" && topic.plugin === "stillfail"
+            ? {
+                stations: [
+                  {
+                    id: "dev_monoid_online",
+                    name: "Acme · tokyo-mac",
+                    connected: true,
+                    connectedAt: "2026-11-25T00:00:00.000Z",
+                    workspace: "Acme Engineering",
+                    emoji: null,
+                    station: "tokyo-mac",
+                    stationCount: 2,
+                    taskModels: {
+                      claude: ["claude-opus-5-5", "claude-sonnet-5-5"],
+                      codex: [],
+                    },
+                  },
+                  {
+                    id: "dev_monoid_offline",
+                    name: "Staging · pvg-1",
+                    connected: false,
+                    connectedAt: "2026-11-24T00:00:00.000Z",
+                    workspace: "Staging Lab",
+                    emoji: null,
+                    station: "pvg-1",
+                    stationCount: 1,
+                    taskModels: {},
+                  },
+                  {
+                    id: "dev_monoid_waiting",
+                    name: null,
+                    connected: false,
+                    connectedAt: null,
+                    workspace: null,
+                    emoji: null,
+                    station: null,
+                    stationCount: null,
+                  },
+                ],
+                notificationLevel: "action_needed",
+                notificationPending: false,
+                error: null,
+                pending: null,
+              }
+            : undefined,
+    calls: (name) =>
+      name === "chat.uploadTaskFile"
+        ? { name: "spec.pdf", path, size: 4 }
+        : name === "chat.startTask"
+          ? { groupId: "grp_1", conversationId: "cnv_monoid_1" }
+          : null,
+  });
+  const onClose = vi.fn();
+  const rootRoute = createRootRoute({
+    component: () =>
+      core.wrap(<NewStationTaskDialog onClose={onClose} workspace="w1" />),
+  });
+  const page = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tasks/$workspaceId/$groupId/$conversationId",
+    component: () => null,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([page]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  await flush();
+
+  await user().click(screen.getByRole("button", { name: "Machine" }));
+  expect(screen.getByRole("menuitemradio", { name: "Staging Lab" })).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+  expect(screen.getByRole("menuitemradio", { name: "Monoid" })).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+  await user().click(screen.getByRole("menuitemradio", { name: "Acme Engineering" }));
+  await flush();
+
+  // No sandbox repo picker is shown; Workspace default is selected first.
+  expect(screen.queryByRole("button", { name: "Repository" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent(
+    "Workspace default"
+  );
+
+  // Opening the model picker shows Workspace default and reported runtime models.
+  await user().click(screen.getByRole("button", { name: "Model" }));
+  expect(
+    screen.getByRole("menuitemradio", { name: "Workspace default" })
+  ).toBeVisible();
+  expect(screen.getByRole("menuitemradio", { name: "Codex" })).toBeVisible();
+  await user().click(screen.getByRole("menuitemradio", { name: "claude-opus-5-5" }));
+  await flush();
+
+  await user().upload(fileInput(), spec());
+  await flush();
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "run smoke tests"
+  );
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+
+  expect(core.sentTo("chat.startTask")).toEqual([
+    {
+      workspaceId: "w1",
+      key: expect.any(String),
+      stillfail: {
+        deviceId: "dev_monoid_online",
+        provider: "claude",
+        model: "claude-opus-5-5",
+      },
+      text: "run smoke tests",
+      uploads: [{ name: "spec.pdf", path }],
+    },
+  ]);
+  expect(router.state.location.pathname).toBe("/tasks/w1/grp_1/cnv_monoid_1");
+  expect(onClose).toHaveBeenCalled();
+});
+
+it("allows submitting on a Monoid workspace with empty taskModels using Workspace default", async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? workspaceModels
+          : topic.topic === "pluginStations" && topic.plugin === "stillfail"
+            ? {
+                stations: [
+                  {
+                    id: "dev_monoid_empty",
+                    name: "Solo",
+                    connected: true,
+                    connectedAt: "2026-11-25T00:00:00.000Z",
+                    workspace: "Solo Workspace",
+                    emoji: null,
+                    station: null,
+                    stationCount: 1,
+                    taskModels: {},
+                  },
+                ],
+                notificationLevel: "action_needed",
+                notificationPending: false,
+                error: null,
+                pending: null,
+              }
+            : undefined,
+    calls: (name) =>
+      name === "chat.startTask"
+        ? { groupId: "grp_1", conversationId: "cnv_monoid_default" }
+        : null,
+  });
+  const router = renderDialog(core);
+  await flush();
+
+  await user().click(screen.getByRole("button", { name: "Machine" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "Solo Workspace" }));
+  await flush();
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "check status"
+  );
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+
+  expect(core.sentTo("chat.startTask")).toEqual([
+    {
+      workspaceId: "w1",
+      key: expect.any(String),
+      stillfail: { deviceId: "dev_monoid_empty" },
+      text: "check status",
+    },
+  ]);
+  expect(router.state.location.pathname).toBe("/tasks/w1/grp_1/cnv_monoid_default");
 });

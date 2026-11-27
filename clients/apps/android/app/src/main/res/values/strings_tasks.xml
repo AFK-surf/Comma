@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="task_status_in_progress">进行中</string>
+    <string name="task_status_loops">定时与监控</string>
     <string name="task_status_needs_review">待审核</string>
     <string name="task_status_done">已完成</string>
     <string name="task_status_cancelled">已取消</string>

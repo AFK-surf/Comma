@@ -15,51 +15,50 @@ Malformed values and groups get no private-chat authority.
 Limits: 1 MiB per event, ten attachments per message (relay images 20 MiB), 1,000 expired claims pruned and a 120 s checkout per pass, bounded HTTP waits.
 Three failed passes without a success pause a process; restore the dependency and restart to resume from the saved cursor. Lock contention prevents a fixed total time bound.
 
-A send makes one HTTP attempt. A timeout, error, or no acknowledgement returns `imessage_delivery_unknown`, `retryable=false`. The Agent stops the turn and asks for verification in Messages. An acknowledgement is not Apple delivery. No cross-call deduplication.
+The relay sends once. No acknowledgement returns `imessage_delivery_unknown`, `retryable=false`. The Agent ends the turn, then answers the next message. An acknowledgement is not Apple delivery. No cross-call deduplication.
 
 Accept with a separate relay origin and database, after confirming the shared Apple identity and stopping any old consumer; keep old configuration and data. Check binding, chat, text and image replies, disconnect and rebind with a test contact. Rollback disables the receiver and keeps binding tables.
 
 ### Photon shared lines
 
 [PhotonIMessage](../systems/apps/salix_im/lib/salix_im/photon_imessage.ex) calls the Photon REST API. Photon has no Elixir SDK.
-Create a project in the [Photon v2 Beta dashboard](https://app.beta.photon.codes). Its project ID starts with `pho_prj_`.
+Create a project (ID `pho_prj_…`) in the [Photon v2 Beta dashboard](https://app.beta.photon.codes).
 Free/Pro pooled lines send only to project Users with active assignments who messaged the line first.
 
 1. A dedicated project takes `transport=photon` at connect: its ten-minute attempt uses an active line, no handle. A shared project returns `imessage_handle_required`; it needs a phone number or Apple Account email as `handle`, registers a User, and assigns a pooled line.
 2. The person sends the code, or `bridgebot connect <code>`, to that line. A named handle must send it; otherwise the first sender binds.
-3. Only then is the binding active. Earlier messages do not reach the Agent.
+3. Only then is the binding active. The reply welcomes the person and says what they can send.
 
-Replies go only to the bound Space, from its line. An unbound sender gets one guide a day (reset by linking or disconnecting); a wrong-account code gets its own reply.
-Settings shows the line, code, `sms:` link, QR code and time left, read every 3 s.
+Replies go only to the bound Space, from its line. An unbound sender gets one guide a day (reset on link/disconnect); a link sends the Agent its last five since then as one input. Wrong-account or failed-binding codes get a reply.
+Settings shows line, code, `sms:` link, QR code and time left, read every 3 s.
 The [receiver](../systems/apps/comma_web/lib/comma_web/imessage_photon_runtime.ex) lists received Messages from the Photon API, oldest first, at most five pages of 100 per pass.
-A verified webhook's Message starts a pass at once, without waiting for a list read. A 60-second timer recovers missed webhooks.
-Photon lists are eventually consistent, so each pass rereads a two-minute overlap, whose handled IDs the text cursor keeps. A Message visible only after the overlap is not received.
+A verified webhook's Message starts a pass at once. A 60-second timer recovers missed webhooks.
+Photon lists are eventually consistent: each pass rereads a two-minute overlap; the text cursor keeps its handled IDs. A Message visible only after the overlap is not received.
 
-`POST /v1/comma/integrations/imessage/photon/webhook` verifies [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md): each `v1,<base64>` in `webhook-signature` is HMAC-SHA256 of `<id>.<timestamp>.<raw body>` under the decoded `whsec_` secret; the timestamp is within five minutes.
+`POST /v1/comma/integrations/imessage/photon/webhook` verifies [Standard Webhooks](https://www.standardwebhooks.com/): each `v1,<base64>` in `webhook-signature` is HMAC-SHA256 of `<id>.<timestamp>.<raw body>` under the decoded `whsec_` secret; the timestamp is within five minutes.
 It verifies raw bytes locally (the Elixir reference library re-encodes JSON). A failed check returns 401 and starts no pass. The body grants nothing: the receiver reads Messages from the API.
 
-Each send uses a new idempotency key. A 4xx returns `imessage_send_rejected`, `delivery_status=not_sent`, with diagnostics; a timeout, 5xx, or missing Message ID returns `imessage_delivery_unknown`.
-An image or file is an upload and a send; its caption follows as text, and a caption failing after the attachment returns unknown delivery.
+A send with no answer, 408, 502, 503, 504 or key in progress repeats under its idempotency key: three requests, 20 s. A 4xx returns `imessage_send_rejected`, `delivery_status=not_sent`, with diagnostics; else no Message ID returns `imessage_delivery_unknown`. Unknown text returns `resend_token`: for 24 h a resend sends only if Photon lists no such text.
+An image or file is an upload and one attachment send; an upload failure sends nothing.
 `imessage.send_file` streams up to 100 MiB, else `imessage_file_too_large` before a request (stage error `size_limit`). The relay refuses files.
 Agent discovery exposes text, image, and file sends, with `reply_to_message_id`. Spectrum SDK features do not prove v2 REST support. Existing callers can call `imessage.react`. Targets must belong to the bound Space.
-Only HTTP 409 `SPACE_NOT_SENDABLE` with detail `Replies are not supported for this Space` permits one ordinary send.
-That request omits the parent and uses a new key. Success includes `reply_fallback=ordinary_message`, not an inline reply.
-For reactions, that refusal or 422 `UNSUPPORTED_CONTENT` returns `imessage_reaction_unsupported`. A removal returns it with no request. Other refusals and ambiguous outcomes never fall back.
+Only HTTP 409 `SPACE_NOT_SENDABLE` with detail `Replies are not supported for this Space` permits one ordinary send without the parent, under a new key; success includes `reply_fallback=ordinary_message`.
+For reactions, that refusal or 422 `UNSUPPORTED_CONTENT` returns `imessage_reaction_unsupported`. A removal returns it with no request. Nothing else falls back.
 An inbound parent ID adds `[Replying to message <id> by …]`, at most 500 characters; a missing original stays explicit. Without one, input marks the target unavailable and the Agent asks for quoted text.
-While the Agent works, the line shows the typing indicator. Comma repeats it every 10 s per chat, within Photon's five requests per second.
+While the Agent works, Comma repeats the typing indicator every 10 s per chat, within Photon's five requests per second.
 
 A bound person's Messages within 2 s of each other (media and its text) form one Router input, sent 2 s after the last is seen, at most 10 s. A waiting burst is not checkpointed; a crash replays it.
 Its source ID names all its Messages. A Message that appears late makes a new input, never a lost one.
 
 On a shared project, disconnect releases the assignment when no binding or open attempt uses the handle, and timer passes release unused ones older than 15 minutes, so a Photon project serves one Comma deployment.
-Set `COMMA_PHOTON_ENABLED`, `COMMA_PHOTON_PROJECT_ID`, `COMMA_PHOTON_API_KEY` (a `pho_sk_` project key), and `COMMA_PHOTON_WEBHOOK_SECRET`. Register the webhook destination in Photon by hand.
+Set `COMMA_PHOTON_ENABLED`, `COMMA_PHOTON_PROJECT_ID`, `COMMA_PHOTON_API_KEY` (a `pho_sk_` project key), and `COMMA_PHOTON_WEBHOOK_SECRET`. Register the webhook in Photon by hand.
 
 ## Comma LINE
 
 One Comma LINE Official Account ([code](../systems/apps/comma_web/lib/comma_web/line_integration.ex)): set `COMMA_LINE_ENABLED`, `_CHANNEL_SECRET`, `_CHANNEL_ACCESS_TOKEN`, `_BASIC_ID`. In LINE, set webhook `/v1/comma/integrations/line/webhook`, allow groups, no auto-replies.
 Settings makes a ten-minute code to send privately as `link <code>`; binding follows Telegram's order, one LINE user per Workspace.
 `X-Line-Signature` is checked once per request; events route by sender. Only the bound user's private messages and group mentions enter the Router.
-`line.send_message` spends the event's free reply token within 50 s, then pushes.
+`line.send_message` spends the event's free reply token within 50 s, then pushes. Private chats show LINE's loading animation while the Router works.
 
 ## Comma WeChat ClawBot
 

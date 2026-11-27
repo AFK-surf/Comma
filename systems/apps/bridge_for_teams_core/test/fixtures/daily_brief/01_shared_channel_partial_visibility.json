@@ -1,0 +1,52 @@
+{
+  "name": "shared_channel_partial_visibility",
+  "window_after": "2026-11-18T01:00:00Z",
+  "now": "2026-11-19T01:00:00Z",
+  "member": {
+    "slack_user_id": "UPENG1",
+    "name": "Peng Xiao",
+    "timezone": "Asia/Shanghai",
+    "aliases": [{"kind": "name", "term": "Peng Xiao"}],
+    "focus_channels": ["C_STILLFAIL"]
+  },
+  "channels": {
+    "C_STILLFAIL": "still-fail"
+  },
+  "messages": [
+    {
+      "channel_id": "C_STILLFAIL",
+      "ts": "1795020000.000100",
+      "actor_kind": "user",
+      "actor_id": "UPENG1",
+      "text": "Windows 聊天页打开不滚到底"
+    },
+    {
+      "channel_id": "C_STILLFAIL",
+      "ts": "1795020600.000100",
+      "thread_ts": "1795020000.000100",
+      "actor_kind": "bot",
+      "actor_id": "SCLAUDE",
+      "text": "下面两个任选一个就能继续：1. 装 station；2. 告诉我版本号？"
+    }
+  ],
+  "direct_messages": [
+    {
+      "channel_id": "C_PMTOOL",
+      "channel_name": "pm-tool",
+      "kind": "shared",
+      "ts": "1795010000.000100",
+      "actor_kind": "user",
+      "actor_id": "UPENG1",
+      "text": "要一个 agent 干活时的 POV html 报告"
+    }
+  ],
+  "followups": [],
+  "closed": [],
+  "issues": {},
+  "issue_states": {},
+  "expect": {
+    "mine_open_contains": ["Windows"],
+    "mine_open_excludes": ["POV"],
+    "text_contains": ["Windows"]
+  }
+}

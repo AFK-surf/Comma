@@ -1,0 +1,191 @@
+syntax = "proto3";
+
+package agentvmm.service.v1;
+
+import "google/protobuf/timestamp.proto";
+import "trust/v1/trust.proto";
+
+option go_package = "github.com/AFK-surf/agent-vmm/api/service/v1;servicev1";
+
+// These are the only V1 ALPNs. Product or authority names never appear in an
+// ALPN and feature negotiation must fail closed for an unknown value.
+enum TransportAlpn {
+  TRANSPORT_ALPN_UNSPECIFIED = 0;
+  TRANSPORT_ALPN_PAIRING_V1 = 1;
+  TRANSPORT_ALPN_MESH_CONTROL_V1 = 2;
+  TRANSPORT_ALPN_SERVICE_TUNNEL_V1 = 3;
+}
+
+enum RouteClass {
+  ROUTE_CLASS_UNSPECIFIED = 0;
+  ROUTE_CLASS_LOCAL = 1;
+  ROUTE_CLASS_DEVICE = 2;
+  ROUTE_CLASS_COMPUTE = 3;
+  ROUTE_CLASS_LAN = 4;
+  ROUTE_CLASS_PUBLIC_HTTP = 5;
+}
+
+enum RouteState {
+  ROUTE_STATE_UNSPECIFIED = 0;
+  ROUTE_STATE_PREPARING = 1;
+  ROUTE_STATE_ACTIVE = 2;
+  ROUTE_STATE_DRAINING = 3;
+  ROUTE_STATE_REVOKED = 4;
+  ROUTE_STATE_EXPIRED = 5;
+}
+
+enum ServiceProtocol {
+  SERVICE_PROTOCOL_UNSPECIFIED = 0;
+  SERVICE_PROTOCOL_TCP = 1;
+  SERVICE_PROTOCOL_HTTP = 2;
+}
+
+// ServiceExport authorizes one owned container ID and port while tracking its current instance
+// projection.
+message ServiceExport {
+  string export_id = 1;
+  string environment_id = 2;
+  string container_id = 3;
+  string container_instance_id = 4;
+  uint32 port = 5;
+  ServiceProtocol protocol = 6;
+  uint64 revision = 7;
+  bool revoked = 8;
+  google.protobuf.Timestamp created_at = 9;
+  string container_generation_id = 10;
+}
+
+// ApplianceFrontendDestination selects a manifest-declared frontend on one installation rather
+// than a raw endpoint.
+message ApplianceFrontendDestination {
+  string installation_id = 1;
+  string name = 2;
+}
+
+// ServiceImport records a current source container's approved connection to one destination
+// export.
+message ServiceImport {
+  string import_id = 1;
+  string source_environment_id = 2;
+  string source_container_id = 3;
+  string source_container_instance_id = 4;
+  string destination_device_id = 5;
+  string destination_export_id = 6;
+  string virtual_service_name = 7;
+  uint64 revision = 8;
+  bool revoked = 9;
+  uint32 destination_port = 10;
+  string source_installation_id = 11;
+  ApplianceFrontendDestination destination_frontend = 12;
+  string source_container_generation_id = 13;
+}
+
+// AccessRoute records the authorized route state and generation independently of its live
+// transport.
+message AccessRoute {
+  string route_id = 1;
+  RouteClass route_class = 2;
+  string source_device_id = 3;
+  optional string source_allocation_id = 4;
+  string destination_device_id = 5;
+  string destination_export_id = 6;
+  RouteState state = 7;
+  uint64 revision = 8;
+  uint64 generation = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  string source_environment_id = 11;
+  string source_container_instance_id = 12;
+  uint64 policy_revision = 13;
+  string source_installation_id = 14;
+  string source_boot_id = 15;
+  string destination_installation_id = 16;
+  string destination_boot_id = 17;
+  string destination_container_instance_id = 18;
+  uint64 destination_grant_revision = 19;
+}
+
+// RouteLease bounds one route use under its current revision, expiry, and budgets.
+message RouteLease {
+  string lease_id = 1;
+  string route_id = 2;
+  uint64 route_revision = 3;
+  uint64 generation = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  agentvmm.trust.v1.RouteCapability capability = 6;
+}
+
+// OpenServiceForwardHeader binds the first transport frame to exact route, lease, source,
+// destination, and capability facts.
+message OpenServiceForwardHeader {
+  string route_id = 1;
+  string lease_id = 2;
+  uint64 route_generation = 3;
+  string source_environment_id = 4;
+  string source_container_instance_id = 5;
+  agentvmm.trust.v1.RouteCapability capability = 6;
+}
+
+// OpenServiceForwardRequest carries inputs for an operation that verifies current route, lease,
+// generation, instances, and budgets before forwarding bytes.
+message OpenServiceForwardRequest {
+  oneof payload {
+    OpenServiceForwardHeader header = 1;
+    bytes data = 2;
+    bool close_write = 3;
+  }
+}
+
+// OpenServiceForwardResponse carries results from an operation that verifies current route,
+// lease, generation, instances, and budgets before forwarding bytes.
+message OpenServiceForwardResponse {
+  oneof payload {
+    bytes data = 1;
+    bool close_write = 2;
+  }
+}
+
+// ServiceRouteService serves instance-fenced service transport.
+service ServiceRouteService {
+  // OpenServiceForward verifies current route, lease, generation, instances, and budgets before
+  // forwarding bytes.
+  rpc OpenServiceForward(stream OpenServiceForwardRequest) returns (stream OpenServiceForwardResponse);
+}
+
+// MeshControlService issues destination-authorized personal routes after current membership
+// verification.
+service MeshControlService {
+  // RequestPersonalRoute asks the destination to verify active source membership and sign a
+  // bounded personal capability.
+  rpc RequestPersonalRoute(RequestPersonalRouteRequest) returns (RequestPersonalRouteResponse);
+}
+
+// RequestPersonalRouteResponse carries results from an operation that asks the destination to
+// verify active source membership and sign a bounded personal capability.
+message RequestPersonalRouteResponse {
+  agentvmm.trust.v1.RouteCapability capability = 1;
+  ServiceExport destination_export = 2;
+}
+
+// RequestPersonalRouteRequest carries inputs for an operation that asks the destination to
+// verify active source membership and sign a bounded personal capability.
+message RequestPersonalRouteRequest {
+  string request_id = 1;
+  string mesh_id = 2;
+  string source_device_id = 3;
+  uint64 source_root_key_revision = 4;
+  string source_environment_id = 5;
+  string source_container_instance_id = 6;
+  string destination_export_id = 7;
+  uint64 route_generation = 8;
+  uint64 policy_epoch = 9;
+  agentvmm.trust.v1.RouteBudget budget = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  bytes nonce = 12;
+  bytes source_signature = 13;
+  RouteClass route_class = 14;
+}
+
+// ListServiceExportsResponse returns the exports visible to the environment owner.
+message ListServiceExportsResponse {
+  repeated ServiceExport exports = 1;
+}

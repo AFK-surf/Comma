@@ -148,6 +148,53 @@ test("upcoming meetings show their status and open the shared report", async ({
   expect(new URL(page.url()).search).toBe("?project=p-2");
 });
 
+test("members' meetings name who gets the reminder and open the shared report", async ({
+  page,
+}) => {
+  const members = {
+    ...overview({ calendar_scope: "members", calendar_selections: [] }),
+    member_calendars: 12,
+    events: [
+      {
+        meeting_plan_id: "plan-member",
+        title: "Weekly product sync",
+        start_ms: 1_900_000_000_000,
+        status: "not_sent",
+        // Slack has no member with Sam's email: Sam gets no DM.
+        recipients: [
+          "maya@acme.test",
+          "li@acme.test",
+          "sam@acme.test",
+          "priya@acme.test",
+        ].map((email) => ({ email, slack_unmatched: email === "sam@acme.test" })),
+      },
+    ],
+  };
+  const requests = await openMeetings(page, "/orgs/acme/meetings", (request) => {
+    if (request.path === "/orgs/acme/meetings/p-1") return ok(members);
+    if (request.path === "/orgs/acme/meetings/p-1/detail")
+      return ok({ report: "Agenda: launch checklist." });
+    return undefined;
+  });
+
+  await expect(page.getByText("12 member Google accounts connected")).toBeVisible();
+  const row = page.getByRole("button", { name: /Weekly product sync/ });
+  // The person Slack cannot find is listed first and marked.
+  await expect(row).toContainText(
+    "To sam@acme.test Not found in Slack, maya@acme.test +2"
+  );
+  await expect(row).toContainText("Not sent");
+  await row.click();
+  const dialog = page.getByRole("dialog", { name: "Weekly product sync" });
+  await expect(
+    dialog.getByText(
+      "maya@acme.test, li@acme.test, sam@acme.test Not found in Slack, priya@acme.test"
+    )
+  ).toBeVisible();
+  await expect(dialog.getByText("Agenda: launch checklist.")).toBeVisible();
+  expect(requests.at(-1)?.search).toBe("?plan=plan-member");
+});
+
 test("past meetings page through the history and link to Slack", async ({ page }) => {
   await openMeetings(page, "/orgs/acme/meetings/past", (request) => {
     if (request.path !== "/orgs/acme/meetings/p-1/history") return undefined;
@@ -276,7 +323,7 @@ test("settings save the chosen calendars, then pause", async ({ page }) => {
   });
 });
 
-test("every member's own calendars save with preparation sent to organizers", async ({
+test("every member's own calendars save with reminder DMs to their members", async ({
   page,
 }) => {
   const requests = await openMeetings(
@@ -307,7 +354,7 @@ test("every member's own calendars save with preparation sent to organizers", as
     .getByText("Send join notices and minutes to the organizer in a DM")
     .click();
   // Joining is a switch of its own for members' calendars too, but one of
-  // joining and the organizer's preparation stays on.
+  // joining and the reminder DMs stays on.
   const autojoin = page.getByRole("checkbox", {
     name: "Automatically join and record the meeting",
   });
@@ -317,15 +364,13 @@ test("every member's own calendars save with preparation sent to organizers", as
   await expect(autojoin).not.toBeChecked();
   await page.getByRole("button", { name: "Save and enable" }).click();
   await expect(
-    page.getByText(
-      "Turn on automatic joining or the preparation message to the organizer."
-    )
+    page.getByText("Turn on automatic joining or the reminder DMs.")
   ).toBeVisible();
   expect(requests.some((request) => request.method === "PUT")).toBe(false);
   await autojoinLabel.click();
 
   await page
-    .getByText("Send each meeting's preparation to its organizer in a DM")
+    .getByText("Send a DM before each meeting to the members who have it")
     .click();
   await page.getByRole("button", { name: "Save and enable" }).click();
   await expect(page).toHaveURL(/\/orgs\/acme\/meetings\?project=p-1$/);

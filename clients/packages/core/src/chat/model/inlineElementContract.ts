@@ -50,6 +50,7 @@ const inlineElementContracts = {
         left.contentId === right.contentId &&
         left.uiRef === right.uiRef &&
         left.version === right.version &&
+        left.title === right.title &&
         left.summary === right.summary &&
         left.messageId === right.messageId &&
         left.conversationId === right.conversationId &&
@@ -125,6 +126,8 @@ const inlineElementContracts = {
         left.prompt === right.prompt &&
         left.multiSelect === right.multiSelect &&
         left.allowOther === right.allowOther &&
+        left.skipBehavior === right.skipBehavior &&
+        left.independent === right.independent &&
         left.choices.length === right.choices.length &&
         left.choices.every((choice, index) =>
           sameChoice(choice, right.choices[index]!)
@@ -177,11 +180,13 @@ const inlineElementContracts = {
       }
 
       const status = stringValue(block.status);
+      const groupId = stringValue(block.group_id);
       return {
         kind: "inline-task",
         task: {
           activityStatus: stringValue(block.activity_status),
           conversationId,
+          ...(groupId === undefined ? {} : { groupId }),
           status,
           ...(status === undefined ? {} : { statusBucket: taskStatusBucket(status) }),
           title: stringValue(block.title),
@@ -194,6 +199,7 @@ const inlineElementContracts = {
       return (
         left.task.activityStatus === right.task.activityStatus &&
         left.task.conversationId === right.task.conversationId &&
+        left.task.groupId === right.task.groupId &&
         left.task.status === right.task.status &&
         left.task.title === right.task.title &&
         left.task.unavailable === right.task.unavailable &&
@@ -275,7 +281,7 @@ function sameMessagePart(left: ChatMessagePart, right: ChatMessagePart) {
 const OPEN_QUESTION: ChatQuestionState = { status: "open" };
 
 /**
- * An Agent's `question` block as the message `messageId` asks it: two to six choices with distinct ids. Its state
+ * An Agent's `question` block as the message `messageId` asks it: one to six choices with distinct ids. Its state
  * starts open; the transcript pass (`withQuestionStates`) says where it stands.
  */
 export function questionPartValue(
@@ -305,7 +311,7 @@ export function questionPartValue(
     }
   );
   if (
-    choices.length < 2 ||
+    choices.length < 1 ||
     choices.length > 6 ||
     new Set(choices.map((choice) => choice.id)).size !== choices.length
   )
@@ -317,6 +323,8 @@ export function questionPartValue(
     choices,
     multiSelect: block.multi_select === true,
     allowOther: block.allow_other !== false,
+    ...(block.skip_behavior === "dismiss" ? { skipBehavior: "dismiss" as const } : {}),
+    ...(block.independent === true ? { independent: true as const } : {}),
     state: OPEN_QUESTION,
   };
 }

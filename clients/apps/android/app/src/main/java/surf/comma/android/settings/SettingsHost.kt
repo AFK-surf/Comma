@@ -5,6 +5,8 @@ import android.app.NotificationManager
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
+import android.os.Parcelable
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
@@ -51,6 +53,7 @@ internal class SettingsHost(
     override val local: LocalSettings by lazy { SettingsGraph.local(activity) }
     override val auth: AuthState get() = authRepository.state.value
     override val devices: HomeDevices by lazy { SettingsGraph.devices(activity) }
+    override val locationSharing get() = surf.comma.android.chat.live.LocationSharing.of(activity)
     private val sessions by lazy { surf.comma.android.conversation.AuthConversationSessions(authRepository) }
     override val apiHost: String get() = android.net.Uri.parse(surf.comma.android.BuildConfig.BACKEND_BASE_URL).host.orEmpty()
 
@@ -66,6 +69,8 @@ internal class SettingsHost(
     }
 
     override fun openRouter() { links?.openRouter?.invoke() }
+
+    override val openApps: (() -> Unit)? get() = links?.openApps
 
     override suspend fun attachToRouter(name: String, bytes: ByteArray): Boolean = links?.attachToRouter?.invoke(name, bytes) == true
 
@@ -193,6 +198,35 @@ internal class SettingsHost(
 
     override fun back() = host.pop()
 
+    /**
+     * Keeps what the Settings tab shows across the activity being recreated (a theme, language or text size change):
+     * the pages opened from the list, which are built from their key alone, and how far the list is scrolled.
+     */
+    fun saveState(out: Bundle) {
+        out.putStringArrayList(STATE_PAGES, ArrayList(host.keys.drop(1).takeWhile { it in LIST_PAGES || DeveloperSettings.restores(it) }))
+        saveListState(out)
+    }
+
+    fun restoreState(state: Bundle?) {
+        state ?: return
+        if (host.keys.size == 1) state.getStringArrayList(STATE_PAGES)?.forEach { key ->
+            (LIST_PAGES[key]?.invoke(this) ?: DeveloperSettings.page(this, key))?.let(::restore)
+        }
+        restoreListState(state)
+    }
+
+    /** How far the list is scrolled, for a host that keeps its own pages (the Settings activity). */
+    fun saveListState(out: Bundle) {
+        rootList()?.layoutManager?.onSaveInstanceState()?.let { out.putParcelable(STATE_ROOT_LIST, it) }
+    }
+
+    fun restoreListState(state: Bundle?) {
+        val list = state?.getParcelable(STATE_ROOT_LIST, Parcelable::class.java) ?: return
+        rootList()?.layoutManager?.onRestoreInstanceState(list)
+    }
+
+    private fun rootList() = (host.pages().firstOrNull()?.view as? SettingsPageLayout)?.list
+
     override fun onRender(page: SettingsPage, render: () -> Unit) = host.onRender(page, render)
 
     override fun toast(text: String, failure: Boolean) = showToast(text, failure)
@@ -273,6 +307,29 @@ internal class SettingsHost(
     private companion object {
         const val PERMISSION_PREFS = "settings.permissions"
         const val BLUETOOTH_ASKED = "bluetooth.asked"
+        const val STATE_ROOT_LIST = "settings.rootList"
+        const val STATE_PAGES = "settings.tabPages"
+        /** Every page the list opens, each built from its key alone (RootPage's rows). */
+        val LIST_PAGES: Map<String, (SettingsContext) -> SettingsPage> = mapOf(
+            ProfilePage.KEY to { ProfilePage(it) },
+            DevicesPage.KEY to { DevicesPage(it) },
+            LicensesPage.KEY to { LicensesPage(it) },
+            NotificationsPage.KEY to { NotificationsPage(it) },
+            WorkspacePage.KEY to { WorkspacePage(it) },
+            surf.comma.android.settings.desktop.SharedTasksPage.KEY to { surf.comma.android.settings.desktop.SharedTasksPage(it) },
+            surf.comma.android.settings.desktop.TaskRequestsPage.KEY to { surf.comma.android.settings.desktop.TaskRequestsPage(it) },
+            surf.comma.android.settings.desktop.RouterKeysPage.KEY to { surf.comma.android.settings.desktop.RouterKeysPage(it) },
+            surf.comma.android.settings.desktop.ComputePage.KEY to { surf.comma.android.settings.desktop.ComputePage(it) },
+            surf.comma.android.settings.desktop.DrivePage.KEY to { surf.comma.android.settings.desktop.DrivePage(it) },
+            surf.comma.android.settings.desktop.PluginsPage.KEY to { surf.comma.android.settings.desktop.PluginsPage(it) },
+            surf.comma.android.settings.desktop.RouterSettingsPage.KEY to { surf.comma.android.settings.desktop.RouterSettingsPage(it) },
+            surf.comma.android.settings.desktop.UsagePage.KEY to { surf.comma.android.settings.desktop.UsagePage(it) },
+            surf.comma.android.settings.desktop.RoutinesSettingsPage.KEY to { surf.comma.android.settings.desktop.RoutinesSettingsPage(it) },
+            surf.comma.android.settings.desktop.ChannelsPage.KEY to { surf.comma.android.settings.desktop.ChannelsPage(it) },
+            surf.comma.android.settings.desktop.ModelsPage.KEY to { surf.comma.android.settings.desktop.ModelsPage(it) },
+            surf.comma.android.settings.desktop.VoiceSettingsPage.KEY to { surf.comma.android.settings.desktop.VoiceSettingsPage(it) },
+            surf.comma.android.labels.TaskLabelsPage.KEY to { surf.comma.android.labels.TaskLabelsPage(it) },
+        )
         /** What a still picture is compressed to; avatars render small. */
         const val AVATAR_TARGET_BYTES = 96L * 1024
     }
@@ -284,4 +341,6 @@ internal class SettingsLinks(
     val attachToRouter: suspend (String, ByteArray) -> Boolean,
     /** A Task opened from Settings is shown over it. */
     val shown: () -> Unit = {},
+    /** Settings › Comma › Apps. */
+    val openApps: (() -> Unit)? = null,
 )

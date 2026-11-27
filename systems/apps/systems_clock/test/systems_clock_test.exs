@@ -1071,4 +1071,37 @@ defmodule SystemsClockTest do
     assert_received {:taken, at}
     assert at >= started + 1_000
   end
+
+  test "arming a timer does not steal another already-due timer" do
+    SystemsClock.manual()
+    test = self()
+
+    worker =
+      InScope.start(fn ->
+        receive do
+          :first ->
+            SystemsClock.send_after(self(), :future, 10_000)
+            SystemsClock.send_after(self(), :immediate, 0)
+            receive do: (:immediate -> :ok)
+            send(test, :after_first)
+        end
+      end)
+
+    SystemsClock.send_after(worker, :first, 1_000)
+    SystemsClock.send_after(self(), :second, 1_000)
+
+    SystemsClock.settle(
+      scope: [Atom.to_string(InScope)],
+      until: fn ->
+        {:messages, messages} = Process.info(self(), :messages)
+        :after_first in messages
+      end
+    )
+
+    assert_received :after_first
+    refute_received :second
+
+    SystemsClock.advance(0)
+    assert_received :second
+  end
 end

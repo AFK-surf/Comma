@@ -6,7 +6,7 @@ export const recommendationTemplateCatalogVersion = 1 as const;
 
 export const recommendationLimits = {
   cards: 6,
-  itemsPerCard: 4,
+  itemsPerCard: 7,
   payloadBytes: 64 * 1024,
   sources: 12,
   summaryCharacters: 1_200,

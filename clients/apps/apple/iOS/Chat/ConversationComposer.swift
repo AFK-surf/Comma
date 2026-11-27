@@ -101,10 +101,14 @@ struct ConversationComposer: View {
             }
             .foregroundStyle(CommaTheme.textPrimary)
             .frame(width: 44, height: 44)
-            // Expanded, the + is a glyph inside the card, mirroring Send in the opposite corner, so its own glass
-            // melts into the card's. Not interactive glass: its touch tracking takes the touch from the button, so
-            // the press shows and the menu never opens. `PlusButtonStyle` draws the press instead.
-            .commaGlass(in: Circle(), shown: !expanded)
+            // Expanded, the + sits inside the card, mirroring Send in the opposite corner. Keeping its glass active
+            // inside the container lets it merge smoothly with the card as the card grows across the gap instead of
+            // dropping the + circle before the card arrives. Not interactive glass: its touch tracking takes the
+            // touch from the button, so the press shows and the menu never opens. `PlusButtonStyle` draws the press.
+            .commaGlass(in: Circle().inset(by: expanded ? 3 : 0), shown: {
+                if #available(iOS 26.0, *) { return true }
+                return !expanded
+            }())
             .contentShape(Circle())
         }
         .buttonStyle(PlusButtonStyle(onGlass: !expanded))

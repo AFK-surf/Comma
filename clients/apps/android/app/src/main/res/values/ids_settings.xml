@@ -8,7 +8,9 @@
     <item name="settings_theme" type="id" />
     <item name="settings_font_size" type="id" />
     <item name="settings_glass" type="id" />
+    <item name="settings_share_location" type="id" />
     <item name="settings_devices" type="id" />
+    <item name="settings_apps" type="id" />
     <item name="settings_devices_status" type="id" />
     <item name="settings_devices_sign_out_others" type="id" />
     <item name="settings_sign_out" type="id" />

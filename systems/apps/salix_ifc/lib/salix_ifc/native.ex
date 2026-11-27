@@ -26,7 +26,8 @@ defmodule SalixIFC.Native do
 
   def entries(_), do: raise(ArgumentError, "IFC requires a list or plain map")
 
-  defp invalid(:decide), do: {:deny, %SalixIFC.Reason{clause: :invalid_input}}
+  defp invalid(operation) when operation in [:decide, :decide_easy],
+    do: {:deny, %SalixIFC.Reason{clause: :invalid_input}}
 
   defp invalid(operation)
        when operation in [

@@ -37,6 +37,7 @@ export interface ClientControlBrowserTarget {
 export interface ClientControlBrowser {
   listClientTargets(): ClientControlBrowserTarget[];
   openClientTab(input: { url: string }): Promise<ClientControlBrowserTarget>;
+  closeClientTab(input: { tabId: string }): Promise<void>;
   sendClientCdpCommand(input: {
     method: string;
     params: Record<string, unknown>;
@@ -168,6 +169,7 @@ const globalSettingsPatchSchema = z
     showInAirDrop: z.boolean().optional(),
     showInDock: z.boolean().optional(),
     showInMenuBar: z.boolean().optional(),
+    showComputerUseInNotch: z.boolean().optional(),
     showInNotch: z.boolean().optional(),
   })
   .strict()
@@ -177,9 +179,11 @@ const globalSettingsPatchSchema = z
 // The client settings an agent may change: what the user could ask for in
 // words. onboardingCompletedUserIds and routerProfileNoticeSeen record what
 // the user has already seen; nothing an agent should rewrite.
+// usageAnalyticsEnabled is the user's own consent to analytics.
 const {
   onboardingCompletedUserIds: _onboardingCompletedUserIds,
   routerProfileNoticeSeen: _routerProfileNoticeSeen,
+  usageAnalyticsEnabled: _usageAnalyticsEnabled,
   ...agentClientSettingsShape
 } = commaClientSettingsPatchSchema.shape;
 const clientSettingsPatchSchema = z
@@ -220,6 +224,7 @@ export function createCommaClientControlRegistry({
   artifactRoot,
   browser,
   deviceAccess,
+  relaunch,
 }: {
   airdrop?: Pick<AirDropService, "status" | "files">;
   airdropSender?: {
@@ -236,6 +241,8 @@ export function createCommaClientControlRegistry({
     workspaceId: string,
     allow: boolean
   ) => Promise<{ allows_operations: boolean }>;
+  /** Main's existing relaunch: it answers first and quits on a later turn. */
+  relaunch: () => Promise<{ relaunching: boolean }>;
 }) {
   let screenshotSequence = 0;
   let screenshotWriteTail = Promise.resolve();
@@ -433,6 +440,7 @@ export function createCommaClientControlRegistry({
             'Items. If the result has keepAwakeWhenLidClosedStatus "requires-approval", ' +
             "tell the user to allow Comma there. Only the user can give that approval. " +
             "showInNotch shows running Tasks and AirDrop around the Mac's notch; " +
+            "showComputerUseInNotch runs Computer Use on a virtual desktop with a top notch island (off falls back to plain background mode); " +
             `notchSideWidth (${notchSideWidthRange.min} to ${notchSideWidthRange.max} points, ` +
             `default ${notchSideWidthRange.default}) is how far it reaches past each side. ` +
             "notifyRouterMessages and notificationSound control the notifications the " +
@@ -487,6 +495,31 @@ export function createCommaClientControlRegistry({
       apis: [
         {
           description:
+            "Quit Comma through its ordinary shutdown and start it again. " +
+            "Use it only when the user asks to restart Comma, or when a setting " +
+            "applies only after a restart. relaunching false means this build " +
+            "cannot restart itself: tell the user to restart Comma. The station " +
+            "and every command that runs through it stop with Comma, so this " +
+            "answer is the last thing you receive. To check, start a new command " +
+            "after Comma is back: wait, then run comma modules. Never quit, kill " +
+            "or start Comma in a different way (osascript, kill, open, launchctl, " +
+            "a background script). Such a job can outlive the request and " +
+            "restart Comma again and again.",
+          // The provider answers before it quits: the server writes this answer
+          // in the same turn, and the quit starts on a later one.
+          handler: () => relaunch(),
+          id: "restart",
+          input: emptyInputSchema,
+          usage: `comma call app restart`,
+        },
+      ],
+      description: "Restart the Comma desktop app.",
+      id: "app",
+    },
+    {
+      apis: [
+        {
+          description:
             "Open a real Comma in-app browser tab and return its stable tab id once its native page is ready.",
           // A failure is a result, as for the agent commands below: the comma
           // CLI shows no HTTP error body.
@@ -507,6 +540,25 @@ export function createCommaClientControlRegistry({
           id: "open-tab",
           input: browserOpenTabInputSchema,
           usage: `comma call in-app-browser open-tab --json '{"url":"https://example.com/"}'`,
+        },
+        {
+          description:
+            "Close an in-app browser tab by its stable tab id. It answers once the tab is gone.",
+          handler: async (input) => {
+            const { tabId } = input as z.output<typeof browserTabInputSchema>;
+            try {
+              await browser.closeClientTab({ tabId });
+              return { closed: { tabId } };
+            } catch (error) {
+              return {
+                error: "browser_operation_failed",
+                message: error instanceof Error ? error.message : String(error),
+              };
+            }
+          },
+          id: "close-tab",
+          input: browserTabInputSchema,
+          usage: `comma call in-app-browser close-tab --json '{"tabId":"..."}'`,
         },
         {
           description: "List live in-app browser tabs and their stable tab ids.",
@@ -543,7 +595,7 @@ export function createCommaClientControlRegistry({
         },
       ],
       description:
-        "Open, inspect, and control Comma's retained in-app browser tabs by stable tab id.",
+        "Open, inspect, control, and close Comma's retained in-app browser tabs by stable tab id.",
       id: "in-app-browser",
     },
   ]);

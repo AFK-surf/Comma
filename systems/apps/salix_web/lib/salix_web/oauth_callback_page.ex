@@ -86,8 +86,9 @@ defmodule SalixWeb.OAuthCallbackPage do
 
   @doc """
   The page where a person types in a secret for `alias_name`. It posts to its own
-  path: one value, or with `fields` (`[%{"name", "label", "secret"}]`) one
-  labelled input each, all required, posted together as `fields[<name>]`.
+  path: one value, or with `fields` (`[%{"name", "label", "secret", "optional"}]`) one
+  labelled input each, required unless the field is optional, posted together
+  as `fields[<name>]`.
   """
   @spec render_secret_form(String.t(), String.t(), [map()]) :: String.t()
   def render_secret_form(state, alias_name, fields \\ []) do
@@ -134,7 +135,9 @@ defmodule SalixWeb.OAuthCallbackPage do
       escape(field["label"] || field["name"]) <>
       ~s(<input type="#{type}" name="fields[) <>
       escape(field["name"]) <>
-      ~s(]" required) <> if(index == 0, do: " autofocus", else: "") <> "></label>"
+      ~s(]") <>
+      if(field["optional"] == true, do: "", else: " required") <>
+      if(index == 0, do: " autofocus", else: "") <> "></label>"
   end
 
   defp mcp_brand(url) when is_binary(url) do

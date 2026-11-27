@@ -13,10 +13,12 @@ defmodule SalixIM.RouterConversationInput do
     ConversationIds,
     ModelMentionTask,
     RequestMention,
+    ShareMention,
     ConversationInput,
     ConversationServer,
     Conversations,
-    GroupDirectory
+    GroupDirectory,
+    StationTaskQuestionSync
   }
 
   @spec ensure(String.t()) :: {:ok, map()} | {:error, term()}
@@ -88,27 +90,204 @@ defmodule SalixIM.RouterConversationInput do
         attrs = stringify(attrs)
         command_text = command_text(attrs["content"])
         command? = ControlCommand.parse(command_text) != :none
-        # A message naming a model starts a Task with it instead of the Router's turn;
-        # one naming a person (and no model) sends them a Task request.
-        model_task =
+
+        station_sync =
           if command?,
-            do: :none,
-            else: ModelMentionTask.parse(said_text(attrs["content"]), attrs["content"])
+            do: :passthrough,
+            else: StationTaskQuestionSync.prepare_user_answer(group_id, conversation, attrs)
 
-        request =
-          if command? or model_task != :none,
-            do: :none,
-            else: RequestMention.parse(said_text(attrs["content"]), attrs["content"])
+        case station_sync do
+          {:stale_card, _ref, question_id, binding} ->
+            locale =
+              case attrs["client_metadata"] do
+                %{"locale" => loc} when is_binary(loc) -> loc
+                _ -> nil
+              end
 
-        message =
-          user_message(
-            conversation,
-            attrs,
-            if(command? or model_task != :none or request != :none,
-              do: [],
-              else: [conversation["router_participant_id"]]
-            )
-          )
+            case StationTaskQuestionSync.fold_stale_card(
+                   group_id,
+                   conversation["conversation_id"],
+                   attrs["user_id"] || "current",
+                   question_id,
+                   binding,
+                   locale: locale
+                 ) do
+              {:ok, %{"message_id" => _} = folded_result} ->
+                {:ok, folded_result}
+
+              _ ->
+                {:error,
+                 {:conflict, "This card has already been answered or replaced in still.fail."}}
+            end
+
+          _ ->
+            {attrs, station_handled?, station_sync_info} =
+              case station_sync do
+                {:handled, sync_info, extra_meta} ->
+                  {merge_metadata(attrs, extra_meta), true, sync_info}
+
+                {:fallback_to_router, extra_meta} ->
+                  {merge_metadata(attrs, extra_meta), false, nil}
+
+                :passthrough ->
+                  {attrs, false, nil}
+              end
+
+            # A message naming a model starts a Task with it instead of the Router's turn;
+            # one naming a person (and no model) sends them a Task request.
+            model_task =
+              if command? or station_handled?,
+                do: :none,
+                else: ModelMentionTask.parse(said_text(attrs["content"]), attrs["content"])
+
+            # One naming people for a shared task starts it with them (and sends no requests).
+            share =
+              if command? or station_handled? or model_task != :none,
+                do: :none,
+                else: ShareMention.parse(said_text(attrs["content"]), attrs["content"])
+
+            request =
+              if command? or station_handled? or model_task != :none or share != :none,
+                do: :none,
+                else: RequestMention.parse(said_text(attrs["content"]), attrs["content"])
+
+            message =
+              user_message(
+                conversation,
+                attrs,
+                if(
+                  command? or station_handled? or model_task != :none or share != :none or
+                    request != :none,
+                  do: [],
+                  else: [conversation["router_participant_id"]]
+                )
+              )
+
+            with {:ok, result} <-
+                   ConversationServer.append_group_conversation_message(
+                     group_id,
+                     conversation["conversation_id"],
+                     message
+                   ) do
+              observe_append(
+                conversation,
+                message["source_message_id"],
+                message["metadata"],
+                result
+              )
+
+              if station_handled? and result["inserted"] == true do
+                StationTaskQuestionSync.after_commit(group_id, station_sync_info)
+              end
+
+              if command? and result["inserted"] do
+                metadata = %{
+                  "provider" => "internal",
+                  "connect_id" => "internal",
+                  "conversation_id" => conversation["conversation_id"],
+                  "source_message_id" => result["message_id"]
+                }
+
+                # The committed Message is the at-most-once receipt. Neither it nor
+                # the command reply is agent input, including after delivery recovery.
+                case ControlCommand.intercept(group_id, command_text, metadata) do
+                  {:error, _reason} ->
+                    ControlCommand.respond(
+                      conversation["router_agent_id"],
+                      metadata,
+                      "Salix could not start this command. Please send it again shortly."
+                    )
+
+                  {:ok, :command} ->
+                    :ok
+                end
+              end
+
+              with {:ok, mention} <- model_task,
+                   true <- result["inserted"] == true do
+                ModelMentionTask.start(
+                  group_id,
+                  conversation,
+                  result["message_id"],
+                  attrs["user_id"],
+                  mention
+                )
+              end
+
+              with {:ok, mention} <- share,
+                   true <- result["inserted"] == true do
+                ShareMention.start(
+                  group_id,
+                  conversation,
+                  result["message_id"],
+                  requester(attrs),
+                  mention
+                )
+              end
+
+              with {:ok, mention} <- request,
+                   true <- result["inserted"] == true do
+                RequestMention.send_request(
+                  group_id,
+                  conversation,
+                  result["message_id"],
+                  requester(attrs),
+                  mention
+                )
+              end
+
+              {:ok, result}
+            end
+        end
+      end
+    end)
+  end
+
+  @doc """
+  Appends a non-waking `question_answer` message in Home when a still.fail
+  options card was answered or closed directly inside still.fail, folding the
+  bound Comma Home card with the user's choice.
+  """
+  @spec append_resolved_question_answer(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          map(),
+          String.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def append_resolved_question_answer(
+        group_id,
+        user_id,
+        question_message_id,
+        display_text,
+        answer_block,
+        station_ref
+      )
+      when is_binary(group_id) and is_binary(question_message_id) and is_binary(display_text) and
+             is_map(answer_block) and is_binary(station_ref) do
+    SalixStore.ReadScope.run(fn ->
+      with {:ok, conversation} <- ensure(group_id) do
+        block = Map.put(answer_block, "question_message_id", question_message_id)
+
+        # Store only the structured `question_answer` block so folding a card
+        # answered inside still.fail never renders a standalone user bubble at
+        # the bottom of Home. `display_text` still goes to the Router's
+        # `no_wake` context note below.
+        content = [block]
+
+        attrs = %{
+          "user_id" => user_id || "current",
+          "content" => content,
+          "reply_to_message_id" => question_message_id,
+          "client_request_id" => "sf-card-sync:" <> question_message_id,
+          "metadata" => %{
+            "resolved_in_stillfail" => true,
+            "stillfail_conversation_id" => station_ref
+          }
+        }
+
+        message = user_message(conversation, attrs, [])
 
         with {:ok, result} <-
                ConversationServer.append_group_conversation_message(
@@ -116,50 +295,16 @@ defmodule SalixIM.RouterConversationInput do
                  conversation["conversation_id"],
                  message
                ) do
-          observe_append(conversation, message["source_message_id"], message["metadata"], result)
-
-          if command? and result["inserted"] do
-            metadata = %{
-              "provider" => "internal",
-              "connect_id" => "internal",
-              "conversation_id" => conversation["conversation_id"],
-              "source_message_id" => result["message_id"]
-            }
-
-            # The committed Message is the at-most-once receipt. Neither it nor
-            # the command reply is agent input, including after delivery recovery.
-            case ControlCommand.intercept(group_id, command_text, metadata) do
-              {:error, _reason} ->
-                ControlCommand.respond(
-                  conversation["router_agent_id"],
-                  metadata,
-                  "Salix could not start this command. Please send it again shortly."
-                )
-
-              {:ok, :command} ->
-                :ok
-            end
-          end
-
-          with {:ok, mention} <- model_task,
-               true <- result["inserted"] == true do
-            ModelMentionTask.start(
+          if result["inserted"] == true do
+            StationTaskQuestionSync.stage_router_context(
               group_id,
-              conversation,
-              result["message_id"],
-              attrs["user_id"],
-              mention
-            )
-          end
-
-          with {:ok, mention} <- request,
-               true <- result["inserted"] == true do
-            RequestMention.send_request(
-              group_id,
-              conversation,
-              result["message_id"],
-              requester(attrs),
-              mention
+              "station-res:" <> question_message_id,
+              %{
+                "event" => "station_card_resolved",
+                "ref" => station_ref,
+                "msg_id" => question_message_id,
+                "text" => String.slice(display_text, 0, 120)
+              }
             )
           end
 
@@ -169,13 +314,22 @@ defmodule SalixIM.RouterConversationInput do
     end)
   end
 
-  # Only a full session's author sends a Task request: Comma marks a
-  # restricted one's message, which then has no requester.
+  defp merge_metadata(attrs, extra) when is_map(extra) and map_size(extra) > 0 do
+    Map.update(attrs, "metadata", extra, fn existing ->
+      if is_map(existing), do: Map.merge(existing, extra), else: extra
+    end)
+  end
+
+  defp merge_metadata(attrs, _extra), do: attrs
+
+  # Only a full session's author sends a Task request or starts a shared task:
+  # Comma marks a restricted one's message, which then has no requester.
   defp requester(%{"metadata" => %{"restricted_session" => true}}), do: nil
   defp requester(attrs), do: attrs["user_id"]
 
   defp user_message(conversation, attrs, participant_ids) do
     attrs
+    |> Map.delete("requester_email")
     |> Map.put("participant_id", conversation["user_participant_id"])
     |> Map.put("actor_type", "user")
     |> Map.put_new("user_id", "current")
@@ -255,6 +409,20 @@ defmodule SalixIM.RouterConversationInput do
   defp said_text(content) when is_binary(content), do: content
   defp said_text(content), do: command_text(content)
 
+  @router_title "Comma"
+  @legacy_router_titles ["bridge chat"]
+
+  @doc false
+  def legacy_router_title?(title) when is_binary(title),
+    do: String.downcase(String.trim(title)) in @legacy_router_titles
+
+  def legacy_router_title?(_), do: false
+
+  @doc false
+  def normalize_router_title(title) do
+    if legacy_router_title?(title), do: @router_title, else: title
+  end
+
   @spec desired_spec(String.t()) :: {:ok, map()} | {:error, term()}
   def desired_spec(group_id) do
     with {:ok, group} <- GroupDirectory.get_group(group_id),
@@ -268,7 +436,7 @@ defmodule SalixIM.RouterConversationInput do
          "agent_group_id" => group_id,
          "router_agent_id" => router_agent["agent_id"],
          "kind" => "user_chat",
-         "title" => "Comma",
+         "title" => @router_title,
          "status" => "active",
          "activity_status" => "idle",
          "created_by_agent_id" => router_agent["agent_id"],
@@ -304,7 +472,7 @@ defmodule SalixIM.RouterConversationInput do
 
     case ConversationServer.resident_group_conversation(group_id, conversation_id) do
       {:ok, conversation} ->
-        {:ok, conversation}
+        reconcile_legacy_router_title(group_id, conversation, spec["title"])
 
       {:error, :not_found} ->
         case ConversationInput.create_group_conversation_with_id(
@@ -312,14 +480,50 @@ defmodule SalixIM.RouterConversationInput do
                conversation_id,
                Map.delete(spec, "router_agent_id")
              ) do
-          {:error, :exists} -> Conversations.get_group_conversation(group_id, conversation_id)
-          other -> other
+          {:error, :exists} ->
+            with {:ok, conversation} <-
+                   Conversations.get_group_conversation(group_id, conversation_id) do
+              reconcile_legacy_router_title(group_id, conversation, spec["title"])
+            end
+
+          other ->
+            other
         end
 
       {:error, _reason} = error ->
         error
     end
   end
+
+  defp reconcile_legacy_router_title(group_id, %{"title" => title} = conversation, desired_title) do
+    if legacy_router_title?(title) do
+      case ConversationServer.update_group_conversation(
+             group_id,
+             conversation["conversation_id"],
+             %{"title" => desired_title, if_title: title}
+           ) do
+        {:ok, updated} ->
+          {:ok, updated}
+
+        {:error, {:conflict, _}} ->
+          case ConversationServer.resident_group_conversation(
+                 group_id,
+                 conversation["conversation_id"]
+               ) do
+            {:ok, current} -> {:ok, current}
+            _ -> {:ok, Map.put(conversation, "title", desired_title)}
+          end
+
+        _ ->
+          {:ok, Map.put(conversation, "title", desired_title)}
+      end
+    else
+      {:ok, conversation}
+    end
+  end
+
+  defp reconcile_legacy_router_title(_group_id, conversation, _desired_title),
+    do: {:ok, conversation}
 
   defp desired_participant(spec, actor_type, identity) do
     case Enum.find(spec["participants"], fn participant ->

@@ -57,7 +57,7 @@ def asyncStart (state event : Term) : KernelM Term := do
   let id := event.get (b "tool_call_id")
   if ← existingTerminal state id then return state
   let selected := select event ["tool_call_id", "tool_name", "input", "status", "completion_mode",
-    "completion_owner", "started_at", "auto_wait_seconds", "visible_reply_origin", "terminal_reply",
+    "completion_owner", "started_at", "auto_wait_seconds", "visible_reply_origin", "terminal_reply", "ifc_view_label",
     "capability_request_id", "capability_deadline_ms", "capability_retry_at_ms",
     "capability_sync_failed", "capability_error_since_ms",
     "trusted_origin", "trusted_origins", "trusted_origin_source_message_ids"]

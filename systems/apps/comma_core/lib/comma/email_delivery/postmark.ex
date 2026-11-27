@@ -30,6 +30,13 @@ defmodule Comma.EmailDelivery.Postmark do
     |> normalize_result()
   end
 
+  @impl true
+  def send_notice(email, subject, text, html) do
+    from_email()
+    |> SalixStore.Postmark.send_email([email], subject, text, html_body: html)
+    |> normalize_result()
+  end
+
   defp normalize_result(:ok), do: :ok
 
   defp normalize_result({:error, {:transport, _reason} = error}),

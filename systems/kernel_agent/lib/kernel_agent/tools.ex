@@ -42,7 +42,7 @@ defmodule KernelAgent.Tools do
       %{
         "name" => "end_turn",
         "description" =>
-          "Settle the turn: outcome done when the work is complete, optionally with the final reply in reply={tool,params}; outcome blocked with a reason when nothing can progress. This must be the only tool call in the response.",
+          "Settle the turn: outcome done when the work is complete, optionally with the final reply in reply matching its disclosed schema; outcome blocked with a reason when nothing can progress. This must be the only tool call in the response.",
         "input_schema" => %{
           "type" => "object",
           "properties" => %{

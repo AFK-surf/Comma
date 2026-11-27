@@ -35,7 +35,7 @@ defmodule SalixAgent.UnsettledReplyNotice do
       "summary" => "the previous response did not end the turn",
       "content" =>
         "Your previous response had no tool call, so nobody received it and the turn is still open. " <>
-          "If the work is done, call end_turn with outcome done, carrying reply={tool,params} when the result is still unsent. " <>
+          "If the work is done, call end_turn with outcome done, carrying reply matching its disclosed schema when the result is still unsent. " <>
           "If no authorized action can progress, call end_turn with outcome blocked and a reason. " <>
           "Otherwise continue the work with a tool.",
       "created_at" => SystemsClock.system_time(:second),

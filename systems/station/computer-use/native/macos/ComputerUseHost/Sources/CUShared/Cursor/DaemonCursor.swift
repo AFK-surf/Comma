@@ -57,6 +57,9 @@ public final class DaemonCursor {
 
         ActionOverlayRuntime.pump(for: ActionOverlayTiming.postApproachDwell)
 
+        if emitClickRipples {
+            VirtualDesktopClickRipple.shared.emit(at: poseScreen)
+        }
         try body()
 
         ActionOverlayRuntime.pump(for: ActionOverlayTiming.finalHold)
@@ -130,7 +133,25 @@ public final class DaemonCursor {
         ActionOverlayRuntime.pump(for: ActionOverlayTiming.finalHold)
     }
 
+    /// Materializes and visibly parks the AI cursor at the center of the
+    /// agent's virtual display so the user immediately sees the AI pointer
+    /// inside the Notch preview and viewer window.
+    public var emitClickRipples: Bool = false
+
+    public func parkOnVirtualDesktop(displayID: CGDirectDisplayID, bounds: CGRect) {
+        let centerAX = Point<AXScreenSpace>(x: bounds.midX, y: bounds.midY)
+        let centerAppKit = appKitScreenPoint(from: centerAX).cgPoint
+        ensureMaterialized(
+            target: .display(screenID: displayID),
+            fallbackWindowFrame: bounds
+        )
+        applyPose(screenPoint: centerAppKit, canvasTheta: ActionOverlayApproachConstants.cursorDockHeading)
+        showPanel()
+    }
+
     public func tearDown() {
+        emitClickRipples = false
+        VirtualDesktopClickRipple.shared.tearDown()
         panel?.orderOut(nil)
         panel?.close()
         panel = nil

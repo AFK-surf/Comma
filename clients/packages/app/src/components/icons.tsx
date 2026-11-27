@@ -15,6 +15,8 @@ import {
   ListChecksIcon,
   ListChecksFilledIcon,
   MicrophoneIcon,
+  PeopleGroupFilledIcon,
+  PeopleGroupIcon,
   ListBulletsIcon,
   PanelLeftIcon,
   PanelRightIcon,
@@ -54,6 +56,7 @@ export type AppIconName =
   | "layout-right"
   | "list-bullets"
   | "mic"
+  | "people"
   | "plus"
   | "plugins"
   | "reload"
@@ -82,6 +85,7 @@ const appIcons: Record<AppIconName, CentralAppIcon> = {
   "layout-right": PanelRightIcon,
   "list-bullets": ListBulletsIcon,
   mic: MicrophoneIcon,
+  people: PeopleGroupIcon,
   plus: PlusIcon,
   plugins: PuzzleIcon,
   reload: ReloadIcon,
@@ -99,6 +103,7 @@ const filledAppIcons: Partial<Record<AppIconName, CentralAppIcon>> = {
   drive: Folder2FilledIcon,
   home: HomeFilledIcon,
   inbox: InboxFilledIcon,
+  people: PeopleGroupFilledIcon,
   plugins: PuzzleFilledIcon,
   tasks: ListChecksFilledIcon,
 };

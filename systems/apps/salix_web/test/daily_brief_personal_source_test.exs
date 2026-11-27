@@ -17,11 +17,25 @@ defmodule Salix.Bindings.DailyBriefPersonalSourceTest do
       owner = SystemsRuntime.fetch_env!(:salix_web, :daily_brief_test_owner)
       SystemsRuntime.Proc.send(owner, {:slack, conn.request_path, token})
       fun = SystemsRuntime.fetch_env!(:salix_web, :daily_brief_test_slack)
+      search = SystemsRuntime.get_env(:salix_web, :daily_brief_test_search)
 
       body =
-        if is_function(fun, 2),
-          do: fun.(conn.request_path, conn.query_params),
-          else: fun.(conn.request_path)
+        cond do
+          conn.request_path == "/api/search.messages" and is_function(search, 1) ->
+            search.(conn.query_params)
+
+          conn.request_path == "/api/search.messages" and is_function(fun, 2) ->
+            %{
+              "ok" => true,
+              "messages" => %{"matches" => [], "paging" => %{"page" => 1, "pages" => 1}}
+            }
+
+          is_function(fun, 2) ->
+            fun.(conn.request_path, conn.query_params)
+
+          true ->
+            fun.(conn.request_path)
+        end
 
       conn
       |> put_resp_content_type("application/json")
@@ -55,6 +69,7 @@ defmodule Salix.Bindings.DailyBriefPersonalSourceTest do
 
       SystemsRuntime.delete_env(:salix_web, :daily_brief_test_owner)
       SystemsRuntime.delete_env(:salix_web, :daily_brief_test_slack)
+      SystemsRuntime.delete_env(:salix_web, :daily_brief_test_search)
     end)
 
     :ok =
@@ -93,7 +108,13 @@ defmodule Salix.Bindings.DailyBriefPersonalSourceTest do
         %{
           "ok" => true,
           "messages" => [
-            %{"ts" => "1786930000.000100", "user" => "UBOB1", "text" => "can you look?"}
+            %{"ts" => "1786930000.000100", "user" => "UBOB1", "text" => "can you look?"},
+            %{
+              "ts" => "1786930000.000300",
+              "user" => "UAPP1",
+              "bot_id" => "B1",
+              "text" => "an app's note"
+            }
           ],
           "response_metadata" => %{"next_cursor" => ""}
         }
@@ -116,7 +137,7 @@ defmodule Salix.Bindings.DailyBriefPersonalSourceTest do
         %{"ok" => true, "messages" => [], "response_metadata" => %{"next_cursor" => ""}}
     end)
 
-    assert {:ok, %{messages: [direct, group], complete?: true}} =
+    assert {:ok, %{messages: [direct, app, group], complete?: true}} =
              Source.direct_messages(
                Map.merge(request(), %{
                  after_us: 1_786_929_000_000_000,
@@ -124,9 +145,81 @@ defmodule Salix.Bindings.DailyBriefPersonalSourceTest do
                })
              )
 
-    assert %{channel_id: "D1", kind: "im", author: "UBOB1", text: "can you look?"} = direct
+    assert %{channel_id: "D1", kind: "im", author: "UBOB1", text: "can you look?", bot?: false} =
+             direct
+
+    # An app posts as its bot user; it is still a bot.
+    assert %{author: "UAPP1", bot?: true} = app
     assert %{channel_id: "C9", kind: "mpim", thread_ts: "1786930000.000900"} = group
     assert_received {:slack, "/api/users.conversations", "Bearer xoxp-member"}
+  end
+
+  test "reads the member's own messages in channels shared with another company" do
+    stub(fn
+      "/api/users.conversations", _params ->
+        %{"ok" => true, "channels" => [], "response_metadata" => %{"next_cursor" => ""}}
+    end)
+
+    shared = %{
+      "id" => "CEXT1",
+      "name" => "pm-tool",
+      "is_channel" => true,
+      "is_ext_shared" => true
+    }
+
+    team = %{"id" => "CTEAM1", "name" => "general", "is_channel" => true}
+
+    SystemsRuntime.put_env(:salix_web, :daily_brief_test_search, fn params ->
+      assert params["query"] == "from:<@UALICE1> after:2026-08-16 before:2026-08-18"
+
+      %{
+        "ok" => true,
+        "messages" => %{
+          "matches" => [
+            %{
+              "ts" => "1786930200.000100",
+              "user" => "UALICE1",
+              "text" => "agents need a CLI too",
+              "channel" => shared,
+              "permalink" =>
+                "https://x.slack.com/archives/CEXT1/p1786930200000100?thread_ts=1786930000.000100&cid=CEXT1"
+            },
+            # The bot reads the team's own channels; search does not add them.
+            %{
+              "ts" => "1786930300.000100",
+              "user" => "UALICE1",
+              "text" => "hi",
+              "channel" => team
+            },
+            # Search takes whole days: a message before the window is cut.
+            %{
+              "ts" => "1786920000.000100",
+              "user" => "UALICE1",
+              "text" => "old",
+              "channel" => shared
+            }
+          ],
+          "paging" => %{"page" => 1, "pages" => 1}
+        }
+      }
+    end)
+
+    assert {:ok, %{messages: [message], complete?: true}} =
+             Source.direct_messages(
+               Map.merge(request(), %{
+                 after_us: 1_786_929_000_000_000,
+                 before_us: 1_786_940_000_000_000
+               })
+             )
+
+    assert %{
+             channel_id: "CEXT1",
+             channel_name: "pm-tool",
+             kind: "shared",
+             author: "UALICE1",
+             thread_ts: "1786930000.000100",
+             text: "agents need a CLI too"
+           } = message
   end
 
   test "a conversation Slack refuses is left out and the read marked partial" do
@@ -199,10 +292,11 @@ defmodule Salix.Bindings.DailyBriefPersonalSourceTest do
     refute_received {:slack, _path, _token}
   end
 
-  test "reports a token Slack rejects as revoked" do
+  test "reports a token Slack rejects as revoked and marks the grant for reconnecting" do
     stub(fn _path -> %{"ok" => false, "error" => "token_revoked"} end)
 
     assert Source.direct_messages(window(request())) == {:error, :grant_revoked}
+    assert {:ok, %{"status" => "reauthorization_required"}} = SalixStore.OAuth.get("conn-1")
   end
 
   defp request,

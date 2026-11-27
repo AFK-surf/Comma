@@ -14,6 +14,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, type MouseEvent, type ReactElement, type ReactNode } from "react";
 import { HoverCard, type HoverCardProps } from "@comma/ui/components/hover-card";
+import { StillfailProviderLogo } from "@comma/ui/components/provider-brand-logos";
 import { TaskLoopHoverDetails } from "./TaskLoopHoverDetails";
 import {
   TASK_LOOP_FILTER_KEYS,
@@ -144,6 +145,46 @@ function Chip({
   );
 }
 
+/**
+ * Chip label text that keeps both start and end readable when truncated by the chip's
+ * max-width, putting the ellipsis in the middle instead of clipping the tail.
+ */
+export function ChipLabelText({
+  ariaHidden,
+  text,
+  title,
+}: {
+  ariaHidden?: boolean | undefined;
+  text: string;
+  title?: string | undefined;
+}) {
+  const chars = Array.from(text);
+  if (chars.length <= 12) {
+    return (
+      <span
+        aria-hidden={ariaHidden}
+        className="comma-task-label-chip-text"
+        title={title}
+      >
+        {text}
+      </span>
+    );
+  }
+  const tailLen = Math.min(10, Math.max(4, Math.floor(chars.length * 0.35)));
+  const head = chars.slice(0, chars.length - tailLen).join("");
+  const tail = chars.slice(chars.length - tailLen).join("");
+  return (
+    <span
+      aria-hidden={ariaHidden}
+      className="comma-task-label-chip-text comma-task-label-chip-text-middle"
+      title={title ?? text}
+    >
+      <span className="comma-task-label-chip-text-start">{head}</span>
+      <span className="comma-task-label-chip-text-end">{tail}</span>
+    </span>
+  );
+}
+
 export function TaskLabelChip({
   color,
   name,
@@ -170,7 +211,7 @@ export function TaskLabelChip({
       testId={testId}
     >
       <LabelDot color={color} />
-      <span className="comma-task-label-chip-text">{name}</span>
+      <ChipLabelText text={name} />
     </Chip>
   );
 }
@@ -216,7 +257,12 @@ export function TaskPullRequestChip({
       onOpen={onOpen}
       testId="task-card-pull-request"
     >
-      <span aria-hidden data-state={pullRequest.state} title={state}>
+      <span
+        aria-hidden
+        className="comma-task-label-chip-icon"
+        data-state={pullRequest.state}
+        title={state}
+      >
         <Icon />
       </span>
       <span className="comma-task-label-chip-text">{name}</span>
@@ -282,7 +328,7 @@ export function TaskRequestChip({
     >
       <span
         aria-hidden
-        className="inline-flex shrink-0"
+        className="comma-task-label-chip-icon inline-flex shrink-0"
         data-direction={direction}
         title={iconOnly ? undefined : said}
       >
@@ -298,11 +344,7 @@ export function TaskRequestChip({
           source={avatar}
         />
       </span>
-      {iconOnly ? null : (
-        <span aria-hidden className="comma-task-label-chip-text" title={said}>
-          {name}
-        </span>
-      )}
+      {iconOnly ? null : <ChipLabelText ariaHidden text={name} title={said} />}
       <span className="app-sr-only">{said}</span>
     </Chip>
   );
@@ -362,27 +404,62 @@ export function TaskPlatformChip({
       onOpen={onOpen}
       testId={testId}
     >
-      <TaskOriginIcon origin={origin} />
-      <span className="comma-task-label-chip-text">{label}</span>
+      <TaskOriginIcon className="size-5 comma-task-label-chip-icon" origin={origin} />
+      <ChipLabelText text={label} />
     </Chip>
   );
 }
 
+/** What the host chip knows of where a station's Task runs. */
+export type TaskHostChipFacts = {
+  /** The machine's name, where this device knows it. */
+  machine: string | null;
+  online: boolean | null;
+  model: string | null;
+  /** A still.fail station's chat (it carries its still.fail page): it runs in still.fail. */
+  stillfail?: boolean | undefined;
+};
+
+/** The product's name (Monoid, still.fail before), as it writes it: never translated. */
+const STILLFAIL_PLACE = "Monoid";
+
 /**
- * Where a Task a station hosts runs: on which machine, with which model, and whether the machine is offline (where
- * this device knows).
+ * The host chip's text. Only a place goes inside "On …": a known machine, or still.fail for a still.fail chat. A
+ * machine this device does not know reads "On a computer", with the model after it, never as the place.
+ */
+function taskHostChipText(
+  host: TaskHostChipFacts,
+  messages: Pick<
+    ReturnType<typeof useCommaMessages>,
+    "station_task_hosted" | "station_task_offline" | "station_task_on"
+  >
+): string {
+  const place = host.machine || (host.stillfail ? STILLFAIL_PLACE : null);
+  const where = place
+    ? messages.station_task_on({
+        where: [place, host.model].filter(Boolean).join(" · "),
+      })
+    : [messages.station_task_hosted(), host.model].filter(Boolean).join(" · ");
+  return host.online === false
+    ? `${where} · ${messages.station_task_offline()}`
+    : where;
+}
+
+/**
+ * Where a Task a station hosts runs: on which machine (or in still.fail), with which model, and whether the machine
+ * is offline (where this device knows).
  */
 export function TaskHostChip({
   host,
   nested,
   testId,
 }: {
-  host: { machine: string | null; online: boolean | null; model: string | null };
+  host: TaskHostChipFacts;
   nested?: boolean;
   testId?: string | undefined;
 }) {
   const messages = useCommaMessages();
-  const where = [host.machine, host.model].filter(Boolean).join(" · ");
+  const inStillfail = host.stillfail === true;
   return (
     <Chip
       className="comma-task-label-chip comma-task-platform-chip"
@@ -390,11 +467,12 @@ export function TaskHostChip({
       nested={nested}
       testId={testId}
     >
-      <MacbookIcon />
-      <span className="comma-task-label-chip-text">
-        {where ? messages.station_task_on({ where }) : messages.station_task_hosted()}
-        {host.online === false ? ` · ${messages.station_task_offline()}` : ""}
-      </span>
+      {inStillfail ? (
+        <StillfailProviderLogo className="comma-task-label-chip-icon" />
+      ) : (
+        <MacbookIcon className="comma-task-label-chip-icon" />
+      )}
+      <ChipLabelText text={taskHostChipText(host, messages)} />
     </Chip>
   );
 }
@@ -429,17 +507,29 @@ export function TaskScheduleChip({
       // the icon, so it never covers the icon of the row below.
       hoverPlacement={iconOnly ? "end" : undefined}
     >
-      <TaskLoopTypeIcon kind={taskLoopFilterKey(loop)} />
-      {iconOnly ? null : <span className="comma-task-label-chip-text">{label}</span>}
+      <TaskLoopTypeIcon
+        className="comma-task-label-chip-icon"
+        kind={taskLoopFilterKey(loop)}
+      />
+      {iconOnly ? null : <ChipLabelText text={label} />}
     </Chip>
   );
 }
 
-function TaskLoopTypeIcon({ kind }: { kind: TaskLoopFilterKey }) {
-  if (kind === "scheduled") return <CalendarIcon />;
-  if (kind === "event_triggered") return <EyeIcon />;
-  if (kind === "unknown") return <InfinityIcon />;
-  return <span aria-hidden className="size-md" />;
+function TaskLoopTypeIcon({
+  className,
+  kind,
+}: {
+  className?: string;
+  kind: TaskLoopFilterKey;
+}) {
+  const iconProps = className ? { className } : {};
+  if (kind === "scheduled") return <CalendarIcon {...iconProps} />;
+  if (kind === "event_triggered") return <EyeIcon {...iconProps} />;
+  if (kind === "unknown") return <InfinityIcon {...iconProps} />;
+  return (
+    <span aria-hidden className={className ? `${className} size-md` : "size-md"} />
+  );
 }
 
 /** Tasks and Inbox offer the same cadence choices and keep unknown cadences separate. */

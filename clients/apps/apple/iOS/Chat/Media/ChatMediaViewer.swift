@@ -37,6 +37,7 @@ final class ChatMediaPresenter: UIViewController {
         self.viewer = viewer
         // A page change back to an earlier session's last message must still reveal its tile.
         gallery.returnMessageID = item.messageID
+        gallery.notifyViewerPageChanged(item: item)
         let navigation = UINavigationController(rootViewController: viewer)
         let appearance = UINavigationBarAppearance()
         appearance.configureWithTransparentBackground()
@@ -95,7 +96,7 @@ final class ChatMediaViewer: UIViewController, UIPageViewControllerDataSource, U
     var currentItem: ChatMediaItem { items[index] }
     var currentPage: ChatMediaPage? { pager.viewControllers?.first as? ChatMediaPage }
     var imageFrame: CGRect {
-        guard let image = currentPage?.imageView else { return .null }
+        guard let image = currentPage?.imageView, !image.bounds.isEmpty else { return .null }
         return image.convert(image.bounds, to: view)
     }
 
@@ -187,7 +188,23 @@ final class ChatMediaViewer: UIViewController, UIPageViewControllerDataSource, U
         if navigationItem.titleView !== count { navigationItem.titleView = count }
     }
 
-    @objc private func closeViewer() { (navigationController ?? self).dismiss(animated: true) }
+    @objc func closeViewer() { (navigationController ?? self).dismiss(animated: true) }
+
+    func goToPage(index target: Int, animated: Bool) {
+        guard target >= 0, target < items.count, target != index else { return }
+        let direction: UIPageViewController.NavigationDirection = target > index ? .forward : .reverse
+        let nextPage = page(at: target)
+        paging = true
+        pager.setViewControllers([nextPage], direction: direction, animated: animated) { [weak self] completed in
+            guard let self else { return }
+            self.paging = false
+            guard completed else { return }
+            self.index = target
+            self.updatePosition()
+            self.gallery.returnMessageID = self.currentItem.messageID
+            self.gallery.notifyViewerPageChanged(item: self.currentItem)
+        }
+    }
 
     @objc private func reducedMotionSwipe() {
         if currentPage?.scroll.zoomScale == 1, !paging { closeViewer() }
@@ -223,12 +240,14 @@ final class ChatMediaViewer: UIViewController, UIPageViewControllerDataSource, U
         index = page.index
         updatePosition()
         gallery.returnMessageID = currentItem.messageID
+        gallery.notifyViewerPageChanged(item: currentItem)
     }
 
     private func updatePosition() {
         for label in [count, footerCount] {
             label.text = "\(index + 1) / \(items.count)"
             label.accessibilityLabel = label.text
+            label.sizeToFit()
         }
         count.isHidden = items.count == 1
     }
@@ -425,8 +444,15 @@ final class ChatMediaPage: UIViewController, UIScrollViewDelegate, @preconcurren
     }
 
     private func layoutImage() {
-        guard scroll.zoomScale == 1 else { return }
-        let size = imageView.image?.size ?? (item.isVideo ? scroll.bounds.size : CGSize(width: 1, height: 1))
+        guard scroll.zoomScale == 1, !scroll.bounds.isEmpty else { return }
+        let size: CGSize
+        if let image = imageView.image {
+            size = image.size
+        } else if let width = item.attachment.width, let height = item.attachment.height, width > 0, height > 0 {
+            size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        } else {
+            size = item.isVideo ? scroll.bounds.size : CGSize(width: 4, height: 3)
+        }
         let ratio = min(scroll.bounds.width / max(size.width, 1), scroll.bounds.height / max(size.height, 1))
         imageView.frame = CGRect(origin: .zero, size: CGSize(width: size.width * ratio, height: size.height * ratio))
         scroll.contentSize = imageView.bounds.size

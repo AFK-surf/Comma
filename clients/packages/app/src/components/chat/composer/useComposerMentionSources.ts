@@ -18,7 +18,7 @@ import type {
   RecommendationSource,
 } from "@comma/recommendation-contract";
 import { useCall, useTopic, useTopicSelect } from "@comma/core-client";
-import type { MentionTask, SlackDirectory } from "@comma/core/contract";
+import type { FileSource, MentionTask, SlackDirectory } from "@comma/core/contract";
 import { useOnboardingAhead } from "../../onboarding/useOnboardingAhead";
 
 /**
@@ -49,6 +49,14 @@ export interface ComposerModelMentionItem {
 }
 
 /** A person the requester may ask for a Task (a request grant), named in the Router chat to send them the message. */
+/** One of the account's People, for a shared task named in the Router chat. */
+export interface ComposerShareMentionItem {
+  userId: string;
+  name: string;
+  email?: string | null | undefined;
+  avatar?: FileSource | null | undefined;
+}
+
 export interface ComposerRequestMentionItem {
   grantId: string;
   name: string;
@@ -106,6 +114,8 @@ export interface ComposerMentionSources {
   plugins: MentionSourceState<ComposerPluginMentionItem>;
   /** People to send a Task request to: in the Router chat only (`taskRequests`), read once the menu first opens. */
   requests: MentionSourceState<ComposerRequestMentionItem>;
+  /** The account's People for a shared task: in the Router chat only (`taskRequests`), read with `requests`. */
+  shares?: MentionSourceState<ComposerShareMentionItem> | undefined;
   routines: MentionSourceState<ComposerRoutineMentionItem>;
   /** The channels and people of the installed Slack plugin, read once the menu first opens. */
   slack?: SlackDirectory;
@@ -128,7 +138,7 @@ function taskItems(
     .filter((task) => task.id !== excludeConversationId)
     .map((task) => ({
       conversationId: task.id,
-      statusBucket: taskStatusBucket(task.status),
+      statusBucket: taskStatusBucket(task.status, { loopState: task.loopState }),
       title: task.title,
       updatedAt: task.updatedAt,
     }));
@@ -421,6 +431,26 @@ export function useComposerMentionSources({
             },
     [modelsAsked, modelsShown, shownRequests]
   );
+  const shares = useMemo<MentionSourceState<ComposerShareMentionItem>>(
+    () =>
+      !modelsShown || !modelsAsked
+        ? { items: EMPTY_ITEMS, status: "ready" }
+        : shownRequests?.people
+          ? {
+              items: shownRequests.people.map((person) => ({
+                userId: person.id,
+                name: person.name || person.email || person.id,
+                email: person.email,
+                avatar: person.avatar,
+              })),
+              status: "ready",
+            }
+          : {
+              items: EMPTY_ITEMS,
+              status: shownRequests?.error ? "ready" : "loading",
+            },
+    [modelsAsked, modelsShown, shownRequests]
+  );
 
   const tasks = useMemo<MentionSourceState<ComposerTaskMentionItem>>(() => {
     if (!enabled || !groupId) return { items: EMPTY_ITEMS, status: "ready" };
@@ -511,6 +541,7 @@ export function useComposerMentionSources({
       models,
       plugins,
       requests,
+      shares,
       routines: visibleRoutines,
       slack,
       slackChannelMembers,
@@ -522,6 +553,7 @@ export function useComposerMentionSources({
       models,
       plugins,
       requests,
+      shares,
       slack,
       slackChannelMembers,
       visibleRoutines,

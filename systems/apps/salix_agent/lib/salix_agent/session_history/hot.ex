@@ -105,7 +105,7 @@ defmodule SalixAgent.SessionHistory.Hot do
       lock(agent, session)
       position = state(agent, session)
       deadline = SystemsClock.monotonic_time(:millisecond) + scan_budget_ms()
-      scope = {agent, session, pattern(search), position.cold, ceiling, limit, deadline}
+      scope = {agent, session, patterns(search), position.cold, ceiling, limit, deadline}
       {rows, resume} = scan(scope, {before_seq, before_part}, [], search && @first_window)
       {position, decode(rows), resume}
     end)
@@ -145,20 +145,44 @@ defmodule SalixAgent.SessionHistory.Hot do
       SELECT seq,part,text,kind,tool_name,label FROM #{@docs}
       WHERE agent_id=$1 AND session_id=$2 AND seq>$3 AND seq<=$4
         AND (seq,part)<($5,$6)
-        AND (($7::text IS NULL AND part=0) OR text LIKE $7 ESCAPE '\\')
+        AND (($7::text[] IS NULL AND part=0) OR (kind<>'fact' AND text LIKE ALL($7::text[])))
       ORDER BY seq DESC,part DESC LIMIT $8
       """,
       [agent, session, low, ceiling, seq, part, pattern, limit]
     ).rows
   end
 
+  # Compaction summary rows that contain any term, newest first. The summaries
+  # of one Session are few, so one bounded query reads them.
+  def summaries(agent, session, kind, terms, ceiling, limit) do
+    transaction(fn ->
+      query(
+        """
+        SELECT seq,part,text,kind,tool_name,label FROM #{@docs}
+        WHERE agent_id=$1 AND session_id=$2 AND seq<=$3 AND tool_name=$4
+          AND text LIKE ANY($5::text[])
+        ORDER BY seq DESC,part DESC LIMIT $6
+        """,
+        [agent, session, ceiling, kind, patterns(terms), limit]
+      ).rows
+      |> decode()
+    end)
+  end
+
+  # The newest 256 indexed records stay hot. A position read without the row
+  # lock can only make a visit skip work that the next discovery returns to.
+  def transfer_due?(position),
+    do: position.transfer_ready and transfer_ceiling(position) > position.cold
+
+  defp transfer_ceiling(position), do: max(position.cold, position.indexed - 256)
+
   def transfer_batch(agent, session) do
     transaction(fn ->
       lock(agent, session)
       position = state(agent, session)
-      ceiling = max(position.cold, position.indexed - 256)
+      ceiling = transfer_ceiling(position)
 
-      if not position.transfer_ready or ceiling == position.cold do
+      if not transfer_due?(position) do
         {position.cold, position.cold, []}
       else
         rows =
@@ -223,7 +247,10 @@ defmodule SalixAgent.SessionHistory.Hot do
   defp decode(rows),
     do: Enum.map(rows, &Map.new(Enum.zip(~w(seq part text kind tool_name label), &1)))
 
-  defp pattern(nil), do: nil
+  # A text search lists every term; a row matches when it contains all of them.
+  # LIKE's default escape character is the backslash.
+  defp patterns(nil), do: nil
+  defp patterns(terms), do: Enum.map(terms, &pattern/1)
 
   defp pattern(text),
     do:

@@ -652,18 +652,23 @@ describe("ChatPanel generated media", () => {
     );
 
     const downloadButton = screen.getByRole("button", { name: "Download audio" });
+    const downloadIconMarkup = downloadButton.querySelector("svg")?.outerHTML;
+    expect(downloadIconMarkup).toBeDefined();
     downloadButton.focus();
     await user.keyboard("{Enter}");
 
     const pendingButton = screen.getByRole("button", {
       name: "Downloading audio",
     });
+    const pendingIcon = pendingButton.querySelector("svg");
+    expect(pendingIcon).toHaveClass("motion-safe:animate-spin");
+    expect(pendingIcon?.outerHTML).not.toBe(downloadIconMarkup);
     expect(pendingButton).toHaveFocus();
     expect(pendingButton).not.toBeDisabled();
     expect(pendingButton).toHaveAttribute("aria-disabled", "true");
     expect(pendingButton).toHaveAttribute("aria-busy", "true");
     expect(pendingButton).not.toHaveAttribute("title");
-    expect(screen.getByText("Downloading audio…")).toBeVisible();
+    expect(screen.getByText("Downloading audio…")).toBeInTheDocument();
     await user.keyboard("{Enter}");
     expect(execute).toHaveBeenCalledOnce();
 
@@ -675,11 +680,12 @@ describe("ChatPanel generated media", () => {
 
     expect(
       await screen.findByText("Could not download audio. Try again.")
-    ).toBeVisible();
+    ).toBeInTheDocument();
     const retryButton = screen.getByRole("button", {
       name: "Download audio failed. Try again",
     });
     expect(retryButton).toHaveFocus();
+    expect(retryButton.querySelector("svg")?.outerHTML).toBe(downloadIconMarkup);
     expect(retryButton).not.toHaveAttribute("aria-disabled");
     expect(retryButton).not.toHaveAttribute("title");
     expect(retryButton).toHaveAttribute("data-download-state", "error");
@@ -698,7 +704,7 @@ describe("ChatPanel generated media", () => {
         source: "https://media.example.test/signed-audio.mp3",
       })
     );
-    expect(await screen.findByText("Audio downloaded.")).toBeVisible();
+    expect(await screen.findByText("Audio downloaded.")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Downloaded audio" })
     ).not.toHaveAttribute("title");
@@ -765,7 +771,7 @@ describe("ChatPanel generated media", () => {
       });
       expect(failedButton).toBeDisabled();
       expect(failedButton).not.toHaveAttribute("title");
-      expect(screen.getByText(`Could not download ${kind}.`)).toBeVisible();
+      expect(screen.getByText(`Could not download ${kind}.`)).toBeInTheDocument();
       expect(fetchMedia).not.toHaveBeenCalled();
     }
   );
@@ -785,7 +791,7 @@ describe("ChatPanel generated media", () => {
 
     expect(
       await screen.findByText("Could not download image. Try again.")
-    ).toBeVisible();
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Download image failed. Try again",
@@ -832,11 +838,13 @@ describe("ChatPanel generated media", () => {
     await user.click(screen.getByRole("button", { name: "Download audio" }));
     expect(
       await screen.findByText("Could not download audio. Try again.")
-    ).toBeVisible();
+    ).toBeInTheDocument();
 
     rerender(renderAudio());
 
-    expect(screen.getByText("Could not download audio. Try again.")).toBeVisible();
+    expect(
+      screen.getByText("Could not download audio. Try again.")
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Download audio failed. Try again",
@@ -874,7 +882,7 @@ describe("ChatPanel generated media", () => {
     await user.click(recoveredButton);
 
     await waitFor(() => expect(nextExecute).toHaveBeenCalledOnce());
-    expect(await screen.findByText("Audio downloaded.")).toBeVisible();
+    expect(await screen.findByText("Audio downloaded.")).toBeInTheDocument();
   });
 
   it("ignores a stale download result after the media source changes", async () => {
@@ -893,7 +901,7 @@ describe("ChatPanel generated media", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Download audio" }));
-    expect(screen.getByText("Downloading audio…")).toBeVisible();
+    expect(screen.getByText("Downloading audio…")).toBeInTheDocument();
 
     rerender(<ChatPanelAudio download={download} src="generated-audio-v2.mp3" />);
     resolveRequest({

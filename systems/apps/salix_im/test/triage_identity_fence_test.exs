@@ -2181,6 +2181,7 @@ defmodule SalixIM.TriageIdentityFenceTest do
       "raw_deny_literals" => [sentinel]
     }
   end
+
   defp valid_v2_fence(scope, generation, run_id) do
     now = SystemsClock.system_time(:millisecond)
 

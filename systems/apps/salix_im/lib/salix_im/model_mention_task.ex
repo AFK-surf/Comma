@@ -128,8 +128,9 @@ defmodule SalixIM.ModelMentionTask do
   @doc """
   Starts a Task from the New task window (`CommaWeb.WindowTasks`) as a model
   mention in Home does, without the message in Home: the catalog `model` (and
-  its `effort`) runs it, `text` is its first Message, and the uploads `text`
-  names are shared into it first. Made once per `request_id` of `user_id`.
+  its `effort`) runs it, or the Workspace's Task model when `model` is nil,
+  `text` is its first Message, and the uploads `text` names are shared into it
+  first. Made once per `request_id` of `user_id`.
   Answers the Task as soon as it is made, for the window to open it; the
   Router is told after, off the request and without a round of its own.
   """
@@ -140,13 +141,19 @@ defmodule SalixIM.ModelMentionTask do
         router,
         user_id,
         request_id,
-        %{model: model, text: text} = asked
+        %{text: text} = asked
       )
       when is_binary(text) and text != "" do
+    model = asked[:model]
+    runs_on = asked[:runs_on]
+    runtime_model = asked[:runtime_model]
+
     mention = %{
       model: model,
       effort: asked[:effort],
-      name: model,
+      runs_on: runs_on,
+      runtime_model: runtime_model,
+      name: window_model_name(model, runs_on, runtime_model),
       text: text,
       uploads: uploads_named(text),
       local_files: 0
@@ -166,7 +173,7 @@ defmodule SalixIM.ModelMentionTask do
         group_id,
         "window-task:" <> user_id <> ":" <> request_id,
         "The person started a Task from the New task window, so you were not asked: " <>
-          "\"#{title(text)}\" (conversation #{task_id}) runs with #{model}. " <>
+          "\"#{title(text)}\" (conversation #{task_id}) runs with #{mention.name}. " <>
           "It is in your Task list; their words were its first message. This is context only, not a request."
       )
 
@@ -184,13 +191,38 @@ defmodule SalixIM.ModelMentionTask do
   def refusal_message({:upload, path, _reason}),
     do: {:ok, "#{upload_name(path)} could not be passed to the Task; attach it again."}
 
+  def refusal_message({:runs_on, :device_offline, _source}),
+    do: {:ok, "That Monoid workspace is offline. Try again when it is back, or choose another."}
+
+  def refusal_message({:runs_on, :device_not_found, _source}),
+    do: {:ok, "That Monoid workspace is no longer connected."}
+
+  def refusal_message({:model, {:not_on_stillfail, _models}}),
+    do:
+      {:ok,
+       "That Monoid workspace does not support the selected model. Choose another model or Workspace default."}
+
   def refusal_message({:model, _reason} = reason), do: {:ok, refusal(reason)}
   def refusal_message({:runs_on, _reason, _source} = reason), do: {:ok, refusal(reason)}
+  def refusal_message({:bound_runs_on, _bound} = reason), do: {:ok, refusal(reason)}
+  def refusal_message({:bound_model, _provider} = reason), do: {:ok, refusal(reason)}
 
   def refusal_message(reason) when reason in [:invalid_model_configuration, :router_changed],
     do: {:ok, refusal(reason)}
 
   def refusal_message(_reason), do: :error
+
+  defp window_model_name(_model, %{"kind" => "station"}, %{"provider" => p, "model" => m}),
+    do: "#{p} (#{m}) on Monoid"
+
+  defp window_model_name(_model, %{"kind" => "station"}, %{"provider" => p}),
+    do: "#{p} on Monoid"
+
+  defp window_model_name(_model, %{"kind" => "station"}, nil),
+    do: "the Monoid workspace's default model"
+
+  defp window_model_name(model, _runs_on, _runtime_model),
+    do: model || "the Workspace's Task model"
 
   defp create(_group_id, _router, _conversation_id, _message_id, _user_id, %{text: ""}),
     do: {:error, :empty}
@@ -212,21 +244,35 @@ defmodule SalixIM.ModelMentionTask do
     end
   end
 
+  # Without a model or explicit station the Task runs in Salix with the Workspace's Task model.
   defp create_task(group_id, router, user_id, mention, client_request_id, source_refs) do
-    model =
-      %{"kind" => "catalog", "model" => mention.model, "allow_paid" => true}
-      |> put_present("reasoning_effort", mention.effort)
+    choice =
+      cond do
+        is_map(mention[:runs_on]) ->
+          %{"runs_on" => mention.runs_on}
+          |> put_present("model", mention[:runtime_model])
+
+        mention.model ->
+          model =
+            %{"kind" => "catalog", "model" => mention.model, "allow_paid" => true}
+            |> put_present("reasoning_effort", mention.effort)
+
+          %{"model" => model}
+
+        true ->
+          %{"runs_on" => %{"kind" => "salix"}}
+      end
 
     TaskPlacement.create_task_conversation(
       group_id,
       router,
-      %{
-        "model" => model,
+      choice
+      |> Map.merge(%{
         "content" => mention.text,
         "title" => title(mention.text),
         "client_request_id" => client_request_id,
         "source_refs" => source_refs
-      }
+      })
       |> owned_by(user_id)
     )
   end
@@ -304,6 +350,8 @@ defmodule SalixIM.ModelMentionTask do
 
   defp refusal({:model, _reason} = refusal), do: TaskPlacement.message(refusal)
   defp refusal({:runs_on, _reason, _source} = refusal), do: TaskPlacement.message(refusal)
+  defp refusal({:bound_runs_on, _bound} = refusal), do: TaskPlacement.message(refusal)
+  defp refusal({:bound_model, _provider} = refusal), do: TaskPlacement.message(refusal)
   defp refusal({:group, _reason} = refusal), do: TaskPlacement.message(refusal)
   defp refusal(:router_changed), do: "the Group's Router changed; send it again"
   defp refusal(:invalid_model_configuration), do: "the model does not take that effort"

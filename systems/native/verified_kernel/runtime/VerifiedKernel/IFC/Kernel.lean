@@ -160,4 +160,51 @@ def decide (effect activation items facts : Term) : Term :=
   | .ok evidence => .tuple [a "allow", evidence]
   | .error why => .tuple [a "deny", why]
 
+
+/-- Easy keeps the reader authority of conversations: provider IM scopes and
+spaces, and internal Comma Conversations. It ignores other audience restrictions. -/
+def easyLabel (source : Term) : Term :=
+  label (normalize ((atoms source).filter (fun atom =>
+    atomKind atom == a "scope" || atomKind atom == a "space" ||
+      atomKind atom == a "conversation" || atom == a "agent_private")))
+
+def easyReader (p source facts : Term) : Tri :=
+  allTri (atoms (easyLabel source)) (fun atom =>
+    if atomKind atom == a "space" then .unknown
+    else readerAtom p atom facts)
+
+/-- Unknown source references still need a decision. No IM source needs no IFC gate. -/
+def easyProtected (rawItems sources : Term) : Bool :=
+  let items := values rawItems
+  if sources == a "context" then items.any (fun item => !publicLabel (easyLabel (f item "label")))
+  else (values sources).any (fun ref =>
+    match items.find? (fun item => f item "ref" == ref) with
+    | none => true
+    | some item => !publicLabel (easyLabel (f item "label")))
+
+def admitEasySource (source p facts : Term) : Check Term :=
+  match easyReader p (f source "label") facts with
+  | .yes => .ok (.tuple [f source "ref", a "instruction"])
+  | .unknown => .error (reason "membership_unknown" (f source "ref") (kinds (easyLabel (f source "label"))))
+  | .no => .error (reason "flow_denied" (f source "ref") (kinds (easyLabel (f source "label"))))
+
+/-- Easy admits IM sources through the authenticated requester's reading rights.
+Destination writers, external placement policy, tags and receipts do not restrict it. -/
+def decideEasyChecked (effect activation rawItems facts : Term) : Check Term := do
+  validate effect activation rawItems facts
+  let items := values rawItems
+  checkUniqueRefs items
+  let request ← resolveRequest effect activation items
+  let p := f request "principal"
+  let sources ← resolveSources effect request items
+  let admitted ← collectSources (fun source => admitEasySource source p facts) sources
+  return record "Evidence" [("request", f effect "request"), ("requester", authority p),
+    ("destination", f effect "destination"), ("sources", list admitted),
+    ("membership_revisions", consultedRevisions effect facts sources)]
+
+def decideEasy (effect activation items facts : Term) : Term :=
+  match decideEasyChecked effect activation items facts with
+  | .ok evidence => .tuple [a "allow", evidence]
+  | .error why => .tuple [a "deny", why]
+
 end VerifiedKernel.IFC

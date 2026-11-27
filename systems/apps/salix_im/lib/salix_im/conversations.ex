@@ -29,11 +29,15 @@ defmodule SalixIM.Conversations do
   @search_message_limit 200
   @participant_status_read_concurrency 8
   @participant_status_read_timeout 2_500
+  @final_message_scan_page_size 16
   @internal_conversation_fields [
     "messages",
     "participants",
     "last_label_proposal_id",
+    "last_final_message_id",
+    "last_final_message_seq",
     "task_public_output_message_id",
+    "_task_feed_cluster",
     "_participant_identity_slots",
     "log_start_seq",
     "_list_index_previous_updated_at"
@@ -44,8 +48,18 @@ defmodule SalixIM.Conversations do
          {:ok, cursor} <- decode_conversation_cursor(opts[:cursor]),
          {:ok, limit} <- strict_limit(opts[:limit]),
          {:ok, kind} <- strict_conversation_kind(opts[:kind]),
+         {:ok, archive} <- strict_archive_filter(opts[:archive]),
+         {:ok, statuses} <- strict_status_filters(opts[:status], opts[:statuses]),
          {:ok, records} <-
-           list_conversation_records(group_id, cursor, limit + 1, kind, opts[:active_since]) do
+           list_conversation_records(
+             group_id,
+             cursor,
+             limit + 1,
+             kind,
+             opts[:active_since],
+             archive,
+             statuses
+           ) do
       {data, rest} = Enum.split(records, limit)
 
       {:ok,
@@ -100,13 +114,78 @@ defmodule SalixIM.Conversations do
   def get_group_conversation_with_messages(group_id, conversation_id, opts \\ []) do
     with {:ok, conversation} <- get_group_conversation_record(group_id, conversation_id),
          projected = project_conversation(conversation),
-         {:ok, messages} <- list_messages(conversation, opts) do
+         {:ok, messages} <- list_messages(conversation, opts),
+         presented = present(conversation, messages),
+         {:ok, final_id} <- resolve_final_message_id(conversation, presented, opts) do
       {:ok,
        %{
          "conversation" => projected,
-         "messages" => present(conversation, messages)
+         "messages" => presented,
+         "final_message_id" => final_id
        }}
     end
+  end
+
+  defp resolve_final_message_id(conversation, presented, opts) do
+    case final_message_id(presented) do
+      id when is_binary(id) ->
+        {:ok, id}
+
+      nil ->
+        tail_seq = conversation_tail_seq(conversation)
+        head_seq = conversation_head_seq(conversation)
+
+        min_seq =
+          case opts[:tail] do
+            tail when is_integer(tail) and tail > 0 -> max(tail_seq - tail + 1, head_seq)
+            _ -> head_seq
+          end
+
+        cond do
+          Map.has_key?(conversation, "last_final_message_id") and
+              Map.has_key?(conversation, "last_final_message_seq") ->
+            id = conversation["last_final_message_id"]
+            seq = conversation["last_final_message_seq"]
+
+            if is_binary(id) and is_integer(seq) and seq >= min_seq,
+              do: {:ok, id},
+              else: {:ok, nil}
+
+          is_integer(opts[:after_seq]) and tail_seq > 0 ->
+            scan_final_message_id(conversation, min(opts[:after_seq], tail_seq), min_seq)
+
+          true ->
+            {:ok, nil}
+        end
+    end
+  end
+
+  defp scan_final_message_id(_conversation, cursor, min_seq) when cursor < min_seq,
+    do: {:ok, nil}
+
+  defp scan_final_message_id(conversation, cursor, min_seq) do
+    first_seq = max(cursor - @final_message_scan_page_size + 1, min_seq)
+    count = cursor - first_seq + 1
+
+    with {:ok, chunk} <- collect_messages(conversation, first_seq, count) do
+      case final_message_id(chunk) do
+        id when is_binary(id) -> {:ok, id}
+        nil -> scan_final_message_id(conversation, first_seq - 1, min_seq)
+      end
+    end
+  end
+
+  defp final_message_id(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{"actor_type" => actor_type, "message_id" => id}
+      when actor_type in ["agent", "system"] and is_binary(id) ->
+        id
+
+      _ ->
+        nil
+    end)
   end
 
   # Messages as readers see them: provider presentation of the stored Messages.
@@ -146,7 +225,7 @@ defmodule SalixIM.Conversations do
     with {:ok, q} <- search_query(query),
          {:ok, page} <-
            list_group_conversations(group_id, limit: @search_conversation_limit),
-         {:ok, hits} <- search_records(page["data"], q) do
+         {:ok, hits} <- search_records(searchable(page["data"]), q) do
       {:ok, hits |> Enum.sort_by(&search_sort_key/1, :desc) |> Enum.take(search_limit(opts))}
     end
   end
@@ -162,10 +241,25 @@ defmodule SalixIM.Conversations do
          {:ok, terms} <- keyword_terms(normalized_query),
          {:ok, page} <-
            list_group_conversations(group_id, limit: @search_conversation_limit),
-         {:ok, hits} <- search_records_by_keywords(page["data"], normalized_query, terms) do
+         {:ok, hits} <-
+           search_records_by_keywords(searchable(page["data"]), normalized_query, terms) do
       {:ok, hits |> Enum.sort_by(&search_sort_key/1, :desc) |> Enum.take(search_limit(opts))}
     end
   end
+
+  @doc """
+  Whether `conversation` is a Task together: a Task its host shares with
+  people outside the Group (`SalixIM.TaskPlacement.create_collaborative_task_conversation/4`).
+  Only its people and its own Worker read what is said in it.
+  """
+  def collaboration_task?(%{"metadata" => %{"collaboration" => %{} = collaboration}}),
+    do: map_size(collaboration) > 0
+
+  def collaboration_task?(_conversation), do: false
+
+  # The Group's Agents search the Group's Conversations; a Task together's
+  # words are its people's alone.
+  defp searchable(conversations), do: Enum.reject(conversations, &collaboration_task?/1)
 
   @doc "Bounded Task-only search DTO used by the Comma public facade."
   def search_group_tasks(group_id, query, opts \\ []) do
@@ -612,16 +706,52 @@ defmodule SalixIM.Conversations do
   defp after_pin_cursor(pins, cursor), do: Enum.filter(pins, &(pin_sort_key(&1) < cursor))
   defp pin_sort_key(pin), do: {pin["pinned_at"], pin["conversation_id"]}
 
-  # Group/kind and list position are canonical query columns.
-  defp list_conversation_records(group_id, cursor, limit, kind, active_since) do
+  defp strict_archive_filter(nil), do: {:ok, "include"}
+  defp strict_archive_filter(mode) when mode in ["exclude", "only", "include"], do: {:ok, mode}
+  defp strict_archive_filter(_other), do: {:error, {:bad_request, "invalid archive filter"}}
+
+  defp strict_status_filters(nil, nil), do: {:ok, nil}
+
+  defp strict_status_filters(status, nil) when is_binary(status) do
+    if SalixIM.TaskStatus.valid?(status),
+      do: {:ok, [status]},
+      else: {:error, {:bad_request, "invalid status filter"}}
+  end
+
+  defp strict_status_filters(nil, statuses) when is_list(statuses) and statuses != [] do
+    if Enum.all?(statuses, &SalixIM.TaskStatus.valid?/1),
+      do: {:ok, Enum.uniq(statuses)},
+      else: {:error, {:bad_request, "invalid status filter"}}
+  end
+
+  defp strict_status_filters(_status, _statuses),
+    do: {:error, {:bad_request, "invalid status filter"}}
+
+  # Group/kind/status and list position are canonical query columns.
+  defp list_conversation_records(group_id, cursor, limit, kind, active_since, archive, statuses) do
     {timestamp, id} = cursor || {nil, ""}
-    filters = [{"kind=", kind}, {"COALESCE(list_timestamp,0)>=", active_since}]
-    filters = Enum.reject(filters, fn {_sql, value} -> is_nil(value) end)
+
+    archive_sql =
+      case archive do
+        "exclude" -> " AND status IS DISTINCT FROM 'archived'"
+        "only" -> " AND status = 'archived'"
+        "include" -> ""
+      end
+
+    filters =
+      [
+        {"kind=", kind, ""},
+        {"COALESCE(list_timestamp,0)>=", active_since, ""},
+        {"status = ANY(", statuses, "::text[])"}
+      ]
+      |> Enum.reject(fn {_prefix, value, _suffix} -> is_nil(value) end)
 
     condition =
       filters
       |> Enum.with_index(5)
-      |> Enum.map_join(fn {{sql, _value}, index} -> " AND #{sql}$#{index}" end)
+      |> Enum.map_join(fn {{prefix, _value, suffix}, index} ->
+        " AND #{prefix}$#{index}#{suffix}"
+      end)
 
     params = [group_id, timestamp, id, limit] ++ Enum.map(filters, &elem(&1, 1))
 
@@ -633,7 +763,7 @@ defmodule SalixIM.Conversations do
            FROM salix_conversations WHERE group_id=$1 AND revision>0 AND deleted_at IS NULL
              AND ($2::bigint IS NULL OR COALESCE(list_timestamp,0)<$2 OR
                   (COALESCE(list_timestamp,0)=$2 AND conversation_id COLLATE "C">$3))
-             #{condition}
+             #{archive_sql}#{condition}
            ORDER BY COALESCE(list_timestamp,0) DESC,conversation_id COLLATE "C" ASC LIMIT $4
            """,
            params
@@ -730,11 +860,17 @@ defmodule SalixIM.Conversations do
 
         is_integer(tail) ->
           tail_seq = conversation_tail_seq(conversation)
+          start_seq = max(tail_seq - tail + 1, conversation_head_seq(conversation))
+
+          start_seq =
+            if is_integer(opts[:after_seq]),
+              do: max(start_seq, opts[:after_seq] + 1),
+              else: start_seq
 
           collect_messages(
             conversation,
-            max(tail_seq - tail + 1, conversation_head_seq(conversation)),
-            tail
+            start_seq,
+            min(max(tail_seq - start_seq + 1, 0), tail)
           )
 
         is_integer(opts[:after_seq]) ->
@@ -1241,7 +1377,7 @@ defmodule SalixIM.Conversations do
         {:error, {:bad_request, "q contains an unsupported null character"}}
 
       {:error, :too_short} ->
-        {:error, {:bad_request, "q must contain at least 2 characters"}}
+        {:error, {:bad_request, "q must contain at least 1 character"}}
 
       {:error, :too_long} ->
         {:error, {:bad_request, "q must contain at most 128 characters"}}

@@ -439,6 +439,11 @@ export class Simulator implements ScreenSource {
     return this.#poses ? ["closed", "open"] : [];
   }
 
+  /// An iPhone Duo's hinge takes any angle, swept (the helper's `{op:"hinge"}`).
+  hingeAngles(): boolean {
+    return this.#poses;
+  }
+
   title(): string {
     return `${this.#device.name} · ${this.#device.runtime}`;
   }
@@ -471,6 +476,8 @@ export class Simulator implements ScreenSource {
         ...(this.boot !== null ? { boot: this.boot } : {}),
         codec,
         control: options.control === true && options.peek !== true,
+        // (a foldable's panel's own picture, never turned: ScreenAsk.panel)
+        ...(options.panel === true && options.peek !== true ? { panel: true } : {}),
         maxWidth: side,
         maxHeight: side,
         ...(options.peek ? { fps: PEEK_FPS } : {}),

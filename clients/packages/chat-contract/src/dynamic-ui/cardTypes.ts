@@ -26,6 +26,7 @@ export type TimerData = CardDataByKind["timer"];
 export type OrderData = CardDataByKind["order"];
 export type TicketData = CardDataByKind["ticket"];
 export type RideData = CardDataByKind["ride"];
+export type RouteData = CardDataByKind["route"];
 export type ProductData = CardDataByKind["product"];
 export type BookingData = CardDataByKind["booking"];
 export type DeviceData = CardDataByKind["device"];

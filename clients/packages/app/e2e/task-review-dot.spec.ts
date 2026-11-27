@@ -88,8 +88,11 @@ test("viewing a needs-review task clears its dot in the inbox", async ({ page })
 test("viewing a needs-review task in Chat Sidebar clears its attention", async ({
   page,
 }) => {
+  const siblingTitle = "翻译产品发布公告";
+  const siblingId = "cnv_task_sidebar_sibling";
   const stub = await startChatSmokeStub({
     assistantReply: "我已经处理了",
+    extraInlineTasks: [{ id: siblingId, status: "needs_review", title: siblingTitle }],
     inlineTaskReference: true,
     taskStatus: "ready_for_review",
   });
@@ -107,10 +110,17 @@ test("viewing a needs-review task in Chat Sidebar clears its attention", async (
     await composer.getByRole("textbox", { name: "AI prompt" }).fill("完成任务");
     await composer.getByRole("button", { name: "Send" }).click();
 
+    const attentionToggle = content.getByTestId("chat-dock-attention-toggle");
+    await attentionToggle.click();
+
     const panelDot = content
       .getByTestId(`chat-task-item-${chatSmokeTaskConversation.id}`)
       .locator(".comma-chat-task-item-dot");
+    const siblingDot = content
+      .getByTestId(`chat-task-item-${siblingId}`)
+      .locator(".comma-chat-task-item-dot");
     await expect(panelDot).toHaveAttribute("data-state", "visible");
+    await expect(siblingDot).toHaveAttribute("data-state", "visible");
 
     const inlineTask = content
       .locator('[data-message-id="msg-assistant-smoke"]')
@@ -120,7 +130,13 @@ test("viewing a needs-review task in Chat Sidebar clears its attention", async (
     await expect(
       content.getByTestId(`chat-sidebar-conversation-${chatSmokeTaskConversation.id}`)
     ).toBeVisible();
+    await expect(content.getByTestId("chat-dock-attention-focus")).toContainText(
+      siblingTitle
+    );
+
+    await attentionToggle.click();
     await expect(panelDot).toHaveAttribute("data-state", "hidden");
+    await expect(siblingDot).toHaveAttribute("data-state", "visible");
   } finally {
     await stub.close();
   }

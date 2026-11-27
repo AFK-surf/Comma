@@ -160,7 +160,12 @@ defmodule SalixWeb.TaskStations do
 
   defp candidate(scope, device_id, model) do
     with {:ok, device} <- usable_device(scope, device_id),
-         true <- runs_model?(get_in(device, ["meta", "capabilities", "task_models"]), model) do
+         true <-
+           runs_model?(
+             get_in(device, ["meta", "capabilities", "task_models"]),
+             model,
+             get_in(device, ["meta", "device_kind"]) == "stillfail"
+           ) do
       {:ok, device}
     else
       _ -> {:error, :station_unavailable}
@@ -184,13 +189,30 @@ defmodule SalixWeb.TaskStations do
     end
   end
 
-  defp runs_model?(models, %{"provider" => provider, "model" => model}) when is_map(models),
-    do: model in List.wrap(models[provider])
+  defp runs_model?(models, %{"provider" => provider, "model" => model}, _stillfail?)
+       when is_map(models),
+       do: model in List.wrap(models[provider])
 
-  defp runs_model?(models, %{"provider" => provider}) when is_map(models),
-    do: List.wrap(models[provider]) != []
+  defp runs_model?(models, %{"provider" => provider}, stillfail?) when is_map(models),
+    do: runs_runtime?(models, provider, stillfail?)
 
-  defp runs_model?(_, _), do: false
+  defp runs_model?(_, _, _), do: false
+
+  @doc """
+  Whether a station's `task_models` let a Task run `provider` with no model
+  named. A Comma station lists a runtime with no model when its Workspace's
+  account source for it is none: it runs nothing there. A still.fail station
+  (`stillfail?`) lists a runtime whose profiles name no model the same way,
+  and runs that runtime's default model (still.fail `station/src/comma/surface.ts`).
+  """
+  def runs_runtime?(models, provider, stillfail?) when is_map(models) do
+    case Map.fetch(models, provider) do
+      {:ok, ids} -> stillfail? or List.wrap(ids) != []
+      :error -> false
+    end
+  end
+
+  def runs_runtime?(_models, _provider, _stillfail?), do: false
 
   defp cloud_accounts(scope, %{"provider" => provider}) do
     case {provider, SalixWeb.StationLLM.tier()} do

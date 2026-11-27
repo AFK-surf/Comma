@@ -27,6 +27,7 @@ import {
   taskPageSchema,
   type TaskConversation,
 } from "./comma/schemas.ts";
+import { noteHostedTogether } from "./collaborations.ts";
 import { taskLoop } from "./comma/task-loop.ts";
 import type {
   ProductInboxItem,
@@ -113,6 +114,7 @@ export function taskItem(
               : { avatar: conversation.requested_by_avatar }),
           },
         }),
+    ...(conversation.together?.length ? { together: conversation.together } : {}),
     ...(conversation.review_version
       ? { reviewVersion: conversation.review_version }
       : {}),
@@ -137,7 +139,9 @@ export function taskItem(
 const withStatus = madeOnce(
   (item: ProductInboxItem): ProductInboxItem => ({
     ...item,
-    statusBucket: taskStatusBucket(item.status),
+    statusBucket: taskStatusBucket(item.status, {
+      loopState: item.loop?.state,
+    }),
     statusFailed: taskStatusFailed(item.status),
   })
 );
@@ -217,6 +221,12 @@ function appended(pages: Page[], next: Page): Page[] {
 
 export class Tasks {
   readonly #ctx: Ctx;
+
+  /** A Task together of the list is noted as one the account hosts, so its files go in its own folder. */
+  #noted(item: ProductInboxItem): ProductInboxItem {
+    if (item.together?.length) noteHostedTogether(this.#ctx, item.conversationId);
+    return item;
+  }
   readonly #workspaces: Workspaces;
   readonly #live: Live;
   /**
@@ -234,6 +244,10 @@ export class Tasks {
   onStationTasksChanged: ((workspace: string) => void) | undefined;
   /** Told when a workspace's task stream says a request to it came or was withdrawn. */
   onTaskRequestsChanged: ((workspace: string) => void) | undefined;
+  /** Told when the focused workspace changed (`tasks.focus`). */
+  onFocusChanged: (() => void) | undefined;
+  /** Told when a workspace's task list refreshed from the server. */
+  onListChanged: ((workspace: string) => void) | undefined;
   /** The Tasks a workspace's stations host, as the list shows them (`hosted`), and what keeps them current while shown. */
   hosted:
     | {
@@ -305,6 +319,7 @@ export class Tasks {
               this.#live.run(topic, this.#keep(topic));
             }
             this.#settleKept();
+            this.onFocusChanged?.();
             return null;
           }),
       },
@@ -448,7 +463,7 @@ export class Tasks {
         const items = conversations.flatMap((raw) => {
           const parsed = taskConversationSchema.safeParse(raw);
           return parsed.success && parsed.data.group_id === workspace.group_id
-            ? [taskItem(parsed.data, workspace)]
+            ? [this.#noted(taskItem(parsed.data, workspace))]
             : [];
         });
         this.#putKept(account, workspace.id, { pages: [{ items }], readAt: 0 });
@@ -572,7 +587,7 @@ export class Tasks {
         const ids = new Set(conversations);
         data = [...data.filter((c) => !ids.has(c.id)), ...exact.data];
       }
-      if (data.some((c) => c.group_id !== workspace.group_id))
+      if (data.some((c) => c.group_id !== workspace.group_id && !c.together?.length))
         return yield* Effect.fail(
           new CoreError("bad_response", "a conversation of another group")
         );
@@ -581,7 +596,7 @@ export class Tasks {
           new CoreError("bad_response", "a next page without its cursor")
         );
       const first: Page = {
-        items: data.map((c) => taskItem(c, workspace)),
+        items: data.map((c) => this.#noted(taskItem(c, workspace))),
         ...(page.has_more === undefined ? {} : { hasMore: page.has_more }),
         ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
       };
@@ -598,6 +613,7 @@ export class Tasks {
       delete state.error;
       state.retry = 0;
       this.#invalidate();
+      this.onListChanged?.(workspace.id);
       this.#stream(account, workspace);
     }).pipe(
       Effect.tapError((error) =>
@@ -701,7 +717,7 @@ export class Tasks {
         TIMEOUT_MS
       );
       const next: Page = {
-        items: page.data.map((c) => taskItem(c, workspace)),
+        items: page.data.map((c) => this.#noted(taskItem(c, workspace))),
         ...(page.has_more === undefined ? {} : { hasMore: page.has_more }),
         ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
       };

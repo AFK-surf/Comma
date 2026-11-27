@@ -152,6 +152,8 @@ defmodule SalixAgent.Workspace do
     with {:ok, _agent} <- Control.get(agent_id),
          :ok <- validate_mutable_path(path),
          {:ok, event} <- AgentWorkspace.prepare_write_ref(path, ref),
+         event = put_ifc_label(event, Keyword.get(opts, :ifc_label)),
+         event = Map.put(event, "preserve_destination_label", true),
          file = file_json(path, event),
          {:ok, opts} <- authorize_storage_write(agent_id, [event], opts, "storage_write"),
          {:ok, result} <-

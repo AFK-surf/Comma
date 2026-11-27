@@ -56,12 +56,14 @@ defmodule SalixWeb.Application do
       SalixWeb.StationRelay.Gate,
       SalixWeb.StationTaskIndex,
       background(SalixWeb.SubscriptionRuntimeWorker, :subscription_runtime_worker),
+      background(SalixIM.LarkSuiteTriage.Worker, :lark_suite_triage_worker),
       {SystemsRuntime.TaskSupervisor,
        name: SalixWeb.ConnectorRequestTaskSupervisor,
        max_children: SystemsRuntime.get_env(:salix_web, :connector_request_task_limit, 64)},
       # Tasks kept here with Sessions of other stations taking part: one giver per Task and station on a node, and
       # once started, each given what it has not had (SalixWeb.StationTasks).
       {SystemsRuntime.Registry, keys: :unique, name: SalixWeb.StationTasks.Registry},
+      SalixWeb.StationTasks.RefusalGuard,
       {SystemsRuntime.TaskSupervisor, name: SalixWeb.StationTasks.Supervisor},
       Supervisor.child_spec({Task, &give_station_tasks/0},
         id: :give_station_tasks,
@@ -71,6 +73,11 @@ defmodule SalixWeb.Application do
        name: SalixWeb.ConnectorStreamTaskSupervisor,
        max_children: SystemsRuntime.get_env(:salix_web, :connector_stream_task_limit, 32)},
       {SystemsRuntime.TaskSupervisor, name: SalixWeb.OAuthMCPRefreshSupervisor, max_children: 16},
+      # Personal remote MCP sign-ins under way: one per person and binding on a node.
+      {SystemsRuntime.Registry,
+       keys: :unique, name: Salix.Control.RemoteMCPDeviceSignIn.Registry},
+      {SystemsRuntime.DynamicSupervisor,
+       name: Salix.Control.RemoteMCPDeviceSignIn.Supervisor, strategy: :one_for_one},
       {SystemsRuntime.TaskSupervisor,
        name: Salix.TaskRoutingLearning.Supervisor, max_children: 16},
       {SystemsRuntime.TaskSupervisor,
@@ -115,11 +122,14 @@ defmodule SalixWeb.Application do
   def native_triage_children do
     namespace = SalixStore.TriageKeys.default_namespace()
 
+    # 30s quiet-window batching with a 2m hard cap to prevent starvation in active channels.
     runtime_opts = [
       id: @native_triage_runtime,
       name: @native_triage_runtime,
       mode: :review,
       namespace: namespace,
+      debounce_ms: 30_000,
+      max_wait_ms: 120_000,
       context_port: @native_triage_context_port,
       evaluator_port: @native_triage_evaluator_port,
       review_projection: :slack,

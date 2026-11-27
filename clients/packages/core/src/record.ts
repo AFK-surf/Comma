@@ -43,6 +43,7 @@ import {
   type StationLinks,
   type StationMeshPorts,
   type StationRelayTicket,
+  type StorePorts,
   type StreamResponse,
   type WebSessionPorts,
 } from "./host.ts";
@@ -162,6 +163,8 @@ export type Input =
   | { kind: "localDrive" }
   /** The host downloads files to its storage (their answers are noted as requests' answers, `HOST downloads.*`). */
   | { kind: "downloads" }
+  /** The host sells through its store (its answers are noted as requests' answers, `HOST store.*`). */
+  | { kind: "store"; provider: StorePorts["provider"] }
   /** The host reaches stations (its answers are noted as requests' answers, `MESH` requests). */
   | { kind: "stationMesh"; alwaysLinked?: true; ownComputers?: true; salixOnly?: true }
   /** The host can reset the app (its answers are noted as requests' answers, `HOST reset.*`). */
@@ -773,6 +776,21 @@ export class Recorder {
         retain: (keep) => port("HOST", "downloads.retain", downloads.retain(keep)),
       };
     }
+    const store = host.store;
+    if (store) {
+      this.input({ kind: "store", provider: store.provider });
+      (recorded as { store?: StorePorts }).store = {
+        provider: store.provider,
+        products: (ids) => port("HOST", "store.products", store.products(ids)),
+        purchase: (input) => port("HOST", "store.purchase", store.purchase(input)),
+        unfinished: Effect.suspend(() =>
+          port("HOST", "store.unfinished", store.unfinished)
+        ),
+        finish: (id) => port("HOST", "store.finish", store.finish(id)),
+        sync: Effect.suspend(() => port("HOST", "store.sync", store.sync)),
+        manage: Effect.suspend(() => port("HOST", "store.manage", store.manage)),
+      };
+    }
     const reset = host.reset;
     if (reset) {
       this.input({ kind: "reset" });
@@ -815,6 +833,9 @@ export class Recorder {
                 credential: (station, credential) =>
                   links.credential(station, credential),
                 reach: (station, reach) => links.reach(station, reach),
+                // Told, nothing answered: a replay has nothing to tell.
+                networkChange: () =>
+                  (links as StationLinks | undefined)?.networkChange?.() ?? Effect.void,
                 nextVia: (station, last) =>
                   port("MESH", `via:${station}`, links.nextVia(station, last)),
                 connect: (station) => {

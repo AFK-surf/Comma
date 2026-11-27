@@ -49,7 +49,7 @@ class Slots {
 const videoPeeks = new Slots(2);
 
 /** Whether `element` is on the screen now, the page shown: a preview is open only then. */
-function useShown(element: RefObject<HTMLElement | null>): boolean {
+export function useShown(element: RefObject<HTMLElement | null>): boolean {
   const [inView, setInView] = useState(false);
   const [visible, setVisible] = useState(
     () => typeof document === "undefined" || document.visibilityState === "visible"

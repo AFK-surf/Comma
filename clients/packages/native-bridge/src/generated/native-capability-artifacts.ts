@@ -18,6 +18,8 @@ import {
   appPreferencesOpenNotificationSettingsCapability,
   appPreferencesRefreshLaunchAtLoginCapability,
   appPreferencesRelaunchCapability,
+  appPreferencesRequestLocationAuthorizationCapability,
+  appPreferencesRequestMicrophoneAuthorizationCapability,
   appPreferencesRequestNotificationAuthorizationCapability,
   appPreferencesStateLeaf,
   appPreferencesUpdateCapability,
@@ -44,6 +46,7 @@ import {
   browserSidebarCaptureCapability,
   browserSidebarChangedEvent,
   browserSidebarCloseCapability,
+  browserSidebarCloseTabRequestedEvent,
   browserSidebarDismissPasskeyCapability,
   browserSidebarImportCookiesCapability,
   browserSidebarInspectCapability,
@@ -214,6 +217,10 @@ export const generatedNativeCapabilityContracts = {
     appPreferencesRefreshLaunchAtLoginCapability.contract,
   appPreferencesRequestNotificationAuthorization:
     appPreferencesRequestNotificationAuthorizationCapability.contract,
+  appPreferencesRequestLocationAuthorization:
+    appPreferencesRequestLocationAuthorizationCapability.contract,
+  appPreferencesRequestMicrophoneAuthorization:
+    appPreferencesRequestMicrophoneAuthorizationCapability.contract,
   appPreferencesUpdate: appPreferencesUpdateCapability.contract,
   connectorRuntimeState: connectorRuntimeStateCapability.contract,
   connectorRuntimeScope: connectorRuntimeScopeCapability.contract,
@@ -371,6 +378,10 @@ export const generatedNativeWebFallbacks = {
     appPreferencesRefreshLaunchAtLoginCapability.webFallback,
   appPreferencesRequestNotificationAuthorization:
     appPreferencesRequestNotificationAuthorizationCapability.webFallback,
+  appPreferencesRequestLocationAuthorization:
+    appPreferencesRequestLocationAuthorizationCapability.webFallback,
+  appPreferencesRequestMicrophoneAuthorization:
+    appPreferencesRequestMicrophoneAuthorizationCapability.webFallback,
   appPreferencesUpdate: appPreferencesUpdateCapability.webFallback,
   connectorRuntimeState: connectorRuntimeStateCapability.webFallback,
   connectorRuntimeScope: connectorRuntimeScopeCapability.webFallback,
@@ -532,6 +543,10 @@ export const generatedNativePreloadBindings = {
     refreshLaunchAtLogin: appPreferencesRefreshLaunchAtLoginCapability.contract,
     requestNotificationAuthorization:
       appPreferencesRequestNotificationAuthorizationCapability.contract,
+    requestLocationAuthorization:
+      appPreferencesRequestLocationAuthorizationCapability.contract,
+    requestMicrophoneAuthorization:
+      appPreferencesRequestMicrophoneAuthorizationCapability.contract,
     update: appPreferencesUpdateCapability.contract,
   },
   connectorRuntime: {
@@ -751,6 +766,7 @@ export const generatedNativePreloadEventBindings = {
   browserSidebar: {
     changed: browserSidebarChangedEvent,
     openTabRequested: browserSidebarOpenTabRequestedEvent,
+    closeTabRequested: browserSidebarCloseTabRequestedEvent,
   },
   surfaces: {
     changed: surfacesChangedEvent,
@@ -979,6 +995,26 @@ export const generatedNativeMainBindingsById = {
       appPreferencesRequestNotificationAuthorizationCapability.sessionAdmission,
     sessionAdmissionRationale:
       appPreferencesRequestNotificationAuthorizationCapability.sessionAdmissionRationale,
+  },
+  "appPreferences.requestLocationAuthorization": {
+    contract: appPreferencesRequestLocationAuthorizationCapability.contract,
+    id: appPreferencesRequestLocationAuthorizationCapability.id,
+    method: "requestLocationAuthorization",
+    provider: "appPreferences",
+    sessionAdmission:
+      appPreferencesRequestLocationAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestLocationAuthorizationCapability.sessionAdmissionRationale,
+  },
+  "appPreferences.requestMicrophoneAuthorization": {
+    contract: appPreferencesRequestMicrophoneAuthorizationCapability.contract,
+    id: appPreferencesRequestMicrophoneAuthorizationCapability.id,
+    method: "requestMicrophoneAuthorization",
+    provider: "appPreferences",
+    sessionAdmission:
+      appPreferencesRequestMicrophoneAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestMicrophoneAuthorizationCapability.sessionAdmissionRationale,
   },
   "appPreferences.update": {
     contract: appPreferencesUpdateCapability.contract,
@@ -2233,6 +2269,30 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmissionRationale:
       appPreferencesRequestNotificationAuthorizationCapability.sessionAdmissionRationale,
     transport: appPreferencesRequestNotificationAuthorizationCapability.transport,
+  },
+  {
+    bridge: appPreferencesRequestLocationAuthorizationCapability.bridge,
+    channel: appPreferencesRequestLocationAuthorizationCapability.channel,
+    id: appPreferencesRequestLocationAuthorizationCapability.id,
+    payloadClass: appPreferencesRequestLocationAuthorizationCapability.payloadClass,
+    permission: appPreferencesRequestLocationAuthorizationCapability.permission,
+    sessionAdmission:
+      appPreferencesRequestLocationAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestLocationAuthorizationCapability.sessionAdmissionRationale,
+    transport: appPreferencesRequestLocationAuthorizationCapability.transport,
+  },
+  {
+    bridge: appPreferencesRequestMicrophoneAuthorizationCapability.bridge,
+    channel: appPreferencesRequestMicrophoneAuthorizationCapability.channel,
+    id: appPreferencesRequestMicrophoneAuthorizationCapability.id,
+    payloadClass: appPreferencesRequestMicrophoneAuthorizationCapability.payloadClass,
+    permission: appPreferencesRequestMicrophoneAuthorizationCapability.permission,
+    sessionAdmission:
+      appPreferencesRequestMicrophoneAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestMicrophoneAuthorizationCapability.sessionAdmissionRationale,
+    transport: appPreferencesRequestMicrophoneAuthorizationCapability.transport,
   },
   {
     bridge: appPreferencesUpdateCapability.bridge,
@@ -3685,6 +3745,12 @@ export const generatedNativeEventManifest = [
     target: browserSidebarOpenTabRequestedEvent.target,
   },
   {
+    channel: browserSidebarCloseTabRequestedEvent.channel,
+    id: browserSidebarCloseTabRequestedEvent.id,
+    permission: browserSidebarCloseTabRequestedEvent.permission,
+    target: browserSidebarCloseTabRequestedEvent.target,
+  },
+  {
     channel: surfacesChangedEvent.channel,
     id: surfacesChangedEvent.id,
     permission: surfacesChangedEvent.permission,
@@ -4291,6 +4357,58 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale:
       appPreferencesRequestNotificationAuthorizationCapability.sessionAdmissionRationale,
     transport: appPreferencesRequestNotificationAuthorizationCapability.transport,
+  },
+  "appPreferences.requestLocationAuthorization": {
+    artifacts: {
+      contract: "appPreferencesRequestLocationAuthorizationContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["appPreferences.requestLocationAuthorization"]',
+      leaf: "appPreferencesRequestLocationAuthorizationCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["appPreferences.requestLocationAuthorization"]',
+      mock: "appPreferencesRequestLocationAuthorizationCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.appPreferences.requestLocationAuthorization",
+      webFallback:
+        "generatedNativeWebFallbacks.appPreferencesRequestLocationAuthorization",
+    },
+    bridge: appPreferencesRequestLocationAuthorizationCapability.bridge,
+    channel: appPreferencesRequestLocationAuthorizationCapability.channel,
+    handler: appPreferencesRequestLocationAuthorizationCapability.handler,
+    id: appPreferencesRequestLocationAuthorizationCapability.id,
+    payloadClass: appPreferencesRequestLocationAuthorizationCapability.payloadClass,
+    permission: appPreferencesRequestLocationAuthorizationCapability.permission,
+    sessionAdmission:
+      appPreferencesRequestLocationAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestLocationAuthorizationCapability.sessionAdmissionRationale,
+    transport: appPreferencesRequestLocationAuthorizationCapability.transport,
+  },
+  "appPreferences.requestMicrophoneAuthorization": {
+    artifacts: {
+      contract: "appPreferencesRequestMicrophoneAuthorizationContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["appPreferences.requestMicrophoneAuthorization"]',
+      leaf: "appPreferencesRequestMicrophoneAuthorizationCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["appPreferences.requestMicrophoneAuthorization"]',
+      mock: "appPreferencesRequestMicrophoneAuthorizationCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.appPreferences.requestMicrophoneAuthorization",
+      webFallback:
+        "generatedNativeWebFallbacks.appPreferencesRequestMicrophoneAuthorization",
+    },
+    bridge: appPreferencesRequestMicrophoneAuthorizationCapability.bridge,
+    channel: appPreferencesRequestMicrophoneAuthorizationCapability.channel,
+    handler: appPreferencesRequestMicrophoneAuthorizationCapability.handler,
+    id: appPreferencesRequestMicrophoneAuthorizationCapability.id,
+    payloadClass: appPreferencesRequestMicrophoneAuthorizationCapability.payloadClass,
+    permission: appPreferencesRequestMicrophoneAuthorizationCapability.permission,
+    sessionAdmission:
+      appPreferencesRequestMicrophoneAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestMicrophoneAuthorizationCapability.sessionAdmissionRationale,
+    transport: appPreferencesRequestMicrophoneAuthorizationCapability.transport,
   },
   "appPreferences.update": {
     artifacts: {
@@ -7147,6 +7265,16 @@ export const generatedNativeEventIndex = {
     permission: browserSidebarOpenTabRequestedEvent.permission,
     target: browserSidebarOpenTabRequestedEvent.target,
   },
+  "browserSidebar.closeTabRequested": {
+    artifacts: {
+      leaf: "browserSidebarCloseTabRequestedEvent",
+      mock: "browserSidebarCloseTabRequestedEvent.mock",
+    },
+    channel: browserSidebarCloseTabRequestedEvent.channel,
+    id: browserSidebarCloseTabRequestedEvent.id,
+    permission: browserSidebarCloseTabRequestedEvent.permission,
+    target: browserSidebarCloseTabRequestedEvent.target,
+  },
   "surfaces.changed": {
     artifacts: {
       leaf: "surfacesChangedEvent",
@@ -7697,6 +7825,10 @@ export const appPreferencesRefreshLaunchAtLoginContract =
   generatedNativeCapabilityContracts.appPreferencesRefreshLaunchAtLogin;
 export const appPreferencesRequestNotificationAuthorizationContract =
   generatedNativeCapabilityContracts.appPreferencesRequestNotificationAuthorization;
+export const appPreferencesRequestLocationAuthorizationContract =
+  generatedNativeCapabilityContracts.appPreferencesRequestLocationAuthorization;
+export const appPreferencesRequestMicrophoneAuthorizationContract =
+  generatedNativeCapabilityContracts.appPreferencesRequestMicrophoneAuthorization;
 export const appPreferencesUpdateContract =
   generatedNativeCapabilityContracts.appPreferencesUpdate;
 export const connectorRuntimeStateContract =
@@ -7951,6 +8083,8 @@ export type NativeCapabilityTypeMap = {
   "appPreferences.openNotificationSettings": typeof appPreferencesOpenNotificationSettingsCapability;
   "appPreferences.refreshLaunchAtLogin": typeof appPreferencesRefreshLaunchAtLoginCapability;
   "appPreferences.requestNotificationAuthorization": typeof appPreferencesRequestNotificationAuthorizationCapability;
+  "appPreferences.requestLocationAuthorization": typeof appPreferencesRequestLocationAuthorizationCapability;
+  "appPreferences.requestMicrophoneAuthorization": typeof appPreferencesRequestMicrophoneAuthorizationCapability;
   "appPreferences.update": typeof appPreferencesUpdateCapability;
   "connectorRuntime.state": typeof connectorRuntimeStateCapability;
   "connectorRuntime.scope": typeof connectorRuntimeScopeCapability;
@@ -8098,6 +8232,7 @@ export type NativeEventTypeMap = {
   "blender.state.changed": typeof blenderStateChangedEvent;
   "browserSidebar.changed": typeof browserSidebarChangedEvent;
   "browserSidebar.openTabRequested": typeof browserSidebarOpenTabRequestedEvent;
+  "browserSidebar.closeTabRequested": typeof browserSidebarCloseTabRequestedEvent;
   "surfaces.changed": typeof surfacesChangedEvent;
   "surfaces.windowFullScreen.changed": typeof surfacesWindowFullScreenChangedEvent;
   "surfaces.windowMaximized.changed": typeof surfacesWindowMaximizedChangedEvent;
@@ -8218,6 +8353,12 @@ export type GeneratedNativeBridge = {
     >;
     requestNotificationAuthorization: GeneratedNativeCommandBridgeMethod<
       typeof appPreferencesRequestNotificationAuthorizationCapability
+    >;
+    requestLocationAuthorization: GeneratedNativeCommandBridgeMethod<
+      typeof appPreferencesRequestLocationAuthorizationCapability
+    >;
+    requestMicrophoneAuthorization: GeneratedNativeCommandBridgeMethod<
+      typeof appPreferencesRequestMicrophoneAuthorizationCapability
     >;
     update: GeneratedNativeCommandBridgeMethod<typeof appPreferencesUpdateCapability>;
     state: GeneratedNativeStateBridgeMethod<typeof appPreferencesStateLeaf>;
@@ -8375,6 +8516,9 @@ export type GeneratedNativeBridge = {
     onChanged: GeneratedNativeEventBridgeMethod<typeof browserSidebarChangedEvent>;
     onOpenTabRequested: GeneratedNativeEventBridgeMethod<
       typeof browserSidebarOpenTabRequestedEvent
+    >;
+    onCloseTabRequested: GeneratedNativeEventBridgeMethod<
+      typeof browserSidebarCloseTabRequestedEvent
     >;
   };
   sitePermissionMenu: {
@@ -8643,6 +8787,16 @@ export function createGeneratedNativePreloadBridge(
           appPreferencesRequestNotificationAuthorizationCapability.contract,
           undefined
         ),
+      requestLocationAuthorization: () =>
+        helpers.invoke(
+          appPreferencesRequestLocationAuthorizationCapability.contract,
+          undefined
+        ),
+      requestMicrophoneAuthorization: () =>
+        helpers.invoke(
+          appPreferencesRequestMicrophoneAuthorizationCapability.contract,
+          undefined
+        ),
       update: (
         input: GeneratedNativeCommandInput<typeof appPreferencesUpdateCapability>
       ) => helpers.invoke(appPreferencesUpdateCapability.contract, input),
@@ -8856,6 +9010,8 @@ export function createGeneratedNativePreloadBridge(
       onChanged: (listener) => helpers.subscribe(browserSidebarChangedEvent, listener),
       onOpenTabRequested: (listener) =>
         helpers.subscribe(browserSidebarOpenTabRequestedEvent, listener),
+      onCloseTabRequested: (listener) =>
+        helpers.subscribe(browserSidebarCloseTabRequestedEvent, listener),
     },
     sitePermissionMenu: {
       act: (
@@ -9118,6 +9274,10 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         appPreferencesRefreshLaunchAtLoginCapability.webFallback,
       requestNotificationAuthorization: async () =>
         appPreferencesRequestNotificationAuthorizationCapability.webFallback,
+      requestLocationAuthorization: async () =>
+        appPreferencesRequestLocationAuthorizationCapability.webFallback,
+      requestMicrophoneAuthorization: async () =>
+        appPreferencesRequestMicrophoneAuthorizationCapability.webFallback,
       update: async (
         _input: GeneratedNativeCommandInput<typeof appPreferencesUpdateCapability>
       ) => appPreferencesUpdateCapability.webFallback,
@@ -9334,6 +9494,7 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       ) => browserSidebarImportCookiesCapability.webFallback,
       onChanged: () => () => {},
       onOpenTabRequested: () => () => {},
+      onCloseTabRequested: () => () => {},
     },
     sitePermissionMenu: {
       act: async (
@@ -9613,6 +9774,12 @@ export function createGeneratedNativeBridgeMock(
       ),
       requestNotificationAuthorization: helpers.command(
         async () => appPreferencesRequestNotificationAuthorizationCapability.mock
+      ),
+      requestLocationAuthorization: helpers.command(
+        async () => appPreferencesRequestLocationAuthorizationCapability.mock
+      ),
+      requestMicrophoneAuthorization: helpers.command(
+        async () => appPreferencesRequestMicrophoneAuthorizationCapability.mock
       ),
       update: helpers.command(
         async (
@@ -9917,6 +10084,7 @@ export function createGeneratedNativeBridgeMock(
       ),
       onChanged: helpers.event((_listener) => () => {}),
       onOpenTabRequested: helpers.event((_listener) => () => {}),
+      onCloseTabRequested: helpers.event((_listener) => () => {}),
     },
     sitePermissionMenu: {
       act: helpers.command(

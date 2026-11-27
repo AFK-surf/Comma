@@ -9,14 +9,18 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useCommaMessages } from "@comma/i18n/react";
 import { afterAnimations, isReducedMotionEnabled, motionEasing } from "../../tokens";
 import {
+  CheckIcon,
   ChevronLeftSmallIcon,
   ChevronRightSmallIcon,
+  CopyIcon,
   DownloadIcon,
   LoadingCircleIcon,
 } from "../icons";
+import { copyWithFeedback } from "../toast";
 import { cx } from "../utils";
 import { ChatPanelImageFilmstrip } from "./ChatPanelImageFilmstrip";
 import { type ChatPanelMediaDownloadAction } from "./ChatPanelMediaDownload";
@@ -31,6 +35,7 @@ import { usePointerPressFeedback } from "./usePointerPressFeedback";
 export interface ChatPanelImageGroupImage {
   alt: string;
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  onCopy?: () => Promise<boolean | void> | boolean | void;
   download?: ChatPanelMediaDownloadAction;
   src: string;
   /** The image is still uploading: the card dims it under a spinner. */
@@ -38,6 +43,8 @@ export interface ChatPanelImageGroupImage {
 }
 
 export interface ChatPanelImageGroupProps {
+  /** Alignment of the stack, toggle pill, and expanded row. Defaults to `"end"` (user messages). */
+  align?: "start" | "end";
   className?: string;
   /** Groups larger than three images start stacked unless this is set. */
   defaultExpanded?: boolean;
@@ -73,6 +80,63 @@ const FLIP_DURATION_MS = 240;
 const FLIP_EXPAND_STAGGER_MS = 12;
 const FLIP_COLLAPSE_STAGGER_MS = 8;
 const FLIP_CLEANUP_BUFFER_MS = 80;
+/** Shared-element FLIP durations for opening and closing the image preview. */
+const SHARED_OPEN_DURATION_MS = 280;
+const SHARED_CLOSE_DURATION_MS = 260;
+
+interface SharedElementRect {
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+}
+
+interface SharedElementFlight {
+  alt: string;
+  fromRadius: string;
+  fromRect: SharedElementRect;
+  index: number;
+  phase: "opening" | "closing";
+  src: string;
+  toRadius?: string;
+  toRect?: SharedElementRect;
+}
+
+const measureElementRect = (element: Element | null): SharedElementRect | null => {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  return {
+    height: rect.height,
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+  };
+};
+
+const measureActiveFilmstripSlideRect = (): SharedElementRect | null => {
+  if (typeof document === "undefined") return null;
+  const slide = document.querySelector<HTMLImageElement>(
+    '.chat-panel-media-preview-modal[data-variant="filmstrip"] .chat-panel-image-filmstrip-slide:not([aria-hidden="true"])'
+  );
+  return measureElementRect(slide);
+};
+
+const CopyStateIcon = ({ copied }: { copied: boolean }) => (
+  <span
+    aria-hidden="true"
+    className="t-icon-swap size-2xl"
+    data-state={copied ? "b" : "a"}
+    data-swap-blur="none"
+  >
+    <span className="t-icon inline-flex size-2xl" data-icon="a">
+      <CopyIcon className="size-2xl" />
+    </span>
+    <span className="t-icon inline-flex size-2xl" data-icon="b">
+      <CheckIcon className="size-2xl text-fg-success-primary" />
+    </span>
+  </span>
+);
 
 interface ImageGroupBrowseState {
   frontIndex: number;
@@ -229,6 +293,7 @@ interface PendingFlight {
  * a smaller bitmap, and agent attachment bytes follow a separate upload path.
  */
 export const ChatPanelImageGroup = ({
+  align = "end",
   className,
   defaultExpanded = false,
   images,
@@ -242,11 +307,18 @@ export const ChatPanelImageGroup = ({
     frontIndex: 0,
     leftCount: 0,
   });
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewInstantMotion, setPreviewInstantMotion] = useState(false);
+  const [sharedFlight, setSharedFlight] = useState<SharedElementFlight | null>(null);
   const cardsRef = useRef<HTMLDivElement | null>(null);
   const cardElementsRef = useRef<(HTMLButtonElement | null)[]>([]);
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
+  const copyResetTimerRef = useRef<CancelUiTimer | null>(null);
+  const sharedLayerRef = useRef<HTMLDivElement | null>(null);
+  const sharedAnimationRef = useRef<Animation | null>(null);
+  const sharedFlightIdRef = useRef(0);
+  const sharedFlightPhaseRef = useRef<SharedElementFlight["phase"] | null>(null);
   const pendingFlightRef = useRef<PendingFlight | null>(null);
   const activeFlightsRef = useRef(
     new Map<HTMLButtonElement, { animation: Animation; timer: CancelUiTimer }>()
@@ -271,12 +343,32 @@ export const ChatPanelImageGroup = ({
     source: frontImage?.src ?? "",
   });
 
+  sharedFlightPhaseRef.current = sharedFlight?.phase ?? null;
+
   const navigatePreview = useCallback(
     (step: 1 | -1) => {
+      // Browsing during the opening flight hands over to the filmstrip at
+      // once; the flight would otherwise land on a slide that left. A closing
+      // flight is never interrupted.
+      if (sharedFlightPhaseRef.current === "opening") {
+        sharedFlightIdRef.current += 1;
+        sharedAnimationRef.current?.cancel();
+        sharedAnimationRef.current = null;
+        sharedFlightPhaseRef.current = null;
+        setSharedFlight(null);
+      }
       dispatchBrowse({ count, step, type: "navigate-preview" });
     },
     [count]
   );
+
+  useEffect(() => {
+    setCopyState("idle");
+    if (copyResetTimerRef.current) {
+      copyResetTimerRef.current();
+      copyResetTimerRef.current = null;
+    }
+  }, [front]);
 
   useEffect(() => {
     if (!previewOpen) return;
@@ -297,9 +389,79 @@ export const ChatPanelImageGroup = ({
       }
       activeFlightsRef.current.clear();
       flipCleanupRef.current?.();
+      if (copyResetTimerRef.current) copyResetTimerRef.current();
+      sharedAnimationRef.current?.cancel();
+      sharedAnimationRef.current = null;
     },
     []
   );
+
+  useLayoutEffect(() => {
+    if (!sharedFlight) return undefined;
+    const layer = sharedLayerRef.current;
+    const flightId = sharedFlightIdRef.current;
+    const toRect =
+      sharedFlight.phase === "opening"
+        ? measureActiveFilmstripSlideRect()
+        : (sharedFlight.toRect ?? null);
+    const toRadius =
+      sharedFlight.phase === "opening" ? "0px" : (sharedFlight.toRadius ?? "12px");
+
+    if (!layer || !toRect || typeof layer.animate !== "function") {
+      if (sharedFlight.phase === "closing") {
+        setPreviewInstantMotion(true);
+        setPreviewOpen(false);
+      }
+      setSharedFlight(null);
+      return undefined;
+    }
+
+    const duration =
+      sharedFlight.phase === "opening"
+        ? SHARED_OPEN_DURATION_MS
+        : SHARED_CLOSE_DURATION_MS;
+    const animation = layer.animate(
+      [
+        {
+          borderRadius: sharedFlight.fromRadius,
+          height: `${sharedFlight.fromRect.height}px`,
+          left: `${sharedFlight.fromRect.left}px`,
+          top: `${sharedFlight.fromRect.top}px`,
+          width: `${sharedFlight.fromRect.width}px`,
+        },
+        {
+          borderRadius: toRadius,
+          height: `${toRect.height}px`,
+          left: `${toRect.left}px`,
+          top: `${toRect.top}px`,
+          width: `${toRect.width}px`,
+        },
+      ],
+      {
+        duration,
+        easing: motionEasing.surfaceSmoothOut,
+        fill: "forwards",
+      }
+    );
+    sharedAnimationRef.current = animation;
+    const settle = () => {
+      if (sharedFlightIdRef.current !== flightId) return;
+      sharedAnimationRef.current = null;
+      if (sharedFlight.phase === "closing") {
+        setPreviewInstantMotion(true);
+        setPreviewOpen(false);
+      }
+      setSharedFlight(null);
+    };
+    animation.addEventListener("finish", settle, { once: true });
+    animation.addEventListener("cancel", settle, { once: true });
+    return () => {
+      if (sharedAnimationRef.current === animation) {
+        sharedAnimationRef.current = null;
+        animation.cancel();
+      }
+    };
+  }, [sharedFlight]);
 
   const retireActiveFlights = () => {
     pendingFlightRef.current = null;
@@ -519,19 +681,108 @@ export const ChatPanelImageGroup = ({
     onExpandedChange?.(next);
   };
 
+  const copyImage = async (onCopy: () => Promise<boolean | void> | boolean | void) => {
+    const success = await copyWithFeedback(async () => {
+      const result = await onCopy();
+      if (result === false) throw new Error("Could not copy the image.");
+    }, messages);
+    setCopyState(success ? "copied" : "error");
+    if (copyResetTimerRef.current) copyResetTimerRef.current();
+    copyResetTimerRef.current = uiClock.after(success ? 1400 : 2000, () =>
+      setCopyState("idle")
+    );
+  };
+
   const openPreview =
     (index: number) => (event: ReactMouseEvent<HTMLButtonElement>) => {
-      previewReturnFocusRef.current = event.currentTarget;
+      const trigger = event.currentTarget;
+      previewReturnFocusRef.current = trigger;
       dispatchBrowse({ count, index, type: "align-preview" });
-      setPreviewInstantMotion(event.detail === 0);
+      const instant = event.detail === 0 || isReducedMotionEnabled();
+      setPreviewInstantMotion(instant);
+      const image = images[index];
+      const fromRect = instant ? null : measureElementRect(trigger);
+      sharedAnimationRef.current?.cancel();
+      sharedAnimationRef.current = null;
+      if (!instant && image && fromRect && typeof trigger.animate === "function") {
+        const fromRadius = getComputedStyle(trigger).borderRadius || "12px";
+        sharedFlightIdRef.current += 1;
+        setSharedFlight({
+          alt: image.alt,
+          fromRadius,
+          fromRect,
+          index,
+          phase: "opening",
+          src: image.src,
+        });
+      } else {
+        setSharedFlight(null);
+      }
       setPreviewOpen(true);
     };
+
+  const handlePreviewOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setPreviewOpen(true);
+      return;
+    }
+    if (sharedFlight?.phase === "closing") return;
+    sharedAnimationRef.current?.cancel();
+    sharedAnimationRef.current = null;
+
+    if (!isReducedMotionEnabled() && !previewInstantMotion) {
+      const fromRect = measureActiveFilmstripSlideRect();
+      const targetCard = cardElementsRef.current[front];
+      const toRect = measureElementRect(targetCard ?? null);
+      const image = images[front];
+      if (
+        fromRect &&
+        toRect &&
+        targetCard &&
+        image &&
+        typeof targetCard.animate === "function"
+      ) {
+        const toRadius = getComputedStyle(targetCard).borderRadius || "12px";
+        sharedFlightIdRef.current += 1;
+        setSharedFlight({
+          alt: image.alt,
+          fromRadius: "0px",
+          fromRect,
+          index: front,
+          phase: "closing",
+          src: image.src,
+          toRadius,
+          toRect,
+        });
+        return;
+      }
+    }
+
+    setSharedFlight(null);
+    setPreviewOpen(false);
+  };
+
+  const singleCopyAction = count === 1 ? images[0]?.onCopy : undefined;
+  const copyButtonLabel =
+    copyState === "copied"
+      ? "Image copied"
+      : copyState === "error"
+        ? "Copy image failed. Try again"
+        : "Copy image";
+  const copyButtonTitle =
+    copyState === "copied"
+      ? "Copied"
+      : copyState === "error"
+        ? "Copy failed"
+        : "Copy image";
 
   return (
     <>
       <figure
         aria-label={messages.chat_image_group_label({ count: String(count) })}
         className={cx("chat-panel-image-group", className)}
+        data-align={align}
+        data-single={count === 1 ? "true" : undefined}
       >
         {stackable ? (
           <button
@@ -561,6 +812,7 @@ export const ChatPanelImageGroup = ({
           className="chat-panel-image-group-cards"
           data-expanded={isExpanded ? "true" : "false"}
           data-single={count === 1 ? "true" : undefined}
+          data-stackable={stackable ? "true" : undefined}
           id={cardsId}
           ref={cardsRef}
           {...keyboardFocusMotion}
@@ -573,10 +825,12 @@ export const ChatPanelImageGroup = ({
             // Parked fan cards stay in layout for FLIP, but they must not keep
             // decoded bitmaps (or compositor layers) while opacity is 0.
             const paintsImage = slot !== "hidden-right" && slot !== "hidden-left";
+            const sharedHidden = sharedFlight?.index === index;
             return (
               <button
                 aria-hidden={interactive ? undefined : true}
                 className="chat-panel-image-group-card"
+                data-shared-hidden={sharedHidden ? "true" : undefined}
                 data-stack-pos={slot}
                 inert={interactive ? undefined : true}
                 key={index}
@@ -594,7 +848,10 @@ export const ChatPanelImageGroup = ({
                     alt={image.alt}
                     className="chat-panel-image-group-card-content"
                     decoding="async"
-                    loading={isExpanded ? "lazy" : "eager"}
+                    /* Single-image cards have aspect-ratio: auto and size to the
+                       decoded image; deferring them with loading="lazy" leaves
+                       offscreen cards collapsed until scrolled onto. */
+                    loading={count > 1 && isExpanded ? "lazy" : "eager"}
                     src={image.src}
                   />
                 ) : null}
@@ -612,6 +869,30 @@ export const ChatPanelImageGroup = ({
               </button>
             );
           })}
+          {singleCopyAction ? (
+            <div
+              className="chat-panel-image-toolbar"
+              data-shared-hidden={sharedFlight?.index === 0 ? "true" : undefined}
+            >
+              <button
+                aria-label={copyButtonLabel}
+                className="chat-panel-image-action"
+                {...pressFeedback}
+                onClick={() => void copyImage(singleCopyAction)}
+                title={copyButtonTitle}
+                type="button"
+              >
+                <CopyStateIcon copied={copyState === "copied"} />
+              </button>
+              <span aria-live="polite" className="sr-only">
+                {copyState === "copied"
+                  ? "Image copied."
+                  : copyState === "error"
+                    ? "Could not copy the image."
+                    : ""}
+              </span>
+            </div>
+          ) : null}
           {stackable && !isExpanded ? (
             <>
               <button
@@ -650,20 +931,36 @@ export const ChatPanelImageGroup = ({
       {previewOpen ? (
         <ChatPanelMediaPreview
           actions={
-            frontImage?.download ? (
-              <ChatPanelMediaDownloadControl
-                buttonClassName="chat-panel-media-preview-action"
-                controller={previewDownloadController}
-                feedbackPlacement="below"
-                icon={<DownloadIcon className="size-2xl" />}
-                kind="image"
-              />
+            frontImage?.onCopy || frontImage?.download ? (
+              <>
+                {frontImage.onCopy ? (
+                  <button
+                    aria-label={copyButtonLabel}
+                    className="chat-panel-media-preview-action"
+                    {...pressFeedback}
+                    onClick={() => void copyImage(frontImage.onCopy!)}
+                    title={copyButtonTitle}
+                    type="button"
+                  >
+                    <CopyStateIcon copied={copyState === "copied"} />
+                  </button>
+                ) : null}
+                {frontImage.download ? (
+                  <ChatPanelMediaDownloadControl
+                    buttonClassName="chat-panel-media-preview-action"
+                    controller={previewDownloadController}
+                    icon={<DownloadIcon className="size-2xl" />}
+                    kind="image"
+                  />
+                ) : null}
+              </>
             ) : undefined
           }
           instantMotion={previewInstantMotion}
           isOpen={previewOpen}
-          onOpenChange={setPreviewOpen}
+          onOpenChange={handlePreviewOpenChange}
           returnFocusRef={previewReturnFocusRef}
+          sharedElementTransition={sharedFlight?.phase ?? null}
           title={resolvedPreviewTitle}
           variant="filmstrip"
         >
@@ -674,6 +971,31 @@ export const ChatPanelImageGroup = ({
           />
         </ChatPanelMediaPreview>
       ) : null}
+      {sharedFlight && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              aria-hidden="true"
+              className="chat-panel-image-group-shared-flight"
+              data-phase={sharedFlight.phase}
+              ref={sharedLayerRef}
+              style={{
+                borderRadius: sharedFlight.fromRadius,
+                height: `${sharedFlight.fromRect.height}px`,
+                left: `${sharedFlight.fromRect.left}px`,
+                top: `${sharedFlight.fromRect.top}px`,
+                width: `${sharedFlight.fromRect.width}px`,
+              }}
+            >
+              <img
+                alt={sharedFlight.alt}
+                className="chat-panel-image-group-shared-flight-image"
+                draggable={false}
+                src={sharedFlight.src}
+              />
+            </div>,
+            document.body
+          )
+        : null}
     </>
   );
 };

@@ -332,20 +332,20 @@ const SettingsStory = () => {
                 ],
               },
               {
-                id: "computer-use",
-                icon: "computer-use",
-                label: "Computer use",
+                id: "permissions",
+                icon: "permissions",
+                label: "Permissions",
                 sections: [
                   {
-                    id: "computer-use.access",
-                    title: "Access",
+                    id: "permissions.system",
+                    title: "",
                     items: [
                       {
-                        id: "computer-use.enabled",
-                        title: "Allow computer use",
+                        id: "permissions.computerUse",
+                        title: "Computer use",
                         description:
-                          "Let Comma interact with applications on this computer.",
-                        control: { type: "toggle" },
+                          "To operate your Mac, Comma Computer Use needs Screen Recording to see the screen and Accessibility to click and type.",
+                        control: { type: "button", label: "Allow" },
                       },
                     ],
                   },

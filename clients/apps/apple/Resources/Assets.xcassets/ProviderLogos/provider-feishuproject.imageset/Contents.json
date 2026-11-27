@@ -1,0 +1,12 @@
+{
+  "images": [
+    { "filename": "provider-feishuproject.png", "idiom": "universal", "scale": "1x" },
+    {
+      "filename": "provider-feishuproject@2x.png",
+      "idiom": "universal",
+      "scale": "2x"
+    },
+    { "filename": "provider-feishuproject@3x.png", "idiom": "universal", "scale": "3x" }
+  ],
+  "info": { "author": "xcode", "version": 1 }
+}

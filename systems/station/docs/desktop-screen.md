@@ -27,6 +27,13 @@ socket. The station writes one JSON line `{control: "screen.view", view: {target
 apps?, bitrate?, background?, cursor?, audio?, timing?}, auth_token}`. Then both directions carry still.fail Helper's messages
 (`CUStream/ScreenView.swift` lists them).
 
+A connector that does not reach the daemon with its token within 2 s (`hello`) starts another daemon on the same socket
+path. The daemon answers `hello` and `shutdown` on the socket queue without waiting for its main thread. Connectors in
+one station that share a socket path share the daemon's token and stop the daemon when the last one closes. A new daemon
+replaces the path. Every 2 s the daemon checks that the path is still its own socket. When the path is gone or names
+another socket, the daemon ends, and after 10 s it exits even if its main thread is busy. It removes the path at
+shutdown only while the path is its own.
+
 The Swift code is a port of still.fail Helper (`afk/main` b928883a23):
 
 | Cue | still.fail |
@@ -123,6 +130,18 @@ The mesh carries it, with the same rules as a Mac's display (`src/mesh/screens.t
 the computer's owner, only while the computer's access is Full, and only when the client has the Debug setting
 "computers over the mesh" on. A view drives the screen only when it asks for control and its member may drive.
 
+A coding Task's sandbox can serve its display too (`SALIX_CONNECTOR_TASK_SCREEN`, which the coding sandbox image sets).
+It asks Salix nothing. When the owner of the Task asks to see the screen, Salix tells the station the facts with that
+owner in the owner's place, and again each time their client asks while it views. That person looks only: no view of
+theirs drives the display, the access setting does not apply (a sandbox has none), and the mesh serves them no other
+route of the station. What the station was told stands for three minutes from when it last heard (`STALE_MS`); then it
+admits no one and its endpoint closes.
+
+Such a station also says `capabilities.screen_active` while a Session uses its browser on the display: from a browser
+tool a runtime calls (`agents/browser-mcp.ts` `isBrowserTool`) until it closes the browser (`browser_close`), its turn
+ends, or its process goes (`sessions/hub.ts` `browsing`). It tells Salix again when this changes, on the connection it has. It runs nothing for
+it: no capture starts until a view opens.
+
 ## How a view runs
 
 1. `src/mesh/mesh.ts` makes one `WindowsDesktop` when `platform.hasWindowsScreen` is true and the release has the
@@ -180,13 +199,21 @@ The station tells Salix in the connector's metadata, for a device connection:
   Use helper, on Windows with the program, and on Linux.
 
 Salix keeps it among a device's public capabilities (`SalixEnv.Control`), and `Comma.Devices` gives it as the device's
-`screen_view`. A station that does not say it (a station from before) gets false. Only a device connection says it: a
-station that is not a computer's (a sandbox's, a workload's) does not. Every client views a screen on the mesh, and
-there is no other way to it (as in still.fail):
+`screen_view`. A station that does not say it (a station from before) gets false. A device connection says it, and so
+does a coding Task's sandbox with a display. Another station that is not a computer's (a Workload's) does not. Every
+client views a screen on the mesh, and there is no other way to it (as in still.fail):
 
 - The desktop app views a computer's screen on the mesh. It offers "View screen" in Settings › Devices, and a
   computer's display in the screen menu, only where `screen_view` is true. It never offers the display of the computer
   it runs on: the view would show itself. That computer's simulators, emulators and phones stay in the screen menu and in "View simulators".
+  For a coding Task's sandbox it offers "View screen" in the Task panel, to the Task's owner alone and while the
+  sandbox runs. That page only looks: it has no Watch or Control, no menu of other screens and no Ask Comma. Each view
+  of it asks Salix to show the screen as it opens and again each minute while it is open.
+  While the sandbox's station of such a Task says something is on its display (`screen_active`), the owner's
+  conversation shows that screen live under the Worker's activity. It is the same
+  view, in the flow of the messages. It holds a view only while it is in sight, and not while the screen has a tab in
+  the side panel. The Worker's message that ends its turn takes the screen out of the conversation as it appears:
+  the station says `screen_active` ended only when the turn does, which is after that message.
 - The web page does the same through the browser's iroh (relays and Salix only, as a browser has no UDP). Where the
   browser has no `MediaStreamTrackGenerator` (Safari, Firefox), it draws the decoded frames on a canvas and shows that
   canvas's stream.
@@ -390,6 +417,20 @@ Not recorded:
 - Bytes in flight and the bandwidth estimate. The addon's `noq-proto` 1.3 `PathStats` has neither.
 - The Windows and Linux desktops' encoder times. Their programs do not send message 66.
 - The clock offset between the station and the client. Client times are durations on the client's own clocks.
+
+## Link statistics
+
+A view, but not a preview, tells the client about its connection in `state` (`src/mesh/screens.ts` `ViewSession`):
+
+- `rtt`: the round trip of the chosen path, in whole ms, from the native mesh (`linkOf` in `src/mesh/comma.ts`).
+- `loss`: the packets from the station to the client lost on the chosen path in about the last 10 s, in % with one
+  decimal (`LinkLoss` in `src/mesh/screen-pace.ts`). A change of path (`via` or relay) or of connection starts the count
+  again. The loss is not sent until packets went on that path. Without new packets, it stays at the last value.
+
+The first `state` has `rtt` when the connection has one. After that, the station looks each second and sends a
+`state` with both known values only when one changed: the round trip by 2 ms or more or into another band (300 ms,
+1 s), or the loss at all. It sends nothing while more than 4 messages wait to go. A station from before sends neither
+field, and the client then shows neither row.
 
 ## Picture quality (画质)
 

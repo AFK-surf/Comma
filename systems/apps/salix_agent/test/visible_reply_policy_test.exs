@@ -627,7 +627,6 @@ defmodule SalixAgent.VisibleReplyPolicyTest do
   end
 
   describe "nested script tool dispatch" do
-
     test "returns only an adapter-owned public summary to JavaScript" do
       SystemsRuntime.put_env(:salix_agent, :im_provider_mod, PublicFailureIMProvider)
 

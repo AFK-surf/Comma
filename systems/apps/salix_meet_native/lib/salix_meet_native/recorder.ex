@@ -6,7 +6,7 @@ defmodule SalixMeetNative.Recorder do
 
   alias Membrane.{Buffer, Opus, RawAudio, Time}
   alias SalixMeetNative.ASR
-  alias SalixMeetNative.Recorder.{ASRTap, Downmix, Encoder, GapFiller, Source, Timeline}
+  alias SalixMeetNative.Recorder.{ASRTap, Downmix, Encoder, GapFiller, OggMuxer, Source, Timeline}
 
   @opus_payload_type 111
   @sample_rate 48_000
@@ -82,7 +82,7 @@ defmodule SalixMeetNative.Recorder do
     spec =
       child(:mixer, %Membrane.LiveAudioMixer{latency: nil, stream_format: @mix_format})
       |> child(:encoder, %Encoder{bitrate: Keyword.get(opts, :bitrate, 12_000)})
-      |> child(:muxer, Membrane.Ogg.Muxer)
+      |> child(:muxer, OggMuxer)
       |> child(:mixed_sink, %Membrane.File.Sink{location: mixed})
 
     owner = Keyword.get(opts, :owner)
@@ -175,11 +175,13 @@ defmodule SalixMeetNative.Recorder do
      }}
   end
 
+  # With no track there is nothing to keep. The mixed file's sink opens it in
+  # its own setup, which can come after this message: remove the files only
+  # once that sink has stopped.
   def handle_info({:finish, from, ref}, _ctx, %{finishing: nil, tracks: tracks} = state)
       when map_size(tracks) == 0 do
-    Enum.each([state.mixed, Timeline.path(state.timeline)], &File.rm/1)
-    send(from, {ref, nil, nil})
-    {[], %{state | finishing: :done}}
+    {[remove_children: [:mixer, :encoder, :muxer, :mixed_sink]],
+     %{state | finishing: {:empty, from, ref}}}
   end
 
   def handle_info({:finish, from, ref}, _ctx, %{finishing: nil} = state) do
@@ -202,6 +204,15 @@ defmodule SalixMeetNative.Recorder do
     do: schedule_mixer_eos(%{state | unlinked: MapSet.delete(state.unlinked, id)})
 
   def handle_child_playing(_child, _ctx, state), do: {[], state}
+
+  @impl true
+  def handle_child_terminated(:mixed_sink, _ctx, %{finishing: {:empty, from, ref}} = state) do
+    Enum.each([state.mixed, Timeline.path(state.timeline)], &File.rm/1)
+    send(from, {ref, nil, nil})
+    {[], %{state | finishing: :done}}
+  end
+
+  def handle_child_terminated(_child, _ctx, state), do: {[], state}
 
   @impl true
   def handle_element_end_of_stream(sink, :input, _ctx, state) do
@@ -267,7 +278,7 @@ defmodule SalixMeetNative.Recorder do
       raw =
         child({:raw_source, id}, %Source{reorder_window_ns: @reorder_ns})
         |> child({:raw_gaps, id}, GapFiller)
-        |> child({:raw_muxer, id}, Membrane.Ogg.Muxer)
+        |> child({:raw_muxer, id}, OggMuxer)
         |> child({:raw_sink, id}, %Membrane.File.Sink{location: Path.join(state.dir, file)})
 
       track = %{id: id, file: file, unwrap: nil, entry: entry, route: nil, ended?: false}

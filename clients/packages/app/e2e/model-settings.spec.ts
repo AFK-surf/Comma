@@ -447,7 +447,15 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
     page.getByRole("status", { name: "Device code", exact: true })
   ).toHaveText("ABCD-1234");
   expect(popups).toBe(0);
-  // One press copies the code and opens the sign-in page.
+  // One press copies the code and opens the sign-in page. A user's browser
+  // has no granted clipboard permission: a write needs the click's activation,
+  // which opening the new tab uses up. A write started after that never
+  // settles in Chrome and leaves the tab on about:blank.
+  await page.evaluate(() => {
+    const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+    navigator.clipboard.writeText = (text) =>
+      navigator.userActivation.isActive ? write(text) : new Promise<void>(() => {});
+  });
   const signInPage = page.waitForEvent("popup");
   await page
     .getByRole("button", {
@@ -455,11 +463,11 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
       exact: true,
     })
     .click();
+  const authorizationPage = await signInPage;
+  await expect(authorizationPage).toHaveURL("https://example.com/device");
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toBe("ABCD-1234");
-  const authorizationPage = await signInPage;
-  await expect(authorizationPage).toHaveURL("https://example.com/device");
   await authorizationPage.close();
   expect(popups).toBe(1);
   await expect(

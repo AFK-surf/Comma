@@ -10,7 +10,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -19,6 +18,7 @@ import surf.comma.android.settings.ConfirmDialog
 import surf.comma.android.settings.SettingsRow
 import surf.comma.android.tasks.tools.ToolPage
 import surf.comma.android.ui.ActionMenu
+import surf.comma.android.ui.kit.ActivityIndicator
 import surf.comma.android.ui.kit.CommaSheet
 import surf.comma.android.ui.kit.GlassIconButton
 import surf.comma.android.ui.kit.dp
@@ -50,7 +50,7 @@ internal class RemoteBrowserView(
         clipToOutline = true
     }
     private val waiting = FrameLayout(activity).apply {
-        addView(ProgressBar(activity), FrameLayout.LayoutParams(activity.dp(28), activity.dp(28), Gravity.CENTER))
+        addView(ActivityIndicator(activity), FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
         minimumHeight = activity.dp(120)
     }
     private val text = EditText(activity).apply {

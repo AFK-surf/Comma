@@ -11,7 +11,7 @@ struct RouterLayerContent: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let layout = ShellColumnLayout(width: geometry.size.width, folded: folded, division: geometry.shellFoldDivision)
+            let layout = ShellColumnLayout(size: geometry.size, folded: folded, division: geometry.shellFoldDivision)
             // The whole stack, its navigation bar included, keeps to the trailing column: the Routines column
             // covers the leading one, and a bar laid out across both would put its close button and mark under it.
             NavigationStack { RouterChatRoot(store: store) }

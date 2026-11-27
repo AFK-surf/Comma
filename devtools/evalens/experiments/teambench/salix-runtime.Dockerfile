@@ -1,6 +1,6 @@
 # The build context is the station release (systems/station/scripts/bundle.sh)
 # for Linux on the Docker host's architecture.
-FROM golang:1.26.10-bookworm AS go-toolchain
+FROM golang:1.26.11-bookworm AS go-toolchain
 
 FROM python:3.11-slim
 

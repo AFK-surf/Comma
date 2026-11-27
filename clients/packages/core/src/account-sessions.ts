@@ -2,6 +2,8 @@
 // the most recently active. Read when a surface shows it and on `accountSessions.refresh`. Signing out another
 // session, or every other one, takes its row away at once and reads the list again. A paired Apple Watch is one more
 // session: the iPhone asks for a one-time pairing (`accountSessions.pairWatch`) that the watch exchanges for its own.
+// The Raycast extension is one too: the desktop app asks for a pairing bound to the extension's challenge
+// (`accountSessions.pairRaycast`), once the person confirmed the connection.
 //
 // Bounds: one read in flight per shown list, at most five pages of 100; each change is one request, then one read; a
 // pairing is one request.
@@ -115,6 +117,30 @@ export class AccountSessions {
               expiresAt: pairing.expires_at,
             }))
           ),
+      },
+      "accountSessions.pairRaycast": {
+        doing: true,
+        run: (p) => {
+          const challenge = (p as { challenge?: unknown } | null)?.challenge;
+          if (typeof challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(challenge))
+            throw CoreError.invalid("challenge is required");
+          return ctx.session.account().pipe(
+            Effect.flatMap((account) =>
+              ctx.api.request(
+                account,
+                "POST",
+                "/v1/comma/auth/raycast/pairing",
+                watchPairingSchema,
+                { challenge }
+              )
+            ),
+            Effect.map((pairing) => ({
+              pairingId: pairing.pairing_id,
+              pairingSecret: pairing.pairing_secret,
+              expiresAt: pairing.expires_at,
+            }))
+          );
+        },
       },
       "accountSessions.revokeOthers": {
         doing: true,

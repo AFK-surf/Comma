@@ -175,10 +175,19 @@ struct PhoneTaskEnvironment: Identifiable {
             return .init(id: id, name: station.string("name") ?? id, online: station.object("link")?.string("state") == "online")
         }
     }
+    /// Comma's built-in model among the cloud's (no catalog id is empty), started with no model.
+    static let builtinModel = ""
+    /// The Workspace's Task model first, then the served models. Comma's built-in model, where the Workspace chose it,
+    /// is `builtinModel`, started with no model, which the server runs with it.
     var cloudModels: [PhoneModelOption] {
-        let preferred = models.taskSelection.model
+        let selection = models.taskSelection
+        let preferred = selection.kind == "catalog" ? selection.model : nil
         let served = models.models.filter { !$0.serving.isEmpty }
-        return served.filter { $0.id == preferred } + served.filter { $0.id != preferred }
+        let hasAgents = models.value.object?.object("agents")?.object("task_model") != nil
+        let builtin: [PhoneModelOption] = hasAgents && selection.kind == "builtin"
+            ? [.init(id: Self.builtinModel, name: String(localized: "Comma built-in"), vendor: "comma")]
+            : []
+        return builtin + served.filter { $0.id == preferred } + served.filter { $0.id != preferred }
     }
     var cloudModel: PhoneModelOption? { cloudModels.first { $0.id == cloudModelID } ?? cloudModels.first }
     var canStart: Bool {
@@ -242,9 +251,16 @@ struct PhoneTaskEnvironment: Identifiable {
                 return models.map { .init(runtime: runtime, profile: id, model: $0, label: name + " · " + $0) }
             }
         }
+        // A runtime with no subscription of its own runs on the accounts Salix lends a sandbox: offered only where they
+        // run it. A server that does not list them limits none.
+        let place = models.value.object?.object("agents")?.object("task_place")
+        let lent = place?.array("sandbox_runtimes") == nil ? nil : place?.strings("sandbox_runtimes")
         return ["codex", "claude"].flatMap { runtime -> [PhoneCodingRun] in
             let profiles = models.profiles.filter { $0.bool("subscription") && $0.bool("usable") && $0.string("source") == runtime }
-            if profiles.isEmpty { return [.init(runtime: runtime, profile: nil, model: nil, label: runtime == "codex" ? "Codex" : "Claude Code")] }
+            if profiles.isEmpty {
+                if let lent, !lent.contains(runtime) { return [] }
+                return [.init(runtime: runtime, profile: nil, model: nil, label: runtime == "codex" ? "Codex" : "Claude Code")]
+            }
             return profiles.flatMap { profile -> [PhoneCodingRun] in
                 guard let id = profile.string("id") else { return [] }
                 let account = profile.string("name") ?? profile.string("email") ?? runtime
@@ -299,7 +315,7 @@ struct PhoneTaskEnvironment: Identifiable {
         if inCloud, let model = cloudModel {
             method = "chat.startTask"
             params["workspaceId"] = scope.workspace.id
-            params["model"] = ["id": model.id, "name": model.name]
+            if model.id != Self.builtinModel { params["model"] = ["id": model.id, "name": model.name] }
         } else if inSandbox, let run {
             method = "coding.start"
             params["workspaceId"] = scope.workspace.id

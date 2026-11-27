@@ -11,7 +11,7 @@ final class TaskDockViewController: UIViewController, UIGestureRecognizerDelegat
     private static let sheetTopGap: CGFloat = 10
 
     let store: CommaStore
-    private var pane: ConversationPane
+    private(set) var pane: ConversationPane
     private var revealRequest: Int
     private(set) var placement: TaskDockPlacement
     let panel = UIView()
@@ -161,6 +161,7 @@ final class TaskDockViewController: UIViewController, UIGestureRecognizerDelegat
         installContent()
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChange(_:)),
                                                name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        trackKeyboard()
     }
 
     override func viewSafeAreaInsetsDidChange() {

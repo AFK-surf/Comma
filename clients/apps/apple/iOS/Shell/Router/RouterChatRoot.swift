@@ -39,7 +39,8 @@ struct RouterChatRoot: View {
         .onChange(of: store.taskRevealRequest) { _, _ in composerFocused = false }
         .onChange(of: navigation.keyboardDismissal) { _, _ in composerFocused = false }
         .onChange(of: navigation.routerOpen) { _, open in if !open { composerFocused = false } }
-        .onChange(of: navigation.routerFocusRequest) { _, _ in composerFocused = true }
+        .onChange(of: navigation.routerFocusRequest) { _, _ in if navigation.routerOpen { composerFocused = true } }
+        .onChange(of: composerFocused) { _, focused in if focused, !navigation.routerOpen { composerFocused = false } }
         // Read when the chat shows, never on a background launch; once per account and Workspace in a process.
         .task(id: (store.session?.id ?? "") + ":" + (store.workspace?.id ?? "")) { await call?.refreshAvailability() }
         .navigationBarTitleDisplayMode(.inline)
@@ -62,7 +63,7 @@ struct RouterChatRoot: View {
                 ToolbarItem(placement: .principal) {
                     let replying = store.router.pane?.isReplying ?? false
                     // The mark alone; the name stays as the accessibility label.
-                    RouterMark(replying: replying, size: 26)
+                    RouterMark(replying: replying, size: RouterCircleOverlay.markSide)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(Text(store.router.name))
                         .accessibilityValue(replying ? Text("Thinking") : Text(verbatim: ""))

@@ -1,8 +1,9 @@
 import { act, renderHook, waitFor } from "@comma/test-utils/render";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import type { ChatParticipantStatus } from "@comma/core/chat";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import { useTaskParticipantFeeds } from "../useActivityFocus";
+import { useActivityFocus, useTaskParticipantFeeds } from "../useActivityFocus";
 
 // How often the core reads each feed, and what it keeps through reconnects, is tested in
 // packages/core/test/task-workers.test.ts.
@@ -43,5 +44,67 @@ describe("useTaskParticipantFeeds", () => {
 
     unmount();
     await waitFor(() => expect(left).toHaveLength(1));
+  });
+});
+
+const summary = (id: string, status: string) => ({
+  id,
+  group_id: "group",
+  kind: "agent_task" as const,
+  status,
+  title: id,
+});
+
+describe("useActivityFocus", () => {
+  it("never follows or opens a feed for a Task that ended", async () => {
+    const shown: Record<string, unknown>[] = [];
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "taskSummaries"
+          ? {
+              summaries: [
+                summary("t_failed", "failed"),
+                summary("t_run1", "active"),
+                summary("t_done", "completed"),
+                summary("t_run2", "active"),
+              ],
+            }
+          : topic.topic === "taskWorkers"
+            ? { t_run1: worker, t_run2: null }
+            : undefined,
+      onSubscribe: (topic) => shown.push(topic),
+    });
+    const participantStatus: ChatParticipantStatus = {
+      conversationId: "home",
+      participantId: "router",
+      state: "active",
+      status: "is thinking...",
+      updatedAt: 1,
+      workingConversationIds: ["t_failed", "t_run1", "t_done", "t_run2"],
+    };
+    const { result, unmount } = renderHook(
+      () =>
+        useActivityFocus({
+          enabled: true,
+          groupId: "group",
+          messages: [],
+          participantStatus,
+        }),
+      { wrapper: ({ children }: { children: ReactNode }) => core.wrap(children) }
+    );
+    await waitFor(() =>
+      expect(result.current?.tasks.map((task) => task.conversationId)).toEqual([
+        "t_run1",
+        "t_run2",
+      ])
+    );
+    expect(result.current).toMatchObject({
+      mode: "following",
+      tasks: [{ worker }, { worker: null }],
+    });
+    expect(shown.filter((topic) => topic.topic === "taskWorkers")).toEqual([
+      { topic: "taskWorkers", group: "group", ids: "t_run1,t_run2" },
+    ]);
+    unmount();
   });
 });

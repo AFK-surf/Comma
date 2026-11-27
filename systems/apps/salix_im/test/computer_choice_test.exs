@@ -200,4 +200,314 @@ defmodule SalixIM.ComputerChoiceTest do
 
     assert ComputerChoice.aimed(@two, %{"content" => "写一篇关于 MacBook 的短文"}, nil) == []
   end
+
+  test "external_thread_key groups Slack threads, Slack DMs, and other IM chats" do
+    slack_root = %{
+      "provider" => "slack",
+      "provider_context" => %{
+        "connect_id" => "c1",
+        "channel_id" => "C1",
+        "channel_type" => "mpim",
+        "message_ts" => "100.1"
+      }
+    }
+
+    slack_reply = %{
+      "provider" => "slack",
+      "provider_context" => %{
+        "connect_id" => "c1",
+        "channel_id" => "C1",
+        "channel_type" => "mpim",
+        "thread_ts" => "100.1",
+        "message_ts" => "100.2"
+      }
+    }
+
+    assert ComputerChoice.external_thread_key(slack_root) ==
+             ComputerChoice.external_thread_key(slack_reply)
+
+    slack_dm_1 = %{
+      "provider" => "slack",
+      "provider_context" => %{
+        "connect_id" => "c1",
+        "channel_id" => "D1",
+        "channel_type" => "im",
+        "message_ts" => "200.1"
+      }
+    }
+
+    slack_dm_2 = %{
+      "provider" => "slack",
+      "provider_context" => %{
+        "connect_id" => "c1",
+        "channel_id" => "D1",
+        "channel_type" => "im",
+        "message_ts" => "200.2"
+      }
+    }
+
+    assert ComputerChoice.external_thread_key(slack_dm_1) ==
+             ComputerChoice.external_thread_key(slack_dm_2)
+
+    imsg_1 = %{
+      "provider" => "imessage",
+      "provider_context" => %{"connect_id" => "c_im", "chat_id" => "chat_1"}
+    }
+
+    imsg_2 = %{
+      "provider" => "imessage",
+      "provider_context" => %{"connect_id" => "c_im", "chat_id" => "chat_1"}
+    }
+
+    assert ComputerChoice.external_thread_key(imsg_1) ==
+             ComputerChoice.external_thread_key(imsg_2)
+  end
+
+  test "an external IM unplaced reply right after a which-computer question avoids looping" do
+    asked = %{
+      "actor_type" => "agent",
+      "external_reply" => true,
+      "content" => text("要在 Peng's MacBook Pro 还是 Mac mini (office) 上跑？")
+    }
+
+    assert decide(@two, [@mini], [user("第二台"), asked, user("帮我跑一下")]) == :ok
+
+    # Explicit mention of another computer still does not silently allow the wrong target.
+    assert {:error, {:computer_choice_required, _}} =
+             decide(@two, [@macbook], [user("用 mini 跑"), asked, user("帮我跑一下")])
+
+    # An unrelated later turn after a non-question agent reply asks again.
+    done = %{
+      "actor_type" => "agent",
+      "external_reply" => true,
+      "content" => text("任务已经完成了。")
+    }
+
+    assert {:error, {:computer_choice_required, _}} =
+             decide(@two, [@mini], [user("再帮我跑个脚本"), done, user("第二台"), asked])
+  end
+
+  test "external IM and automatic refusal messages match the surface and hint cloud alternatives" do
+    ext_msg =
+      TaskPlacement.message({:runs_on, {:computer_choice_required, @two, "imessage"}, :automatic})
+
+    assert ext_msg =~ "imessage conversation"
+    refute ext_msg =~ "im_api.internal.send_message"
+    assert ext_msg =~ "cloud sandbox"
+
+    ext_other =
+      TaskPlacement.message({:runs_on, {:computer_choice_other, [@mini], "slack"}, :requested})
+
+    assert ext_other =~ "slack conversation"
+    refute ext_other =~ "question card"
+  end
+end
+
+defmodule SalixIM.ComputerChoicePlacementTest do
+  use ExUnit.Case, async: false
+
+  alias SalixIM.{ComputerChoice, TaskPlacement}
+  alias SalixStore.Ids
+
+  @macbook %{
+    "device_id" => "dev_mbp",
+    "station_id" => "aaa",
+    "name" => "Peng's MacBook Pro",
+    "os" => "darwin"
+  }
+  @mini %{
+    "device_id" => "dev_mini",
+    "station_id" => "bbb",
+    "name" => "Mac mini (office)",
+    "os" => "darwin"
+  }
+  @two [@macbook, @mini]
+
+  defmodule FakePort do
+    @behaviour SalixIM.Ports.TaskCreate
+
+    @impl true
+    def create_task_conversation(_g, _d, _t, _a), do: {:error, :unused}
+
+    @impl true
+    def personal_computers(_scope),
+      do: {:ok, SystemsRuntime.get_env(:salix_im, :cc_test_computers, [])}
+
+    @impl true
+    def external_choice_messages(_scope, _origin, _limit),
+      do: {:ok, SystemsRuntime.get_env(:salix_im, :cc_test_ext_messages, [])}
+
+    @impl true
+    def runs_on(_scope, _request),
+      do: SystemsRuntime.get_env(:salix_im, :cc_test_runs_on, {:ok, %{"kind" => "sandbox"}})
+
+    @impl true
+    def session_model(_scope, choice), do: {:ok, choice}
+  end
+
+  setup do
+    prev_port = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, FakePort)
+    SystemsRuntime.put_env(:salix_im, :cc_test_computers, @two)
+    SystemsRuntime.put_env(:salix_im, :cc_test_ext_messages, [])
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    start_supervised!(SalixStore.S3.Fake)
+
+    tenant = SalixAgent.TestSupport.new_tenant_id()
+    group = Ids.new_group_id(tenant)
+    SalixAgent.TestSupport.create_control_group!(group, %{"name" => "Computer choice test"})
+
+    worker_doc =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "name" => "Worker",
+        "role" => "worker"
+      })
+
+    worker = worker_doc["agent_id"]
+
+    on_exit(fn ->
+      if prev_port,
+        do: SystemsRuntime.put_env(:salix_im, :task_create_mod, prev_port),
+        else: SystemsRuntime.delete_env(:salix_im, :task_create_mod)
+
+      if prev_s3,
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, prev_s3),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
+
+      SystemsRuntime.delete_env(:salix_im, :cc_test_computers)
+      SystemsRuntime.delete_env(:salix_im, :cc_test_ext_messages)
+      SystemsRuntime.delete_env(:salix_im, :cc_test_runs_on)
+    end)
+
+    {:ok, tenant: tenant, group: group, worker: worker}
+  end
+
+  defp external_origin(provider, text, opts \\ []) do
+    %{
+      "provider" => provider,
+      "source_actor_type" => Keyword.get(opts, :actor_type, "provider_user"),
+      "source_message_id" => Keyword.get(opts, :message_id, "m1"),
+      "source_text" => text,
+      "provider_context" =>
+        case provider do
+          "slack" ->
+            %{
+              "connect_id" => "c_slack",
+              "channel_id" => "C1",
+              "channel_type" => "mpim",
+              "thread_ts" => "100.1"
+            }
+
+          _ ->
+            %{"connect_id" => "c_im", "chat_id" => "chat_1"}
+        end
+    }
+  end
+
+  test "external IM requests with multiple computers require choice unless named in turn or history" do
+    station = %{"kind" => "station", "device_id" => "dev_mbp"}
+
+    assert {:error, {:computer_choice_required, @two, "slack"}} =
+             ComputerChoice.check(
+               %{computer_choice: external_origin("slack", "帮我在本地跑一下")},
+               %{},
+               station
+             )
+
+    assert :ok =
+             ComputerChoice.check(
+               %{computer_choice: external_origin("slack", "在 MacBook Pro 上跑一下")},
+               %{},
+               station
+             )
+
+    SystemsRuntime.put_env(:salix_im, :cc_test_ext_messages, [
+      %{
+        "actor_type" => "user",
+        "message_id" => "m0",
+        "content" => [%{"type" => "text", "text" => "后面都用 mini 跑"}]
+      }
+    ])
+
+    assert :ok =
+             ComputerChoice.check(
+               %{computer_choice: external_origin("imessage", "跑一下这个项目")},
+               %{},
+               %{"kind" => "station", "device_id" => "dev_mini"}
+             )
+
+    # Non-human provider system events do not trigger computer choice.
+    assert :ok =
+             ComputerChoice.check(
+               %{
+                 computer_choice:
+                   external_origin("slack", "scheduled", actor_type: "provider_system")
+               },
+               %{},
+               station
+             )
+  end
+
+  test "automatic placement onto one of multiple personal computers requires user choice", %{
+    tenant: tenant,
+    group: group,
+    worker: worker
+  } do
+    SystemsRuntime.put_env(
+      :salix_im,
+      :cc_test_runs_on,
+      {:ok, %{"kind" => "station", "device_id" => "dev_mbp"}}
+    )
+
+    params = %{
+      "model" => %{"kind" => "runtime", "provider" => "codex"}
+    }
+
+    scope = %{
+      tenant_id: tenant,
+      group_id: group,
+      computer_choice: external_origin("imessage", "手机上下个任务帮我跑脚本")
+    }
+
+    assert {:error, {:runs_on, {:computer_choice_required, @two, "imessage"}, :automatic}} =
+             TaskPlacement.resolve(scope, worker, params, false)
+
+    assert {:error, {:runs_on, {:computer_choice_required, @two, "imessage"}, :requested}} =
+             TaskPlacement.resolve(
+               scope,
+               worker,
+               Map.put(params, "runs_on", %{"kind" => "default"}),
+               false
+             )
+
+    named_scope = %{
+      scope
+      | computer_choice: external_origin("imessage", "在 MacBook Pro 上跑这个脚本")
+    }
+
+    assert {:ok, %{runs_on: %{"kind" => "station", "device_id" => "dev_mbp"}, source: :automatic}} =
+             TaskPlacement.resolve(named_scope, worker, params, false)
+
+    # Automatic placement landing on a sandbox is not blocked by multiple personal computers.
+    SystemsRuntime.put_env(:salix_im, :cc_test_runs_on, {:ok, %{"kind" => "sandbox"}})
+
+    assert {:ok, %{runs_on: %{"kind" => "sandbox"}, source: :automatic}} =
+             TaskPlacement.resolve(scope, worker, params, false)
+
+    # Explicit Group default_task_place (:default) stays respected without re-asking.
+    SystemsRuntime.put_env(
+      :salix_im,
+      :cc_test_runs_on,
+      {:ok, %{"kind" => "station", "device_id" => "dev_mbp"}}
+    )
+
+    {:ok, _} =
+      SalixStore.CasRecord.update(SalixStore.Keys.ctl_group(group), fn doc ->
+        Map.put(doc, "default_task_place", %{"kind" => "station", "device_id" => "dev_mbp"})
+      end)
+
+    assert {:ok, %{runs_on: %{"kind" => "station", "device_id" => "dev_mbp"}, source: :default}} =
+             TaskPlacement.resolve(scope, worker, params, false)
+  end
 end

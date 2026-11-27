@@ -40,7 +40,8 @@ internal data class VoiceAccess(val accountId: String, val sessionId: String, va
 
 /**
  * Thirty-day device key, made through the client core (`voice.createKey`) and replaced before a call when fewer than
- * three days remain. A key this phone no longer uses is deleted at once (`voice.deleteKey`); one that cannot be
+ * three days remain. At the key limit, an unexpired key of this session serves this call; a stale-session or
+ * expired key is deleted before one retry. A key this phone no longer uses is deleted at once (`voice.deleteKey`); one that cannot be
  * deleted then (offline) ends on its own when it expires, and this phone no longer holds it.
  */
 class VoiceKeyCredentials internal constructor(
@@ -78,9 +79,28 @@ class VoiceKeyCredentials internal constructor(
 
     private suspend fun mint(owner: VoiceAccess, saved: VoiceKeyRecord?): VoiceEndpoint {
         val expiry = nowMillis() / 1000 + LIFETIME_SECONDS
-        val json = core.call("voice.createKey", JSONObject().put("workspace", owner.workspaceId)
-            .put("name", "Android voice calls").put("expiresAt", expiry)) as? JSONObject
-            ?: throw VoiceFailure(CallResult.Unavailable)
+        suspend fun create(): JSONObject = try {
+            core.call("voice.createKey", JSONObject().put("workspace", owner.workspaceId)
+                .put("name", "Android voice calls").put("expiresAt", expiry)) as? JSONObject
+                ?: throw VoiceFailure(CallResult.Unavailable)
+        } catch (e: CoreError) {
+            if (e.status == 409) throw VoiceFailure(CallResult.KeyLimit)
+            throw e
+        }
+        var previous = saved
+        val json = try { create() } catch (e: VoiceFailure) {
+            if (e.result != CallResult.KeyLimit || saved == null ||
+                saved.workspaceId != owner.workspaceId || saved.accountId != owner.accountId || access() != owner) throw e
+            if (saved.sessionId == owner.sessionId && saved.expiresAt > nowMillis() / 1000) {
+                issued = saved
+                return saved.endpoint
+            }
+            // A stale-session or expired key still counts toward the limit; deleting it frees its slot.
+            delete(saved.workspaceId, saved.keyId)
+            store.clear()
+            previous = null
+            create()
+        }
         val keyId = json.optString("key_id")
         val record = try {
             val expiresAt = json.getLong("expires_at")
@@ -102,7 +122,7 @@ class VoiceKeyCredentials internal constructor(
             delete(record.workspaceId, record.keyId)
             throw e
         }
-        saved?.let { delete(it.workspaceId, it.keyId) }
+        previous?.let { delete(it.workspaceId, it.keyId) }
         issued = record
         return record.endpoint
     }

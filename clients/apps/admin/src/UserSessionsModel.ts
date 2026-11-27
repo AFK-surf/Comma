@@ -78,6 +78,8 @@ export function sessionDeviceLabel(session: AdminSession) {
       return "Comma on iPhone";
     case "watch":
       return "Comma on Apple Watch";
+    case "raycast":
+      return "Comma for Raycast";
     case "api":
       return messages.admin_device_api();
     case "ssh":

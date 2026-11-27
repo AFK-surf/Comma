@@ -239,6 +239,19 @@ extension CommaStore {
         else { AppleCredentialMonitor.clear() }
     }
 
+    /**
+     * Keeps `environment` as the backend for the next launch (the hidden switch of TestFlight and development
+     * builds). This device's push slot on the current backend goes first, so that backend stops notifying this
+     * iPhone. The session stays kept for the current backend, to use again on switching back.
+     */
+    func chooseBackend(_ environment: BackendEnvironment) async {
+        loading = true
+        defer { loading = false }
+        await beforeBackendSwitch?()
+        if lifecycle?.phase == "signed_in" { _ = try? await core.call("notifications.unregisterDevice") }
+        BackendEnvironment.choose(environment)
+    }
+
     // MARK: Other accounts signed in on this iPhone
 
     /**

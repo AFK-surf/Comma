@@ -640,3 +640,39 @@ export class Sizer {
     return this.#low ? { maxWidth: Math.min(a.maxWidth, LOW_BOUNDS.maxWidth), maxHeight: Math.min(a.maxHeight, LOW_BOUNDS.maxHeight) } : { ...a };
   }
 }
+
+/// How far back a view's packet loss is counted (`LinkLoss`).
+export const LOSS_WINDOW_MS = 10_000;
+
+/// The share of the station's packets to the client lost on the view's path over about the last LOSS_WINDOW_MS, in %
+/// (one decimal), from what the native mesh counts on that path (`LinkStats` `sentDatagrams`, `lostPackets`): what the
+/// client's statistics show as packet loss. Counted on one path alone: another way or relay, or counters that went
+/// back (another connection), starts it again. Even a few packets count: a link that loses most of them sends few.
+export class LinkLoss {
+  #key: string | null = null;
+  #samples: { at: number; sent: number; lost: number }[] = [];
+  /// The last loss measured on this path: kept while nothing more went.
+  #last: number | null = null;
+
+  /// The loss at `now` (ms), with what the link says now; null while none can be told yet.
+  sample(now: number, link: { via?: string | null; relay?: string | null; sentDatagrams?: number; lostPackets?: number } | null): number | null {
+    if (!link || typeof link.sentDatagrams !== "number" || typeof link.lostPackets !== "number" || !Number.isFinite(link.sentDatagrams) || !Number.isFinite(link.lostPackets)) return null;
+    const key = `${link.via ?? ""}\n${link.relay ?? ""}`;
+    const last = this.#samples.at(-1);
+    if (key !== this.#key || !last || link.sentDatagrams < last.sent || link.lostPackets < last.lost) {
+      this.#key = key;
+      this.#samples = [{ at: now, sent: link.sentDatagrams, lost: link.lostPackets }];
+      this.#last = null;
+      return null;
+    }
+    this.#samples.push({ at: now, sent: link.sentDatagrams, lost: link.lostPackets });
+    // (the oldest kept is the window's start: the next one is no later than its beginning)
+    while (this.#samples.length > 2 && this.#samples[1]!.at <= now - LOSS_WINDOW_MS) this.#samples.shift();
+    const base = this.#samples[0]!;
+    const sent = link.sentDatagrams - base.sent;
+    if (sent <= 0) return this.#last;
+    const lost = Math.max(0, link.lostPackets - base.lost);
+    this.#last = Math.min(100, Math.max(0, Math.round((lost / sent) * 1000) / 10));
+    return this.#last;
+  }
+}

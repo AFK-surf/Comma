@@ -1094,7 +1094,8 @@ defmodule CommaWeb.ProactiveMailTest do
     {:ok, messages} =
       SalixIM.Conversations.list_group_conversation_messages(
         f.ctx.group_id,
-        home["conversation_id"]
+        home["conversation_id"],
+        limit: 1_000
       )
 
     Enum.filter(messages, &(&1["kind"] == "message"))
@@ -1106,7 +1107,8 @@ defmodule CommaWeb.ProactiveMailTest do
     {:ok, messages} =
       SalixIM.Conversations.list_group_conversation_messages(
         f.ctx.group_id,
-        home["conversation_id"]
+        home["conversation_id"],
+        limit: 1_000
       )
 
     Enum.filter(messages, &is_map(&1["agent_input"]))
@@ -1410,10 +1412,17 @@ defmodule CommaWeb.ProactiveMailTest do
                {"10", "needs_review", f.user["email"], -8 * 24 * 60 * 60 * 1000}
              ])
 
-    assert [%{"agent_input" => %{content: text}}] = Enum.drop(router_inputs(f), before)
-    assert text =~ "Chat 7"
-    assert text =~ "im_api.internal.read_conversation"
-    assert text =~ ref
+    assert [%{"agent_input" => %{no_wake: true, content: ctx_json}}] =
+             Enum.drop(router_inputs(f), before)
+
+    assert %{"event" => "station_task_notified", "ref" => ^ref, "title" => "Chat 7"} =
+             Jason.decode!(ctx_json)
+
+    assert Enum.any?(home_messages(f), fn msg ->
+             Enum.any?(msg["content"] || [], fn b ->
+               b["type"] == "text" and String.contains?(b["text"] || "", "Chat 7")
+             end)
+           end)
 
     # The same stop, seen again, hands over nothing new.
     assert [%{"state" => "active"}] =
@@ -1433,7 +1442,11 @@ defmodule CommaWeb.ProactiveMailTest do
     assert [%{"state" => "active"}] =
              send_rows.([
                {"7", "needs_review", f.user["email"], 4_000,
-                %{"attention" => "need", "waits_for" => [f.user["email"]]}}
+                %{
+                  "attention" => "need",
+                  "waits_for" => [f.user["email"]],
+                  "labels" => ["card:approval"]
+                }}
              ])
 
     assert length(router_inputs(f)) == before + 2
@@ -1441,62 +1454,1594 @@ defmodule CommaWeb.ProactiveMailTest do
 
   test "a still.fail chat reaches the person it waits for, with its kind, its agent's line and its link",
        f do
+    assert {:ok, %{"level" => "all"}} =
+             CommaWeb.Proactive.set_stillfail_notification_level(
+               f.user,
+               %{},
+               f.ctx.group_id,
+               "all"
+             )
+
     {station, send_rows} = station_task_sender(f)
     ref = &SalixIM.Ports.StationHostedTasks.ref(station.id, &1)
     owner = String.upcase(f.user["email"])
-    day = 24 * 60 * 60 * 1000
+    hour = 60 * 60 * 1000
+    day = 24 * hour
     before = length(router_inputs(f))
 
-    # Who a chat waits for decides, not who made it.
+    # Who a chat waits for decides, not who made it. Stale stops older than 6
+    # hours, `done` receipts, `failed` stops, link-only system cards, and
+    # cardless prose notices stay in Routine and do not interrupt Home chat.
     sources =
       send_rows.([
         {"20", "needs_review", "someone@comma.test", 2_000,
          %{
            "attention" => "need",
            "waits_for" => ["other@comma.test", owner],
+           "labels" => ["card:approval"],
            "note" => "Push the branch to main or wait for review",
            "url" => "https://still.fail/c/20"
          }},
         {"21", "needs_review", f.user["email"], 2_000,
-         %{"attention" => "need", "waits_for" => ["other@comma.test"]}},
-        # Finished ten days ago and not read: still news, not urgent.
-        {"22", "done", "someone@comma.test", -10 * day,
+         %{
+           "attention" => "need",
+           "waits_for" => ["other@comma.test"],
+           "labels" => ["card:approval"]
+         }},
+        # Finished recently and not read: stays in Routine/left rail, not Home chat.
+        {"22", "done", "someone@comma.test", -2 * hour,
          %{"attention" => "done", "waits_for" => [f.user["email"]]}},
+        # Runtime failures stay in Routine/left rail, not Home chat.
         {"23", "needs_review", "someone@comma.test", 1_000,
          %{"attention" => "failed", "waits_for" => [f.user["email"]]}},
+        # Second actionable decision card for co-presented tracking & closure.
+        {"27", "needs_review", "someone@comma.test", 1_500,
+         %{
+           "attention" => "need",
+           "waits_for" => [f.user["email"]],
+           "labels" => ["card:approval"],
+           "note" => "Confirm target cluster",
+           "url" => "https://still.fail/c/27"
+         }},
         # It waits for the owner but asks nothing of anyone.
-        {"24", "in_progress", f.user["email"], 1_000, %{"waits_for" => [f.user["email"]]}}
+        {"24", "in_progress", f.user["email"], 1_000, %{"waits_for" => [f.user["email"]]}},
+        # Historical backlog older than the real-time handoff window stays quiet.
+        {"25", "needs_review", "someone@comma.test", -8 * hour,
+         %{
+           "attention" => "need",
+           "waits_for" => [f.user["email"]],
+           "labels" => ["card:approval"]
+         }},
+        {"26", "done", "someone@comma.test", -10 * day,
+         %{"attention" => "done", "waits_for" => [f.user["email"]]}}
       ])
 
-    assert [need, done, failed] = sources
-    assert Enum.map(sources, & &1["thread_id"]) == [ref.("20"), ref.("22"), ref.("23")]
+    assert [need, second_need] = sources
+    assert Enum.map(sources, & &1["thread_id"]) == [ref.("20"), ref.("27")]
 
     assert %{"urgency" => "high", "source_url" => "https://still.fail/c/20"} = need
     assert String.starts_with?(need["message_id"], "needs_review:")
-    assert %{"urgency" => "normal", "source_url" => ""} = done
-    assert String.starts_with?(done["message_id"], "done:")
-    assert %{"urgency" => "high"} = failed
-    assert String.starts_with?(failed["message_id"], "failed:")
+    assert String.starts_with?(second_need["message_id"], "needs_review:")
 
-    texts =
-      Map.new(Enum.drop(router_inputs(f), before), fn %{"agent_input" => %{content: text}} ->
-        {Enum.find(~w(20 22 23), &(text =~ "Chat #{&1}")), text}
+    # Admitted stops commit individually as direct non-waking Home messages with
+    # compact `no_wake` Router context notes, spending 2 slots of the 120/day
+    # agent circuit-breaker.
+    ctx_inputs = Enum.drop(router_inputs(f), before)
+    assert length(ctx_inputs) == 2
+    assert Enum.all?(ctx_inputs, &(&1["agent_input"][:no_wake] == true))
+
+    ctx_payloads = Enum.map(ctx_inputs, &Jason.decode!(&1["agent_input"][:content]))
+    assert Enum.sort(Enum.map(ctx_payloads, & &1["title"])) == ["Chat 20", "Chat 27"]
+
+    home_texts =
+      home_messages(f)
+      |> Enum.flat_map(fn m ->
+        for %{"type" => "text", "text" => t} <- m["content"] || [], do: t
       end)
 
-    assert texts["20"] =~ "waits for the user"
-    assert texts["20"] =~ "its own words"
-    assert texts["20"] =~ "Push the branch to main or wait for review"
-    assert texts["20"] =~ "im_api.internal.read_conversation"
-    assert texts["22"] =~ "has not read its result"
-    assert texts["23"] =~ "failed"
-    assert map_size(texts) == 3
+    assert Enum.any?(
+             home_texts,
+             &(&1 =~ "Chat 20" and &1 =~ "https://still.fail/c/20" and
+                 &1 =~ "Push the branch to main or wait for review")
+           )
 
-    # The chat now waits for someone else: it no longer concerns the owner.
-    assert [%{"state" => "handled"}, %{"state" => "active"}, %{"state" => "active"}] =
+    refute Enum.any?(home_texts, &(&1 =~ "Chat 22"))
+    refute Enum.any?(home_texts, &(&1 =~ "Chat 23"))
+    assert Enum.any?(home_texts, &(&1 =~ "Chat 27"))
+
+    {:ok, _, _ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    {:ok, conv} = SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, home)
+
+    assert {:open, 118} =
+             SalixIM.MailInteraction.agent_budget(
+               conv,
+               f.user["id"],
+               :handoff,
+               SystemsClock.system_time(:millisecond)
+             )
+
+    # Closing the primary item on leave and a co-presented tracked item via
+    # router_replied both work individually.
+    assert [%{"state" => "handled"}, %{"state" => "active"}] =
              send_rows.([
                {"20", "needs_review", "someone@comma.test", 3_000,
                 %{"attention" => "need", "waits_for" => ["other@comma.test"]}}
              ])
+
+    assert :ok = CommaWeb.ProactiveStationTask.router_replied(f.ctx.group_id, ref.("27"), 42)
+    {:ok, after_reply} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    assert [%{"state" => "handled"}, %{"state" => "handled"}] =
+             after_reply["sources"]
+             |> Enum.filter(&(&1["account_id"] == "station_task"))
+             |> Enum.sort_by(& &1["thread_id"])
+  end
+
+  test "station task index wakeup, preview, draft refusal and Router reply closure work end to end",
+       f do
+    import Ecto.Query
+
+    device = "dev_event_" <> f.ctx.group_id
+    {:ok, station} = SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, device)
+    ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "30")
+    key = SalixIM.MailInteraction.key("station_task", ref)
+    now = SystemsClock.system_time(:millisecond)
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, device, %{
+               "epoch" => "e1",
+               "since" => 0,
+               "reset" => true,
+               "rows" => [
+                 %{
+                   "thread" => "30",
+                   "rev" => 1,
+                   "title" => "Chat 30",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now + 1_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:approval"],
+                   "note" => "Approve production rollout?",
+                   "url" => "https://still.fail/c/30"
+                 }
+               ]
+             })
+
+    assert :ok = CommaWeb.ProactiveStationTask.station_tasks_changed(f.ctx.group_id)
+    assert :ok = CommaWeb.ProactiveStationTask.station_tasks_changed(f.ctx.group_id)
+
+    jobs =
+      Comma.Repo.all(
+        from(j in Oban.Job,
+          where:
+            j.worker == "CommaWeb.ProactiveStationTask" and
+              fragment("?->>'group_id' = ?", j.args, ^f.ctx.group_id)
+        )
+      )
+
+    assert [job] = jobs
+    assert :ok = CommaWeb.ProactiveStationTask.perform(job)
+
+    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    assert %{"state" => "active", "generation" => gen, "read" => read_spec} =
+             Enum.find(status["sources"], &(&1["key"] == key))
+
+    preview =
+      ProactiveWatch.preview(
+        %{
+          "conversation_id" => ref,
+          "hosted_on_station" => true,
+          "messages" => [
+            %{
+              "seq" => 9,
+              "author_kind" => "person",
+              "author" => f.user["email"],
+              "text" => "Deploy staging first"
+            },
+            %{
+              "seq" => 10,
+              "author_kind" => "agent",
+              "author" => "ember:c-30",
+              "text" => "",
+              "milestones" => ["Staging smoke passed"]
+            },
+            %{
+              "seq" => 11,
+              "author_kind" => "agent",
+              "author" => "ember:c-30",
+              "text" => "Approve production rollout?"
+            }
+          ]
+        },
+        read_spec
+      )
+
+    assert [
+             %{"message_id" => "9", "from" => from_person, "body" => "Deploy staging first"},
+             %{"message_id" => "10", "from" => "ember:c-30", "body" => "Staging smoke passed"},
+             %{
+               "message_id" => "11",
+               "from" => "ember:c-30",
+               "body" => "Approve production rollout?"
+             }
+           ] = preview["messages"]
+
+    assert from_person == f.user["email"]
+
+    assert {:error, :station_task_use_send_message} =
+             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
+               "key" => key,
+               "action" => "draft",
+               "generation" => gen,
+               "request_id" => "draft-refused"
+             })
+
+    assert {:error, :station_task_quiet_forbidden} =
+             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
+               "key" => key,
+               "action" => "quiet",
+               "generation" => gen,
+               "request_id" => "quiet-refused",
+               "reason" => "owner saw it"
+             })
+
+    before = length(router_inputs(f))
+    assert :ok = CommaWeb.ProactiveStationTask.router_replied(f.ctx.group_id, ref, 12)
+
+    {:ok, after_reply} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    assert %{"state" => "handled"} = Enum.find(after_reply["sources"], &(&1["key"] == key))
+
+    # Re-running before the station advances its index does not re-present the answered stop.
+    assert :ok = CommaWeb.ProactiveStationTask.perform(job)
+    assert length(router_inputs(f)) == before
+  end
+
+  test "still.fail agent budget caps bursts and isolates inbox/code budgets while keeping link-only system cards in Routine",
+       f do
+    {station, send_rows} = station_task_sender(f)
+    {:ok, _, _ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    now = SystemsClock.system_time(:millisecond)
+
+    # One reconcile admits at most 3 ordinary stops per pass (spending 3 slots
+    # of the 120/day agent circuit-breaker), then spend the remaining 117 slots
+    # so the agent pool closes while passive inbox & email OTP code pools stay
+    # completely untouched.
+    burst_rows =
+      for i <- 1..5 do
+        {"burst-#{i}", "needs_review", f.user["email"], 1_000 + i,
+         %{
+           "attention" => "need",
+           "waits_for" => [f.user["email"]],
+           "labels" => ["card:approval"],
+           "note" => "Burst approval #{i}",
+           "url" => "https://still.fail/c/burst-#{i}"
+         }}
+      end
+
+    assert length(send_rows.(burst_rows)) == 3
+
+    # Clear the burst rows and spend the remaining 117 agent slots across
+    # reusable active threads so Home conversation metadata stays bounded.
+    send_rows.(for i <- 1..5, do: {"burst-#{i}", "in_progress", f.user["email"], 2_000 + i})
+
+    for i <- 1..117 do
+      thread = "exhaust-#{rem(i - 1, 4) + 1}"
+
+      send_rows.([
+        {thread, "needs_review", f.user["email"], 2_100 + i,
+         %{
+           "attention" => "need",
+           "waits_for" => [f.user["email"]],
+           "labels" => ["card:approval"],
+           "note" => "Ordinary approval #{i}",
+           "url" => "https://still.fail/c/#{thread}"
+         }}
+      ])
+    end
+
+    {:ok, exhausted_status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    assert %{"remaining" => 20} = exhausted_status["automatic_budget"]
+    assert %{"handoff" => %{"remaining" => 0}} = exhausted_status["agent_budget"]
+    assert %{"handoff" => %{"remaining" => 40}} = exhausted_status["agent_code_budget"]
+
+    {:ok, exhausted_conv} =
+      SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, home)
+
+    exhausted_now = SystemsClock.system_time(:millisecond)
+
+    assert {:closed, _} =
+             SalixIM.MailInteraction.agent_budget(
+               exhausted_conv,
+               f.user["id"],
+               :handoff,
+               exhausted_now
+             )
+
+    assert {:open, 20} =
+             SalixIM.MailInteraction.automatic_budget(
+               exhausted_conv,
+               f.user["id"],
+               exhausted_now
+             )
+
+    assert {:open, 6} =
+             SalixIM.MailInteraction.code_budget(
+               exhausted_conv,
+               f.user["id"],
+               :handoff,
+               exhausted_now
+             )
+
+    before_ids = MapSet.new(router_inputs(f), & &1["message_id"])
+    login_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "login-card")
+    ordinary_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "ordinary-card")
+
+    sources =
+      send_rows.(
+        for(i <- 1..39, do: {"exhaust-#{i}", "in_progress", f.user["email"], 3_000 + i}) ++
+          [
+            {"login-card", "needs_review", f.user["email"], 5_000,
+             %{
+               "attention" => "need",
+               "waits_for" => [f.user["email"]],
+               "labels" => ["card:login"],
+               "note" => "Sign in to GitHub CLI",
+               "url" => "https://still.fail/c/login-card"
+             }},
+            {"ordinary-card", "needs_review", f.user["email"], 5_000,
+             %{
+               "attention" => "need",
+               "waits_for" => [f.user["email"]],
+               "labels" => ["card:options"],
+               "note" => "Pick rollout region",
+               "url" => "https://still.fail/c/ordinary-card"
+             }}
+          ]
+      )
+
+    # Link-only system cards stay out of Home chat completely, and ordinary
+    # stops wait for the `agent` pool to reopen; `code` and `agent_code` pools
+    # remain untouched.
+    refute Enum.any?(sources, &(&1["thread_id"] == login_ref))
+    refute Enum.any?(sources, &(&1["thread_id"] == ordinary_ref))
+
+    assert [] ==
+             Enum.reject(router_inputs(f), &MapSet.member?(before_ids, &1["message_id"]))
+
+    refute Enum.any?(home_messages(f), fn m ->
+             Enum.any?(m["content"] || [], fn b ->
+               b["type"] == "text" and
+                 String.contains?(b["text"] || "", "https://still.fail/c/login-card")
+             end)
+           end)
+
+    {:ok, after_login_conv} =
+      SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, home)
+
+    after_now = SystemsClock.system_time(:millisecond)
+
+    assert {:open, 6} =
+             SalixIM.MailInteraction.code_budget(
+               after_login_conv,
+               f.user["id"],
+               :handoff,
+               after_now
+             )
+
+    assert {:open, 40} =
+             SalixIM.MailInteraction.agent_code_budget(
+               after_login_conv,
+               f.user["id"],
+               :handoff,
+               after_now
+             )
+
+    # Routine still projects both the system login card and the pending options
+    # card as a contract-valid card.
+    {:ok, workspace} = Comma.Workspaces.get_by_group(f.ctx.group_id)
+    {:ok, _, _ctx, _home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+
+    base_envelope = %{
+      "state" => "fresh",
+      "snapshot" => %{
+        "protocolVersion" => 1,
+        "templateCatalogVersion" => 1,
+        "generatedAt" => now,
+        "generation" => 1,
+        "sourceRevision" => 1,
+        "summary" => [%{"kind" => "markdown", "text" => "Morning"}],
+        "warnings" => [],
+        "prompts" => %{},
+        "cards" => [],
+        "attentionItems" => []
+      }
+    }
+
+    projected = CommaWeb.ProactiveRoutine.project(base_envelope, workspace)
+    assert :ok = Comma.RecommendationContract.validate(projected["snapshot"])
+
+    assert %{"id" => "routine-stillfail", "items" => card_items} =
+             Enum.find(projected["snapshot"]["cards"], &(&1["id"] == "routine-stillfail"))
+
+    assert length(card_items) == 2
+
+    # Once the login chat resumes in still.fail, Routine drops it cleanly.
+    send_rows.([
+      {"login-card", "in_progress", f.user["email"], 6_000},
+      {"ordinary-card", "needs_review", f.user["email"], 5_000,
+       %{
+         "attention" => "need",
+         "waits_for" => [f.user["email"]],
+         "labels" => ["card:options"],
+         "note" => "Pick rollout region",
+         "url" => "https://still.fail/c/ordinary-card"
+       }}
+    ])
+
+    projected_after = CommaWeb.ProactiveRoutine.project(base_envelope, workspace)
+    assert :ok = Comma.RecommendationContract.validate(projected_after["snapshot"])
+
+    assert %{"id" => "routine-stillfail", "items" => [remaining_item]} =
+             Enum.find(projected_after["snapshot"]["cards"], &(&1["id"] == "routine-stillfail"))
+
+    assert get_in(remaining_item, ["parts", Access.at(0), "link", "href"]) ==
+             "https://still.fail/c/ordinary-card"
+  end
+
+  test "ProactiveRoutine prioritizes system cards, keeps up to 6 Monoid tasks, and appends a contract-valid overflow summary",
+       f do
+    now = SystemsClock.system_time(:millisecond)
+    {:ok, workspace} = Comma.Workspaces.get_by_group(f.ctx.group_id)
+    {:ok, _, _ctx, _home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+
+    {:ok, token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(
+        f.ctx.group_id,
+        f.ctx.tenant_id,
+        %{
+          "default_name" => "Monoid",
+          "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+        }
+      )
+
+    {:ok, station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, token["device_id"])
+
+    owner_email = String.downcase(f.user["email"])
+
+    rows = [
+      %{
+        "thread" => "CHAT/done-1",
+        "rev" => 1,
+        "title" => "Done 1",
+        "status" => "done",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 1_000,
+        "attention" => "done",
+        "waits_for" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/done-1"
+      },
+      %{
+        "thread" => "CHAT/done-2",
+        "rev" => 2,
+        "title" => "Done 2",
+        "status" => "done",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 2_000,
+        "attention" => "done",
+        "waits_for" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/done-2"
+      },
+      %{
+        "thread" => "CHAT/done-3",
+        "rev" => 3,
+        "title" => "Done 3 (overflow)",
+        "status" => "done",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 3_000,
+        "attention" => "done",
+        "waits_for" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/done-3"
+      },
+      %{
+        "thread" => "CHAT/done-4",
+        "rev" => 4,
+        "title" => "Done 4 (overflow)",
+        "status" => "done",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 4_000,
+        "attention" => "done",
+        "waits_for" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/done-4"
+      },
+      %{
+        "thread" => "CHAT/failed-1",
+        "rev" => 5,
+        "title" => "Failed 1",
+        "status" => "in_progress",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 5_000,
+        "attention" => "failed",
+        "waits_for" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/failed-1"
+      },
+      %{
+        "thread" => "CHAT/need-1",
+        "rev" => 6,
+        "title" => "Ordinary Need 1",
+        "status" => "needs_review",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 6_000,
+        "attention" => "need",
+        "waits_for" => [owner_email],
+        "labels" => ["card:options"],
+        "url" => "https://app.monoid.zone/chats/need-1"
+      },
+      %{
+        "thread" => "CHAT/need-2",
+        "rev" => 7,
+        "title" => "Ordinary Need 2",
+        "status" => "needs_review",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 7_000,
+        "attention" => "need",
+        "waits_for" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/need-2"
+      },
+      %{
+        "thread" => "CHAT/auth-1",
+        "rev" => 8,
+        "title" => "System Auth Login",
+        "status" => "needs_review",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 8_000,
+        "attention" => "need",
+        "waits_for" => [owner_email],
+        "labels" => ["card:login"],
+        "url" => "https://app.monoid.zone/chats/auth-1"
+      }
+    ]
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e-routine-6",
+               "reset" => true,
+               "rows" => rows
+             })
+
+    base_envelope = %{
+      "state" => "fresh",
+      "snapshot" => %{
+        "protocolVersion" => 1,
+        "templateCatalogVersion" => 1,
+        "generatedAt" => now,
+        "generation" => 1,
+        "sourceRevision" => 1,
+        "summary" => [%{"kind" => "markdown", "text" => "Morning"}],
+        "warnings" => [],
+        "prompts" => %{},
+        "cards" => [],
+        "attentionItems" => []
+      }
+    }
+
+    projected = CommaWeb.ProactiveRoutine.project(base_envelope, workspace)
+    assert :ok = Comma.RecommendationContract.validate(projected["snapshot"])
+
+    assert %{"id" => "routine-stillfail", "items" => card_items} =
+             Enum.find(projected["snapshot"]["cards"], &(&1["id"] == "routine-stillfail"))
+
+    # 6 prioritized tasks + 1 overflow summary row = 7 items
+    assert length(card_items) == 7
+
+    hrefs =
+      card_items
+      |> Enum.take(6)
+      |> Enum.map(&get_in(&1, ["parts", Access.at(0), "link", "href"]))
+
+    assert hrefs == [
+             "https://app.monoid.zone/chats/auth-1",
+             "https://app.monoid.zone/chats/need-1",
+             "https://app.monoid.zone/chats/need-2",
+             "https://app.monoid.zone/chats/failed-1",
+             "https://app.monoid.zone/chats/done-1",
+             "https://app.monoid.zone/chats/done-2"
+           ]
+
+    overflow_item = List.last(card_items)
+    assert overflow_item["id"] == "stillfail-overflow"
+    overflow_text = get_in(overflow_item, ["parts", Access.at(0), "text"])
+    assert overflow_text =~ "2" and overflow_text =~ "Monoid"
+  end
+
+  test "ProactiveStationTask and ProactiveRoutine match router/created_by/participants while strictly isolating explicit waits_for on need",
+       f do
+    now = SystemsClock.system_time(:millisecond)
+    {:ok, workspace} = Comma.Workspaces.get_by_group(f.ctx.group_id)
+    {:ok, _, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+
+    assert {:ok, %{"level" => "all"}} =
+             CommaWeb.Proactive.set_stillfail_notification_level(
+               f.user,
+               %{},
+               f.ctx.group_id,
+               "all"
+             )
+
+    {:ok, token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(
+        f.ctx.group_id,
+        f.ctx.tenant_id,
+        %{
+          "default_name" => "Monoid",
+          "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+        }
+      )
+
+    {:ok, station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, token["device_id"])
+
+    owner_email = String.downcase(f.user["email"])
+
+    rows = [
+      # Explicit waits_for for teammate on `need`: must NOT notify owner even when owner participated and router == true.
+      %{
+        "thread" => "CHAT/need-other",
+        "rev" => 1,
+        "title" => "Teammate approval",
+        "status" => "needs_review",
+        "created_by" => owner_email,
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 5_000,
+        "attention" => "need",
+        "waits_for" => ["teammate@example.com"],
+        "participants" => [owner_email],
+        "router" => true,
+        "url" => "https://app.monoid.zone/chats/need-other"
+      },
+      # Failed task where owner only participated (waits_for empty): MUST match.
+      %{
+        "thread" => "CHAT/failed-participant",
+        "rev" => 2,
+        "title" => "Participant failed build",
+        "status" => "in_progress",
+        "created_by" => "teammate@example.com",
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 4_000,
+        "attention" => "failed",
+        "waits_for" => [],
+        "participants" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/failed-participant"
+      },
+      # Done task created by router (waits_for empty, past 3m grace): MUST match.
+      %{
+        "thread" => "CHAT/done-router",
+        "rev" => 3,
+        "title" => "Router finished task",
+        "status" => "done",
+        "created_by" => "teammate@example.com",
+        "created_at" => now - 600_000,
+        "last_activity_at" => now - 300_000,
+        "attention" => "done",
+        "waits_for" => [],
+        "router" => true,
+        "url" => "https://app.monoid.zone/chats/done-router"
+      },
+      # Unrelated 3rd-party failed task: must NOT match.
+      %{
+        "thread" => "CHAT/failed-unrelated",
+        "rev" => 4,
+        "title" => "Unrelated failure",
+        "status" => "in_progress",
+        "created_by" => "teammate@example.com",
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 3_000,
+        "attention" => "failed",
+        "waits_for" => ["teammate@example.com"],
+        "participants" => ["teammate@example.com"],
+        "url" => "https://app.monoid.zone/chats/failed-unrelated"
+      },
+      # Carded need where owner participated (waits_for empty): MUST reach Home chat.
+      %{
+        "thread" => "CHAT/need-participant",
+        "rev" => 5,
+        "title" => "Participant approval",
+        "status" => "needs_review",
+        "created_by" => "teammate@example.com",
+        "created_at" => now - 10_000,
+        "last_activity_at" => now - 2_000,
+        "attention" => "need",
+        "waits_for" => [],
+        "labels" => ["card:approval"],
+        "participants" => [owner_email],
+        "url" => "https://app.monoid.zone/chats/need-participant"
+      }
+    ]
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e-unified",
+               "reset" => true,
+               "rows" => rows
+             })
+
+    base_envelope = %{
+      "state" => "fresh",
+      "snapshot" => %{
+        "protocolVersion" => 1,
+        "templateCatalogVersion" => 1,
+        "generatedAt" => now,
+        "generation" => 1,
+        "sourceRevision" => 1,
+        "summary" => [%{"kind" => "markdown", "text" => "Morning"}],
+        "warnings" => [],
+        "prompts" => %{},
+        "cards" => [],
+        "attentionItems" => []
+      }
+    }
+
+    projected = CommaWeb.ProactiveRoutine.project(base_envelope, workspace)
+    assert :ok = Comma.RecommendationContract.validate(projected["snapshot"])
+
+    assert %{"id" => "routine-stillfail", "items" => card_items} =
+             Enum.find(projected["snapshot"]["cards"], &(&1["id"] == "routine-stillfail"))
+
+    hrefs = Enum.map(card_items, &get_in(&1, ["parts", Access.at(0), "link", "href"]))
+
+    assert hrefs == [
+             "https://app.monoid.zone/chats/need-participant",
+             "https://app.monoid.zone/chats/failed-participant",
+             "https://app.monoid.zone/chats/done-router"
+           ]
+
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+
+    home_texts =
+      home_messages(f)
+      |> Enum.flat_map(fn m ->
+        for %{"type" => "text", "text" => text} <- m["content"] || [], do: text
+      end)
+      |> Enum.join("\n")
+
+    assert home_texts =~ "https://app.monoid.zone/chats/need-participant"
+    refute home_texts =~ "https://app.monoid.zone/chats/failed-participant"
+    refute home_texts =~ "https://app.monoid.zone/chats/done-router"
+    refute home_texts =~ "https://app.monoid.zone/chats/need-other"
+    refute home_texts =~ "https://app.monoid.zone/chats/failed-unrelated"
+
+    # End-to-end member-scoped station_tasks/3 returns router, created_by, and participants rows
+    # while strictly excluding the unrelated 3rd-party Monoid chat.
+    assert {:ok, %{"tasks" => board_tasks}} =
+             Comma.Conversations.station_tasks(f.user, %{}, f.ctx.group_id)
+
+    board_threads = Enum.map(board_tasks, & &1["thread"]) |> Enum.sort()
+
+    assert board_threads == [
+             "CHAT/done-router",
+             "CHAT/failed-participant",
+             "CHAT/need-other",
+             "CHAT/need-participant"
+           ]
+  end
+
+  test "still.fail done stops stay in Routine rather than interrupting Home chat",
+       f do
+    assert {:ok, %{"level" => "all"}} =
+             CommaWeb.Proactive.set_stillfail_notification_level(
+               f.user,
+               %{},
+               f.ctx.group_id,
+               "all"
+             )
+
+    {_station, send_rows} = station_task_sender(f)
+    {:ok, _, _ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    now = SystemsClock.system_time(:millisecond)
+    before = length(router_inputs(f))
+
+    assert [] =
+             send_rows.([
+               {"fresh-done", "done", f.user["email"], -5_000,
+                %{
+                  "attention" => "done",
+                  "waits_for" => [f.user["email"]],
+                  "note" => "Finished PR #42",
+                  "url" => "https://still.fail/c/fresh-done"
+                }},
+               {"aged-done", "done", f.user["email"], -4 * 60 * 1000,
+                %{
+                  "attention" => "done",
+                  "waits_for" => [f.user["email"]],
+                  "note" => "Finished PR #43",
+                  "url" => "https://still.fail/c/aged-done"
+                }}
+             ])
+
+    assert length(router_inputs(f)) == before
+
+    {:ok, conv} = SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, home)
+
+    assert {:open, 120} =
+             SalixIM.MailInteraction.agent_budget(conv, f.user["id"], :handoff, now)
+  end
+
+  test "stillfail notification level filters stops across off, action_needed, issues, and all",
+       f do
+    import Ecto.Query
+
+    {station, send_rows} = station_task_sender(f)
+    ref = &SalixIM.Ports.StationHostedTasks.ref(station.id, &1)
+    hour = 60 * 60 * 1000
+
+    rows = [
+      {"lvl-need", "needs_review", f.user["email"], -10_000,
+       %{
+         "attention" => "need",
+         "waits_for" => [f.user["email"]],
+         "labels" => ["card:approval"],
+         "note" => "Pick a branch"
+       }},
+      {"lvl-login", "needs_review", f.user["email"], -11_000,
+       %{
+         "attention" => "need",
+         "waits_for" => [f.user["email"]],
+         "labels" => ["card:login"],
+         "note" => "CLI login"
+       }},
+      {"lvl-prose-need", "needs_review", f.user["email"], -12_000,
+       %{"attention" => "need", "waits_for" => [f.user["email"]], "note" => "Reopen Steam"}},
+      {"lvl-failed", "needs_review", f.user["email"], -15_000,
+       %{"attention" => "failed", "waits_for" => [f.user["email"]], "note" => "Build failed"}},
+      {"lvl-done", "done", f.user["email"], -hour,
+       %{"attention" => "done", "waits_for" => [f.user["email"]], "note" => "PR merged"}}
+    ]
+
+    # Default level is `action_needed`: only interactive decision-card `need`
+    # stops reach Home chat; link-only system cards, cardless prose notices,
+    # `failed`, and `done` stay in Routine / left rail.
+    {:ok, initial_status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    assert initial_status["stillfail_notification_level"] == "action_needed"
+
+    assert [need_only] = send_rows.(rows)
+    assert need_only["thread_id"] == ref.("lvl-need")
+    assert is_binary(need_only["home_message_id"])
+
+    assert [%{"agent_input" => %{no_wake: true, content: need_ctx}}] =
+             Enum.take(router_inputs(f), -1)
+
+    assert %{"event" => "station_task_notified", "kind" => "need"} = Jason.decode!(need_ctx)
+
+    # Raising to `issues` or `all` still keeps `failed`, `done`, link-only
+    # system cards, and cardless prose out of Home chat (they stay in Routine).
+    assert {:ok, %{"level" => "issues"}} =
+             CommaWeb.Proactive.set_stillfail_notification_level(
+               f.user,
+               %{},
+               f.ctx.group_id,
+               "issues"
+             )
+
+    issues_sources = send_rows.(rows)
+    assert Enum.map(issues_sources, & &1["thread_id"]) == [ref.("lvl-need")]
+
+    assert {:ok, %{"level" => "all"}} =
+             CommaWeb.Proactive.set_stillfail_notification_level(
+               f.user,
+               %{},
+               f.ctx.group_id,
+               "all"
+             )
+
+    all_sources = send_rows.(rows)
+    assert Enum.map(all_sources, & &1["thread_id"]) == [ref.("lvl-need")]
+
+    # Setting to `off` closes open station_task matters and skips change wakeups.
+    assert {:ok, %{"level" => "off"}} =
+             CommaWeb.Proactive.set_stillfail_notification_level(
+               f.user,
+               %{},
+               f.ctx.group_id,
+               "off"
+             )
+
+    {:ok, off_status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    assert off_status["stillfail_notification_level"] == "off"
+
+    off_sources = send_rows.(rows)
+    assert Enum.all?(off_sources, &(&1["state"] == "handled"))
+
+    Comma.Repo.delete_all(from(j in Oban.Job, where: j.worker == "CommaWeb.ProactiveStationTask"))
+
+    assert :ok = CommaWeb.ProactiveStationTask.station_tasks_changed(f.ctx.group_id)
+
+    assert [] ==
+             Comma.Repo.all(
+               from(j in Oban.Job,
+                 where:
+                   j.worker == "CommaWeb.ProactiveStationTask" and
+                     fragment("?->>'group_id' = ?", j.args, ^f.ctx.group_id)
+               )
+             )
+  end
+
+  test "recent stillfail_owner_active_at defers ordinary need stops for 2 minutes while keeping link-only system cards out of Home",
+       f do
+    import Ecto.Query
+
+    now = SystemsClock.system_time(:millisecond)
+
+    {:ok, token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(f.ctx.group_id, f.ctx.tenant_id, %{
+        "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+      })
+
+    {:ok, _transport, _device} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => f.ctx.tenant_id,
+          "group_id" => f.ctx.group_id,
+          "device_id" => token["device_id"],
+          "connector_id" => token["connector_id"],
+          "capabilities" => %{
+            "tasks" => 2,
+            "stillfail_owner_email" => f.user["email"],
+            "stillfail_owner_active_at" => now - 30_000
+          }
+        },
+        connection_generation: 0,
+        credential_generation: token["credential_generation"],
+        transport_id: "stillfail-presence-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    {:ok, station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, token["device_id"])
+
+    {:ok, _, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    before = length(router_inputs(f))
+
+    # A fresh ordinary `need` stop (5s old) while the owner was active in
+    # still.fail 30s ago is deferred for 2 minutes and schedules a
+    # `presence_defer` follow-up job; link-only `card:login` stays in Routine
+    # and does not post to Home chat.
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e1",
+               "since" => 0,
+               "reset" => true,
+               "rows" => [
+                 %{
+                   "thread" => "presence-need",
+                   "rev" => 1,
+                   "title" => "Active chat question",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 5_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:approval"],
+                   "note" => "Which branch?"
+                 },
+                 %{
+                   "thread" => "presence-login",
+                   "rev" => 2,
+                   "title" => "CLI login",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 5_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:login"],
+                   "note" => "Sign in to gh"
+                 }
+               ]
+             })
+
+    assert :ok = CommaWeb.ProactiveStationTask.station_tasks_changed(f.ctx.group_id)
+
+    change_jobs =
+      Comma.Repo.all(
+        from(j in Oban.Job,
+          where:
+            j.worker == "CommaWeb.ProactiveStationTask" and
+              fragment("?->>'group_id' = ?", j.args, ^f.ctx.group_id)
+        )
+      )
+
+    assert [_change_job] = change_jobs
+
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+
+    login_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "presence-login")
+    need_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "presence-need")
+
+    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    station_sources = Enum.filter(status["sources"], &(&1["account_id"] == "station_task"))
+
+    refute Enum.any?(station_sources, &(&1["thread_id"] == login_ref))
+    refute Enum.any?(station_sources, &(&1["thread_id"] == need_ref))
+    assert [] == Enum.drop(router_inputs(f), before)
+
+    presence_jobs =
+      Comma.Repo.all(
+        from(j in Oban.Job,
+          where:
+            j.worker == "CommaWeb.ProactiveStationTask" and
+              fragment("?->>'group_id' = ?", j.args, ^f.ctx.group_id) and
+              fragment("?->>'reason' = ?", j.args, "presence_defer")
+        )
+      )
+
+    assert [presence_job] = presence_jobs
+
+    assert DateTime.diff(
+             presence_job.scheduled_at,
+             DateTime.from_unix!(now, :millisecond),
+             :second
+           ) in 110..125
+
+    # If the owner answers in still.fail during the 2-minute deferral, running
+    # the scheduled `presence_defer` job hands off nothing.
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e1",
+               "since" => 2,
+               "reset" => false,
+               "rows" => [
+                 %{
+                   "thread" => "presence-need",
+                   "rev" => 3,
+                   "title" => "Active chat question",
+                   "status" => "in_progress",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 2_000
+                 }
+               ]
+             })
+
+    assert :ok = CommaWeb.ProactiveStationTask.perform(presence_job)
+    assert length(router_inputs(f)) == before
+
+    # Once an ordinary `need` is older than 2 minutes, it hands off cleanly even
+    # if the owner is still active in still.fail (never starved forever).
+    aged_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "presence-aged-need")
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e1",
+               "since" => 3,
+               "reset" => false,
+               "rows" => [
+                 %{
+                   "thread" => "presence-aged-need",
+                   "rev" => 4,
+                   "title" => "Missed chat question",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 3 * 60 * 1000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:approval"],
+                   "note" => "Still waiting on your OK"
+                 }
+               ]
+             })
+
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+    {:ok, status_after} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    assert Enum.any?(
+             status_after["sources"],
+             &(&1["thread_id"] == aged_ref and &1["state"] == "active")
+           )
+  end
+
+  test "a still.fail station's bound owner_email matches proactive stops and Routine cards across differing emails",
+       f do
+    {:ok, bound_token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(f.ctx.group_id, f.ctx.tenant_id, %{
+        "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+      })
+
+    {:ok, _transport, _device} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => f.ctx.tenant_id,
+          "group_id" => f.ctx.group_id,
+          "device_id" => bound_token["device_id"],
+          "connector_id" => bound_token["connector_id"],
+          "capabilities" => %{
+            "tasks" => 2,
+            "stillfail_owner_email" => "  Personal@Stillfail.Test "
+          }
+        },
+        connection_generation: 0,
+        credential_generation: bound_token["credential_generation"],
+        transport_id: "stillfail-bound-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    {:ok, other_token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(f.ctx.group_id, f.ctx.tenant_id, %{
+        "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+      })
+
+    bound_device = bound_token["device_id"]
+    other_device = other_token["device_id"]
+
+    {:ok, bound_station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, bound_device)
+
+    {:ok, other_station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, other_device)
+
+    now = SystemsClock.system_time(:millisecond)
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(bound_station, bound_device, %{
+               "epoch" => "e1",
+               "since" => 0,
+               "reset" => true,
+               "rows" => [
+                 %{
+                   "thread" => "bound-1",
+                   "rev" => 1,
+                   "title" => "PinShot rewrite",
+                   "status" => "needs_review",
+                   "created_by" => "personal@stillfail.test",
+                   "created_at" => 1_000,
+                   "last_activity_at" => now + 2_000,
+                   "attention" => "need",
+                   "waits_for" => ["personal@stillfail.test"],
+                   "labels" => ["card:approval"],
+                   "note" => "Ship 1.0.11?",
+                   "url" => "https://still.fail/c/bound-1"
+                 },
+                 %{
+                   "thread" => "teammate-1",
+                   "rev" => 2,
+                   "title" => "Teammate chat",
+                   "status" => "needs_review",
+                   "created_by" => "teammate@stillfail.test",
+                   "created_at" => 1_000,
+                   "last_activity_at" => now + 2_000,
+                   "attention" => "need",
+                   "waits_for" => ["teammate@stillfail.test"],
+                   "labels" => ["card:approval"],
+                   "note" => "Other member stop",
+                   "url" => "https://still.fail/c/teammate-1"
+                 }
+               ]
+             })
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(other_station, other_device, %{
+               "epoch" => "e1",
+               "since" => 0,
+               "reset" => true,
+               "rows" => [
+                 %{
+                   "thread" => "other-station-1",
+                   "rev" => 1,
+                   "title" => "Unbound station chat",
+                   "status" => "needs_review",
+                   "created_by" => "personal@stillfail.test",
+                   "created_at" => 1_000,
+                   "last_activity_at" => now + 2_000,
+                   "attention" => "need",
+                   "waits_for" => ["personal@stillfail.test"],
+                   "labels" => ["card:approval"],
+                   "note" => "Should not match unbound station",
+                   "url" => "https://still.fail/c/other-station-1"
+                 }
+               ]
+             })
+
+    bound_ref = SalixIM.Ports.StationHostedTasks.ref(bound_station.id, "bound-1")
+    teammate_ref = SalixIM.Ports.StationHostedTasks.ref(bound_station.id, "teammate-1")
+    other_ref = SalixIM.Ports.StationHostedTasks.ref(other_station.id, "other-station-1")
+
+    {:ok, workspace, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+
+    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    station_threads =
+      status["sources"]
+      |> Enum.filter(&(&1["account_id"] == "station_task"))
+      |> Enum.map(& &1["thread_id"])
+
+    assert bound_ref in station_threads
+    refute teammate_ref in station_threads
+    refute other_ref in station_threads
+
+    base_envelope = %{
+      "state" => "fresh",
+      "snapshot" => %{
+        "protocolVersion" => 1,
+        "templateCatalogVersion" => 1,
+        "generatedAt" => now,
+        "generation" => 1,
+        "sourceRevision" => 1,
+        "summary" => [%{"kind" => "markdown", "text" => "Morning"}],
+        "warnings" => [],
+        "prompts" => %{},
+        "cards" => [],
+        "attentionItems" => []
+      }
+    }
+
+    projected = CommaWeb.ProactiveRoutine.project(base_envelope, workspace)
+    assert :ok = Comma.RecommendationContract.validate(projected["snapshot"])
+
+    assert %{"id" => "routine-stillfail", "items" => [item]} =
+             Enum.find(projected["snapshot"]["cards"], &(&1["id"] == "routine-stillfail"))
+
+    assert get_in(item, ["parts", Access.at(0), "link", "href"]) == "https://still.fail/c/bound-1"
+  end
+
+  test "a peer-station chat with a long station-qualified thread id closes cleanly on leave and router reply",
+       f do
+    {station, send_rows} = station_task_sender(f)
+    peer_thread = "193@" <> String.duplicate("a", 64)
+    ref = SalixIM.Ports.StationHostedTasks.ref(station.id, peer_thread)
+    assert byte_size(ref) > 100
+
+    assert [%{"state" => "active", "thread_id" => ^ref}] =
+             send_rows.([
+               {peer_thread, "needs_review", f.user["email"], 2_000,
+                %{
+                  "attention" => "need",
+                  "waits_for" => [f.user["email"]],
+                  "labels" => ["card:approval"],
+                  "note" => "Confirm build?"
+                }}
+             ])
+
+    # Router reply closure must stay within MailInteraction's 128-byte request_id bound.
+    assert :ok = CommaWeb.ProactiveStationTask.router_replied(f.ctx.group_id, ref, 15)
+    {:ok, after_reply} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    assert [%{"state" => "handled", "thread_id" => ^ref, "message_id" => "needs_review:" <> _}] =
+             Enum.filter(after_reply["sources"], &(&1["account_id"] == "station_task"))
+
+    # Leaving attention must also close cleanly so the next stop re-arms.
+    assert [
+             %{
+               "state" => "handled",
+               "thread_id" => ^ref,
+               "message_id" => "left:needs_review:" <> _
+             }
+           ] =
+             send_rows.([{peer_thread, "in_progress", f.user["email"], 3_000}])
+
+    assert [%{"state" => "active", "thread_id" => ^ref, "message_id" => "needs_review:" <> _}] =
+             send_rows.([
+               {peer_thread, "needs_review", f.user["email"], 4_000,
+                %{
+                  "attention" => "need",
+                  "waits_for" => [f.user["email"]],
+                  "labels" => ["card:approval"],
+                  "note" => "Second question"
+                }}
+             ])
+  end
+
+  defmodule DirectCardFakeStation do
+    @behaviour SalixIM.Ports.StationHostedTasks
+
+    def read(_scope, _station_id, thread, _opts) do
+      case :persistent_term.get({__MODULE__, thread}, {:error, :device_offline}) do
+        {:ok, msgs} -> {:ok, %{"title" => thread, "messages" => msgs, "through" => length(msgs)}}
+        error -> error
+      end
+    end
+
+    def say(_scope, _station_id, _thread, _text, _key, _requester), do: {:ok, %{"seq" => 99}}
+
+    def say(_scope, _station_id, _thread, _text, _key, _requester, _opts),
+      do: {:ok, %{"seq" => 99}}
+
+    def read_file(_scope, _station_id, thread, seq, file, offset) do
+      case :persistent_term.get({__MODULE__, {:file, thread, seq, file}}, :missing) do
+        {:ok, bytes} when is_binary(bytes) ->
+          size = byte_size(bytes)
+          part = binary_part(bytes, offset, min(4, max(size - offset, 0)))
+
+          {:ok,
+           %{
+             "name" => file,
+             "size" => size,
+             "offset" => offset,
+             "data" => Base.encode64(part)
+           }}
+
+        :missing ->
+          {:ok, %{"missing" => "no such file"}}
+      end
+    end
+  end
+
+  test "concurrent still.fail options stops deliver independent clickable cards with home_message_id O(1) folding and retry on offline read",
+       f do
+    import Ecto.Query
+
+    previous_mod = SystemsRuntime.get_env(:salix_im, :station_hosted_tasks_mod)
+    SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, DirectCardFakeStation)
+
+    on_exit(fn ->
+      if is_nil(previous_mod),
+        do: SystemsRuntime.delete_env(:salix_im, :station_hosted_tasks_mod),
+        else: SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, previous_mod)
+
+      for k <- ["pinshot", "photon", "offline-opt"] do
+        :persistent_term.erase({DirectCardFakeStation, k})
+      end
+    end)
+
+    now = SystemsClock.system_time(:millisecond)
+
+    {:ok, token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(f.ctx.group_id, f.ctx.tenant_id, %{
+        "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+      })
+
+    {:ok, _transport, _device} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => f.ctx.tenant_id,
+          "group_id" => f.ctx.group_id,
+          "device_id" => token["device_id"],
+          "connector_id" => token["connector_id"],
+          "capabilities" => %{
+            "tasks" => 2,
+            "task_say_cas" => 1,
+            "stillfail_owner_email" => f.user["email"]
+          }
+        },
+        connection_generation: 0,
+        credential_generation: token["credential_generation"],
+        transport_id: "stillfail-cas-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    {:ok, station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, token["device_id"])
+
+    :persistent_term.put(
+      {DirectCardFakeStation, "pinshot"},
+      {:ok,
+       [
+         %{
+           "seq" => 41,
+           "author_kind" => "agent",
+           "text" => "| Col A | Col B |\n|---|---|\n| Long comparison table... | ... |",
+           "card" => %{
+             "type" => "options",
+             "options" => [
+               %{"label" => "Option A", "detail" => "Keep current hero", "recommended" => true},
+               %{"label" => "Option B", "action" => "close"}
+             ]
+           }
+         }
+       ]}
+    )
+
+    :persistent_term.put(
+      {DirectCardFakeStation, "photon"},
+      {:ok,
+       [
+         %{
+           "seq" => 12,
+           "author_kind" => "agent",
+           "text" => "Photon question",
+           "card" => %{
+             "type" => "options",
+             "options" => [%{"label" => "Ship Photon", "recommended" => true}]
+           }
+         }
+       ]}
+    )
+
+    :persistent_term.put({DirectCardFakeStation, "offline-opt"}, {:error, :device_offline})
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e1",
+               "since" => 0,
+               "reset" => true,
+               "rows" => [
+                 %{
+                   "thread" => "pinshot",
+                   "rev" => 1,
+                   "title" => "PinShot 首页与配图更新",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 10_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:options"],
+                   "note" => "请确认首页展示方案",
+                   "url" => "https://still.fail/c/pinshot"
+                 },
+                 %{
+                   "thread" => "photon",
+                   "rev" => 2,
+                   "title" => "Photon 发布",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 9_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:options"],
+                   "note" => "确认发布 Photon？",
+                   "url" => "https://still.fail/c/photon"
+                 },
+                 %{
+                   "thread" => "offline-opt",
+                   "rev" => 3,
+                   "title" => "Offline Station Chat",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 8_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:options"],
+                   "note" => "Temporarily offline",
+                   "url" => "https://still.fail/c/offline"
+                 }
+               ]
+             })
+
+    {:ok, _, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+
+    pinshot_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "pinshot")
+    photon_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "photon")
+    offline_ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "offline-opt")
+
+    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    station_sources = Enum.filter(status["sources"], &(&1["account_id"] == "station_task"))
+
+    pinshot_matter = Enum.find(station_sources, &(&1["thread_id"] == pinshot_ref))
+    photon_matter = Enum.find(station_sources, &(&1["thread_id"] == photon_ref))
+    assert is_binary(pinshot_matter["home_message_id"])
+    assert is_binary(photon_matter["home_message_id"])
+
+    # Offline options stop did NOT write a dead cardless Home placeholder and scheduled read_retry.
+    assert is_nil(Enum.find(station_sources, &(&1["thread_id"] == offline_ref)))
+
+    retry_jobs =
+      Comma.Repo.all(
+        from(j in Oban.Job,
+          where:
+            j.worker == "CommaWeb.ProactiveStationTask" and
+              fragment("?->>'group_id' = ?", j.args, ^f.ctx.group_id) and
+              fragment("?->>'reason' = ?", j.args, "read_retry")
+        )
+      )
+
+    assert [%{args: %{"read_retry_attempt" => 1}}] = retry_jobs
+
+    # Both PinShot (2 choices) and Photon (1 choice) landed as independent clickable cards.
+    {:ok, pinshot_msg} =
+      SalixIM.Conversations.get_group_conversation_message(
+        f.ctx.group_id,
+        home,
+        pinshot_matter["home_message_id"]
+      )
+
+    {:ok, photon_msg} =
+      SalixIM.Conversations.get_group_conversation_message(
+        f.ctx.group_id,
+        home,
+        photon_matter["home_message_id"]
+      )
+
+    pinshot_q = SalixIM.ConversationQuestion.question_block(pinshot_msg["content"])
+    photon_q = SalixIM.ConversationQuestion.question_block(photon_msg["content"])
+
+    assert pinshot_q["independent"] == true
+    assert pinshot_q["skip_behavior"] == "dismiss"
+    assert length(pinshot_q["choices"]) == 2
+    assert pinshot_msg["metadata"]["station_task_question"]["card_seq"] == 41
+
+    assert Enum.any?(pinshot_msg["content"] || [], fn b ->
+             b["type"] == "text" and String.contains?(b["text"] || "", "Long comparison table...")
+           end)
+
+    assert photon_q["independent"] == true
+    assert length(photon_q["choices"]) == 1
+    assert photon_msg["metadata"]["station_task_question"]["card_seq"] == 12
+
+    # Interactive options stops wake the Router asynchronously with rich Single Session
+    # context (excerpt + choices + home msg_id) so it can add cross-channel advice.
+    decision_inputs =
+      router_inputs(f)
+      |> Enum.filter(fn m ->
+        get_in(m, ["metadata", "event_type"]) == "station_task_decision_posted"
+      end)
+
+    assert length(decision_inputs) == 2
+
+    pinshot_input =
+      Enum.find(decision_inputs, fn m ->
+        get_in(m, ["metadata", "home_message_id"]) == pinshot_matter["home_message_id"]
+      end)
+
+    refute pinshot_input["agent_input"][:no_wake] == true
+
+    assert %{
+             "event" => "station_task_decision_posted",
+             "ref" => ^pinshot_ref,
+             "choices" => ["Option A", "Option B"],
+             "excerpt" => "| Col A | Col B |\n|---|---|\n| Long comparison table... | ... |"
+           } = Jason.decode!(pinshot_input["agent_input"][:content])
+
+    # When PinShot is answered in still.fail, O(1) folding by `home_message_id` closes its Home card.
+    :persistent_term.put(
+      {DirectCardFakeStation, "pinshot"},
+      {:ok,
+       [
+         %{
+           "seq" => 41,
+           "author_kind" => "agent",
+           "card" => %{"type" => "options", "closed" => true, "choice" => "Option A"}
+         }
+       ]}
+    )
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e1",
+               "since" => 3,
+               "reset" => false,
+               "rows" => [
+                 %{
+                   "thread" => "pinshot",
+                   "rev" => 4,
+                   "title" => "PinShot 首页与配图更新",
+                   "status" => "in_progress",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 1_000
+                 }
+               ]
+             })
+
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+
+    {:ok, all_home} = SalixIM.Conversations.list_group_conversation_messages(f.ctx.group_id, home)
+
+    assert Enum.any?(all_home, fn m ->
+             ans = SalixIM.ConversationQuestion.answer_block(m["content"])
+
+             is_map(ans) and ans["question_message_id"] == pinshot_matter["home_message_id"] and
+               ans["choice_ids"] == ["c1"] and
+               m["content"] == [ans] and
+               get_in(m, ["metadata", "resolved_in_stillfail"]) == true
+           end)
   end
 
   test "a due append failure preserves its schedule and resumes the exact saved result", f do
@@ -2018,7 +3563,7 @@ defmodule CommaWeb.ProactiveMailTest do
              })
 
     {:ok, after_notify} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    assert after_notify["notification_budget"]["remaining"] == 5
+    assert after_notify["notification_budget"]["remaining"] == 10
 
     # Long evidence is kept bounded in Home and says it was cut.
     long = String.duplicate("evidence ", 900)
@@ -2069,6 +3614,891 @@ defmodule CommaWeb.ProactiveMailTest do
     assert length(router_inputs(f)) == inputs
     {:ok, after_retry} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
     assert after_retry["sources"] == before_retry["sources"]
+  end
+
+  test "Home MailInteraction links preview live for Outlook and Gmail and fail closed on revoke or other links",
+       f do
+    {:ok, :ok} =
+      Comma.MemberSourceConsents.record(f.user, %{}, f.workspace.id, "outlook", "ca_outlook")
+
+    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
+
+    gmail_value = present!(f, "m1", "preview-gmail")
+    gmail_url = gmail_value["source_url"]
+    assert String.starts_with?(gmail_url, "https://mail.google.com/mail/")
+
+    outlook_url = "https://outlook.office.com/mail/id/AAMk1"
+
+    assert {:ok, _} =
+             SalixIM.ConversationServer.mail_interaction(
+               f.ctx.group_id,
+               home["conversation_id"],
+               f.user["id"],
+               f.ctx.agent_id,
+               %{
+                 "action" => "track",
+                 "key" => SalixIM.MailInteraction.key("ca_outlook", "outlook-thread"),
+                 "account_id" => "ca_outlook",
+                 "thread_id" => "outlook-thread",
+                 "message_id" => "AAMk1=",
+                 "source_url" => outlook_url,
+                 "subject" => "Review the contract",
+                 "request_id" => "preview-outlook"
+               }
+             )
+
+    workspace = %{
+      "id" => f.workspace.id,
+      "owner_user_id" => f.user["id"],
+      "default_group_id" => f.ctx.group_id,
+      "salix_tenant_id" => f.ctx.tenant_id
+    }
+
+    assert {:ok,
+            %{
+              "kind" => "outlook_message",
+              "href" => ^outlook_url,
+              "title" => "Review the contract",
+              "sender" => "sender@example.test",
+              "body" => "Please approve the contract."
+            }} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               outlook_url,
+               nil,
+               f.user["id"]
+             )
+
+    assert {:ok,
+            %{
+              "kind" => "gmail_message",
+              "href" => ^gmail_url,
+              "title" => "Contract approval",
+              "receivedAt" => 1000,
+              "body" => "Please approve the contract by Friday."
+            }} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               gmail_url,
+               nil,
+               f.user["id"]
+             )
+
+    # Unrecorded links and non-owners fail closed.
+    assert {:error, :not_found} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               "https://outlook.office.com/mail/id/other",
+               nil,
+               f.user["id"]
+             )
+
+    assert {:error, :not_found} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               "https://mail.google.com/mail/#inbox/unrecorded",
+               nil,
+               f.user["id"]
+             )
+
+    assert {:error, :not_found} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               outlook_url,
+               nil,
+               "other-user"
+             )
+
+    assert {:error, :not_found} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               gmail_url,
+               nil,
+               "other-user"
+             )
+
+    # Revoking consent fails closed for both Outlook and Gmail.
+    Comma.MemberSourceConsents.forget_connection(f.workspace.id, "ca_outlook")
+    Comma.MemberSourceConsents.forget_connection(f.workspace.id, "ca_owner")
+
+    assert {:error, :not_found} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               outlook_url,
+               nil,
+               f.user["id"]
+             )
+
+    assert {:error, :not_found} =
+             CommaWeb.RecommendationLinkPreview.preview_connected(
+               workspace,
+               gmail_url,
+               nil,
+               f.user["id"]
+             )
+  end
+
+  test "signal handoff uses dedicated non-rejudging Router delivery text", f do
+    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
+    key = SalixIM.MailInteraction.key("slack", "sig-phase1")
+
+    assert {:ok, _} =
+             SalixIM.ConversationServer.mail_interaction(
+               f.ctx.group_id,
+               home["conversation_id"],
+               f.user["id"],
+               f.ctx.agent_id,
+               %{
+                 "action" => "present",
+                 "automatic" => true,
+                 "decision" => "signal",
+                 "urgency" => "normal",
+                 "pool" => "signal",
+                 "reason" => "Product featured in newsletter.",
+                 "assessment" => %{"role" => "reference", "signal" => true, "code" => false},
+                 "key" => key,
+                 "request_id" => "check:signal-phase1-1",
+                 "account_id" => "slack",
+                 "thread_id" => "sig-phase1",
+                 "message_id" => "obs-sig-1",
+                 "subject" => "Weekly feature",
+                 "source_url" => "https://example.slack.com/archives/C1/p1",
+                 "text" => "Your product was featured.",
+                 "research" => [
+                   %{
+                     "source" => "local_context",
+                     "matches" => [
+                       %{"source" => "memory", "excerpt" => "Sandbox rule: cue.surf only."}
+                     ]
+                   }
+                 ]
+               }
+             )
+
+    assert %{"agent_input" => %{content: content, trusted_origin: origin}} =
+             List.last(router_inputs(f))
+
+    assert origin["proactive_handoff"] == true
+    assert content =~ "high-value non-obligation insight (`signal`)"
+    assert content =~ "Sandbox rule: cue.surf only."
+    refute content =~ "A background reminder needs your decision."
+  end
+
+  test "long-description calendar ingest preserves attendeeCount in facts, supports atomic merge_attention, deferral retry, and while_current revocation",
+       f do
+    now = ~U[2026-11-25 05:40:00.000000Z]
+    now_ms = DateTime.to_unix(now, :millisecond)
+    long_desc = String.duplicate("Quarterly architecture review agenda note. ", 70)
+    assert byte_size(long_desc) > 2_000
+
+    routes = fn "GET", url, _opts ->
+      cond do
+        String.ends_with?(url, "/calendars/primary") ->
+          {:ok, %{"id" => "member@example.com"}}
+
+        String.contains?(url, "/calendars/primary/events") ->
+          {:ok,
+           %{
+             "items" => [
+               %{
+                 "id" => "evt_long_group",
+                 "summary" => "Medalsmith x Acme Sync",
+                 "htmlLink" => "https://calendar.google.com/event/evt_long_group",
+                 "status" => "confirmed",
+                 "description" => long_desc,
+                 "start" => %{"dateTime" => "2026-11-25T06:00:00Z"},
+                 "end" => %{"dateTime" => "2026-11-25T06:45:00Z"},
+                 "attendees" => [
+                   %{
+                     "email" => "member@example.com",
+                     "self" => true,
+                     "responseStatus" => "accepted"
+                   },
+                   %{
+                     "email" => "lena@acme.example",
+                     "displayName" => "Lena Wu",
+                     "responseStatus" => "accepted"
+                   }
+                 ]
+               }
+             ]
+           }}
+      end
+    end
+
+    {:ok, data, subject} =
+      CommaWeb.RecommendationGoogleMemberSource.read("googlecalendar", routes, now)
+
+    source = %{
+      "enabled" => true,
+      "connectionId" => "ca_gcal_long",
+      "appId" => "googlecalendar",
+      "toolkit" => "googlecalendar",
+      "appName" => "Google Calendar"
+    }
+
+    profile =
+      Comma.Repo.insert!(%Comma.Data.RecommendationProfile{
+        workspace_id: f.workspace.id,
+        user_id: f.user["id"],
+        relevance_mode: "member",
+        sources: [source],
+        source_revision: 1,
+        snapshot_source_revision: 1
+      })
+
+    {:ok, fact, _warnings} =
+      CommaWeb.RecommendationSourceCollector.member_fact(source, data, subject, now)
+
+    items_by_source = CommaWeb.MemberSourceIngest.items([fact])
+
+    {:ok, _counts} =
+      Comma.MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            "ca_gcal_long" => %{
+              "toolkit" => "googlecalendar",
+              "app" => "Google Calendar",
+              "subject" => subject,
+              "bound" => %{},
+              "items" => items_by_source["ca_gcal_long"] || []
+            }
+          },
+          failed: %{}
+        },
+        ["ca_gcal_long"],
+        now
+      )
+
+    [%{items: [stored]}] = Comma.MemberSourceItems.current(profile.id)
+
+    # Context was truncated past 1,200 bytes, yet attendeeCount & attendeesSummary survived in facts.
+    assert stored.context["truncated"] == true
+    assert stored.facts["attendeeCount"] == 1
+    assert stored.facts["attendeesSummary"] =~ "Lena Wu <lena@acme.example>"
+
+    # Calendar fingerprint excludes prep-only attendeeCount/attendeesSummary (zero rollout churn).
+    [raw_item] = items_by_source["ca_gcal_long"]
+
+    legacy_item =
+      Map.update!(raw_item, "facts", &Map.drop(&1, ~w(attendeeCount attendeesSummary)))
+
+    {:ok, counts_unchanged} =
+      Comma.MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            "ca_gcal_long" => %{
+              "toolkit" => "googlecalendar",
+              "app" => "Google Calendar",
+              "subject" => subject,
+              "bound" => %{},
+              "items" => [legacy_item]
+            }
+          },
+          failed: %{}
+        },
+        ["ca_gcal_long"],
+        DateTime.add(now, 60, :second)
+      )
+
+    assert counts_unchanged == %{new: 0, changed: 0}
+
+    # Re-record with full attendee facts and verify non-baseline arrival stays pending even if prep marks checked FIRST!
+    {:ok, _} =
+      Comma.MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            "ca_gcal_long" => %{
+              "toolkit" => "googlecalendar",
+              "app" => "Google Calendar",
+              "subject" => subject,
+              "bound" => %{},
+              "items" => [
+                Map.merge(raw_item, %{
+                  "item_key" => "evt_new_before_prep",
+                  "title" => "Urgent Sync Before Prep"
+                })
+              ]
+            }
+          },
+          failed: %{}
+        },
+        ["ca_gcal_long"],
+        DateTime.add(now, 120, :second)
+      )
+
+    [%{items: [new_invite]}] = Comma.MemberSourceItems.current(profile.id)
+    assert is_nil(new_invite.attention)
+    assert Comma.MemberSourceItems.pending?(profile.id)
+
+    [prep_first_cand] = CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms)
+    assert prep_first_cand["title"] == "Urgent Sync Before Prep"
+    assert prep_first_cand["excerpt"] =~ "Lena Wu <lena@acme.example>"
+
+    # Order 1 (Fable N1 + Astra F4): prep writes prep_start_ms while primary attention is still NULL;
+    # item MUST remain pending, while_pending MUST succeed, and subsequent primary settle MUST preserve prep_start_ms!
+    assert :ok = CommaWeb.ProactiveMeetingPrep.mark_checked(prep_first_cand, now_ms)
+    assert Comma.MemberSourceItems.pending?(profile.id)
+    assert [pending_row] = Comma.MemberSourceItems.pending(profile.id, 5)
+    assert pending_row.id == new_invite.id
+
+    assert {:ok, :primary_ok} =
+             Comma.MemberSourceItems.while_pending(new_invite, fn -> {:ok, :primary_ok} end)
+
+    Comma.MemberSourceItems.settle([new_invite], %{
+      "outcome" => "quiet",
+      "due_at" => now_ms + 999_000
+    })
+
+    [%{items: [after_primary_settle]}] = Comma.MemberSourceItems.current(profile.id)
+    assert after_primary_settle.attention["outcome"] == "quiet"
+    assert after_primary_settle.attention["due_at"] == now_ms + 999_000
+    assert after_primary_settle.attention["prep_start_ms"] == prep_first_cand["prep_start_ms"]
+    assert CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms + 60_000) == []
+
+    # Order 2: primary settle first, then prep defer -> retry -> mark_checked preserves primary outcome.
+    retry_at = now_ms + 300_000
+
+    assert :ok =
+             CommaWeb.ProactiveMeetingPrep.mark_deferred(
+               Map.put(prep_first_cand, "prep_start_ms", prep_first_cand["prep_start_ms"] + 1),
+               retry_at,
+               now_ms
+             )
+
+    [%{items: [after_defer]}] = Comma.MemberSourceItems.current(profile.id)
+    assert after_defer.attention["outcome"] == "quiet"
+    assert after_defer.attention["due_at"] == now_ms + 999_000
+    assert after_defer.attention["prep_deferred_until"] == retry_at
+
+    # while_current enforces both fingerprint change and source revocation under FOR SHARE lock.
+    assert {:ok, :still_ok} =
+             Comma.MemberSourceItems.while_current(new_invite, fn -> {:ok, :still_ok} end)
+
+    stale_fp = %{new_invite | fingerprint: "stale_fingerprint"}
+
+    assert {:error, :withdrawn} =
+             Comma.MemberSourceItems.while_current(stale_fp, fn -> {:ok, :should_not_run} end)
+
+    Comma.MemberSourceItems.purge_source(f.workspace.id, "ca_gcal_long", f.user["id"])
+
+    assert {:error, :withdrawn} =
+             Comma.MemberSourceItems.while_current(new_invite, fn -> {:ok, :should_not_run} end)
+  end
+
+  test "unchanged calendar recordings backfill legacy facts, pick up 0->2 attendees, and refresh attendees without re-screening or post-prep re-trigger",
+       f do
+    source = %{
+      "enabled" => true,
+      "connectionId" => "ca_gcal_facts",
+      "appId" => "googlecalendar",
+      "toolkit" => "googlecalendar",
+      "appName" => "Google Calendar"
+    }
+
+    profile =
+      Comma.Repo.insert!(%Comma.Data.RecommendationProfile{
+        workspace_id: f.workspace.id,
+        user_id: f.user["id"],
+        relevance_mode: "member",
+        sources: [source],
+        source_revision: 1,
+        snapshot_source_revision: 1
+      })
+
+    now = ~U[2026-11-25 14:00:00.000000Z]
+    now_ms = DateTime.to_unix(now, :millisecond)
+    start_iso = "2026-11-25T14:20:00Z"
+    end_iso = "2026-11-25T15:00:00Z"
+
+    subject = %{
+      "toolkit" => "googlecalendar",
+      "connection_id" => "ca_gcal_facts",
+      "user_id" => f.user["id"]
+    }
+
+    record_items = fn items, at ->
+      Comma.MemberSourceItems.record(
+        profile.id,
+        %{
+          collected: %{
+            "ca_gcal_facts" => %{
+              "toolkit" => "googlecalendar",
+              "app" => "Google Calendar",
+              "subject" => subject,
+              "bound" => %{},
+              "items" => items
+            }
+          },
+          failed: %{}
+        },
+        ["ca_gcal_facts"],
+        at
+      )
+    end
+
+    base_event = fn key, title, facts ->
+      %{
+        "item_key" => key,
+        "toolkit" => "googlecalendar",
+        "app" => "Google Calendar",
+        "title" => title,
+        "url" => "https://calendar.google.com/event?eid=#{key}",
+        "excerpt" => "Review milestone details.",
+        "context" => %{"status" => "confirmed", "text" => "Review milestone details."},
+        "relationship" => "upcoming_calendar_event",
+        "facts" => facts
+      }
+    end
+
+    # Establish source baseline first so subsequent calendar arrivals are non-baseline rows.
+    assert {:ok, %{new: 0, changed: 0}} = record_items.([], DateTime.add(now, -60, :second))
+
+    # 1) Legacy pre-deploy row (no attendeeCount) settled quiet -> later recording with attendeeCount
+    #    backfills facts in place without resetting attention or re-screening, enabling Meeting Prep.
+    legacy_facts = %{"start" => start_iso, "end" => end_iso}
+
+    assert {:ok, %{new: 1, changed: 0}} =
+             record_items.([base_event.("evt_legacy", "Launch Sync", legacy_facts)], now)
+
+    [%{items: [legacy_row]}] = Comma.MemberSourceItems.current(profile.id)
+    assert Comma.MemberSourceItems.pending?(profile.id)
+    Comma.MemberSourceItems.settle([legacy_row], %{"outcome" => "quiet"})
+    refute Comma.MemberSourceItems.pending?(profile.id)
+    assert CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms) == []
+
+    backfilled_facts = %{
+      "start" => start_iso,
+      "end" => end_iso,
+      "attendeeCount" => 2,
+      "attendeesSummary" => "Alice <alice@acme.example>, Bob <bob@acme.example>"
+    }
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record_items.(
+               [base_event.("evt_legacy", "Launch Sync", backfilled_facts)],
+               DateTime.add(now, 60, :second)
+             )
+
+    [%{items: [after_backfill]}] = Comma.MemberSourceItems.current(profile.id)
+    assert after_backfill.facts["attendeeCount"] == 2
+    assert after_backfill.facts["attendeesSummary"] =~ "Alice"
+    assert after_backfill.attention["outcome"] == "quiet"
+    refute Comma.MemberSourceItems.pending?(profile.id)
+
+    assert [legacy_cand] = CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms)
+    assert legacy_cand["title"] == "Launch Sync"
+    assert legacy_cand["excerpt"] =~ "Alice <alice@acme.example>"
+    assert :ok = CommaWeb.ProactiveMeetingPrep.mark_checked(legacy_cand, now_ms)
+
+    # 2) Solo event (attendeeCount: 0) transitions to 2 attendees -> unchanged updates facts and triggers prep.
+    solo_facts = %{"start" => start_iso, "end" => end_iso, "attendeeCount" => 0}
+
+    assert {:ok, %{new: 1, changed: 0}} =
+             record_items.(
+               [base_event.("evt_solo", "Design Working Session", solo_facts)],
+               DateTime.add(now, 120, :second)
+             )
+
+    assert CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms) == []
+
+    joined_facts = %{
+      "start" => start_iso,
+      "end" => end_iso,
+      "attendeeCount" => 2,
+      "attendeesSummary" => "Alice <alice@acme.example>, Bob <bob@acme.example>"
+    }
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record_items.(
+               [base_event.("evt_solo", "Design Working Session", joined_facts)],
+               DateTime.add(now, 180, :second)
+             )
+
+    assert [joined_cand] = CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms)
+    assert joined_cand["title"] == "Design Working Session"
+    assert joined_cand["excerpt"] =~ "Alice <alice@acme.example>"
+
+    # 3) Attendee replacement BEFORE prep reflects new attendees; AFTER mark_checked updates facts without re-triggering.
+    swapped_before = %{
+      "start" => start_iso,
+      "end" => end_iso,
+      "attendeeCount" => 2,
+      "attendeesSummary" => "Carol <carol@acme.example>, Dave <dave@acme.example>"
+    }
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record_items.(
+               [base_event.("evt_solo", "Design Working Session", swapped_before)],
+               DateTime.add(now, 240, :second)
+             )
+
+    assert [swapped_cand] = CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms)
+    assert swapped_cand["excerpt"] =~ "Carol <carol@acme.example>"
+    refute swapped_cand["excerpt"] =~ "Alice"
+
+    assert :ok = CommaWeb.ProactiveMeetingPrep.mark_checked(swapped_cand, now_ms)
+    assert CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms) == []
+
+    swapped_after = %{
+      "start" => start_iso,
+      "end" => end_iso,
+      "attendeeCount" => 2,
+      "attendeesSummary" => "Eve <eve@acme.example>, Frank <frank@acme.example>"
+    }
+
+    assert {:ok, %{new: 0, changed: 0}} =
+             record_items.(
+               [base_event.("evt_solo", "Design Working Session", swapped_after)],
+               DateTime.add(now, 300, :second)
+             )
+
+    [%{items: items_after_swap}] = Comma.MemberSourceItems.current(profile.id)
+    after_checked_swap = Enum.find(items_after_swap, &(&1.item_key == "evt_solo"))
+    assert after_checked_swap.facts["attendeesSummary"] =~ "Eve <eve@acme.example>"
+    assert after_checked_swap.attention["prep_start_ms"] == swapped_cand["prep_start_ms"]
+    assert CommaWeb.ProactiveMeetingPrep.candidates(profile.id, now_ms) == []
+  end
+
+  test "ProactiveCheck.route_screened defers nil-record web_radar hits cleanly without crashing when signal budget is closed",
+       f do
+    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
+    now_ms = SystemsClock.system_time(:millisecond)
+    now = DateTime.from_unix!(now_ms, :millisecond)
+
+    # Exhaust the 4-handoff / 24h signal budget in Home Conversation metadata.
+    for idx <- 1..4 do
+      assert {:ok, _} =
+               SalixIM.ConversationServer.mail_interaction(
+                 f.ctx.group_id,
+                 home["conversation_id"],
+                 f.user["id"],
+                 f.ctx.agent_id,
+                 %{
+                   "action" => "present",
+                   "automatic" => true,
+                   "decision" => "signal",
+                   "urgency" => "normal",
+                   "pool" => "signal",
+                   "reason" => "Earlier signal #{idx}",
+                   "assessment" => %{"role" => "reference", "signal" => true, "code" => false},
+                   "key" => SalixIM.MailInteraction.key("web_radar", "prev-#{idx}"),
+                   "request_id" => "check:radar-cap-#{idx}",
+                   "account_id" => "web_radar",
+                   "thread_id" => "prev-#{idx}",
+                   "message_id" => "obs-prev-#{idx}",
+                   "subject" => "Earlier #{idx}",
+                   "source_url" => "https://blog.example/prev-#{idx}",
+                   "text" => "Earlier signal #{idx}."
+                 }
+               )
+    end
+
+    profile =
+      Comma.Repo.insert!(%Comma.Data.RecommendationProfile{
+        workspace_id: f.workspace.id,
+        user_id: f.user["id"],
+        relevance_mode: "member",
+        sources: [],
+        source_revision: 1,
+        snapshot_source_revision: 1
+      })
+
+    # Synthetic web_radar item has NO "record" key; route_screened -> dispose -> defer_handoff -> rechecks/1 must not crash.
+    url_deferred =
+      "https://indiehacker.example/posts/medalsmith-defer-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    hit = %{
+      "id" => "wr:defertest",
+      "profile_id" => profile.id,
+      "sourceId" => "web_radar",
+      "sourceVersion" => "defertest",
+      "toolkit" => "web_radar",
+      "app" => "Web Radar",
+      "title" => "Medalsmith featured",
+      "url" => url_deferred,
+      "excerpt" => "Medalsmith featured on IndieHackers.",
+      "relationship" => "web_mention_of_your_work",
+      "arrivedAt" => now,
+      "web_radar" => true
+    }
+
+    hit = Map.put(hit, "members", [hit])
+
+    {:ok, {:handoff, decided_item, msg}} =
+      CommaWeb.ProactiveCheck.decide(
+        %{
+          "id" => hit["id"],
+          "repeats" => false,
+          "code" => false,
+          "role" => "reference",
+          "link" => "portrait",
+          "cost" => "",
+          "due" => nil,
+          "reversible" => true,
+          "decision" => "signal",
+          "reason" => "Featured on IndieHackers.",
+          "message" => "Medalsmith was featured on IndieHackers."
+        },
+        hit,
+        now,
+        []
+      )
+
+    {:ok, conversation} =
+      SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, home["conversation_id"])
+
+    workspace_map = %{
+      "id" => f.workspace.id,
+      "default_group_id" => f.ctx.group_id,
+      "router_agent_id" => f.ctx.agent_id
+    }
+
+    # Connect directly to test Redis so seen? / mark_seen is verified end-to-end.
+    redis_url = System.get_env("REDIS_TEST_URL", "redis://127.0.0.1:6379/14")
+    {:ok, redis_pid} = start_supervised({Redix, redis_url})
+    prev_redis = SystemsRuntime.get_env(:comma_web, :web_radar_seen_redis)
+    SystemsRuntime.put_env(:comma_web, :web_radar_seen_redis, redis_pid)
+
+    on_exit(fn ->
+      if is_nil(prev_redis),
+        do: SystemsRuntime.delete_env(:comma_web, :web_radar_seen_redis),
+        else: SystemsRuntime.put_env(:comma_web, :web_radar_seen_redis, prev_redis)
+    end)
+
+    assert {:ok, :deferred} =
+             CommaWeb.ProactiveCheck.route_screened(
+               workspace_map,
+               f.ctx,
+               home["conversation_id"],
+               profile,
+               conversation,
+               [{hit, {:ok, {:handoff, decided_item, msg}}}],
+               now_ms
+             )
+
+    # Deferred radar hits are NOT marked permanently seen.
+    refute CommaWeb.ProactiveWebRadar.seen?(profile.id, url_deferred)
+
+    # Settled (briefing/quiet) radar hits ARE marked seen in Redis (72h TTL).
+    url_quiet =
+      "https://indiehacker.example/posts/medalsmith-quiet-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    quiet_hit = %{hit | "id" => "wr:quiettest", "url" => url_quiet}
+    quiet_hit = Map.put(quiet_hit, "members", [quiet_hit])
+
+    assert {:ok, :quiet} =
+             CommaWeb.ProactiveCheck.route_screened(
+               workspace_map,
+               f.ctx,
+               home["conversation_id"],
+               profile,
+               conversation,
+               [
+                 {quiet_hit,
+                  {:ok, {:settle, "briefing", %{"role" => "reference", "reason" => "Low value"}}}}
+               ],
+               now_ms
+             )
+
+    assert CommaWeb.ProactiveWebRadar.seen?(profile.id, url_quiet)
+  end
+
+  test "signal handoff forwards research and execution payloads into Home Router input", f do
+    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
+    key = SalixIM.MailInteraction.key("slack", "sig-exec-1")
+
+    research = [
+      %{
+        "source" => "local_context",
+        "matches" => [%{"source" => "memory", "excerpt" => "Sandbox rule: cue.surf only."}]
+      }
+    ]
+
+    execution = %{
+      "actionable" => true,
+      "github_repo" => %{"owner" => "AFK-surf", "name" => "Cue", "pull_request" => 5590},
+      "suggested_actions" => [
+        %{
+          "kind" => "sandbox_pr",
+          "tool" => "im_api.internal.task.create",
+          "runs_on" => %{"kind" => "sandbox"},
+          "repo" => %{"owner" => "AFK-surf", "name" => "Cue", "pull_request" => 5590}
+        }
+      ]
+    }
+
+    assert {:ok, _} =
+             SalixIM.ConversationServer.mail_interaction(
+               f.ctx.group_id,
+               home["conversation_id"],
+               f.user["id"],
+               f.ctx.agent_id,
+               %{
+                 "action" => "present",
+                 "automatic" => true,
+                 "decision" => "signal",
+                 "urgency" => "normal",
+                 "pool" => "signal",
+                 "reason" => "PR #5590 sandbox allowlist ready.",
+                 "assessment" => %{"role" => "act", "signal" => true, "code" => false},
+                 "key" => key,
+                 "request_id" => "check:signal-exec-1",
+                 "account_id" => "slack",
+                 "thread_id" => "sig-exec-1",
+                 "message_id" => "obs-sig-exec-1",
+                 "subject" => "PR #5590",
+                 "source_url" => "https://github.com/AFK-surf/Cue/pull/5590",
+                 "text" => "PR #5590 needs allowlist update.",
+                 "research" => research,
+                 "execution" => execution
+               }
+             )
+
+    assert %{"agent_input" => %{content: content, trusted_origin: origin}} =
+             List.last(router_inputs(f))
+
+    assert origin["proactive_handoff"] == true
+    assert content =~ "high-value non-obligation insight (`signal`)"
+    refute content =~ "A background reminder needs your decision."
+
+    [_prefix, json] = String.split(content, "\n", parts: 2)
+    payload = Jason.decode!(json)
+    assert payload["decision"] == "signal"
+    assert payload["research"] == research
+    assert payload["execution"] == execution
+  end
+
+  test "still.fail options stop with task_read_file: 1 stages image attachments into Router blobs and renders them in Home",
+       f do
+    previous_mod = SystemsRuntime.get_env(:salix_im, :station_hosted_tasks_mod)
+    SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, DirectCardFakeStation)
+
+    img_bytes = <<137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4>>
+    img_size = byte_size(img_bytes)
+
+    on_exit(fn ->
+      if is_nil(previous_mod),
+        do: SystemsRuntime.delete_env(:salix_im, :station_hosted_tasks_mod),
+        else: SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, previous_mod)
+
+      :persistent_term.erase({DirectCardFakeStation, "img-preview"})
+      :persistent_term.erase({DirectCardFakeStation, {:file, "img-preview", 7, "win-flat-simple.png"}})
+    end)
+
+    now = SystemsClock.system_time(:millisecond)
+
+    {:ok, token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(f.ctx.group_id, f.ctx.tenant_id, %{
+        "meta" => %{"surface" => "comma", "device_kind" => "stillfail"}
+      })
+
+    {:ok, _transport, _device} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => f.ctx.tenant_id,
+          "group_id" => f.ctx.group_id,
+          "device_id" => token["device_id"],
+          "connector_id" => token["connector_id"],
+          "capabilities" => %{
+            "tasks" => 2,
+            "task_say_cas" => 1,
+            "task_read_file" => 1,
+            "stillfail_owner_email" => f.user["email"]
+          }
+        },
+        connection_generation: 0,
+        credential_generation: token["credential_generation"],
+        transport_id: "stillfail-img-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    {:ok, station} =
+      SalixStore.StillfailStations.ensure(f.ctx.tenant_id, f.ctx.group_id, token["device_id"])
+
+    :persistent_term.put(
+      {DirectCardFakeStation, "img-preview"},
+      {:ok,
+       [
+         %{
+           "seq" => 7,
+           "author_kind" => "agent",
+           "text" => "Preview attached:\n\n![](win-flat-simple.png)\n\n![](missing.png)",
+           "files" => [
+             %{"name" => "win-flat-simple.png", "size" => img_size, "width" => 64, "height" => 64},
+             %{"name" => "missing.png", "size" => 128},
+             %{"name" => "notes.txt", "size" => 32}
+           ],
+           "card" => %{
+             "type" => "options",
+             "options" => [%{"label" => "Ship it", "recommended" => true}]
+           }
+         }
+       ]}
+    )
+
+    :persistent_term.put(
+      {DirectCardFakeStation, {:file, "img-preview", 7, "win-flat-simple.png"}},
+      {:ok, img_bytes}
+    )
+
+    assert {:ok, _} =
+             SalixStore.StationTaskIndex.apply_page(station, token["device_id"], %{
+               "epoch" => "e1",
+               "since" => 0,
+               "reset" => true,
+               "rows" => [
+                 %{
+                   "thread" => "img-preview",
+                   "rev" => 1,
+                   "title" => "Icon preview",
+                   "status" => "needs_review",
+                   "created_by" => f.user["email"],
+                   "created_at" => 1_000,
+                   "last_activity_at" => now - 10_000,
+                   "attention" => "need",
+                   "waits_for" => [f.user["email"]],
+                   "labels" => ["card:options"],
+                   "note" => "Pick an icon",
+                   "url" => "https://still.fail/c/img-preview"
+                 }
+               ]
+             })
+
+    {:ok, _, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    assert :ok = CommaWeb.ProactiveStationTask.reconcile(ctx, home, f.user["id"])
+
+    {:ok, %{"messages" => home_messages}} =
+      SalixIM.Conversations.list_group_conversation_message_page(f.ctx.group_id, home, limit: 10)
+
+    ref = SalixIM.Ports.StationHostedTasks.ref(station.id, "img-preview")
+
+    msg =
+      Enum.find(home_messages, fn m ->
+        get_in(m, ["metadata", "station_task_question", "conversation_id"]) == ref
+      end)
+
+    assert is_map(msg)
+
+    assert [
+             %{"type" => "text", "text" => text},
+             %{
+               "type" => "file",
+               "file_name" => "win-flat-simple.png",
+               "blob_ref" => %{"size" => ^img_size}
+             },
+             %{"type" => "question", "independent" => true},
+             %{"type" => "text", "fallback_for" => "question"}
+           ] = msg["content"]
+
+    refute text =~ "win-flat-simple.png"
+    assert text =~ "[Image: missing.png]"
+
+    assert {:ok, %{filename: "win-flat-simple.png", body: ^img_bytes}} =
+             SalixIM.ConversationAttachments.fetch(f.ctx.group_id, home, msg["message_id"], 1)
   end
 
   # The toolkit's one consent receipt, or nil.

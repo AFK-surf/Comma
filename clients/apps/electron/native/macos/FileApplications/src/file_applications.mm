@@ -64,10 +64,16 @@ void ResolveBoolean(napi_env env, napi_deferred deferred, bool value) {
   }
 }
 
+// A menu draws an application's icon 24 points wide. On a display of two pixels
+// to the point that is 48 pixels: an icon of fewer is stretched and reads as
+// blurred. A 48-pixel PNG is under the size bound below whatever it shows
+// (48 x 48 x 4 bytes before it is packed).
+constexpr NSInteger kIconPixels = 48;
+
 std::string ApplicationIcon(NSWorkspace *workspace, NSString *path) {
   NSImage *image = [workspace iconForFile:path];
   NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
-      initWithBitmapDataPlanes:nullptr pixelsWide:32 pixelsHigh:32
+      initWithBitmapDataPlanes:nullptr pixelsWide:kIconPixels pixelsHigh:kIconPixels
       bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
       colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
   if (image == nil || bitmap == nil) return "";
@@ -75,7 +81,8 @@ std::string ApplicationIcon(NSWorkspace *workspace, NSString *path) {
   if (context == nil) return "";
   [NSGraphicsContext saveGraphicsState];
   [NSGraphicsContext setCurrentContext:context];
-  [image drawInRect:NSMakeRect(0, 0, 32, 32) fromRect:NSZeroRect
+  context.imageInterpolation = NSImageInterpolationHigh;
+  [image drawInRect:NSMakeRect(0, 0, kIconPixels, kIconPixels) fromRect:NSZeroRect
          operation:NSCompositingOperationCopy fraction:1.0];
   [NSGraphicsContext restoreGraphicsState];
   NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];

@@ -36,6 +36,10 @@ struct CommaApp: App {
             }
             // Signing in or out cross-fades between the login and the app instead of cutting.
             .animation(CommaMotion.stageExit, value: store?.session == nil)
+            #if DEBUG
+            // A device's live page without a station, to look at in a simulator (`DeviceScreenPreviewPage`).
+            .overlay { if let request = DeviceScreenPreviewPage.requested { DeviceScreenPreviewPage(request) } }
+            #endif
             .task {
                 await appDelegate.bootstrap()
                 if scenePhase == .active { await appDelegate.startForeground() }
@@ -85,8 +89,9 @@ struct CommaApp: App {
 
     private func open(_ url: URL, store: CommaStore) async {
         if store.openMiniApp(url) { return }
-        guard UIApplication.shared.applicationState == .active,
-              let session = store.session, ["comma", "comma-ios-dev"].contains(url.scheme), url.host == "task",
+        guard UIApplication.shared.applicationState == .active else { return }
+        if await Self.handleLiveStatusDeepLink(url, store: store) { return }
+        guard let session = store.session, ["comma", "comma-staging", "comma-ios-dev"].contains(url.scheme), url.host == "task",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let taskID = components.queryItems?.first(where: { $0.name == "task" })?.value,
               let workspaceID = components.queryItems?.first(where: { $0.name == "workspace" })?.value,
@@ -99,6 +104,37 @@ struct CommaApp: App {
         await store.openTask(id: taskID)
         guard UIApplication.shared.applicationState == .active else { store.suspend(); return }
         guard store.isCurrent(boundary), store.session?.id == session.id else { return }
+    }
+
+    @discardableResult
+    static func handleLiveStatusDeepLink(_ url: URL, store: CommaStore) async -> Bool {
+        guard let link = LiveStatusDeepLink.parse(url: url),
+              let session = store.session,
+              let workspace = store.workspaces.first(where: { $0.id == link.workspaceID && $0.groupID == link.groupID }) else {
+            return false
+        }
+        let boundary = store.boundaryToken
+        if store.workspace?.id != workspace.id {
+            await store.chooseWorkspace(workspace)
+        }
+        guard store.isCurrent(boundary), store.session?.id == session.id,
+              store.session?.user.id == session.user.id, store.workspace?.id == workspace.id else {
+            return true
+        }
+        if let conversationID = link.conversationID {
+            var matchesTask = store.taskSummary(id: conversationID) != nil
+            if !matchesTask {
+                matchesTask = (try? await store.isTask(conversationID, group: workspace.groupID)) == true
+            }
+            guard store.isCurrent(boundary), store.session?.id == session.id,
+                  store.workspace?.id == workspace.id else { return true }
+            if matchesTask {
+                await store.openTask(id: conversationID)
+                return true
+            }
+        }
+        store.revealRouter()
+        return true
     }
 }
 

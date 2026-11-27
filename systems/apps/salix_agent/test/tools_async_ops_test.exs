@@ -458,6 +458,106 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
     end
   end
 
+  describe "model-visible async result boundary" do
+    for {mode, options} <- [{"whole", %{}}, {"paged", %{"offset" => 0, "limit" => 10000}}] do
+      @tag :async_result_dto
+      test "#{mode} legacy reader preserves content and audience without authorization metadata" do
+        label = %{"label" => ["scope|cnx1|C_OTHER"]}
+        body = Jason.encode!(%{"rows" => [1, 2], "trusted_origins" => "application field"})
+
+        result = %{
+          "content" => body,
+          "output" => body,
+          "status" => "completed",
+          "error" => false,
+          "ifc" => label,
+          "ifc_view_label" => ["agent_private"],
+          "trusted_origins" => [%{"channel" => "C_OTHER"}],
+          "tool_context" => %{"organization_scopes" => ["secret-org"]},
+          "future_internal_metadata" => "server-only"
+        }
+
+        ctx =
+          seed_session([
+            %{"type" => "session_created", "session_id" => "ses1_0000000000000000802"},
+            %{
+              "type" => "async_tool_call_started",
+              "session_id" => "ses1_0000000000000000802",
+              "tool_call_id" => "dto-read",
+              "tool_name" => "env.copy",
+              "status" => "running",
+              "tool_context" => %{"trusted_origin" => %{"channel" => "C_OTHER"}}
+            },
+            %{
+              "type" => "async_tool_call_completed",
+              "session_id" => "ses1_0000000000000000802",
+              "tool_call_id" => "dto-read",
+              "result" => result
+            }
+          ])
+
+        params = Map.put(unquote(Macro.escape(options)), "tool_call_id", "dto-read")
+
+        assert {:tool_ifc, content, [], ^label} = AsyncOps.get_tool_call_result(params, ctx)
+        decoded = Jason.decode!(content)
+
+        visible =
+          if decoded["result_page"],
+            do: Jason.decode!(decoded["result_page"]["content"]),
+            else: decoded["result"]
+
+        assert visible["content"] == body
+        assert visible["output"] == body
+        assert visible["error"] == false
+
+        for secret <- ["C_OTHER", "agent_private", "secret-org", "server-only"],
+            do: refute(content =~ secret)
+
+        assert {:ok, record} =
+                 SalixAgent.Runtime.get_async_tool_call(ctx.agent_id, ctx.session_id, "dto-read")
+
+        assert record["result"]["ifc"] == label
+        assert record["result"]["trusted_origins"] == result["trusted_origins"]
+
+        cancelled = AsyncOps.cancel_tool_call(%{"tool_call_id" => "dto-read"}, ctx)
+        assert Jason.decode!(cancelled)["result"]["content"] == body
+        refute cancelled =~ "C_OTHER"
+      end
+    end
+
+    @tag :async_result_dto
+    test "completion notifications project result fields but preserve durable provenance" do
+      pending = %{
+        session_id: "ses1_0000000000000000802",
+        tool_call_id: "dto-notify",
+        tool_name: "env.copy"
+      }
+
+      result = %{
+        content: "copied successfully",
+        output: "copied successfully",
+        status: "completed",
+        error: false,
+        ifc: %{"label" => ["agent_private"]},
+        trusted_origins: [%{"channel" => "C_OTHER"}],
+        trusted_origin_source_message_ids: ["private-origin-id"],
+        future_internal_metadata: "server-only"
+      }
+
+      [completed, notification] = AsyncToolResults.internal_events(pending, result)
+      assert completed["result"]["ifc"] == result.ifc
+      content = notification["payload"]["content"]
+      assert content =~ "copied successfully"
+
+      for secret <- ["C_OTHER", "agent_private", "private-origin-id", "server-only"],
+          do: refute(content =~ secret)
+
+      page = AsyncToolResults.result_payload(result, 0, 10000, true)["result_page"]
+      assert Jason.decode!(page["content"])["content"] == "copied successfully"
+      refute page["content"] =~ "C_OTHER"
+    end
+  end
+
   describe "permission.request" do
     test "creates the permission request and returns running result with auto wait" do
       {content, [started, wait_set]} =

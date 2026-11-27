@@ -36,7 +36,8 @@ defmodule SalixStore.OAuth.Adapter do
       (base64url) instead of the raw verifier; willow's adapters compute the
       challenge from `req.CodeVerifier` themselves (`CodeChallengeS256`).
     * `refresh/2` classifies provider `invalid_grant` / `invalid grant` /
-      `expired_token` failures itself and returns
+      `expired_token` / `bad_refresh_token` / `refresh token revoked` /
+      `token_revoked` failures itself and returns
       `{:error, :reauthorization_required}`; in willow this classification lives
       in the resolver (`isInvalidGrant` in `internal/oauth/resolver.go`), not in
       the adapters.
@@ -72,8 +73,25 @@ defmodule SalixStore.OAuth.Adapter do
               :ok | {:error, term}
   @callback default_env_var() :: String.t()
 
+  @doc """
+  True when a response of the provider's own API (request host, HTTP status,
+  decoded JSON body) says the token sent is revoked or no longer valid, so
+  only a new authorization can fix it. A response from any other host is
+  never a refusal. An expired token that a refresh renews is not refused.
+  """
+  @callback token_refused?(host :: String.t(), status :: integer, body :: term) :: boolean
+
+  @optional_callbacks token_refused?: 3
+
   # Credential value names a model can request (willow `CredentialAccessToken`).
   @credential_access_token "access_token"
+
+  @doc """
+  True when `host` is the provider's API host `default`, or the one
+  `:oauth_endpoint_overrides` sets under `"api_host"`.
+  """
+  def api_host?(provider, host, default),
+    do: is_binary(host) and String.downcase(host) == endpoint(provider, "api_host", default)
 
   @doc "The only supported credential value name (willow `oauth.CredentialAccessToken`)."
   def credential_access_token, do: @credential_access_token
@@ -214,16 +232,28 @@ defmodule SalixStore.OAuth.Adapter do
   def blank?(s), do: trim(s) == ""
 
   @doc """
-  Classify a refresh failure: willow resolver's `isInvalidGrant` — substring
-  match on `invalid_grant` / `invalid grant` / `expired_token` (case-insensitive)
-  — maps to `{:error, :reauthorization_required}`; everything else passes
-  through as `{:error, message}`.
+  Format an OAuth token endpoint error preserving the machine `error` code
+  ahead of `error_description` so `refresh_error/1` can classify grant errors.
+  """
+  def format_token_error(err, description) do
+    desc = trim(description)
+    if desc == "", do: err, else: "#{err}: #{desc}"
+  end
+
+  @doc """
+  Classify a refresh failure: matches `invalid_grant`, `invalid grant`,
+  `expired_token`, `bad_refresh_token`, `refresh token revoked`, and
+  `token_revoked` (case-insensitive) as `{:error, :reauthorization_required}`;
+  everything else passes through as `{:error, message}`.
   """
   def refresh_error(msg) when is_binary(msg) do
     lower = String.downcase(msg)
 
     if String.contains?(lower, "invalid_grant") or String.contains?(lower, "invalid grant") or
-         String.contains?(lower, "expired_token") do
+         String.contains?(lower, "expired_token") or
+         String.contains?(lower, "bad_refresh_token") or
+         String.contains?(lower, "refresh token revoked") or
+         String.contains?(lower, "token_revoked") do
       {:error, :reauthorization_required}
     else
       {:error, msg}

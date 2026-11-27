@@ -3,22 +3,30 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
 
   import SalixIM.Provider.Util, only: [str: 1]
 
-  alias SalixIM.Provider.Slack.{MessageReferences, TableBlocks, TaskCards}
+  alias SalixIM.Provider.Slack.{MessageReferences, Permalink, TableBlocks, TaskCards}
 
   @spec result(map(), keyword()) :: map()
   def result(response, opts \\ []) when is_map(response) do
+    summary_opts = Keyword.take(opts, [:channel_id, :base_url, :keep_channel])
+
     case Keyword.get(opts, :before_ts) |> presence() do
       nil ->
-        page_result(response, Keyword.get(opts, :exclude_ts))
+        page_result(response, Keyword.get(opts, :exclude_ts), summary_opts)
 
       before_ts ->
         previous_page_result(
           response,
           before_ts,
           Keyword.fetch!(opts, :limit),
-          Keyword.get(opts, :exclude_ts)
+          Keyword.get(opts, :exclude_ts),
+          summary_opts
         )
     end
+  end
+
+  @spec summary(map(), keyword()) :: map()
+  def summary(message, opts \\ []) when is_map(message) do
+    message_summary(message, opts)
   end
 
   @spec previous_messages([map()], String.t(), pos_integer()) :: [map()]
@@ -47,25 +55,25 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
   @spec valid_timestamp?(term()) :: boolean()
   def valid_timestamp?(value), do: match?({_seconds, _micros}, ts_sort_key(value))
 
-  defp page_result(response, exclude_ts) do
+  defp page_result(response, exclude_ts, summary_opts) do
     %{
       "messages" =>
         response
         |> Map.get("messages", [])
         |> List.wrap()
-        |> Enum.map(&message_summary/1)
+        |> Enum.map(&message_summary(&1, summary_opts))
         |> Enum.reject(&(&1["ts"] == exclude_ts))
     }
     |> put_boolean("has_more", response["has_more"])
     |> put_present("next_cursor", next_cursor(response))
   end
 
-  defp previous_page_result(response, before_ts, limit, exclude_ts) do
+  defp previous_page_result(response, before_ts, limit, exclude_ts, summary_opts) do
     candidates =
       response
       |> Map.get("messages", [])
       |> List.wrap()
-      |> Enum.map(&message_summary/1)
+      |> Enum.map(&message_summary(&1, summary_opts))
       |> Enum.filter(&ts_before?(&1["ts"], before_ts))
       |> Enum.reject(&(&1["ts"] == exclude_ts))
       |> Enum.sort_by(&ts_sort_key(&1["ts"]))
@@ -85,7 +93,7 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
     |> put_when(has_more, "next_cursor", cursor)
   end
 
-  defp message_summary(message) do
+  defp message_summary(message, opts \\ []) do
     base =
       Map.take(message, [
         "type",
@@ -104,11 +112,69 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
     # visible output links. Tables keep their cells as Markdown. Raw blocks,
     # actions and private file URLs stay out.
     base
+    |> maybe_put_channel(message, opts)
+    |> maybe_put_permalink(message, opts)
+    |> maybe_put_reactions(message["reactions"])
     |> maybe_put_files(message["files"])
     |> maybe_put_tables(TableBlocks.from_message(message))
     |> maybe_put_source_references(MessageReferences.from_message(message))
     |> maybe_put_task_cards(TaskCards.from_message(message))
   end
+
+  defp maybe_put_channel(base, message, opts) do
+    if Keyword.get(opts, :keep_channel) == true do
+      put_present(base, "channel", message["channel"] || Keyword.get(opts, :channel_id))
+    else
+      base
+    end
+  end
+
+  defp maybe_put_permalink(base, message, opts) do
+    base_url = Keyword.get(opts, :base_url)
+    channel_id = presence(message["channel"] || Keyword.get(opts, :channel_id))
+
+    if is_binary(base_url) and is_binary(channel_id) do
+      case Permalink.build(base_url, channel_id, message["ts"], message["thread_ts"]) do
+        url when is_binary(url) -> Map.put(base, "permalink", url)
+        nil -> base
+      end
+    else
+      base
+    end
+  end
+
+  defp maybe_put_reactions(base, reactions) when is_list(reactions) do
+    compact =
+      Enum.reduce(reactions, [], fn
+        %{"name" => name} = reaction, acc when is_binary(name) and name != "" ->
+          users = Enum.filter(List.wrap(reaction["users"]), &is_binary/1)
+
+          count =
+            case reaction["count"] do
+              n when is_integer(n) and n > 0 -> n
+              _ -> length(users)
+            end
+
+          if count > 0 do
+            entry = %{"name" => name, "count" => count}
+            entry = if users != [], do: Map.put(entry, "users", Enum.take(users, 10)), else: entry
+            [entry | acc]
+          else
+            acc
+          end
+
+        _other, acc ->
+          acc
+      end)
+      |> Enum.reverse()
+
+    case compact do
+      [] -> base
+      list -> Map.put(base, "reactions", list)
+    end
+  end
+
+  defp maybe_put_reactions(base, _reactions), do: base
 
   defp maybe_put_files(base, files) do
     case files |> List.wrap() |> Enum.filter(&is_map/1) do

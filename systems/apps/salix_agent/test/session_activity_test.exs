@@ -18,6 +18,19 @@ defmodule SalixAgent.SessionActivityTest do
              SessionActivity.project(internal("idle", "failed"))
   end
 
+  test "a running compaction is active work over any committed baseline" do
+    for baseline <- [internal("idle", "paused"), internal("idle", "failed")] do
+      assert %{
+               "state" => "active",
+               "status" => "is compacting context...",
+               "version" => "activity-revision-test"
+             } = SessionActivity.project(Map.put(baseline, "compacting", true))
+    end
+
+    assert %{"state" => "stopped", "status" => ""} =
+             SessionActivity.project(Map.put(internal("idle", "paused"), "compacting", false))
+  end
+
   test "a funding stop carries what the member can fix, and nothing else" do
     internal =
       internal("idle", "failed")

@@ -24,6 +24,7 @@ defmodule SalixIM.Provider.Lark.Meetings do
 
   alias SalixIM.IFC.ReadLabels
   alias SalixIM.Ports.{AgentWorkspace, LarkUserAccounts}
+  alias SalixIM.Provider.DocAccess
   alias SalixIM.Provider.Lark.{API, Message, Minutes}
 
   @max_page_size 30
@@ -221,18 +222,38 @@ defmodule SalixIM.Provider.Lark.Meetings do
 
   def as_account(agent_id, connect, alias_name) do
     with {:ok, accounts} <- accounts(connect),
-         {:ok, account} <- find_account(accounts, alias_name),
+         {:ok, account} <- find_account(connect, accounts, alias_name),
          do: as_user(agent_id, connect, account)
   end
 
   defp accounts(connect) do
-    case LarkUserAccounts.list(connect["group_id"]) do
+    case LarkUserAccounts.list(connect["group_id"], acting(connect)) do
       {:ok, accounts} ->
         {:ok, accounts}
 
       {:error, reason} ->
         {:error, "could not read the signed-in Lark accounts: #{inspect(reason)}"}
     end
+  end
+
+  # Who the read is for (`SalixIM.Ports.LarkUserAccounts`): the person of the
+  # tool call that runs it, through this connect. A member's own sign-in is
+  # one of the accounts only when the call acts for them; outside a tool call
+  # the read acts for nobody.
+  defp acting(connect),
+    do: %{
+      "trusted_origin" => SalixIM.Provider.current_tool_context()["trusted_origin"],
+      "connect_id" => connect["connect_id"],
+      "group_id" => connect["group_id"]
+    }
+
+  # How a person signs in again. A member's own bot, made by a scan in Comma,
+  # has no OAuth app of the tenant: the person reconnects the plugin there.
+  defp sign_in_again(connect, alias_name) do
+    if DocAccess.own_bot?(connect),
+      do: "ask that person to " <> DocAccess.reconnect("lark"),
+      else:
+        "ask that person to sign in again: call oauth.request_authorization with provider lark and alias #{alias_name}, and send its authorization_url in the chat the request came from"
   end
 
   # Who a read runs as: the app itself and then every active signed-in
@@ -247,7 +268,8 @@ defmodule SalixIM.Provider.Lark.Meetings do
           {:ok, [@app]}
 
         alias_name ->
-          with {:ok, account} <- find_account(accounts, alias_name), do: {:ok, [account]}
+          with {:ok, account} <- find_account(connect, accounts, alias_name),
+               do: {:ok, [account]}
       end
     end
   end
@@ -284,9 +306,17 @@ defmodule SalixIM.Provider.Lark.Meetings do
             do: Map.put(item, "account", account_ref(account))
 
       guidance =
-        if identities == [@app],
-          do:
+        cond do
+          identities != [@app] ->
+            nil
+
+          DocAccess.own_bot?(connect) ->
+            "Searched as the app only: the person has not signed in with this bot. A person sees more than the app; to search as them, ask them to " <>
+              DocAccess.reconnect("lark") <> "."
+
+          true ->
             "Searched as the app only: no Lark account is signed in. A person sees more than the app; to search as them, call oauth.request_authorization with provider lark, an alias such as lark-<their name> and a reason, and send its authorization_url in the chat the request came from."
+        end
 
       case {found, results} do
         {[], [{:error, _account, reason}]} ->
@@ -349,14 +379,15 @@ defmodule SalixIM.Provider.Lark.Meetings do
 
   defp search_hit(_unit), do: nil
 
-  defp find_account(accounts, wanted) do
+  defp find_account(connect, accounts, wanted) do
     case Enum.find(accounts, &(wanted in [&1["alias"], &1["open_id"]])) do
       %{"status" => "active"} = account ->
         {:ok, account}
 
       %{} = account ->
         {:error,
-         "the Lark account #{account["name"] || wanted} is #{account["status"]}; ask that person to sign in again: call oauth.request_authorization with provider lark and alias #{account["alias"]}, and send its authorization_url in the chat the request came from"}
+         "the Lark account #{account["name"] || wanted} is #{account["status"]}; " <>
+           sign_in_again(connect, account["alias"])}
 
       nil ->
         {:error, "no signed-in Lark account #{wanted}; lark.list_accounts names them"}
@@ -366,13 +397,14 @@ defmodule SalixIM.Provider.Lark.Meetings do
   defp as_user(_agent_id, connect, @app), do: {:ok, connect}
 
   defp as_user(agent_id, connect, account) do
-    case LarkUserAccounts.access_token(agent_id, account["alias"]) do
+    case LarkUserAccounts.access_token(agent_id, account["alias"], acting(connect)) do
       {:ok, token} ->
         {:ok, API.as_user(connect, token)}
 
       {:error, reason} ->
         {:error,
-         "the Lark account #{account["name"] || account["alias"]} cannot be used: #{reason_text(reason)}. If it expired or needs authorization again, ask that person to sign in again: call oauth.request_authorization with provider lark and alias #{account["alias"]}, and send its authorization_url in the chat the request came from"}
+         "the Lark account #{account["name"] || account["alias"]} cannot be used: #{reason_text(reason)}. If it expired or needs authorization again, " <>
+           sign_in_again(connect, account["alias"])}
     end
   end
 

@@ -2,6 +2,8 @@ import type { CoreClient } from "@comma/core-client";
 import {
   draftUploadIdOfPreviewRef,
   draftUploadPreviewRef,
+  isGroupImagePreviewPath,
+  isTaskFilePath,
   localFilePreviewRefPattern,
   type ChatImagePreviewRef,
   type ConversationChannelState,
@@ -11,11 +13,9 @@ import type { CommaNativeBridge } from "@comma/native-bridge";
 import type { SessionProductLease } from "@comma/session-contract";
 import { LocalFilePreviewCache } from "./LocalFilePreviewCache";
 
-const workspaceImagePreviewPathPattern =
-  /^\/uploads\/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\.(?:png|jpe?g|gif|webp)$/i;
-
 type LocalFilePreviewLoader = (
-  previewRef: ChatImagePreviewRef
+  previewRef: ChatImagePreviewRef,
+  signal: AbortSignal
 ) => Promise<Uint8Array | undefined>;
 
 /**
@@ -37,9 +37,15 @@ export class LocalFilePreviews {
       session,
     }: { conversationId: string; groupId: string; session: SessionProductLease }
   ) {
-    const readGroupImage = (input: object) =>
-      client.call("chat.readGroupImage", input) as Promise<Uint8Array>;
-    this.#load = async (previewRef) => {
+    this.#load = async (previewRef, signal) => {
+      // A read nobody waits for any more stops, giving its slot to the next.
+      const readGroupImage = (input: object) =>
+        client.call(
+          "chat.readGroupImage",
+          input,
+          undefined,
+          signal
+        ) as Promise<Uint8Array>;
       if (typeof previewRef !== "string") {
         // A message's image is read where its conversation keeps it.
         if (previewRef.kind === "attachment")
@@ -84,9 +90,10 @@ export class LocalFilePreviews {
         });
         return result.status === "ready" ? Uint8Array.from(result.pngImage) : undefined;
       }
-      if (workspaceImagePreviewPathPattern.test(previewRef)) {
+      if (isGroupImagePreviewPath(previewRef)) {
         return Uint8Array.from(
           await readGroupImage({
+            ...(isTaskFilePath(previewRef) ? { conversationId } : {}),
             groupId,
             path: previewRef,
             session,
@@ -152,7 +159,12 @@ export class LocalFilePreviews {
   }
 
   #create() {
-    return new LocalFilePreviewCache({ load: this.#load });
+    return new LocalFilePreviewCache({
+      load: this.#load,
+      // Every read but a local file's preview (the host's, which takes no signal) is the core's, which stops.
+      stops: (previewRef) =>
+        typeof previewRef !== "string" || !localFilePreviewRefPattern.test(previewRef),
+    });
   }
 }
 

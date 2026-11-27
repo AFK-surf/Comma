@@ -207,6 +207,8 @@ function imageRead(topic: Topic): ImageRead | null {
   const url = String(topic.url ?? "");
   const workspace = String(topic.workspace ?? "");
   const link = String(topic.link ?? "");
+  const collaborationGroup = String(topic.collaborationGroup ?? "");
+  const collaborationTask = String(topic.collaborationTask ?? "");
   const kind = ICON_PATH.test(url)
     ? "icon"
     : COVER_PATH.test(url)
@@ -216,14 +218,28 @@ function imageRead(topic: Topic): ImageRead | null {
         : AVATAR_PATH.test(url)
           ? "avatar"
           : null;
+  const hasWorkspace = workspace !== "";
+  const hasLink = link !== "";
+  const hasCollab = collaborationGroup !== "" || collaborationTask !== "";
+  const modeCount = Number(hasWorkspace) + Number(hasLink) + Number(hasCollab);
   if (
     !kind ||
-    (workspace === "") === (link === "") ||
+    modeCount !== 1 ||
     workspace.length > 256 ||
-    link.length > 512
+    link.length > 512 ||
+    (hasCollab &&
+      (collaborationGroup === "" ||
+        collaborationTask === "" ||
+        collaborationGroup.length > 256 ||
+        collaborationTask.length > 256))
   )
     return null;
-  return { kind, url, via: workspace ? { workspace } : { token: link } };
+  const via: MiniAppVia = hasWorkspace
+    ? { workspace }
+    : hasLink
+      ? { token: link }
+      : { collaboration: { group: collaborationGroup, task: collaborationTask } };
+  return { kind, url, via };
 }
 export const MINI_APP_DRIVE_MAX_BYTES = 20 * 1_048_576;
 const DRIVE_TIMEOUT_MS = 120_000;
@@ -275,13 +291,24 @@ const viaSchema = lazySchema(() =>
   z.union([
     z.object({ workspace: z.string().min(1).max(256) }).strict(),
     z.object({ token: z.string().min(1).max(512) }).strict(),
+    z
+      .object({
+        collaboration: z
+          .object({
+            group: z.string().min(1).max(256),
+            task: z.string().min(1).max(256),
+          })
+          .strict(),
+      })
+      .strict(),
   ])
 );
 
 /** A call's `via`: the access path the app is reached by. */
 const viaParam = (raw: unknown): MiniAppVia => {
   const parsed = viaSchema.safeParse((raw as { via?: unknown } | null)?.via);
-  if (!parsed.success) throw CoreError.invalid("via is {workspace} or {token}");
+  if (!parsed.success)
+    throw CoreError.invalid("via is {workspace}, {token} or {collaboration}");
   return parsed.data;
 };
 
@@ -1144,7 +1171,11 @@ export class MiniApps {
     return [
       [
         "x-comma-app-via",
-        "workspace" in via ? `workspace/${via.workspace}` : `link/${via.token}`,
+        "workspace" in via
+          ? `workspace/${via.workspace}`
+          : "token" in via
+            ? `link/${via.token}`
+            : `collaboration/${via.collaboration.group}/${via.collaboration.task}`,
       ],
       ...(pinned === undefined
         ? []
@@ -1183,7 +1214,7 @@ export class MiniApps {
       const grants = new Set(
         shown.grants.filter((g) => shown.capabilities.includes(g))
       );
-      if ("token" in via)
+      if ("token" in via || "collaboration" in via)
         for (const g of this.#linkGrants.get(`${accountKey}\u0000${app}`) ?? [])
           grants.add(g);
       const session: Session = {
@@ -1262,7 +1293,9 @@ export class MiniApps {
     const path =
       "workspace" in session.via
         ? `${appPath(session.via.workspace, session.app.id)}/versions/${session.version}/bundle`
-        : `${route`/v1/comma/apps/links/${session.via.token}`}/bundle`;
+        : "token" in session.via
+          ? `${route`/v1/comma/apps/links/${session.via.token}`}/bundle`
+          : `${route`/v1/comma/collaborations/${session.via.collaboration.group}/${session.via.collaboration.task}/apps/${session.app.id}`}/versions/${session.version}/bundle`;
     const ctx = this.#ctx;
     return ctx.session.account().pipe(
       Effect.flatMap((account) =>
@@ -1376,8 +1409,8 @@ export class MiniApps {
           s.grants = new Set(grants.filter((g) => s.app.capabilities.includes(g)));
       return { grants };
     };
-    if ("token" in session.via) {
-      // A link without an Install: the grant lasts while the core runs.
+    if ("token" in session.via || "collaboration" in session.via) {
+      // A link or collaboration without an Install: the grant lasts while the core runs.
       const key = `${session.accountKey}\u0000${session.app.id}`;
       const kept = this.#linkGrants.get(key) ?? new Set<string>();
       kept.add(capability);
@@ -2040,7 +2073,12 @@ export class MiniApps {
   // --- Device storage ------------------------------------------------------------------------------------------------
 
   #deviceDoc(session: Session): string {
-    const where = "workspace" in session.via ? session.via.workspace : "link";
+    const where =
+      "workspace" in session.via
+        ? session.via.workspace
+        : "token" in session.via
+          ? "link"
+          : `collaboration:${session.via.collaboration.group}:${session.via.collaboration.task}`;
     return `miniAppDevice:${JSON.stringify([where, session.app.id])}`;
   }
 

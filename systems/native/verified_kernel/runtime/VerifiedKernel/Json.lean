@@ -60,42 +60,84 @@ def resultRefs (bytes : ByteArray) : Except JsonSyntax.ParseFailure (List Term) 
   let refs ← JsonSyntax.refs bytes (fun token => (decimal token).isSome)
   return refs.map .binary
 
-private def escapeChar (char : Char) : String :=
-  match char with
-  | '"' => "\\\""
-  | '\\' => "\\\\"
-  | '\x08' => "\\b"
-  | '\t' => "\\t"
-  | '\n' => "\\n"
-  | '\x0c' => "\\f"
-  | '\r' => "\\r"
-  -- Jason writes the escape with `~4.16.0B`, whose digits are uppercase.
-  | c => if c.toNat < 32 then
-      let digit := fun n => Char.ofNat (if n < 10 then n + 48 else n + 55)
-      "\\u00" ++ String.ofList [digit (c.toNat / 16), digit (c.toNat % 16)]
-    else String.singleton c
+private def hexDigit (n : UInt8) : UInt8 :=
+  if n < 10 then n + 48 else n + 55
 
-/-- True when some byte needs a JSON escape: a control character, a quote or
-a backslash. Every other byte, including every byte of a multi-byte UTF-8
-sequence, is written as is. -/
-private def needsEscape (raw : ByteArray) : Bool :=
-  (raw.findIdx? (fun byte => byte < 32 || byte == 34 || byte == 92)).isSome
+private def escapeByte (out : ByteArray) (byte : UInt8) : ByteArray :=
+  if byte == 34 then (out.push 92).push 34
+  else if byte == 92 then (out.push 92).push 92
+  else if byte == 8 then (out.push 92).push 98
+  else if byte == 9 then (out.push 92).push 116
+  else if byte == 10 then (out.push 92).push 110
+  else if byte == 12 then (out.push 92).push 102
+  else if byte == 13 then (out.push 92).push 114
+  else
+    -- Jason writes the escape with `~4.16.0B`, whose digits are uppercase.
+    (((((out.push 92).push 117).push 48).push 48).push (hexDigit (byte / 16))).push (hexDigit (byte % 16))
 
-def quote (raw : ByteArray) : Option ByteArray := do
-  let text ← String.fromUTF8? raw
-  if !needsEscape raw then return "\"".toUTF8 ++ raw ++ "\"".toUTF8
-  return ("\"" ++ String.join (text.toList.map escapeChar) ++ "\"").toUTF8
+/-- Quote valid UTF-8 bytes as a JSON string in a single pass. Every byte
+needing a JSON escape (`< 32`, `"` = 34, `\` = 92) is `< 0x80`, so multi-byte
+UTF-8 sequences are copied verbatim. -/
+def quote (raw : ByteArray) : Option ByteArray :=
+  if !raw.validateUTF8 then none
+  else some (Id.run do
+    let size := raw.size
+    match raw.findIdx? (fun byte => byte < 32 || byte == 34 || byte == 92) with
+    | none =>
+      let out := (ByteArray.emptyWithCapacity (size + 2)).push 34
+      (raw.copySlice 0 out 1 size false).push 34
+    | some first =>
+      let mut out := (ByteArray.emptyWithCapacity (size + 16)).push 34
+      if first > 0 then
+        out := raw.copySlice 0 out out.size first false
+      out := escapeByte out raw[first]!
+      let mut chunkStart := first + 1
+      let mut i := first + 1
+      while i < size do
+        let byte := raw[i]!
+        if byte < 32 || byte == 34 || byte == 92 then
+          if i > chunkStart then
+            out := raw.copySlice chunkStart out out.size (i - chunkStart) false
+          out := escapeByte out byte
+          chunkStart := i + 1
+        i := i + 1
+      if size > chunkStart then
+        out := raw.copySlice chunkStart out out.size (size - chunkStart) false
+      return out.push 34)
 
-private def joined (left right : String) (parts : List ByteArray) : ByteArray := Id.run do
+private def joined (left right : UInt8) (parts : List ByteArray) : ByteArray := Id.run do
   -- List.intersperse's foldr consumes native stack proportional to list width.
-  -- NIF worker stacks are bounded: append separators in the iterative builder.
-  let mut output := left.toUTF8
+  -- NIF worker stacks are bounded: pre-size and copy into one buffer iteratively.
+  let mut total := 2
+  let mut count := 0
+  for part in parts do
+    total := total + part.size
+    count := count + 1
+  if count > 1 then total := total + (count - 1)
+  let mut output := (ByteArray.emptyWithCapacity total).push left
   let mut first := true
   for part in parts do
     if !first then output := output.push 44
-    output := output ++ part
+    output := part.copySlice 0 output output.size part.size false
     first := false
-  return output ++ right.toUTF8
+  return output.push right
+
+private def joinedObject (pairs : List (ByteArray × ByteArray)) : ByteArray := Id.run do
+  let mut total := 2
+  let mut count := 0
+  for (key, item) in pairs do
+    total := total + key.size + 1 + item.size
+    count := count + 1
+  if count > 1 then total := total + (count - 1)
+  let mut output := (ByteArray.emptyWithCapacity total).push 123
+  let mut first := true
+  for (key, item) in pairs do
+    if !first then output := output.push 44
+    output := key.copySlice 0 output output.size key.size false
+    output := output.push 58
+    output := item.copySlice 0 output output.size item.size false
+    first := false
+  return output.push 125
 
 private def encodeFuelDeferred : Nat → Term → KernelEval (Option ByteArray)
   | 0, _ => monadLift (fail "invalid_term_depth")
@@ -113,18 +155,18 @@ private def encodeFuelDeferred : Nat → Term → KernelEval (Option ByteArray)
       for item in xs do
         let some part ← encodeFuelDeferred fuel item | return none
         parts := part :: parts
-      return some (joined "[" "]" parts.reverse)
+      return some (joined 91 93 parts.reverse)
     | .map xs =>
       if value.has (a "__struct__") then
         return none
-      let mut parts := []
+      let mut pairs := []
       for pair in xs do
         let key ← match pair.1 with | .atom name => pure (b name) | _ => stringChars pair.1
         let key := match key with | .binary raw => quote raw | _ => none
         let some key := key | return none
         let some item ← encodeFuelDeferred fuel pair.2 | return none
-        parts := (key ++ ":".toUTF8 ++ item) :: parts
-      return some (joined "{" "}" parts.reverse)
+        pairs := (key, item) :: pairs
+      return some (joinedObject pairs.reverse)
     | _ => return none
 
 private def encodeFuel (fuel : Nat) (value : Term) : KernelM (Option ByteArray) :=

@@ -62,8 +62,8 @@ test("a chat Markdown attachment opens a shared sidebar tab without fetching doc
       `/#/inbox/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`
     );
     await page
-      .locator(".chat-panel-file")
-      .getByRole("button", { name: "Preview report.md", exact: true })
+      .locator(".chat-panel-preview-card")
+      .getByRole("button", { name: "Open report.md", exact: true })
       .click();
     await expect(
       page.getByRole("tab", { name: "report.md", exact: true })
@@ -81,14 +81,17 @@ test("a chat Markdown attachment opens a shared sidebar tab without fetching doc
     expect(saved.suggestedFilename()).toBe("report.md");
     const savedPath = await saved.path();
     expect(savedPath).not.toBeNull();
-    expect(await readFile(savedPath!, "utf8")).toBe(markdown);
+    // A document is saved as portable Markdown written from the file: its raw HTML block stands apart.
+    expect(await readFile(savedPath!, "utf8")).toBe(
+      markdown.replace("```\n<script>", "```\n\n<script>") + "\n"
+    );
     expect(resourceRequests).toEqual([]);
     expect(
       await page.evaluate(() => Reflect.get(window, "previewExecuted"))
     ).toBeUndefined();
     await page
-      .locator(".chat-panel-file")
-      .getByRole("button", { name: "Preview report.md", exact: true })
+      .locator(".chat-panel-preview-card")
+      .getByRole("button", { name: "Open report.md", exact: true })
       .click();
     await expect(page.getByRole("tab", { name: "report.md", exact: true })).toHaveCount(
       1
@@ -169,7 +172,7 @@ for (const format of ["document", "fragment"] as const) {
     ]);
     try {
       await page
-        .getByRole("button", { name: "Preview document.html", exact: true })
+        .getByRole("button", { name: "Open document.html", exact: true })
         .click();
       const frame = page.frameLocator('[data-testid="file-preview-html"]');
       await expect(frame.getByRole("heading", { name: "Safe document" })).toBeVisible();
@@ -225,9 +228,7 @@ test("the file sidebar renders a bounded PDF page and changes pages", async ({
     { name: fileName, mime: "application/pdf", body: twoPagePdf() },
   ]);
   try {
-    await page
-      .getByRole("button", { name: `Preview ${fileName}`, exact: true })
-      .click();
+    await page.getByRole("button", { name: `Open ${fileName}`, exact: true }).click();
     const panel = page.getByTestId("file-preview-panel");
     const { toolbar, download } = await expectCompactPreviewToolbar(panel, fileName);
     const title = toolbar.locator(`[title="${fileName}"]`);
@@ -293,6 +294,78 @@ test("the file sidebar renders a bounded PDF page and changes pages", async ({
   }
 });
 
+test("a PowerPoint deck opens as its slides in the file sidebar", async ({ page }) => {
+  const deck = await readFile(
+    new URL(
+      "../src/components/file-preview/test/fixtures/roadmap.pptx",
+      import.meta.url
+    )
+  );
+  const stub = await startPreview(page, [
+    {
+      name: "roadmap.pptx",
+      mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      body: deck,
+    },
+  ]);
+  try {
+    await page.getByRole("button", { name: "Open roadmap.pptx", exact: true }).click();
+    const panel = page.getByTestId("file-preview-panel");
+    await expectCompactPreviewToolbar(panel, "roadmap.pptx");
+    const slides = panel.getByTestId("file-preview-slides");
+    await expect(slides).toContainText("Q4 Roadmap");
+    await expect(slides).toContainText("Highlights");
+    await expect(
+      panel.getByText("A preview is not available for this file type.")
+    ).toHaveCount(0);
+  } finally {
+    await stub.close();
+  }
+});
+
+for (const office of [
+  {
+    name: "brief.docx",
+    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    testId: "file-preview-docx",
+    text: ["Launch Brief", "Appendix"],
+  },
+  {
+    name: "budget.xlsx",
+    mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    testId: "file-preview-sheet",
+    text: ["Q4 Budget", "$1,200.00"],
+  },
+]) {
+  test(`${office.name} opens as its own content in the file sidebar`, async ({
+    page,
+  }) => {
+    const body = await readFile(
+      new URL(
+        `../src/components/file-preview/test/fixtures/${office.name}`,
+        import.meta.url
+      )
+    );
+    const stub = await startPreview(page, [
+      { name: office.name, mime: office.mime, body },
+    ]);
+    try {
+      await page
+        .getByRole("button", { name: `Open ${office.name}`, exact: true })
+        .click();
+      const panel = page.getByTestId("file-preview-panel");
+      await expectCompactPreviewToolbar(panel, office.name);
+      for (const text of office.text)
+        await expect(panel.getByTestId(office.testId)).toContainText(text);
+      await expect(
+        panel.getByText("A preview is not available for this file type.")
+      ).toHaveCount(0);
+    } finally {
+      await stub.close();
+    }
+  });
+}
+
 test("a PDF thumbnail glides the pages to the page it names and keeps it chosen on the way", async ({
   page,
 }) => {
@@ -304,7 +377,7 @@ test("a PDF thumbnail glides the pages to the page it names and keeps it chosen 
     },
   ]);
   try {
-    await page.getByRole("button", { name: "Preview long.pdf", exact: true }).click();
+    await page.getByRole("button", { name: "Open long.pdf", exact: true }).click();
     const panel = page.getByTestId("file-preview-panel");
     await expect(
       panel.getByRole("img", { name: "PDF page 1", exact: true })
@@ -373,7 +446,7 @@ test("Request edits sends a dragged PDF area to the Task with its screenshot and
     { name: "brief.pdf", mime: "application/pdf", body: twoPagePdf() },
   ]);
   try {
-    await page.getByRole("button", { name: "Preview brief.pdf", exact: true }).click();
+    await page.getByRole("button", { name: "Open brief.pdf", exact: true }).click();
     const panel = page.getByTestId("file-preview-panel");
     const firstPage = panel.getByRole("img", { name: "PDF page 1" });
     await expect(firstPage).toBeVisible();
@@ -594,6 +667,12 @@ test("Chat inline images retain their original source in messages and full-windo
       '[data-message-id="msg_menu_images"] .comma-chat-inline-images'
     );
     const menu = page.getByRole("menu", { name: "Image actions" });
+    // Four images start as a stack with only the front card reachable: spread them first.
+    await group.getByRole("button", { name: "4 Images", exact: true }).click();
+    // Expanded, the toggle is named for what it does next.
+    await expect(
+      group.getByRole("button", { name: "Hide", exact: true })
+    ).toHaveAttribute("aria-expanded", "true");
     // Add to Context names the original attachment, which the server stores by reference: nothing is read or uploaded.
     const addToContext = async (index: number) => {
       const stored = page.waitForResponse((response) =>

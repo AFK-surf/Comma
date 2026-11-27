@@ -9,6 +9,23 @@ defmodule SalixIM.Triage.InvestigationAuthority do
   alias SalixIM.{ConversationSourceIdentity, Conversations, GroupDirectory, ProviderConnects}
   alias SalixIM.Triage.Investigation
 
+  @readonly_composio_slugs ~w(
+    GITHUB_GET_A_REPOSITORY
+    GITHUB_LIST_PULL_REQUESTS
+    GITHUB_GET_A_PULL_REQUEST
+    GITHUB_LIST_COMMITS
+    GITHUB_GET_AN_ISSUE
+    GITHUB_LIST_REPOSITORY_ISSUES
+    GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS
+    GITHUB_LIST_RELEASES
+    GITHUB_GET_THE_LATEST_RELEASE
+    LINEAR_GET_LINEAR_ISSUE
+    LINEAR_LIST_LINEAR_ISSUES
+    NOTION_SEARCH_NOTION_PAGE
+    NOTION_FETCH_BLOCK_METADATA
+    NOTION_FETCH_BLOCK_CONTENTS
+  )
+
   def seal_conversation(record) do
     scope = %{
       "conversation_id" => record["conversation_id"],
@@ -143,6 +160,15 @@ defmodule SalixIM.Triage.InvestigationAuthority do
       # grant must not reject them before IFC evaluates their selected sources.
       name in ~w(web.search web.read_pages) ->
         true
+
+      name in ~w(composio.list_connections composio.list_tools composio.get_tool) ->
+        true
+
+      name == "composio.execute" ->
+        args["tool_slug"] in @readonly_composio_slugs and is_map(args["arguments"])
+
+      String.starts_with?(name, "composio.") ->
+        false
 
       name in ~w(help tool_call.get_status tool_call.get_result wait_for) ->
         true

@@ -77,7 +77,11 @@ defmodule SalixAgent.Tools.ImRouter do
               {:ok, %{connects: [map()], manuals: map()}} | {:error, term()}
   @callback task_execution_request(String.t(), map(), map()) ::
               {:ok, String.t(), String.t()} | :none
-  @optional_callbacks provider_manual: 2,
+  # Trusted producer contract: no connection, tenant, role or runtime data.
+  @callback builtin_provider_manual(String.t()) :: {:ok, map()} | {:error, term()}
+
+  @optional_callbacks builtin_provider_manual: 1,
+                      provider_manual: 2,
                       provider_manual: 3,
                       group_providers: 1,
                       list_connects: 2,
@@ -364,7 +368,65 @@ defmodule SalixAgent.Tools.ImRouter do
   # ---- im.provider_apis_list ----
 
   @doc false
-  def provider_apis_list(args, ctx) do
+  def builtin_help?(name), do: not is_nil(builtin_help_entry(name))
+
+  @doc false
+  def builtin_help_entry("im_api." <> rest) do
+    case String.split(rest, ".", parts: 2) do
+      [provider, api] ->
+        case builtin_manual(provider) do
+          {:ok, %{"apis" => apis}} ->
+            case Enum.find(
+                   apis,
+                   &(String.replace_prefix(operation_name(&1), provider <> ".", "") == api)
+                 ) do
+              nil -> nil
+              contract -> dynamic_operation_entry(provider, contract)
+            end
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def builtin_help_entry(_), do: nil
+
+  defp builtin_manual(provider) do
+    mod = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+
+    if is_atom(mod) and not is_nil(mod) and
+         SystemsRuntime.Proc.ensure_loaded?(mod) and
+         function_exported?(mod, :builtin_provider_manual, 1),
+       do: mod.builtin_provider_manual(provider),
+       else: {:error, :unsupported}
+  end
+
+  @doc false
+  def provider_apis_list(%{"provider" => provider} = args, ctx) when map_size(args) == 1 do
+    case builtin_manual(provider) do
+      {:ok, %{"apis" => apis}} when is_list(apis) ->
+        # This path never resolves connections, permissions or tenant plugins.
+        entries =
+          Enum.map(apis, fn api ->
+            provider_api_summary(provider, api, nil, "") |> Map.delete("callable")
+          end)
+
+        with_ifc(Jason.encode!(%{"provider" => provider, "apis" => entries}), %{
+          "label" => ["public"]
+        })
+
+      _ ->
+        connected_provider_apis_list(args, ctx)
+    end
+  end
+
+  def provider_apis_list(args, ctx), do: connected_provider_apis_list(args, ctx)
+
+  defp connected_provider_apis_list(args, ctx) do
     provider = args |> arg("provider") |> String.trim()
     connect_id = args |> arg("connect_id") |> String.trim()
     mod = seam!()

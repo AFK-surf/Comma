@@ -10,6 +10,7 @@ metadata:
   color: red
   visibility: toggled
   placeholder: Describe the skill to create, install, or manage
+prompt_summary: "Create, install from URL, edit, delete, or save a reusable workflow as a group skill."
 ---
 
 # Skill Manager

@@ -53,10 +53,8 @@ enum TaskDockPlacement: Equatable {
     }
 
     static func resolve(size: CGSize, leadingInset: CGFloat, folded: Bool, division: CGRect?) -> Self {
-        let columns = ShellColumnLayout(width: size.width, folded: folded, division: division)
-        guard size.width > size.height,
-              size.width - columns.gap >= ShellTabs.minimumColumnWidth * 2,
-              columns.leadingWidth > 0, columns.trailingWidth > 0 else { return .bottom }
+        let columns = ShellColumnLayout(size: size, folded: folded, division: division)
+        guard size.width > size.height, columns.isWide else { return .bottom }
         return .leading(width: columns.leadingWidth + leadingInset, gap: columns.gap)
     }
 }

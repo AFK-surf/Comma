@@ -45,9 +45,11 @@ export function usePluginInstall() {
         pluginId,
         workspaceId,
         connectionId,
-      }: Target & { connectionId: string }) =>
+        bindingId,
+      }: Target & { connectionId: string; bindingId?: string }) =>
         call("plugin.reauthorize", {
           connection: connectionId,
+          ...(bindingId ? { bindingId } : {}),
           plugin: pluginId,
           workspace: workspaceId,
         })
@@ -203,6 +205,9 @@ export function PluginNotices() {
               id: notice.id,
               sessionId,
               pending: false,
+              ...(notice.configuration.setup.error
+                ? { error: notice.configuration.setup.error }
+                : {}),
             });
           } else {
             sayNotice(notice, messages);
@@ -221,11 +226,17 @@ export function PluginNotices() {
 
   if (!credentials || credentials.sessionId !== sessionId) return null;
 
+  const dialogKey =
+    credentials.setup.format === "oauth_code"
+      ? `${credentials.workspace}:${credentials.plugin.id}:${credentials.operation ?? "install"}`
+      : String(credentials.id);
+
   return (
     <PluginCredentialsDialog
-      key={credentials.id}
+      key={dialogKey}
       plugin={credentials.plugin}
       configuration={credentials.setup}
+      {...(credentials.operation ? { operation: credentials.operation } : {})}
       pending={credentials.pending}
       {...(credentials.error ? { error: credentials.error } : {})}
       onClose={() => showCredentials(undefined)}
@@ -236,11 +247,29 @@ export function PluginNotices() {
         )
           return;
         showCredentials({ ...credentials, pending: true });
-        void call("plugin.install", {
-          workspace: credentials.workspace,
-          plugin: credentials.plugin.id,
-          configValues,
-        })
+        const request =
+          credentials.operation === "reauthorize"
+            ? call("plugin.reauthorize", {
+                workspace: credentials.workspace,
+                plugin: credentials.plugin.id,
+                ...(credentials.connectionId
+                  ? { connection: credentials.connectionId }
+                  : {}),
+                ...(credentials.bindingId ? { bindingId: credentials.bindingId } : {}),
+                ...(credentials.setup.attemptId
+                  ? { attemptId: credentials.setup.attemptId }
+                  : {}),
+                configValues,
+              })
+            : call("plugin.install", {
+                workspace: credentials.workspace,
+                plugin: credentials.plugin.id,
+                ...(credentials.setup.attemptId
+                  ? { attemptId: credentials.setup.attemptId }
+                  : {}),
+                configValues,
+              });
+        void request
           .then((answer) => {
             if (
               active.current?.id !== credentials.id ||
@@ -251,7 +280,7 @@ export function PluginNotices() {
               showCredentials({
                 ...credentials,
                 pending: false,
-                error: reasonDescription(answer.failure, messages),
+                error: answer.message ?? reasonDescription(answer.failure, messages),
               });
             else showCredentials(undefined);
           })

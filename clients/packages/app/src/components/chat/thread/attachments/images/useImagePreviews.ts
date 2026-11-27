@@ -11,6 +11,7 @@ import {
   type SyntheticEvent,
 } from "react";
 import { MediaMenuContext } from "../../../../file-preview/useMediaContextMenu";
+import { copyImageBlob } from "../../../../../runtime-files/imageClipboard";
 import type { ChatAttachment, ChatImagePreviewRef } from "@comma/core/chat";
 import {
   useLocalFilePreviews,
@@ -46,10 +47,16 @@ export function useImagePreviews({
   const messagesApi = useCommaMessages();
   const call = useCall();
   // Previews that settled without an image for the life of this message:
-  // decode errors, loaders that answered "unavailable", and loaders that
-  // outlived the settle deadline. They are never requested again, so the
-  // fallback card and the reserved geometry stay put across every re-entry.
+  // decode errors and loaders that answered "unavailable". They are never
+  // requested again, so the fallback card and the reserved geometry stay put
+  // across every re-entry.
   const [failedPreviewKeys, setFailedPreviewKeys] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  // Previews that outlived the settle deadline: the group reveals without
+  // them and each shows as its file card meanwhile, but their loads go on and
+  // an image that arrives takes its card's place in the group.
+  const [latePreviewKeys, setLatePreviewKeys] = useState<ReadonlySet<string>>(
     () => new Set()
   );
   const pendingPreviewSinceRef = useRef(new Map<string, number>());
@@ -124,6 +131,8 @@ export function useImagePreviews({
           {
             image: {
               alt: attachmentLabel(attachment, messagesApi),
+              // The desktop renderer may not write the clipboard itself.
+              onCopy: async () => copyImageBlob(await read()),
               src: preview.url,
               ...(attachment.uploadingId ? { uploading: true } : {}),
               ...(openImageMenu
@@ -181,6 +190,7 @@ export function useImagePreviews({
     const status = previews.get(key)?.status;
     return status === "ready" ||
       status === "unavailable" ||
+      latePreviewKeys.has(key) ||
       shownPreview(key, position)?.status === "ready"
       ? []
       : [key];
@@ -214,7 +224,7 @@ export function useImagePreviews({
         pendingPreviewSinceRef.current,
         pendingPreviewKeysSignature ? pendingPreviewKeysSignature.split("\n") : [],
         (expired) =>
-          setFailedPreviewKeys((current) => {
+          setLatePreviewKeys((current) => {
             const next = new Set(current);
             for (const key of expired) next.add(key);
             return next;
@@ -247,6 +257,7 @@ export function useImagePreviews({
     groupedImages,
     groupedPreviews,
     handlePreviewImageError,
+    latePreviewKeys,
     pendingPreviewKeys,
     previews,
   };

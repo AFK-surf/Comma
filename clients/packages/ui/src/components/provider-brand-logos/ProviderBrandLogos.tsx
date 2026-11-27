@@ -29,11 +29,11 @@ export function GithubProviderLogo(props: ProviderBrandLogoProps) {
   );
 }
 
-const googleMaskPath =
+const googleClipPath =
   "M21.7674 10.3721H12.2326V14.3256H17.7209C17.2093 16.8372 15.0698 18.2791 12.2326 18.2791C8.88372 18.2791 6.18605 15.5814 6.18605 12.2326C6.18605 8.88372 8.88372 6.18605 12.2326 6.18605C13.6744 6.18605 14.9767 6.69767 16 7.53488L18.9767 4.55814C17.1628 2.97674 14.8372 2 12.2326 2C6.55814 2 2 6.55814 2 12.2326C2 17.907 6.55814 22.4651 12.2326 22.4651C17.3488 22.4651 22 18.7442 22 12.2326C22 11.6279 21.907 10.9767 21.7674 10.3721Z";
 
 export function GoogleProviderLogo(props: ProviderBrandLogoProps) {
-  const maskId = `google-provider-logo-${useId().replaceAll(":", "")}`;
+  const clipId = `google-provider-logo-${useId().replaceAll(":", "")}`;
 
   return (
     <svg
@@ -48,19 +48,11 @@ export function GoogleProviderLogo(props: ProviderBrandLogoProps) {
       xmlns="http://www.w3.org/2000/svg"
     >
       <defs>
-        <mask
-          id={maskId}
-          height="21"
-          maskUnits="userSpaceOnUse"
-          style={{ maskType: "luminance" }}
-          width="20"
-          x="2"
-          y="2"
-        >
-          <path d={googleMaskPath} fill="white" />
-        </mask>
+        <clipPath id={clipId}>
+          <path d={googleClipPath} />
+        </clipPath>
       </defs>
-      <g mask={`url(#${maskId})`}>
+      <g clipPath={`url(#${clipId})`}>
         <path
           d="M1.07031 18.2791V6.18604L8.97729 12.2325L1.07031 18.2791Z"
           fill="#FBBC05"
@@ -413,3 +405,5 @@ export function OutlookProviderLogo(props: ProviderBrandLogoProps) {
     </svg>
   );
 }
+
+export { GoogleColabProviderLogo } from "./GoogleColabProviderLogo";

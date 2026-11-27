@@ -77,6 +77,14 @@ export type EntryKind = "message" | "edit" | "milestone";
 export type Quote = { author: string; text: string; comment: string; ts?: string; role?: string; file?: string };
 export type Attachment = { name: string; path: string; size: number; width?: number; height?: number; thumbhash?: string };
 
+export type TaskRosterEntry = {
+  slot: string;
+  label?: string | null;
+  role?: string | null;
+  primary?: boolean;
+  session?: string | null;
+};
+
 /// One entry of a thread's log (as the archive files hold them, one per line).
 export type EntryRow = {
   agentIdentity: Json | undefined; thread: number; n: number; kind: EntryKind; target: number | null; ts: string | null;
@@ -85,6 +93,10 @@ export type EntryRow = {
   at: number;
   /// The key steps its agent finished (chat_post milestones), in order; none: undefined.
   milestones: string[] | undefined;
+  /// For multi-session Task entries: target slots (undefined for legacy/broadcast).
+  deliverToSlots?: string[] | undefined;
+  /// For multi-session Task entries: slots allowed to see this entry (undefined = visible to all).
+  visibleToSlots?: string[] | undefined;
 };
 
 /// A message as it reads now: its latest edit's words, files and quotes.
@@ -128,7 +140,8 @@ export type ProcessRow = { pgid: number; startedAt: number; runtime: string; lab
 export type NewMessage = {
   thread: number; ts: string; authorKind: AuthorKind; author: string; text: string; attachments?: Attachment[];
   quotes?: Quote[]; declared?: string | null; client?: string | null; profile?: string | null; card?: Json | null;
-  options?: Json | null; at?: number | null; milestones?: string[] | null;
+  options?: Json | null; at?: number | null; milestones?: string[] | null; deliverToSlots?: string[] | null;
+  visibleToSlots?: string[] | null;
 };
 
 /// At most this many milestones in one post, each at most this many characters on one line (the Salix contract's).
@@ -315,13 +328,18 @@ export const toSessionThread = (r: Json): SessionThread => ({ thread: toThread(r
 export const toMembership = (r: Json): Membership => ({ thread: r.thread, session: r.session, connect: r.connect, joinedAt: r.joined_at });
 
 export function toEntry(r: Json): EntryRow {
-  return {
+  const entry: EntryRow = {
     agentIdentity: parsed(r.agent_identity), thread: r.thread, n: r.n, kind: entryKind(r.kind),
     target: r.target, ts: r.ts, authorKind: authorKind(r.author_kind), author: r.author, text: r.text,
     attachments: fromJsonList(r.attachments, attachment), quotes: fromJsonList(r.quotes, quote), declared: r.declared,
     client: r.client, profile: r.profile, options: parsed(r.options), card: parsed(r.card), at: r.at,
     milestones: storedMilestones(r.milestones),
   };
+  const deliverToSlots = storedDeliverToSlots(r.deliver_to_slots);
+  if (deliverToSlots !== undefined) entry.deliverToSlots = deliverToSlots;
+  const visibleToSlots = storedDeliverToSlots(r.visible_to_slots);
+  if (visibleToSlots !== undefined) entry.visibleToSlots = visibleToSlots;
+  return entry;
 }
 
 export const entryKind = (kind: Json): EntryKind => (kind === "edit" ? "edit" : kind === "milestone" ? "milestone" : "message");
@@ -332,6 +350,13 @@ export function storedMilestones(value: Json): string[] | undefined {
   if (!Array.isArray(list)) return undefined;
   const titles = list.filter((t): t is string => typeof t === "string");
   return titles.length === 0 ? undefined : titles;
+}
+
+/// A stored list of target slots (entries.deliver_to_slots): undefined when NULL/absent (legacy broadcast).
+export function storedDeliverToSlots(value: Json): string[] | undefined {
+  const list = typeof value === "string" ? parsed(value) : value;
+  if (!Array.isArray(list)) return undefined;
+  return list.filter((s): s is string => typeof s === "string" && s !== "");
 }
 
 export function toMessage(r: Json): MessageRow {

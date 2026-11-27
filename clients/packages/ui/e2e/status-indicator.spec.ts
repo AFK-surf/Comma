@@ -37,8 +37,8 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
       "style[data-comma-reduced-motion]"
     );
     const first = items?.[0];
-    const last = items?.[3];
-    if (!root || !items || items.length !== 4 || !first || !last || !reducedStyle) {
+    const last = items?.[4];
+    if (!root || !items || items.length !== 5 || !first || !last || !reducedStyle) {
       throw new Error("Status indicator Shadow DOM did not initialize");
     }
 
@@ -72,7 +72,7 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
 
   const valueControl = page.getByLabel("value");
   await expect(valueControl).toHaveValue("in-progress");
-  await valueControl.selectOption("cancel");
+  await valueControl.selectOption("loops");
   const result = await indicator.evaluate(
     (element) =>
       Reflect.get(element, "__reducedMotionResult") as Promise<ReducedMotionResult>
@@ -97,7 +97,7 @@ test("status indicator tooltip follows the hovered or focused segment", async ({
   const preview = page.locator("#storybook-preview-iframe").contentFrame();
   const indicator = preview.locator("status-indicator");
   await expect(indicator).toBeVisible();
-  await expect(indicator.locator('[role="radio"]')).toHaveCount(4);
+  await expect(indicator.locator('[role="radio"]')).toHaveCount(5);
 
   const doneStatus = indicator.locator('[role="radio"]').nth(2);
   // Prime React Aria's pointer modality before entering the Shadow DOM trigger.

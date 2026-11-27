@@ -56,8 +56,10 @@ func Generate(root string) (Manifest, error) {
 				"systems/runtime-images/station/apt-package-recovery.mjs",
 				"systems/runtime-images/go.mod",
 				"systems/runtime-images/cmd/comma-shell-runtime",
+				"systems/runtime-images/cmd/erofs-bundle",
+				"systems/runtime-images/internal/erofsbundle",
 			},
-			lockKeys: []string{"baseImages.go", "baseImages.station", "packageSnapshot", "npm", "npmSecurityPatches"},
+			lockKeys: []string{"baseImages.go", "baseImages.station", "baseImages.codingSandbox", "packageSnapshot", "npm", "npmSecurityPatches"},
 		},
 		// The station release (systems/station/scripts/bundle.sh): the station, the
 		// workspace package it bundles, and the pnpm lock that resolves the rest;
@@ -66,12 +68,14 @@ func Generate(root string) (Manifest, error) {
 			files: []string{
 				buildRecipe,
 				"systems/runtime-images/station",
+				"systems/runtime-images/cmd/erofs-bundle",
+				"systems/runtime-images/internal/erofsbundle",
 				"systems/station",
 				"clients/packages/mesh/package.json",
 				"clients/packages/mesh/src",
 				"pnpm-lock.yaml",
 			},
-			lockKeys: []string{"baseImages.go", "baseImages.station", "packageSnapshot", "npm", "npmSecurityPatches", "codex", "claude", "silkV3Decoder", "meetnative"},
+			lockKeys: []string{"baseImages.go", "baseImages.station", "baseImages.codingSandbox", "packageSnapshot", "npm", "npmSecurityPatches", "codex", "claude", "silkV3Decoder", "meetnative"},
 		},
 	}
 

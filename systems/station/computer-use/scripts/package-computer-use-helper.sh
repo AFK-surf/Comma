@@ -15,7 +15,6 @@ bundle_id="surf.comma.salix-connect.computer-use"
 resource_bundles=(
   "ComputerUseHost_CommaComputerUseDaemon.bundle"
   "ComputerUseHost_CUShared.bundle"
-  "ComputerUseHost_CUForeground.bundle"
   "PermissionFlow_PermissionFlow.bundle"
 )
 sign_identity="${COMMA_MACOS_DEV_SIGN_IDENTITY:--}"

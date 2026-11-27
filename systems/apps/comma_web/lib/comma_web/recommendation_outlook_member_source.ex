@@ -167,10 +167,15 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
       |> Enum.uniq_by(& &1["id"])
       |> Enum.take(40)
       |> Enum.map(fn event ->
+        others = outlook_other_attendees(event, mailbox)
+        summary = others |> Enum.join(", ") |> String.slice(0, 240)
+
         event
         |> Map.put("webUrl", event["webLink"])
+        |> Map.put("attendeeCount", length(others))
+        |> then(&if(summary != "", do: Map.put(&1, "attendeesSummary", summary), else: &1))
         |> RecommendationSourceContext.attach(~w(bodyPreview location))
-        |> Map.take(~w(id subject start end webUrl context))
+        |> Map.take(~w(id subject start end webUrl attendeeCount attendeesSummary context))
         |> RecommendationSourceQuote.put(
           title: event["subject"],
           body: {:plain, event["bodyPreview"]}
@@ -208,5 +213,38 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
            is_binary(address) and String.downcase(address) == self and
              get_in(attendee, ["status", "response"]) != "declined"
          end))
+  end
+
+  defp outlook_other_attendees(event, mailbox) do
+    self = if is_binary(mailbox), do: String.downcase(mailbox), else: ""
+
+    event
+    |> Map.get("attendees", [])
+    |> List.wrap()
+    |> Enum.filter(fn attendee ->
+      address = get_in(attendee, ["emailAddress", "address"]) || ""
+
+      is_map(attendee) and String.downcase(address) != self and
+        get_in(attendee, ["status", "response"]) != "declined"
+    end)
+    |> Enum.take(12)
+    |> Enum.flat_map(fn attendee ->
+      name = get_in(attendee, ["emailAddress", "name"])
+      email = get_in(attendee, ["emailAddress", "address"])
+
+      cond do
+        is_binary(name) and String.trim(name) != "" and is_binary(email) and email != "" ->
+          ["#{String.trim(name)} <#{email}>"]
+
+        is_binary(email) and email != "" ->
+          [email]
+
+        is_binary(name) and String.trim(name) != "" ->
+          [String.trim(name)]
+
+        true ->
+          []
+      end
+    end)
   end
 end

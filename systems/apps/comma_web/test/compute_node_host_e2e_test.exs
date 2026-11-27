@@ -115,23 +115,23 @@ defmodule CommaWeb.ComputeNodeHostE2ETest do
       )
 
     {:ok, {_, control_port}} = ThousandIsland.listener_info(listener)
-    remote_port = free_port()
-    internal_port = free_port()
     secret = Base.url_encode64(SystemsRuntime.Proc.random_bytes(32))
     image = System.fetch_env!("COMMA_COMPUTE_HOST_IMAGE") |> File.read!() |> Jason.decode!()
     configure(:salix_web, :public_base_url, "http://127.0.0.1:#{control_port}")
-    configure(:salix_web, :agent_vmm_gateway_control_secret, secret)
 
-    configure(:salix_store, :agent_vmm_gateway_instances, %{
-      "pressure-gateway" => "https://localhost:#{internal_port}"
-    })
+    worker = :"agent_vmm_worker_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    configure(:salix_store, :agent_vmm_gateway_tls,
-      cacertfile: ca,
-      certfile: cert,
-      keyfile: key,
-      verify: :verify_peer
+    start_supervised!(
+      {SalixStore.AgentVMM.Worker,
+       name: worker,
+       instance_id: "pressure-gateway",
+       remote_listen: "127.0.0.1:0",
+       tls_cert_file: cert,
+       tls_key_file: key,
+       iroh_preset: "minimal"}
     )
+
+    "127.0.0.1:" <> remote_port = SystemsRuntime.Server.call(worker, :remote_addr, :infinity)
 
     configure(:salix_store, :agent_vmm_connection_config, %{
       "remote_connection" => %{
@@ -172,9 +172,6 @@ defmodule CommaWeb.ComputeNodeHostE2ETest do
 
     config = %{
       remote_endpoint: "localhost:#{remote_port}",
-      internal_listen: "127.0.0.1:#{internal_port}",
-      control_url: "http://127.0.0.1:#{control_port}",
-      control_secret: secret,
       ca_file: ca,
       cert_file: cert,
       key_file: key,
@@ -190,17 +187,6 @@ defmodule CommaWeb.ComputeNodeHostE2ETest do
 
     File.write!(config_path, Jason.encode!(config))
     File.chmod!(config_path, 0o600)
-
-    gateway =
-      launch(
-        System.fetch_env!("COMMA_COMPUTE_HOST_GATEWAY"),
-        "TestCommaVMMPressureGatewayE2E",
-        config_path,
-        root,
-        "gateway"
-      )
-
-    eventually(fn -> File.exists?(config_path <> ".gateway-ready") end, 30_000)
 
     host =
       launch(
@@ -307,9 +293,7 @@ defmodule CommaWeb.ComputeNodeHostE2ETest do
     after
       File.write!(config_path <> ".stop", "stop")
       host_result = settled_await(host)
-      gateway_result = settled_await(gateway)
       assert {_, 0} = host_result
-      assert {_, 0} = gateway_result
     end
   end
 
@@ -439,14 +423,7 @@ defmodule CommaWeb.ComputeNodeHostE2ETest do
     )
   end
 
-  defp free_port do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
-    {:ok, {_, port}} = :inet.sockname(socket)
-    :gen_tcp.close(socket)
-    port
-  end
-
-  # The chain waits on a real Host, Guest, gateway and Electron, so this opt-in
+  # The chain waits on a real Host, Guest, worker and Electron, so this opt-in
   # fixture runs on the machine clock: a manual clock would skip past their work.
   defp eventually(fun, ms), do: wait(fun, SystemsClock.monotonic_time(:millisecond) + ms)
 

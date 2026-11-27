@@ -2,25 +2,8 @@ import SwiftUI
 import CommaCore
 import CoreImage.CIFilterBuiltins
 
-/// The Apps tab follows the selected Workspace and starts no list work while another tab is shown.
-struct MiniAppsTabView: View {
-    let store: CommaStore
-
-    var body: some View {
-        if let workspace = store.workspace {
-            MiniAppsView(store: store, workspace: workspace).id("\(store.boundaryToken)/\(workspace.id)")
-        } else {
-            NavigationStack {
-                EmptyState(Text("No workspace"), icon: "icon-square-grid",
-                           description: Text("Choose or create a workspace to see your apps."))
-                    .background(CommaTheme.bgSecondary)
-                    .pageTitle("Apps")
-            }
-        }
-    }
-}
-
-/// Current Workspace apps. This page follows one Core topic and does not fetch each row separately.
+/// Settings › Comma › Apps: current Workspace apps, pushed on Settings' stack. This page follows one Core topic, only
+/// while it is shown, and does not fetch each row separately.
 struct MiniAppsView: View {
     let store: CommaStore
     @Environment(AppNavigation.self) private var navigation
@@ -35,52 +18,60 @@ struct MiniAppsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollViewReader { scroller in
-                ScrollView {
-                    VStack(spacing: GroupedSurface.margin) {
-                        if !model.apps.isEmpty {
-                            FilterSearchField(prompt: "Search apps", text: $query, icon: "icon-search", accessibilityID: "miniAppSearch")
-                        }
-                        if let failure = model.failure {
-                            InlineError(message: failure) { Task { await model.perform("miniApps.refresh") } }
-                        }
-                        LazyVGrid(columns: columns, spacing: GroupedSurface.margin) {
-                            ForEach(shown) { app in
-                                MiniAppGridCard(store: store, app: app, workspaceID: model.workspace.id,
-                                                status: status(app), canRun: model.current,
-                                                continuing: store.canContinueMiniApp(workspaceID: model.workspace.id, appID: app.id),
-                                                details: { store.miniAppPresentation = .details(MiniAppTarget(workspaceID: model.workspace.id, appID: app.id)) },
-                                                run: { preview = MiniAppTarget(workspaceID: model.workspace.id, appID: app.id) })
-                                    .id(app.id)
-                            }
-                        }
+        ScrollView {
+            VStack(spacing: GroupedSurface.margin) {
+                if !model.apps.isEmpty {
+                    FilterSearchField(prompt: "Search apps", text: $query, icon: "icon-search", accessibilityID: "miniAppSearch")
+                }
+                if let failure = model.failure {
+                    InlineError(message: failure) { Task { await model.perform("miniApps.refresh") } }
+                }
+                LazyVGrid(columns: columns, spacing: GroupedSurface.margin) {
+                    ForEach(shown) { app in
+                        MiniAppGridCard(store: store, app: app, workspaceID: model.workspace.id,
+                                        status: status(app), canRun: model.current,
+                                        continuing: store.canContinueMiniApp(workspaceID: model.workspace.id, appID: app.id),
+                                        details: { store.miniAppPresentation = .details(MiniAppTarget(workspaceID: model.workspace.id, appID: app.id)) },
+                                        run: { preview = MiniAppTarget(workspaceID: model.workspace.id, appID: app.id) })
+                            .id(app.id)
                     }
-                    .padding(GroupedSurface.margin)
-                }
-                .background(CommaTheme.bgSecondary)
-                .overlay {
-                    Group {
-                        if !model.loaded { ProgressView("Loading apps…") }
-                        else if model.apps.isEmpty, model.failure == nil {
-                            EmptyState(Text("No apps yet"), icon: "icon-square-grid",
-                                       description: Text("Ask Comma to build an app. Apps you create or install in this workspace appear here."))
-                                .accessibilityIdentifier("miniAppsEmpty")
-                        } else if shown.isEmpty, model.failure == nil { EmptyState(Text("No matching apps"), icon: "icon-search") }
-                    }.allowsHitTesting(false)
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .refreshable { await model.perform("miniApps.refresh") }
-                .pageTitle("Apps")
-                .task(whileShowing: .apps) { await model.followList() }
-                .onChange(of: navigation.reselect[.apps]) { _, _ in
-                    query = ""
-                    if let first = model.apps.first { withAnimation(CommaMotion.spatialMove) { scroller.scrollTo(first.id, anchor: .top) } }
                 }
             }
+            .padding(GroupedSurface.margin)
         }
+        .background(CommaTheme.bgSecondary)
+        .overlay {
+            if !model.loaded { ProgressView("Loading apps…").allowsHitTesting(false) }
+            else if model.apps.isEmpty, model.failure == nil {
+                // New app takes a tap; around the empty state the page still pulls to refresh.
+                EmptyState(Text("No apps yet"), icon: "icon-square-grid",
+                           description: Text("Ask Comma to build one, such as “Build a habit tracker for my team.”")) {
+                    Button("New app", action: newApp)
+                        .buttonStyle(CommaButtonStyle(hierarchy: .primary, compact: true))
+                        .accessibilityIdentifier("miniAppsNew")
+                }
+                .accessibilityIdentifier("miniAppsEmpty")
+            } else if shown.isEmpty, model.failure == nil {
+                EmptyState(Text("No matching apps"), icon: "icon-search").allowsHitTesting(false)
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .refreshable { await model.perform("miniApps.refresh") }
+        .pageTitle("Apps")
+        .task(whileShowing: .appsHost) { await model.followList() }
         .fullScreenCover(item: $preview) { target in MiniAppRunView(store: store, target: target).id(target.id) }
         .onChange(of: model.current) { _, current in if !current { preview = nil } }
+    }
+
+    /// As on the desktop: the start of a request to build an app goes into the router chat's composer, which opens
+    /// with the keyboard up for the member to finish the sentence and send it. Nothing is sent.
+    /// As the desktop's prefill, a draft that already holds the request keeps it once.
+    private func newApp() {
+        let prompt = String(localized: "Build a Comma app that ")
+        if let pane = store.router.pane, !pane.draftText.contains(prompt.trimmingCharacters(in: .whitespaces)) {
+            pane.fillDraft(prompt)
+        }
+        navigation.openRouter(focus: true)
     }
 
     private var columns: [GridItem] {

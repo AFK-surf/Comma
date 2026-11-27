@@ -1,6 +1,6 @@
 import { uiClock } from "@comma/ui/clock";
 import type { ReactNode } from "react";
-import { getActiveCommaConfig } from "@comma/config";
+import { getActiveCommaConfig, type CommaChannel } from "@comma/config";
 import {
   useCall,
   useTopic,
@@ -20,6 +20,7 @@ import {
   openNativePlatformExternalUrl,
   openNativePlatformExternalUrlFromUserAction,
 } from "../../nativePlatformActions";
+import { billingEntry, captureCommaBilling } from "../../analytics/client";
 import { useWorkspacePreference } from "../activeWorkspace";
 import {
   BillingAllowanceMeter,
@@ -33,6 +34,18 @@ import {
   subscriptionPrice,
   subscriptionStatusLabel,
 } from "./BillingSettings";
+
+const TEAMS_ORIGINS: Record<CommaChannel, string> = {
+  prod: "https://teams.bridge.surf",
+  staging: "https://teams-staging.bridge.surf",
+  dev: "http://127.0.0.1:4101",
+};
+
+/** Where the personal app sends a team buyer to purchase Comma for Teams seats. */
+export function teamsSignupUrl(channel: CommaChannel, zh: boolean): string {
+  const query = zh ? "from=personal&locale=zh_Hans" : "from=personal";
+  return `${TEAMS_ORIGINS[channel]}/signup/teams?${query}`;
+}
 
 /** Where Stripe sends the person back to. */
 function billingReturn(): BillingReturn {
@@ -118,8 +131,27 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
     }
     if (enteredRead.current || prefer === undefined) return;
     enteredRead.current = true;
+    captureCommaBilling("comma_billing_opened", {
+      billing_entry: billingEntry(takeHashParam("from")),
+    });
     void call("billing.refresh", {}).catch(() => undefined);
   }, [call, enabled, prefer]);
+
+  // A notice followed while the page is already open does not open it again:
+  // its `from` leaves the hash, so a later entry cannot report it.
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined") return;
+    const drop = () => {
+      if (enteredRead.current) takeHashParam("from");
+    };
+    window.addEventListener("hashchange", drop);
+    return () => window.removeEventListener("hashchange", drop);
+  }, [enabled]);
+
+  // The web opens the checkout in a window of its own and gets no return
+  // route: its return is that window closed with the person back on this page.
+  // Stripe's return page closes it; so does the person. No timer watches it.
+  const checkoutWindow = useRef<Window>(undefined);
 
   // Coming back to the window (from Stripe, or anywhere) reads the balance
   // again, so a webhook that landed after that backoff still shows up.
@@ -127,6 +159,10 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
     if (!enabled || !workspaceId || typeof window === "undefined") return;
     const refresh = () => {
       if (document.visibilityState === "hidden") return;
+      if (checkoutWindow.current?.closed) {
+        checkoutWindow.current = undefined;
+        captureCommaBilling("comma_billing_returned");
+      }
       void call("billing.refresh", { workspace: workspaceId }).catch(() => undefined);
     };
     window.addEventListener("focus", refresh);
@@ -163,15 +199,34 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
 
   const startCheckout = (plan: BillingPlan) => {
     if (!workspace) return;
-    void run(plan.plan_key, async () => {
-      await openNativePlatformExternalUrlFromUserAction(async () => {
-        const session = await call("billing.checkout", {
-          workspace: workspace.id,
-          plan: plan.plan_key,
-          return: billingReturn(),
+    const plan_key = plan.plan_key;
+    captureCommaBilling("comma_checkout_requested", { plan_key });
+    void run(plan_key, async () => {
+      let step: "popup_blocked" | "request_failed" | "open_failed" = "popup_blocked";
+      try {
+        checkoutWindow.current = await openNativePlatformExternalUrlFromUserAction(
+          async () => {
+            step = "request_failed";
+            const session = await call("billing.checkout", {
+              workspace: workspace.id,
+              plan: plan_key,
+              return: billingReturn(),
+            });
+            step = "open_failed";
+            return session.url;
+          }
+        );
+        if (!checkoutWindow.current) desktopCheckoutOpened = true;
+      } catch (reason) {
+        // The web opens its window before it asks for the checkout: a blocked
+        // window fails before the request. The server reports why a request
+        // failed; a checkout it created can still fail to open in the browser.
+        captureCommaBilling("comma_checkout_open_failed", {
+          plan_key,
+          error_kind: step,
         });
-        return session.url;
-      });
+        throw reason;
+      }
     });
   };
 
@@ -590,6 +645,8 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
     ),
   ];
 
+  const hasHostedSubscriptions = plans.some((plan) => plan.mode === "subscription");
+
   return {
     id: "usage-billing",
     icon: "usage-billing",
@@ -635,6 +692,41 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
           },
         ],
       },
+      ...(hasHostedSubscriptions
+        ? [
+            {
+              id: "billing.teams",
+              title: "Comma for Teams",
+              items: [
+                {
+                  id: "billing.teams.buy",
+                  title: zh ? "购买团队席位" : "Buy seats for your team",
+                  description: zh
+                    ? "为团队开通独立组织，100 席位起按季通过 Stripe 计费。"
+                    : "Create a separate team organization, billed quarterly from 100 seats through Stripe.",
+                  keywords: [
+                    "teams",
+                    "seats",
+                    "organization",
+                    "enterprise",
+                    "团队",
+                    "席位",
+                    "组织",
+                  ],
+                  control: {
+                    type: "button" as const,
+                    label: zh ? "购买席位" : "Buy seats",
+                    onPress: () => {
+                      void openNativePlatformExternalUrl(
+                        teamsSignupUrl(getActiveCommaConfig().channel, zh)
+                      );
+                    },
+                  },
+                },
+              ],
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -693,22 +785,40 @@ function useBillingReturn(enabled: boolean): number {
   return count;
 }
 
+/**
+ * A checkout this app opened in the browser and has not seen return. The
+ * return page opens the app's URL scheme for a checkout opened on the web too,
+ * so only a return to a checkout of its own is this app's funnel step. A
+ * return after the app restarted is not reported; it still refreshes.
+ */
+let desktopCheckoutOpened = false;
+
 /** Removes `billing-return` from the hash; true when the return should refresh. */
 function consumeBillingReturn(): boolean {
+  const status = takeHashParam("billing-return");
+  if ((status === "success" || status === "cancel") && desktopCheckoutOpened) {
+    desktopCheckoutOpened = false;
+    captureCommaBilling("comma_billing_returned", { state: status });
+  }
+  return status === "success" || status === "portal" || status === "subscription";
+}
+
+/** Reads one parameter of the hash's query and removes it, so the next one changes the hash again. */
+function takeHashParam(name: string): string | null {
   const hash = window.location.hash;
   const queryStart = hash.indexOf("?");
-  if (queryStart < 0) return false;
+  if (queryStart < 0) return null;
   const params = new URLSearchParams(hash.slice(queryStart + 1));
-  const status = params.get("billing-return");
-  if (status === null) return false;
-  params.delete("billing-return");
+  const value = params.get(name);
+  if (value === null) return null;
+  params.delete(name);
   const query = params.toString();
   window.history.replaceState(
     window.history.state,
     "",
     `${hash.slice(0, queryStart)}${query ? `?${query}` : ""}`
   );
-  return status === "success" || status === "portal" || status === "subscription";
+  return value;
 }
 
 function billingErrorMessage(reason: unknown, zh: boolean) {

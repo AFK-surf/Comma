@@ -230,7 +230,7 @@ class TaskToolsTest {
 
     // MARK: New task
 
-    private fun form(core: Core) = NewTaskForm(calls(core), NewTaskForm.Labels("Comma cloud", "Write code", "Sandbox", "Default", "Unavailable"))
+    private fun form(core: Core) = NewTaskForm(calls(core), NewTaskForm.Labels("Comma cloud", "Write code", "Sandbox", "Default", "Unavailable", "Comma built-in"))
 
     private fun models(vararg profiles: JSONObject) = TopicValue.Value<JSONObject?>(JSONObject().put("workspace", "wsp_1").put("catalog", JSONObject())
         .put("models", JSONArray().put(JSONObject().put("id", "gpt").put("name", "GPT").put("serving", JSONArray().put("p1"))))
@@ -284,6 +284,18 @@ class TaskToolsTest {
     }
 
     @Test
+    fun aSandboxIsOfferedNoRuntimeWithoutAnAccountItCanRunOn() {
+        val form = form(Core())
+        val shown = models().value!!.put("agents", JSONObject().put("task_place", JSONObject()
+            .put("place", JSONObject().put("kind", "salix")).put("sandboxes", true).put("sandbox_runtimes", JSONArray().put("codex"))))
+        form.modelsChanged(TopicValue.Value<JSONObject?>(shown))
+        form.stationsChanged(TopicValue.Value(JSONObject().put("workspace", "wsp_1").put("stations", JSONArray())))
+        form.chooseEnvironment("plain_sandbox")
+        // Claude Code has no subscription, and nothing Salix lends the sandbox runs it.
+        assertEquals(listOf("codex"), form.runs.map { it.runtime })
+    }
+
+    @Test
     fun aRefusedStartTakesANewKey() = runBlocking {
         val core = Core()
         val form = form(core)
@@ -297,6 +309,53 @@ class TaskToolsTest {
         assertEquals("chat.startTask", core.calls.single().first)
         assertEquals("gpt", core.calls.single().second.getJSONObject("model").getString("id"))
         assertNotEquals(before, form.creationKey)
+    }
+
+    @Test
+    fun theBuiltInModelStartsACloudTaskWithNoModel() = runBlocking {
+        val core = Core()
+        val form = form(core)
+        form.modelsChanged(TopicValue.Value<JSONObject?>(JSONObject().put("workspace", "wsp_1").put("catalog", JSONObject())
+            .put("models", JSONArray().put(JSONObject().put("id", "gpt").put("name", "GPT").put("serving", JSONArray())))
+            .put("agents", JSONObject().put("task_model", JSONObject().put("selection", JSONObject().put("kind", "builtin"))))))
+        form.stationsChanged(TopicValue.Value(JSONObject().put("workspace", "wsp_1").put("stations", JSONArray())))
+        form.text = "Plan the offsite"
+        assertEquals("salix", form.environmentId)
+        assertEquals(listOf("Comma built-in"), form.cloudModels.map { it.name })
+        assertTrue(form.canStart)
+        core.answer = { _, _ -> JSONObject().put("conversationId", "task_1") }
+        assertEquals("task_1", form.start())
+        val sent = core.named("chat.startTask").single()
+        assertEquals("Plan the offsite", sent.getString("text"))
+        assertFalse(sent.has("model"))
+    }
+
+    @Test
+    fun aCatalogModelNamedDefaultIsSentAsThatModel() = runBlocking {
+        val core = Core()
+        val form = form(core)
+        form.modelsChanged(TopicValue.Value<JSONObject?>(JSONObject().put("workspace", "wsp_1").put("catalog", JSONObject())
+            .put("models", JSONArray().put(JSONObject().put("id", "default").put("name", "My endpoint").put("serving", JSONArray().put("p1"))))
+            .put("agents", JSONObject().put("task_model", JSONObject().put("selection", JSONObject().put("kind", "builtin"))))))
+        form.stationsChanged(TopicValue.Value(JSONObject().put("workspace", "wsp_1").put("stations", JSONArray())))
+        form.text = "Plan the offsite"
+        assertEquals(listOf("Comma built-in", "My endpoint"), form.cloudModels.map { it.name })
+        form.cloudModelId = "default"
+        core.answer = { _, _ -> JSONObject().put("conversationId", "task_1") }
+        assertEquals("task_1", form.start())
+        assertEquals("default", core.named("chat.startTask").single().getJSONObject("model").getString("id"))
+    }
+
+    @Test
+    fun anUnservedCatalogTaskModelOffersNoDefaultToSend() {
+        val form = form(Core())
+        form.modelsChanged(TopicValue.Value<JSONObject?>(JSONObject().put("workspace", "wsp_1").put("catalog", JSONObject())
+            .put("models", JSONArray().put(JSONObject().put("id", "a").put("name", "A").put("serving", JSONArray())))
+            .put("agents", JSONObject().put("task_model", JSONObject().put("selection", JSONObject().put("kind", "catalog").put("model", "a"))))))
+        form.stationsChanged(TopicValue.Value(JSONObject().put("workspace", "wsp_1").put("stations", JSONArray())))
+        form.text = "Plan the offsite"
+        assertTrue(form.cloudModels.isEmpty())
+        assertFalse(form.canStart)
     }
 
     @Test

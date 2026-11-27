@@ -10,6 +10,11 @@
 // decides), and its system output comes packet by packet where the page asked for it (still.fail's client/core-ts
 // screen-frames.ts carries the same frames). A station that logs its frames' times (its first state's `timing`) is told
 // as each video frame comes whole (`received`), and each `ack` carries the times it went by (`ViewTiming`).
+import {
+  screenPostureInputs,
+  screenPostureOf,
+  screenPosturesOf,
+} from "./screen-postures.ts";
 import { lazySchema } from "@comma/chat-contract";
 import { CoreError, type CallContext, type Value } from "@comma/core-kernel";
 import {
@@ -52,6 +57,7 @@ import {
 } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
 import { fromBase64 } from "./record.ts";
+import { askSandboxScreen, SANDBOX_SCREEN_EVERY_MS } from "./coding.ts";
 import type { Stations } from "./stations/index.ts";
 
 /** Where the account keeps its 画质 (`screenQuality`). */
@@ -63,6 +69,11 @@ const listSchema = lazySchema(() =>
       z.object({
         id: z.string(),
         clipboard: z.array(z.string()).optional(),
+        // (a foldable whose hinge takes any angle: its postures are swept there, `screen-postures.ts`)
+        capabilities: z
+          .object({ hinge: z.boolean().optional() })
+          .optional()
+          .catch(undefined),
       })
     ),
     codecs: z.array(z.string()).optional(),
@@ -151,6 +162,7 @@ const devicesSchema = lazySchema(() =>
             // (a station's case it cannot read is left out, the device drawn as its panels say)
             chrome: z.array(chromeSchema).max(4).optional().catch(undefined),
             poses: z.array(z.enum(["closed", "book", "open"])).optional(),
+            hinge: z.boolean().optional(),
             closable: z.boolean().optional(),
             logs: z.boolean().optional(),
             // (what debugs an app on it; any action a later station lists that this client does not know is left out)
@@ -344,7 +356,10 @@ function clipOf(raw: unknown): Clip | null {
 
 /** The two calls. A view's id is good only for the page that opened it. */
 export function registerScreenViews(ctx: Ctx, stations: Stations): void {
-  const open = new Map<string, { outgoing: ScreenOutgoing; timing: ViewTiming }>();
+  const open = new Map<
+    string,
+    { outgoing: ScreenOutgoing; timing: ViewTiming; hinge: boolean }
+  >();
   let nextView = 1;
 
   // The 画质 chosen (still.fail's prefs `screenQuality`), kept with the account on this device: a sign-out forgets it,
@@ -416,6 +431,9 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
                   height: s.height ?? 0,
                   peek: s.peek === true,
                   capabilities: s.capabilities,
+                  ...(s.capabilities.hinge === true
+                    ? { postures: screenPosturesOf(true) }
+                    : {}),
                   ...(s.phone ? { phone: true } : {}),
                   ...(s.agent ? { agent: true } : {}),
                 },
@@ -561,12 +579,14 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
           control?: unknown;
           background?: unknown;
           peek?: unknown;
+          panel?: unknown;
           instance?: unknown;
           maxWidth?: unknown;
           maxHeight?: unknown;
           audio?: unknown;
           quality?: unknown;
           sink?: unknown;
+          task?: unknown;
         };
         const target = p.target;
         const asksDevice = isDevice(target);
@@ -578,6 +598,26 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
             unsupported("This app does not reach computers' screens.")
           );
         const account = yield* ctx.session.account();
+        // The screen of a Task's sandbox (`task`): the sandbox shows it only while it is asked to, so this view asks as
+        // it opens, however it came to open (a press on the Task's row, or a page from before), and again until it
+        // ends. One ask a minute for each open view of one, and none once it closed (coding.ts). It only looks.
+        if (p.task !== undefined) {
+          const task = string(raw, "task");
+          if (p.control === true)
+            throw CoreError.invalid("a Task's sandbox is looked at, not driven");
+          const asked = yield* askSandboxScreen(ctx, workspace, task);
+          if (asked.deviceId !== device)
+            return yield* Effect.fail(
+              unsupported("That Task's sandbox is another device now.")
+            );
+          yield* Effect.forkChild(
+            Effect.forever(
+              Effect.sleep(SANDBOX_SCREEN_EVERY_MS).pipe(
+                Effect.andThen(Effect.ignore(askSandboxScreen(ctx, workspace, task)))
+              )
+            )
+          );
+        }
         const found = yield* ctx.api.request(
           account,
           "GET",
@@ -589,7 +629,9 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
           return yield* Effect.fail(unsupported("That computer runs no station."));
         // A station from before takes a view for a request whose body never ends: it is asked only of one that lists
         // the screen. A plain request, too, renews a credential that has expired, which the view's own stream cannot.
-        stations.linkOwnComputer(workspace, station);
+        // Held for as long as the view: a Task's sandbox is in no Devices list to keep it linked.
+        const release = stations.holdComputer(workspace, station);
+        yield* Effect.addFinalizer(() => Effect.sync(release));
         const listed = yield* stations
           .ask(
             workspace,
@@ -632,7 +674,10 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
         const timing = new ViewTiming();
         const view = nextView++;
         const key = keyOf(call.client, view);
-        open.set(key, { outgoing, timing });
+        // (a foldable whose station sweeps its hinge to any angle: it moves between postures)
+        const hinge = shown.capabilities?.hinge === true;
+        open.set(key, { outgoing, timing, hinge });
+
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             open.delete(key);
@@ -662,6 +707,9 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
             ? { audio: p.audio === "opus" ? ("opus" as const) : ("pcm_s16le" as const) }
             : {}),
           ...(quality && p.peek !== true ? { quality } : {}),
+          // A page that draws the device turned in 3D (a foldable that sweeps its hinge) asks its panel's own picture, so
+          // that its UI turns on it as on the device; others, and a peek, take it turned upright.
+          ...(hinge && p.panel === true && p.peek !== true ? { panel: true } : {}),
         };
         const { body } = yield* stations.duplex(
           workspace,
@@ -785,11 +833,12 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
             control?: unknown;
             clipboard?: unknown;
             paste?: unknown;
+            posture?: unknown;
             sound?: unknown;
           } | null;
           const opened = open.get(keyOf(call.client, Number(p?.view)));
           if (!opened) return null;
-          const { outgoing, timing } = opened;
+          const { outgoing, timing, hinge } = opened;
           if (Number.isSafeInteger(p?.ack)) {
             const ts = p!.ack as number;
             outgoing.push(
@@ -807,6 +856,10 @@ export function registerScreenViews(ctx: Ctx, stations: Stations): void {
             outgoing.push(encodeScreenControl(p.control));
           const clip = clipOf(p?.clipboard);
           if (clip) outgoing.push(encodeScreenClip(clip, p?.paste === true));
+          const posture = screenPostureOf(p?.posture);
+          if (posture && hinge)
+            for (const input of screenPostureInputs(posture))
+              outgoing.push(encodeScreenJson(ScreenKind.input, input));
           if (typeof p?.sound === "boolean") outgoing.push(encodeScreenSound(p.sound));
           return null;
         }),

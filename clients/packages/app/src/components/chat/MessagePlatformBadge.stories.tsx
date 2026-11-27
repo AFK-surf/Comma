@@ -154,6 +154,35 @@ export const OtherCommaApps: Story = {
   },
 };
 
+// Words written in the Raycast extension: the one Comma entry that takes a platform's bubble and round mark.
+export const Raycast: Story = {
+  args: {
+    messages: [
+      {
+        ...message("raycast-question", "user", "Book a table for two at seven."),
+        clientSource: "raycast",
+      },
+      message("raycast-answer", "assistant", "Booked for two at seven."),
+      message("home-follow-up", "user", "Thanks."),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const [article] = await expectBadgesBesideCopy(
+      canvasElement,
+      "Booked for two at seven.",
+      ["Raycast"]
+    );
+    const bubble = article!.querySelector<HTMLElement>(".comma-chat-user-bubble")!;
+    expect(bubble.style.getPropertyValue("--comma-chat-user-bubble-background")).toBe(
+      "#ff6363"
+    );
+    // A round platform mark, not the grey disc of another Comma app.
+    expect(
+      within(canvasElement).getByTitle("Raycast").hasAttribute("data-client-source")
+    ).toBe(false);
+  },
+};
+
 export const IMessageAndDiscord: Story = {
   args: {
     messages: [

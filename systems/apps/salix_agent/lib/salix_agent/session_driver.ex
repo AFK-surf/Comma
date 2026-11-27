@@ -40,40 +40,68 @@ defmodule SalixAgent.SessionDriver do
   newer revision asks the driver to rebuild the step against it, unless the
   step's mode says `"rebuild" => false`.
 
+  `augment`, when given, is `(state, events) -> events`: it adds host-owned
+  events to the events that are finally committed, computed against the
+  state they commit over, also after a rebuild.
+
   Returns `{:ok, revision, driver}`, `{:rerouted, revision, driver, effect}`
   when the rebuilt step took another branch, or `{:error, reason}`.
   """
-  def commit(agent_id, session_id, revision, driver, {events, opts, mode}, read \\ nil) do
+  def commit(
+        agent_id,
+        session_id,
+        revision,
+        driver,
+        {events, opts, mode},
+        read \\ nil,
+        augment \\ nil
+      ) do
     if rebuild?(mode),
-      do: commit_rebuilt(agent_id, session_id, revision, driver, events, opts, read),
-      else: commit_plain(agent_id, session_id, revision, driver, events, opts)
+      do: commit_rebuilt(agent_id, session_id, revision, driver, events, opts, read, augment),
+      else: commit_plain(agent_id, session_id, revision, driver, events, opts, augment)
   end
 
   defp rebuild?(%{"rebuild" => false}), do: false
   defp rebuild?(_mode), do: true
 
-  defp commit_plain(agent_id, session_id, %Revision{} = revision, driver, events, opts) do
+  defp commit_plain(agent_id, session_id, %Revision{} = revision, driver, events, opts, augment) do
+    events = apply_augment(augment, revision.state, events)
+
     with {:ok, revision} <-
            InternalSessionStore.commit_revision(agent_id, session_id, revision, events, opts),
          do: {:ok, revision, driver}
   end
 
-  defp commit_plain(agent_id, session_id, nil, driver, events, opts) do
+  defp commit_plain(agent_id, session_id, nil, driver, events, opts, nil) do
     with {:ok, _session} <- InternalSessionStore.commit(agent_id, session_id, events, opts),
          {:ok, revision} <- InternalSessionStore.read_revision(agent_id, session_id),
          do: {:ok, revision, driver}
   end
 
-  defp commit_rebuilt(agent_id, session_id, revision, driver, events, opts, read) do
+  # Augmenting needs the state the events commit over: read it in the commit.
+  defp commit_plain(agent_id, session_id, nil, driver, events, opts, augment) do
+    builder = fn current ->
+      {:ok, apply_augment(augment, current, events), opts, %{driver: driver}}
+    end
+
+    with {:ok, revision, %{driver: driver}} <-
+           commit_dynamic(agent_id, session_id, nil, builder),
+         do: {:ok, revision, driver}
+  end
+
+  defp commit_rebuilt(agent_id, session_id, revision, driver, events, opts, read, augment) do
     state = if match?(%Revision{}, revision), do: revision.state
 
     builder = fn current ->
       if current == state do
-        {:ok, events, opts, %{driver: driver}}
+        {:ok, apply_augment(augment, current, events), opts, %{driver: driver}}
       else
         case step(current, driver, :rebuild, read) do
-          {rebuilt, {:commit, events, opts, _mode}} -> {:ok, events, opts, %{driver: rebuilt}}
-          {rebuilt, effect} -> {:error, {:rerouted, rebuilt, effect}}
+          {rebuilt, {:commit, rebuilt_events, opts, _mode}} ->
+            {:ok, apply_augment(augment, current, rebuilt_events), opts, %{driver: rebuilt}}
+
+          {rebuilt, effect} ->
+            {:error, {:rerouted, rebuilt, effect}}
         end
       end
     end
@@ -91,6 +119,11 @@ defmodule SalixAgent.SessionDriver do
         error
     end
   end
+
+  defp apply_augment(nil, _state, events), do: events
+
+  defp apply_augment(augment, state, events) when is_function(augment, 2),
+    do: augment.(state, events)
 
   defp commit_dynamic(agent_id, session_id, %Revision{} = revision, builder),
     do: InternalSessionStore.commit_revision_dynamic(agent_id, session_id, revision, builder)

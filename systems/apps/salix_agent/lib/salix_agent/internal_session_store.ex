@@ -28,6 +28,12 @@ defmodule SalixAgent.InternalSessionStore do
           }
   end
 
+  defmodule FenceTask do
+    @moduledoc false
+    @enforce_keys [:task, :agent_id, :session_id]
+    defstruct [:task, :agent_id, :session_id]
+  end
+
   def read(agent_id, session_id) do
     with {:ok, version} <- read_revision(agent_id, session_id) do
       # The caller gets the state only. The revision cursor shares it and
@@ -323,8 +329,10 @@ defmodule SalixAgent.InternalSessionStore do
 
         case run_commit_prerequisite(prerequisite) do
           :ok ->
-            {result, clock} = write.(epoch, lap(clock, :prerequisite_ms))
-            observe_fence(agent_id, session_id, result, clock)
+            {{result, clock}, write_steps} =
+              PG.time_write(fn -> write.(epoch, lap(clock, :prerequisite_ms)) end)
+
+            observe_fence(agent_id, session_id, result, Map.put(clock, :write_steps, write_steps))
             result
 
           error ->
@@ -370,6 +378,8 @@ defmodule SalixAgent.InternalSessionStore do
   @doc false
   def observe_fence(agent_id, session_id, result, clock) do
     finished = SystemsClock.monotonic_time()
+    total_elapsed = Map.get_lazy(clock, :total_elapsed, fn -> finished - clock.started end)
+    write_elapsed = Map.get_lazy(clock, :write_elapsed, fn -> finished - clock.lap end)
     outcome = if match?({:ok, _}, result), do: "ok", else: "error"
 
     Salix.Telemetry.emit_operation(
@@ -377,12 +387,12 @@ defmodule SalixAgent.InternalSessionStore do
       "session_fence",
       SystemsObservability.Context.current_surface(),
       outcome,
-      finished - clock.started
+      total_elapsed
     )
 
-    if System.convert_time_unit(finished - clock.started, :native, :millisecond) >=
+    if System.convert_time_unit(total_elapsed, :native, :millisecond) >=
          @slow_fence_ms do
-      laps = Map.put(clock.laps, :write_ms, finished - clock.lap)
+      laps = Map.put(clock.laps, :write_ms, write_elapsed)
 
       fields =
         for phase <- ~w(owner_ms prerequisite_ms freeze_ms schedule_ms write_ms)a, into: %{} do
@@ -394,6 +404,11 @@ defmodule SalixAgent.InternalSessionStore do
           {step, System.convert_time_unit(elapsed, :native, :millisecond)}
         end
 
+      write_steps =
+        for {step, elapsed} <- Map.get(clock, :write_steps, %{}), into: %{} do
+          {step, System.convert_time_unit(elapsed, :native, :millisecond)}
+        end
+
       Logger.warning("session_fence_slow",
         session_fence:
           Map.merge(fields, %{
@@ -401,7 +416,8 @@ defmodule SalixAgent.InternalSessionStore do
             session_id: session_id,
             kind: clock.kind,
             outcome: outcome,
-            freeze_steps: steps
+            freeze_steps: steps,
+            write_steps: write_steps
           })
       )
     end
@@ -439,19 +455,36 @@ defmodule SalixAgent.InternalSessionStore do
         case run_commit_prerequisite(prerequisite) do
           :ok ->
             clock = lap(clock, :prerequisite_ms)
+            expected_revision = version.revision
 
+            # Run only DB storage and notifications in the background task so it
+            # never contends with the actor's concurrent kernel work on `l->mutex`.
+            # Kernel commit runs in `await_durable_fence/1` once the actor joins.
             task =
               SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
                 SystemsObservability.Context.run(context, fn ->
                   clock = lap(clock, :schedule_ms)
 
-                  result = write_frozen(frozen, command, epoch)
-                  observe_fence(agent_id, session_id, result, clock)
-                  result
+                  {storage_result, write_steps} =
+                    PG.time_write(fn ->
+                      write_frozen_storage(
+                        frozen,
+                        command,
+                        agent_id,
+                        session_id,
+                        expected_revision,
+                        epoch
+                      )
+                    end)
+
+                  bg_finished = SystemsClock.monotonic_time()
+
+                  {storage_result, clock, write_steps, bg_finished - clock.started,
+                   bg_finished - clock.lap}
                 end)
               end)
 
-            {:ok, task}
+            {:ok, %FenceTask{task: task, agent_id: agent_id, session_id: session_id}}
 
           error ->
             observe_fence(agent_id, session_id, error, lap(clock, :prerequisite_ms))
@@ -461,6 +494,41 @@ defmodule SalixAgent.InternalSessionStore do
       error ->
         observe_fence(agent_id, session_id, error, lap(clock, :owner_ms))
         error
+    end
+  end
+
+  defp write_frozen_storage({:ok, pending}, _command, _agent_id, _session_id, _expected, _epoch),
+    do: pending |> PG.execute_storage() |> settle_storage()
+
+  defp write_frozen_storage(:clean, command, agent_id, session_id, expected_revision, epoch) do
+    PG.confirm_clean_command_storage(command, agent_id, session_id, expected_revision, epoch)
+    |> settle_storage()
+  end
+
+  def await_durable_fence(%FenceTask{task: task, agent_id: agent_id, session_id: session_id}) do
+    case SystemsClock.yield(task, :infinity) do
+      {:ok, {storage_result, clock, bg_write_steps, bg_total_elapsed, bg_write_elapsed}} ->
+        commit_started = SystemsClock.monotonic_time()
+
+        {result, commit_write_steps} =
+          PG.time_write(fn -> PG.finish_storage(storage_result) end)
+
+        commit_elapsed = SystemsClock.monotonic_time() - commit_started
+
+        write_steps =
+          Map.merge(bg_write_steps, commit_write_steps, fn _k, v1, v2 -> v1 + v2 end)
+
+        clock =
+          clock
+          |> Map.put(:write_steps, write_steps)
+          |> Map.put(:total_elapsed, bg_total_elapsed + commit_elapsed)
+          |> Map.put(:write_elapsed, bg_write_elapsed + commit_elapsed)
+
+        observe_fence(agent_id, session_id, result, clock)
+        result
+
+      {:exit, reason} ->
+        {:error, {:durable_fence_failed, reason}}
     end
   end
 
@@ -539,6 +607,16 @@ defmodule SalixAgent.InternalSessionStore do
     do: {:error, {:commit_indeterminate, pending}}
 
   defp settle(result, _), do: result
+
+  defp settle_storage(result, remaining \\ 5)
+
+  defp settle_storage({:error, :commit_indeterminate, pending}, remaining) when remaining > 0,
+    do: settle_storage(PG.settle_storage(pending), remaining - 1)
+
+  defp settle_storage({:error, :commit_indeterminate, pending}, _),
+    do: {:error, {:commit_indeterminate, pending}}
+
+  defp settle_storage(result, _), do: result
 
   defp ensure_session_owner(agent_id, session_id) do
     systems_self = SystemsRuntime.Proc.self()

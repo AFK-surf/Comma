@@ -6,6 +6,7 @@ import type { ChatMessagePart } from "@comma/chat-contract";
 import {
   modelMentionsAsWords,
   requestMentionsAsWords,
+  shareMentionsAsWords,
   slackMentionsAsWords,
   splitUserTaskMentionParts,
 } from "./mentionSerialization.ts";
@@ -35,6 +36,10 @@ export const BROWSER_ELEMENT_INSPECTION_CONTEXT_PATTERN =
 export const PDF_REGION_CONTEXT_PATTERN =
   /\s*<user-reminder>\s*<pdf_region_context>[\s\S]*?<\/pdf_region_context>\s*<\/user-reminder>\s*$/u;
 
+/** Passages of a document a person selected to have changed: which file and where, for the model; the chat shows the words. */
+export const DOCUMENT_SELECTION_CONTEXT_PATTERN =
+  /\s*<user-reminder>\s*<document_selection_context>[\s\S]*?<\/document_selection_context>\s*<\/user-reminder>\s*$/u;
+
 const COMMAND_PATTERN = /^\s*<salix-command>([^<]{0,256})<\/salix-command>\s*$/u;
 
 /**
@@ -44,11 +49,15 @@ const COMMAND_PATTERN = /^\s*<salix-command>([^<]{0,256})<\/salix-command>\s*$/u
  */
 export function decodeUserMessage(text: string): UserMessageDisplay {
   const attached = parseAttachmentsBlock(text);
-  // An inspected element or PDF area is context for the agent; the chat shows its screenshot instead.
+  // An inspected element, a PDF area or a document's passage is context for the agent; the chat shows its screenshot instead.
   const quoted = parseQuotedTextBlock(
-    BROWSER_ELEMENT_INSPECTION_CONTEXT_PATTERN.test(attached.body)
+    (BROWSER_ELEMENT_INSPECTION_CONTEXT_PATTERN.test(attached.body)
       ? stripBrowserElementInspectionContext(attached.body)
-      : attached.body.replace(PDF_REGION_CONTEXT_PATTERN, "").trimEnd()
+      : attached.body.replace(PDF_REGION_CONTEXT_PATTERN, "")
+    )
+      // A document's passages come before an element's block, so they are the end once that is off.
+      .replace(DOCUMENT_SELECTION_CONTEXT_PATTERN, "")
+      .trimEnd()
   );
   const texts = parseAttachedTextBlocks(quoted.body);
   const command = COMMAND_PATTERN.exec(texts.body)?.[1]?.trim();
@@ -65,7 +74,9 @@ export function decodeUserMessage(text: string): UserMessageDisplay {
 export function userParts(display: UserMessageDisplay): ChatMessagePart[] {
   const shown = display.command
     ? `/${display.command}`
-    : slackMentionsAsWords(requestMentionsAsWords(modelMentionsAsWords(display.body)));
+    : slackMentionsAsWords(
+        shareMentionsAsWords(requestMentionsAsWords(modelMentionsAsWords(display.body)))
+      );
   return splitUserTaskMentionParts(shown) ?? [{ kind: "markdown", text: shown }];
 }
 

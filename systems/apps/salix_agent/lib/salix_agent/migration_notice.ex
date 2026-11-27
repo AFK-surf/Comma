@@ -1,7 +1,7 @@
 defmodule SalixAgent.MigrationNotice do
   @moduledoc false
 
-  @version 73
+  @version 75
   @superseded_versions [
     11,
     18,
@@ -80,6 +80,14 @@ defmodule SalixAgent.MigrationNotice do
       "content" => content(version)
     }
   end
+
+  defp summary(75),
+    do:
+      "Ask the user before creating a Task or binding a Worker when where or how to run is uncertain"
+
+  defp summary(74),
+    do:
+      "Same-thread follow-ups get one combined reply before delivery, or a direct delta reply after"
 
   defp summary(73),
     do:
@@ -170,6 +178,14 @@ defmodule SalixAgent.MigrationNotice do
 
   defp summary(_version), do: "migration notice changed"
 
+  defp content(75),
+    do:
+      "Routers: before creating a Task (im_api.internal.task.create) or creating or rebinding a Worker (agent.create_worker, agent.rebind_runtime), unless the request, an attached local file, a configured Group default or Worker binding, or one unambiguous environment clearly settles both where to run (personal computer vs sandbox/Cloud VM vs inside Salix, or which of several connected computers) and how to run (station runtime vs sandbox vs Salix worker), ask the user first instead of guessing. Ask with a question card in Comma chat, or briefly in the same thread or chat on Slack, iMessage, Feishu or other external IMs, and end the turn blocked until they answer. Automatic and explicit placement onto one of several connected personal computers is now refused on external IMs as well as in Comma chat until the person chooses. Continue silently; this notice requests no new work."
+
+  defp content(74),
+    do:
+      "Routers: when an activation holds multiple messages from the same conversation or thread, answer all of them in one combined reply. When answering a follow-up right after a recent reply in the same conversation or thread, continue directly with the conclusion and new information instead of repeating facts, numbers, or background already stated in the previous reply. Continue silently; this notice requests no new work."
+
   defp content(73),
     do:
       "Routers: ending a turn does not continue its request later. Nothing wakes you for it again unless the person writes. When a person in this activation has had no reply and no Task carries their request, end_turn with outcome=done and no reply is refused. Before you end, put the answer or a short note on what is done and what is blocked in end_turn's reply, or create a Task for the remaining work. Set no_reply=true only when silence is deliberate. Use outcome=blocked with a reason when nothing can progress. Continue silently; this notice requests no new work."
@@ -228,7 +244,7 @@ defmodule SalixAgent.MigrationNotice do
 
   defp content(59),
     do:
-      "Routers: this replaces older opening and final-answer instructions in stored prompts and notices, including notice 48's separate completion rule. If you can answer immediately, call end_turn directly with outcome=done and reply={tool,params}. Use the same form for completed work with an unsent final answer. Do not send that answer through call and then end it in another round. Use a standalone opening or progress send only while work remains. Then continue that work. A successful standalone send proves delivery, not completion. If the answer was already sent, omit reply. Current-source routing and IFC authorization do not change. Put any required ifc declaration inside reply. With reply, the runtime settles only after a successful send. Existing script instructions remain unchanged. Continue silently. This notice requests no new work."
+      "Routers: this replaces older opening and final-answer instructions in stored prompts and notices, including notice 48's separate completion rule. If you can answer immediately, call end_turn directly with outcome=done and reply matching its disclosed schema. Use the same form for completed work with an unsent final answer. Do not send that answer through call and then end it in another round. Use a standalone opening or progress send only while work remains. Then continue that work. A successful standalone send proves delivery, not completion. If the answer was already sent, omit reply. Current-source routing and IFC authorization do not change. Put any required ifc declaration inside reply. With reply, the runtime settles only after a successful send. Existing script instructions remain unchanged. Continue silently. This notice requests no new work."
 
   defp content(58),
     do:
@@ -268,11 +284,11 @@ defmodule SalixAgent.MigrationNotice do
   end
 
   defp content(50) do
-    "Earlier history may show a completed reply as call with reply_mode=final and final_outcome, or show a running placeholder after that reply completed. Those were old runtime representations, not instructions for the next reply. Do not copy their call shape. For an immediately answerable request or completed work with an unsent final answer, use the directly named end_turn tool with outcome=done and reply={tool,params}. Do not wrap end_turn in call. Put an ifc source declaration inside reply when needed. The runtime sends the reply and settles only after success. A completed reply receipt proves delivery; do not poll or resend it. Use a standalone send for progress, then continue the work. If essential human input blocks all progress, use end_turn with outcome=blocked, a reason, and an optional unsent question in reply. If the reply was already delivered, end_turn omits reply. This replaces earlier reply-completion instructions. Continue the current request silently; this notice requests no new work."
+    "Earlier history may show a completed reply as call with reply_mode=final and final_outcome, or show a running placeholder after that reply completed. Those were old runtime representations, not instructions for the next reply. Do not copy their call shape. For an immediately answerable request or completed work with an unsent final answer, use the directly named end_turn tool with outcome=done and reply matching its disclosed schema. Do not wrap end_turn in call. Put an ifc source declaration inside reply when needed. The runtime sends the reply and settles only after success. A completed reply receipt proves delivery; do not poll or resend it. Use a standalone send for progress, then continue the work. If essential human input blocks all progress, use end_turn with outcome=blocked, a reason, and an optional unsent question in reply. If the reply was already delivered, end_turn omits reply. This replaces earlier reply-completion instructions. Continue the current request silently; this notice requests no new work."
   end
 
   defp content(49) do
-    "If the requested work is complete and the current-source reply is unsent, call end_turn with outcome=done and reply={tool,params}. Include an ifc source declaration in reply when needed. The runtime uses the disclosed IM or Comma operation, sends the reply, and settles only after a successful result. If essential human input blocks all work, use outcome=blocked with a reason and an optional unsent question in reply. A standalone send only delivers its message. Continue independent work after an opening or progress reply, then call end_turn without reply. Do not repeat a successful send. This replaces earlier reply-completion instructions in stored prompts and migration notices. Continue silently; this notice requests no new work."
+    "If the requested work is complete and the current-source reply is unsent, call end_turn with outcome=done and reply matching its disclosed schema. Include an ifc source declaration in reply when needed. The runtime uses the disclosed IM or Comma operation, sends the reply, and settles only after a successful result. If essential human input blocks all work, use outcome=blocked with a reason and an optional unsent question in reply. A standalone send only delivers its message. Continue independent work after an opening or progress reply, then call end_turn without reply. Do not repeat a successful send. This replaces earlier reply-completion instructions in stored prompts and migration notices. Continue silently; this notice requests no new work."
   end
 
   defp content(47) do

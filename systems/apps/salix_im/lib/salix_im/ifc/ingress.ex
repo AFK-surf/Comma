@@ -48,7 +48,12 @@ defmodule SalixIM.IFC.Ingress do
     if group_id == "" or provider == "" or connect_id == "" or not enabled?(group) do
       nil
     else
-      scope = %{tenant_id: tenant_id, group_id: group_id, connect_id: connect_id}
+      scope = %{
+        tenant_id: tenant_id,
+        group_id: group_id,
+        connect_id: connect_id,
+        ifc_mode: get_in(group, ["ifc", "mode"])
+      }
 
       case audience(provider, scope, metadata) do
         nil ->
@@ -84,7 +89,7 @@ defmodule SalixIM.IFC.Ingress do
   @spec enabled?(map()) :: boolean()
   def enabled?(group) when is_map(group) do
     case group["ifc"] do
-      %{"mode" => mode} when is_binary(mode) -> text(mode) in ["audit", "enforce"]
+      %{"mode" => mode} when is_binary(mode) -> text(mode) in ["audit", "enforce", "hard", "easy"]
       _absent -> false
     end
   end
@@ -186,16 +191,18 @@ defmodule SalixIM.IFC.Ingress do
     sender = text(metadata["sender_open_id"] || metadata["sender_user_id"])
 
     cond do
-      chat_id == "" ->
-        nil
-
       text(metadata["chat_type"]) == "p2p" and sender != "" ->
         # The chat payload names neither participant, so this inbound — which
         # carries both — is the only place the pairing can be learned. A later
-        # read or write naming only the chat id resolves through it.
-        Projection.observe_direct(scope, chat_id, sender)
+        # read or write naming only the chat id resolves through it. A tap on
+        # the bot's menu (`feishu.bot_menu`) names no chat: it is still the
+        # person's private conversation with the bot.
+        if chat_id != "", do: Projection.observe_direct(scope, chat_id, sender)
         {scope_id, row} = feishu_direct(scope, sender)
         atoms(scope, scope_id, row)
+
+      chat_id == "" ->
+        nil
 
       true ->
         {canonical, row} = Projection.structure(scope, chat_id)
@@ -244,19 +251,21 @@ defmodule SalixIM.IFC.Ingress do
 
   # A private Lark chat (`p2p`) names neither person, so this inbound, which
   # carries the sender, is where the pairing is learned: a later read or send
-  # that names only the chat resolves through it. A Lark group is a room.
+  # that names only the chat resolves through it. A tap on the bot's menu
+  # (`lark.bot_menu`) names no chat: it is still the person's private
+  # conversation with the bot. A Lark group is a room.
   defp audience("lark", scope, metadata) do
     chat_id = text(metadata["chat_id"])
     sender = text(metadata["sender_open_id"] || metadata["sender_user_id"])
 
     cond do
-      chat_id == "" ->
-        nil
-
       text(metadata["chat_type"]) == "p2p" and sender != "" ->
-        Projection.observe_direct(scope, chat_id, sender)
+        if chat_id != "", do: Projection.observe_direct(scope, chat_id, sender)
         scope_id = Projection.direct_scope_id(sender)
         atoms(scope, scope_id, stored(scope, scope_id, "direct"))
+
+      chat_id == "" ->
+        nil
 
       true ->
         {canonical, row} = Projection.structure(scope, chat_id)
@@ -291,6 +300,28 @@ defmodule SalixIM.IFC.Ingress do
   # record it as that one-to-one. A group (`group:`) or multi-person chat
   # (`room:`) is a room, as for QQ.
   defp audience("line", scope, metadata) do
+    chat_id = text(metadata["chat_id"])
+    sender = text(metadata["from_user_id"])
+
+    cond do
+      chat_id == "" ->
+        nil
+
+      sender != "" and chat_id == "user:" <> sender ->
+        Projection.observe_direct(scope, chat_id, sender)
+        scope_id = Projection.direct_scope_id(sender)
+        atoms(scope, scope_id, stored(scope, scope_id, "direct"))
+
+      true ->
+        {canonical, row} = Projection.structure(scope, chat_id)
+        atoms(scope, canonical, if(is_nil(row.kind), do: %{row | kind: "room"}, else: row))
+    end
+  end
+
+  # A private WeCom chat is `user:<userid>`, and that user is the sender:
+  # record it as that one-to-one. A WeCom group (`group:<chatid>`) is a room;
+  # WeCom gives the bot no member list, so it keeps the room's own atom.
+  defp audience("wecom", scope, metadata) do
     chat_id = text(metadata["chat_id"])
     sender = text(metadata["from_user_id"])
 
@@ -363,7 +394,7 @@ defmodule SalixIM.IFC.Ingress do
   # room's own atom.
   defp atoms(scope, scope_id, row) do
     base =
-      if Projection.space_audience?(row),
+      if Map.get(scope, :ifc_mode) != "easy" and Projection.space_audience?(row),
         do: {:space, scope.connect_id},
         else: {:scope, scope.connect_id, scope_id}
 

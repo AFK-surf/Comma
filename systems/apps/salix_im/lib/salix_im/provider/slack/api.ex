@@ -438,14 +438,25 @@ defmodule SalixIM.Provider.Slack.API do
 
   @doc "`auth.test` for resolving the installed bot's stable Slack identities."
   @spec auth_test(credential()) :: map()
-  def auth_test(token), do: post_form(token, "auth.test", [])
+  def auth_test(token) do
+    body = post_form(token, "auth.test", [])
+    maybe_cache_workspace_url(body)
+    body
+  end
 
   @doc "`auth.test` plus Slack's HTTP response time, used for provider-clock boundaries."
   @spec auth_test_with_response_date_ms(credential()) :: {map(), integer() | nil}
   def auth_test_with_response_date_ms(token) do
     {body, response} = request_with_response(:post, token, "auth.test", [])
+    maybe_cache_workspace_url(body)
     {body, response_date_ms(response)}
   end
+
+  defp maybe_cache_workspace_url(%{"ok" => true, "team_id" => team_id, "url" => url}) do
+    SalixIM.Provider.Slack.Permalink.cache_workspace_url(team_id, url)
+  end
+
+  defp maybe_cache_workspace_url(_body), do: :ok
 
   @doc """
   `chat.postMessage`. `opts`: `:blocks` / `:metadata` (maps encoded as JSON
@@ -638,6 +649,32 @@ defmodule SalixIM.Provider.Slack.API do
       {:ok, _invalid_mode} ->
         {:error, :invalid_slack_read_receipt_request}
     end
+  end
+
+  @doc """
+  One `search.messages` page, newest first, with a user token that has
+  `search:read`. `opts`: `:count`, `:page`. Returns the page's matches and
+  whether a later page exists.
+  """
+  @spec search_messages(credential(), String.t(), keyword()) :: %{
+          matches: [map()],
+          more?: boolean()
+        }
+  def search_messages(token, query, opts \\ []) do
+    fields =
+      [query: query, sort: "timestamp", sort_dir: "desc"]
+      |> put_field(:count, opts[:count])
+      |> put_field(:page, opts[:page])
+
+    body = get_query(token, "search.messages", fields)
+    paging = get_in(body, ["messages", "paging"]) || %{}
+
+    %{
+      matches: get_in(body, ["messages", "matches"]) || [],
+      more?:
+        is_integer(paging["page"]) and is_integer(paging["pages"]) and
+          paging["page"] < paging["pages"]
+    }
   end
 
   defp observed_conversation_replies(credential, channel, thread_ts, opts) do

@@ -15,6 +15,16 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_active, {:ok, %{}})
     end
 
+    def daily_brief_jev_recall(request) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:salix, :jev_recall, request})
+
+      case SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_jev_recall) do
+        fun when is_function(fun, 1) -> fun.(request)
+        other when not is_nil(other) -> other
+        nil -> {:ok, %{}}
+      end
+    end
+
     defp reply(name, request) do
       SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:salix, name, request})
       SystemsRuntime.fetch_env!(:bridge_for_teams_core, :daily_brief_fake).(name, request)
@@ -31,6 +41,7 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous)
       SystemsRuntime.delete_env(:bridge_for_teams_core, :daily_brief_fake)
       SystemsRuntime.delete_env(:bridge_for_teams_core, :daily_brief_test_active)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :daily_brief_test_jev_recall)
     end)
 
     suffix = SystemsRuntime.Proc.unique_integer([:positive])
@@ -165,6 +176,37 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       assert [%{id: "C_DOWN", reason: :source_unavailable}] = coverage.failed
       assert coverage.threads_complete == %{ctx.alice.id => true, ctx.bob.id => false}
       refute SharedSource.complete?(coverage)
+    end
+
+    test "a channel Slack asks to wait for is read after the wait", ctx do
+      fake(fn
+        :channels, _request ->
+          {:ok,
+           %{
+             workspace_id: "T1",
+             complete?: true,
+             channels: [%{id: "C_MAIN", name: "main"}],
+             gaps: %{}
+           }}
+
+        :read_window, %{channel_id: "C_MAIN"} ->
+          if Process.put(:rate_limited, true) do
+            {:ok,
+             %{
+               messages: [msg("C_MAIN", "1.0", "UBOB1", "export the logs")],
+               next_cursor: nil,
+               has_more?: false
+             }}
+          else
+            {:error, {:rate_limited, 1}}
+          end
+      end)
+
+      assert {:ok, result} = SharedSource.read(ctx.settings, @window, members: [])
+      assert [%{ts: "1.0"}] = result.messages
+      assert result.coverage.failed == []
+      assert_received {:salix, :read_window, %{channel_id: "C_MAIN"}}
+      assert_received {:salix, :read_window, %{channel_id: "C_MAIN"}}
     end
 
     test "a member's main channels bring in what people said there", ctx do
@@ -302,6 +344,58 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       assert result.coverage.channels_read == 0
       refute SharedSource.complete?(result.coverage)
     end
+
+    test "sends lightweight human P2 candidates to daily_brief_jev_recall, promotes >= 2500 to P1, drops low scores, and skips bots",
+         ctx do
+      SystemsRuntime.put_env(
+        :bridge_for_teams_core,
+        :daily_brief_test_jev_recall,
+        {:ok, %{{"C_EDGE", "10.0"} => 3_500, {"C_EDGE", "11.0"} => 1_200}}
+      )
+
+      fake(fn
+        :channels, _request ->
+          {:ok,
+           %{
+             workspace_id: "T1",
+             complete?: true,
+             channels: [%{id: "C_EDGE", name: "edge"}],
+             gaps: %{}
+           }}
+
+        :read_window, %{channel_id: "C_EDGE"} ->
+          {:ok,
+           %{
+             messages: [
+               msg("C_EDGE", "10.0", "UCAROL1", "Release freeze at 18:00 today")
+               |> Map.put(:actor_label, "Carol")
+               |> Map.put(:extra_blob, String.duplicate("x", 500)),
+               msg("C_EDGE", "11.0", "UCAROL1", "Anyone want boba?")
+               |> Map.put(:actor_label, "Carol"),
+               msg("C_EDGE", "12.0", "BDEPLOY1", "CI build passed", nil, "bot")
+             ],
+             next_cursor: nil,
+             has_more?: false
+           }}
+
+        :member_threads, _request ->
+          {:ok, %{threads: [], complete?: true}}
+      end)
+
+      assert {:ok, result} =
+               SharedSource.read(ctx.settings, @window,
+                 members: [Repo.preload(ctx.alice, :aliases)]
+               )
+
+      assert_received {:salix, :jev_recall, %{messages: sent_messages}}
+      assert Enum.map(sent_messages, & &1.ts) == ["10.0", "11.0"]
+
+      for item <- sent_messages do
+        assert Enum.sort(Map.keys(item)) == [:actor_label, :channel_id, :text, :ts]
+      end
+
+      assert picked(result, ctx.alice) == [{"10.0", [:jev_recall], :p1}]
+    end
   end
 
   describe "classifier" do
@@ -327,6 +421,20 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       # the added one that the bot can read.
       assert focus.humans == MapSet.new(~w(C_A C_D C_E C_F1 C_F2 C_X))
       assert focus.bots == MapSet.new()
+
+      # A newly created channel where the member wrote three or more messages in
+      # the current window enters focus on its first day, unless muted.
+      day_one =
+        BridgeForTeams.DailyBrief.Focus.of(
+          member,
+          activity,
+          MapSet.put(readable, "C_NEW"),
+          %{"C_NEW" => 3, "C_B" => 4, "C_C" => 2}
+        )
+
+      assert MapSet.member?(day_one.humans, "C_NEW")
+      refute MapSet.member?(day_one.humans, "C_B")
+      refute MapSet.member?(day_one.humans, "C_C")
     end
 
     test "matches ASCII aliases as words and other aliases as text" do
@@ -356,6 +464,31 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
 
       assert Classifier.reasons(msg("C", "4.0", "B1", "XP deployed", nil, "bot"), member) == []
       assert Classifier.reasons(msg("C", "5.0", "B1", "deployed", "9.0", "bot"), member) == []
+    end
+
+    test "a bot's meeting notes count for a member they name" do
+      member = Classifier.member("UME1", [%{term: "XP", kind: "name"}], [])
+      notes = "Meeting Summary\nAttendees: Bob, XP\n" <> String.duplicate("决定：先做 agent 机。", 80)
+
+      assert Classifier.reasons(msg("C", "6.0", "B1", notes, "5.0", "bot"), member) == [:alias]
+    end
+
+    test "promotes P2 human edge messages to P1 when jev_recall_bp meets the recall threshold" do
+      member = Classifier.member("UME1", [%{term: "XP", kind: "name"}], [])
+
+      promoted =
+        msg("C_EDGE", "7.0", "UX1", "Release freeze starts at 18:00")
+        |> Map.put(:jev_recall_bp, 3_200)
+
+      dropped =
+        msg("C_EDGE", "8.0", "UX1", "Lunch at 12:30")
+        |> Map.put(:jev_recall_bp, 1_200)
+
+      assert Classifier.reasons(promoted, member) == [:jev_recall]
+      assert Classifier.tier(Classifier.reasons(promoted, member)) == :p1
+
+      assert Classifier.reasons(dropped, member) == []
+      assert Classifier.tier(Classifier.reasons(dropped, member)) == nil
     end
   end
 

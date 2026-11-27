@@ -23,22 +23,25 @@ defmodule SalixStore.StationStats do
   added up `by` one of `:person`, `:model`, `:day`, `:source`, `:station` or
   `:task` (the Task the spending was in, as a Router names a station-hosted
   Task: `station:<station_id>:<thread>`), of one `source` only when given
-  (`"self"`, `"stillfail"`), of one `person` only when given:
+  (`"self"`, `"stillfail"`), of one `person` only when given, of one Device
+  `device` only when given (a still.fail workspace's still.fail device):
   `{:ok, [%{"key" => value, "calls", "input", "cache_read", "cache_write", "output", "cost"}]}`,
   the most spent first.
   """
-  def usage(group_id, from, to, by, source \\ nil, person \\ nil)
+  def usage(group_id, from, to, by, source \\ nil, person \\ nil, device \\ nil)
 
-  def usage(group_id, from, to, by, source, person)
+  def usage(group_id, from, to, by, source, person, device)
       when is_binary(group_id) and (is_map_key(@by, by) or by == :task) and
-             (is_nil(source) or is_binary(source)) and (is_nil(person) or is_binary(person)) do
+             (is_nil(source) or is_binary(source)) and (is_nil(person) or is_binary(person)) and
+             (is_nil(device) or is_binary(device)) do
     with {:ok, from_date} <- Date.from_iso8601(from),
          {:ok, to_date} <- Date.from_iso8601(to),
          true <- Date.diff(to_date, from_date) in 0..(@max_days - 1) || {:error, :invalid_span} do
       key = key(by)
+      scope = active(group_id) |> of_source(source) |> of_person(person) |> of_device(device)
 
       rows =
-        from(r in of_person(of_source(active(group_id), source), person),
+        from(r in scope,
           where: r.kind == "usage" and r.day >= ^from and r.day <= ^to,
           group_by: ^[key],
           select:
@@ -64,7 +67,8 @@ defmodule SalixStore.StationStats do
     end
   end
 
-  def usage(_group_id, _from, _to, _by, _source, _person), do: {:error, :invalid_grouping}
+  def usage(_group_id, _from, _to, _by, _source, _person, _device),
+    do: {:error, :invalid_grouping}
 
   # What a row adds up under. A still.fail station's row of a chat on another
   # station of its workspace names that station (`station`), as its Task index
@@ -92,6 +96,9 @@ defmodule SalixStore.StationStats do
 
   defp of_person(query, nil), do: query
   defp of_person(query, person), do: where(query, [r], r.person == ^person)
+
+  defp of_device(query, nil), do: query
+  defp of_device(query, device), do: where(query, [r], r.device_id == ^device)
 
   @doc """
   The Group's chats with something in them since `since` (unix ms), the latest

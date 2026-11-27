@@ -1,11 +1,9 @@
 import {
-  additionalMockCardTitles,
   oldMockEnvelope,
   settings,
   source,
 } from "./fixtures/web-app/routes/recommendations-data";
-import { waitForSettledMotion } from "./support/motion";
-import { expect, test, type Locator, type Page } from "./support/page";
+import { expect, test, type Locator } from "./support/page";
 import { stepUntil, testClock, testPage } from "./support/virtual-time";
 import { useWebApp } from "./support/web-app";
 
@@ -19,6 +17,37 @@ import { useWebApp } from "./support/web-app";
 // a stable anchor must not pin one time of day. `briefing-heading.spec.ts` pins
 // the wording against a fixed clock.
 const greetingHeading = /^Good (morning|afternoon|evening), /;
+
+// A Gmail Routine card whose one row is a sentence around a link chip.
+const launchApprovalCard = {
+  fallbackText: "Gmail flagged Launch approval.",
+  id: "gmail",
+  items: [
+    {
+      action: {
+        label: "Review the launch approval",
+        prompt: "Review the launch approval",
+        requiresConfirmation: false,
+        type: "open_task_form",
+      },
+      id: "launch-approval",
+      parts: [
+        { kind: "markdown", text: "Gmail flagged " },
+        {
+          kind: "inline-link",
+          link: {
+            href: "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
+            label: "Launch approval",
+            sourceId: "local-gmail",
+          },
+        },
+      ],
+    },
+  ],
+  sourceIds: ["local-gmail"],
+  template: "text-list@1",
+  title: "Gmail",
+};
 
 const reminderUrl = "https://mail.google.com/mail/u/0/#inbox/launch-approval";
 const reminderTranscript = [
@@ -96,26 +125,6 @@ async function eventually<T>(
   check(await read());
 }
 
-type RoutineDragEvidence = {
-  layoutAnimation?: {
-    duration: number | null;
-    transforms: (string | null)[];
-  };
-  nativeDragImageCalls: number;
-};
-
-type RoutineDragFrame = {
-  hasTransformAnimation: boolean;
-  order: string[];
-  tops: Record<string, number>;
-};
-
-/** The text-list routines on the rail, in order, by the source each names. */
-const routineCardTitles = (page: Page) =>
-  page
-    .locator('.comma-recommendation-card[data-template="text-list@1"]')
-    .evaluateAll((cards) => cards.map((card) => card.getAttribute("aria-label")));
-
 const readIconControlVisual = (control: Locator) =>
   control.evaluate((element) => {
     const icon = element.querySelector("svg")?.getBoundingClientRect();
@@ -148,21 +157,6 @@ const settleIconControlVisual = (control: Locator) =>
     );
   });
 
-const readTextInkBounds = (text: Locator) =>
-  text.evaluate((element) => {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    const bounds = range.getBoundingClientRect();
-    return {
-      bottom: bounds.bottom,
-      height: bounds.height,
-      left: bounds.left,
-      right: bounds.right,
-      top: bounds.top,
-      width: bounds.width,
-    };
-  });
-
 test("a rejected real refresh replaces stale mock recommendations with canonical empty state", async ({
   page,
 }) => {
@@ -176,7 +170,6 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
   await page.getByRole("heading", { name: greetingHeading }).click();
 
   await expect(page.getByRole("heading", { name: greetingHeading })).toBeVisible();
-  await expect(page.getByText("Old mock briefing.")).toBeVisible();
   await expect(page.getByRole("group", { name: "Old mock card" })).toBeVisible();
   await expect(page.getByRole("group", { name: "Next mock card" })).toBeVisible();
   await expect(page.locator(".comma-recommendations-heading")).toHaveCSS(
@@ -226,9 +219,6 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
     exact: true,
     name: "Refresh",
   });
-  const routinesTrigger = page.getByRole("button", {
-    name: "Customize routines",
-  });
   const toggleSidebar = page
     .getByTestId("comma-window-bar")
     .getByRole("button", { name: "New tab" });
@@ -236,27 +226,30 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
   await expect(refreshControl).toHaveAttribute("aria-label", "Refresh");
   await expect(refreshControl).not.toContainText("Refresh");
   await expect(refreshControl.locator("[data-comma-icon]")).toBeVisible();
-  await expect(routinesTrigger.locator("[data-comma-icon]")).toBeVisible();
   await expect(toggleSidebar).toBeVisible();
 
-  // The Routines controls share the Chat Sidebar toggle's look and footprint
-  // (28px box, 20px icon, 4px padding and radius, same colours).
+  // The refresh control is the heading row's only control. It sits on the
+  // status line, which says how many cards are left.
+  const headingRow = page.locator(".comma-recommendations-heading");
+  await expect(headingRow.getByRole("button")).toHaveCount(1);
+  await expect(headingRow.getByRole("heading")).toHaveText(/^\d+ things need you$/);
+  const statusLine = await headingRow.evaluate((row) => {
+    const status = row.querySelector("h2")!.getBoundingClientRect();
+    const refresh = row.querySelector("button")!.getBoundingClientRect();
+    return {
+      centreOffset: status.top + status.height / 2 - (refresh.top + refresh.height / 2),
+      statusBeforeRefresh: status.right <= refresh.left,
+    };
+  });
+  expect(Math.abs(statusLine.centreOffset)).toBeLessThan(0.5);
+  expect(statusLine.statusBeforeRefresh).toBe(true);
+
+  // It shares the Chat Sidebar toggle's look and footprint (28px box, 20px
+  // icon, 4px padding and radius, same colours).
   const routinesControlVisual = await readIconControlVisual(toggleSidebar);
   expect(routinesControlVisual).toMatchObject({ height: 28, width: 28 });
   expect(await readIconControlVisual(refreshControl)).toEqual(routinesControlVisual);
-  expect(await readIconControlVisual(routinesTrigger)).toEqual(routinesControlVisual);
 
-  const refreshPrecedesCustomize = await refreshControl.evaluate(
-    (refresh, customize) => {
-      if (!(customize instanceof Element)) return null;
-      return Boolean(
-        refresh.compareDocumentPosition(customize) & Node.DOCUMENT_POSITION_FOLLOWING
-      );
-    },
-    await routinesTrigger.elementHandle()
-  );
-  expect(refreshPrecedesCustomize).toBe(true);
-  await routinesTrigger.focus();
   await toggleSidebar.hover();
   await settleIconControlVisual(toggleSidebar);
   const toggleSidebarHoverVisual = await toggleSidebar.evaluate((element) => {
@@ -266,921 +259,26 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
       color: style.color,
     };
   });
-  for (const control of [refreshControl, routinesTrigger]) {
-    await control.hover();
-    await settleIconControlVisual(control);
-    expect(
-      await control.evaluate((element) => {
-        const style = getComputedStyle(element);
-        return {
-          backgroundColor: style.backgroundColor,
-          color: style.color,
-        };
-      })
-    ).toEqual(toggleSidebarHoverVisual);
-  }
-  await routinesTrigger.hover();
-  await page.locator(".comma-home-chat").hover();
-  await testClock().advance(300);
-  await expect(routinesTrigger).toBeFocused();
-  const triggerBoundsBeforePress = await routinesTrigger.boundingBox();
-  expect(triggerBoundsBeforePress).not.toBeNull();
-  await routinesTrigger.hover();
-  await page.mouse.down();
-  await routinesTrigger.evaluate((element) =>
-    Promise.all(element.getAnimations().map((animation) => animation.finished))
-  );
-  const triggerBoundsDuringPress = await routinesTrigger.boundingBox();
-  expect(triggerBoundsDuringPress).not.toBeNull();
-  for (const dimension of ["x", "y", "width", "height"] as const) {
-    expect(
-      Math.abs(
-        triggerBoundsDuringPress![dimension] - triggerBoundsBeforePress![dimension]
-      )
-    ).toBeLessThan(0.1);
-  }
-  await page.mouse.up();
-  const routinesDialog = page.getByRole("dialog", { name: "Customize routines" });
-  await expect(routinesDialog).toBeVisible();
-  await expect(routinesDialog).toHaveAttribute("data-has-cards", "true");
-  const routinesPopover = page.locator('[data-slot="menu-popover"]', {
-    has: routinesDialog,
-  });
-  await expect(routinesPopover).toHaveAttribute("data-animation", "anchor");
-  await expect(routinesDialog).toHaveCSS("padding-top", "4px");
-  await expect(routinesDialog).toHaveCSS("padding-right", "4px");
-  await expect(routinesDialog).toHaveCSS("padding-bottom", "4px");
-  await expect(routinesDialog).toHaveCSS("padding-left", "4px");
-  await testClock().advance(550);
-  const stableTriggerBounds = await routinesTrigger.boundingBox();
-  const stablePopoverBounds = await routinesPopover.boundingBox();
-  const firstCardBounds = await firstCard.boundingBox();
-  expect(stableTriggerBounds).not.toBeNull();
-  expect(stablePopoverBounds).not.toBeNull();
-  expect(firstCardBounds).not.toBeNull();
-  expect(Math.abs(stableTriggerBounds!.x - triggerBoundsBeforePress!.x)).toBeLessThan(
-    1
-  );
+  await refreshControl.hover();
+  await settleIconControlVisual(refreshControl);
   expect(
-    stablePopoverBounds!.x - (stableTriggerBounds!.x + stableTriggerBounds!.width)
-  ).toBeCloseTo(8, 0);
-  expect(stablePopoverBounds!.x).toBeGreaterThanOrEqual(
-    firstCardBounds!.x + firstCardBounds!.width
-  );
-  await expect(routinesDialog.getByRole("row")).toHaveCount(6);
-  const customProviderRow = routinesDialog.getByRole("row", {
-    name: "Team follow-ups",
-  });
-  const customProviderImage = customProviderRow.locator(
-    '.comma-recommendation-card-logo img[src="https://assets.comma.test/custom-crm.svg"]'
-  );
-  await expect(customProviderImage).toBeVisible();
-  expect(
-    await customProviderImage.evaluate(
-      (image) => image instanceof HTMLImageElement && image.draggable
-    )
-  ).toBe(false);
-  await page.evaluate(() => {
-    Object.defineProperty(window, "commaNativeImageDragStarts", {
-      configurable: true,
-      value: 0,
-      writable: true,
-    });
-    document.addEventListener(
-      "dragstart",
-      () => {
-        (
-          window as typeof window & { commaNativeImageDragStarts: number }
-        ).commaNativeImageDragStarts += 1;
-      },
-      { capture: true, once: true }
-    );
-  });
-  const customProviderImageBounds = await customProviderImage.boundingBox();
-  expect(customProviderImageBounds).not.toBeNull();
-  await page.mouse.move(
-    customProviderImageBounds!.x + customProviderImageBounds!.width / 2,
-    customProviderImageBounds!.y + customProviderImageBounds!.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    customProviderImageBounds!.x + customProviderImageBounds!.width / 2 + 24,
-    customProviderImageBounds!.y + customProviderImageBounds!.height / 2 + 8,
-    { steps: 4 }
-  );
-  await page.mouse.up();
-  expect(
-    await page.evaluate(
-      () =>
-        (window as typeof window & { commaNativeImageDragStarts: number })
-          .commaNativeImageDragStarts
-    )
-  ).toBe(0);
-  await expect(page.locator("html")).not.toHaveAttribute("data-comma-routine-dragging");
-  const firstRoutineRow = routinesDialog.getByRole("row", {
-    name: "Old mock card",
-  });
-  await expect(firstRoutineRow).toHaveCSS("height", "32px");
-  await expect(firstRoutineRow).toHaveCSS("cursor", "default");
-  const firstDragHandleBounds = await firstRoutineRow
-    .locator(".comma-routines-card-drag-hit-area")
-    .boundingBox();
-  expect(firstDragHandleBounds).not.toBeNull();
-  const dragHandleHitTarget = await page.evaluate(
-    ({ x, y }) => {
-      const target = document.elementFromPoint(x, y);
+    await refreshControl.evaluate((element) => {
+      const style = getComputedStyle(element);
       return {
-        cursor: target ? getComputedStyle(target).cursor : null,
-        isDragHitArea: target?.matches(".comma-routines-card-drag-hit-area") ?? false,
-        isRoutineRow: Boolean(target?.closest(".comma-routines-card-row")),
+        backgroundColor: style.backgroundColor,
+        color: style.color,
       };
-    },
-    {
-      x: firstDragHandleBounds!.x + firstDragHandleBounds!.width / 2,
-      y: firstDragHandleBounds!.y + firstDragHandleBounds!.height / 2,
-    }
-  );
-  expect(dragHandleHitTarget).toEqual({
-    cursor: "grab",
-    isDragHitArea: true,
-    isRoutineRow: true,
-  });
-  const firstRoutineTitle = firstRoutineRow.locator(".comma-routines-card-title");
-  const firstRoutineTitleBounds = await firstRoutineTitle.boundingBox();
-  expect(firstRoutineTitleBounds).not.toBeNull();
-  expect(
-    await page.evaluate(
-      ({ x, y }) => {
-        const target = document.elementFromPoint(x, y);
-        return target ? getComputedStyle(target).cursor : null;
-      },
-      {
-        x: firstRoutineTitleBounds!.x + firstRoutineTitleBounds!.width / 2,
-        y: firstRoutineTitleBounds!.y + firstRoutineTitleBounds!.height / 2,
-      }
-    )
-  ).toBe("default");
-  const firstVisibilityTrigger = firstRoutineRow.getByRole("button", {
-    name: /Old mock card visibility$/,
-  });
-  await expect(firstVisibilityTrigger).toHaveCSS("height", "32px");
-  await expect(firstVisibilityTrigger).toHaveCSS(
-    "background-color",
-    "rgba(0, 0, 0, 0)"
-  );
-  await expect(firstVisibilityTrigger).toHaveCSS("width", "108px");
-  const initialVisibilityBounds = await firstVisibilityTrigger.boundingBox();
-  expect(initialVisibilityBounds).not.toBeNull();
-  const actionsMenu = routinesDialog.locator(".comma-routines-panel-actions");
-  await expect(actionsMenu).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await expect(actionsMenu.getByRole("menuitem", { name: "Refresh" })).toHaveCount(0);
-  const settingsActionItem = actionsMenu.getByRole("menuitem", {
-    name: "Routines settings",
-  });
-  const settingsContent = settingsActionItem.locator('[data-slot="menu-item-content"]');
-  await expect(settingsActionItem).toHaveCSS("display", "block");
-  await expect(settingsActionItem).toHaveCSS("font-size", "13px");
-  expect(
-    await settingsActionItem.evaluate(
-      (element) => element.getBoundingClientRect().height
-    )
-  ).toBeCloseTo(32, 0);
-  await expect(settingsContent).toHaveCSS("height", "32px");
-  await expect(settingsContent).toHaveCSS("padding-top", "6px");
-  await expect(settingsContent).toHaveCSS("padding-bottom", "6px");
-  await expect(settingsActionItem.locator('[data-slot="menu-item-icon"]')).toHaveCount(
-    0
-  );
-  expect(
-    await settingsContent.evaluate((element) => {
-      const probe = document.createElement("span");
-      probe.style.color = "var(--color-text-tertiary)";
-      element.append(probe);
-      const matches = getComputedStyle(probe).color === getComputedStyle(element).color;
-      probe.remove();
-      return matches;
     })
-  ).toBe(true);
-  // It opens Settings on the Routines category, not the Settings root.
-  expect(await settingsActionItem.getAttribute("href")).toBe(
-    "/#/settings?category=recommendations"
-  );
-  const settingsLabelBox = await settingsActionItem
-    .locator('[data-slot="menu-item-label"]')
-    .boundingBox();
-  expect(settingsLabelBox).not.toBeNull();
-  const firstRowContentLeft = await firstRoutineRow.evaluate(
-    (row) =>
-      row.getBoundingClientRect().left + parseFloat(getComputedStyle(row).paddingLeft)
-  );
-  expect(Math.abs(settingsLabelBox!.x - firstRowContentLeft)).toBeLessThan(0.5);
-  const dividerInsets = await actionsMenu.evaluate((element) => {
-    const panel = element.closest(".comma-routines-panel")!;
-    const panelRect = panel.getBoundingClientRect();
-    const panelStyle = getComputedStyle(panel);
-    const rect = element.getBoundingClientRect();
-    return {
-      left: rect.left - (panelRect.left + parseFloat(panelStyle.borderLeftWidth)),
-      right: panelRect.right - parseFloat(panelStyle.borderRightWidth) - rect.right,
-    };
-  });
-  expect(Math.abs(dividerInsets.left)).toBeLessThan(0.5);
-  expect(Math.abs(dividerInsets.right)).toBeLessThan(0.5);
-  const triggerLabelToChevronGap = await firstVisibilityTrigger.evaluate((trigger) => {
-    const label = trigger.querySelector('[data-slot="dropdown-row-label"]')!;
-    const indicator = trigger.querySelector('[data-slot="dropdown-row-indicator"]')!;
-    return indicator.getBoundingClientRect().left - label.getBoundingClientRect().right;
-  });
-  expect(triggerLabelToChevronGap).toBeCloseTo(4, 1);
-  const visibility = routinesDialog.getByRole("button", {
-    name: /Old mock card visibility$/,
-  });
-  await visibility.click();
-  const selectedVisibilityOption = page
-    .getByRole("option", { name: "Show" })
-    .locator('[data-slot="dropdown-option-content"]');
-  const triggerVisibilityLabel = firstVisibilityTrigger.locator(
-    '[data-slot="dropdown-trigger-label"]'
-  );
-  const selectedVisibilityLabel = selectedVisibilityOption.locator(
-    '[data-slot="dropdown-option-label"]'
-  );
-  const hiddenOptionLabel = page
-    .getByRole("option", { name: "Hidden" })
-    .locator('[data-slot="dropdown-option-label"]');
-  await waitForSettledMotion(
-    page.getByRole("dialog", { name: "Old mock card visibility", exact: true })
-  );
-  const triggerBoundsWhileOpen = await firstVisibilityTrigger.boundingBox();
-  const selectedOptionBounds = await selectedVisibilityOption.boundingBox();
-  const triggerLabelBounds = await readTextInkBounds(triggerVisibilityLabel);
-  const selectedLabelBounds = await readTextInkBounds(selectedVisibilityLabel);
-  const hiddenOptionLabelBounds = await readTextInkBounds(hiddenOptionLabel);
-  expect(triggerBoundsWhileOpen).not.toBeNull();
-  expect(selectedOptionBounds).not.toBeNull();
-  expect(triggerLabelBounds.width).toBeGreaterThan(0);
-  expect(selectedLabelBounds.width).toBeGreaterThan(0);
-  expect(Math.abs(selectedOptionBounds!.y - triggerBoundsWhileOpen!.y)).toBeLessThan(
-    0.5
-  );
-  expect(
-    Math.abs(selectedOptionBounds!.height - triggerBoundsWhileOpen!.height)
-  ).toBeLessThan(0.1);
-  // The text is the anchor: the checked option's ink opens exactly over the
-  // trigger's ink (the popover slides sideways to meet the end-aligned
-  // trigger label), while the option list itself stays start-aligned.
-  expect(Math.abs(selectedLabelBounds.right - triggerLabelBounds.right)).toBeLessThan(
-    0.5
-  );
-  expect(Math.abs(selectedLabelBounds.left - triggerLabelBounds.left)).toBeLessThan(
-    0.5
-  );
-  expect(Math.abs(selectedLabelBounds.top - triggerLabelBounds.top)).toBeLessThan(0.5);
-  expect(Math.abs(selectedLabelBounds.bottom - triggerLabelBounds.bottom)).toBeLessThan(
-    0.5
-  );
-  // Options of different text widths share a left ink edge.
-  expect(
-    Math.abs(hiddenOptionLabelBounds.left - selectedLabelBounds.left)
-  ).toBeLessThan(0.5);
-  await page.getByRole("option", { name: "Hidden" }).click();
-  await expect(firstCard).toHaveCount(0);
-  const hiddenVisibilityTrigger = routinesDialog.getByRole("button", {
-    name: /Old mock card visibility$/,
-  });
-  const hiddenVisibilityBounds = await hiddenVisibilityTrigger.boundingBox();
-  expect(hiddenVisibilityBounds).not.toBeNull();
-  expect(Math.abs(hiddenVisibilityBounds!.x - initialVisibilityBounds!.x)).toBeLessThan(
-    0.1
-  );
-  expect(
-    Math.abs(hiddenVisibilityBounds!.width - initialVisibilityBounds!.width)
-  ).toBeLessThan(0.1);
-  const hiddenVisibilityLabel = hiddenVisibilityTrigger.locator(
-    '[data-slot="dropdown-trigger-label"]'
-  );
-  await expect(hiddenVisibilityLabel).toHaveText("Hidden");
-  expect(
-    await hiddenVisibilityLabel.evaluate(
-      (element) => element.scrollWidth <= element.clientWidth
-    )
-  ).toBe(true);
-  await hiddenVisibilityTrigger.click();
-  const selectedHiddenOption = page
-    .getByRole("option", { name: "Hidden" })
-    .locator('[data-slot="dropdown-option-content"]');
-  const selectedHiddenLabel = selectedHiddenOption.locator(
-    '[data-slot="dropdown-option-label"]'
-  );
-  await waitForSettledMotion(
-    page.getByRole("dialog", { name: "Old mock card visibility", exact: true })
-  );
-  const hiddenTriggerBoundsWhileOpen = await hiddenVisibilityTrigger.boundingBox();
-  const selectedHiddenOptionBounds = await selectedHiddenOption.boundingBox();
-  const hiddenTriggerLabelBounds = await readTextInkBounds(hiddenVisibilityLabel);
-  const selectedHiddenLabelBounds = await readTextInkBounds(selectedHiddenLabel);
-  expect(
-    Math.abs(hiddenTriggerLabelBounds.right - triggerLabelBounds.right)
-  ).toBeLessThan(0.5);
-  expect(hiddenTriggerBoundsWhileOpen).not.toBeNull();
-  expect(selectedHiddenOptionBounds).not.toBeNull();
-  expect(
-    Math.abs(selectedHiddenOptionBounds!.y - hiddenTriggerBoundsWhileOpen!.y)
-  ).toBeLessThan(0.5);
-  expect(
-    Math.abs(selectedHiddenOptionBounds!.height - hiddenTriggerBoundsWhileOpen!.height)
-  ).toBeLessThan(0.1);
-  expect(
-    Math.abs(selectedHiddenLabelBounds.right - hiddenTriggerLabelBounds.right)
-  ).toBeLessThan(0.5);
-  expect(
-    Math.abs(selectedHiddenLabelBounds.left - hiddenTriggerLabelBounds.left)
-  ).toBeLessThan(0.5);
-  expect(
-    Math.abs(selectedHiddenLabelBounds.top - hiddenTriggerLabelBounds.top)
-  ).toBeLessThan(0.5);
-  expect(
-    Math.abs(selectedHiddenLabelBounds.bottom - hiddenTriggerLabelBounds.bottom)
-  ).toBeLessThan(0.5);
-  await page.getByRole("option", { name: "Show" }).click();
-  await eventually(
-    () => routineCardTitles(page),
-    (titles) =>
-      expect(titles).toEqual([
-        "Old mock card",
-        "Next mock card",
-        ...additionalMockCardTitles,
-      ])
-  );
-
-  const bottomRoutineTitle = additionalMockCardTitles.at(-1)!;
-  const bottomRoutineRow = routinesDialog.getByRole("row", {
-    name: bottomRoutineTitle,
-  });
-  const bottomVisibilityTrigger = bottomRoutineRow.getByRole("button", {
-    name: new RegExp(`${bottomRoutineTitle} visibility$`),
-  });
-  await bottomVisibilityTrigger.click();
-  const routeBeforeBottomVisibilityChange = page.url();
-  const bottomVisibilityDialog = page.getByRole("dialog", {
-    name: `${bottomRoutineTitle} visibility`,
-    exact: true,
-  });
-  // The previous card's menu can still be leaving; read this card's option.
-  const bottomHiddenOption = bottomVisibilityDialog.getByRole("option", {
-    name: "Hidden",
-  });
-  await waitForSettledMotion(bottomVisibilityDialog);
-  const bottomHiddenOptionBounds = await bottomHiddenOption.boundingBox();
-  const settingsActionBounds = await settingsActionItem.boundingBox();
-  expect(bottomHiddenOptionBounds).not.toBeNull();
-  expect(settingsActionBounds).not.toBeNull();
-  const bottomHiddenOptionCenter = {
-    x: bottomHiddenOptionBounds!.x + bottomHiddenOptionBounds!.width / 2,
-    y: bottomHiddenOptionBounds!.y + bottomHiddenOptionBounds!.height / 2,
-  };
-  expect(bottomHiddenOptionCenter.x).toBeGreaterThan(settingsActionBounds!.x);
-  expect(bottomHiddenOptionCenter.x).toBeLessThan(
-    settingsActionBounds!.x + settingsActionBounds!.width
-  );
-  expect(bottomHiddenOptionCenter.y).toBeGreaterThan(settingsActionBounds!.y);
-  expect(bottomHiddenOptionCenter.y).toBeLessThan(
-    settingsActionBounds!.y + settingsActionBounds!.height
-  );
-  await page.mouse.move(bottomHiddenOptionCenter.x, bottomHiddenOptionCenter.y);
-  await page.mouse.down();
-  await page.mouse.up();
-  await expect(page).toHaveURL(routeBeforeBottomVisibilityChange);
-  await expect(routinesDialog).toBeVisible();
-  await expect(page.getByRole("group", { name: bottomRoutineTitle })).toHaveCount(0);
-  await bottomVisibilityTrigger.click();
-  await page.getByRole("option", { name: "Show" }).click();
-  await expect(page.getByRole("group", { name: bottomRoutineTitle })).toBeVisible();
-
-  const oldRoutineRow = routinesDialog.getByRole("row", {
-    exact: true,
-    name: "Old mock card",
-  });
-  const nextRoutineRow = routinesDialog.getByRole("row", {
-    exact: true,
-    name: "Next mock card",
-  });
-  // Keep Greeting above its 681px route floor beside the 68px app rail
-  // and 8px window inset, so closing the menu can restore its trigger.
-  await page.setViewportSize({ height: 800, width: 780 });
-  await expect(page.getByTestId("home-greet-rail")).toHaveAttribute(
-    "data-folded",
-    "false"
-  );
-  await expect(routinesDialog).toBeVisible();
-  await eventually(
-    async () => {
-      const box = await oldRoutineRow.boundingBox();
-      if (!box) return false;
-      const center = box.x + box.width / 2;
-      return center >= 0 && center <= 780;
-    },
-    (value) => expect(value).toBe(true)
-  );
-  await expect(page.locator('[data-slot="dropdown-popover"]')).toBeHidden();
-  await waitForSettledMotion(
-    routinesDialog.locator('xpath=ancestor::*[@data-slot="menu-popover"][1]')
-  );
-  const oldRowBox = await oldRoutineRow.boundingBox();
-  const nextRowBox = await nextRoutineRow.boundingBox();
-  expect(oldRowBox).not.toBeNull();
-  expect(nextRowBox).not.toBeNull();
-  await page.evaluate(() => {
-    const dragWindow = window as typeof window & {
-      commaRoutineDragEvidence?: RoutineDragEvidence;
-    };
-    dragWindow.commaRoutineDragEvidence = { nativeDragImageCalls: 0 };
-    const originalAnimate = Element.prototype.animate;
-    Element.prototype.animate = function animateRoutineLayout(keyframes, options) {
-      if (this instanceof HTMLElement && this.matches(".comma-routines-card-row")) {
-        const frames = Array.isArray(keyframes) ? keyframes : [];
-        const current = dragWindow.commaRoutineDragEvidence;
-        if (current) {
-          current.layoutAnimation = {
-            duration:
-              typeof options === "number"
-                ? options
-                : typeof options?.duration === "number"
-                  ? options.duration
-                  : null,
-            transforms: frames.map((frame) => frame.transform?.toString() ?? null),
-          };
-        }
-      }
-      return originalAnimate.call(this, keyframes, options);
-    };
-    const originalSetDragImage = DataTransfer.prototype.setDragImage;
-    DataTransfer.prototype.setDragImage = function setRoutineDragImage(element, x, y) {
-      dragWindow.commaRoutineDragEvidence!.nativeDragImageCalls += 1;
-      originalSetDragImage.call(this, element, x, y);
-    };
-  });
-  const routineHoverVisualBefore = await oldRoutineRow.evaluate((row) => ({
-    backgroundColor: getComputedStyle(row).backgroundColor,
-    handleColor: getComputedStyle(
-      row.querySelector<HTMLElement>(".comma-routines-card-drag-handle")!
-    ).color,
-  }));
-  await page.mouse.move(
-    oldRowBox!.x + oldRowBox!.width / 2,
-    oldRowBox!.y + oldRowBox!.height / 2
-  );
-  await expect(oldRoutineRow).toHaveAttribute("data-hovered", "true");
-  await oldRoutineRow.evaluate(async (row) => {
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
-    const handle = row.querySelector<HTMLElement>(".comma-routines-card-drag-handle");
-    await Promise.all(
-      [...row.getAnimations(), ...(handle?.getAnimations() ?? [])].map(
-        (animation) => animation.finished
-      )
-    );
-  });
-  const routineHoverVisualAfter = await oldRoutineRow.evaluate((row) => ({
-    backgroundColor: getComputedStyle(row).backgroundColor,
-    handleColor: getComputedStyle(
-      row.querySelector<HTMLElement>(".comma-routines-card-drag-handle")!
-    ).color,
-  }));
-  expect(routineHoverVisualAfter).toEqual(routineHoverVisualBefore);
-  expect(routineHoverVisualAfter.backgroundColor).toBe("rgba(0, 0, 0, 0)");
-  const oldDragHitAreaBox = await oldRoutineRow
-    .locator(".comma-routines-card-drag-hit-area")
-    .boundingBox();
-  expect(oldDragHitAreaBox).not.toBeNull();
-  expect(
-    await oldRoutineRow.evaluate((row) => row instanceof HTMLElement && row.draggable)
-  ).toBe(false);
-  await oldRoutineRow.evaluate((row) => {
-    row.dataset.directSortSource = "true";
-  });
-  await page.mouse.move(
-    oldDragHitAreaBox!.x + oldDragHitAreaBox!.width / 2,
-    oldDragHitAreaBox!.y + oldDragHitAreaBox!.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    oldDragHitAreaBox!.x + oldDragHitAreaBox!.width / 2,
-    oldDragHitAreaBox!.y + oldDragHitAreaBox!.height / 2 + 2
-  );
-  await expect(page.locator("html")).not.toHaveAttribute("data-comma-routine-dragging");
-  await expect(oldRoutineRow).not.toHaveAttribute("data-pointer-dragging");
-  await page.mouse.move(
-    oldDragHitAreaBox!.x + oldDragHitAreaBox!.width / 2,
-    oldDragHitAreaBox!.y + oldDragHitAreaBox!.height / 2 + 8,
-    { steps: 4 }
-  );
-  await expect(page.locator("html")).toHaveAttribute(
-    "data-comma-routine-dragging",
-    "true"
-  );
-  await expect(oldRoutineRow).toHaveAttribute("data-pointer-dragging", "true");
-  await expect(oldRoutineRow).not.toHaveAttribute("data-dragging");
-  await expect(oldRoutineRow).toHaveCSS("cursor", "grabbing");
-  // The picked-up row lifts: opaque popup surface, elevation shadow, and the
-  // drag-lift scale, so it reads as a card sliding above the list.
-  await eventually(
-    () =>
-      oldRoutineRow.evaluate((row) => {
-        const probe = document.createElement("div");
-        probe.style.backgroundColor = "var(--color-bg-popup-secondary)";
-        row.append(probe);
-        const matches =
-          getComputedStyle(probe).backgroundColor ===
-          getComputedStyle(row).backgroundColor;
-        probe.remove();
-        return matches;
-      }),
-    (value) => expect(value).toBe(true)
-  );
-  // Elevation rides on the pseudo-element's opacity; the row's own
-  // box-shadow channel stays reserved for the instant focus ring, and the
-  // row is never scaled (the scroll viewport would clip it).
-  await eventually(
-    () =>
-      oldRoutineRow.evaluate((row) => {
-        const pseudo = getComputedStyle(row, "::after");
-        return {
-          boxShadowIsNone: pseudo.boxShadow === "none",
-          opacity: pseudo.opacity,
-        };
-      }),
-    (value) => expect(value).toEqual({ boxShadowIsNone: false, opacity: "1" })
-  );
-  await expect(oldRoutineRow).toHaveCSS("scale", "none");
-  await expect(oldRoutineRow).not.toHaveCSS("transform", "none");
-  await expect(oldRoutineRow.locator(".comma-routines-card-title")).toHaveCSS(
-    "opacity",
-    "1"
-  );
-  await expect(
-    routinesDialog.locator('[data-slot="routine-drag-preview"]')
-  ).toHaveCount(0);
-  await expect(
-    routinesDialog.locator(".react-aria-DropIndicator[data-drop-target]")
-  ).toHaveCount(0);
-  await page.mouse.move(
-    nextRowBox!.x + nextRowBox!.width / 2,
-    nextRowBox!.y + nextRowBox!.height - 2,
-    { steps: 8 }
-  );
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      })
-  );
-  await nextRoutineRow.evaluate((row) =>
-    Promise.all(
-      row.getAnimations().map((animation) => animation.finished.catch(() => undefined))
-    )
-  );
-  await expect(routinesDialog.locator(".comma-routines-card-title")).toHaveText([
-    "Old mock card",
-    "Next mock card",
-    ...additionalMockCardTitles,
-  ]);
-  await expect(nextRoutineRow).toHaveAttribute("data-routine-drag-shift", "up");
-  const sourceVisualBeforeDrop = await oldRoutineRow.boundingBox();
-  const nextVisualBeforeDrop = await nextRoutineRow.boundingBox();
-  expect(sourceVisualBeforeDrop).not.toBeNull();
-  expect(nextVisualBeforeDrop).not.toBeNull();
-  expect(sourceVisualBeforeDrop!.y).toBeGreaterThan(nextRowBox!.y);
-  expect(Math.abs(nextVisualBeforeDrop!.y - oldRowBox!.y)).toBeLessThan(1);
-  expect(await oldRoutineRow.getAttribute("data-direct-sort-source")).toBe("true");
-  const dragEvidenceBeforeDrop = await page.evaluate(
-    () =>
-      (
-        window as typeof window & {
-          commaRoutineDragEvidence?: RoutineDragEvidence;
-        }
-      ).commaRoutineDragEvidence
-  );
-  expect(dragEvidenceBeforeDrop?.nativeDragImageCalls).toBe(0);
-  await page.evaluate(() => {
-    const dragWindow = window as typeof window & {
-      commaRoutineDragRecordingComplete?: boolean;
-      commaRoutineDragFrames?: RoutineDragFrame[];
-    };
-    dragWindow.commaRoutineDragRecordingComplete = false;
-    dragWindow.commaRoutineDragFrames = [];
-    const stopAt = performance.now() + 500;
-
-    const recordFrame = () => {
-      const rows = Array.from(
-        document.querySelectorAll<HTMLElement>(".comma-routines-card-row")
-      );
-      const rowFrames = rows.map((row) => ({
-        title:
-          row.querySelector(".comma-routines-card-title")?.textContent?.trim() ?? "",
-        top: row.getBoundingClientRect().top,
-      }));
-      dragWindow.commaRoutineDragFrames?.push({
-        hasTransformAnimation: rows.some((row) =>
-          row.getAnimations().some((animation) => {
-            const effect = animation.effect;
-            return (
-              animation.playState === "running" &&
-              effect instanceof KeyframeEffect &&
-              effect
-                .getKeyframes()
-                .some(
-                  (frame) =>
-                    typeof frame.transform === "string" && frame.transform !== "none"
-                )
-            );
-          })
-        ),
-        order: rowFrames.map(({ title }) => title),
-        tops: Object.fromEntries(rowFrames.map(({ title, top }) => [title, top])),
-      });
-      if (performance.now() < stopAt) requestAnimationFrame(recordFrame);
-      else dragWindow.commaRoutineDragRecordingComplete = true;
-    };
-    requestAnimationFrame(recordFrame);
-  });
-  await page.mouse.up();
-  await expect(page.locator("html")).not.toHaveAttribute("data-comma-routine-dragging");
-  await expect(oldRoutineRow).not.toHaveAttribute("data-pointer-dragging");
-  await expect(nextRoutineRow).not.toHaveAttribute("data-routine-drag-shift");
-  await expect(oldRoutineRow.locator(".comma-routines-card-title")).toHaveCSS(
-    "opacity",
-    "1"
-  );
-  await eventually(
-    () => routineCardTitles(page),
-    (titles) =>
-      expect(titles).toEqual([
-        "Next mock card",
-        "Old mock card",
-        ...additionalMockCardTitles,
-      ])
-  );
-  await eventually(
-    () =>
-      page.evaluate(
-        () =>
-          (
-            window as typeof window & {
-              commaRoutineDragRecordingComplete?: boolean;
-            }
-          ).commaRoutineDragRecordingComplete ?? false
-      ),
-    (value) => expect(value).toBe(true)
-  );
-  const dragEvidence = await page.evaluate(
-    () =>
-      (
-        window as typeof window & {
-          commaRoutineDragEvidence?: RoutineDragEvidence;
-        }
-      ).commaRoutineDragEvidence
-  );
-  const dragFrames = await page.evaluate(
-    () =>
-      (
-        window as typeof window & {
-          commaRoutineDragFrames?: RoutineDragFrame[];
-        }
-      ).commaRoutineDragFrames ?? []
-  );
-  expect(dragEvidence).toMatchObject({
-    layoutAnimation: {
-      // motionDuration.spatialMove: the drop travels back into its slot on
-      // the same beat as the lift fade. Offsets may be fractional from
-      // sub-pixel row positions at the drop instant.
-      duration: 200,
-      transforms: [
-        expect.stringMatching(/^translateY\(-?\d+(?:\.\d+)?px\)$/),
-        "translateY(0)",
-      ],
-    },
-    nativeDragImageCalls: 0,
-  });
-  const firstReorderedFrame = dragFrames.find(
-    (frame) => frame.order[0] === "Next mock card"
-  );
-  expect(firstReorderedFrame).toBeDefined();
-  expect(firstReorderedFrame!.hasTransformAnimation).toBe(true);
-  const firstOldCardTop = firstReorderedFrame!.tops["Old mock card"];
-  const firstNextCardTop = firstReorderedFrame!.tops["Next mock card"];
-  expect(firstOldCardTop).toBeDefined();
-  expect(firstNextCardTop).toBeDefined();
-  expect(Math.abs(firstOldCardTop! - sourceVisualBeforeDrop!.y)).toBeLessThan(8);
-  expect(Math.abs(firstNextCardTop! - nextVisualBeforeDrop!.y)).toBeLessThan(8);
-  const settledFrame = dragFrames.at(-1);
-  expect(settledFrame?.order[0]).toBe("Next mock card");
-  expect(settledFrame?.hasTransformAnimation).toBe(false);
-  const settledOldCardTop = settledFrame!.tops["Old mock card"];
-  const settledNextCardTop = settledFrame!.tops["Next mock card"];
-  expect(settledOldCardTop).toBeDefined();
-  expect(settledNextCardTop).toBeDefined();
-  expect(Math.abs(settledNextCardTop! - oldRowBox!.y)).toBeLessThan(1);
-  expect(Math.abs(settledOldCardTop! - nextRowBox!.y)).toBeLessThan(1);
-
-  const reorderedOldHitArea = oldRoutineRow.locator(
-    ".comma-routines-card-drag-hit-area"
-  );
-  const reorderedOldHitAreaBox = await reorderedOldHitArea.boundingBox();
-  expect(reorderedOldHitAreaBox).not.toBeNull();
-  await page.mouse.move(
-    reorderedOldHitAreaBox!.x + reorderedOldHitAreaBox!.width / 2,
-    reorderedOldHitAreaBox!.y + reorderedOldHitAreaBox!.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    reorderedOldHitAreaBox!.x + reorderedOldHitAreaBox!.width / 2,
-    reorderedOldHitAreaBox!.y + reorderedOldHitAreaBox!.height / 2 - 40,
-    { steps: 6 }
-  );
-  await expect(oldRoutineRow).toHaveAttribute("data-pointer-dragging", "true");
-  await expect(nextRoutineRow).toHaveAttribute("data-routine-drag-shift", "down");
-  await page.keyboard.press("Escape");
-  await page.mouse.up();
-  await expect(routinesDialog).toBeVisible();
-  await expect(page.locator("html")).not.toHaveAttribute("data-comma-routine-dragging");
-  await expect(oldRoutineRow).not.toHaveAttribute("data-pointer-dragging");
-  await expect(nextRoutineRow).not.toHaveAttribute("data-routine-drag-shift");
-  await testClock().advance(350);
-  await expect(oldRoutineRow).toHaveCSS("transform", "none");
-  await expect(nextRoutineRow).toHaveCSS("transform", "none");
-  await expect(routinesDialog.locator(".comma-routines-card-title")).toHaveText([
-    "Next mock card",
-    "Old mock card",
-    ...additionalMockCardTitles,
-  ]);
-
-  // Dragging far past the list's end must pin the row to the last slot: an
-  // unclamped translation extends the scroll viewport's scrollable overflow
-  // and the edge auto-scroll chases it into an ever-growing blank region.
-  const routineScrollViewport = routinesDialog.locator(
-    ".comma-routines-card-scroll .comma-scroll-area__viewport"
-  );
-  const panelBoxBeforeOverdrag = await routinesDialog.boundingBox();
-  const lastRoutineRow = routinesDialog.getByRole("row", {
-    name: additionalMockCardTitles.at(-1)!,
-  });
-  const lastRowBoxBeforeOverdrag = await lastRoutineRow.boundingBox();
-  const overdragHitAreaBox = await nextRoutineRow
-    .locator(".comma-routines-card-drag-hit-area")
-    .boundingBox();
-  expect(panelBoxBeforeOverdrag).not.toBeNull();
-  expect(lastRowBoxBeforeOverdrag).not.toBeNull();
-  expect(overdragHitAreaBox).not.toBeNull();
-  await page.mouse.move(
-    overdragHitAreaBox!.x + overdragHitAreaBox!.width / 2,
-    overdragHitAreaBox!.y + overdragHitAreaBox!.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    overdragHitAreaBox!.x + overdragHitAreaBox!.width / 2,
-    lastRowBoxBeforeOverdrag!.y + lastRowBoxBeforeOverdrag!.height + 320,
-    { steps: 10 }
-  );
-  await expect(nextRoutineRow).toHaveAttribute("data-pointer-dragging", "true");
-  // Overshoot past the last slot is rubber-banded: at most the damped cap
-  // (routineDragOverdragCap = spacing.md), never a runaway translation.
-  const overdragCap = 8;
-  const overdraggedRowBox = await nextRoutineRow.boundingBox();
-  expect(overdraggedRowBox).not.toBeNull();
-  expect(overdraggedRowBox!.y).toBeLessThanOrEqual(
-    lastRowBoxBeforeOverdrag!.y + overdragCap + 1
-  );
-  // Damped cap plus fractional row offsets and integer rounding of
-  // scrollHeight — bounded, versus a runaway translation.
-  expect(
-    await routineScrollViewport.evaluate(
-      (viewport) => viewport.scrollHeight - viewport.clientHeight
-    )
-  ).toBeLessThan(overdragCap + 5);
-  const panelBoxDuringOverdrag = await routinesDialog.boundingBox();
-  expect(panelBoxDuringOverdrag).not.toBeNull();
-  expect(
-    Math.abs(panelBoxDuringOverdrag!.height - panelBoxBeforeOverdrag!.height)
-  ).toBeLessThan(1);
-  await page.keyboard.press("Escape");
-  await page.mouse.up();
-  await expect(routinesDialog).toBeVisible();
-  await expect(nextRoutineRow).not.toHaveAttribute("data-pointer-dragging");
-  await testClock().advance(350);
-  await expect(routinesDialog.locator(".comma-routines-card-title")).toHaveText([
-    "Next mock card",
-    "Old mock card",
-    ...additionalMockCardTitles,
-  ]);
-
-  const keyboardReorder = oldRoutineRow.getByRole("button", {
-    name: "Reorder Old mock card",
-  });
-  await keyboardReorder.focus();
-  await page.keyboard.press("Enter");
-  await expect(oldRoutineRow).toHaveAttribute("data-dragging", "true");
-  await expect(page.locator("html")).toHaveAttribute(
-    "data-comma-routine-dragging",
-    "true"
-  );
-  await page.evaluate(
-    () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-  );
-  await page.keyboard.press("Escape");
-  await expect(oldRoutineRow).not.toHaveAttribute("data-dragging");
-  await expect(page.locator("html")).not.toHaveAttribute("data-comma-routine-dragging");
-  await expect(routinesDialog).toBeVisible();
-
-  await page.keyboard.press("Escape");
-  await expect(routinesDialog).toBeHidden();
-  await expect(routinesTrigger).toBeFocused();
-  await page.setViewportSize({ height: 180, width: 1280 });
-  await routinesTrigger.click();
-  const settingsAction = page.getByRole("menuitem", {
-    name: "Routines settings",
-  });
-  await waitForSettledMotion(
-    routinesDialog.locator('xpath=ancestor::*[@data-slot="menu-popover"][1]')
-  );
-  const constrainedPanel = await routinesDialog.evaluate((panel) => {
-    const scrollViewport = panel.querySelector<HTMLElement>(
-      ".comma-routines-card-scroll .comma-scroll-area__viewport"
-    );
-    const settingsItem = panel.querySelector<HTMLElement>(
-      '[role="menuitem"][data-key="settings"]'
-    );
-    if (!scrollViewport || !settingsItem) return null;
-    const panelRect = panel.getBoundingClientRect();
-    const settingsRect = settingsItem.getBoundingClientRect();
-    return {
-      panelBottom: panelRect.bottom,
-      panelTop: panelRect.top,
-      scrollClientHeight: scrollViewport.clientHeight,
-      scrollHeight: scrollViewport.scrollHeight,
-      settingsBottom: settingsRect.bottom,
-      viewportHeight: window.innerHeight,
-    };
-  });
-  expect(constrainedPanel).not.toBeNull();
-  expect(constrainedPanel!.panelTop).toBeGreaterThanOrEqual(0);
-  expect(constrainedPanel!.panelBottom).toBeLessThanOrEqual(
-    constrainedPanel!.viewportHeight
-  );
-  expect(constrainedPanel!.settingsBottom).toBeLessThanOrEqual(
-    constrainedPanel!.viewportHeight
-  );
-  expect(constrainedPanel!.scrollHeight).toBeGreaterThan(
-    constrainedPanel!.scrollClientHeight
-  );
-  await expect(settingsAction).toBeVisible();
-  const constrainedScrollViewport = routinesDialog.locator(
-    ".comma-routines-card-scroll .comma-scroll-area__viewport"
-  );
-  await constrainedScrollViewport.evaluate((viewport) => {
-    viewport.scrollTop = 0;
-  });
-  const constrainedFirstRow = routinesDialog.getByRole("row", {
-    exact: true,
-    name: "Next mock card",
-  });
-  const constrainedDragHandle = constrainedFirstRow.locator(
-    ".comma-routines-card-drag-hit-area"
-  );
-  const constrainedDragHandleBox = await constrainedDragHandle.boundingBox();
-  const constrainedViewportBox = await constrainedScrollViewport.boundingBox();
-  expect(constrainedDragHandleBox).not.toBeNull();
-  expect(constrainedViewportBox).not.toBeNull();
-  await page.mouse.move(
-    constrainedDragHandleBox!.x + constrainedDragHandleBox!.width / 2,
-    constrainedDragHandleBox!.y + constrainedDragHandleBox!.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    constrainedDragHandleBox!.x + constrainedDragHandleBox!.width / 2,
-    constrainedViewportBox!.y + constrainedViewportBox!.height - 1,
-    { steps: 6 }
-  );
-  await eventually(
-    () => constrainedScrollViewport.evaluate((viewport) => viewport.scrollTop),
-    (value) => expect(value).toBeGreaterThan(0)
-  );
-  await expect(constrainedFirstRow).toHaveAttribute("data-pointer-dragging", "true");
-  await page.keyboard.press("Escape");
-  await page.mouse.up();
-  await expect(routinesDialog).toBeVisible();
-  await expect(constrainedFirstRow).not.toHaveAttribute("data-pointer-dragging");
-  await page.keyboard.press("Escape");
-  await expect(routinesDialog).toBeHidden();
+  ).toEqual(toggleSidebarHoverVisual);
+  await page.locator(".comma-home-chat").hover();
   await refreshControl.click();
 
-  await expect(page.getByText("No routines created yet")).toBeVisible();
+  await expect(page.getByText("Connect apps to get your daily briefing")).toBeVisible();
   await expect(page.getByRole("group", { name: "Old mock card" })).toHaveCount(0);
 
   // Empty Routines puts its heading first in the rail, where it must share a
   // centre line with the Tasks rail heading even though only Routines carries
-  // icon controls.
+  // an icon control.
   const headingCentreY = (selector: string) =>
     page.evaluate((target) => {
       const rect = document.querySelector(target)?.getBoundingClientRect();
@@ -1197,7 +295,6 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
   expect(Math.abs(routinesHeadingCentre! - tasksHeadingCentre!)).toBeLessThan(0.5);
 
   await expect(refreshControl).toBeDisabled();
-  await routinesTrigger.focus();
   await page.locator(".comma-home-chat").hover();
   await settleIconControlVisual(refreshControl);
   const disabledRefreshVisual = await readIconControlVisual(refreshControl);
@@ -1248,7 +345,6 @@ test("failed generation and unreadable refresh retain the briefing until an auth
   await app.stub().call("setRecommendations", { name: "fallback" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await app.open(page);
-  await expect(page.getByText("Old mock briefing.")).toBeVisible();
   await expect(page.getByText("Old mock card", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   // The failed refresh keeps the previous briefing without a notice.
@@ -1263,11 +359,9 @@ test("failed generation and unreadable refresh retain the briefing until an auth
     async () => (await calls()).readFailures,
     (value) => expect(value).toBeGreaterThan(0)
   );
-  await expect(page.getByText("Old mock briefing.")).toBeVisible();
   await expect(page.getByText("Old mock card", { exact: true })).toBeVisible();
   await expect(page.getByText("Routines are unavailable")).toHaveCount(0);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(page.getByText("Old mock briefing.")).toHaveCount(0);
   await expect(page.getByText("Old mock card", { exact: true })).toHaveCount(0);
 });
 
@@ -1371,23 +465,12 @@ test("opening the Chat Sidebar from an inline link keeps the content frame ancho
       ],
     },
     snapshot: {
-      cards: [],
+      cards: [launchApprovalCard],
       generatedAt: 1,
       generation: 1,
       protocolVersion: 1,
       sourceRevision: 1,
-      summary: [
-        { kind: "markdown", text: "Good morning.\n\nGmail flagged " },
-        {
-          kind: "inline-link",
-          link: {
-            href: "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
-            label: "Launch approval",
-            sourceId: "local-gmail",
-          },
-        },
-        { kind: "markdown", text: "." },
-      ],
+      summary: [{ kind: "markdown", text: "Good morning.\n\nGmail flagged a mail." }],
       templateCatalogVersion: 1,
       warnings: [],
     },
@@ -1444,7 +527,7 @@ test("opening the Chat Sidebar from an inline link keeps the content frame ancho
     .locator(".comma-recommendation-inline-source", { hasText: "Launch approval" })
     .click();
   await expect(chatSidebar).toHaveAttribute("data-open", "true");
-  await expect(page.getByRole("tab", { name: /mail\.google\.com/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Gmail/ })).toBeVisible();
   expect(await readContentFrame()).toEqual({
     maxScrollLeft: 0,
     outletLefts: [outletLeft],
@@ -1508,23 +591,12 @@ test("dragging the Chat Sidebar squeezes the Home chat, then reflows Tasks and G
       ],
     },
     snapshot: {
-      cards: [],
+      cards: [launchApprovalCard],
       generatedAt: 1,
       generation: 1,
       protocolVersion: 1,
       sourceRevision: 1,
-      summary: [
-        { kind: "markdown", text: "Good morning.\n\nGmail flagged " },
-        {
-          kind: "inline-link",
-          link: {
-            href: "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
-            label: "Launch approval",
-            sourceId: "local-gmail",
-          },
-        },
-        { kind: "markdown", text: "." },
-      ],
+      summary: [{ kind: "markdown", text: "Good morning.\n\nGmail flagged a mail." }],
       templateCatalogVersion: 1,
       warnings: [],
     },

@@ -88,6 +88,59 @@ defmodule SalixAgent.PlatformBalanceTest do
     refute_received {:balance, _, _}
   end
 
+  test "ignores an exhausted secondary currency when a multi-currency account is funded in another" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      infos =
+        case Plug.Conn.get_req_header(conn, "authorization") do
+          ["Bearer sk-deepseek-low-0123456789"] ->
+            [
+              %{"currency" => "CNY", "total_balance" => "1775.65"},
+              %{"currency" => "USD", "total_balance" => "-0.01"}
+            ]
+
+          ["Bearer sk-deepseek-high-0123456789"] ->
+            [
+              %{"currency" => "CNY", "total_balance" => "0.00"},
+              %{"currency" => "USD", "total_balance" => "500.00"}
+            ]
+        end
+
+      Req.Test.json(conn, %{"is_available" => true, "balance_infos" => infos})
+    end)
+
+    assert %{{"deepseek", "cny"} => 1775.65, {"deepseek", "usd"} => 500.0} ==
+             PlatformBalance.emit()
+
+    assert_received {:balance, %{provider: "deepseek", kind: "cny"}, 1775.65}
+    assert_received {:balance, %{provider: "deepseek", kind: "usd"}, 500.0}
+    refute_received {:balance, _, _}
+  end
+
+  test "still publishes a below-threshold gauge when a multi-currency account is exhausted in every currency" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      infos =
+        case Plug.Conn.get_req_header(conn, "authorization") do
+          ["Bearer sk-deepseek-low-0123456789"] ->
+            [
+              %{"currency" => "USD", "total_balance" => "-0.01"},
+              %{"currency" => "CNY", "total_balance" => "0.00"}
+            ]
+
+          ["Bearer sk-deepseek-high-0123456789"] ->
+            [
+              %{"currency" => "CNY", "total_balance" => "369.06"},
+              %{"currency" => "USD", "total_balance" => "-0.01"}
+            ]
+        end
+
+      Req.Test.json(conn, %{"is_available" => false, "balance_infos" => infos})
+    end)
+
+    assert %{{"deepseek", "cny"} => 0.0} == PlatformBalance.emit()
+    assert_received {:balance, %{provider: "deepseek", kind: "cny"}, 0.0}
+    refute_received {:balance, _, _}
+  end
+
   test "a failed read publishes nothing, so the gauge keeps its last value" do
     Req.Test.stub(__MODULE__, fn conn ->
       conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => %{"message" => "bad key"}})

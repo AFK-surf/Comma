@@ -55,7 +55,7 @@ describe("Task status glyph", () => {
   it("pauses, and says why, while the Task's Loop is paused", () => {
     const { container } = render(
       <TaskSummaryCard
-        task={task("in_progress", {
+        task={task("loops", {
           loopStop: { text: "Paused · usage limit reached", failed: false },
         })}
       />
@@ -69,7 +69,7 @@ describe("Task status glyph", () => {
   it("shows the error glyph once the Task's Loop stopped on an error", () => {
     const { container } = render(
       <TaskSummaryCard
-        task={task("in_progress", {
+        task={task("loops", {
           loopStop: { text: "Stopped · couldn’t reach this task", failed: true },
         })}
       />
@@ -79,11 +79,106 @@ describe("Task status glyph", () => {
     expect(screen.getByText("Stopped · couldn’t reach this task")).toBeInTheDocument();
   });
 
+  it("shows a static scheduled glyph, cadence, and next run while an active scheduled Loop waits", () => {
+    const { container } = render(
+      <TaskSummaryCard
+        task={task("loops", {
+          loopStanding: {
+            kind: "scheduled",
+            text: "Every day at 9:00 AM",
+            title: "Every day at 9:00 AM · China Standard Time",
+            nextRunText: "Next run Nov 22, 9:00 AM",
+          },
+        })}
+      />
+    );
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-loop-standing")).toBeTruthy();
+    expect(container.querySelector(".comma-shiny-text")).toBeNull();
+    expect(screen.getByText("Every day at 9:00 AM")).toHaveAttribute(
+      "title",
+      "Every day at 9:00 AM · China Standard Time"
+    );
+    expect(container.querySelector('[data-slot="task-card-footer"]')).toHaveTextContent(
+      "Next run Nov 22, 9:00 AM"
+    );
+  });
+
+  it("shows a static glyph without shimmer for event-triggered and pending Loops", () => {
+    const { container, rerender } = render(
+      <TaskSummaryCard
+        task={task("loops", {
+          loopStanding: {
+            kind: "event_triggered",
+            text: "Pull request updated",
+          },
+        })}
+      />
+    );
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-loop-standing")).toBeTruthy();
+    expect(container.querySelector(".comma-shiny-text")).toBeNull();
+    expect(screen.getByText("Pull request updated")).toBeInTheDocument();
+
+    rerender(
+      <TaskSummaryCard
+        task={task("loops", {
+          loopStanding: {
+            kind: "pending",
+            text: "Setting up",
+          },
+        })}
+      />
+    );
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-loop-standing")).toBeTruthy();
+    expect(container.querySelector(".comma-shiny-text")).toBeNull();
+    expect(screen.getByText("Setting up")).toBeInTheDocument();
+  });
+
+  it("spins and shimmers when a live Worker step arrives for an active Loop, then returns to standing", () => {
+    const steps = source({});
+    const loopTask = task("loops", {
+      id: "task-loop-live",
+      loopStanding: {
+        kind: "scheduled",
+        text: "Every day at 9:00 AM",
+        nextRunText: "Next run Nov 22, 9:00 AM",
+      },
+    });
+    const { container } = render(
+      <TaskProgressContext.Provider value={steps.value}>
+        <TaskSummaryCard task={loopTask} />
+      </TaskProgressContext.Provider>
+    );
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-loop-standing")).toBeTruthy();
+    expect(container.querySelector(".comma-shiny-text")).toBeNull();
+
+    act(() => steps.publish({ "task-loop-live": "Fetching latest arXiv papers" }));
+    expect(spinning(container)).toBeTruthy();
+    expect(container.querySelector("svg.comma-task-status-loop-standing")).toBeNull();
+    expect(container.querySelector(".comma-shiny-text")).toHaveTextContent(
+      "Fetching latest arXiv papers"
+    );
+    expect(container.querySelector('[data-slot="task-card-footer"]')).toHaveTextContent(
+      "Next run Nov 22, 9:00 AM"
+    );
+
+    act(() => steps.publish({}));
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-loop-standing")).toBeTruthy();
+    expect(container.querySelector(".comma-shiny-text")).toBeNull();
+  });
+
   it("holds still where it only names the status", () => {
     const { container } = render(
-      <>{taskStatusIcon("in_progress", { spins: false })}</>
+      <>
+        {taskStatusIcon("in_progress", { spins: false })}
+        {taskStatusIcon("loops")}
+      </>
     );
-    expect(container.querySelector("svg")).toBeTruthy();
+    expect(container.querySelectorAll("svg")).toHaveLength(2);
     expect(spinning(container)).toBeNull();
   });
 });

@@ -56,12 +56,21 @@ defmodule SalixAgent.LiveLlmTestSupport do
       base_url: System.get_env("LLM_BASE_URL") || @base_url,
       api_key_env: key_env,
       model: System.get_env("LLM_MODEL") || @model,
-      max_tokens: 2_000,
+      max_tokens: parse_positive_int(System.get_env("LLM_MAX_TOKENS"), 2_000),
       default_headers: %{"x-opencode-session" => opencode_session_id()}
     }
 
     preflight!(config)
     config
+  end
+
+  defp parse_positive_int(nil, default), do: default
+
+  defp parse_positive_int(raw, default) when is_binary(raw) do
+    case Integer.parse(String.trim(raw)) do
+      {n, ""} when n > 0 -> n
+      _ -> default
+    end
   end
 
   # OpenCode Go rejects requests without a stable `x-opencode-session` id

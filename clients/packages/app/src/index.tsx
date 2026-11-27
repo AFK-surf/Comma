@@ -25,6 +25,7 @@ import { ConversationRoute } from "./components/chat/conversation/ConversationRo
 import { DriveRoute } from "./components/drive/DriveRoute";
 import { InboxNoSelection, InboxWorkspace } from "./components/inbox/InboxRoute";
 import { InboxRequestPane } from "./components/inbox/TaskRequestInbox";
+import { InboxInvitationPane } from "./components/people/Invitations";
 import { PluginsRoute } from "./components/plugins/PluginsRoute";
 import {
   commaDefaultPrimaryContentMinWidth,
@@ -33,10 +34,17 @@ import {
   commaInboxConversationRailWidth,
 } from "./components/shellGeometry";
 import { TasksRoute } from "./components/tasks/TasksRoute";
+import { PeopleRoute } from "./components/people/PeopleRoute";
 import { validateTasksSearch } from "./components/tasks/tasksSearch";
 import { AppsRoute } from "./components/apps/AppsRoute";
 import { AppLinkRoute } from "./components/apps/AppLinkRoute";
 import { AppWindowRoute } from "./components/apps/AppWindowRoute";
+import { CollaborationMiniAppRoute } from "./components/apps/CollaborationMiniAppRoute";
+import { DocumentWindowRoute } from "./components/chat-sidebar/DocumentWindowRoute";
+import {
+  documentWindowSearch,
+  documentWindowTarget,
+} from "./components/chat-sidebar/documentWindow";
 import { adoptMiniAppLinkLocation } from "./miniAppLink";
 
 export { CommaAnalyticsLifecycle } from "./analytics/CommaAnalyticsLifecycle";
@@ -148,10 +156,13 @@ const indexRoute = createRoute({
     search: Record<string, unknown>
   ): {
     draft?: string | undefined;
+    entry?: "raycast" | undefined;
     workspace?: string | undefined;
   } => ({
     // Text another page hands to Home's composer, such as "Try in Chat".
     draft: typeof search.draft === "string" ? search.draft : undefined,
+    // Where that text was written when not in this app: a Raycast link (`comma://home/compose`).
+    entry: search.entry === "raycast" ? "raycast" : undefined,
     workspace: typeof search.workspace === "string" ? search.workspace : undefined,
   }),
   staticData: {
@@ -194,9 +205,20 @@ const inboxRequestRoute = createRoute({
   },
 });
 
+const inboxInvitationRoute = createRoute({
+  getParentRoute: () => inboxRoute,
+  path: "invitation/$invitationId",
+  component: InboxInvitationPane,
+  staticData: {
+    commaPrimaryContentMinWidth:
+      commaInboxConversationRailWidth + commaDefaultPrimaryContentMinWidth,
+  },
+});
+
 const inboxRouteTree = inboxRoute.addChildren({
   inboxIndexRoute,
   inboxRequestRoute,
+  inboxInvitationRoute,
   conversationRoute,
 });
 
@@ -232,20 +254,50 @@ const tasksRoute = createRoute({
   validateSearch: validateTasksSearch,
 });
 
-// A Task opened from a search: `q` what was searched, `message` the matching Message shown.
+// A Task opened from search (`q` + `message`) or from Task Feed (`message` alone).
 const taskDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "tasks/$workspaceId/$groupId/$conversationId",
   component: ConversationRoute,
   validateSearch: (
     search: Record<string, unknown>
-  ): { message?: string; q?: string } =>
-    typeof search["message"] === "string" &&
-    search["message"] &&
-    typeof search["q"] === "string" &&
-    search["q"]
-      ? { message: search["message"], q: search["q"] }
-      : {},
+  ): { message?: string; q?: string } => {
+    const message =
+      typeof search["message"] === "string" && search["message"]
+        ? search["message"]
+        : undefined;
+    const q = typeof search["q"] === "string" && search["q"] ? search["q"] : undefined;
+    return {
+      ...(message ? { message } : {}),
+      ...(message && q ? { q } : {}),
+    };
+  },
+});
+
+const peopleRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "people",
+  component: PeopleRoute,
+  // `with`: the user ids of a new Task together to start, as a done Task's "same people" hands them over;
+  // `together`: a new Task together with no one chosen yet, as the New task window opens it;
+  // `person`: one person's page, as Inbox opens someone who joined.
+  validateSearch: (
+    search: Record<string, unknown>
+  ): {
+    with?: string | undefined;
+    together?: "1" | undefined;
+    person?: string | undefined;
+  } => ({
+    ...(typeof search["person"] === "string" && search["person"]
+      ? { person: search["person"] }
+      : {}),
+    ...(typeof search["with"] === "string" && search["with"]
+      ? { with: search["with"] }
+      : {}),
+    ...(search["together"] === "1" || search["together"] === 1
+      ? { together: "1" as const }
+      : {}),
+  }),
 });
 
 const pluginsRoute = createRoute({
@@ -320,6 +372,24 @@ const appWindowRoute = createRoute({
   },
 });
 
+// A document in its own window ("Open in window"): inside the signed-in session, outside the product shell, as an
+// app's window is.
+const documentWindowRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "documents/window",
+  // Its own keys alone, as text: the document the window shows (`documentWindowTarget`).
+  validateSearch: documentWindowSearch,
+  component: function DocumentWindowRouteView() {
+    const target = documentWindowTarget(documentWindowRoute.useSearch());
+    return target ? (
+      <DocumentWindowRoute
+        key={JSON.stringify([target.conversationId, target.fileName])}
+        target={target}
+      />
+    ) : null;
+  },
+});
+
 // URL for Settings. The product layout renders the Settings surface itself
 // (outside the chat-consumer boundary), so this match stays empty.
 const settingsRoute = createRoute({
@@ -328,14 +398,35 @@ const settingsRoute = createRoute({
   component: () => null,
 });
 
+const collaborationMiniAppRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "collaborations/$groupId/$taskId/apps/$appId",
+  validateSearch: validateAppVersionSearch,
+  component: function CollaborationMiniAppRouteView() {
+    const { groupId, taskId, appId } = collaborationMiniAppRoute.useParams();
+    const { version } = collaborationMiniAppRoute.useSearch();
+    return (
+      <CollaborationMiniAppRoute
+        appId={appId}
+        groupId={groupId}
+        key={`${groupId}/${taskId}/${appId}:${version ?? ""}`}
+        taskId={taskId}
+        version={version}
+      />
+    );
+  },
+});
+
 const shellRouteTree = shellRoute.addChildren({
   indexRoute,
   appsRoute,
   appLinkRoute,
   appSettingsRoute,
   appRunRoute,
+  collaborationMiniAppRoute,
   inboxRouteTree,
   driveRoute,
+  peopleRoute,
   pluginsRoute,
   settingsRoute,
   taskDetailRoute,
@@ -344,6 +435,7 @@ const shellRouteTree = shellRoute.addChildren({
 
 const authedRouteTree = authedRoute.addChildren({
   appWindowRoute,
+  documentWindowRoute,
   shellRouteTree,
 });
 
@@ -408,14 +500,15 @@ export function CommaApp() {
     adoptMiniAppLinkLocation(window.location, window.history);
     // Apply the saved view once, only for an ordinary launch. Explicit routes
     // and Home links with workspace search parameters keep their destination.
-    if (
-      ["", "#", "#/"].includes(window.location.hash) &&
-      settings.defaultHomeView !== "home"
-    ) {
+    const launchView =
+      settings.defaultHomeView === "people" && !settings.peopleEnabled
+        ? "home"
+        : settings.defaultHomeView;
+    if (["", "#", "#/"].includes(window.location.hash) && launchView !== "home") {
       window.history.replaceState(
         window.history.state,
         "",
-        `${window.location.pathname}${window.location.search}#/${settings.defaultHomeView}`
+        `${window.location.pathname}${window.location.search}#/${launchView}`
       );
     }
     return createCommaRouter();

@@ -149,6 +149,24 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(stdin(p.dump).at(-1).method, "thread/unsubscribe");
   });
 
+  test("on a machine that brings a browser, a thread is given its server beside the station's", async () => {
+    const d = driver({ env: { ...process.env, COMMA_BROWSER_MCP_CONFIG: "/etc/comma/browser-mcp.json", DISPLAY: ":99" } });
+    const p = profile();
+    const { push, until } = listen();
+    const o = options(p);
+    const session = await d.open(o, push);
+    await session.prompt("cmd");
+    await until(ended(1));
+    const { config } = stdin(p.dump)[2].params;
+    assert.equal(config["mcp_servers.comma-station.url"], o.mcpUrl);
+    assert.equal(config["mcp_servers.playwright.command"], "playwright-mcp");
+    assert.deepEqual(config["mcp_servers.playwright.args"], ["--config", "/etc/comma/browser-mcp.json"]);
+    // Codex hands an MCP server few of its own variables: the display is said.
+    assert.deepEqual(config["mcp_servers.playwright.env"], { DISPLAY: ":99" });
+    assert.equal(config["mcp_servers.playwright.tool_timeout_sec"], 120);
+    await session.dispose();
+  });
+
   test("a failed turn is told apart by its codexErrorInfo", async () => {
     const d = driver();
     const { events, push, until } = listen();

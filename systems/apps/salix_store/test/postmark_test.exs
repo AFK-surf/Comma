@@ -21,7 +21,15 @@ defmodule SalixStore.PostmarkTest do
     def init(opts), do: opts
 
     @impl true
-    def call(%{method: "POST", request_path: "/email"} = conn, _opts) do
+    def call(%{method: "GET"} = conn, opts) do
+      token = conn |> get_req_header("x-postmark-server-token") |> List.first()
+      Agent.update(__MODULE__, &[%{get: conn.request_path, token: token} | &1])
+      route(conn, opts)
+    end
+
+    def call(conn, opts), do: route(conn, opts)
+
+    defp route(%{method: "POST", request_path: "/email"} = conn, _opts) do
       {:ok, raw, conn} = read_body(conn)
       req = Jason.decode!(raw)
       token = conn |> get_req_header("x-postmark-server-token") |> List.first()
@@ -37,7 +45,7 @@ defmodule SalixStore.PostmarkTest do
       json(conn, status, resp)
     end
 
-    def call(%{method: "GET", request_path: "/messages/outbound/msg-1/details"} = conn, _opts) do
+    defp route(%{method: "GET", request_path: "/messages/outbound/msg-1/details"} = conn, _opts) do
       json(conn, 200, %{
         "MessageID" => "msg-1",
         "Status" => "Sent",
@@ -54,7 +62,7 @@ defmodule SalixStore.PostmarkTest do
       })
     end
 
-    def call(%{method: "GET", request_path: "/bounces/42"} = conn, _opts) do
+    defp route(%{method: "GET", request_path: "/bounces/42"} = conn, _opts) do
       json(conn, 200, %{
         "ID" => 42,
         "Type" => "HardBounce",
@@ -65,13 +73,13 @@ defmodule SalixStore.PostmarkTest do
       })
     end
 
-    def call(%{method: "GET", request_path: "/messages/outbound/" <> _} = conn, _opts),
+    defp route(%{method: "GET", request_path: "/messages/outbound/" <> _} = conn, _opts),
       do: json(conn, 422, %{"ErrorCode" => 701, "Message" => "Message not found"})
 
-    def call(
-          %{method: "GET", request_path: "/message-streams/outbound/suppressions/dump"} = conn,
-          _opts
-        ) do
+    defp route(
+           %{method: "GET", request_path: "/message-streams/outbound/suppressions/dump"} = conn,
+           _opts
+         ) do
       conn = fetch_query_params(conn)
 
       suppressions =
@@ -93,7 +101,7 @@ defmodule SalixStore.PostmarkTest do
       json(conn, 200, %{"Suppressions" => suppressions})
     end
 
-    def call(conn, _opts), do: send_resp(conn, 404, "not found")
+    defp route(conn, _opts), do: send_resp(conn, 404, "not found")
 
     defp json(conn, status, body) do
       conn
@@ -153,6 +161,29 @@ defmodule SalixStore.PostmarkTest do
 
     assert {:error, {:postmark, 200, 406}} =
              Postmark.send_message("login@comma.test", "a@x.com", "reject-200", "Body")
+  end
+
+  test "a caller's own server sends, replies and looks up with its own token" do
+    teams = [server_token: "teams-token"]
+
+    assert {:ok, %{message_id: "msg-1"}} =
+             Postmark.send_message(
+               "teams@comma.test",
+               "a@x.com",
+               "Hi",
+               "Body",
+               [reply_to: "support@comma.test"] ++ teams
+             )
+
+    assert {:ok, %{events: [%{bounce: %{type: "HardBounce"}}]}} =
+             Postmark.message_events("msg-1", teams)
+
+    assert {:ok, %{reason: "HardBounce"}} = Postmark.suppression("a@x.com", teams)
+
+    assert [%{body: body, token: "teams-token"} | lookups] = MockPostmark.requests()
+    assert body["ReplyTo"] == "support@comma.test"
+    assert length(lookups) == 3
+    assert Enum.all?(lookups, &(&1.token == "teams-token"))
   end
 
   test "message_events keeps event types and bounce classes, not content or SMTP text" do

@@ -116,7 +116,7 @@ class TimelinePinTest {
     )
 
     @Test fun `keyboard text and tall images use the same bottom edge`() {
-        inset(450)
+        inset(520)
         submit(listOf(message(1, "image-turn", ChatRole.USER, "layout sample"), image(2)))
         assertGap(2)
         assertTrue("oversized content stays scrollable", timeline.canScrollVertically(-1))

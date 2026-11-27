@@ -63,16 +63,21 @@ defmodule CommaWeb.ProactiveBriefing do
         "text" => text(items)
       }
 
-      case ConversationServer.mail_interaction(
-             ctx.group_id,
-             home,
-             profile.user_id,
-             ctx.agent_id,
-             command
-           ) do
-        {:ok, _} ->
-          :ok
-
+      # A handoff interrupted after its reservation (a failed append, a
+      # restart) leaves its command pending, and the store refuses every
+      # other command on the key until it completes. The Router may never act
+      # on this key again, so finish the saved command before today's briefing.
+      with {:ok, _} <- resume_pending(ctx, home, profile.user_id, current),
+           {:ok, _} <-
+             ConversationServer.mail_interaction(
+               ctx.group_id,
+               home,
+               profile.user_id,
+               ctx.agent_id,
+               command
+             ) do
+        :ok
+      else
         {:error, reason} ->
           Logger.info(
             "proactive_briefing handoff skipped reason=#{inspect(reason)}",
@@ -91,6 +96,11 @@ defmodule CommaWeb.ProactiveBriefing do
 
       :ok
   end
+
+  defp resume_pending(ctx, home, owner, %{"pending" => %{"command" => command}}),
+    do: ConversationServer.mail_interaction(ctx.group_id, home, owner, ctx.agent_id, command)
+
+  defp resume_pending(_ctx, _home, _owner, _current), do: {:ok, nil}
 
   # The caller's process is not this handoff's, so its lines carry the IDs.
   defp log_ids(workspace, profile),

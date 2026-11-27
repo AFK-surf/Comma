@@ -1,7 +1,7 @@
 defmodule SalixAgent.UnansweredPersonGuardTest do
   use SystemsClock.Case, async: true
 
-  alias SalixAgent.{InternalSession, UnansweredPersonGuard}
+  alias SalixAgent.{FollowupReplyGuard, InternalSession, UnansweredPersonGuard}
 
   @session_id "ses1_0000000000000000931"
 
@@ -9,7 +9,7 @@ defmodule SalixAgent.UnansweredPersonGuardTest do
     "provider" => "feishu",
     "source_actor_type" => "provider_user",
     "source_message_id" => "person-1",
-    "provider_context" => %{"connect_id" => "feishu-1", "chat_id" => "oc_1"}
+    "provider_context" => %{"connect_id" => "feishu-1", "chat_id" => "oc_1", "chat_type" => "p2p"}
   }
 
   defp session(origin, later \\ [], fields \\ %{}) do
@@ -84,5 +84,72 @@ defmodule SalixAgent.UnansweredPersonGuardTest do
 
     refute refused?(done, session(schedule))
     refute refused?(done, session(@person, [], %{compacted_through: 1}))
+  end
+
+  test "a queued same-thread follow-up holds the first send and still requires a reply" do
+    followup = %{
+      "queue_id" => 2,
+      "kind" => "user_message",
+      "wake" => true,
+      "dedupe_key" => "person-2",
+      "payload" => %{
+        "source_message_id" => "person-2",
+        "content" => "and tomorrow?",
+        "trusted_origin" => Map.put(@person, "source_message_id", "person-2")
+      }
+    }
+
+    send_call = %{
+      "id" => "s1",
+      "name" => "call",
+      "args" => %{"tool" => "im_api.feishu.reply_text", "params" => %{"text" => "partial"}}
+    }
+
+    task_call = %{
+      "id" => "t1",
+      "name" => "call",
+      "args" => %{"tool" => "im_api.internal.task.create", "params" => %{"content" => "work"}}
+    }
+
+    queued = session(@person, [], %{input_queue: [followup], queue_ack_id: 1})
+
+    {:assistant, "", [guarded, guarded_task]} =
+      FollowupReplyGuard.guard({:assistant, "", [send_call, task_call]}, queued, "router")
+
+    assert guarded[:guidance_reason] == "queued_followup"
+    assert guarded_task[:guidance_reason] == "queued_followup"
+
+    assert [%{id: "s1", name: "call"}, %{id: "t1", name: "call"}] =
+             FollowupReplyGuard.model_calls([guarded, guarded_task])
+
+    held_tool = %{
+      id: 3,
+      role: "tool",
+      status: "guidance",
+      guidance_reason: "queued_followup",
+      tool_call_id: "s1"
+    }
+
+    # A send held by FollowupReplyGuard never reached the person, so bare done is still refused,
+    # and the held guidance result does not open visible_reply_repair on the clean turn.
+    assert SalixAgent.VisibleReplyPolicy.transition(
+             :clean,
+             SalixAgent.VisibleReplyPolicy.label_results([guarded, guarded_task])
+           ) == :none
+
+    held =
+      session(@person, [assistant(2, send_call), held_tool], %{
+        input_queue: [followup],
+        queue_ack_id: 1
+      })
+
+    assert refused?(end_turn(%{"outcome" => "done"}), held)
+    assert InternalSession.active_unanswered_thread(held) == ["feishu", "feishu-1", "oc_1", "dm"]
+    {events, true, 4} = InternalSession.materialize_pending_input_events(held, 100)
+
+    assert Enum.any?(
+             events,
+             &(&1["type"] == "delivery" and &1["source_message_id"] == "person-2")
+           )
   end
 end

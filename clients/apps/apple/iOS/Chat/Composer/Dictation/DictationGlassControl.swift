@@ -4,7 +4,8 @@ import UIKit
 
 /// The composer's microphone, and the waveform that fills the composer while it records. A tap on the microphone
 /// starts a recording that a tap anywhere on the composer ends; holding the microphone records until the finger
-/// lifts. Transcribing, the microphone is a spinner and the row says so.
+/// lifts. Recording, a ✓ takes Send's corner, as in ChatGPT, so the way to end it shows: the waveform stops short of
+/// it. Transcribing, the ✓ is a spinner and the row says so.
 ///
 /// While dictating, the composer holds its collapsed one-row glass capsule (`ConversationComposer`), and this view
 /// lies over it at the same size. The waveform is drawn by Metal (`DictationWaveformRenderer`) straight onto that
@@ -28,6 +29,9 @@ final class DictationGlassControl: UIView {
 
     private let mic = UIImageView(image: UIImage(named: "central-microphone")?.withRenderingMode(.alwaysTemplate))
     private let spinner = UIActivityIndicatorView(style: .medium)
+    /// Recording, Send's 32pt circle in its corner, with a ✓: a tap ends the recording, as one anywhere on it does.
+    private let done = UIView()
+    private let check = UIImageView(image: UIImage(named: "central-checkmark-1")?.withRenderingMode(.alwaysTemplate))
     private let label = UILabel()
     private var waveform: MTKView?
     private var renderer: DictationWaveformRenderer?
@@ -47,8 +51,15 @@ final class DictationGlassControl: UIView {
         label.adjustsFontForContentSizeCategory = true
         label.textColor = UIColor(CommaTheme.textTertiary)
         label.alpha = 0
+        done.backgroundColor = UIColor(CommaTheme.brandSolid)
+        done.isUserInteractionEnabled = false
+        check.tintColor = .white
+        check.contentMode = .scaleAspectFit
+        done.addSubview(check)
+        hideDone()
         addSubview(label)
         addSubview(mic)
+        addSubview(done)
         addSubview(spinner)
         DictationWaveformRenderer.make { [weak self] device, renderer in self?.install(device: device, renderer: renderer) }
         isAccessibilityElement = true
@@ -93,6 +104,11 @@ final class DictationGlassControl: UIView {
         mic.center = CGPoint(x: micSlot.midX, y: micSlot.midY)
         // Transcribing, Send is hidden, so the spinner takes the row's last corner.
         spinner.center = CGPoint(x: bounds.width - 22, y: bounds.height - 22)
+        // Set apart from its transform, which scales it in and out.
+        done.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
+        done.layer.cornerRadius = 16
+        done.center = spinner.center
+        check.frame = CGRect(x: 7, y: 7, width: 18, height: 18)
         label.frame = CGRect(x: 16, y: bounds.height - 44, width: max(0, bounds.width - 60), height: 44)
         // The waveform is the composer's capsule: the bottom 44pt row, end to end.
         waveform?.frame = CGRect(x: 0, y: bounds.height - 44, width: bounds.width, height: 44)
@@ -117,6 +133,16 @@ final class DictationGlassControl: UIView {
         }
         // The note goes at once: the composer opens out as the words arrive, and their text takes its row.
         if phase == .idle { label.alpha = 0 }
+        // The ✓ grows in with the waveform, and shrinks out as the spinner takes its place. One curve for its scale
+        // and its opacity, so the opacity follows the scale.
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]) {
+            if recording {
+                self.done.alpha = 1
+                self.done.transform = .identity
+            } else {
+                self.hideDone()
+            }
+        }
         UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.waveform?.alpha = recording ? 1 : 0
             self.mic.alpha = self.phase == .idle ? 1 : 0
@@ -128,6 +154,12 @@ final class DictationGlassControl: UIView {
             self.waveform?.isHidden = true
         }
         if phase == .transcribing { spinner.startAnimating() } else { spinner.stopAnimating() }
+    }
+
+    /// Half its size and clear, so it grows in from there without showing at half its size or less.
+    private func hideDone() {
+        done.alpha = 0
+        done.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
     }
 
     // MARK: Touches
@@ -201,6 +233,8 @@ final class DictationWaveformRenderer: NSObject, MTKViewDelegate {
     private static let tallest: CGFloat = 26
     /// The opacity of the bars the row starts with. Bars that enter later are opaque.
     private static let restingOpacity: Float = 0.4
+    /// The ✓'s 44pt corner at the trailing end, which the strip stops short of: bars enter at its leading edge.
+    static let trailing: CGFloat = 44
 
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
@@ -222,7 +256,7 @@ final class DictationWaveformRenderer: NSObject, MTKViewDelegate {
         var depth: Float
         var dispersion: Float
         var restingOpacity: Float
-        var pad: Float = 0
+        var trailing: Float
         var color: SIMD4<Float>
         var backdrop: SIMD4<Float>
     }
@@ -317,6 +351,7 @@ final class DictationWaveformRenderer: NSObject, MTKViewDelegate {
             depth: Float(size.height) * 0.375,
             dispersion: 0.04,
             restingOpacity: Self.restingOpacity,
+            trailing: Float(Self.trailing),
             color: Self.rgba(UIColor(CommaTheme.textPrimary).resolvedColor(with: traits)),
             backdrop: dark ? SIMD4(0.16, 0.16, 0.17, 1) : SIMD4(0.95, 0.95, 0.96, 1)
         )
@@ -350,7 +385,7 @@ final class DictationWaveformRenderer: NSObject, MTKViewDelegate {
     struct DictationUniforms {
         float2 size;        // The capsule, in points.
         float scale;        // Pixels per point.
-        float offset;       // How far the strip has moved left of the trailing edge, in points.
+        float offset;       // How far the strip has moved left of its trailing end, in points.
         float barWidth;
         float step;         // Bar plus gap.
         float grow;         // How far a bar moves while it reaches its level, in points.
@@ -358,7 +393,7 @@ final class DictationWaveformRenderer: NSObject, MTKViewDelegate {
         float depth;        // How far inward the outline itself shows, in points: the most the band reaches.
         float dispersion;   // How much further red reaches than green, and blue less, as a share of the reach.
         float restingOpacity; // The bars left of the first one that entered.
-        float pad;
+        float trailing;     // The ✓'s corner at the trailing end, where no bar draws.
         float4 color;       // The bars' colour.
         float4 backdrop;    // The glass's tone behind the bars, for the colour fringes.
     };
@@ -383,7 +418,9 @@ final class DictationWaveformRenderer: NSObject, MTKViewDelegate {
     // How much of the point `p` (in points) a bar covers, 0...1. `soft` widens the edge past one pixel, as a
     // magnified edge is.
     static float coverage(float2 p, float soft, constant DictationUniforms &u, constant float2 *bars) {
-        float rel = p.x - (u.size.x - u.offset);
+        float end = u.size.x - u.trailing;
+        if (p.x > end) return 0;
+        float rel = p.x - (end - u.offset);
         float cell = floor(rel / u.step);
         float height = u.barWidth;
         float opacity = u.restingOpacity;

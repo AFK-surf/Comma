@@ -111,6 +111,16 @@ defmodule SalixIM.IFC.Projection do
   def refresh(scope, scope_id) do
     {canonical, row} = lookup(scope, scope_id)
 
+    # Every mode reads it: a Group can switch to Easy at any time, and one
+    # node's refresh claim covers whoever asks next. An answer the provider
+    # could not give keeps the last one stored.
+    if row.kind in ["room", "shared", "public"] do
+      case provider_bot_presence(scope, canonical) do
+        present when is_boolean(present) -> observe_bot_presence(scope, canonical, present)
+        nil -> :ok
+      end
+    end
+
     if needs_members?(row) do
       case provider_members(scope, canonical, row.kind) do
         {:ok, members} ->
@@ -135,6 +145,40 @@ defmodule SalixIM.IFC.Projection do
   catch
     _kind, _reason -> :ok
   end
+
+  @doc """
+  Refreshes one scope's stored structure, bot presence and members after a
+  provider chat mutation (`create_chat`, `add_chat_members`, `join_chat`),
+  when the connect's Group has IFC enabled. A send to that chat later in the
+  same turn then reads the chat the bot just made or changed, not unknown.
+
+  Best-effort: returns `:ok` on every fault and does nothing when IFC is `off`.
+  """
+  @spec refresh_for_connect(map(), term()) :: :ok
+  def refresh_for_connect(connect, scope_id) when is_map(connect) do
+    tenant_id = String.trim(to_string(connect["tenant_id"] || ""))
+    group_id = String.trim(to_string(connect["group_id"] || ""))
+    connect_id = String.trim(to_string(connect["connect_id"] || ""))
+    scope_id = String.trim(to_string(scope_id || ""))
+
+    if group_id != "" and connect_id != "" and scope_id != "" and
+         SalixIM.IFC.Facts.mode(tenant_id, group_id) != "off" do
+      refresh(%{tenant_id: tenant_id, group_id: group_id, connect_id: connect_id}, scope_id)
+    else
+      :ok
+    end
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  def refresh_for_connect(_connect, _scope_id), do: :ok
+
+  @doc false
+  # A conversation the background refresh reads: one with a member set, or a
+  # public room, whose only background fact is whether the bot is in it.
+  def refresh_wanted?(row), do: needs_members?(row) or Map.get(row, :kind) == "public"
 
   @doc false
   # Only a room or shared conversation, or a public room an operator gave its
@@ -439,6 +483,7 @@ defmodule SalixIM.IFC.Projection do
       canonical_scope_id: nil,
       display_name: nil,
       members: :unknown,
+      bot_present: nil,
       observed_at_ms: nil,
       revision: 0,
       tags: [],
@@ -479,6 +524,66 @@ defmodule SalixIM.IFC.Projection do
       :error ->
         row
     end
+  end
+
+  @doc "Records whether this connection's bot is in a conversation."
+  def observe_bot_presence(scope, scope_id, present)
+      when is_binary(scope_id) and scope_id != "" and is_boolean(present) do
+    Store.observe_bot_presence(
+      scope.tenant_id,
+      scope.group_id,
+      scope.connect_id,
+      scope_id,
+      present
+    )
+  end
+
+  def observe_bot_event(connect, envelope) do
+    type = get_in(envelope, ["header", "event_type"])
+    scope_id = get_in(envelope, ["event", "chat_id"])
+
+    if type in ["im.chat.member.bot.added_v1", "im.chat.member.bot.deleted_v1"] and
+         is_binary(scope_id) and scope_id != "" do
+      scope = %{
+        tenant_id: connect["tenant_id"],
+        group_id: connect["group_id"],
+        connect_id: connect["connect_id"]
+      }
+
+      observe_bot_presence(scope, scope_id, type == "im.chat.member.bot.added_v1")
+    end
+
+    :ok
+  end
+
+  defp provider_bot_presence(scope, scope_id) do
+    with {:ok, connect} <- connect(scope) do
+      case connect["provider"] do
+        "slack" ->
+          case slack_channel(connect, scope_id) do
+            %{"is_member" => present} when is_boolean(present) -> present
+            _ -> nil
+          end
+
+        provider when provider in ["feishu", "lark"] ->
+          api = if provider == "feishu", do: FeishuAPI, else: LarkAPI
+
+          case api.get(
+                 connect,
+                 "/im/v1/chats/#{URI.encode(to_string(scope_id))}/members/is_in_chat"
+               ) do
+            {:ok, %{"is_in_chat" => present}} when is_boolean(present) -> present
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   @doc "How often one node re-reads a conversation from its provider."

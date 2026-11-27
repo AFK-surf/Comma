@@ -17,6 +17,47 @@ defmodule SalixAgent.LLMMetering do
 
   def capture_decision(fact, _decision), do: Map.delete(fact, :billing_exemption)
 
+  @doc """
+  The fee check before a platform key serves a platform Router's request in
+  `deduct` billing (`SalixAgent.PlatformRouter`): the request's meter fact,
+  platform-funded and settled by `deduct`. Answers `:ok` or
+  `{:error, decision}` for `SalixAgent.AccountPool`.
+  """
+  def platform_admit(fact) when is_map(fact) do
+    fact =
+      Map.merge(fact, %{
+        credential_scope: "platform",
+        tenant_account_pool: false,
+        settlement: "deduct",
+        source_key: "#{fact[:request_id] || fact[:source_key]}:platform"
+      })
+
+    case before_llm_call(fact) do
+      :ok -> :ok
+      {:ok, _decision} -> :ok
+      {:error, {:billing_unavailable, decision}} -> {:error, decision}
+      {:error, _reason} -> {:error, %{reason: "fee_control_error"}}
+    end
+  end
+
+  @doc """
+  The meter fact of a dispatch, following what served it: a platform key on
+  a platform Router's route (response meta `"funding"` scope `platform`) is
+  platform-funded and settled by the Router's billing (`record` or `deduct`).
+  """
+  def served_by(fact, %{"funding" => %{"scope" => "platform", "billing" => billing}})
+      when billing in ["record", "deduct"],
+      do:
+        fact
+        |> Map.delete(:billing_exemption)
+        |> Map.merge(%{
+          credential_scope: "platform",
+          tenant_account_pool: false,
+          settlement: billing
+        })
+
+  def served_by(fact, _meta), do: fact
+
   def after_llm_call(fact) do
     SystemsObservability.Trace.with_span(
       :salix_round_metering,

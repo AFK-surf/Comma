@@ -20,6 +20,13 @@ defmodule SalixAgent.ModelChoice do
       and pays for it. A `worker` choice may also name the `model` the
       platform route table returned for its Task.
 
+  A catalog choice may carry the platform Router mark `"platform" => true`
+  (`SalixAgent.PlatformRouter`): platform API keys serve it first, then the
+  Tenant's subscriptions, and its API keys only when the platform admin's
+  option allows pay-per-use (the choice then also carries `"allow_paid" =>
+  true`). `choose/2` never answers it, so no Tenant write path
+  stores it; only the platform admin's save does.
+
   `record/2` answers the model record a choice stands for: its name, model id,
   provider, `provider_config`, limits and image input. That record is never
   stored. `llm_config/1`, `media/2` and `public_json/1` read it.
@@ -99,6 +106,14 @@ defmodule SalixAgent.ModelChoice do
 
   def choose(_choice, _tenant_id), do: {:error, :invalid_model_configuration}
 
+  @doc "Whether `value` is a catalog choice with the platform Router mark."
+  @spec platform?(term()) :: boolean()
+  def platform?(%{"kind" => "catalog", "model" => model, "platform" => true})
+      when is_binary(model),
+      do: true
+
+  def platform?(_value), do: false
+
   @doc "Whether `value` has the shape of a stored choice."
   @spec value?(term()) :: boolean()
   def value?(%{"kind" => "catalog", "model" => model}) when is_binary(model), do: true
@@ -115,9 +130,10 @@ defmodule SalixAgent.ModelChoice do
   @spec record(map(), String.t() | nil) :: {:ok, map()} | {:error, term()}
   def record(%{"kind" => "catalog", "model" => model_id} = value, tenant_id) do
     effort = value["reasoning_effort"]
+    platform? = platform?(value)
 
     with :ok <- validate_tenant(tenant_id),
-         {:ok, model} <- stored_model(model_id, tenant_id) do
+         {:ok, model} <- stored_model(model_id, tenant_id, platform?) do
       {:ok,
        %{
          "name" => Enum.join([model["name"], effort || "default"], " · "),
@@ -125,12 +141,14 @@ defmodule SalixAgent.ModelChoice do
          "model_display_name" => model["name"],
          "model_vendor" => model["vendor"],
          "provider" => model["vendor"],
-         "provider_config" => %{
-           "catalog_model" => model_id,
-           "allow_paid" => value["allow_paid"] == true or custom?(model_id),
-           "profile_id" => value["profile_id"],
-           "reasoning_effort" => effort
-         },
+         "provider_config" =>
+           %{
+             "catalog_model" => model_id,
+             "allow_paid" => value["allow_paid"] == true or (custom?(model_id) and not platform?),
+             "profile_id" => value["profile_id"],
+             "reasoning_effort" => effort
+           }
+           |> then(&if(platform?, do: Map.put(&1, "platform", true), else: &1)),
          "max_tokens" => min(model["max_tokens"] || 32_000, 128_000),
          "context_tokens" => model["context_tokens"] || 0,
          "supports_images" => model["images"] == true,
@@ -279,12 +297,15 @@ defmodule SalixAgent.ModelChoice do
     |> Map.merge(runtime_view(config))
   end
 
-  defp catalog_view(%{"catalog_model" => model} = config),
-    do: %{
+  defp catalog_view(%{"catalog_model" => model} = config) do
+    view = %{
       "catalog_model" => model,
       "allow_paid" => config["allow_paid"] == true,
       "profile_id" => config["profile_id"]
     }
+
+    if config["platform"] == true, do: Map.put(view, "platform_provided", true), else: view
+  end
 
   defp catalog_view(_config), do: %{}
 
@@ -325,7 +346,15 @@ defmodule SalixAgent.ModelChoice do
   # removed. It still reads as that model id, so the Agent, its Tasks and the
   # settings page keep working; no Profile serves it at dispatch, and the input
   # stops as `model_unavailable` (`SalixAgent.AccountPool`).
-  defp stored_model(model_id, tenant_id) do
+  # A marked choice names a model the platform's keys serve: the catalog's,
+  # else the platform Custom endpoint's (`PlatformModels.model_info/1`), else
+  # one the Tenant's own Custom endpoint lists.
+  defp stored_model(model_id, tenant_id, true) do
+    with {:error, _} <- PlatformModels.model_info(model_id),
+         do: stored_model(model_id, tenant_id, false)
+  end
+
+  defp stored_model(model_id, tenant_id, false) do
     case catalog_or_custom(model_id, tenant_id) do
       {:ok, model} ->
         {:ok, model}

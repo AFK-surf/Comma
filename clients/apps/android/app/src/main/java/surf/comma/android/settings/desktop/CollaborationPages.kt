@@ -1,21 +1,46 @@
 package surf.comma.android.settings.desktop
 
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RectF
+import android.graphics.drawable.Drawable
+import android.text.InputType
+import android.text.TextUtils
 import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import androidx.core.view.isVisible
 import org.json.JSONObject
 import surf.comma.android.R
+import surf.comma.android.chat.render.BubbleTail
+import surf.comma.android.people.PersonAvatarView
 import surf.comma.android.settings.ConfirmDialog
+import surf.comma.android.settings.FieldDialog
+import surf.comma.android.settings.PressFeedback
 import surf.comma.android.settings.SettingsContext
 import surf.comma.android.settings.SettingsRow
 import surf.comma.android.settings.SettingsSection
+import surf.comma.android.settings.clipToRoundedBackground
+import surf.comma.android.settings.color
 import surf.comma.android.settings.dp
+import surf.comma.android.settings.filledButton
+import surf.comma.android.settings.roundRect
 import surf.comma.android.settings.text
+import surf.comma.android.tasks.TaskStatusBucket
+import surf.comma.android.tasks.ui.statusIconRes
+import surf.comma.android.tasks.ui.statusLabelRes
+import surf.comma.android.tasks.ui.statusTintRes
 import surf.comma.android.ui.ActionMenu
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignTypography.Level
+import surf.comma.android.ui.theme.uiSansAt
 import java.util.UUID
 
 /** Settings > Shared tasks: the Workspace's active public links. */
@@ -108,9 +133,16 @@ private fun android.content.Context.dateTime(seconds: Long?): String = seconds?.
 
 private fun personName(person: JSONObject?) = person?.string("name") ?: person?.string("email").orEmpty()
 
-private fun android.content.Context.requestStatus(value: String?) = when (value) {
+internal fun android.content.Context.requestStatus(value: String?, taskStatus: String? = null): String = when (value) {
     "pending" -> getString(R.string.ds_requests_pending)
-    "accepted" -> getString(R.string.ds_requests_accepted)
+    "accepted" -> {
+        val trimmed = taskStatus?.trim().orEmpty()
+        when {
+            trimmed.isEmpty() -> getString(R.string.ds_requests_accepted)
+            trimmed.equals("escalated", ignoreCase = true) -> getString(R.string.ds_requests_needs_input)
+            else -> getString(statusLabelRes(TaskStatusBucket.fromTaskStatus(trimmed)))
+        }
+    }
     "declined" -> getString(R.string.ds_requests_declined)
     "withdrawn" -> getString(R.string.ds_requests_withdrawn)
     "expired" -> getString(R.string.ds_requests_expired)
@@ -185,14 +217,27 @@ internal class TaskRequestsPage(ctx: SettingsContext) : WorkspacePage(ctx, R.str
             }
         }.ifEmpty { if (loaded) listOf(activity.infoRow(activity.getString(R.string.ds_requests_targets_empty))) else emptyList() })
         sent.fill(model.rows("sent").map { request ->
-            val detail = listOf(personName(request.optJSONObject("workspace")?.optJSONObject("owner")), activity.requestStatus(request.string("status")),
+            val detail = listOf(personName(request.optJSONObject("workspace")?.optJSONObject("owner")),
+                activity.requestStatus(request.string("status"), request.string("task_status")),
                 request.string("decline_reason").orEmpty(), request.string("reply").orEmpty()).filter(String::isNotEmpty).joinToString(" · ")
-            val withdraw = request.string("id")?.takeIf { request.string("status") == "pending" }?.let { id ->
-                activity.inlineButton(activity.getString(R.string.ds_requests_withdraw), destructive = true) {
-                    model.scope.launch("taskRequests.withdraw", json("request" to id), workspaceParameter = false)
+            val action = request.string("id")?.let { id ->
+                if (request.string("status") == "pending") {
+                    activity.inlineButton(activity.getString(R.string.ds_requests_withdraw), destructive = true) {
+                        model.scope.launch("taskRequests.withdraw", json("request" to id), workspaceParameter = false)
+                    }
+                } else {
+                    activity.inlineButton(activity.getString(R.string.ds_requests_delete), destructive = true) {
+                        ConfirmDialog(
+                            activity,
+                            activity.getString(R.string.ds_requests_delete_title),
+                            activity.getString(R.string.ds_requests_delete_description),
+                            activity.getString(R.string.ds_requests_delete_request),
+                            destructive = true,
+                        ) { model.scope.launch("taskRequests.hide", json("request" to id), workspaceParameter = false) }.show()
+                    }
                 }
             }
-            activity.describedRow(request.string("title") ?: activity.getString(R.string.ds_requests_request), detail, control = withdraw).apply {
+            activity.describedRow(request.string("title") ?: activity.getString(R.string.ds_requests_request), detail, control = action).apply {
                 setOnClickListener { ctx.open(RequestDetailPage(ctx, model, request, incoming = false)) }
             }
         }.ifEmpty { if (loaded) listOf(activity.infoRow(activity.getString(R.string.ds_requests_sent_empty))) else emptyList() })
@@ -315,69 +360,443 @@ internal class LinkChatAccountPage(ctx: SettingsContext, private val model: Task
     }
 }
 
+private const val MAX_DECLINE_REASON_BYTES = 1_000
+
 /**
- * One request. A waiting incoming request can be accepted with edited words, into a new Task or the Router chat, or
- * declined; otherwise it shows its words, status and reply.
+ * One request. A waiting incoming request shows its sender, timestamp, and a labeled editable request card with a
+ * pinned Decline / Create task footer; sent and decided requests match the mobile Task chat: a two-line title and
+ * status bar over an airy thread of real curved Comma chat bubbles.
  */
 internal class RequestDetailPage(ctx: SettingsContext, private val model: TaskRequestsModel, private val request: JSONObject,
-                                 private val incoming: Boolean) : WorkspacePage(ctx, R.string.ds_requests_request, "requests.detail", model.scope) {
+                                 private val incoming: Boolean) :
+    WorkspacePage(ctx, R.string.ds_requests_request, "requests.detail", model.scope) {
     private val id = request.string("id").orEmpty()
-    private val current get() = model.rows(if (incoming) "incoming" else "sent").firstOrNull { it.string("id") == id } ?: request
+    private val current
+        get() = (if (incoming) {
+            model.rows("received").firstOrNull { it.string("id") == id }
+                ?: model.rows("incoming").firstOrNull { it.string("id") == id }
+        } else {
+            model.rows("sent").firstOrNull { it.string("id") == id }
+        }) ?: request
     private var title = request.optString("title")
     private var content = request.optString("content")
-    private var reason = ""
-    private var destination = "task"
-    private val titleField = activity.fieldRow(activity.getString(R.string.ds_title)) { title = it }
-    private val contentField = activity.fieldRow(activity.getString(R.string.ds_requests_content), lines = 3) { content = it; render() }
-    private val reasonField = activity.fieldRow(activity.getString(R.string.ds_requests_decline_reason)) { reason = it }
-    private val destinationRow = SettingsRow(activity, null, activity.getString(R.string.ds_requests_send_to))
-    private val section = SettingsSection(activity, activity.getString(R.string.ds_requests_request))
+    private val titleField = activity.fieldRow(activity.getString(R.string.ds_title)) { title = it }.apply {
+        typeface = uiSansAt(DesignFonts.semibold)
+        gravity = Gravity.TOP or Gravity.START
+        includeFontPadding = false
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(0, activity.dp(6), 0, 0)
+    }
+    private val contentField = activity.fieldRow(activity.getString(R.string.ds_requests_content), lines = 4) { content = it; render() }.apply {
+        setPadding(0, activity.dp(4), 0, 0)
+        minimumHeight = activity.dp(104)
+    }
+    private val reviewHeader = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+    private val reviewDecline = activity.filledButton(
+        activity.getString(R.string.ds_requests_decline),
+        R.color.token_bg_tertiary,
+        R.color.token_text_error_primary,
+        pill = true,
+    ).apply {
+        setOnClickListener {
+            FieldDialog(
+                activity = activity,
+                title = activity.getString(R.string.ds_requests_decline_title),
+                hint = activity.getString(R.string.ds_requests_decline_reason),
+                current = "",
+                saveLabel = activity.getString(R.string.ds_requests_decline),
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES,
+                maxLength = MAX_DECLINE_REASON_BYTES,
+                onSave = { reason ->
+                    model.scope.launch("taskRequests.decline", json("request" to id, "reason" to reason))
+                },
+                description = activity.getString(R.string.ds_requests_decline_message),
+                keyboard = true,
+                refused = { false },
+                destructive = true,
+                requireChange = false,
+                maxBytes = MAX_DECLINE_REASON_BYTES,
+            ).show()
+        }
+    }
+    private val reviewAccept = activity.filledButton(
+        activity.getString(R.string.ds_requests_accept),
+        R.color.token_bg_brand_solid,
+        null,
+        pill = true,
+    ).apply {
+        setOnClickListener {
+            model.scope.launch("taskRequests.accept", json("request" to id, "title" to title, "content" to content)) { answer ->
+                ctx.back()
+                val task = answer.json?.optJSONObject("task")?.string("id")
+                if (task != null) ctx.openTask(task)
+            }
+        }
+    }
+    private val reviewFooter = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(activity.color(R.color.token_bg_primary))
+        addView(View(activity).apply { setBackgroundColor(activity.color(R.color.token_border_primary)) },
+            LinearLayout.LayoutParams(-1, 1))
+        val actions = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(activity.dp(16), activity.dp(12), activity.dp(16), activity.dp(12))
+            addView(reviewDecline, LinearLayout.LayoutParams(0, activity.dp(44), 1f))
+            addView(reviewAccept, LinearLayout.LayoutParams(0, activity.dp(44), 1f).apply { marginStart = activity.dp(12) })
+        }
+        addView(actions, LinearLayout.LayoutParams(-1, -2))
+    }
+    private val reviewBody = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(reviewHeader, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = activity.dp(4)
+            bottomMargin = activity.dp(16)
+        })
+        val cardRadius = activity.dp(24).toFloat()
+        val card = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundRect(activity.color(R.color.token_bg_tertiary), cardRadius)
+            clipToRoundedBackground(cardRadius)
+            val titleGroup = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(activity.dp(16), activity.dp(14), activity.dp(16), activity.dp(14))
+                addView(activity.text(Level.MINI, R.color.token_text_tertiary, DesignFonts.medium).apply {
+                    text = activity.getString(R.string.ds_title)
+                }, LinearLayout.LayoutParams(-2, -2))
+                addView(titleField, LinearLayout.LayoutParams(-1, -2))
+            }
+            addView(titleGroup, LinearLayout.LayoutParams(-1, -2))
+            addView(View(activity).apply { setBackgroundColor(activity.color(R.color.token_bg_primary)) },
+                LinearLayout.LayoutParams(-1, maxOf(1, (activity.resources.displayMetrics.density * 0.67f).toInt())).apply {
+                    marginStart = activity.dp(16)
+                })
+            val contentGroup = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(activity.dp(16), activity.dp(14), activity.dp(16), activity.dp(14))
+                addView(activity.text(Level.MINI, R.color.token_text_tertiary, DesignFonts.medium).apply {
+                    text = activity.getString(R.string.ds_requests_content)
+                }, LinearLayout.LayoutParams(-2, -2))
+                addView(contentField, LinearLayout.LayoutParams(-1, -2))
+            }
+            addView(contentGroup, LinearLayout.LayoutParams(-1, -2))
+        }
+        addView(card, LinearLayout.LayoutParams(-1, -2))
+        addView(activity.text(Level.MINI, R.color.token_text_tertiary).apply {
+            text = activity.getString(R.string.ds_requests_accept_note)
+            setPadding(activity.dp(4), activity.dp(12), activity.dp(4), 0)
+        }, LinearLayout.LayoutParams(-1, -2))
+    }
+    private val thread = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+    private val barTitle = activity.text(Level.REGULAR, R.color.token_text_primary, DesignFonts.medium).apply {
+        maxLines = 1
+        ellipsize = TextUtils.TruncateAt.END
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        isAccessibilityHeading = true
+    }
+    private val barStatusIcon = ImageView(activity)
+    private val barStatusText = activity.text(Level.MINI, R.color.token_text_quaternary, DesignFonts.medium).apply {
+        maxLines = 1
+        includeFontPadding = false
+    }
+    private val barHeader = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        addView(barTitle, LinearLayout.LayoutParams(-2, -2))
+        addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(barStatusIcon, LinearLayout.LayoutParams(activity.dp(12), activity.dp(12)).apply {
+                marginEnd = activity.dp(4)
+            })
+            addView(barStatusText, LinearLayout.LayoutParams(-2, -2))
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = activity.dp(1) })
+    }
+    private val more = ImageView(activity).apply {
+        id = R.id.request_detail_more
+        setImageResource(R.drawable.ic_action_more)
+        imageTintList = android.content.res.ColorStateList.valueOf(activity.getColor(R.color.token_fg_primary))
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        contentDescription = activity.getString(R.string.ds_requests_more)
+        PressFeedback(this, R.color.token_bg_quaternary, scale = true)
+        clipToRoundedBackground(activity.dp(22).toFloat())
+        setOnClickListener { openMore(it) }
+    }
     private var started = false
 
     init {
         titleField.setText(title)
         contentField.setText(content)
         started = true
-        layout.section(section, top = 0)
+        layout.bar.addView(barHeader, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER).apply {
+            marginStart = activity.dp(56)
+            marginEnd = activity.dp(56)
+        })
+        layout.section(reviewBody, top = 0)
+        layout.section(thread, top = 0)
+        layout.footer(reviewFooter)
+        layout.trailing.addView(more, LinearLayout.LayoutParams(activity.dp(44), activity.dp(44)))
         loading.isVisible = false
         start()
+    }
+
+    private fun openMore(anchor: View) {
+        if (id.isEmpty()) return
+        val status = current.string("status")
+        val menu = ActionMenu(activity)
+        if (status == "pending") {
+            menu.item(activity.getString(R.string.ds_requests_withdraw), destructive = true) {
+                model.scope.launch("taskRequests.withdraw", json("request" to id), workspaceParameter = false)
+            }
+        } else {
+            menu.item(activity.getString(R.string.ds_requests_delete_request), R.drawable.ic_trash_can, destructive = true) {
+                ConfirmDialog(
+                    activity,
+                    activity.getString(R.string.ds_requests_delete_title),
+                    activity.getString(R.string.ds_requests_delete_description),
+                    activity.getString(R.string.ds_requests_delete_request),
+                    destructive = true,
+                ) {
+                    model.scope.launch("taskRequests.hide", json("request" to id), workspaceParameter = false) { ctx.back() }
+                }.show()
+            }
+        }
+        menu.show(anchor, haptic = true)
     }
 
     override fun render() {
         if (!started) return
         super.render()
         val current = current
-        val rows = mutableListOf<View>()
-        if (incoming && current.string("status") == "pending") {
-            destinationRow.choices(listOf("task" to activity.getString(R.string.ds_requests_new_task),
-                "router" to activity.getString(R.string.ds_requests_router_chat)), destination) { destination = it; render() }
-            rows += listOf(titleField, contentField, destinationRow)
-            rows += activity.actionRow(activity.getString(R.string.ds_requests_accept)) {
-                model.scope.launch("taskRequests.accept", json("request" to id, "title" to title, "content" to content, "to" to destination)) { answer ->
-                    ctx.back()
-                    val task = answer.json?.optJSONObject("task")?.string("id")
-                    if (task != null) ctx.openTask(task) else if (destination == "router") ctx.openRouter()
-                }
-            }.apply { isEnabled = content.isNotBlank() }
-            rows += reasonField
-            rows += activity.actionRow(activity.getString(R.string.ds_requests_decline), destructive = true) {
-                ConfirmDialog(activity, activity.getString(R.string.ds_requests_decline_title), "", activity.getString(R.string.ds_requests_decline),
-                    destructive = true) { model.scope.launch("taskRequests.decline", json("request" to id, "reason" to reason)) }.show()
+        val pendingIncoming = incoming && current.string("status") == "pending"
+        more.isVisible = !incoming && id.isNotEmpty()
+        layout.titleView.isVisible = pendingIncoming
+        barHeader.isVisible = !pendingIncoming
+        reviewBody.isVisible = pendingIncoming
+        reviewFooter.isVisible = pendingIncoming
+        layout.syncFooterPadding()
+        thread.isVisible = !pendingIncoming
+        if (pendingIncoming) {
+            val sender = current.optJSONObject("sender")
+            val senderName = personName(sender)
+            val senderAvatar = sender?.string("id")?.let { pid ->
+                model.rows("people").firstOrNull { it.string("id") == pid }?.optJSONObject("avatar")
             }
+            val timestamp = activity.dateTime(current.int("created_at"))
+            reviewHeader.removeAllViews()
+            reviewHeader.isVisible = senderName.isNotEmpty() || timestamp.isNotEmpty()
+            if (senderName.isNotEmpty()) {
+                reviewHeader.addView(
+                    recipientChip(senderName, senderAvatar, activity.getString(R.string.ds_requests_from_person, senderName)),
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+            }
+            if (timestamp.isNotEmpty()) {
+                reviewHeader.addView(
+                    activity.text(Level.MINI, R.color.token_text_tertiary).apply { text = timestamp },
+                    LinearLayout.LayoutParams(-2, -2).apply { if (senderName.isNotEmpty()) topMargin = activity.dp(6) },
+                )
+            }
+            val ready = content.isNotBlank()
+            reviewAccept.isEnabled = ready
+            reviewAccept.alpha = if (ready) 1f else 0.4f
         } else {
-            rows += activity.textBlock(current.string("title").orEmpty()).apply {
-                surf.comma.android.ui.theme.DesignTypography.applyTo(this, Level.REGULAR, DesignFonts.semibold)
-            }
-            rows += activity.textBlock(current.optString("content"))
-            rows += activity.infoRow(activity.getString(R.string.ds_status), activity.requestStatus(current.string("status")))
-            current.string("reply")?.let { rows += activity.textBlock(it) }
-            current.string("decline_reason")?.let { rows += activity.textBlock(it) }
-            if (!incoming && current.string("status") == "pending") rows += activity.actionRow(activity.getString(R.string.ds_requests_withdraw), destructive = true) {
-                model.scope.launch("taskRequests.withdraw", json("request" to id), workspaceParameter = false)
-            }
-            current.optJSONObject("task")?.string("id")?.let { task -> rows += activity.actionRow(activity.getString(R.string.ds_open_task)) { ctx.openTask(task) } }
+            renderThread(current)
         }
-        section.fill(rows)
+    }
+
+    private fun recipientChip(name: String, avatarSource: JSONObject?, label: CharSequence) = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = roundRect(activity.color(R.color.token_bg_tertiary), activity.dp(999).toFloat())
+        setPadding(activity.dp(3), activity.dp(3), activity.dp(10), activity.dp(3))
+        addView(PersonAvatarView(activity, 22).apply {
+            show(name, avatarSource, model.scope.core)
+        }, LinearLayout.LayoutParams(activity.dp(22), activity.dp(22)))
+        addView(activity.text(Level.SMALL, R.color.token_text_primary).apply {
+            text = label
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = activity.dp(6) })
+    }
+
+    private fun renderThread(current: JSONObject) {
+        thread.removeAllViews()
+        val status = current.string("status")
+        val taskStatus = if (incoming) null else current.string("task_status")
+        val bucket = when (status) {
+            "pending" -> null
+            "accepted" -> taskStatus?.takeIf { it.isNotBlank() }?.let(TaskStatusBucket::fromTaskStatus) ?: TaskStatusBucket.IN_PROGRESS
+            else -> TaskStatusBucket.CANCELLED
+        }
+        val quiet = status != "pending" && status != "accepted"
+        val tintRes = if (quiet || bucket == null) R.color.token_fg_quaternary else statusTintRes(bucket)
+        val statusText = activity.requestStatus(status, taskStatus)
+        val heading = current.string("title").orEmpty().ifEmpty { activity.getString(R.string.ds_requests_request) }
+        barTitle.text = heading
+        barStatusIcon.setImageResource(statusIconRes(bucket))
+        barStatusIcon.imageTintList = android.content.res.ColorStateList.valueOf(activity.color(tintRes))
+        barStatusText.text = statusText
+
+        val person = if (incoming) current.optJSONObject("sender") else current.optJSONObject("workspace")?.optJSONObject("owner")
+        val personId = person?.string("id")
+        val counterparty = personName(person).ifEmpty { current.optJSONObject("workspace")?.string("name").orEmpty() }
+        val avatarSource = personId?.let { pid ->
+            model.rows("people").firstOrNull { it.string("id") == pid }?.optJSONObject("avatar")
+        }
+        val timestamp = activity.dateTime(current.int("created_at"))
+
+        if (counterparty.isNotEmpty() || timestamp.isNotEmpty()) {
+            val opening = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                if (counterparty.isNotEmpty()) {
+                    val chipRow = LinearLayout(activity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        if (!incoming) {
+                            addView(activity.text(Level.SMALL, R.color.token_text_tertiary).apply {
+                                text = activity.getString(R.string.people_to)
+                            }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = activity.dp(6) })
+                        }
+                        val chipLabel = if (incoming) activity.getString(R.string.ds_requests_from_person, counterparty)
+                        else activity.getString(R.string.people_request_to, counterparty)
+                        addView(recipientChip(counterparty, avatarSource, chipLabel))
+                    }
+                    addView(chipRow, LinearLayout.LayoutParams(-2, -2))
+                }
+                if (timestamp.isNotEmpty()) {
+                    addView(activity.text(Level.MINI, R.color.token_text_tertiary).apply {
+                        text = timestamp
+                        gravity = Gravity.CENTER
+                    }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = activity.dp(6) })
+                }
+            }
+            thread.addView(opening, LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = activity.dp(12)
+                bottomMargin = activity.dp(22)
+            })
+        }
+
+        val requestText = current.optString("content").trim()
+        if (requestText.isNotEmpty()) {
+            if (!incoming) {
+                val row = LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.END
+                    addView(messageBubble(requestText, outgoing = true), LinearLayout.LayoutParams(-2, -2).apply {
+                        marginStart = activity.dp(48)
+                    })
+                }
+                thread.addView(row, LinearLayout.LayoutParams(-1, -2))
+            } else {
+                thread.addView(incomingRow(counterparty, avatarSource, isComma = false, counterparty, requestText), LinearLayout.LayoutParams(-1, -2))
+            }
+        }
+
+        val reply = current.string("reply")?.trim().orEmpty()
+        val declineReason = current.string("decline_reason")?.trim().orEmpty()
+        when {
+            reply.isNotEmpty() -> {
+                val caption = if (!incoming && counterparty.isNotEmpty()) activity.getString(R.string.people_request_to, counterparty) else ""
+                thread.addView(incomingRow(counterparty, avatarSource, isComma = true, caption, reply), LinearLayout.LayoutParams(-1, -2).apply {
+                    topMargin = activity.dp(14)
+                })
+            }
+            declineReason.isNotEmpty() -> {
+                thread.addView(
+                    incomingRow(counterparty, avatarSource, isComma = false, activity.getString(R.string.ds_requests_declined), declineReason),
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(14) },
+                )
+            }
+            !incoming && status !in setOf("declined", "withdrawn", "expired") -> {
+                thread.addView(activity.text(Level.SMALL, R.color.token_text_tertiary).apply {
+                    text = activity.getString(R.string.ds_requests_no_result)
+                    gravity = Gravity.CENTER
+                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(20) })
+            }
+        }
+
+        current.optJSONObject("task")?.string("id")?.let { task ->
+            thread.addView(activity.filledButton(activity.getString(R.string.ds_open_task), R.color.token_bg_brand_solid, null).apply {
+                setOnClickListener { ctx.openTask(task) }
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(24) })
+        }
+    }
+
+    private fun incomingRow(counterparty: String, avatarSource: JSONObject?, isComma: Boolean, caption: String, body: String): View {
+        val tailDepthPx = activity.dp(BubbleTail.DEPTH_DP.toInt())
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            if (isComma || counterparty.isNotEmpty()) {
+                val avatar: View = if (isComma) {
+                    FrameLayout(activity).apply {
+                        addView(ImageView(activity).apply {
+                            setImageResource(R.drawable.ic_cue_mark)
+                            imageTintList = android.content.res.ColorStateList.valueOf(activity.color(R.color.token_text_primary))
+                        }, FrameLayout.LayoutParams(activity.dp(16), activity.dp(16), Gravity.CENTER))
+                    }
+                } else {
+                    PersonAvatarView(activity, 24).apply { show(counterparty, avatarSource, model.scope.core) }
+                }
+                addView(avatar, LinearLayout.LayoutParams(activity.dp(24), activity.dp(24)).apply {
+                    marginEnd = activity.dp(8)
+                    bottomMargin = tailDepthPx
+                })
+            }
+            addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                if (caption.isNotEmpty()) {
+                    addView(activity.text(Level.MINI, R.color.token_text_tertiary).apply {
+                        text = caption
+                        setPadding(activity.dp(14), 0, 0, 0)
+                    }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = activity.dp(4) })
+                }
+                addView(messageBubble(body, outgoing = false), LinearLayout.LayoutParams(-2, -2))
+            }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = activity.dp(42) })
+        }
+    }
+
+    private fun messageBubble(text: String, outgoing: Boolean) = activity.text(
+        Level.REGULAR,
+        if (outgoing) R.color.token_text_primary else R.color.token_markdown_text_primary,
+    ).apply {
+        this.text = text
+        if (outgoing) setTextColor(Color.WHITE)
+        setTextIsSelectable(true)
+        val tailDepthPx = activity.dp(BubbleTail.DEPTH_DP.toInt())
+        setPadding(activity.dp(14), activity.dp(9), activity.dp(14), activity.dp(9) + tailDepthPx)
+        background = BubbleDrawable(
+            fill = activity.color(if (outgoing) R.color.token_bg_brand_solid else R.color.token_markdown_bg_message),
+            right = outgoing,
+            density = resources.displayMetrics.density,
+        )
+    }
+
+    private class BubbleDrawable(private val fill: Int, private val right: Boolean, private val density: Float) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill }
+        private val path = Path()
+        private val scratch = Path()
+        private val body = RectF()
+        private val radiusPx = BubbleTail.RADIUS_DP * density
+        private val tailDepthPx = BubbleTail.DEPTH_DP * density
+
+        override fun draw(canvas: Canvas) {
+            val w = bounds.width().toFloat()
+            val h = (bounds.height().toFloat() - tailDepthPx).coerceAtLeast(radiusPx)
+            if (w <= 0f || h <= 0f) return
+            body.set(0f, 0f, w, h)
+            BubbleTail.outline(path, scratch, body, radiusPx, right, density)
+            canvas.drawPath(path, paint)
+        }
+
+        override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+        override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter }
+        @Deprecated("Deprecated in Java") override fun getOpacity() = PixelFormat.TRANSLUCENT
     }
 }
 

@@ -25,8 +25,26 @@ beforeEach(() => {
   initializeCommaI18n(["en"]);
 });
 
-/** `accepted` holds the core's answer to acceptInvite until the test settles it. */
-function mount(state: NearbyState, accepted?: Promise<unknown>) {
+const preview = {
+  workspace: {
+    id: "ws-a",
+    name: "Ada's workspace",
+    owner: { id: "u1", name: "Ada Lin", email: "ada@example.com" },
+  },
+  own: false,
+  back: { workspace: { id: "ws-b", name: "Bo's workspace" }, mode: "review" },
+  expiresAt: null,
+};
+
+/**
+ * `accepted` holds the core's answer to acceptInvite until the test settles it;
+ * `read` does the same for invitePreview.
+ */
+function mount(
+  state: NearbyState,
+  accepted?: Promise<unknown>,
+  read: () => unknown = () => preview
+) {
   const bridge = installNativeBridgeMock({
     os: "macos",
     platform: "electron",
@@ -44,16 +62,7 @@ function mount(state: NearbyState, accepted?: Promise<unknown>) {
         : undefined,
     calls: (name) =>
       name === "taskRequests.invitePreview"
-        ? {
-            workspace: {
-              id: "ws-a",
-              name: "Ada's workspace",
-              owner: { id: "u1", name: "Ada Lin", email: "ada@example.com" },
-            },
-            own: false,
-            back: { workspace: { id: "ws-b", name: "Bo's workspace" }, mode: "review" },
-            expiresAt: null,
-          }
+        ? read()
         : name === "taskRequests.acceptInvite"
           ? (accepted ?? { reciprocal: true })
           : null,
@@ -83,6 +92,53 @@ it("shows whose invite came over AirDrop, accepts it in the core, then answers t
   ]);
   expect(bridge.nearby.answer).toHaveBeenCalledWith({ accept: true, requestId });
   expect(screen.getByRole("heading", { name: "Connected" })).toBeVisible();
+});
+
+it("comes up under the sender's name while the core reads the invite", async () => {
+  let settle!: (value: unknown) => void;
+  const reading = new Promise((resolve) => {
+    settle = resolve;
+  });
+  const { bridge, core } = mount(held, undefined, () => reading);
+  await act(flush);
+  // The core has not read whose invite it is yet: the card is up, Connect waits.
+  expect(core.sentTo("taskRequests.invitePreview")).toEqual([
+    { invite, workspace: "ws-b" },
+  ]);
+  expect(screen.getByRole("heading", { name: "Ada wants to connect" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+  expect(core.sentTo("taskRequests.acceptInvite")).toEqual([]);
+
+  await act(async () => {
+    settle(preview);
+    await flush();
+  });
+  expect(
+    screen.getByRole("heading", { name: "Ada Lin wants to connect" })
+  ).toBeVisible();
+  expect(screen.getByText("ada@example.com")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+  expect(bridge.nearby.answer).not.toHaveBeenCalled();
+});
+
+it("says an invite could not be read, and closing it declines the offer", async () => {
+  const { bridge, core } = mount(held, undefined, () => {
+    throw new Error("The invite could not be read.");
+  });
+  await act(flush);
+  // The card stays up: the person learns that it came, and that it failed.
+  expect(screen.getByRole("heading", { name: "Ada wants to connect" })).toBeVisible();
+  expect(
+    screen.getByText("Couldn’t read this invite. Ask them to send it again.")
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+  expect(bridge.nearby.answer).not.toHaveBeenCalled();
+
+  const [, action] = screen.getAllByRole("button", { name: "Close" });
+  await userEvent.click(action!);
+  expect(bridge.nearby.answer).toHaveBeenCalledWith({ accept: false, requestId });
+  expect(core.sentTo("taskRequests.acceptInvite")).toEqual([]);
 });
 
 it("declines the offer when the card is closed", async () => {

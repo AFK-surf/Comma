@@ -232,6 +232,8 @@ struct RuntimeAppSnapshot {
     let screenshotURL: URL?
     let screenshotSize: CGSize?
     let fingerprint: String
+    /// The window has more elements than a snapshot keeps (`ComputerUseCore.maxSnapshotNodes`).
+    var nodesCut = false
 
     func node(index: Int) throws -> RuntimeAXNode {
         guard let node = nodes.first(where: { $0.index == index }) else {
@@ -551,8 +553,22 @@ enum ComputerUseCore {
             selectedText: latestSnapshot.selectedText,
             screenshotURL: screenshotCapture?.url,
             screenshotSize: screenshotCapture?.size,
-            fingerprint: latestSnapshot.fingerprint
+            fingerprint: latestSnapshot.fingerprint,
+            nodesCut: latestSnapshot.nodesCut
         )
+    }
+
+    /// Per-call Accessibility IPC timeout, replacing macOS's 6 s default so a suspended or hung app cannot hold the
+    /// daemon's main thread for tens of seconds. Setting it on the system-wide element applies to child elements too.
+    static let axMessagingTimeoutSeconds: Float = 1.5
+    private static let configuredSystemWideTimeout: Void = {
+        _ = AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), axMessagingTimeoutSeconds)
+    }()
+
+    @discardableResult
+    static func configureAXMessagingTimeout(_ element: AXUIElement) -> AXError {
+        _ = configuredSystemWideTimeout
+        return AXUIElementSetMessagingTimeout(element, axMessagingTimeoutSeconds)
     }
 
     private static func captureSnapshot(
@@ -563,6 +579,7 @@ enum ComputerUseCore {
         preferredWindowFrame: CGRect? = nil
     ) throws -> RuntimeAppSnapshot {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        configureAXMessagingTimeout(appElement)
         ChromiumAccessibilityActivation.shared.activateIfNeeded(
             pid: app.processIdentifier,
             root: appElement
@@ -580,7 +597,7 @@ enum ComputerUseCore {
             name: kAXFocusedUIElementAttribute as String
         ) as AXUIElement?
 
-        let nodes = flattenTree(
+        let (nodes, nodesCut) = flattenTree(
             from: windowMatch.element,
             focusedElement: focusedElement
         )
@@ -620,7 +637,8 @@ enum ComputerUseCore {
             selectedText: selectedText,
             screenshotURL: screenshotCapture?.url,
             screenshotSize: screenshotCapture?.size,
-            fingerprint: fingerprint
+            fingerprint: fingerprint,
+            nodesCut: nodesCut
         )
     }
 
@@ -790,55 +808,79 @@ enum ComputerUseCore {
             candidates.first(where: { $0.layer == 0 })
     }
 
+    /// The most elements a snapshot reads from one window. A window's accessibility tree can be very large (a long
+    /// table, a terminal's history, a web page) or, as an app reports it, have no end; the walk stops there.
+    static let maxSnapshotNodes = 5000
+
+    /// The window's elements, depth first, each once, at most `maxSnapshotNodes`; and whether elements were left out.
     private static func flattenTree(
         from root: AXUIElement,
         focusedElement: AXUIElement?
-    ) -> [RuntimeAXNode] {
-        var stack: [(element: AXUIElement, depth: Int)] = [(root, 0)]
-        var visited = Set<ObjectIdentifier>()
+    ) -> (nodes: [RuntimeAXNode], cut: Bool) {
         var nodes: [RuntimeAXNode] = []
-        var nextIndex = 0
-
-        while let current = stack.popLast() {
-            let identifier = ObjectIdentifier(current.element as AnyObject)
-            if visited.contains(identifier) {
-                continue
+        let cut = walkTree(
+            from: AXElementKey(root),
+            limit: maxSnapshotNodes,
+            children: { key in
+                (cuAttribute(key.element, name: kAXChildrenAttribute as String) as [AXUIElement]? ?? []).map(AXElementKey.init)
+            },
+            visit: { key, depth in
+                let element = key.element
+                let value = cuRawAttribute(element, name: kAXValueAttribute as String)
+                nodes.append(RuntimeAXNode(
+                    index: nodes.count,
+                    depth: depth,
+                    element: element,
+                    role: cuAttribute(element, name: kAXRoleAttribute as String) as String? ?? "AXUnknown",
+                    subrole: cuAttribute(element, name: kAXSubroleAttribute as String) as String? ?? "",
+                    title: cuTitle(element),
+                    value: value,
+                    help: cuAttribute(element, name: kAXHelpAttribute as String) as String? ?? "",
+                    identifier: cuAttribute(element, name: kAXIdentifierAttribute as String) as String? ?? "",
+                    url: cuAttribute(element, name: kAXURLAttribute as String) as URL?,
+                    enabled: cuBoolAttribute(element, name: kAXEnabledAttribute as String),
+                    selected: cuBoolAttribute(element, name: kAXSelectedAttribute as String),
+                    expanded: cuBoolAttribute(element, name: kAXExpandedAttribute as String),
+                    focused: focusedElement.map { CFEqual($0, element) },
+                    frame: cuFrame(element),
+                    actions: cuActions(element),
+                    isValueSettable: cuIsAttributeSettable(element, name: kAXValueAttribute as String),
+                    valueTypeDescription: describeValueType(value)
+                ))
             }
-            visited.insert(identifier)
+        )
+        return (nodes, cut)
+    }
 
-            let role = cuAttribute(current.element, name: kAXRoleAttribute as String) as String? ?? "AXUnknown"
-            let subrole = cuAttribute(current.element, name: kAXSubroleAttribute as String) as String? ?? ""
-            let value = cuRawAttribute(current.element, name: kAXValueAttribute as String)
-            let node = RuntimeAXNode(
-                index: nextIndex,
-                depth: current.depth,
-                element: current.element,
-                role: role,
-                subrole: subrole,
-                title: cuTitle(current.element),
-                value: value,
-                help: cuAttribute(current.element, name: kAXHelpAttribute as String) as String? ?? "",
-                identifier: cuAttribute(current.element, name: kAXIdentifierAttribute as String) as String? ?? "",
-                url: cuAttribute(current.element, name: kAXURLAttribute as String) as URL?,
-                enabled: cuBoolAttribute(current.element, name: kAXEnabledAttribute as String),
-                selected: cuBoolAttribute(current.element, name: kAXSelectedAttribute as String),
-                expanded: cuBoolAttribute(current.element, name: kAXExpandedAttribute as String),
-                focused: focusedElement.map { CFEqual($0, current.element) },
-                frame: cuFrame(current.element),
-                actions: cuActions(current.element),
-                isValueSettable: cuIsAttributeSettable(current.element, name: kAXValueAttribute as String),
-                valueTypeDescription: describeValueType(value)
-            )
-            nodes.append(node)
-            nextIndex += 1
-
-            let children = cuAttribute(current.element, name: kAXChildrenAttribute as String) as [AXUIElement]? ?? []
-            for child in children.reversed() {
+    /// Visits a tree depth first, children in order, each element once, at most `limit` elements. Returns whether
+    /// elements were left out. An element is told apart by `Hashable`, not by object: accessibility gives a new object
+    /// each time an element is read, and a tree that leads back to an element it already holds would otherwise never
+    /// end.
+    static func walkTree<Element: Hashable>(
+        from root: Element,
+        limit: Int,
+        children: (Element) -> [Element],
+        visit: (Element, Int) -> Void
+    ) -> Bool {
+        var stack: [(element: Element, depth: Int)] = [(root, 0)]
+        var visited = Set<Element>()
+        while let current = stack.popLast() {
+            guard visited.insert(current.element).inserted else { continue }
+            if visited.count > limit { return true }
+            visit(current.element, current.depth)
+            let maxNewChildren = limit - visited.count + 1
+            var nextChildren: [Element] = []
+            var seenInParent = Set<Element>()
+            for child in children(current.element) {
+                guard !visited.contains(child), seenInParent.insert(child).inserted else { continue }
+                nextChildren.append(child)
+                if nextChildren.count >= maxNewChildren { break }
+            }
+            for child in nextChildren.reversed() {
                 stack.append((child, current.depth + 1))
             }
         }
-
-        return nodes
+        return false
     }
 
     private static func fingerprint(
@@ -943,10 +985,13 @@ enum ComputerUseStateFormatter {
         }
 
         let lines = snapshot.nodes.map(format(node:))
+        let cutLine = snapshot.nodesCut
+            ? "\nThe window has more elements than these \(snapshot.nodes.count): the rest are not listed."
+            : ""
         return """
         App=\(snapshot.app.bundleIdentifier ?? appName) (pid \(snapshot.app.processIdentifier))
         Window: "\(snapshot.windowTitle)", App: \(appName).
-        \(lines.joined(separator: "\n"))\(focusedLine)\(selectedTextLine)
+        \(lines.joined(separator: "\n"))\(cutLine)\(focusedLine)\(selectedTextLine)
         """
     }
 
@@ -1343,6 +1388,24 @@ func nearlyEqualRects(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 2) -> B
         abs(lhs.origin.y - rhs.origin.y) <= tolerance &&
         abs(lhs.width - rhs.width) <= tolerance &&
         abs(lhs.height - rhs.height) <= tolerance
+}
+
+/// An accessibility element as a set holds it: equal and hashed as Core Foundation compares elements (the same element
+/// read twice is two objects).
+struct AXElementKey: Hashable {
+    let element: AXUIElement
+
+    init(_ element: AXUIElement) {
+        self.element = element
+    }
+
+    static func == (lhs: AXElementKey, rhs: AXElementKey) -> Bool {
+        CFEqual(lhs.element, rhs.element)
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(CFHash(element))
+    }
 }
 
 func cuRawAttribute(_ element: AXUIElement, name: String) -> Any? {

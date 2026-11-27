@@ -63,7 +63,7 @@ describe("LocalFilePreviewCache", () => {
     await flushMicrotasks();
 
     expect(load).toHaveBeenCalledOnce();
-    expect(load).toHaveBeenCalledWith(ref);
+    expect(load).toHaveBeenCalledWith(ref, expect.any(AbortSignal));
 
     result.resolve(pngBytes());
     const [first, second] = await Promise.all([firstPromise, secondPromise]);
@@ -177,7 +177,7 @@ describe("LocalFilePreviewCache", () => {
     expect(revokeObjectURL).toHaveBeenCalledOnce();
     const reenteredLease = await cache.acquire(path);
     expect(load).toHaveBeenCalledTimes(2);
-    expect(load).toHaveBeenLastCalledWith(path);
+    expect(load).toHaveBeenLastCalledWith(path, expect.any(AbortSignal));
     expect(reenteredLease?.url).not.toBe(composerLease?.url);
 
     reenteredLease?.release();
@@ -203,7 +203,7 @@ describe("LocalFilePreviewCache", () => {
     expect(await composerLease).toBeUndefined();
     const shown = await messageLease;
     expect(shown?.url).toMatch(/^blob:/);
-    expect(load).toHaveBeenLastCalledWith(path);
+    expect(load).toHaveBeenLastCalledWith(path, expect.any(AbortSignal));
     shown?.release();
     await flushMicrotasks();
     cache.dispose();
@@ -242,7 +242,7 @@ describe("LocalFilePreviewCache", () => {
     const lease = await cache.acquire(path);
 
     expect(load).toHaveBeenCalledOnce();
-    expect(load).toHaveBeenCalledWith(path);
+    expect(load).toHaveBeenCalledWith(path, expect.any(AbortSignal));
     lease?.release();
     await flushMicrotasks();
     cache.dispose();
@@ -323,6 +323,86 @@ describe("LocalFilePreviewCache", () => {
     (await replacement)?.release();
     await flushMicrotasks();
     cache.dispose();
+  });
+
+  it("stops a load nobody waits for and gives its slot to the next", async () => {
+    const signals = new Map<string, AbortSignal>();
+    const load = vi.fn(
+      (ref: ChatImagePreviewRef, signal: AbortSignal) =>
+        new Promise<Uint8Array | undefined>((resolve, reject) => {
+          signals.set(localPreviewRef(ref), signal);
+          // A read that never answers by itself, as a stalled connection.
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+          if (localPreviewRef(ref) === localFileRef(34)) resolve(pngBytes());
+        })
+    );
+    const cache = new LocalFilePreviewCache({ load, stops: () => true });
+    const refs = Array.from({ length: 5 }, (_, index) => localFileRef(index + 30));
+    const controllers = refs.map(() => new AbortController());
+    const acquisitions = refs.map((ref, index) =>
+      cache.acquire(ref, controllers[index]?.signal)
+    );
+    await flushMicrotasks();
+    expect(load).toHaveBeenCalledTimes(4);
+
+    // The first stalls; its message lets it go.
+    controllers[0]?.abort();
+    await expect(acquisitions[0]).resolves.toBeUndefined();
+    expect(signals.get(refs[0]!)?.aborted).toBe(true);
+    const fifth = await acquisitions[4];
+    expect(fifth?.url).toMatch(/^blob:/);
+
+    fifth?.release();
+    for (const controller of controllers) controller.abort();
+    await flushMicrotasks();
+    cache.dispose();
+  });
+
+  it("keeps a load that cannot stop for an acquisition that comes back", async () => {
+    const gate = deferred<Uint8Array | undefined>();
+    const load = vi.fn(() => gate.promise);
+    const cache = new LocalFilePreviewCache({ load, stops: () => false });
+    const ref = localFileRef(40);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const leaving = new AbortController();
+      const acquisition = cache.acquire(ref, leaving.signal);
+      await flushMicrotasks();
+      leaving.abort();
+      await expect(acquisition).resolves.toBeUndefined();
+    }
+    const back = cache.acquire(ref);
+    gate.resolve(pngBytes());
+    const lease = await back;
+
+    // One read of the file, joined each time, and the image it brings.
+    expect(load).toHaveBeenCalledOnce();
+    expect(lease?.url).toMatch(/^blob:/);
+    lease?.release();
+    await flushMicrotasks();
+    cache.dispose();
+  });
+
+  it("stops every load still running when it is disposed", async () => {
+    const signals: AbortSignal[] = [];
+    const load = vi.fn((_ref: ChatImagePreviewRef, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<Uint8Array | undefined>(() => undefined);
+    });
+    const cache = new LocalFilePreviewCache({ load, stops: () => true });
+    const acquisitions = Array.from({ length: 4 }, (_, index) =>
+      cache.acquire(localFileRef(index + 50))
+    );
+    await flushMicrotasks();
+    expect(load).toHaveBeenCalledTimes(4);
+
+    cache.dispose();
+    await expect(Promise.all(acquisitions)).resolves.toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(signals.filter((signal) => signal.aborted)).toHaveLength(4);
   });
 
   it("admits at most fifty unique queued or loading refs", async () => {

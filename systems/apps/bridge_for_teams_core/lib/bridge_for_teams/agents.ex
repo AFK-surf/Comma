@@ -1096,7 +1096,7 @@ defmodule BridgeForTeams.Agents do
   # that one is pinned.
   defp model_audit_value(%{} = choice) do
     choice
-    |> Map.take(~w(kind model provider tier reasoning_effort allow_paid))
+    |> Map.take(~w(kind model provider tier reasoning_effort allow_paid platform))
     |> Map.put("profile_pinned", is_binary(choice["profile_id"]))
   end
 

@@ -470,11 +470,18 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
       return typeof search.draft === "string" ? search.draft : undefined;
     },
   });
+  // A Raycast link's text says where it was written (`comma://home/compose`, launcherLink.ts in Main).
+  const routeDraftEntry = useRouterState({
+    select: (state) =>
+      (state.location.search as { entry?: unknown }).entry === "raycast"
+        ? ("raycast" as const)
+        : undefined,
+  });
   // Home writes the handed-over text into its composer once, then the URL drops it.
   const takeRouteDraft = useCallback(() => {
     void navigate({
       replace: true,
-      search: (search) => ({ ...search, draft: undefined }),
+      search: (search) => ({ ...search, draft: undefined, entry: undefined }),
       to: "/",
     });
   }, [navigate]);
@@ -572,6 +579,7 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
                       onConnectApps={handleConnectApps}
                       onRequestedDraftTaken={takeRouteDraft}
                       requestedDraft={homeVisible ? routeDraft : undefined}
+                      requestedDraftEntry={routeDraftEntry}
                       surfaceActive={homeVisible}
                     />
                   </HomeRailFoldProvider>

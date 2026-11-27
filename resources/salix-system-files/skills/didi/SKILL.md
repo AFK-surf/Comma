@@ -41,3 +41,9 @@ Without ordering access, give the link from `taxi_generate_ride_app_link`.
 
 Creating an order dispatches a real car and charges the user's DiDi account.
 Cancellation after a driver accepts can cost a fee. Ask before cancel.
+
+## Live Activity
+
+After booking, mirror pickup ETA, plate, and trip status to the Dynamic Island
+with `live_activity.upsert` (`category: "car"`, `key: "ride:didi-<order_id>"`),
+and call `live_activity.end` once the ride finishes or is cancelled.

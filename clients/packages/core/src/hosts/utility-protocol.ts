@@ -1,7 +1,12 @@
 // What Main and the core's utility process say to each other (hosts/node.ts), and the session values both sides name
 // (host.ts re-exports them). No imports but the session, chat and core contracts' types: Main uses it without the core
 // itself.
-import type { ChatLocalFile, ChatPickAttachmentError } from "@comma/chat-contract";
+import type {
+  ChatLocalFile,
+  ChatLocalPathFile,
+  ChatLocalPathMode,
+  ChatPickAttachmentError,
+} from "@comma/chat-contract";
 import type { LocalDriveListInput, LocalDriveOp } from "../host.ts";
 import type { SessionCleanup, SessionProblem } from "@comma/session-contract";
 import type {
@@ -156,6 +161,14 @@ export interface AppUpdateStatus {
 }
 
 export const CORE_START = "comma-core:start";
+/** How often Main acknowledges messages read from the core's parent port, keeping unread IPC bounded. */
+export const MAIN_IPC_ACK_EVERY = 32;
+/**
+ * Maximum core-to-Main messages waiting for Main to read them before new requests fail fast. Kept well below macOS's
+ * 1024-message Mach port queue (`MACH_PORT_QLIMIT_LARGE`), with headroom for one `abort` per in-flight request, so a
+ * suspended Main (`task_suspend`) never fills its receive port and spins Chromium's `ChannelMac` sender.
+ */
+export const MAX_UNACKED_MAIN_MESSAGES = 128;
 
 /** A local file snapshot Main made of a saved recording, named by its opaque reference (no host path). */
 export interface MeetingLocalFile {
@@ -301,12 +314,18 @@ export interface ChatPickRequest {
   maxFiles: number;
   maxTotalSize: number;
   maxUploadFiles: number;
+  /** Which files that are not images the message names by their path rather than uploads (absent: none). */
+  localPathMode?: ChatLocalPathMode | undefined;
 }
 
-/** A file a pick gave: an image's bytes to upload, or a local file Main registered (its opaque ref). */
+/**
+ * A file a pick gave: an image's bytes to upload, a local file Main registered (its opaque ref), or a file the message
+ * names by its path on this computer.
+ */
 export type ChatPickedItem =
   | { kind: "upload"; name: string; size: number; bytes: Uint8Array }
-  | { kind: "local_file"; file: ChatLocalFile };
+  | { kind: "local_file"; file: ChatLocalFile }
+  | { kind: "local_path"; file: ChatLocalPathFile };
 
 /** What a pick gave: the files, and why each other selected file was refused; `cancelled` when the dialog was. */
 export interface ChatPickAnswer {
@@ -454,7 +473,9 @@ export type MainToCore =
   /** What Main's meeting recorder parts saw (presence, capture, the settings, the main window). */
   | { type: "meeting-event"; event: MeetingEvent }
   /** What the voice call's socket did (`voice-call`). */
-  | { type: "voice-call-event"; event: VoiceCallSocketEvent };
+  | { type: "voice-call-event"; event: VoiceCallSocketEvent }
+  /** Main dequeued `received` messages from this core process so far. */
+  | { type: "ack"; received: number };
 
 /**
  * The voice call socket Main holds for the core (`VoiceCallPorts`): it opened, a `comma.voice.v1` text message came,

@@ -13,6 +13,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transformSync } from "@babel/core";
 import { build } from "esbuild";
+import {
+  ensureCompiled,
+  hostCache,
+  viteIsServer,
+} from "../../i18n/scripts/compiled-catalogs.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, "../../../..");
@@ -61,6 +66,10 @@ export function hermesTools(): { hermesc: string; hermes: string } {
 
 /** Bundles the core for Hermes into `out`; given `hbc`, compiles it there too. */
 export async function bundle(out: string, hbc?: string): Promise<void> {
+  // The core's words are the compiled message catalogs (@comma/i18n/messages), which no checkout carries: compiled
+  // here when they are not the output of the catalogs as they are now, as a Vite build does. An app built over
+  // catalogs compiled before a message was added called nothing for it ("undefined is not a function").
+  await ensureCompiled({ isServer: viteIsServer, cache: hostCache() });
   await build({
     entryPoints: [join(here, "../src/hosts/mobile.ts")],
     bundle: true,
@@ -73,6 +82,8 @@ export async function bundle(out: string, hbc?: string): Promise<void> {
     legalComments: "none",
     outfile: out,
     logLevel: "warning",
+    // A name no module exports is undefined in the bundle and throws only where a phone calls it.
+    logOverride: { "import-is-undefined": "error" },
   });
   const lowered = transformSync(readFileSync(out, "utf8"), {
     babelrc: false,

@@ -74,6 +74,14 @@ defmodule CommaLog.FormatterTest do
     refute Map.has_key?(obj, "time")
   end
 
+  test "moves stream metadata off the field the GKE log agent owns" do
+    line = Formatter.format(:info, "call", {{2026, 1, 1}, {0, 0, 0, 0}}, stream: true)
+
+    obj = decode(line)
+    refute Map.has_key?(obj, "stream")
+    assert obj["app_stream"] == true
+  end
+
   test "renders charlist metadata (e.g. :file) as a string, not an int array" do
     line = Formatter.format(:info, "x", {{2026, 1, 1}, {0, 0, 0, 0}}, file: ~c"lib/comma/app.ex")
     assert decode(line)["file"] == "lib/comma/app.ex"

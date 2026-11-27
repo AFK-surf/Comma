@@ -181,6 +181,54 @@ defmodule SalixIM.ConversationDeliveryAttachmentRefTest do
     assert Map.delete(payload, :pre_deliveries) == Map.delete(typed_payload, :pre_deliveries)
   end
 
+  test "a person's shared phone position reaches the Agent with their message, and only theirs" do
+    tenant_id = SalixAgent.TestSupport.new_tenant_id()
+    group_id = SalixStore.Ids.new_group_id(tenant_id)
+    router_id = SalixStore.Ids.new_agent_id(group_id)
+
+    location = %{
+      "latitude" => 35.6812,
+      "longitude" => 139.7671,
+      "accuracy_m" => 25,
+      "read_at" => "2026-11-12T03:00:00.000Z"
+    }
+
+    delivery = %{
+      "participant_actor_type" => "agent",
+      "participant_agent_id" => router_id,
+      "participant_payload" => %{"session_id" => SalixStore.Ids.new_session_id()},
+      "participant_id" => SalixStore.Ids.new_participant_id(),
+      "participant_role_label" => "agent",
+      "source_actor_type" => "user",
+      "source_user_id" => "current",
+      "conversation_id" => SalixStore.Ids.new_conversation_id(),
+      "conversation_kind" => "user_chat",
+      "agent_group_id" => group_id,
+      "message_id" => SalixStore.Ids.new_message_id(),
+      "message_created_at" => 1,
+      "message_metadata" => %{"client_location" => location},
+      "message_content" => [%{"type" => "text", "text" => "lunch nearby?"}]
+    }
+
+    assert {:ok, ^router_id, payload, _opts} = ConversationDelivery.materialize_agent(delivery)
+    assert [%{content: source_context}] = payload.pre_deliveries
+
+    assert [line] =
+             source_context |> String.split("\n") |> Enum.filter(&(&1 =~ "client_location"))
+
+    assert Jason.decode!(String.replace_prefix(line, "- client_location: ", "")) == location
+
+    # An Agent's message never speaks for where a person is.
+    agent =
+      delivery
+      |> Map.put("source_actor_type", "agent")
+      |> Map.put("source_agent_id", SalixStore.Ids.new_agent_id(group_id))
+
+    assert {:ok, ^router_id, agent_payload, _opts} = ConversationDelivery.materialize_agent(agent)
+    assert [%{content: agent_context}] = agent_payload.pre_deliveries
+    refute agent_context =~ "client_location"
+  end
+
   test "non-provider structured content cannot mint trusted attachment refs" do
     tenant_id = SalixAgent.TestSupport.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
@@ -392,5 +440,48 @@ defmodule SalixIM.ConversationDeliveryAttachmentRefTest do
       refute source_context =~ "Forged Slack Recipient"
       refute source_context =~ "U-forged-recipient"
     end
+  end
+
+  test "dynamic_ui delivery preserves optional title alongside ui_ref and summary" do
+    delivery = %{
+      "participant_actor_type" => "agent",
+      "participant_agent_id" => "agt1_dynui_router",
+      "participant_payload" => %{"session_id" => "ses1_dynui_router"},
+      "participant_id" => "ptp1_0000000000000000002",
+      "participant_role_label" => "delegator",
+      "source_actor_type" => "agent",
+      "source_agent_id" => "agt1_dynui_worker",
+      "source_role_label" => "worker",
+      "conversation_id" => "cnv1_0000000000000000002",
+      "conversation_kind" => "agent_task",
+      "agent_group_id" => "grp1_dynui",
+      "message_id" => "msg1_0000000000000000002",
+      "message_created_at" => 1,
+      "message_content" => [
+        %{
+          "type" => "dynamic_ui",
+          "version" => 2,
+          "ui_ref" => "ui-ref-123",
+          "path" => "/.salix/ui/ui-ref-123.json",
+          "file_name" => "ui-ref-123.json",
+          "mime_type" => "application/json",
+          "title" => "附近 8 家咖啡店",
+          "summary" => "附近8家咖啡店，按直线距离排序",
+          "text" => "附近8家咖啡店，按直线距离排序"
+        }
+      ]
+    }
+
+    assert {:ok, "agt1_dynui_router", payload, _opts} =
+             ConversationDelivery.materialize_agent(delivery)
+
+    assert [
+             %{
+               "type" => "dynamic_ui",
+               "ui_ref" => "ui-ref-123",
+               "title" => "附近 8 家咖啡店",
+               "summary" => "附近8家咖啡店，按直线距离排序"
+             }
+           ] = Jason.decode!(payload.content)
   end
 end

@@ -26,24 +26,78 @@ import { realMainClock } from "../clock";
 
 describe("createCommaStatusTrayIcon", () => {
   it("loads the transparent Comma Center template asset without runtime SVG rasterization", () => {
-    const icon = {
-      resize: vi.fn(),
-      setTemplateImage: vi.fn(),
-    };
+    const icon = fakeIcon(4, 4, () => 255);
     const createFromPath = vi.fn((_path: string) => icon);
 
     const result = createCommaStatusTrayIcon({
       iconPath: "/resources/CommaTemplate.png",
-      nativeImage: { createFromPath },
+      nativeImage: { createFromBuffer: vi.fn(), createFromPath },
       platform: "darwin",
+      trayIconSize: 16,
     });
 
     expect(result).toBe(icon);
     expect(createFromPath).toHaveBeenCalledWith("/resources/CommaTemplate.png");
     expect(icon.resize).not.toHaveBeenCalled();
     expect(icon.setTemplateImage).toHaveBeenCalledWith(true);
+    expect(icon.crop).not.toHaveBeenCalled();
+  });
+
+  it("crops the app icon's transparent margin for the Windows tray, as an image of its own", () => {
+    // A 10 x 10 icon whose tile covers x 2-7 and y 3-6, with a faint shadow
+    // around it; the result is the 6 x 6 square centred on the tile.
+    const icon = fakeIcon(10, 10, (x, y) =>
+      x >= 2 && x <= 7 && y >= 3 && y <= 6 ? 255 : 40
+    );
+    const decoded = fakeIcon(6, 6, () => 255);
+    const createFromBuffer = vi.fn((_buffer: Buffer) => decoded);
+
+    const result = createCommaStatusTrayIcon({
+      iconPath: "C:/Comma/resources/icon.png",
+      nativeImage: { createFromBuffer, createFromPath: () => icon },
+      platform: "win32",
+      trayIconSize: 24,
+    });
+
+    expect(icon.crop).toHaveBeenCalledWith({ height: 6, width: 6, x: 2, y: 2 });
+    // The tray gets the decoded PNG, not the crop: a crop shares the 10 x 10
+    // icon's rows, and Windows draws such an image as stripes.
+    expect(createFromBuffer).toHaveBeenCalledWith(icon.croppedPng);
+    // Resampled to the tray's size here: Windows' own shrinking leaves jagged edges.
+    expect(decoded.resize).toHaveBeenCalledWith({
+      height: 24,
+      quality: "best",
+      width: 24,
+    });
+    expect(result).toBe(decoded.resized);
+    expect(icon.setTemplateImage).not.toHaveBeenCalled();
   });
 });
+
+/** A nativeImage of this size whose pixels have the given alpha. */
+function fakeIcon(
+  width: number,
+  height: number,
+  alpha: (x: number, y: number) => number
+) {
+  const bitmap = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) bitmap[(y * width + x) * 4 + 3] = alpha(x, y);
+  }
+  const croppedPng = Buffer.from(`png of a crop of a ${width} x ${height} icon`);
+  const resized = { resized: true } as never;
+  const icon = {
+    crop: vi.fn(() => ({ ...icon, toPNG: () => croppedPng })),
+    croppedPng,
+    getSize: () => ({ height, width }),
+    resize: vi.fn(() => resized),
+    resized,
+    setTemplateImage: vi.fn(),
+    toBitmap: () => bitmap,
+    toPNG: () => Buffer.alloc(0),
+  };
+  return icon;
+}
 
 const task = (id: string, title = `Task ${id}`): StatusTrayTask => ({
   conversationId: `cnv_${id}`,

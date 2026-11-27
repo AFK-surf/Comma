@@ -247,6 +247,24 @@ defmodule SalixAgent.ToolsMediaTest do
                AgentWorkspace.read(agent, transcript_path)
     end
 
+    test "reads a Drive recording in place and writes the transcript to the workspace", %{
+      agent: agent,
+      ctx: ctx
+    } do
+      assert {content, [%{"type" => "vfs_write"}]} =
+               Media.transcribe_audio(%{"path" => "/drive/Meetings/customer.m4a"}, ctx)
+
+      assert_received {:audio_transcribe, ^agent, "/drive/Meetings/customer.m4a"}
+      assert %{"source_path" => "/drive/Meetings/customer.m4a"} = Jason.decode!(content)
+
+      assert_raise RuntimeError, "path must be a normal visible file path", fn ->
+        Media.transcribe_audio(
+          %{"path" => "/uploads/interview.m4a", "output_path" => "/drive/t.txt"},
+          ctx
+        )
+      end
+    end
+
     test "asks with the calling agent's Group so the team's glossary spells the names", %{
       agent: agent,
       ctx: ctx

@@ -28,13 +28,13 @@ defmodule SalixAgent.Tools do
   # churn.
   @registry [
     {"help",
-     "Return tool manuals, schemas, and examples. Discover tool names on demand with tool=mcp_manager, plugin, calendar, inbound_api, ssh, or im_api.internal.label; then request help for a returned name. Discover MCP server operations with mcp.list. Use tool=ifc for information-flow rules.",
+     "Return tool manuals, schemas, and examples. Discover tool names on demand with tool=mcp_manager, plugin, calendar, inbound_api, ssh, tailnet, colab, browser, or im_api.internal.label; then request help for a returned name. Discover MCP server operations with mcp.list. Use tool=ifc for information-flow rules.",
      &__MODULE__.help/2, @normal_auto_wait_seconds},
     {"fs.write_file",
      "Create a visible file, or replace one whole. To change an existing file use fs.edit_file instead: rewriting a file you already read sends the whole file back through the model, which is slow, spends output tokens and trips rate limits.",
      &__MODULE__.write_file/2, @normal_auto_wait_seconds},
     {"fs.read_file",
-     "Read content from a visible file path, including VFS files and session runtime files such as /.runtime/compaction-recovery.md and /.runtime/skills. Text files can be read fully, by line with start_line/num_lines, or from the end with tail_lines. Oversized text results keep the head and tail and report omitted middle characters. Image files return image content only when the active agent template supports image input; otherwise they require a configured vision describer. Other binary formats need dedicated readers and are reported as unsupported.",
+     "Read content from a visible file path, including VFS files and session runtime files such as /.runtime/compaction-recovery.md and /.runtime/skills. Text files can be read fully, by line with start_line/num_lines, or from the end with tail_lines. Oversized text results keep the head and tail and report omitted middle characters. Image files return native image content when the active model supports image input and vision_query is omitted. Passing vision_query (or reading an image on a model without image input) uses the configured vision describer to return a text answer. Other binary formats need dedicated readers and are reported as unsupported.",
      &__MODULE__.read_file/2, @normal_auto_wait_seconds},
     {"fs.list_files", "List visible file paths under a prefix.", &__MODULE__.list_files/2,
      @normal_auto_wait_seconds},
@@ -195,6 +195,9 @@ defmodule SalixAgent.Tools do
     composio.list_tools
     composio.get_tool
     composio.list_toolkits
+    group.search_conversations
+    group.read_conversation
+    colab.status
   )
 
   @typedoc """
@@ -248,7 +251,6 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.TaskRequests.defs() ++
       SalixAgent.Tools.ChannelLink.defs() ++
       SalixAgent.Tools.PluginInstall.defs() ++
-      SalixAgent.Tools.OwnerEmail.defs() ++
       SalixAgent.Tools.Meeting.defs() ++
       SalixAgent.Tools.IFC.defs() ++
       SalixAgent.Tools.History.entries() ++
@@ -263,7 +265,10 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.LanGateway.defs() ++
       SalixAgent.Tools.LanScript.defs() ++
       SalixAgent.Tools.DeviceSecrets.defs() ++
-      SalixAgent.Tools.Tailnet.defs()
+      SalixAgent.Tools.Tailnet.defs() ++
+      SalixAgent.Tools.GroupSearch.defs() ++
+      SalixAgent.Tools.LiveActivity.defs() ++
+      SalixAgent.Tools.Colab.defs()
   end
 
   @doc """
@@ -508,9 +513,9 @@ defmodule SalixAgent.Tools do
          {:inline,
           error_result(
             call,
-            "A background reminder is evidence, not delegated work. Do not create a Task for it. " <>
+            "A background reminder is evidence, not delegated work. Do not create a Task or message a station conversation for it. " <>
               "Record your decision with proactive.act and, if the user should act, offer the step in your reminder; " <>
-              "create the Task after the user accepts it, with that message as source_message_id: " <>
+              "create the Task or continue the station conversation only after the user accepts it, with that message as source_message_id: " <>
               reason,
             reason
           )}}
@@ -632,7 +637,7 @@ defmodule SalixAgent.Tools do
   # while model rounds hold the Tenant's slots: a report or a status that
   # waited for a slot would reach the person as "admission is saturated". It
   # is tracked without a slot, as a Loop's own writes are (`DependencyJob`).
-  @unmetered_tools ~w(im_api.internal.send_message im_api.internal.update_conversation im_api.internal.update_conversation_titles)
+  @unmetered_tools ~w(im_api.internal.send_message im_api.internal.update_conversation im_api.internal.update_conversation_titles im_api.internal.task.archive im_api.internal.task.unarchive)
 
   defp dependency_kind(name) do
     if to_string(name || "") in @unmetered_tools, do: :loop_control, else: :tool
@@ -762,10 +767,30 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.AsyncPolicy.exec_readiness_timeout_ms() + @exec_timeout_grace_ms
   end
 
+  defp call_tool_timeout_ms("compute.exec", args) do
+    timeout_ms =
+      case if(is_map(args), do: Map.get(args, "timeout_ms", Map.get(args, :timeout_ms))) do
+        ms when is_integer(ms) and ms > 0 -> min(max(ms, 1_000), 300_000)
+        _ -> 60_000
+      end
+
+    min(@max_exec_timeout_ms, timeout_ms + @exec_timeout_grace_ms + 15_000)
+  end
+
   defp call_tool_timeout_ms("env.process_tail", args) do
     case process_tail_wait_ms(args) do
       nil -> nil
       ms -> min(@max_exec_timeout_ms, ms + @exec_timeout_grace_ms)
+    end
+  end
+
+  defp call_tool_timeout_ms("process.tail", args) when is_map(args) do
+    case Map.get(args, "wait_ms", Map.get(args, :wait_ms)) do
+      ms when is_integer(ms) and ms > 0 ->
+        min(@max_exec_timeout_ms, min(ms, 30_000) + @exec_timeout_grace_ms)
+
+      _ ->
+        nil
     end
   end
 
@@ -779,6 +804,9 @@ defmodule SalixAgent.Tools do
   # Output waits, exec timeouts and transfers carry their own deadlines.
   defp call_tool_timeout_ms("ssh." <> _ = name, args) when is_map(args),
     do: SalixAgent.Tools.SSH.dispatch_timeout_ms(name, args)
+
+  defp call_tool_timeout_ms("colab." <> _ = name, args) when is_map(args),
+    do: SalixAgent.Tools.Colab.dispatch_timeout_ms(name, args)
 
   # A binary body arrives in chunks over up to two minutes (the connector's
   # `http_request_chunks` timeout), plus a Digest challenge round trip.
@@ -823,6 +851,9 @@ defmodule SalixAgent.Tools do
   defp process_tail_wait_ms(_args), do: nil
 
   defp default_tool_timeout_ms("env.copy"), do: @copy_timeout_ms
+  # A Drive file is streamed through the server: a long recording takes minutes.
+  defp default_tool_timeout_ms("fs.copy_file"), do: @copy_timeout_ms
+  defp default_tool_timeout_ms("fs.move_file"), do: @copy_timeout_ms
   defp default_tool_timeout_ms("env.android"), do: @android_tool_timeout_ms
   defp default_tool_timeout_ms("memory.ask_worker"), do: 30_000
   # The gateway's 30 s request ceiling plus connector round-trip slack.
@@ -972,7 +1003,10 @@ defmodule SalixAgent.Tools do
             try do
               SalixAgent.MeetingSummaryScope.authorize_tool!(name, ctx)
 
-              case fun.(args, ctx) do
+              outcome = fun.(args, ctx)
+              SalixAgent.Tools.Memory.authorize_events!(outcome_events(outcome), ctx)
+
+              case outcome do
                 {:tool_failure, diagnostic, error_class, visibility, public_summary, events}
                 when is_binary(diagnostic) and is_binary(error_class) and
                        is_binary(visibility) and is_list(events) ->
@@ -1019,6 +1053,22 @@ defmodule SalixAgent.Tools do
                 # A read that knows what audience it returned says so here, and
                 # the dispatcher's stamping step keeps that label rather than
                 # the round's (docs/verification.md).
+                {:tool_ifc,
+                 {:tool_failure, diagnostic, error_class, visibility, public_summary, events},
+                 %{} = ifc}
+                when is_binary(diagnostic) and is_binary(error_class) and
+                       is_binary(visibility) and is_list(events) ->
+                  id
+                  |> tool_failure_result(
+                    name,
+                    diagnostic,
+                    error_class,
+                    visibility,
+                    public_summary,
+                    events
+                  )
+                  |> Map.put(:ifc, ifc)
+
                 {:tool_ifc, content, events, %{} = ifc} when is_list(events) ->
                   id
                   |> tool_result(name, content, events)
@@ -1041,6 +1091,16 @@ defmodule SalixAgent.Tools do
         end
     end
   end
+
+  # The workspace events a tool's outcome asks the round to commit.
+  defp outcome_events({:tool_failure, _, _, _, _, events}), do: events
+  defp outcome_events({:tool_failure, _, _, _, _, events, _}), do: events
+  defp outcome_events({:tool_status, _, _, events}), do: events
+  defp outcome_events({:tool_observations, _, events, _}), do: events
+  defp outcome_events({:tool_ifc, {:tool_failure, _, _, _, _, events}, _}), do: events
+  defp outcome_events({:tool_ifc, _, events, _}), do: events
+  defp outcome_events({_content, events}) when is_list(events), do: events
+  defp outcome_events(_content), do: []
 
   defp run_one_with_timeout(call, ctx) do
     name = call[:name] || call["name"]
@@ -1323,14 +1383,22 @@ defmodule SalixAgent.Tools do
   defp normalize_call(call) when is_map(call) do
     call
     |> Map.drop([:reply_intent, "reply_intent", :terminal_reply, "terminal_reply"])
+    |> Map.drop([
+      :ifc_local_diagnostic,
+      "ifc_local_diagnostic",
+      :ifc_declaration_present,
+      "ifc_declaration_present"
+    ])
+    |> Map.put(:ifc_declaration_present, SalixAgent.IFC.Declaration.present?(call))
     |> Map.put(:id, tool_call_id(call))
   end
 
   defp prepare_calls(calls, ctx) do
     calls
     |> normalize_calls()
-    |> call_envelopes(ctx[:llm_tool_envelope] == true)
+    |> call_envelopes(ctx[:llm_tool_envelope] == true, ctx)
     |> Enum.map(&normalize_tool_input/1)
+    |> Enum.map(&enforce_declaration(&1, ctx))
     |> Enum.map(&enforce_disclosed_tool(&1, ctx))
     |> Enum.map(&enforce_queue_yield(&1, ctx))
   end
@@ -1375,6 +1443,7 @@ defmodule SalixAgent.Tools do
         |> Map.delete(:status_hint)
         |> Map.put(:status, "guidance")
         |> Map.put(:call_index, call[:call_index] || call["call_index"])
+        |> SalixAgent.IFC.LocalDiagnostic.project(call[:ifc_local_diagnostic])
 
       {:ok, result}
     else
@@ -1416,13 +1485,22 @@ defmodule SalixAgent.Tools do
   # capability call from an enveloped runtime, or a `call` targeting
   # `wait_for`, becomes guidance, and a `call` becomes its target with the
   # target's arguments, reply intent, and IFC declaration.
-  defp call_envelopes(calls, envelope?),
-    do:
+  defp call_envelopes(calls, envelope?, ctx \\ %{}) do
+    prepared =
       SalixVerifiedKernel.Session.query(
         SalixVerifiedKernel.Session.open(%{__struct__: SalixAgent.InternalSession.State}),
         :call_envelopes,
         {calls, envelope?}
       )
+
+    Enum.zip_with(calls, prepared, fn original, call ->
+      # Only guidance newly generated by the kernel gets the local marker.
+      if not guidance_call?(original) and guidance_call?(call) and
+           guidance_reason(call) == "envelope_misuse",
+         do: local_diagnostic(call, :envelope_misuse, ctx),
+         else: call
+    end)
+  end
 
   # `env.exec.description` is presentation metadata, not operational input.
   # Canonicalize it before disclosed-schema validation so a verbose label does
@@ -1442,8 +1520,50 @@ defmodule SalixAgent.Tools do
     end
   end
 
+  # The declaration is tool input, not an IFC verdict. Validate it before
+  # dispatch can resolve facts or archive a permission decision. wait_for is
+  # a session control, not a capability call with a declaration envelope. A
+  # tool the session cannot call gets `not_callable` first, so the model does
+  # not add a declaration only to learn the tool is unavailable.
+  defp enforce_declaration(call, ctx) do
+    name = to_string(call[:name] || call["name"] || "")
+
+    if guidance_call?(call) or name == "wait_for" or
+         SalixAgent.IFC.mode(ctx[:ifc_mode]) == :off or
+         (disclosure_available?(ctx) and not SalixAgent.ToolDisclosure.callable?(ctx, name)) do
+      call
+    else
+      call =
+        if call[:ifc_declaration_present] == false and
+             SalixAgent.IFC.LocalMetadata.exempt?(name, call[:args] || call["args"], ctx),
+           do: Map.put(call, :ifc, %{"sources" => []}),
+           else: call
+
+      case SalixAgent.IFC.Declaration.validate_sources(call) do
+        :ok ->
+          call
+
+        {:error, _} ->
+          guidance_call(
+            call,
+            "Provide ifc.sources as an array of complete src: references. Use [] when no source content is carried. Missing declarations and context are not valid tool parameters.",
+            name,
+            ctx,
+            "invalid_params"
+          )
+          |> Map.put(:ifc_local_diagnostic, :invalid_params)
+      end
+    end
+  end
+
+  defp local_diagnostic(call, reason, ctx) do
+    if SalixAgent.IFC.mode(ctx[:ifc_mode]) == :off,
+      do: call,
+      else: Map.put(call, :ifc_local_diagnostic, reason)
+  end
+
   defp enforce_disclosed_tool(call, ctx) do
-    if disclosure_available?(ctx) do
+    if guidance_call?(call) or disclosure_available?(ctx) do
       name = to_string(call[:name] || call["name"] || "")
       args = call[:args] || call["args"] || %{}
 
@@ -1453,11 +1573,16 @@ defmodule SalixAgent.Tools do
 
         not SalixAgent.ToolDisclosure.callable?(ctx, name) ->
           guidance_call(call, "tool is not callable in this session", name, ctx, "not_callable")
+          |> local_diagnostic(:not_callable, ctx)
 
         true ->
           case validate_disclosed_params(name, args, ctx) do
-            :ok -> call
-            {:error, reason} -> guidance_call(call, reason, name, ctx, "invalid_params")
+            :ok ->
+              call
+
+            {:error, reason} ->
+              guidance_call(call, reason, name, ctx, "invalid_params")
+              |> local_diagnostic(:invalid_params, ctx)
           end
       end
     else
@@ -1546,7 +1671,7 @@ defmodule SalixAgent.Tools do
 
   defp maybe_put_guidance_reason(call, reason)
        when reason in ~w(not_callable not_disclosed invalid_params envelope_misuse queued_person
-                         unanswered_person),
+                         unanswered_person queued_followup),
        do: Map.put(call, :guidance_reason, reason)
 
   defp maybe_put_guidance_reason(call, _reason), do: call
@@ -2021,18 +2146,38 @@ defmodule SalixAgent.Tools do
   end
 
   defp help_payload(tool, ctx) do
-    case SalixAgent.ToolDisclosure.find_disclosure_entry(ctx, tool) do
+    # The fixed-help exemption must read the same trusted static producer,
+    # never a same-name tenant disclosure entry.
+    entry =
+      SalixAgent.Tools.ImRouter.builtin_help_entry(tool) ||
+        SalixAgent.ToolDisclosure.find_disclosure_entry(ctx, tool)
+
+    case entry do
       nil ->
         {:error, "unknown tool: #{tool}"}
 
       entry ->
         case SalixAgent.ToolDisclosure.entry_schema(entry) do
           schema when is_map(schema) ->
+            schema =
+              if ctx[:llm_tool_envelope] != true and SalixAgent.IFC.mode(ctx[:ifc_mode]) != :off,
+                do: SalixAgent.IFC.Declaration.for_tool(schema, tool),
+                else: schema
+
+            manual = entry["manual"] || entry["summary"] || ""
+
+            manual =
+              if SalixAgent.IFC.mode(ctx[:ifc_mode]) != :off,
+                do:
+                  "API instructions are not task evidence. Do not cite this help in ifc.sources merely for using its calling syntax; cite it only if the reply reports the help itself.\n\n" <>
+                    manual,
+                else: manual
+
             {:ok,
              %{
                "name" => tool,
                "summary" => entry["summary"] || "",
-               "manual" => entry["manual"] || entry["summary"] || "",
+               "manual" => manual,
                "input_schema" => schema,
                "examples" => SalixAgent.ToolDisclosure.entry_examples(entry)
              }}
@@ -2048,6 +2193,12 @@ defmodule SalixAgent.Tools do
   # shows a complete card call.
   def help_examples("ui.create" = tool, _schema),
     do: call_examples(tool, SalixAgent.Tools.DynamicUI.example_params())
+
+  def help_examples("compute.workspace.write" = tool, schema),
+    do: call_examples(tool, Map.delete(example_params_for_schema(schema), "content_base64"))
+
+  def help_examples("process.write" = tool, schema),
+    do: call_examples(tool, Map.delete(example_params_for_schema(schema), "data_base64"))
 
   def help_examples(tool, schema), do: call_examples(tool, example_params_for_schema(schema))
 
@@ -2186,8 +2337,11 @@ defmodule SalixAgent.Tools do
   # and end_turn instead.
   defp guidance_next_step(@runtime_message_name, _reason), do: %{}
 
-  # A refused `end_turn` names its next steps itself (`UnansweredPersonGuard`).
-  defp guidance_next_step(_tool, "unanswered_person"), do: %{}
+  # A refused `end_turn` or held send names its next steps itself
+  # (`UnansweredPersonGuard`, `FollowupReplyGuard`).
+  defp guidance_next_step(_tool, reason)
+       when reason in ["unanswered_person", "queued_followup"],
+       do: %{}
 
   defp guidance_next_step(tool, _reason) do
     %{
@@ -2574,10 +2728,25 @@ defmodule SalixAgent.Tools do
   @doc false
   def read_file(args, ctx) do
     path = required_arg(args, "path")
-    labelled(read_file_content(args, ctx, path), [path], ctx)
+
+    if SalixAgent.SkillProjection.matches?(path) do
+      case SalixAgent.SkillProjection.read_with_label(ctx, path) do
+        {:ok, body, label} ->
+          # Pin bytes and provenance together: a concurrent custom-skill removal
+          # must not relabel its already-read content as the built-in it shadowed.
+          reader = fn _ctx, _path -> {:ok, body, false} end
+          result = read_file_content(args, ctx, path, reader)
+          SalixAgent.IFC.FileLabels.from_read(result, label, ctx)
+
+        error ->
+          read_file_content(args, ctx, path, fn _ctx, _path -> error end)
+      end
+    else
+      labelled(read_file_content(args, ctx, path, &read_any/2), [path], ctx)
+    end
   end
 
-  defp read_file_content(args, ctx, path) do
+  defp read_file_content(args, ctx, path, reader) do
     vision_query = arg(args, "vision_query") |> String.trim()
 
     cond do
@@ -2592,13 +2761,13 @@ defmodule SalixAgent.Tools do
             raise "fs.read_file: start_line/num_lines/tail_lines cannot be used with vision_query"
 
           window != nil ->
-            read_file_window(path, ctx, window)
+            read_file_window(path, ctx, window, reader)
 
           vision_query != "" and image_path?(path) ->
-            read_file_vision(path, vision_query, ctx)
+            read_file_vision(path, vision_query, ctx, reader)
 
           true ->
-            case read_any(ctx, path) do
+            case reader.(ctx, path) do
               {:ok, body, truncated} -> format_read(path, body, ctx, truncated)
               {:error, :not_found} -> raise "no such file: #{path}"
               {:error, msg} when is_binary(msg) -> raise msg
@@ -2615,8 +2784,8 @@ defmodule SalixAgent.Tools do
     FileBackend.read(ctx, path)
   end
 
-  defp read_file_window(path, ctx, window) do
-    case read_any(ctx, path) do
+  defp read_file_window(path, ctx, window, reader) do
+    case reader.(ctx, path) do
       {:ok, body, truncated} -> format_read_window(path, body, window, truncated)
       {:error, :not_found} -> raise "no such file: #{path}"
       {:error, msg} when is_binary(msg) -> raise msg
@@ -3069,11 +3238,11 @@ defmodule SalixAgent.Tools do
     raise "fs.read_file: unsupported #{kind} file #{path} (#{byte_size(body)} bytes); add a dedicated reader for this format"
   end
 
-  defp read_file_vision(path, query, ctx) do
+  defp read_file_vision(path, query, ctx, reader) do
     with {:ok, media} <- SalixAgent.MediaResolver.resolve(ctx.agent_id),
          cfg <- (media || %{})["vision_describer_config"],
          true <- vision_configured?(cfg) or SalixAgent.MediaResolver.supports_images?(media, ctx),
-         {:ok, body, false} <- read_any(ctx, path) do
+         {:ok, body, false} <- reader.(ctx, path) do
       if vision_configured?(cfg),
         do: describe_image(path, body, cfg, question: query),
         else: image_block(path, body)
@@ -3182,8 +3351,11 @@ defmodule SalixAgent.Tools do
         updated = String.replace(body, old, new, global: false)
 
         case FileBackend.prepare_write(ctx, path, updated) do
-          {:ok, event} -> {"edited #{path}", journal(event)}
-          {:error, reason} -> raise "edit failed: #{inspect(reason)}"
+          {:ok, event} ->
+            {"edited #{path}", journal(event)}
+
+          {:error, reason} ->
+            raise "edit failed: #{inspect(reason)}"
         end
 
       {:error, :not_found} ->
@@ -3200,9 +3372,14 @@ defmodule SalixAgent.Tools do
     to = required_arg(args, "to")
 
     case FileBackend.prepare_copy(ctx, from, to) do
-      {:ok, events, _size} -> {"copied #{from} → #{to}", events}
-      {:error, :not_found} -> raise "copy: no such file: #{from}"
-      {:error, reason} -> raise "copy failed: #{inspect(reason)}"
+      {:ok, events, _size} ->
+        {"copied #{from} → #{to}", events}
+
+      {:error, :not_found} ->
+        raise "copy: no such file: #{from}"
+
+      {:error, reason} ->
+        raise "copy failed: #{inspect(reason)}"
     end
   end
 
@@ -3212,9 +3389,14 @@ defmodule SalixAgent.Tools do
     to = required_arg(args, "to")
 
     case FileBackend.prepare_move(ctx, from, to) do
-      {:ok, events, _size} -> {"moved #{from} → #{to}", events}
-      {:error, :not_found} -> raise "move: no such file: #{from}"
-      {:error, reason} -> raise "move failed: #{inspect(reason)}"
+      {:ok, events, _size} ->
+        {"moved #{from} → #{to}", events}
+
+      {:error, :not_found} ->
+        raise "move: no such file: #{from}"
+
+      {:error, reason} ->
+        raise "move failed: #{inspect(reason)}"
     end
   end
 

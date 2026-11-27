@@ -389,9 +389,9 @@ test("agent-created task docks above the composer, reveals its turn, and opens i
 
   const panel = content.getByTestId("chat-task-panel");
   await expect(panel).toBeVisible();
-  const item = panel.getByTestId(`chat-task-item-${smokeTaskId}`);
-  await expect(item).toContainText(taskTitle);
-  await expect(item).toContainText("In progress");
+  const toggle = panel.getByTestId("chat-task-panel-toggle");
+  await expect(toggle).toContainText("1 running");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
 
   for (const width of [1280, 800, 500]) {
     await page.setViewportSize({ width, height: 800 });
@@ -427,8 +427,7 @@ test("agent-created task docks above the composer, reveals its turn, and opens i
     })
   ).toBe(true);
 
-  // Holding the Tasks title must not shrink its hit target or text.
-  const toggle = panel.getByTestId("chat-task-panel-toggle");
+  // Holding the Active Tasks pill must not shrink its hit target or text.
   await toggle.hover();
   await waitForSettledMotion(page.locator("body"));
   const beforePress = await toggle.boundingBox();
@@ -438,17 +437,15 @@ test("agent-created task docks above the composer, reveals its turn, and opens i
   expect(duringPress!.width).toBeCloseTo(beforePress!.width, 1);
   expect(duringPress!.height).toBeCloseTo(beforePress!.height, 1);
   await page.mouse.up();
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  // Folded, the panel is its header line alone, so the count sits on the
-  // panel's vertical centre: nothing of the list is left under it.
-  await expect(item).toHaveCount(0);
-  const folded = await panel.boundingBox();
-  const header = await toggle.boundingBox();
-  expect(header!.y - folded!.y).toBeCloseTo(
-    folded!.y + folded!.height - (header!.y + header!.height),
-    1
-  );
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const item = panel.getByTestId(`chat-task-item-${smokeTaskId}`);
+  await expect(item).toContainText(taskTitle);
+  await expect(item).toContainText("In progress");
+
   await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(item).toHaveCount(0);
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(item).toBeVisible();
@@ -469,11 +466,13 @@ test("agent-created task docks above the composer, reveals its turn, and opens i
   await expect(
     content.locator('[data-message-id="msg-assistant-smoke"]')
   ).toBeInViewport();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
 
   // Anywhere else on the row — here its leading inset, outside every
   // control's own box — opens the Task's chat beside this one, the way the
-  // Task's chip in the transcript does. It is navigation: the row stays.
-  // This chat enters the reply thread of the message that announced the Task.
+  // Task's chip in the transcript does. It is navigation: the row stays, and
+  // this chat stays as it was.
+  await toggle.click();
   const sidebarChat = page.getByTestId(`chat-sidebar-conversation-${smokeTaskId}`);
   const replyThread = content.getByRole("region", { name: "Reply thread" });
   await expect(sidebarChat).toHaveCount(0);
@@ -481,9 +480,7 @@ test("agent-created task docks above the composer, reveals its turn, and opens i
   await item.click({ position: { x: 2, y: 2 } });
   await expect(sidebarChat).toBeVisible();
   await expect(item).toBeVisible();
-  await expect(
-    replyThread.locator('[data-message-id="msg-assistant-smoke"]')
-  ).toBeVisible();
+  await expect(replyThread).toHaveCount(0);
 });
 
 test("Quick Chat shows the person's words before a Router reply creates a Task card", async ({
@@ -529,6 +526,7 @@ test("Quick Chat shows the person's words before a Router reply creates a Task c
   expect(cardBox!.y).toBeGreaterThanOrEqual(wordsBox!.y + wordsBox!.height);
 
   const panel = content.getByTestId("chat-task-panel");
+  await panel.getByTestId("chat-task-panel-toggle").click();
   const item = panel.getByTestId(`chat-task-item-${smokeTaskId}`);
   await expect(item).toContainText("In progress");
   await item.hover();
@@ -784,6 +782,7 @@ test("a revealed task turn releases the bounded window after handoff", async ({
   await expect(firstTurn).toHaveCount(0);
   await expect(thread).toHaveAttribute("data-comma-turn-window-start", /^[1-9]\d*$/);
 
+  await content.getByTestId("chat-task-panel-toggle").click();
   await content.getByTestId(`chat-task-reveal-${smokeTaskId}`).click();
   await expect(thread).toHaveAttribute("data-comma-turn-window-start", "0");
   await expect(firstTurn).toBeInViewport();
@@ -821,31 +820,28 @@ test("six tasks keep creation order and scroll inside the panel", async ({ page 
 
   const panel = content.getByTestId("chat-task-panel");
   await expect(panel).toBeVisible();
-  await expect(panel.locator(".comma-chat-task-item")).toHaveCount(6);
 
-  // Creation order: the announcing messages' transcript order, oldest first.
-  const titles = panel.locator(".comma-chat-task-item-title");
-  await expect(titles.first()).toHaveText(taskTitle);
-  await expect(titles.nth(1)).toHaveText(taskFleet[0].title);
-  await expect(titles.last()).toHaveText(taskFleet[4].title);
+  // Needs-review tasks split into the left focus strip (+1 for the second);
+  // running tasks split into the right active pill (4 running).
+  const focus = panel.getByTestId("chat-dock-attention-focus");
+  await expect(focus).toContainText(taskFleet[1].title);
+  await expect(panel.getByTestId("chat-dock-attention-toggle")).toContainText("+1");
+  await expect(panel.getByTestId("chat-task-panel-toggle")).toContainText("4 running");
 
-  // Each row carries its own status snapshot.
+  // Open the attention popover: both Needs Review tasks keep creation order.
+  await panel.getByTestId("chat-dock-attention-toggle").click();
+  await expect(panel.locator(".comma-chat-task-item")).toHaveCount(2);
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_2")).toContainText(
     "Needs Review"
   );
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_4")).toContainText(
     "Needs Review"
   );
-  // A done or cancelled Task leaves the panel by itself.
+  // A done or cancelled Task never docks.
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_6")).toHaveCount(0);
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_7")).toHaveCount(0);
 
-  // A row is the control that opens its Task, followed by its text actions
-  // in reading order: a running row offers Reveal, a settled row Dismiss and
-  // then Reveal.
-  const runningItem = panel.getByTestId("chat-task-item-cnv_task_fleet_5");
   const settledItem = panel.getByTestId("chat-task-item-cnv_task_fleet_2");
-  await expect(runningItem.getByRole("button")).toHaveCount(2);
   await expect(settledItem.getByRole("button")).toHaveCount(3);
   await settledItem.getByRole("button", { name: /^Open task:/ }).focus();
   await page.keyboard.press("Tab");
@@ -855,9 +851,7 @@ test("six tasks keep creation order and scroll inside the panel", async ({ page 
     settledItem.getByRole("button", { name: /^Reveal in chat:/ })
   ).toBeFocused();
 
-  // The row's actions lie over its trailing edge; they take no share of the
-  // row at rest. Beside the Home rails the chat column is narrow, and a
-  // settled row, which carries both actions, used to have no title left.
+  // Hovering a settled row reveals actions without shifting or truncating the title.
   const settledTitle = settledItem.locator(".comma-chat-task-item-title");
   const titleFits = () =>
     settledTitle.evaluate((title) => ({
@@ -866,39 +860,34 @@ test("six tasks keep creation order and scroll inside the panel", async ({ page 
     }));
   const atRest = await titleFits();
   expect(atRest.truncated).toBe(false);
-  // Landing the pointer shows the actions without moving the title.
   await settledItem.hover();
   await expect(settledItem.getByRole("button", { name: /^Dismiss:/ })).toBeVisible();
   expect(await titleFits()).toEqual(atRest);
   await page.mouse.move(0, 0);
 
-  // Past five rows the list overflows its viewport and scrolls internally.
-  const scroll = panel.getByTestId("chat-task-panel-list");
-  expect(
-    await scroll.evaluate((element) => element.scrollHeight > element.clientHeight)
-  ).toBe(true);
-  await scroll.evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
-  await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_5")).toBeInViewport();
-
-  // Revealing a settled row acknowledges it: reveal, then clear.
-  // Running rows only reveal and stay docked.
+  // Revealing a settled row acknowledges and clears it; the sole remaining
+  // Needs Review task promotes directly into the single-task focus strip.
   await panel.getByTestId("chat-task-reveal-cnv_task_fleet_4").click();
-  await expect(panel.locator(".comma-chat-task-item")).toHaveCount(5);
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_4")).toHaveCount(0);
-  await panel.getByTestId("chat-task-reveal-cnv_task_fleet_5").click();
-  await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_5")).toBeVisible();
-
-  // "Dismiss" hides a settled row without revealing its turn; a running row
-  // offers no such action because it always docks.
-  await expect(panel.getByTestId("chat-task-dismiss-cnv_task_fleet_5")).toHaveCount(0);
-  await settledItem.hover();
-  // The core records the acknowledgement before the row disappears.
-  // The worker round trip need not finish within one renderer frame.
+  await panel.getByTestId("chat-task-item-cnv_task_fleet_2").hover();
   await panel.getByTestId("chat-task-dismiss-cnv_task_fleet_2").click();
-  await expect(panel.locator(".comma-chat-task-item")).toHaveCount(4);
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_2")).toHaveCount(0);
+
+  // Switching to the active pill shows the four running tasks in creation order.
+  await panel.getByTestId("chat-task-panel-toggle").click();
+  await expect(panel.locator(".comma-chat-task-item")).toHaveCount(4);
+  const runningTitles = panel.locator(".comma-chat-task-item-title");
+  await expect(runningTitles.first()).toHaveText(taskTitle);
+  await expect(runningTitles.nth(1)).toHaveText(taskFleet[0].title);
+  await expect(runningTitles.last()).toHaveText(taskFleet[4].title);
+
+  const runningItem = panel.getByTestId("chat-task-item-cnv_task_fleet_5");
+  await expect(runningItem.getByRole("button")).toHaveCount(2);
+  await expect(panel.getByTestId("chat-task-dismiss-cnv_task_fleet_5")).toHaveCount(0);
+  await panel.getByTestId("chat-task-reveal-cnv_task_fleet_5").click();
+  await expect(panel.getByTestId("chat-dock-active-popover")).toHaveCount(0);
+  await panel.getByTestId("chat-task-panel-toggle").click();
+  await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_5")).toBeVisible();
 });
 
 // packages/app/e2e/chat-task-panel.spec.ts: "a revealed turn holds while the
@@ -915,6 +904,7 @@ test("a revealed turn holds while the run keeps working", async ({ page }) => {
   await composer.getByRole("textbox", { name: "AI prompt" }).fill("请完成冒烟任务");
   await composer.getByRole("button", { name: "Send" }).click();
 
+  await content.getByTestId("chat-task-panel-toggle").click();
   const item = content.getByTestId(`chat-task-item-${smokeTaskId}`);
   await expect(item).toContainText("In progress");
 
@@ -973,8 +963,8 @@ test("focus returning to a chip the run has scrolled past leaves the reader at t
   const prompt = composer.getByRole("textbox", { name: "AI prompt" });
   await prompt.fill("请完成冒烟任务");
   await composer.getByRole("button", { name: "Send" }).click();
-  await expect(content.getByTestId(`chat-task-item-${smokeTaskId}`)).toContainText(
-    "In progress"
+  await expect(content.getByTestId("chat-task-panel-toggle")).toContainText(
+    "1 running"
   );
 
   const viewport = content.locator(
@@ -1071,7 +1061,7 @@ test("focus returning to a chip the run has scrolled past leaves the reader at t
   await expect(
     content.locator('[data-message-id="msg-assistant-thinking-2"]')
   ).toHaveCount(1);
-  await testClock().advance(1_400);
+  await testClock().advance(2_000);
   await expect(chip).toBeInViewport();
   await expect(pill).toBeVisible();
 });

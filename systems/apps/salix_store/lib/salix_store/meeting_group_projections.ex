@@ -83,6 +83,105 @@ defmodule SalixStore.MeetingGroupProjections do
 
   def list_group(_group_id, _opts), do: {:error, :invalid}
 
+  @type recent_cursor :: %{inserted_at: DateTime.t(), meeting_id: String.t()}
+
+  @doc "Read bounded recent meeting IDs for one group, newest projection first."
+  @spec list_recent_group(String.t(), keyword()) ::
+          {:ok,
+           %{
+             meeting_ids: [String.t()],
+             truncated: boolean(),
+             next_cursor: recent_cursor() | nil
+           }}
+          | {:error, :invalid | :unavailable}
+  def list_recent_group(group_id, opts \\ [])
+
+  def list_recent_group(group_id, opts) when is_binary(group_id) and is_list(opts) do
+    limit = Keyword.get(opts, :limit, 25)
+    cursor = Keyword.get(opts, :cursor)
+    timeout = Keyword.get(opts, :timeout, 2_000)
+
+    if valid_identity?(group_id) and is_integer(limit) and limit in 1..@max_limit and
+         is_integer(timeout) and timeout in 1..2_000 and
+         Keyword.keys(opts) -- [:limit, :cursor, :timeout] == [] and
+         valid_recent_cursor?(cursor) do
+      query_recent_group(group_id, limit, cursor, timeout)
+    else
+      {:error, :invalid}
+    end
+  rescue
+    _exception -> {:error, :unavailable}
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
+  def list_recent_group(_group_id, _opts), do: {:error, :invalid}
+
+  defp query_recent_group(group_id, limit, nil, timeout) do
+    case Repo.query(
+           """
+           SELECT meeting_id, inserted_at
+           FROM meeting_group_projections
+           WHERE group_id = $1
+           ORDER BY inserted_at DESC, meeting_id DESC
+           LIMIT $2
+           """,
+           [group_id, limit + 1],
+           timeout: timeout
+         ) do
+      {:ok, %{rows: rows}} -> {:ok, recent_page(rows, limit)}
+      {:error, _reason} -> {:error, :unavailable}
+    end
+  end
+
+  defp query_recent_group(
+         group_id,
+         limit,
+         %{inserted_at: inserted_at, meeting_id: meeting_id},
+         timeout
+       ) do
+    case Repo.query(
+           """
+           SELECT meeting_id, inserted_at
+           FROM meeting_group_projections
+           WHERE group_id = $1
+             AND (inserted_at, meeting_id) < ($2, $3)
+           ORDER BY inserted_at DESC, meeting_id DESC
+           LIMIT $4
+           """,
+           [group_id, inserted_at, meeting_id, limit + 1],
+           timeout: timeout
+         ) do
+      {:ok, %{rows: rows}} -> {:ok, recent_page(rows, limit)}
+      {:error, _reason} -> {:error, :unavailable}
+    end
+  end
+
+  defp recent_page(rows, limit) do
+    truncated = length(rows) > limit
+    page = Enum.take(rows, limit)
+    ids = Enum.map(page, &hd/1)
+
+    next_cursor =
+      case {truncated, List.last(page)} do
+        {true, [meeting_id, inserted_at]} ->
+          %{inserted_at: inserted_at, meeting_id: meeting_id}
+
+        _ ->
+          nil
+      end
+
+    %{meeting_ids: ids, truncated: truncated, next_cursor: next_cursor}
+  end
+
+  defp valid_recent_cursor?(nil), do: true
+
+  defp valid_recent_cursor?(%{inserted_at: %DateTime{}, meeting_id: meeting_id})
+       when is_binary(meeting_id),
+       do: valid_identity?(meeting_id)
+
+  defp valid_recent_cursor?(_cursor), do: false
+
   @doc "Read one bounded page in stable meeting-ID order, not chronological order."
   def list_group_page(group_id, after_id \\ nil) do
     if is_binary(group_id) and valid_identity?(group_id) and

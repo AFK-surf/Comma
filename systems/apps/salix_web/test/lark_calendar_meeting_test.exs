@@ -120,6 +120,10 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
               )
           })
 
+        String.ends_with?(rest, "/events/instance_view") ->
+          state = Agent.get(__MODULE__, & &1)
+          ok(%{"has_more" => false, "items" => state.events})
+
         String.ends_with?(rest, "/events") ->
           calendar = rest |> String.trim_trailing("/events") |> URI.decode()
           state = Agent.get(__MODULE__, & &1)
@@ -152,6 +156,52 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
           "chat_type" => "private",
           "chat_status" => "normal"
         })
+
+    defp answer("GET", "/open-apis/im/v1/chats/oc_public", _request),
+      do:
+        ok(%{
+          "chat_id" => "oc_public",
+          "name" => "Product Team",
+          "chat_mode" => "group",
+          "chat_type" => "public",
+          "external" => false,
+          "chat_status" => "normal"
+        })
+
+    defp answer("GET", "/open-apis/im/v1/chats/oc_external", _request),
+      do:
+        ok(%{
+          "chat_id" => "oc_external",
+          "name" => "External Group",
+          "chat_mode" => "group",
+          "chat_type" => "public",
+          "external" => true,
+          "chat_status" => "normal"
+        })
+
+    defp answer("GET", "/open-apis/im/v1/chats/oc_public_not_member", _request),
+      do:
+        ok(%{
+          "chat_id" => "oc_public_not_member",
+          "name" => "Other Public Team",
+          "chat_mode" => "group",
+          "chat_type" => "public",
+          "external" => false,
+          "chat_status" => "normal"
+        })
+
+    defp answer(
+           "GET",
+           "/open-apis/im/v1/chats/oc_public_not_member/members/is_in_chat",
+           _request
+         ),
+         do: ok(%{"is_in_chat" => false})
+
+    defp answer("GET", "/open-apis/im/v1/chats/" <> rest, _request) do
+      if String.ends_with?(rest, "/members/is_in_chat"),
+        do: ok(%{"is_in_chat" => true}),
+        else: %{"code" => 99_999, "msg" => "not faked"}
+    end
 
     defp answer("GET", "/open-apis/im/v1/chats", _request),
       do:
@@ -222,14 +272,14 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
     @behaviour SalixIM.Ports.LarkUserAccounts
 
     @impl true
-    def list(_group_id),
+    def list(_group_id, _acting),
       do:
         {:ok,
          [%{"alias" => "lark-ann", "open_id" => "ou_ann", "name" => "Ann", "status" => "active"}]}
 
     @impl true
-    def access_token(_agent_id, "lark-ann"), do: {:ok, "u-ann"}
-    def access_token(_agent_id, _alias), do: {:error, :not_found}
+    def access_token(_agent_id, "lark-ann", _acting), do: {:ok, "u-ann"}
+    def access_token(_agent_id, _alias, _acting), do: {:error, :not_found}
   end
 
   setup do
@@ -348,6 +398,20 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
                object["recurrenceRules"]
 
       assert until == "2030-03-01T09:59:59"
+
+      assert {:ok, counted} =
+               LarkCalendarSource.normalize(
+                 event("uid-count_0", 1_893_456_000, recurrence: "FREQ=MONTHLY;BYDAY=1TU;COUNT=3")
+               )
+
+      assert [
+               %{
+                 "frequency" => "monthly",
+                 "byDay" => [%{"day" => "tu", "nthOfPeriod" => 1}],
+                 "until" => "2030-03-05T08:00:00"
+               }
+             ] = counted["object"]["recurrenceRules"]
+
       assert get_in(object, ["virtualLocations", "conference", "uri"]) == @meeting_url
 
       assert get_in(object, ["links", "event", "href"]) =~
@@ -446,13 +510,15 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
                  Map.put(event("uid-gone_0", 1_893_456_000), "status", "cancelled")
                )
 
-      assert {:ok, counted} =
+      assert {:ok, unsupported} =
                LarkCalendarSource.normalize(
-                 event("uid-count_0", 1_893_456_000, recurrence: "FREQ=WEEKLY;COUNT=3")
+                 event("uid-setpos_0", 1_893_456_000,
+                   recurrence: "FREQ=MONTHLY;BYDAY=TU;BYSETPOS=1"
+                 )
                )
 
-      assert counted["normalization_state"] == "unsupported_timing"
-      assert counted["meeting_qualification"]["authorized"] == false
+      assert unsupported["normalization_state"] == "unsupported_timing"
+      assert unsupported["meeting_qualification"]["authorized"] == false
 
       assert {:ok, linkless} =
                LarkCalendarSource.normalize(
@@ -460,6 +526,140 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
                )
 
       assert linkless["meeting_qualification"]["reason"] == "no_supported_conference"
+    end
+
+    test "extracts non-Google-Meet links from location and description when vchat has none, for Feishu and Lark",
+         ctx do
+      zoom = "https://us02web.zoom.us/j/81234567890?pwd=abc"
+      teams = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0"
+      lark_vc = "https://vc.larksuite.com/j/987654321"
+      feishu_vc = "https://vc.feishu.cn/j/987654321"
+      google_meet = "https://meet.google.com/abc-defg-hij"
+
+      # location.name
+      loc_name_event =
+        "uid-loc-name_0"
+        |> event(1_893_456_000)
+        |> Map.delete("vchat")
+        |> Map.put("location", %{"name" => "Room A #{zoom}", "address" => "Floor 3"})
+
+      assert {:ok, from_name} = LarkCalendarSource.normalize(loc_name_event)
+      assert get_in(from_name, ["object", "virtualLocations", "conference", "uri"]) == zoom
+
+      assert %{"authorized" => true, "reason" => "zoom_meeting"} =
+               from_name["meeting_qualification"]
+
+      # location.address
+      loc_addr_event =
+        "uid-loc-addr_0"
+        |> event(1_893_456_000)
+        |> Map.delete("vchat")
+        |> Map.put("location", %{"name" => "Online", "address" => teams})
+
+      assert {:ok, from_addr} = LarkCalendarSource.normalize(loc_addr_event)
+      assert get_in(from_addr, ["object", "virtualLocations", "conference", "uri"]) == teams
+
+      assert %{"authorized" => true, "reason" => "teams_meeting"} =
+               from_addr["meeting_qualification"]
+
+      # description (both Feishu and Lark VC links)
+      for url <- [feishu_vc, lark_vc] do
+        desc_event =
+          "uid-desc_0"
+          |> event(1_893_456_000)
+          |> Map.delete("vchat")
+          |> Map.put("description", "Join at #{url} please")
+
+        assert {:ok, from_desc} = LarkCalendarSource.normalize(desc_event)
+        assert get_in(from_desc, ["object", "virtualLocations", "conference", "uri"]) == url
+
+        assert %{"authorized" => true, "reason" => "lark_meeting"} =
+                 from_desc["meeting_qualification"]
+      end
+
+      # vchat Google Meet falls back to non-Google-Meet link in description
+      fallback_event =
+        "uid-meet-fallback_0"
+        |> event(1_893_456_000)
+        |> Map.put("vchat", %{"vc_type" => "third_party", "meeting_url" => google_meet})
+        |> Map.put("description", "Backup: #{zoom}")
+
+      assert {:ok, from_fallback} = LarkCalendarSource.normalize(fallback_event)
+      assert get_in(from_fallback, ["object", "virtualLocations", "conference", "uri"]) == zoom
+
+      # Google Meet only in location or description is never qualified
+      meet_only_event =
+        "uid-meet-text_0"
+        |> event(1_893_456_000)
+        |> Map.delete("vchat")
+        |> Map.put("location", %{"name" => google_meet, "address" => google_meet})
+        |> Map.put("description", "Meet: #{google_meet}")
+
+      assert {:ok, meet_only} = LarkCalendarSource.normalize(meet_only_event)
+      refute get_in(meet_only, ["object", "virtualLocations"])
+      assert meet_only["meeting_qualification"]["reason"] == "no_supported_conference"
+
+      # Exception override also extracts from description
+      moved =
+        "uid-loc-name_1893456000"
+        |> event(1_893_459_600, recurring_event_id: "uid-loc-name_0")
+        |> Map.delete("vchat")
+        |> Map.put("description", "Moved to #{teams}")
+
+      assert {:ok, patch} = LarkCalendarSource.normalize(moved)
+
+      assert get_in(patch, [
+               "object_patch",
+               "recurrenceOverrides",
+               "2030-01-01T08:00:00",
+               "virtualLocations",
+               "conference",
+               "uri"
+             ]) == teams
+
+      # upcoming_meetings and identity_current (via read_attendees) work for both Feishu and Lark
+      recurring_desc =
+        "uid-rec-desc_0"
+        |> event(1_893_456_000, recurrence: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO")
+        |> Map.delete("vchat")
+        |> Map.put("description", "Weekly sync #{zoom}")
+
+      FakeLark.events([recurring_desc, meet_only_event])
+
+      for {adapter, connect_id} <- [
+            {"feishu_calendar", ctx.feishu_connect_id},
+            {"lark_calendar", ctx.connect_id}
+          ] do
+        source = %{
+          "group_id" => ctx.group_id,
+          "adapter" => adapter,
+          "source_locator" => %{
+            "connect_id" => connect_id,
+            "account" => "app",
+            "external_calendar_id" => @team_calendar
+          }
+        }
+
+        assert {:ok, %{"meetings" => [%{"event_id" => "uid-rec-desc_0"}]}} =
+                 LarkCalendarSource.upcoming_meetings(source)
+
+        assert {:ok, normalized} = LarkCalendarSource.normalize(recurring_desc)
+
+        item = %{
+          "origin" => %{"external_locator" => %{"event_id" => "uid-rec-desc_0"}},
+          "object" => normalized["object"],
+          "source_version" => normalized["source_version"]
+        }
+
+        occurrence = %{
+          "occurrence_ref" => %{"recurrence_key" => %{"value" => "2030-01-01T08:00:00"}},
+          "start_ms" => 1_893_456_000_000,
+          "end_ms" => 1_893_457_800_000
+        }
+
+        assert {:ok, [%{"user_id" => "ou_ann"}, %{"user_id" => "ou_bob"}]} =
+                 LarkCalendarSource.read_attendees(source, item, occurrence)
+      end
     end
   end
 
@@ -914,6 +1114,228 @@ defmodule Salix.Bindings.LarkCalendarMeetingTest do
 
     # Without the directory scope nobody is found, and nothing fails.
     assert LarkMeetingPersonalPreparation.open_ids(lark, ["denied@example.test"]) == %{}
+  end
+
+  test "autojoin with channel delivery requires a notice chat, while pure autojoin with a chat or organizer delivery saves",
+       ctx do
+    for connect_id <- [ctx.feishu_connect_id, ctx.connect_id] do
+      # Selected calendars: autojoin + channel delivery without chat -> rejected
+      assert {:error, :meeting_channel_invalid} =
+               MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "save", %{
+                 "enabled" => true,
+                 "connect_id" => connect_id,
+                 "calendar_selections" => [
+                   %{"account_id" => "app", "calendar_id" => @team_calendar}
+                 ],
+                 "preparation_lead_minutes" => 10,
+                 "research_enabled" => false,
+                 "channel_notice" => false,
+                 "personal_preparation" => false,
+                 "autojoin" => true,
+                 "delivery" => "channel"
+               })
+
+      # Members calendars: autojoin + channel delivery without chat -> rejected
+      assert {:error, :meeting_channel_invalid} =
+               MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "save", %{
+                 "enabled" => true,
+                 "connect_id" => connect_id,
+                 "calendar_scope" => "members",
+                 "preparation_lead_minutes" => 10,
+                 "research_enabled" => false,
+                 "personal_preparation" => false,
+                 "autojoin" => true,
+                 "delivery" => "channel"
+               })
+
+      # Selected calendars: pure autojoin with chat -> allowed
+      assert {:ok, settings} =
+               MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "save", %{
+                 "enabled" => true,
+                 "connect_id" => connect_id,
+                 "channel_id" => @chat,
+                 "calendar_selections" => [
+                   %{"account_id" => "app", "calendar_id" => @team_calendar}
+                 ],
+                 "preparation_lead_minutes" => 10,
+                 "research_enabled" => false,
+                 "channel_notice" => false,
+                 "personal_preparation" => false,
+                 "autojoin" => true,
+                 "delivery" => "channel"
+               })
+
+      assert settings["mode"] == "join"
+      assert settings["chat_id"] == @chat
+
+      # Selected calendars: pure autojoin with organizer delivery and no chat -> allowed
+      assert {:ok, org_settings} =
+               MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "save", %{
+                 "enabled" => true,
+                 "connect_id" => connect_id,
+                 "calendar_selections" => [
+                   %{"account_id" => "app", "calendar_id" => @team_calendar}
+                 ],
+                 "preparation_lead_minutes" => 10,
+                 "research_enabled" => false,
+                 "channel_notice" => false,
+                 "personal_preparation" => false,
+                 "autojoin" => true,
+                 "delivery" => "organizer"
+               })
+
+      assert org_settings["mode"] == "join"
+      assert org_settings["chat_id"] == ""
+
+      # Members calendars: autojoin with organizer delivery and no chat -> allowed
+      assert {:ok, members_settings} =
+               MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "save", %{
+                 "enabled" => true,
+                 "connect_id" => connect_id,
+                 "calendar_scope" => "members",
+                 "preparation_lead_minutes" => 10,
+                 "research_enabled" => false,
+                 "personal_preparation" => false,
+                 "autojoin" => true,
+                 "delivery" => "organizer"
+               })
+
+      assert members_settings["mode"] == "join"
+      assert members_settings["chat_id"] == ""
+    end
+  end
+
+  test "meeting history returns public Feishu and Lark group records with safe links and fails closed for private or external chats",
+       ctx do
+    :ok = SalixStore.MeetingGroupProjections.mark_ready(%{"source" => "local-test"})
+    :ok = SalixStore.MeetingGroupProjectionReadiness.refresh()
+
+    for {provider, connect_id, ref_key, minute_url, note_url, applink_host} <- [
+          {
+            "feishu",
+            ctx.feishu_connect_id,
+            "feishu_ref",
+            "https://acme.feishu.cn/minutes/obcn123",
+            "https://acme.feishu.cn/docx/doxcn456",
+            "https://applink.feishu.cn"
+          },
+          {
+            "lark",
+            ctx.connect_id,
+            "lark_ref",
+            "https://acme.larksuite.com/minutes/obgl123",
+            "https://acme.larkoffice.com/docx/doxgl456",
+            "https://applink.larksuite.com"
+          }
+        ] do
+      # Seed one matching public group meeting, one with unsafe links, and one in another chat.
+      {:ok, _, _} =
+        SalixMeet.Store.create_once("hist-#{provider}-ok-#{ctx.group_id}",
+          state: %{
+            "tenant_id" => ctx.tenant_id,
+            "group_id" => ctx.group_id,
+            "connect_id" => connect_id,
+            "provider" => provider,
+            "title" => "#{provider} Product Sync",
+            "status" => "done",
+            "start_at" => 1_789_610_000,
+            ref_key => %{"chat_id" => "oc_public", "chat_type" => "group"},
+            "lark_bot" => %{
+              "links" => [
+                %{"kind" => "minute", "url" => minute_url},
+                %{"kind" => "note", "url" => note_url}
+              ]
+            }
+          }
+        )
+
+      {:ok, _, _} =
+        SalixMeet.Store.create_once("hist-#{provider}-unsafe-#{ctx.group_id}",
+          state: %{
+            "tenant_id" => ctx.tenant_id,
+            "group_id" => ctx.group_id,
+            "connect_id" => connect_id,
+            "provider" => provider,
+            "title" => "#{provider} Unsafe Links",
+            "status" => "done",
+            "start_at" => 1_789_600_000,
+            ref_key => %{"chat_id" => "oc_public", "chat_type" => "group"},
+            "lark_bot" => %{
+              "links" => [
+                %{"kind" => "minute", "url" => "https://feishu.cn.evil.test/minutes/1"},
+                %{"kind" => "note", "url" => "javascript:alert(1)"}
+              ]
+            }
+          }
+        )
+
+      {:ok, _, _} =
+        SalixMeet.Store.create_once("hist-#{provider}-other-#{ctx.group_id}",
+          state: %{
+            "tenant_id" => ctx.tenant_id,
+            "group_id" => ctx.group_id,
+            "connect_id" => connect_id,
+            "provider" => provider,
+            "title" => "Other Private Chat Secret",
+            "status" => "done",
+            "start_at" => 1_789_620_000,
+            ref_key => %{"chat_id" => "oc_team", "chat_type" => "group"}
+          }
+        )
+
+      # Public internal group where bot is a member -> succeeds
+      {:ok, _} =
+        MeetingCalendarSettings.put(
+          ctx.group_id,
+          ctx.tenant_id,
+          %{
+            "enabled" => true,
+            "provider" => provider,
+            "connect_id" => connect_id,
+            "channel_id" => "oc_public",
+            "chat_id" => "oc_public",
+            "channel" => "Product Team"
+          },
+          fn -> :ok end
+        )
+
+      assert {:ok, page} =
+               MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "history", %{})
+
+      assert page["provider"] == provider
+      assert page["channel"] == "Product Team"
+      assert [first, second] = page["meetings"]
+      assert first["title"] == "#{provider} Product Sync"
+      assert first["recording_url"] == minute_url
+      assert first["recording_status"] == "available"
+      assert first["canvas_url"] == note_url
+      assert first["thread_url"] == "#{applink_host}/client/chat/open?openChatId=oc_public"
+      assert first["channel"] == "Product Team"
+
+      assert second["title"] == "#{provider} Unsafe Links"
+      assert second["recording_url"] == nil
+      assert second["canvas_url"] == nil
+
+      # Private group, external group, and public group where bot is not a member -> fail closed
+      for blocked_chat <- ["oc_team", "oc_external", "oc_public_not_member"] do
+        {:ok, _} =
+          MeetingCalendarSettings.put(
+            ctx.group_id,
+            ctx.tenant_id,
+            %{
+              "enabled" => true,
+              "provider" => provider,
+              "connect_id" => connect_id,
+              "channel_id" => blocked_chat,
+              "chat_id" => blocked_chat
+            },
+            fn -> :ok end
+          )
+
+        assert {:error, :meeting_history_scope_unavailable} =
+                 MeetingPreparationDashboard.run(ctx.tenant_id, ctx.group_id, "history", %{})
+      end
+    end
   end
 
   defp enrolled_group!(ctx, provider \\ "lark") do

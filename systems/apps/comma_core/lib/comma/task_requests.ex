@@ -711,7 +711,9 @@ defmodule Comma.TaskRequests do
     with :ok <- full_session(session) do
       requests =
         from(request in TaskRequest,
-          where: request.sender_user_id == ^user["id"] and not is_nil(request.grant_id),
+          where:
+            request.sender_user_id == ^user["id"] and not is_nil(request.grant_id) and
+              is_nil(request.sender_hidden_at),
           order_by: [desc: request.inserted_at, desc: request.id],
           limit: @page_limit
         )
@@ -730,14 +732,76 @@ defmodule Comma.TaskRequests do
   @doc "One sent request, with its Task's status and latest reply once accepted."
   def get_sent(user, session, request_id) do
     with :ok <- full_session(session),
-         %TaskRequest{} = request <-
+         %TaskRequest{sender_hidden_at: nil} = request <-
            Repo.get_by(TaskRequest, id: to_string(request_id), sender_user_id: user["id"]) do
       workspaces = sent_workspaces([request])
       {:ok, sent_view(request, workspaces, now(), task_state(request))}
     else
+      %TaskRequest{} -> {:error, :not_found}
       nil -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc """
+  Hides a decided sent request from the sender's lists (`sender_hidden_at`).
+  A pending request must be withdrawn instead. The recipient's Task and
+  rate-limit accounting are unchanged.
+  """
+  def hide_sent(user, session, request_id) do
+    with :ok <- full_session(session),
+         %TaskRequest{} = request <-
+           Repo.get_by(TaskRequest, id: to_string(request_id), sender_user_id: user["id"]) do
+      now = now()
+
+      if status(request, now) == "pending" do
+        {:error, :task_request_pending}
+      else
+        {updated, _} =
+          from(r in TaskRequest,
+            where: r.id == ^request.id and is_nil(r.sender_hidden_at)
+          )
+          |> Repo.update_all(set: [sender_hidden_at: now, updated_at: now])
+
+        if updated == 1, do: sent_changed(user["id"])
+        :ok
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  The avatar of a person who holds an active grant on the owner's Workspace, at
+  revision `avatar_id`, for the Workspace's owner: `{:ok, content_type, body}`.
+  """
+  def grant_avatar(user, session, workspace_id, grant_id, avatar_id) do
+    with {:ok, workspace} <- authorize_owner(user, session, workspace_id),
+         %TaskRequestGrant{status: "active", grantee_user_id: grantee}
+         when is_binary(grantee) <- get_grant(workspace["id"], grant_id) do
+      Comma.ProfileAvatar.fetch(grantee, avatar_id)
+    else
+      %TaskRequestGrant{} -> {:error, :not_found}
+      nil -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  `(group_id, task_id)` pairs of the given accepted requests that already name a
+  Task but have not recorded its status yet (for bounded receipt backfill).
+  """
+  def task_refs_for_backfill([]), do: []
+
+  def task_refs_for_backfill(request_ids) when is_list(request_ids) do
+    from(r in TaskRequest,
+      where:
+        r.id in ^request_ids and r.status == "accepted" and not is_nil(r.group_id) and
+          not is_nil(r.task_id) and is_nil(r.task_status),
+      select: {r.group_id, r.task_id}
+    )
+    |> Repo.all()
   end
 
   @doc """
@@ -860,6 +924,60 @@ defmodule Comma.TaskRequests do
   def for_task(_group_id, _task_id), do: nil
 
   @doc """
+  Binds a Task created by the owner's Router (`task_request_id` on
+  `internal.task.create`) to its accepted request when the request has no Task
+  yet, so subsequent status updates reach the sender and wake the Router.
+  """
+  def attach_router_task(request_id, group_id, task_id, status \\ nil)
+      when is_binary(request_id) and is_binary(group_id) and is_binary(task_id) do
+    with {:ok, %TaskRequest{task_id: nil} = request} <- accepted_in_group(request_id, group_id) do
+      now = now()
+
+      updates =
+        [group_id: group_id, task_id: task_id, updated_at: now] ++
+          if(is_binary(status) and is_nil(request.task_status),
+            do: [task_status: status, task_updated_at: now],
+            else: []
+          )
+
+      {updated, _} =
+        from(r in TaskRequest,
+          where: r.id == ^request.id and r.status == "accepted" and is_nil(r.task_id)
+        )
+        |> Repo.update_all(set: updates)
+
+      if updated == 1, do: sent_changed(request.sender_user_id)
+      :ok
+    else
+      {:ok, %TaskRequest{}} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Finds the accepted request for `(group_id, task_id)`, or binds and returns
+  the accepted request named by `task_request_id` (a Router-created Task).
+  """
+  def for_task_or_request(group_id, task_id, task_request_id \\ nil)
+
+  def for_task_or_request(group_id, task_id, task_request_id)
+      when is_binary(group_id) and is_binary(task_id) do
+    case for_task(group_id, task_id) do
+      %TaskRequest{} = request ->
+        request
+
+      nil when is_binary(task_request_id) and task_request_id != "" ->
+        _ = attach_router_task(task_request_id, group_id, task_id)
+        for_task(group_id, task_id)
+
+      nil ->
+        nil
+    end
+  end
+
+  def for_task_or_request(_group_id, _task_id, _task_request_id), do: nil
+
+  @doc """
   Keeps the status of the request's Task (its Salix record). Tells the sender's
   clients when it changed. What the Task says stays with the owner's Router, which
   reports what the sender gets (`record_report/4`). `{:ok, request, previous_status}`.
@@ -876,6 +994,43 @@ defmodule Comma.TaskRequests do
 
       sent_changed(request.sender_user_id)
       {:ok, updated, request.task_status}
+    end
+  end
+
+  @doc """
+  Fills in a historical accepted request's missing `task_status` from its Task
+  without clobbering a status recorded meanwhile or bumping `task_updated_at`
+  to the present. Tells the sender's clients when filled.
+  """
+  def backfill_task(%TaskRequest{} = request, %{"status" => status} = task)
+      when is_binary(status) do
+    if not is_nil(request.task_status) do
+      {:ok, request, request.task_status}
+    else
+      now = now()
+      task_at = historical_task_updated_at(task, request)
+
+      from(r in TaskRequest, where: r.id == ^request.id and is_nil(r.task_status), select: r)
+      |> Repo.update_all(set: [task_status: status, task_updated_at: task_at, updated_at: now])
+      |> case do
+        {1, [updated]} ->
+          sent_changed(request.sender_user_id)
+          {:ok, updated, nil}
+
+        {0, _} ->
+          current = Repo.get(TaskRequest, request.id) || request
+          {:ok, current, current.task_status}
+      end
+    end
+  end
+
+  defp historical_task_updated_at(task, request) do
+    case task["updated_at"] || task["created_at"] do
+      ms when is_integer(ms) and ms > 0 ->
+        DateTime.from_unix!(ms * 1_000, :microsecond)
+
+      _other ->
+        request.decided_at || request.inserted_at
     end
   end
 
@@ -1185,7 +1340,10 @@ defmodule Comma.TaskRequests do
       "pending_limit" => grant.pending_limit,
       "grantee" => person(users[grant.grantee_user_id]),
       "created_at" => unix(grant.inserted_at),
-      "accepted_at" => unix(grant.accepted_at)
+      "accepted_at" => unix(grant.accepted_at),
+      # Taken from the owner's invite link (a grant made back when someone
+      # takes the other's link had none): the owner's Inbox tells them who joined.
+      "from_invite" => not is_nil(grant.invite_expires_at)
     }
     |> Map.merge(
       if grant.status == "invited",

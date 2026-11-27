@@ -73,7 +73,8 @@ class ChildLifecycle(parent: LifecycleOwner) : LifecycleOwner {
  * The signed-in session as a Task's conversation sees it: the account's scope with the Task in place of the router
  * chat. One scope per account scope, so a scope that ends ends the Task's too.
  */
-private class TaskConversationSessions(private val auth: AuthRepository, private val taskId: String) : ConversationSessions {
+private class TaskConversationSessions(private val auth: AuthRepository, private val taskId: String, private val group: String?) :
+    ConversationSessions {
     val owner = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val derived = mutableMapOf<ConversationScope, ConversationScope>()
 
@@ -81,7 +82,7 @@ private class TaskConversationSessions(private val auth: AuthRepository, private
         .stateIn(owner, SharingStarted.Eagerly, auth.conversationScope.value?.let(::derive))
 
     @Synchronized private fun derive(base: ConversationScope): ConversationScope =
-        derived.getOrPut(base) { ConversationScope(base.generation, base.accountId, base.groupId, taskId, base.workspaceId) }
+        derived.getOrPut(base) { ConversationScope(base.generation, base.accountId, group ?: base.groupId, taskId, base.workspaceId) }
 
     override fun isCurrent(scope: ConversationScope): Boolean {
         val base = auth.conversationScope.value ?: return false
@@ -129,11 +130,14 @@ class TaskConversation private constructor(val view: ChatView, private val sessi
     }
 
     companion object {
-        /** [foreground]: whether the app is on screen now; the dock follows it with [ChatView.setForeground] after. */
-        fun open(context: Context, taskId: String, foreground: Boolean): TaskConversation {
+        /**
+         * [foreground]: whether the app is on screen now; the dock follows it with [ChatView.setForeground] after.
+         * [group]: the host's Group of a Collaborative Task the member joined; null for the member's own Group.
+         */
+        fun open(context: Context, taskId: String, foreground: Boolean, group: String? = null): TaskConversation {
             val app = context.applicationContext
             val auth = AuthGraph.get(app)
-            val sessions = TaskConversationSessions(auth, taskId)
+            val sessions = TaskConversationSessions(auth, taskId, group)
             val view = ChatView(sessions, AuthGraph.core(app))
             view.start()
             view.setForeground(foreground)

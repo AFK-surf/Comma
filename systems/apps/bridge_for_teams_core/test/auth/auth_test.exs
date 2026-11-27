@@ -30,19 +30,30 @@ defmodule BridgeForTeams.AuthTest do
     n = SystemsRuntime.Proc.unique_integer([:positive])
     tenant_id = "org_#{n}"
 
-    %Organization{}
-    |> Organization.changeset(
-      Map.merge(
-        %{
-          name: "Org #{n}",
-          slug: "org-#{n}",
-          salix_tenant_id: tenant_id,
-          billing_account_id: "bridge-ba-#{tenant_id}"
-        },
-        attrs
+    org =
+      %Organization{}
+      |> Organization.changeset(
+        Map.merge(
+          %{
+            name: "Org #{n}",
+            slug: "org-#{n}",
+            salix_tenant_id: tenant_id,
+            billing_account_id: "bridge-ba-#{tenant_id}"
+          },
+          attrs
+        )
       )
-    )
-    |> Repo.insert!()
+      |> Repo.insert!()
+
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        billing_account_id: org.billing_account_id,
+        surface: "bridge",
+        product_owner_type: "organization",
+        product_owner_id: org.id
+      })
+
+    org
   end
 
   defp sso!(org, attrs \\ %{}) do

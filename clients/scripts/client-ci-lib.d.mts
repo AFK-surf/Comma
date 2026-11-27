@@ -3,6 +3,7 @@ export function isComputerUseCiPath(path: string): boolean;
 export function computerUseCiChanged(paths: string[]): boolean;
 export function electronCiChanged(paths: string[]): boolean;
 export function synchCiChanged(paths: string[]): boolean;
+export function raycastCiChanged(paths: string[]): boolean;
 export function androidCiChanged(paths: string[]): boolean;
 export function appleCiChanged(paths: string[]): boolean;
 export function clientCiChanged(paths: string[]): boolean;

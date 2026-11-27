@@ -12,11 +12,13 @@ defmodule CommaWeb.Coding.SandboxAdmission do
   alias Comma.Repo
 
   def admitted?(tenant_id, group_id) when is_binary(tenant_id) and is_binary(group_id) do
+    workspace_group_id = SalixWeb.CodingSandboxes.github_group_id(group_id)
+
     owner =
       Repo.one(
         from(w in Workspace,
           where:
-            w.salix_tenant_id == ^tenant_id and w.salix_group_id == ^group_id and
+            w.salix_tenant_id == ^tenant_id and w.salix_group_id == ^workspace_group_id and
               w.status != "deleted",
           select: w.owner_user_id,
           limit: 1

@@ -89,6 +89,40 @@ defmodule SalixAgent.SkillStoreWriteTest do
     }
   end
 
+  test "only an actual builtin read can omit its declaration", %{creator_ctx: ctx} do
+    ctx = Map.put(ctx, :ifc_mode, :enforce)
+
+    prepare = fn path ->
+      [call] =
+        Tools.prepare_for_dispatch(
+          [%{id: "meta-read", name: "fs.read_file", args: %{"path" => path}}],
+          ctx
+        )
+
+      call
+    end
+
+    builtin = prepare.("/.runtime/skills/read-only-proof/SKILL.md")
+    assert :not_guidance = Tools.prepared_guidance_result(builtin)
+
+    for path <- ["/.runtime/skills/index.md", "/private.txt", "/.runtime/skills/missing/SKILL.md"] do
+      assert {:ok, _} = Tools.prepared_guidance_result(prepare.(path))
+    end
+
+    assert {:ok, event} =
+             SkillStore.prepare_group_create(ctx, %{
+               "skill_id" => "read-only-proof",
+               "name" => "Private replacement",
+               "content" => "PRIVATE_SKILL"
+             })
+
+    event = put_in(event, ["skill", "origin"], "builtin")
+    assert {:ok, _} = SkillStore.commit_operation("private-override-declaration", %{}, [event])
+
+    assert {:ok, _} =
+             Tools.prepared_guidance_result(prepare.("/.runtime/skills/read-only-proof/SKILL.md"))
+  end
+
   test "control plane deletes an editable group skill across agent ownership", %{
     creator_ctx: creator_ctx,
     creator_id: creator_id,
@@ -357,6 +391,75 @@ defmodule SalixAgent.SkillStoreWriteTest do
                "id" => owner_id
              }
     end)
+  end
+
+  test "built-in skill reads flow to a channel while the mixed index stays private", %{
+    creator_ctx: ctx
+  } do
+    ctx = Map.put(ctx, :ifc, %{"items" => []})
+
+    assert {:tool_ifc, body, [], %{"label" => label}} =
+             Tools.read_file(%{"path" => "/.runtime/skills/read-only-proof/SKILL.md"}, ctx)
+
+    assert body =~ "READ_ONLY"
+    assert_channel_flow(label, true)
+
+    assert Tools.read_file(
+             %{"path" => "/.runtime/skills/read-only-proof/SKILL.md"},
+             Map.delete(ctx, :ifc)
+           ) == body
+
+    assert {:tool_ifc, page, [], %{"label" => page_label}} =
+             Tools.read_file(
+               %{
+                 "path" => "/.runtime/skills/read-only-proof/SKILL.md",
+                 "start_line" => 1,
+                 "num_lines" => 2
+               },
+               ctx
+             )
+
+    refute page =~ "READ_ONLY"
+    assert_channel_flow(page_label, true)
+
+    assert {:tool_ifc, _, [], %{"label" => index_label}} =
+             Tools.read_file(%{"path" => "/.runtime/skills/index.md"}, ctx)
+
+    assert_channel_flow(index_label, false)
+  end
+
+  for {id, name} <- [
+        {"read-only-proof", "Private replacement"},
+        {"private-alias", "Read Only Proof"}
+      ] do
+    test "persisted skill shadow #{id} cannot impersonate built-in provenance", %{
+      creator_ctx: ctx
+    } do
+      ctx = Map.put(ctx, :ifc, %{"items" => []})
+
+      assert {:ok, event} =
+               SkillStore.prepare_group_create(ctx, %{
+                 "skill_id" => unquote(id),
+                 "name" => unquote(name),
+                 "content" => "PRIVATE_SKILL"
+               })
+
+      event = put_in(event, ["skill", "origin"], "builtin")
+      assert {:ok, _} = SkillStore.commit_operation("private-skill-shadow", %{}, [event])
+
+      assert {:tool_ifc, body, [], %{"label" => label}} =
+               Tools.read_file(%{"path" => "/.runtime/skills/#{unquote(id)}/SKILL.md"}, ctx)
+
+      assert body =~ "PRIVATE_SKILL"
+      assert_channel_flow(label, false)
+      assert is_nil(FileBackend.label(ctx, "/.runtime/skills/missing/SKILL.md"))
+    end
+  end
+
+  defp assert_channel_flow(encoded, expected) do
+    label = SalixIFC.Codec.decode_label(encoded, SalixIFC.Label.new([:agent_private]))
+    channel = SalixIFC.Label.new([{:scope, "slack-test", "C_TEST_A"}])
+    assert SalixIFC.readers_subset?(channel, label, SalixIFC.Facts.new()) == expected
   end
 
   defp create_skill!(ctx, skill_id, name) do

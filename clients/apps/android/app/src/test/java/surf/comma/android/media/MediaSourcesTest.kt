@@ -29,7 +29,14 @@ class MediaSourcesTest {
     }
 
     @Test fun invalidRefsAndOrdinaryWorkspacePathsAreNotDownloadCapabilities() {
-        listOf("/workspace/image.png", "/.conversation-attachments/a.png", "/uploads/short-a.png", UPLOAD_PATH + "/../a.jpg").forEach {
+        listOf(
+            "/workspace/image.png",
+            "/.conversation-attachments/a.png",
+            "/uploads/short-a.png",
+            UPLOAD_PATH + "/../a.jpg",
+            "/task/cnv1_1/uploads/../secret.png",
+            "/task/../uploads/abcdefghijklmnopqrstuv-a.png",
+        ).forEach {
             assertThrows(IllegalArgumentException::class.java) { MediaSource.UploadedFile(it) }
         }
         assertThrows(IllegalArgumentException::class.java) { MediaBlobRef("A".repeat(32), "b".repeat(64), 1) }
@@ -48,6 +55,16 @@ class MediaSourcesTest {
         assertEquals(AttachmentDisplay.VIDEO, MediaRouting.display(video.toChatAttachment().file))
         assertEquals(MediaSource.UploadedFile("/uploads/abcdefghijklmnopqrstuv-r3-test.pdf"),
             pdf.toChatAttachment("c", "m", "file").file.source)
+        val taskImagePath = "/task/cnv1_collab/uploads/abcdefghijklmnopqrstuv-image.png"
+        assertTrue(validUploadedPath(taskImagePath))
+        assertTrue(validUploadedImagePath(taskImagePath))
+        val taskImage = surf.comma.android.conversation.MessageAttachment(
+            blockType = "image", blockIndex = 0, fileName = "image.png", title = null, mimeType = "image/png", size = 3,
+            workspacePath = taskImagePath, widthPx = null, heightPx = null, blobRef = null,
+            agentId = null, downloadable = false,
+        )
+        assertEquals(MediaSource.UploadedFile(taskImagePath),
+            taskImage.toChatAttachment("cnv1_collab", "m", "image").file.source)
     }
 
     @Test fun keysIncludeSessionAccountGroupAndOriginAndUseBlobHash() {

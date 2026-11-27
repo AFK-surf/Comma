@@ -59,7 +59,7 @@ defmodule SalixAgent.UnansweredPersonGuard do
     "The person in this activation has received no reply, and no Task carries their request. " <>
       "Ending the turn does not continue it later: nothing wakes you for this request again " <>
       "unless they write. Do one of these: put the answer, or a short note on what is done and " <>
-      "what is blocked, in end_turn's reply={tool,params}; or create a Task for the remaining " <>
+      "what is blocked, in end_turn's reply matching its disclosed schema; or create a Task for the remaining " <>
       "work with im_api.internal.task.create; or, only when silence is deliberate, call " <>
       "end_turn with no_reply: true. Use outcome=blocked with a reason when nothing can progress."
   end
@@ -126,10 +126,23 @@ defmodule SalixAgent.UnansweredPersonGuard do
     with true <- is_integer(ack) and is_integer(compacted) and compacted <= ack,
          false <- running_async?(session),
          messages when is_list(messages) <- InternalSession.get(session, :messages) do
-      not Enum.any?(messages, &attempt?(&1, ack))
+      held_ids = followup_guidance_ids(messages, ack)
+      not Enum.any?(messages, &attempt?(&1, ack, held_ids))
     else
       _unseen -> false
     end
+  end
+
+  defp followup_guidance_ids(messages, ack) do
+    for message <- messages,
+        id = field(message, :id),
+        is_integer(id) and id > ack,
+        field(message, :role) == "tool",
+        field(message, :guidance_reason) == "queued_followup",
+        call_id = field(message, :tool_call_id),
+        is_binary(call_id),
+        into: MapSet.new(),
+        do: call_id
   end
 
   defp running_async?(session) do
@@ -142,11 +155,16 @@ defmodule SalixAgent.UnansweredPersonGuard do
     end
   end
 
-  defp attempt?(message, ack) do
+  defp attempt?(message, ack, held_ids) do
     id = field(message, :id)
 
     is_integer(id) and id > ack and field(message, :role) == "assistant" and
-      message |> field(:tool_calls) |> List.wrap() |> Enum.any?(&reaches?/1)
+      message
+      |> field(:tool_calls)
+      |> List.wrap()
+      |> Enum.any?(fn call ->
+        not MapSet.member?(held_ids, field(call, :id)) and reaches?(call)
+      end)
   end
 
   defp reaches?(call) when is_map(call) do

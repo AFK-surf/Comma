@@ -256,7 +256,12 @@ export function SideChatComposer({
   );
 }
 
-export type SideChatTaskStatus = "in_progress" | "needs_review" | "done" | "cancelled";
+export type SideChatTaskStatus =
+  | "in_progress"
+  | "needs_review"
+  | "done"
+  | "cancelled"
+  | "loops";
 export type SideChatTask = {
   archiveAction?: TaskArchiveAction | undefined;
   activityStatus: string;
@@ -287,6 +292,7 @@ const STATUS_COLUMN_DEFINITIONS = [
   { bucket: "needs_review", icon: taskStatusIcon("needs_review") },
   { bucket: "done", icon: taskStatusIcon("done") },
   { bucket: "cancelled", icon: taskStatusIcon("cancelled") },
+  { bucket: "loops", icon: taskStatusIcon("loops", { spins: false }) },
 ] as const;
 
 function useStatusColumns() {
@@ -307,6 +313,10 @@ function useStatusColumns() {
     {
       ...STATUS_COLUMN_DEFINITIONS[3],
       label: messages.tasks_cancelled(),
+    },
+    {
+      ...STATUS_COLUMN_DEFINITIONS[4],
+      label: messages.tasks_status_loops(),
     },
   ] as const;
 }
@@ -436,6 +446,7 @@ function SideChatCardsColumn({
     cancelled: messages.side_chat_no_cancelled_tasks(),
     done: messages.side_chat_no_done_tasks(),
     in_progress: messages.side_chat_no_in_progress_tasks(),
+    loops: messages.side_chat_no_automated_tasks(),
     needs_review: messages.side_chat_no_review_tasks(),
   }[bucket];
   const scrollViewportRef = useRef<HTMLDivElement>(null);

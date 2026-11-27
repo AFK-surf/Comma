@@ -26,9 +26,11 @@ defmodule SalixIM.TaskPlacement do
       open pull request on its own head branch) it is a coding Task, with
       that repository checked out; the product checks the repository.
       Without `repo` it is a plain sandbox Task. The product applies the
-      Group's sandbox limit either way. A Worker may be bound to it
-      (`SalixAgent.StationBinding`), and it may be a Group's default place
-      (`SalixAgent.TaskPlace`): each Task then gets a sandbox of its own.
+      Group's sandbox limit either way, and refuses a runtime model whose
+      runtime no account the workspace lends a sandbox runs. A Worker may
+      be bound to it (`SalixAgent.StationBinding`), and it may be a Group's
+      default place (`SalixAgent.TaskPlace`): each Task then gets a sandbox
+      of its own.
     * A Mini App build (`mini_app {"app_id": ...}`) is a coding Task on the
       app's own repository: only with `runs_on {"kind": "sandbox"}` and a
       `repo` that is the app's (`SalixIM.MiniApps.repo/2`).
@@ -181,9 +183,11 @@ defmodule SalixIM.TaskPlacement do
     end
   end
 
-  # A place the Router chose: a Worker binding, the Group's default and
-  # automatic selection are not the Router aiming at one computer.
-  defp computer_choice(scope, placed, runs_on, source) when source in [:requested, :salix] do
+  # A place the Router chose, or automatic selection landing on one of the
+  # person's computers: a Worker binding and an explicit Group default stay as
+  # configured.
+  defp computer_choice(scope, placed, runs_on, source)
+       when source in [:requested, :salix, :automatic] do
     case SalixIM.ComputerChoice.check(scope, placed, runs_on) do
       :ok -> :ok
       {:error, reason} -> {:error, {:runs_on, reason, source}}
@@ -198,6 +202,22 @@ defmodule SalixIM.TaskPlacement do
     do: {Map.delete(runs_on, "repo"), runs_on["repo"]}
 
   defp split_repo(runs_on), do: {runs_on, nil}
+
+  @doc """
+  Validates and resolves a single session's `model` choice against an already-resolved
+  `runs_on` place (nil for Salix, or a normalized station / cloud_vm / sandbox map)
+  without re-running place resolution or billing/sandbox-limit side effects.
+  """
+  @spec resolve_session_model(map(), String.t(), map() | nil, map() | nil) ::
+          {:ok, map() | nil} | {:error, refusal()}
+  def resolve_session_model(_scope, _target_agent_id, nil, _runs_on), do: {:ok, nil}
+
+  def resolve_session_model(scope, target_agent_id, model, runs_on) when is_map(model) do
+    session_model(scope, target_agent_id, %{"model" => model}, runs_on)
+  end
+
+  def resolve_session_model(_scope, _target_agent_id, _model, _runs_on),
+    do: {:error, {:model, :not_an_object}}
 
   @doc false
   def placement_attrs(attrs, placement) do
@@ -233,7 +253,8 @@ defmodule SalixIM.TaskPlacement do
              tenant_id: group["tenant_id"],
              group_id: group_id,
              task_request_identity: attrs["client_request_id"]
-           }),
+           })
+           |> put_present(:account_id, account_id(attrs["account_id"])),
          {:ok, worker} <- task_worker(scope),
          {:ok, placement} <-
            resolve(
@@ -267,6 +288,70 @@ defmodule SalixIM.TaskPlacement do
     end
   end
 
+  @doc """
+  Create a Collaborative Task in Group `group_id`: a Task its owner hosts and
+  shares with people outside the Group. Its own Worker `worker_agent_id` runs
+  it (never the Group's Task agent), inside Salix whatever the Group's default
+  place, on Comma's built-in model. The Group's Router `router_agent_id` stays
+  its delegator only as the Task's origin and receives nothing of it
+  (`SalixIM.TaskConversationInput`). `attrs["collaboration"]` names the host
+  and the members it was started with; it is kept in the Task's metadata.
+  """
+  @spec create_collaborative_task_conversation(
+          String.t(),
+          String.t() | nil,
+          String.t(),
+          map()
+        ) ::
+          {:ok, map()} | {:error, term()}
+  def create_collaborative_task_conversation(group_id, router_agent_id, worker_agent_id, attrs)
+      when is_map(attrs) do
+    attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+
+    with %{} = collaboration when map_size(collaboration) > 0 <- attrs["collaboration"],
+         {:ok, group} <- group(group_id),
+         :ok <- collaboration_router(group, router_agent_id),
+         false <- worker_agent_id == group["task_agent_id"],
+         scope = %{
+           tenant_id: group["tenant_id"],
+           group_id: group_id,
+           task_request_identity: attrs["client_request_id"]
+         },
+         {:ok, placement} <-
+           resolve(scope, worker_agent_id, %{"runs_on" => %{"kind" => "salix"}}, false) do
+      task =
+        attrs
+        # A Loop Task together runs as any Loop Task does, on its host's credits.
+        |> Map.drop(["collaboration", "runs_on", "model", "repo", "mini_app"])
+        |> Map.update(
+          "conversation_metadata",
+          %{"collaboration" => collaboration},
+          &Map.put(&1, "collaboration", collaboration)
+        )
+
+      # Comma's built-in model, whatever the Group's default Task model: the
+      # Task serves people other than its host, never on the host's own
+      # subscription account.
+      TaskCreate.create_task_conversation(
+        group_id,
+        router_agent_id,
+        worker_agent_id,
+        task
+        |> placement_attrs(placement)
+        |> Map.put("session_model", SalixIM.TaskModelSelection.builtin())
+      )
+    else
+      true -> {:error, :task_agent_not_isolated}
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_collaboration}
+    end
+  end
+
+  # The one account a product's Task selected (a coding Task's, from Comma);
+  # its sandbox is lent only that one.
+  defp account_id(id) when is_binary(id) and id != "", do: id
+  defp account_id(_none), do: nil
+
   defp group(group_id) do
     case GroupDirectory.get_group(group_id) do
       {:ok, group} -> {:ok, group}
@@ -279,6 +364,14 @@ defmodule SalixIM.TaskPlacement do
        do: :ok
 
   defp router(_group, _router_agent_id), do: {:error, :router_changed}
+
+  # An isolated collaboration Group has no Router (`purpose: "collaboration"`,
+  # `router_agent_id: nil`). A legacy Group keeps its exact Router check.
+  defp collaboration_router(%{"purpose" => "collaboration"} = group, nil) do
+    if group["router_agent_id"] in [nil, ""], do: :ok, else: {:error, :router_changed}
+  end
+
+  defp collaboration_router(group, router_agent_id), do: router(group, router_agent_id)
 
   defp task_worker(scope) do
     case TaskCreate.task_worker(scope) do
@@ -308,7 +401,8 @@ defmodule SalixIM.TaskPlacement do
   # binding's. A Task may name them itself only when they agree with the
   # binding: the same place, and a model of the same runtime. A binding
   # without a model id leaves the station's default model of its runtime
-  # (`bound_model`, which no product check is asked about). A Loop Task runs
+  # (`bound_model`): a station bound to is not asked, a new sandbox is
+  # (`bound_runtime_runs/3`). A Loop Task runs
   # inside Salix (`loop_place/3`), so a bound Worker refuses it first.
   defp station_binding(target_agent_id, params, loop?) do
     case GroupDirectory.get_agent(target_agent_id) do
@@ -517,12 +611,21 @@ defmodule SalixIM.TaskPlacement do
   end
 
   # A bound Worker whose binding names only its runtime: the station runs its
-  # default model of that runtime.
+  # default model of that runtime. A station bound to was set up for it; a new
+  # sandbox runs only the runtimes the workspace lends it, so it is asked as
+  # for a runtime the Task names (`station_runs_runtime/3`).
   defp session_model(scope, target_agent_id, params, runs_on, bound_model) do
-    if is_map(bound_model) and is_nil(params["model"]),
-      do: {:ok, bound_model},
-      else: session_model(scope, target_agent_id, params, runs_on)
+    if is_map(bound_model) and is_nil(params["model"]) do
+      with :ok <- bound_runtime_runs(scope, runs_on, bound_model), do: {:ok, bound_model}
+    else
+      session_model(scope, target_agent_id, params, runs_on)
+    end
   end
+
+  defp bound_runtime_runs(scope, %{"kind" => "sandbox"} = place, bound_model),
+    do: station_runs_runtime(scope, place, bound_model)
+
+  defp bound_runtime_runs(_scope, _runs_on, _bound_model), do: :ok
 
   # A Worker's Session for this Task can use its own model instead of the
   # Worker's (`SalixAgent.ModelChoice`). The product checks the choice: a
@@ -546,10 +649,7 @@ defmodule SalixIM.TaskPlacement do
         with {:ok, _agent} <- GroupDirectory.get_agent(target_agent_id),
              :ok <- model_fits_runs_on(choice, runs_on),
              {:ok, model} <-
-               TaskCreate.session_model(
-                 %{tenant_id: scope.tenant_id, group_id: scope.group_id, runs_on: runs_on},
-                 choice
-               ) do
+               TaskCreate.session_model(product_scope(scope, runs_on), choice) do
           {:ok, model}
         else
           {:error, {:model, _reason}} = error -> error
@@ -565,26 +665,38 @@ defmodule SalixIM.TaskPlacement do
   # (`task_models`): a person chose an account source there for it. One that
   # runs none is refused here, before the station is invited and refuses the
   # Task itself. The Group's own VM on a VMM Host keeps its platform default.
+  # A new sandbox runs the runtimes of the accounts the workspace lends it: one
+  # it cannot run is refused here, before a sandbox is made for a Task its
+  # station would refuse.
   defp station_runs_runtime(
          scope,
          %{"kind" => "station", "device_id" => device_id} = place,
          choice
        ) do
-    if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id) do
-      :ok
-    else
-      case TaskCreate.session_model(
-             %{tenant_id: scope.tenant_id, group_id: scope.group_id, runs_on: place},
-             choice
-           ) do
-        {:ok, _choice} -> :ok
-        {:error, :model_selection_unsupported} -> :ok
-        {:error, reason} -> {:error, {:model, reason}}
-      end
+    if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id),
+      do: :ok,
+      else: product_runs_runtime(scope, place, choice)
+  end
+
+  defp station_runs_runtime(scope, %{"kind" => "sandbox"} = place, choice),
+    do: product_runs_runtime(scope, place, choice)
+
+  defp station_runs_runtime(_scope, _runs_on, _choice), do: :ok
+
+  defp product_runs_runtime(scope, place, choice) do
+    case TaskCreate.session_model(product_scope(scope, place), choice) do
+      {:ok, _choice} -> :ok
+      {:error, :model_selection_unsupported} -> :ok
+      {:error, reason} -> {:error, {:model, reason}}
     end
   end
 
-  defp station_runs_runtime(_scope, _runs_on, _choice), do: :ok
+  # What the product checks a model against: the place, and the one account a
+  # Task selected (`account_id`), which a sandbox is lent alone.
+  defp product_scope(scope, place) do
+    %{tenant_id: scope.tenant_id, group_id: scope.group_id, runs_on: place}
+    |> put_present(:account_id, scope[:account_id])
+  end
 
   defp model_fits_runs_on(%{"kind" => "runtime"}, nil),
     do: {:error, {:model, :runtime_requires_runs_on}}
@@ -595,19 +707,32 @@ defmodule SalixIM.TaskPlacement do
 
   defp runs_on_refusal(:not_an_object, _source), do: "runs_on must be an object"
 
-  defp runs_on_refusal({:computer_choice_required, computers}, _source),
+  defp runs_on_refusal({:computer_choice_required, computers}, source),
     do:
       "this person has more than one computer connected (#{computer_list(computers)}) and has " <>
         "not said which to use. Do not choose for them. Ask with a question card in this " <>
         "conversation (im_api.internal.send_message), one choice per computer labelled with " <>
-        "its name as written here, then end the turn blocked and create the Task on the " <>
-        "computer they pick. The Task was not made."
+        "its name as written here#{automatic_choice_hint(source)}, then end the turn blocked " <>
+        "and create the Task on the place they pick. The Task was not made."
+
+  defp runs_on_refusal({:computer_choice_required, computers, provider}, source),
+    do:
+      "this person has more than one computer connected (#{computer_list(computers)}) and has " <>
+        "not said which to use. Do not choose for them. Ask in this #{provider} conversation " <>
+        "which computer to use, naming each computer as written here#{automatic_choice_hint(source)}, " <>
+        "then end the turn blocked and create the Task on the place they pick. The Task was not made."
 
   defp runs_on_refusal({:computer_choice_other, named}, _source),
     do:
       "this person chose #{computer_list(named)} in this conversation, not the computer this " <>
         "Task is aimed at. Create the Task on the computer they chose, or ask again with a " <>
         "question card if they changed their mind. The Task was not made."
+
+  defp runs_on_refusal({:computer_choice_other, named, provider}, _source),
+    do:
+      "this person chose #{computer_list(named)} in this #{provider} conversation, not the " <>
+        "computer this Task is aimed at. Create the Task on the computer they chose, or ask " <>
+        "again in this #{provider} conversation if they changed their mind. The Task was not made."
 
   defp runs_on_refusal(:station_candidate_page_exhausted, _source),
     do:
@@ -815,6 +940,11 @@ defmodule SalixIM.TaskPlacement do
     end)
   end
 
+  defp automatic_choice_hint(:automatic),
+    do: " (or offer a cloud sandbox / Salix if the work does not need one of these computers)"
+
+  defp automatic_choice_hint(_source), do: ""
+
   # A device that cannot take Tasks: what its user does, for the agent to pass
   # on, with the structured reason (`SalixStore.StationReadiness`).
   defp station_refusal(reason, info) do
@@ -842,6 +972,24 @@ defmodule SalixIM.TaskPlacement do
         "To do the work on that computer now, create a Task with runs_on {kind: salix} and no runtime model; " <>
         "its Worker drives the computer with env.exec (environment \"station\"), station.fs and station.process. " <>
         "The Task was not made."
+
+  defp model_refusal({:not_in_sandbox, []}),
+    do:
+      "a sandbox here runs no runtime: the workspace lends a sandbox no Codex or Claude account. " <>
+        "Create the Task elsewhere, or tell the person a sandbox needs an account. The Task was not made."
+
+  defp model_refusal({:not_in_sandbox, runtimes}),
+    do:
+      "a sandbox here does not run this runtime: the workspace lends a sandbox accounts for " <>
+        "#{Enum.join(runtimes, ", ")} only. Give model {kind: runtime, provider} with one of those, " <>
+        "or omit model. The Task was not made."
+
+  defp model_refusal({:not_on_stillfail, models}),
+    do:
+      "that still.fail workspace does not run this model; its task_models are #{Jason.encode!(models)}. " <>
+        "Omit model to run the workspace's own default model, or give model {kind: runtime, provider} with " <>
+        "a runtime it lists and a model id only from its list (a runtime listed with no model ids runs its " <>
+        "default). Do not do this work with env.exec: a still.fail station runs no command. The Task was not made."
 
   defp model_refusal(reason),
     do: "model is not usable here: #{inspect(reason)}; check agent.models"

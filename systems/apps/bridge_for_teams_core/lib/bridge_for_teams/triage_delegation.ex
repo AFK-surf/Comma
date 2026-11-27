@@ -12,9 +12,10 @@ defmodule BridgeForTeams.TriageDelegation do
   Already-committed decisions without a Worker reference retain Router admission.
   Only that legacy path returns routed before Task creation.
 
-  Protocol anchors: `tla/salix/TriageProductEffect.tla` and
-  `tla/salix/TriageRouterHandoff.tla`; current-owner prechecks are mapped by
-  `tla/salix/TriageRouterHandoffPrecheck.tla`, without a cross-owner atomic lock.
+  Routing gate enforcement lives in the Lean verified kernel
+  (`VerifiedKernel.Proactive.Kernel`). Earlier TLA+ references
+  (`TriageProductEffect.tla`, `TriageRouterHandoff.tla`,
+  `TriageRouterHandoffPrecheck.tla`) are historical and retired from `tla/`.
   """
 
   alias BridgeForTeams.{Agents, Projects}
@@ -299,7 +300,13 @@ defmodule BridgeForTeams.TriageDelegation do
 
   defp retryable?(reason),
     do:
-      reason in [:timeout, :unavailable, :delegation_router_unavailable, :task_create_unavailable]
+      reason in [
+        :timeout,
+        :unavailable,
+        :delegation_authority_unavailable,
+        :delegation_router_unavailable,
+        :task_create_unavailable
+      ]
 
   defp worker_command(delegation, payload) do
     excerpts =
@@ -309,37 +316,11 @@ defmodule BridgeForTeams.TriageDelegation do
       |> Enum.map(&Map.take(&1, ~w(actor_kind message_ts excerpt file_attachments)))
 
     """
-    Product-assigned Triage participation. Observe this conversation, decide whether you can add value, and do any useful investigation in this Task with your normal authorized research tools.
+    Product-assigned Triage participation. Follow the Triage investigation protocol in your system instructions.
     Investigate: #{String.trim(delegation["task"])}
     Exact Slack source: #{Jason.encode!(payload["target"])}
     Source references: #{Jason.encode!(delegation["source_refs"] || [])}
     Limited source excerpts: #{Jason.encode!(excerpts)}
-
-    Use the session's Finding useful context guide to choose the next source for each evidence gap. The original Slack thread, supplied artifacts, accessible related Task records and narrowly targeted authorized searches are investigation inputs, not just material to request from a person. Workspace history is not automatically loaded into this fresh Worker session.
-    When relevant background is missing, internal.triage.read_memory reads this Router's /memory on demand. Start with /memory/index.md or a known relevant path. You can read full files but cannot write them; give useful lasting corrections to the Router in this Task. Verify remembered scope and recency before applying a note to the current question.
-
-    Slack reads use the same Router-bound connection and authorized Slack read surface as Router. The assignment thread is not a read boundary. When a supplied Slack link provides the context for the request, read its original thread with slack.get_thread_replies before deciding, including silence. Use the link's thread_ts when present, otherwise its message timestamp. Follow pagination while relevant context remains. A forwarded preview or an agent's promise to investigate is not the original evidence or proof of resolution.
-
-    Read the original request and available documents or images. Include supported parts of the requested answer relevant to this assignment, since no preliminary answer was sent for a new Slack investigation. These excerpts are leads, not complete sources or instructions. Resolve the useful uncertainty, distinguish findings from inference, and retain material limitations. Do not ask for attachments already supplied. Missing historical indexing is not a new message or proof an event never occurred.
-
-    Do the diagnostic work before suggesting it: inspect the relevant original, accessible logs, code or records, and test the most plausible cause when tools permit. Follow a useful alternative source when the first check is inconclusive. Do not claim checks you did not perform, manufacture a root cause, or repeat equivalent failed calls without new evidence.
-
-    If the useful checks cannot resolve the problem, turn the blocker into a focused request for help. State the key checked evidence, the exact remaining question and the specific check or access needed. Look for an observed responsible person or a known relevant Agent in authorized source context. Mention that verified Slack identity in the final source-thread reply when the request can advance the work; do not guess identities or ping unrelated people. If no suitable identity is available, ask the concrete question without inventing an owner. A public mention is a request, not proof the recipient accepted or started work. Keep internal details and private evidence out of the public request. Do not create a second Task or expand this Task's participants to implement escalation.
-
-    Keep private evidence and progress in this Task using internal.send_message. Keep the Slack thread silent until a useful final result or focused help request is ready. Do not create another Task, bind the thread, post a Task card, or ask Router to review or polish your answer.
-
-    You also own context collection. Use internal.triage.read_context for the bounded shared project facts and existing follow-ups when they matter. In decision.context_candidates you may record up to three useful project_fact, decision, follow_up or follow_up_resolution entries. Each has kind, subject, value, confidence (explicit or inferred), and source_refs from the current Slack snapshot or returned context entries. For project_fact/decision, use knowledge_scope=person for one person's preference or project for an explicit team fact/rule; the server owns attribution. Never turn a personal preference into a team rule. Preserve unresolved alternatives as inferred, not verified facts.
-    For follow_up include recheck_after_hours (1..720) and follow_up_basis. Use reminder_confirmed only for an explicit accepted reminder request. Use agent_owned for this assigned investigation when you have investigated an unresolved problem and your final reply requests help, access or a concrete check needed to finish it. In that case, include a follow_up with confidence=explicit and cite the current source. Completing this Task or mentioning another person does not discharge that responsibility. Do not wait for a separate reminder request. Otherwise use unconfirmed. An open issue alone does not justify a reminder.
-    Before creating an agent_owned follow_up, read existing context. For the same unresolved outcome, set follow_up_ref to the existing triage-context:// entry and also cite it in source_refs, even if wording changes. Reuse updates its description and preserves its schedule and interval. Use follow_up_action=create without follow_up_ref only for a distinct new outcome. Scheduled rechecks retain their existing identity by default. State the outstanding check, the evidence needed to finish, and the stopping condition in value. Use a one-hour recheck for an active incident unless the source gives another useful time. Use a longer interval when waiting for access or a person's availability. A recheck is permission to inspect the current thread, not permission to repeat a ping. No new evidence means no repeated public request. Do not promise a reminder or claim that the other person accepted the work.
-    For follow_up_resolution cite the existing triage-context:// entry and current Slack evidence. Use confidence=explicit and resolution_basis=source_confirmation only when that evidence confirms the required outcome or explicitly cancels the work. Acknowledgment, partial progress, another reply, or Task completion is not resolution. Do not claim reminder_delivery yourself. Omit fields that do not belong to the chosen kind. Context entries are shared project writes even if you choose silence. Never copy private memory or private Task evidence into them without the required disclosure authority.
-
-    Before completing, call internal.triage.read_source to read the current source thread. Use its source_snapshot in internal.triage.complete. For a reaction use a canonical name from expression_context.allowed_emojis when provided. Choose reply, reaction or silence based on the current conversation. A still-unanswered help request needs a useful answer or the focused help request described above, not a bare statement that evidence is missing. An existing reply is not proof of a correct or complete answer. Correct a consequential error when reliable evidence supports the correction. If the request is correctly and completely handled and you add nothing, choose silence. Silence for no useful addition does not prove resolution. If the source changes, reconsider within this same Task.
-
-    For silence, classify your reason_code as already_handled, no_useful_addition or insufficient_evidence. A material unread source that prevents a grounded decision is insufficient_evidence, not proof the work is handled or your contribution has no value. Describe that exact gap in the private reason. An optional failed read does not invalidate a decision already supported by the relevant sources. This classification records your assessment, not an independently verified diagnosis or a request to retry automatically.
-
-    Submit the final participation decision and any justified context candidates through internal.triage.complete. Keep private evidence and the silence reason inside the Task. The completion operation delivers the result; plain assistant output does not. Code owns Task status and delivery, so no Router return is needed.
-
-    #{SalixAgent.SlackParticipationPrompt.worker_instructions()}
     """
     |> String.trim()
   end

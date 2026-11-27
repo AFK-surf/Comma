@@ -9,7 +9,11 @@ defmodule SalixLlm.Transcribe do
 
   @receive_timeout 180_000
   @batch_timeout 600_000
-  @max_chunk_concurrency 2
+  # A recording's chunks asked at once. With 2, an 88-minute recording (20
+  # chunks, about 55 s each) took 550 s of the 600 s batch on staging
+  # (2026-11-12), so a longer meeting timed out. With 6, four hours (48
+  # chunks) fit in the batch.
+  @max_chunk_concurrency 6
   # A chunk the model fails on is asked again as parts this long. On prod
   # (2026-11), a recording's failing 5-minute chunk failed again on every retry,
   # while the same audio cut into one-minute parts transcribed.
@@ -384,7 +388,12 @@ defmodule SalixLlm.Transcribe do
 
   defp run_chunk_transcriptions(cfg, chunks, prompt, opts) do
     transcribe_fun = opts[:transcribe_fun] || (&transcribe/4)
-    max_concurrency = opts |> Keyword.get(:max_concurrency, @max_chunk_concurrency) |> clamp(1, 2)
+
+    max_concurrency =
+      opts
+      |> Keyword.get(:max_concurrency, @max_chunk_concurrency)
+      |> clamp(1, @max_chunk_concurrency)
+
     # Each request is bounded by its receive timeout; a chunk asked again as
     # parts takes longer, so only the batch deadline bounds a chunk.
     task_timeout = opts[:task_timeout_ms] || opts[:batch_remaining_ms]

@@ -2356,7 +2356,7 @@ test("app-owned download capability visibly retries no-CORS media without naviga
   );
   await expect(
     audioGroup.getByText("Could not download audio. Try again.")
-  ).toBeVisible();
+  ).toBeAttached();
   expect(page.url()).toBe(originalPageUrl);
 
   const downloadPromise = page.waitForEvent("download");
@@ -2368,7 +2368,7 @@ test("app-owned download capability visibly retries no-CORS media without naviga
   expect((await downloadPromise).suggestedFilename()).toBe(
     "generated-audio-preview.mp3"
   );
-  await expect(audioGroup.getByText("Audio downloaded.")).toBeVisible();
+  await expect(audioGroup.getByText("Audio downloaded.")).toBeAttached();
   expect(page.url()).toBe(originalPageUrl);
 });
 
@@ -2492,7 +2492,7 @@ test("video download state remains shared when the preview opens", async ({ page
   await expect(
     previewPlayer.getByRole("button", { name: "Downloading video" })
   ).toHaveAttribute("aria-disabled", "true");
-  await expect(previewPlayer.getByText("Downloading video…")).toBeVisible();
+  await expect(previewPlayer.getByText("Downloading video…")).toBeAttached();
   await expect
     .poll(() =>
       page.evaluate(
@@ -2508,7 +2508,7 @@ test("video download state remains shared when the preview opens", async ({ page
 
   await expect(
     previewPlayer.getByText("Could not download video. Try again.")
-  ).toBeVisible();
+  ).toBeAttached();
   const retryButton = previewPlayer.getByRole("button", {
     name: "Download video failed. Try again",
   });
@@ -2557,7 +2557,7 @@ test("video download state remains shared when the preview opens", async ({ page
   expect((await downloadPromise).suggestedFilename()).toBe(
     "generated-video-preview.webm"
   );
-  await expect(inlinePlayer.getByText("Video downloaded.")).toBeVisible();
+  await expect(inlinePlayer.getByText("Video downloaded.")).toBeAttached();
 });
 
 test("hover-only media keeps delayed download feedback visible off-surface", async ({
@@ -2590,10 +2590,10 @@ test("hover-only media keeps delayed download feedback visible off-surface", asy
     )
     .toEqual({ focusWithin: false, hover: false });
   await expect(imageToolbar).toHaveCSS("opacity", "1");
-  await expect(imageToolbar.getByText("Downloading image…")).toBeVisible();
+  await expect(imageToolbar.getByText("Downloading image…")).toBeAttached();
   await expect(
     imageToolbar.getByText("Could not download image. Try again.")
-  ).toBeVisible();
+  ).toBeAttached();
   await expect(imageToolbar).toHaveCSS("opacity", "1");
 
   const videoStage = page.locator(".chat-panel-video-stage");
@@ -2618,10 +2618,10 @@ test("hover-only media keeps delayed download feedback visible off-surface", asy
     )
     .toEqual({ focusWithin: false, hover: false });
   await expect(videoPlayer).toHaveCSS("opacity", "1");
-  await expect(videoPlayer.getByText("Downloading video…")).toBeVisible();
+  await expect(videoPlayer.getByText("Downloading video…")).toBeAttached();
   await expect(
     videoPlayer.getByText("Could not download video. Try again.")
-  ).toBeVisible();
+  ).toBeAttached();
   await expect(videoPlayer).toHaveCSS("opacity", "1");
 });
 

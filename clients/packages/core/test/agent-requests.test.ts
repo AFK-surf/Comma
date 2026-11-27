@@ -200,6 +200,42 @@ describe("An Agent's requests in a conversation", () => {
     expect(get()?.requests[0]?.outcome).toBe("connected");
   });
 
+  it("reads a secret's fields for its card, each shown or masked, required or optional", async () => {
+    const t = setup();
+    const secret = github("pending", {
+      oauth: {
+        provider: "secret",
+        alias: "lumen-erp",
+        reason: "The ERP needs an app key and a secret.",
+        scopes: [],
+        input: {
+          kind: "secret_fields",
+          fields: [
+            { name: "app_key", label: "App Key", secret: false },
+            { name: "app_secret" },
+            { name: "token", label: "Token", optional: true },
+          ],
+        },
+      },
+    });
+    const get = t.watch({
+      topic: "agentRequests",
+      group: GROUP,
+      conversation: CONVERSATION,
+    });
+    await t.time.pass(100);
+    t.host.api.open(`${BASE}/events`)!.named("snapshot", { data: [secret] });
+    await t.time.pass(100);
+    expect(get()?.requests[0]).toHaveProperty("oauth.input", {
+      kind: "secret",
+      fields: [
+        { name: "app_key", label: "App Key", secret: false, optional: false },
+        { name: "app_secret", label: "app_secret", secret: true, optional: false },
+        { name: "token", label: "Token", secret: true, optional: true },
+      ],
+    });
+  });
+
   it("follows the person's own location requests while the app is open, in every Group", async () => {
     const t = setup();
     const own = t.watch({ topic: "agentLocationRequests" });

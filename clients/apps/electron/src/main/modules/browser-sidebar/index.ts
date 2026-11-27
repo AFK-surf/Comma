@@ -15,6 +15,7 @@ import {
   browserSidebarInspectResultSchema,
   browserSidebarNavigateInputSchema,
   browserSidebarOpenInputSchema,
+  browserSidebarCloseTabRequestSchema,
   browserSidebarOpenTabRequestSchema,
   browserSidebarUpdateInputSchema,
   maxBrowserSidebarFaviconBytes,
@@ -23,6 +24,7 @@ import {
   type BrowserSidebarCaptureInput,
   type BrowserSidebarCaptureResult,
   type BrowserSidebarCloseInput,
+  type BrowserSidebarCloseTabRequest,
   type BrowserSidebarCornerRadii,
   type BrowserSidebarInspectInput,
   type BrowserSidebarInspectResult,
@@ -80,6 +82,7 @@ function standInUnavailable(reason: string) {
 const BROWSER_INSPECTION_SCREENSHOT_MAX_EDGE = 1568;
 export const CLIENT_CDP_TIMEOUT_MS = 10_000;
 export const CLIENT_BROWSER_OPEN_TIMEOUT_MS = 10_000;
+export const CLIENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const CLIENT_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024;
 const CLIENT_SCREENSHOT_MAX_BASE64_CHARS =
   Math.ceil(CLIENT_SCREENSHOT_MAX_BYTES / 3) * 4;
@@ -423,6 +426,14 @@ interface PendingClientTabOpen {
   cancelTimer: () => void;
 }
 
+interface PendingClientTabClose {
+  ownerWindowId: string;
+  promise: Promise<void>;
+  reject(error: Error): void;
+  resolve(): void;
+  cancelTimer: () => void;
+}
+
 interface BrowserSidebarSurfaces {
   registerView(
     registration: Parameters<NativeSurfaceService["registerView"]>[0]
@@ -455,6 +466,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     | ((ownerWindowId: string, request: BrowserSidebarOpenTabRequest) => boolean)
     | undefined;
   readonly #pendingClientTabOpens = new Map<string, PendingClientTabOpen>();
+  readonly #onClientCloseTabRequested:
+    | ((ownerWindowId: string, request: BrowserSidebarCloseTabRequest) => boolean)
+    | undefined;
+  readonly #pendingClientTabCloses = new Map<string, PendingClientTabClose>();
   readonly #releaseOwnerWindowListener: (() => void) | undefined;
   readonly #resolveOwnerWindow: (
     windowId: string
@@ -518,6 +533,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     createComposerView,
     composerUrl,
     getCallerWindowId = () => getCurrentNativeCallerContext().windowId,
+    onClientCloseTabRequested,
     onClientOpenTabRequested,
     onStateChanged,
     onOwnerWindowUnregistered,
@@ -535,6 +551,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     createComposerView?: (() => BrowserSidebarViewLike) | undefined;
     composerUrl?: string | undefined;
     getCallerWindowId?: (() => string) | undefined;
+    onClientCloseTabRequested?:
+      | ((ownerWindowId: string, request: BrowserSidebarCloseTabRequest) => boolean)
+      | undefined;
     onClientOpenTabRequested?:
       | ((ownerWindowId: string, request: BrowserSidebarOpenTabRequest) => boolean)
       | undefined;
@@ -557,6 +576,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     this.#createComposerView = createComposerView;
     this.#composerUrl = composerUrl;
     this.#getCallerWindowId = getCallerWindowId;
+    this.#onClientCloseTabRequested = onClientCloseTabRequested;
     this.#onClientOpenTabRequested = onClientOpenTabRequested;
     this.#onStateChanged = onStateChanged;
     this.#resolveOwnerWindow = resolveOwnerWindow;
@@ -629,6 +649,51 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
         this.#rejectPendingClientTabOpen(tabId, asError(error));
       }
     });
+  }
+
+  /**
+   * Asks the tab's owner renderer to close one tab the way the person closing
+   * it does, and settles only when Main has removed that tab's session. The
+   * renderer owns the tab list, so Main does not close the session behind its
+   * back. The wait is event-driven and bounded, like `openClientTab`.
+   */
+  async closeClientTab(input: { tabId: string }): Promise<void> {
+    const target = this.#requireClientTarget(input.tabId);
+    const { ownerWindowId, tabId } = target;
+    const waiting = this.#pendingClientTabCloses.get(tabId);
+    if (waiting) return waiting.promise;
+    if (!this.#onClientCloseTabRequested) {
+      throw new Error("Closing an in-app browser tab is unavailable.");
+    }
+    const request = browserSidebarCloseTabRequestSchema.parse({ tabId });
+
+    let settle!: Pick<PendingClientTabClose, "reject" | "resolve">;
+    const promise = new Promise<void>((resolve, reject) => {
+      settle = { reject, resolve };
+    });
+    const cancelTimer = this.#clock.setTimer(CLIENT_BROWSER_CLOSE_TIMEOUT_MS, () => {
+      this.#rejectPendingClientTabClose(
+        tabId,
+        new Error(`Timed out waiting for in-app browser tab ${tabId} to close.`)
+      );
+    });
+    this.#pendingClientTabCloses.set(tabId, {
+      ...settle,
+      cancelTimer,
+      ownerWindowId,
+      promise,
+    });
+    try {
+      if (this.#onClientCloseTabRequested(ownerWindowId, request) !== true) {
+        this.#rejectPendingClientTabClose(
+          tabId,
+          new Error("Comma's main renderer is not ready to close a browser tab.")
+        );
+      }
+    } catch (error: unknown) {
+      this.#rejectPendingClientTabClose(tabId, asError(error));
+    }
+    return promise;
   }
 
   async open(input: BrowserSidebarOpenInput): Promise<BrowserSidebarState> {
@@ -770,7 +835,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       this.#touchActive(previous);
       placeView(previous.view, parsed.bounds, parsed.cornerRadii);
       previous.inspectionComposer?.position();
-      previous.view.setVisible(true);
+      previous.view.setVisible(parsed.visible !== false);
       const requestedNavigationRevision = parsed.navigationRevision ?? 0;
       if (requestedNavigationRevision > previous.navigationRevision) {
         previous.navigationRevision = requestedNavigationRevision;
@@ -865,7 +930,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       this.#installNavigationStatePublishing(active);
       this.#installPasskeys(active);
       placeView(view, parsed.bounds, parsed.cornerRadii);
-      view.setVisible(true);
+      view.setVisible(parsed.visible !== false);
       owner.contentView.addChildView(view.nativeView ?? view);
     } catch (error: unknown) {
       try {
@@ -1166,6 +1231,31 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
   }
 
+  /** The tab's session is gone from Main, however it ended: the close is done. */
+  #resolvePendingClientTabClose(active: ActiveBrowserSidebar) {
+    const pending = this.#pendingClientTabCloses.get(active.tabId);
+    if (!pending || pending.ownerWindowId !== active.ownerWindowId) return;
+    this.#pendingClientTabCloses.delete(active.tabId);
+    pending.cancelTimer();
+    pending.resolve();
+  }
+
+  #rejectPendingClientTabClose(tabId: string, error: Error) {
+    const pending = this.#pendingClientTabCloses.get(tabId);
+    if (!pending) return;
+    this.#pendingClientTabCloses.delete(tabId);
+    pending.cancelTimer();
+    pending.reject(error);
+  }
+
+  #rejectPendingClientTabClosesForOwner(ownerWindowId: string, error: Error) {
+    for (const [tabId, pending] of this.#pendingClientTabCloses) {
+      if (pending.ownerWindowId === ownerWindowId) {
+        this.#rejectPendingClientTabClose(tabId, error);
+      }
+    }
+  }
+
   async #withClientDebugger<T>(
     active: ActiveBrowserSidebar,
     operation: (
@@ -1298,6 +1388,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       ownerWindowId,
       new Error("The browser tab owner window closed before the tab became ready.")
     );
+    this.#rejectPendingClientTabClosesForOwner(
+      ownerWindowId,
+      new Error("The browser tab owner window closed before the tab closed.")
+    );
     this.#releaseOwnerLifecycle(ownerWindowId);
     this.#preemptOwner(ownerWindowId);
     return this.#enqueueOwnerOperation(ownerWindowId, () =>
@@ -1368,6 +1462,12 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       this.#rejectPendingClientTabOpen(
         tabId,
         new Error("Browser sidebar service was disposed before the tab became ready.")
+      );
+    }
+    for (const tabId of this.#pendingClientTabCloses.keys()) {
+      this.#rejectPendingClientTabClose(
+        tabId,
+        new Error("Browser sidebar service was disposed before the tab closed.")
       );
     }
     this.#releaseOwnerWindowListener?.();
@@ -2231,6 +2331,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
     if (this.#activeByTabId.get(active.tabId) === active) {
       this.#activeByTabId.delete(active.tabId);
+      this.#resolvePendingClientTabClose(active);
     }
     const sessions = this.#activeByOwnerWindowId.get(active.ownerWindowId);
     if (sessions?.get(active.sessionId) === active) {

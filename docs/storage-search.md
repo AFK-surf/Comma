@@ -54,7 +54,7 @@ The retained S3 Session prefix is `agents/{agent_id}/internal_runtime/sessions/{
 Ordinary Session commits update PostgreSQL inputs, control, records, source progress, and due state in one transaction.
 They do not write a hot S3 snapshot. Imported history retains its published segment locations and supported encoding.
 Frozen JSONL ranges retain their original object key, byte offset, and length in the same PostgreSQL directory as ETF segments.
-Readers use the recorded encoding. Import does not rewrite these history bodies or require a separate format conversion.
+Readers use the recorded encoding. Import does not rewrite or convert these history bodies.
 A reload captures control, inputs, hot records, context, and directory pages in one short REPEATABLE READ transaction.
 S3 downloads follow that transaction and use its captured locations. They do not reconstruct a key from the current Session identity.
 The reader restores cold records needed above `compacted_seq` and retained terminal-call references.
@@ -68,11 +68,11 @@ History pages merge each record once, even when the runtime context contains rec
 Do not add writes to the old JSONL archive.
 Use OTP zstd. Cross-OTP byte equality is not a durable protocol guarantee.
 
-History search indexes canonical records in PostgreSQL, then transfers complete records to ClickHouse.
+On the Agent's ring Pod, history search indexes canonical records in PostgreSQL, then transfers complete records to ClickHouse.
 A bounded HTTP read must confirm the exact cold documents before hot document deletion.
 Table-name substitution preserves literal document content.
 
-Failed confirmation preserves hot documents. The existing `checked_at` field delays retries five seconds across Pods, including direct hints.
+Failed confirmation preserves hot documents. The `checked_at` field delays retries five seconds across Pods, including direct hints.
 Canonical indexing and body archival continue independently. Oversized records remain hot without reporting a storage failure.
 
 New materialized user and runtime messages keep `accepted_input`: `{queue_id, kind, dedupe_key, payload}` from the canonical queue item.
@@ -85,7 +85,7 @@ The sealing byte bound counts these bytes. Older records lack this value and can
 
 Deploy the reader that restores uncompacted cold context to all serving nodes before deploying this producer.
 Record commits raise the archive target to committed `last_seq`. Logical compaction remains independent.
-The existing global worker discovers 256 pending records or a tail idle for 30 seconds, using `last_activity_at`.
+The Agent's ring Pod discovers 256 pending records or a tail idle for 30 seconds, using `last_activity_at`.
 Each discovery page returns at most 128 control rows and advances past rows that are still waiting.
 An admitted hint also inspects at most 256 payload lengths against the existing 16 MiB segment line.
 Continuous input drains through bounded visits, and idle tails close without model compaction.
@@ -127,19 +127,20 @@ Import preserves its status, result, and source object. An explicit deadline rem
 ## Comma Task search
 
 `GET /v1/comma/groups/:group_id/conversations/search?q=...&limit=...` requires authorization for the exact Group.
-It calls `SalixIM.Conversations.search_group_tasks/3` for `agent_task` Conversations.
+It calls `SalixIM.Conversations.search_group_tasks/3`.
 `GET .../conversations/:conversation_id/search?q=...` lists one Task's matching Messages (id, `seq`) by `seq`.
+A query of one codepoint, raw or folded, matches only titles, by `u:` grams an after-rollout pass adds to older titles.
 Task search uses an `agent_task` allowlist. Every other nonempty string kind is a non-Task, including unknown kinds.
-Discovery skips these Conversations; queued projection work removes their old Task projection.
+Discovery skips them; queued projection work removes their old Task projection.
 Missing or malformed kinds, mismatched identities, and invalid metadata still fail validation.
 `search_group_conversations` is not a fallback or a migration reader.
 Unavailable or unsealed generations fail closed. Queries never scan canonical S3.
 
 Canonical Conversation mutations enqueue search work in the same PostgreSQL transaction.
 The explicit release backfill captures an upper key and scans bounded canonical pages.
-Each page commits its jobs and cursor together. The existing writer barrier, completed scan, and drained jobs permit sealing.
-A sealed generation does not start another discovery cycle. Subsequent mutations use the transactional jobs.
-Freshness depends on worker service capacity and available dependencies.
+Each page commits its jobs and cursor together. The writer barrier, completed scan and drained jobs permit sealing.
+A sealed generation starts no other discovery cycle; later mutations use the transactional jobs.
+Freshness depends on worker capacity.
 
 ## Message-search publication
 

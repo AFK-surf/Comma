@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getNativeBridge, type HostMaintenanceState } from "@comma/native-bridge";
 import { useCommaMessages } from "@comma/i18n/react";
 
-/** `clear` deletes the local data; `reinstall_reset` reinstalls on empty data. */
+/** `clear` deletes the local data; `reinstall_reset` reinstalls on empty data; `uninstall_reset` removes components and data. */
 type MaintenanceAction =
   | "update"
   | "reinstall"
   | "uninstall"
+  | "uninstall_reset"
   | "clear"
   | "reinstall_reset";
 
@@ -80,35 +81,40 @@ export function useHostMaintenanceCategory(
   const running = operation?.outcome === "pending";
   const needsInstall = state?.installation === "not_installed";
   const needsUpdate = updateRequired || !!state?.updateAvailable;
-  /** Update, repair and clearing wait for a running request; Main recovers a stuck one by itself. */
+  /** Update and repair wait for a running request; Main recovers a stuck one by itself. */
   const blocked = pending || readingError || !state || running;
-  /** After the current client request returns, uninstall can replace stuck native maintenance. */
+  /** After the current client request returns, uninstall and clearing can replace stuck native maintenance. */
   const uninstallBlocked = pending || readingError;
+  const clearBlocked = pending || readingError || !state;
   const phaseLabel: string = failed
     ? m.compute_maintenance_failed()
-    : operation?.phase === "preparing"
-      ? state?.preparationPhase === "downloading"
-        ? m.compute_maintenance_downloading()
-        : state?.preparationPhase === "extracting"
-          ? m.compute_maintenance_extracting()
-          : state?.preparationPhase === "building"
-            ? m.compute_maintenance_building()
-            : m.compute_maintenance_preparing()
-      : operation?.phase === "stopping"
-        ? m.compute_maintenance_stopping()
-        : operation?.phase === "installing"
-          ? m.compute_maintenance_installing()
-          : operation?.phase === "removing"
-            ? m.compute_maintenance_removing()
-            : operation?.phase === "checking"
-              ? m.compute_maintenance_checking()
-              : operation?.outcome === "failed"
-                ? m.compute_maintenance_failed()
-                : m.compute_maintenance_completed();
+    : operation?.action === "update" && operation.outcome === "pending"
+      ? m.compute_sandbox_updating()
+      : operation?.phase === "preparing"
+        ? state?.preparationPhase === "downloading"
+          ? m.compute_maintenance_downloading()
+          : state?.preparationPhase === "extracting"
+            ? m.compute_maintenance_extracting()
+            : state?.preparationPhase === "building"
+              ? m.compute_maintenance_building()
+              : m.compute_maintenance_preparing()
+        : operation?.phase === "stopping"
+          ? m.compute_maintenance_stopping()
+          : operation?.phase === "installing"
+            ? m.compute_maintenance_installing()
+            : operation?.phase === "removing"
+              ? m.compute_maintenance_removing()
+              : operation?.phase === "checking"
+                ? m.compute_maintenance_checking()
+                : operation?.outcome === "failed"
+                  ? m.compute_maintenance_failed()
+                  : m.compute_maintenance_completed();
   const title: string = readingError
     ? m.compute_maintenance_unknown()
     : unfinished
-      ? phaseLabel
+      ? pending && failed
+        ? m.compute_maintenance_preparing()
+        : phaseLabel
       : pending
         ? m.compute_maintenance_preparing()
         : needsInstall &&
@@ -125,19 +131,29 @@ export function useHostMaintenanceCategory(
                 ? m.compute_maintenance_installed()
                 : m.compute_maintenance_unknown();
   const submit = async (next: MaintenanceAction) => {
-    const resets = next === "clear" || next === "reinstall_reset";
+    const resets =
+      next === "clear" || next === "reinstall_reset" || next === "uninstall_reset";
     // Main decides which request the new one may supersede.
-    if (next === "uninstall" ? uninstallBlocked : blocked) return;
+    if (
+      next === "uninstall" || next === "uninstall_reset"
+        ? uninstallBlocked
+        : next === "clear" || next === "reinstall_reset"
+          ? clearBlocked
+          : blocked
+    )
+      return;
     return await mutate(() =>
       bridge.computeNode.maintainHost({
         action:
           next === "reinstall_reset"
             ? "reinstall"
-            : next === "clear"
-              ? needsInstall
-                ? "uninstall"
-                : "reinstall"
-              : next,
+            : next === "uninstall_reset"
+              ? "uninstall"
+              : next === "clear"
+                ? needsInstall
+                  ? "uninstall"
+                  : "reinstall"
+                : next,
         dataPolicy: resets ? "reset" : "preserve",
       })
     );
@@ -162,6 +178,7 @@ export function useHostMaintenanceCategory(
     needsUpdate,
     blocked,
     uninstallBlocked,
+    clearBlocked,
     error,
     readingError,
     submit,

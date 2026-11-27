@@ -98,6 +98,52 @@ describe("message thread layout", () => {
     ]);
   });
 
+  it("splits adjacent worker messages with distinct participantIds even when sharing actorId", () => {
+    const lead1: ChatMessage = {
+      ...message("M1", "worker-shared", "R0", "R0"),
+      participantId: "ptc_lead",
+    };
+    const reviewer1: ChatMessage = {
+      ...message("M2", "worker-shared", "R0", "R0"),
+      participantId: "ptc_reviewer",
+    };
+    const reviewer2: ChatMessage = {
+      ...message("M3", "worker-shared", "R0", "R0"),
+      participantId: "ptc_reviewer",
+    };
+    const lead2: ChatMessage = {
+      ...message("M4", "worker-shared", "R0", "R0"),
+      participantId: "ptc_lead",
+    };
+    const { positions } = messageRelationships([
+      { ...message("R0", "user"), role: "user" },
+      lead1,
+      reviewer1,
+      reviewer2,
+      lead2,
+    ]);
+    expect(positions.get("M1")).toEqual({
+      first: true,
+      last: true,
+      avatarMessageId: "M1",
+    });
+    expect(positions.get("M2")).toEqual({
+      first: true,
+      last: false,
+      avatarMessageId: "M3",
+    });
+    expect(positions.get("M3")).toEqual({
+      first: false,
+      last: true,
+      avatarMessageId: "M3",
+    });
+    expect(positions.get("M4")).toEqual({
+      first: true,
+      last: true,
+      avatarMessageId: "M4",
+    });
+  });
+
   it("quotes the root once when a different thread cuts the spine, then extends that segment", () => {
     const { replies } = messageRelationships([
       message("A", "a"),
@@ -230,5 +276,67 @@ describe("message thread layout", () => {
     expect(positions.get("B")?.first).toBe(true);
     expect(replies.get("B")).toMatchObject({ targetId: "A", presentation: "line" });
     expect(replies.get("C")).toMatchObject({ targetId: "B", presentation: "line" });
+  });
+
+  it("uses a preview when an unrelated left bubble blocks a bubble-inset Router line", () => {
+    const routerMsg = (
+      id: string,
+      target?: string,
+      root = target ?? id
+    ): ChatMessage => ({
+      ...message(id, "router", target, root),
+      actorRole: "router",
+    });
+    const blocked = messageRelationships(
+      [routerMsg("A"), routerMsg("unrelated"), routerMsg("B", "A", "A")],
+      new Set(),
+      "router"
+    );
+    expect(blocked.replies.get("B")).toMatchObject({
+      targetId: "A",
+      presentation: "preview",
+    });
+    expect(blocked.crossedByLine.size).toBe(0);
+
+    // A user bubble sits on the right, so it does not obstruct the left-inset line.
+    const pastUser = messageRelationships(
+      [
+        routerMsg("A"),
+        { ...message("U", "user", "A", "A"), role: "user" },
+        routerMsg("B", "U", "A"),
+      ],
+      new Set(),
+      "router"
+    );
+    expect(pastUser.replies.get("B")).toMatchObject({
+      targetId: "A",
+      presentation: "line",
+    });
+
+    // When the avatar gutter is shown, the gutter line stays clear of bubbles.
+    const withGutter = messageRelationships(
+      [routerMsg("A"), routerMsg("unrelated"), routerMsg("B", "A", "A")],
+      new Set(),
+      "worker"
+    );
+    expect(withGutter.replies.get("B")).toMatchObject({
+      targetId: "A",
+      presentation: "line",
+    });
+
+    // A Router reply anchored to a user prompt keeps its user-height bracket line.
+    const fromUser = messageRelationships(
+      [
+        { ...message("U", "user"), role: "user" },
+        message("W", "worker-a"),
+        routerMsg("B", "U", "U"),
+      ],
+      new Set(),
+      "router"
+    );
+    expect(fromUser.replies.get("B")).toMatchObject({
+      targetId: "U",
+      presentation: "line",
+    });
   });
 });

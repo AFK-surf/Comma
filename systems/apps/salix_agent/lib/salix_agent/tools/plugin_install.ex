@@ -30,8 +30,9 @@ defmodule SalixAgent.Tools.PluginInstall do
          "when they ask to add, install or connect one, or what they asked needs a plugin that is not installed. " <>
          "Only the Workspace owner can install; the requester is the sender of the message you are answering. " <>
          "plugin_id is the plugin's id (e.g. notion); an unknown id fails with the plugins there are. reason says in one sentence, in the user's language, what the plugin is for here. " <>
-         "An installed plugin answers status installed: go on. Otherwise the Comma chat shows the user an install card with the reason: do not post a link or steps. " <>
-         "The call waits until they install it and returns status installed (or declined / expired): then go on, or tell them.",
+         "An already-installed plugin answers status installed immediately. Otherwise the Comma chat shows the user an install card with the reason: do not post a link or steps. " <>
+         "The call waits until they install it and returns status installed (or declined / expired). " <>
+         "Status installed means the plugin is enabled in this Workspace: if the user only asked to install or connect it, confirm directly without re-checking plugin definitions or connections; otherwise continue their request.",
        schema(), &__MODULE__.request_install/2, @user_interaction_auto_wait_seconds,
        [safety: "write", roles: ["router"], runtimes: [:internal]]}
     ]

@@ -23,12 +23,13 @@ defmodule CommaWeb.WindowTasksTest do
 
     %{
       url: "http://127.0.0.1:#{port}/v1/comma/workspaces/#{workspace.id}/tasks",
+      workspace: workspace,
       owner: owner_session,
       viewer: viewer_session
     }
   end
 
-  test "a read-only member starts no Task, and a start needs its words, request id and model",
+  test "a read-only member starts no Task, and a start needs its words, a request id and a model it can name",
        ctx do
     body = %{
       "text" => "fix the build",
@@ -46,7 +47,7 @@ defmodule CommaWeb.WindowTasksTest do
              post(ctx.url, ctx.owner, Map.delete(body, "client_request_id"))
 
     assert %{status: 400, body: %{"message" => "model must name a catalog model id"}} =
-             post(ctx.url, ctx.owner, Map.delete(body, "model"))
+             post(ctx.url, ctx.owner, Map.put(body, "model", "claude-opus-5-5"))
 
     assert %{status: 400} =
              post(
@@ -54,6 +55,103 @@ defmodule CommaWeb.WindowTasksTest do
                ctx.owner,
                Map.put(body, "model", %{"id" => "claude-opus-5-5", "effort" => 3})
              )
+
+    assert %{status: 400, body: %{"error" => "bad_request"}} =
+             post(ctx.url, ctx.owner, Map.put(body, "runs_on", %{"kind" => "sandbox"}))
+
+    assert %{status: 400, body: %{"error" => "bad_request"}} =
+             post(
+               ctx.url,
+               ctx.owner,
+               Map.put(body, "runs_on", %{"kind" => "station", "device_id" => " "})
+             )
+
+    # Catalog model is mutually exclusive with station runs_on.
+    assert %{status: 400, body: %{"error" => "bad_request"}} =
+             post(
+               ctx.url,
+               ctx.owner,
+               Map.put(body, "runs_on", %{"kind" => "station", "device_id" => "dev_1"})
+             )
+
+    assert %{status: 400, body: %{"error" => "bad_request"}} =
+             post(
+               ctx.url,
+               ctx.owner,
+               body
+               |> Map.put("runs_on", %{"kind" => "station", "device_id" => "dev_1"})
+               |> Map.put("model", %{"kind" => "runtime", "provider" => ""})
+             )
+  end
+
+  test "station runs_on rejects devices outside the group, non-stillfail devices, and offline Monoid workspaces",
+       ctx do
+    other_owner = elem(user!(), 0)
+    other_ws = workspace!(other_owner)
+
+    other_stillfail =
+      connect_device!(other_ws, "dev-other-stillfail", %{"device_kind" => "stillfail"})
+
+    normal_station =
+      connect_device!(ctx.workspace, "dev-normal-station", %{"device_kind" => "desktop"})
+
+    {offline_stillfail, offline_run} =
+      connect_device_run!(ctx.workspace, "dev-offline-stillfail", %{"device_kind" => "stillfail"})
+
+    {:ok, _} = SalixEnv.Registry.mark_disconnected(offline_run)
+
+    base = %{"text" => "run on monoid", "client_request_id" => "k-monoid-1"}
+
+    # Device in another group is refused.
+    assert %{status: 409, body: %{"error" => "refused"}} =
+             post(
+               ctx.url,
+               ctx.owner,
+               Map.put(base, "runs_on", %{"kind" => "station", "device_id" => other_stillfail})
+             )
+
+    # Non-stillfail device in the same group is refused.
+    assert %{status: 409, body: %{"error" => "refused"}} =
+             post(
+               ctx.url,
+               ctx.owner,
+               Map.put(base, "runs_on", %{"kind" => "station", "device_id" => normal_station})
+             )
+
+    # Offline stillfail device returns 409 machine_offline.
+    assert %{status: 409, body: %{"error" => "machine_offline", "message" => message}} =
+             post(
+               ctx.url,
+               ctx.owner,
+               Map.put(base, "runs_on", %{"kind" => "station", "device_id" => offline_stillfail})
+             )
+
+    assert is_binary(message) and message != ""
+  end
+
+  defp connect_device!(workspace, prefix, meta) do
+    workspace |> connect_device_run!(prefix, meta) |> elem(0)
+  end
+
+  defp connect_device_run!(workspace, prefix, meta) do
+    device_id = "#{prefix}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    transport_id = "tr-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    {:ok, ^transport_id, record} =
+      SalixEnv.Registry.connect(
+        "test-node",
+        %{
+          "tenant_id" => workspace.salix_tenant_id,
+          "group_id" => workspace.salix_group_id,
+          "device_id" => device_id,
+          "connector_id" => "conn-" <> transport_id,
+          "name" => "Monoid"
+        },
+        transport_id: transport_id
+      )
+
+    {:ok, _} = SalixEnv.Registry.update_meta(record["connector_run_id"], &Map.merge(&1, meta))
+    {device_id, record["connector_run_id"]}
   end
 
   defp user! do

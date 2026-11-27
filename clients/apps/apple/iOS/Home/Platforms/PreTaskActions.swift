@@ -36,7 +36,7 @@ extension CommaStore {
         platform.preTasks { id in
             // A Task this phone does not know counts as ended, as on the desktop.
             guard let task = taskSummary(id: id) else { return false }
-            return task.bucket == .inProgress || task.status == "escalated"
+            return task.bucket == .inProgress || task.bucket == .loops || task.status == "escalated"
         }
     }
 }
@@ -66,8 +66,6 @@ private struct PreTaskPresenter: ViewModifier {
     @Binding var content: RoutineSheetContent?
     let store: CommaStore
     @State private var chosen: (item: RecommendationItem, source: RecommendationSource?)?
-    /// A Task named in the briefing's summary, opened once the sheet has gone.
-    @State private var chosenTask: String?
     /// Counts prompts placed in the composer, each of which plays a light tap.
     @State private var inserts = 0
     @Environment(AppNavigation.self) private var navigation
@@ -78,7 +76,7 @@ private struct PreTaskPresenter: ViewModifier {
             .sheet(item: $content, onDismiss: performChosen) { shown in
                 switch shown {
                 case .platform(let platform): PreTaskSheet(platform: platform, store: store, choose: choose)
-                case .briefing: RoutineSheet(store: store, choose: choose, openTask: chooseTask)
+                case .briefing: RoutineSheet(store: store, choose: choose)
                 }
             }
             .sensoryFeedback(.impact(weight: .light), trigger: inserts)
@@ -89,16 +87,7 @@ private struct PreTaskPresenter: ViewModifier {
         content = nil
     }
 
-    private func chooseTask(_ id: String) {
-        chosenTask = id
-        content = nil
-    }
-
     private func performChosen() {
-        if let task = chosenTask {
-            chosenTask = nil
-            Task { await store.openTask(id: task) }
-        }
         guard let (item, source) = chosen else { return }
         chosen = nil
         RoutineActions(usePrompt: { prompt in

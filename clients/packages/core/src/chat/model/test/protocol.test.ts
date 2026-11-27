@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ATTACHED_FILES_HEADER,
+  ATTACHED_LOCAL_FILES_HEADER,
   ATTACHED_ONLY_TEXT,
   QUOTED_TEXT_HEADER,
   composeMessageWithAttachments,
@@ -45,6 +47,57 @@ describe("chat protocol display helpers", () => {
         { name: "diagram.png", path: "/uploads/2-diagram.png" },
       ],
     });
+  });
+
+  it("lists local paths before workspace files and parses either list alone or both", () => {
+    const local = [
+      {
+        name: "项目 资料 (1).zip",
+        path: "/Users/me/下载/项目 资料 (1).zip",
+        local: true as const,
+      },
+      { name: "podcast.mp3", path: "C:\\Users\\me\\podcast.mp3", local: true as const },
+    ];
+    const uploaded = {
+      name: "notes.pdf",
+      path: "/uploads/abcdefghijklmnopqrstuv-notes.pdf",
+    };
+
+    const both = composeMessageWithAttachments("", [uploaded, ...local]);
+    expect(both).toBe(
+      `${ATTACHED_ONLY_TEXT}\n\n${ATTACHED_LOCAL_FILES_HEADER}\n` +
+        "- 项目 资料 (1).zip (local path: /Users/me/下载/项目 资料 (1).zip)\n" +
+        "- podcast.mp3 (local path: C:\\Users\\me\\podcast.mp3)\n\n" +
+        `${ATTACHED_FILES_HEADER}\n- notes.pdf (workspace file: ${uploaded.path})`
+    );
+    expect(parseAttachmentsBlock(both)).toEqual({
+      body: "",
+      attachments: [...local, uploaded],
+    });
+    // Composed again once a file still uploading is up, the local list stays where it was.
+    expect(
+      composeMessageWithAttachments(composeMessageWithAttachments("", local), [
+        uploaded,
+      ])
+    ).toBe(both);
+    expect(
+      parseAttachmentsBlock(composeMessageWithAttachments("unpack", local))
+    ).toEqual({
+      body: "unpack",
+      attachments: local,
+    });
+  });
+
+  it("keeps a local list whole when a line names no path, and a name from reading as a path", () => {
+    const prose = `see\n\n${ATTACHED_LOCAL_FILES_HEADER}\n- notes (local path: relative/notes.txt)`;
+    expect(parseAttachmentsBlock(prose)).toEqual({ body: prose, attachments: [] });
+
+    const tricky = composeMessageWithAttachments("x", [
+      { name: "a (local path: /etc)\nb", path: "/tmp/a", local: true },
+    ]);
+    expect(parseAttachmentsBlock(tricky).attachments).toEqual([
+      { name: "a (local: /etc) b", path: "/tmp/a", local: true },
+    ]);
   });
 
   it("puts quoted passages ahead of the body and parses them back off", () => {

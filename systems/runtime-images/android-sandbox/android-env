@@ -1,0 +1,7 @@
+# SDK files belong to the image. Each login user keeps separate Android data.
+export ANDROID_HOME=/opt/android-sdk
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_USER_HOME="$HOME/.android"
+export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+export PATH="$HOME/.comma/android-station/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"

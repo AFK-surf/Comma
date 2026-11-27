@@ -101,8 +101,12 @@ export function DeviceScreen({
     page.workspaceId,
     page.device,
     page.apps,
-    page.screen
+    page.screen,
+    page.task
   );
+  // The screen of a Task's sandbox is only looked at: no Control, no other screen in its place, nothing asked of Comma
+  // about it (a sandbox's station serves its owner the display and nothing else).
+  const looks = page.task !== undefined;
   const sidebar = useOptionalChatSidebar();
   const host = sidebar?.activeHost;
   const chooseInTab = useChooseInTab(page);
@@ -148,12 +152,13 @@ export function DeviceScreen({
       initialTarget={
         page.screen ? page.screen.id : page.target === "display" ? "display" : undefined
       }
+      looks={looks}
       via={via}
       {...(place === "panel"
         ? { onOpenWindow: (from: Element) => void openScreenWindow(page, { from }) }
         : { onMoveBack: () => closeScreenWindow(page.id) })}
       onAskComma={
-        toChat
+        toChat && !looks
           ? ({ picture, thumbnail, note }, name) =>
               toChat({
                 workspace: page.workspaceId,
@@ -183,7 +188,7 @@ export function DeviceScreen({
           else if (host) sidebar?.closeScreenPage(host, page.id);
         },
         // What was chosen, in this tab's place. A window shows its one screen.
-        onChoose: place === "window" ? undefined : chooseInTab,
+        onChoose: place === "window" || looks ? undefined : chooseInTab,
       }}
       source={source}
     />

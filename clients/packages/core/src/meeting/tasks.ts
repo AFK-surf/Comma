@@ -705,7 +705,11 @@ export class MeetingTasks {
         entry.version++;
         const saved = yield* Effect.exit(this.#persist());
         if (Exit.isFailure(saved)) {
-          const message = meetingSubmissionError("journal", saved.cause);
+          const message = meetingSubmissionError(
+            "journal",
+            saved.cause,
+            this.#locale()
+          );
           this.#show(entry, "error", message);
           this.#report(entry, "journal", message);
           return yield* Effect.fail(new MeetingTaskError(message));
@@ -1013,7 +1017,7 @@ export class MeetingTasks {
     return send.pipe(
       Effect.catch((error: unknown) =>
         Effect.suspend(() => {
-          const message = meetingSubmissionError(stage, error);
+          const message = meetingSubmissionError(stage, error, this.#locale());
           const retryable =
             Boolean(entry.final && lease) && canRetryMeetingSubmission(stage, error);
           this.#show(entry, "error", message);

@@ -4,6 +4,8 @@ import {
   miniAppWebRuntimePath,
 } from "@comma/chat-contract/mini-app-runtime";
 
+import androidAssetLinks from "./assetlinks.json";
+
 interface Env {
   ASSETS: {
     fetch(request: Request): Promise<Response>;
@@ -12,6 +14,7 @@ interface Env {
 
 const commaApiPrefix = "/v1";
 const publicSharePath = /^\/s\/[^/]+\/?$/;
+const collabGuestPath = /^\/c\/[^/]+\/?$/;
 const miniAppLinkPath = /^\/a\/[^/]+\/?$/;
 // Only production is for search. Staging and preview hosts stay out of indexes.
 const indexedHost = "app.comma.surf";
@@ -24,13 +27,17 @@ const appAssociation = {
   },
 };
 
-// A public Task Share link: the token stays out of referrers and indexes.
-async function servePublicShare(request: Request, env: Env): Promise<Response> {
+// A public Task Share link or external guest collaboration link: the token stays out of referrers and indexes.
+async function serveTokenPage(
+  request: Request,
+  env: Env,
+  assetPath: "/share.html" | "/collab.html"
+): Promise<Response> {
   let page = await env.ASSETS.fetch(
-    new Request(new URL("/share.html", request.url), request)
+    new Request(new URL(assetPath, request.url), request)
   );
   // Asset HTML handling may canonicalize the file name with a redirect. Follow
-  // it here: the browser must stay on /s/<token>, which carries the token.
+  // it here: the browser must stay on /s/<token> or /c/<token>, which carries the token.
   const location = page.headers.get("location");
   if (page.status >= 300 && page.status < 400 && location) {
     page = await env.ASSETS.fetch(new Request(new URL(location, request.url), request));
@@ -78,15 +85,20 @@ export default {
 };
 
 function serve(request: Request, pathname: string, env: Env): Promise<Response> {
-  if (pathname === "/.well-known/apple-app-site-association") {
-    if (!appLinkHosts.has(new URL(request.url).hostname))
+  const android = pathname === "/.well-known/assetlinks.json";
+  if (android || pathname === "/.well-known/apple-app-site-association") {
+    const { hostname } = new URL(request.url);
+    if (android ? hostname !== indexedHost : !appLinkHosts.has(hostname))
       return Promise.resolve(new Response(null, { status: 404 }));
     if (request.method !== "GET" && request.method !== "HEAD")
       return Promise.resolve(
         new Response(null, { status: 405, headers: { allow: "GET, HEAD" } })
       );
+    const body = android
+      ? JSON.stringify(androidAssetLinks, null, 2)
+      : JSON.stringify(appAssociation);
     return Promise.resolve(
-      new Response(request.method === "HEAD" ? null : JSON.stringify(appAssociation), {
+      new Response(request.method === "HEAD" ? null : body, {
         headers: {
           "content-type": "application/json",
           "cache-control": "public, max-age=3600",
@@ -107,7 +119,10 @@ function serve(request: Request, pathname: string, env: Env): Promise<Response> 
     );
   }
   if (publicSharePath.test(pathname)) {
-    return servePublicShare(request, env);
+    return serveTokenPage(request, env, "/share.html");
+  }
+  if (collabGuestPath.test(pathname)) {
+    return serveTokenPage(request, env, "/collab.html");
   }
   if (pathname === miniAppWebRuntimePath) {
     return Promise.resolve(serveMiniAppRuntime());

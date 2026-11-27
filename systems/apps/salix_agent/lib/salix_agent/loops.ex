@@ -794,12 +794,19 @@ defmodule SalixAgent.Loops do
   # ---- runs and the end of a Loop ---------------------------------------------
 
   @doc """
-  The next timed run of the Loop after `after_ms` (default: now), from its
-  declared trigger, recorded as `next_run_at`. When windows after `after_ms`
-  already passed, the latest of them is the answer, so a Loop that was down
-  runs once, not once per missed window. A next run at or after `ends_at`
-  ends the Loop: `{:ok, :ended}`. A Loop without a timed trigger is refused
-  with `{:error, :no_timed_trigger}`.
+  The next timed run of the Loop after `after_ms`, from its declared
+  trigger, recorded as `next_run_at`. When windows after `after_ms` already
+  passed, the latest of them is the answer, so a Loop that was down runs
+  once, not once per missed window.
+
+  Without `after_ms` the row keeps the schedule, so a program that restarts
+  (a new incarnation after a node move or a release) keeps its time: a
+  recorded `next_run_at` that no run has reached yet is the answer again
+  (the latest missed window when it already passed); otherwise the next
+  window after the recorded one, or after the Loop started.
+
+  A next run at or after `ends_at` ends the Loop: `{:ok, :ended}`. A Loop
+  without a timed trigger is refused with `{:error, :no_timed_trigger}`.
   """
   @spec next_run(String.t(), integer(), integer() | nil) ::
           {:ok, integer() | :ended} | {:error, term()}
@@ -808,7 +815,7 @@ defmodule SalixAgent.Loops do
 
     with {:ok, record} <- Store.get(loop_id),
          :ok <- current(record, incarnation),
-         {:ok, next} <- next_window(record["trigger"], after_ms || now, now) do
+         {:ok, next} <- scheduled(record, after_ms, now) do
       if is_integer(record["ends_at"]) and next >= record["ends_at"] do
         with {:ok, _} <- end_loop(loop_id, "ends_at"), do: {:ok, :ended}
       else
@@ -827,6 +834,42 @@ defmodule SalixAgent.Loops do
 
   defp current(%{"incarnation" => incarnation, "status" => "active"}, incarnation), do: :ok
   defp current(_record, _incarnation), do: {:error, :stale_incarnation}
+
+  defp scheduled(record, after_ms, now) when is_integer(after_ms),
+    do: next_window(record["trigger"], after_ms, now)
+
+  defp scheduled(%{"next_run_at" => pending} = record, nil, now)
+       when is_integer(pending) do
+    cond do
+      is_integer(record["last_run_at"]) and record["last_run_at"] >= pending ->
+        next_window(record["trigger"], pending, now)
+
+      pending > now ->
+        if timed?(record["trigger"]), do: {:ok, pending}, else: {:error, :no_timed_trigger}
+
+      true ->
+        latest_window(record["trigger"], pending, now)
+    end
+  end
+
+  defp scheduled(record, nil, now),
+    do: next_window(record["trigger"], record["started_at"] || record["created_at"] || now, now)
+
+  defp timed?(%{"every_minutes" => minutes}) when is_integer(minutes), do: true
+  defp timed?(%{"cron" => _, "timezone" => _}), do: true
+  defp timed?(_trigger), do: false
+
+  # The latest window at or before `now`, given `pending`, a window at or
+  # before `now`.
+  defp latest_window(%{"every_minutes" => minutes}, pending, now) when is_integer(minutes) do
+    step = minutes * 60_000
+    {:ok, pending + div(now - pending, step) * step}
+  end
+
+  defp latest_window(%{"cron" => cron, "timezone" => timezone}, _pending, now),
+    do: schedules_mod().cron_latest_at_or_before(cron, now, timezone)
+
+  defp latest_window(_trigger, _pending, _now), do: {:error, :no_timed_trigger}
 
   defp next_window(%{"every_minutes" => minutes}, after_ms, now) when is_integer(minutes) do
     step = minutes * 60_000

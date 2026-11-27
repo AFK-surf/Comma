@@ -16,7 +16,7 @@ defmodule SalixIM.Provider.Lark do
 
   import SalixIM.Provider.Util
 
-  alias SalixIM.IFC.ReadLabels
+  alias SalixIM.IFC.{Projection, ReadLabels}
   alias SalixIM.MessageRenderer.Input
 
   alias SalixIM.Provider.DocAccess
@@ -106,6 +106,30 @@ defmodule SalixIM.Provider.Lark do
       case str(message["chat_id"]) do
         "" -> {:error, "Lark get-message response did not contain a chat_id"}
         chat_id -> {:ok, chat_id}
+      end
+    end
+  end
+
+  @doc """
+  The chat and the thread of one exact message: `"chat_id"`, `"thread_id"`
+  (blank outside a thread) and `"root_id"` (blank for a root message). A
+  thread hand-over checks its address with this read.
+  """
+  @spec message_address(map(), String.t()) :: {:ok, map()} | {:error, term()}
+  def message_address(connect, message_id) do
+    with :ok <- ensure_connected(connect),
+         {:ok, message} <- raw_message(connect, message_id) do
+      case str(message["chat_id"]) do
+        "" ->
+          {:error, "Lark get-message response did not contain a chat_id"}
+
+        chat_id ->
+          {:ok,
+           %{
+             "chat_id" => chat_id,
+             "thread_id" => str(message["thread_id"]),
+             "root_id" => str(message["root_id"])
+           }}
       end
     end
   end
@@ -253,6 +277,7 @@ defmodule SalixIM.Provider.Lark do
                  %{"receive_id" => receive_id}
                ) do
           record_sent(connect, %{}, sent)
+          if id_type == "chat_id", do: join_group_send(connect, receive_id, sent)
           {:ok, target |> sent_to(sent) |> Map.put("message", without_body(sent))}
         end
       else
@@ -457,12 +482,16 @@ defmodule SalixIM.Provider.Lark do
         |> maybe_put("uuid", message_uuid("lark.create_chat", params))
         |> URI.encode_query()
 
-      API.post(connect, "/im/v1/chats?" <> query, %{
-        "name" => str(params["name"]),
-        "user_id_list" => user_ids,
-        "chat_mode" => "group",
-        "chat_type" => "private"
-      })
+      with {:ok, created} <-
+             API.post(connect, "/im/v1/chats?" <> query, %{
+               "name" => str(params["name"]),
+               "user_id_list" => user_ids,
+               "chat_mode" => "group",
+               "chat_type" => "private"
+             }) do
+        created_chat(connect, str(created["chat_id"]))
+        {:ok, created}
+      end
     end
   end
 
@@ -471,11 +500,15 @@ defmodule SalixIM.Provider.Lark do
          {:ok, chat_id} <- chat_id(connect, params),
          {:ok, user_ids} <- chat_user_ids(params) do
       # Reject the whole request if any member is unavailable.
-      API.post(
-        connect,
-        "/im/v1/chats/#{segment(chat_id)}/members?member_id_type=open_id&succeed_type=2",
-        %{"id_list" => user_ids}
-      )
+      with {:ok, added} <-
+             API.post(
+               connect,
+               "/im/v1/chats/#{segment(chat_id)}/members?member_id_type=open_id&succeed_type=2",
+               %{"id_list" => user_ids}
+             ) do
+        Projection.refresh_for_connect(connect, chat_id)
+        {:ok, added}
+      end
     end
   end
 
@@ -528,8 +561,11 @@ defmodule SalixIM.Provider.Lark do
 
   defp do_call(_agent_id, connect, "lark.join_chat", params) do
     with :ok <- require_param(params, "chat_id"),
-         {:ok, chat_id} <- chat_id(connect, params) do
-      API.patch(connect, "/im/v1/chats/#{segment(chat_id)}/members/me_join", %{})
+         {:ok, chat_id} <- chat_id(connect, params),
+         {:ok, joined} <-
+           API.patch(connect, "/im/v1/chats/#{segment(chat_id)}/members/me_join", %{}) do
+      Projection.refresh_for_connect(connect, chat_id)
+      {:ok, joined}
     end
   end
 
@@ -1018,11 +1054,24 @@ defmodule SalixIM.Provider.Lark do
     end
   end
 
-  defp send_text(connect, target, params) do
+  defp send_text(connect, {id_type, receive_id} = target, params) do
     if String.trim(to_string(params["text"] || "")) == "" do
       {:ok, nil}
     else
-      with {:ok, rendered} <- outbound_content(params),
+      origin = origin_context(connect)
+      source_chat? = id_type == "chat_id" and receive_id == str(origin["chat_id"])
+
+      # A question card says where it is: the chat type, and the thread of the
+      # source when it answers there.
+      card_params =
+        params
+        |> Map.put(
+          "chat_type",
+          if(id_type == "chat_id", do: chat_type(connect, receive_id), else: "p2p")
+        )
+        |> Map.put("thread_id", if(source_chat?, do: str(origin["message_thread_id"]), else: ""))
+
+      with {:ok, rendered} <- outbound_content(card_params),
            body = maybe_put(rendered, "uuid", message_uuid("lark.send_message", params)),
            :ok <- MessageRenderer.validate_request(body),
            {:ok, sent} <- post_message(connect, target, params, body) do
@@ -1054,11 +1103,15 @@ defmodule SalixIM.Provider.Lark do
   defp post_message(connect, {id_type, receive_id}, params, body) do
     case str(params["reply_to"]) do
       "" ->
-        API.post(
-          connect,
-          "/im/v1/messages?receive_id_type=#{id_type}",
-          Map.put(body, "receive_id", receive_id)
-        )
+        with {:ok, sent} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages?receive_id_type=#{id_type}",
+                 Map.put(body, "receive_id", receive_id)
+               ) do
+          if id_type == "chat_id", do: join_group_send(connect, receive_id, sent)
+          {:ok, sent}
+        end
 
       # A reply is always of a chat: `send_target/2` refuses it for a person.
       message_id ->
@@ -1069,6 +1122,7 @@ defmodule SalixIM.Provider.Lark do
                  Map.put(body, "reply_in_thread", reply_in_thread?(connect, receive_id, params))
                ) do
           join_thread(connect, receive_id, sent)
+          join_group_send(connect, receive_id, sent)
           {:ok, sent}
         end
     end
@@ -1095,6 +1149,50 @@ defmodule SalixIM.Provider.Lark do
     end
 
     :ok
+  end
+
+  # A message the bot sends into a group, unasked, starts a conversation: a
+  # quote reply to it, or a thread opened under it, reaches the Router
+  # without a mention (`SalixIM.LarkInbound`). The message and its thread are
+  # marked; the chat is not, so other talk of the group still needs a
+  # mention. Best effort: the message is out.
+  defp join_group_send(connect, fallback_chat_id, sent) when is_map(sent) do
+    chat_id = str(sent["chat_id"] || fallback_chat_id)
+
+    if chat_id != "" and chat_type(connect, chat_id) != "p2p" do
+      for id <- [str(sent["thread_id"]), str(sent["message_id"])], id != "" do
+        join_mark(connect, chat_id, id)
+      end
+    end
+
+    :ok
+  end
+
+  defp join_group_send(_connect, _fallback_chat_id, _sent), do: :ok
+
+  # A group the bot made is the bot's conversation: people of it answer the
+  # bot without a mention. The group is marked by its own chat ID, a
+  # namespace (`oc_`) no thread (`omt_`) or message (`om_`) shares. The
+  # projection then knows the group before a send to it.
+  defp created_chat(_connect, ""), do: :ok
+
+  defp created_chat(connect, chat_id) do
+    join_mark(connect, chat_id, chat_id)
+    Projection.refresh_for_connect(connect, chat_id)
+  end
+
+  defp join_mark(connect, chat_id, id) do
+    case LarkThreads.join(connect, chat_id, id) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("lark_thread_join_failed", reason: inspect(reason))
+    end
+
+    :ok
+  end
+
+  defp chat_type(connect, chat_id) do
+    origin = origin_context(connect)
+    if chat_id == str(origin["chat_id"]), do: str(origin["chat_type"]), else: "group"
   end
 
   # Lark sends the bot no event for its own message, so a sent message is
@@ -1342,7 +1440,9 @@ defmodule SalixIM.Provider.Lark do
              SalixIM.QuestionCard.with_mentions(str(params["text"]), mentioned),
              question,
              %{
-               "chat_type" => if(str(params["user_id"]) != "", do: "p2p", else: "")
+               "chat_type" =>
+                 if(str(params["user_id"]) != "", do: "p2p", else: str(params["chat_type"])),
+               "thread_id" => str(params["thread_id"])
              }
            ) do
       {:ok, %{"msg_type" => "interactive", "content" => Jason.encode!(card)}}

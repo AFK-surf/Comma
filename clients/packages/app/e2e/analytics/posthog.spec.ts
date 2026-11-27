@@ -110,20 +110,22 @@ test("a website contact form reports the page it was sent from, never its answer
   page,
 }) => {
   const { events, waitForEvents } = await captureEvents(page);
-  await page.goto(`${websiteOrigin}/teams`);
+  await page.goto(`${websiteOrigin}/enterprise`);
   await waitForEvents("$pageview", 1);
   const form = page.locator("form[data-contact]");
   await form.getByLabel("Full name").fill("Private Person");
   await form.getByLabel("Work email").fill("private@example.com");
   await form.getByLabel("Company size").selectOption("20–199");
   await form.getByLabel("What's the intended use?").fill("private-use");
-  await form.getByLabel("Which product are you interested in?").selectOption("Both");
+  await form
+    .getByLabel("Which product are you interested in?")
+    .selectOption("Comma for Teams");
   await form.getByLabel("Anything else we should know?").fill("private-message");
   await form.getByRole("button", { name: "Email sales" }).click();
   await waitForEvents("comma_website_contact_submitted", 1);
   expect(
     events.find((e) => e.event === "comma_website_contact_submitted")!.properties.route
-  ).toBe("/teams");
+  ).toBe("/enterprise");
   const serialized = JSON.stringify(events);
   for (const value of [
     "Private Person",

@@ -36,3 +36,9 @@ Use the Comma in-app browser on `https://kyfw.12306.cn/otn/resources/login.html`
 Confirm the date, train, stations, seat class, passengers, and price before
 submitting. 改签 and 退票 (change and refund) can cost fees. Do not run
 automated ticket grabbing.
+
+## Live Activity
+
+Before departure or during the trip, mirror train number, gate/platform, and
+departure or arrival ETA with `live_activity.upsert` (`category: "train"`), and
+close with `live_activity.end` upon arrival.

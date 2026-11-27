@@ -75,10 +75,7 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
     respond!(no_tool("I will investigate the runtime next."))
     {llm_pid, messages, tools} = await_request!()
 
-    request_text =
-      Enum.map_join(messages, "\n", &to_string(&1[:content] || &1["content"] || ""))
-
-    assert request_text =~ "Plain text does not end the turn"
+    assert %{role: "runtime", type: "unsettled_reply"} = List.last(messages)
     assert Enum.any?(tools, &(&1["name"] == "end_turn"))
 
     pending = read_session!(agent_id)
@@ -186,6 +183,60 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
     assert_received {:no_reply, ["turn-outcome:silence"]}
     SystemsRuntime.Proc.send(llm_pid, {:explicit_turn_llm_response, end_turn("finish-after")})
     await_settled!(agent_id)
+  end
+
+  # A Router's reply to a withdrawn Lark message failed, so its next end_turn
+  # with no_reply was refused for a reply repair. It then answered in the chat,
+  # but its mention had already been counted as silence (2026-11-16).
+  test "an end_turn with no_reply that the runtime refuses reports no silence", %{
+    agent_id: agent_id
+  } do
+    handler = {__MODULE__, :refused_no_reply}
+
+    SystemsRuntime.Telemetry.attach(
+      handler,
+      [:salix, :turn, :no_reply],
+      &__MODULE__.forward_no_reply/4,
+      SystemsRuntime.Proc.self()
+    )
+
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
+
+    deliver!(agent_id, "turn-outcome:refused-silence", "answer me")
+
+    respond!(
+      {:assistant, "malformed envelope",
+       [%{id: "missing-tool-refused", name: "call", args: %{"params" => %{}}}]}
+    )
+
+    projection_wake!(agent_id)
+    {repair_llm_pid, repair_messages, _tools} = await_request!()
+    assert_repair_contract!(repair_messages)
+
+    SystemsRuntime.Proc.send(
+      repair_llm_pid,
+      {:explicit_turn_llm_response,
+       {:assistant, "",
+        [
+          %{
+            id: "finish-refused-silent",
+            name: "end_turn",
+            args: %{"outcome" => "done", "no_reply" => true}
+          }
+        ]}}
+    )
+
+    # The refused end_turn keeps the activation going.
+    {cleanup_llm_pid, _messages, _tools} = await_request!()
+    refute_received {:no_reply, _source_ids}
+
+    SystemsRuntime.Proc.send(
+      cleanup_llm_pid,
+      {:explicit_turn_llm_response, end_turn("finish-refused-cleanup")}
+    )
+
+    await_settled!(agent_id)
+    refute_received {:no_reply, _source_ids}
   end
 
   @doc false

@@ -113,13 +113,15 @@ defmodule CommaWeb.RecommendationNotionMemberSource do
 
   defp task_database(%{"id" => id, "properties" => properties} = source)
        when is_binary(id) and is_map(properties) do
+    sorted_properties = Enum.sort_by(properties, fn {name, _value} -> name end)
+
     people =
-      for {name, %{"type" => "people", "id" => property}} <- properties,
+      for {name, %{"type" => "people", "id" => property}} <- sorted_properties,
           is_binary(property),
           do: {property, name}
 
     open =
-      for {_name, %{"type" => "status", "id" => property} = value} <- properties,
+      for {_name, %{"type" => "status", "id" => property} = value} <- sorted_properties,
           is_binary(property),
           option <- open_options(value["status"]),
           do: {property, option}

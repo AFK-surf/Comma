@@ -12,10 +12,13 @@ import type { ReactNode } from "react";
 import {
   ArchiveIcon,
   BubbleAlertIcon,
+  CalendarIcon,
   CircleCheckIcon,
   CircleDashedIcon,
   CircleXIcon,
   ExclamationTriangleIcon,
+  EyeIcon,
+  InfinityIcon,
   LoaderIcon,
   PauseIcon,
 } from "../icons";
@@ -44,9 +47,18 @@ export type TaskWorkspaceMessage = {
 /** Why a Task in progress does not run: its Loop stopped, in words, and whether on an error. */
 export type TaskLoopStop = { text: string; failed: boolean };
 
+/** Standing state of an active or pending Loop Task while waiting between runs. */
+export type TaskLoopStanding = {
+  kind: "scheduled" | "event_triggered" | "pending" | "other";
+  text: string;
+  title?: string | undefined;
+  nextRunText?: string | undefined;
+};
+
 export type TaskSummaryViewModel = {
   archiveVersion?: number | undefined;
   archiveAction?: import("./TaskArchiveMenu").TaskArchiveAction | undefined;
+  openExternalAction?: import("./TaskArchiveMenu").TaskOpenExternalAction | undefined;
   activityStatus: string;
   id: string;
   lastMessage?: TaskWorkspaceMessage | undefined;
@@ -58,6 +70,12 @@ export type TaskSummaryViewModel = {
    * read as running while nothing runs.
    */
   loopStop?: TaskLoopStop | undefined;
+  /**
+   * Standing trigger or setup state of an active/pending Loop Task while
+   * waiting between runs, so it shows its schedule/watch glyph instead of
+   * spinning indefinitely.
+   */
+  loopStanding?: TaskLoopStanding | undefined;
   statusBucket: TaskStatusBucket;
   title: string;
   updatedAt: number;
@@ -69,6 +87,7 @@ const TASK_STATUS_ICONS: Record<VisibleTaskStatusBucket, ReactNode> = {
   needs_review: <BubbleAlertIcon className="text-yellow-500" />,
   done: <CircleCheckIcon className="text-fg-success-primary" />,
   cancelled: <CircleXIcon className="text-fg-error-primary" />,
+  loops: <InfinityIcon className="text-sidebar-icon-secondary" />,
 };
 
 const RUNNING_TASK_STATUS_ICON = (
@@ -84,6 +103,21 @@ const LOOP_FAILED_TASK_STATUS_ICON = (
   <ExclamationTriangleIcon className="comma-task-status-loop-failed text-fg-error-primary" />
 );
 
+const LOOP_STANDING_TASK_STATUS_ICONS: Record<TaskLoopStanding["kind"], ReactNode> = {
+  scheduled: (
+    <CalendarIcon className="comma-task-status-loop-standing text-sidebar-icon-secondary" />
+  ),
+  event_triggered: (
+    <EyeIcon className="comma-task-status-loop-standing text-sidebar-icon-secondary" />
+  ),
+  pending: (
+    <CircleDashedIcon className="comma-task-status-loop-standing text-sidebar-icon-secondary" />
+  ),
+  other: (
+    <InfinityIcon className="comma-task-status-loop-standing text-sidebar-icon-secondary" />
+  ),
+};
+
 /** The board's columns, in the order of the statuses every client shows (the core's `taskOrder` sections). */
 export const TASK_STATUS_COLUMNS: ReadonlyArray<{
   bucket: TaskStatusBucket;
@@ -92,6 +126,10 @@ export const TASK_STATUS_COLUMNS: ReadonlyArray<{
   bucket,
   icon: TASK_STATUS_ICONS[bucket],
 }));
+
+function isActiveTaskBucket(bucket: TaskStatusBucket): boolean {
+  return bucket === "in_progress" || bucket === "loops";
+}
 
 export function TaskSummaryCard({
   progress,
@@ -108,12 +146,23 @@ export function TaskSummaryCard({
 }) {
   const locale = useCommaLocale();
   const followed = useTaskProgress(task.id);
+  const liveProgress = progress ?? followed;
+  const standing =
+    isActiveTaskBucket(task.statusBucket) && !task.loopStop
+      ? task.loopStanding
+      : undefined;
 
   return (
     <TaskCard
-      footer={taskUpdatedAtLabel(task.updatedAt, locale)}
-      icon={taskStatusIcon(task.statusBucket, { loopStop: task.loopStop })}
-      meta={taskMeta(task, locale, progress ?? followed)}
+      footer={standing?.nextRunText ?? taskUpdatedAtLabel(task.updatedAt, locale)}
+      icon={taskStatusIcon(
+        standing && liveProgress ? "in_progress" : task.statusBucket,
+        {
+          loopStop: task.loopStop,
+          loopStanding: standing && !liveProgress ? standing : undefined,
+        }
+      )}
+      meta={taskMeta(task, locale, liveProgress)}
       title={task.title}
       titleIdentity={task.id}
       {...props}
@@ -129,18 +178,26 @@ export function taskNeutralIcon() {
 /**
  * A Task's status glyph. In progress, it turns where it reports a running Task, as on iOS and Android; a control
  * that only names the status (a board column, a filter) passes `spins: false` and stays still. A Task in progress
- * whose Loop stopped (`loopStop`) shows the pause glyph, or the error glyph when it stopped on an error: nothing runs.
+ * or in `loops` whose Loop stopped (`loopStop`) shows the pause glyph, or the error glyph when it stopped on an error: nothing runs.
+ * An active or pending Loop waiting between runs (`loopStanding`) shows its static trigger glyph instead of spinning.
  */
 export function taskStatusIcon(
   bucket: TaskStatusBucket,
   {
     spins = true,
     loopStop,
-  }: { spins?: boolean; loopStop?: Pick<TaskLoopStop, "failed"> | undefined } = {}
+    loopStanding,
+  }: {
+    spins?: boolean;
+    loopStop?: Pick<TaskLoopStop, "failed"> | undefined;
+    loopStanding?: Pick<TaskLoopStanding, "kind"> | undefined;
+  } = {}
 ) {
   if (bucket === "archived") return <ArchiveIcon />;
-  if (bucket === "in_progress" && loopStop)
+  if (isActiveTaskBucket(bucket) && loopStop)
     return loopStop.failed ? LOOP_FAILED_TASK_STATUS_ICON : PAUSED_TASK_STATUS_ICON;
+  if (isActiveTaskBucket(bucket) && loopStanding)
+    return LOOP_STANDING_TASK_STATUS_ICONS[loopStanding.kind];
   if (bucket === "in_progress" && spins) return RUNNING_TASK_STATUS_ICON;
   return (
     TASK_STATUS_COLUMNS.find((column) => column.bucket === bucket)?.icon ??
@@ -159,7 +216,7 @@ export function taskProgressLabel(
   task: TaskSummaryViewModel,
   locale: CommaLocale
 ): string | undefined {
-  if (task.statusBucket !== "in_progress") return undefined;
+  if (!isActiveTaskBucket(task.statusBucket)) return undefined;
   // An idle activity still means running — the worker just has nothing new to
   // report this second — so the line falls back to the status instead of
   // vanishing and making a live task look inert.
@@ -175,10 +232,18 @@ function taskMeta(
   locale: CommaLocale,
   override: string | undefined
 ) {
-  if (task.statusBucket === "in_progress" && task.loopStop)
+  if (isActiveTaskBucket(task.statusBucket) && task.loopStop)
     return (
       <TaskCardMeta>
         <TaskProgressText>{task.loopStop.text}</TaskProgressText>
+      </TaskCardMeta>
+    );
+  if (isActiveTaskBucket(task.statusBucket) && task.loopStanding && !override)
+    return (
+      <TaskCardMeta>
+        <TaskProgressText title={task.loopStanding.title}>
+          {task.loopStanding.text}
+        </TaskProgressText>
       </TaskCardMeta>
     );
   const label = taskProgressLabel(task, locale);

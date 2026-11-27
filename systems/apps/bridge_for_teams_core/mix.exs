@@ -34,6 +34,8 @@ defmodule BridgeForTeamsCore.MixProject do
       {:systems_runtime, in_umbrella: true},
       {:billing_core, in_umbrella: true},
       {:billing_commerce, in_umbrella: true},
+      {:billing_stripe, in_umbrella: true},
+      {:product_analytics, in_umbrella: true},
       # S3 reuse: SalixStore.Blob / SalixStore.S3 / SalixStore.Lease.
       {:salix_store, in_umbrella: true},
       # Shared URI-aware Google Meet classification/redaction contract.

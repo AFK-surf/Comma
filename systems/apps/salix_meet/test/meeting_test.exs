@@ -701,7 +701,6 @@ defmodule SalixMeet.MeetingTest do
   end
 
   describe "post-publication activation claims" do
-
     test "a terminal Canvas fallback activates only after durable full notes are visible", %{
       id: id
     } do

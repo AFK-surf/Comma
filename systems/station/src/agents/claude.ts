@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../ops/log.ts";
 import { LiveFromClaude, chars, type ClaudeLiveState } from "./live.ts";
+import { BROWSER_MCP_NAME, browserMcp } from "./browser-mcp.ts";
 import { CLAUDE_TOKEN_MARGIN_MS, machineClaudeToken, type Env, type MachineToken } from "./machine-logins.ts";
 import { fileCredentials, takeBack } from "./no-keychain.ts";
 import { AgentProcess, ackedOffset, debug, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
@@ -150,6 +151,10 @@ export class ClaudeDriver implements AgentDriver {
     return "claude";
   }
 
+  browser(): boolean {
+    return browserMcp(this.env) !== null;
+  }
+
   async open(options: OpenOptions, events: (event: RuntimeEvent) => void): Promise<AgentSession> {
     const home = options.profile.home;
     mkdirSync(home, { recursive: true });
@@ -158,7 +163,11 @@ export class ClaudeDriver implements AgentDriver {
       throw new Error(`no claude transcript for session ${options.resume}`);
     }
     const sessionId = options.resume ?? uuid();
-    const mcpConfig = { mcpServers: { comma: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
+    const mcpServers: Record<string, unknown> = { comma: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } };
+    // The machine's browser, where it brings one (a coding sandbox).
+    const browser = browserMcp(this.env);
+    if (browser) mcpServers[BROWSER_MCP_NAME] = { type: "stdio", command: browser.command, args: browser.args, env: browser.env };
+    const mcpConfig = { mcpServers };
     const model = options.model ?? profileModel(options.profile);
     const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions"];
     if (options.resume !== undefined) args.push("--resume", sessionId);

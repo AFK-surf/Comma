@@ -25,7 +25,7 @@
     <string name="home_greeting_morning">早上好，%s。</string>
     <string name="home_greeting_afternoon">下午好，%s。</string>
     <string name="home_greeting_evening">晚上好，%s。</string>
-    <string name="home_open_routine">显示完整的例程</string>
+    <string name="home_open_routine">显示完整的简报</string>
     <string name="home_all_tasks">全部任务</string>
     <string name="home_statuses">%d 个状态</string>
     <string name="home_filters">筛选</string>
@@ -44,13 +44,13 @@
     <string name="home_clear_filters">清除筛选</string>
     <string name="home_tasks_failed">无法加载任务</string>
     <string name="home_tasks_failed_detail">请检查网络连接，然后重试。</string>
-    <string name="routines_title">例程</string>
-    <string name="routines_refresh">刷新例程</string>
-    <string name="routines_unavailable">无法加载例程。</string>
+    <string name="routines_title">简报</string>
+    <string name="routines_refresh">刷新简报</string>
+    <string name="routines_unavailable">无法加载简报。</string>
     <string name="routines_rate_limited">一小时内刷新次数过多，请稍后再试。</string>
     <string name="routines_connect_apps">在电脑上的 Comma 中连接应用</string>
     <string name="routines_nothing_from">%s 目前没有需要你处理的事项。</string>
-    <string name="routines_reconnect">例程无法读取 %s，请在桌面端的插件中重新连接。</string>
+    <string name="routines_reconnect">简报无法读取 %s，请在桌面端的插件中重新连接。</string>
     <string name="routines_card_count">%1$s，%2$d 个建议任务</string>
     <string name="routines_card_nothing">%s，暂无新内容</string>
     <string name="routines_needs_reconnecting">需要重新连接</string>
@@ -59,6 +59,9 @@
     <string name="routines_adds_prompt">添加到发给 Comma 的消息中</string>
     <string name="routines_opens_link">打开链接</string>
     <string name="routines_dismiss">不再提醒</string>
+    <plurals name="routines_status_count"><item quantity="other">%1$d 件事需要你处理</item></plurals>
+    <string name="routines_status_cleared">已全部清空</string>
+    <string name="routines_cleared">简报已全部清空</string>
     <string name="routines_dismiss_failed">无法移除这一条，请重试。</string>
     <string name="routines_platforms">平台</string>
     <string name="routines_card_position">第 %1$d 张，共 %2$d 张</string>

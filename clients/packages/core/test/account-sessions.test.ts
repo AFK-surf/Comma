@@ -150,6 +150,31 @@ describe("the account's signed-in devices", () => {
     expect(t.api.seen("POST", "/v1/comma/auth/watch/pairing")).toHaveLength(1);
   });
 
+  it("asks for a one-time Raycast pairing bound to the extension's challenge", async () => {
+    const t = setup();
+    const challenge = "c".repeat(43);
+    t.api.on("POST", "/v1/comma/auth/raycast/pairing", () =>
+      json(201, {
+        pairing_id: "pair-2",
+        pairing_secret: "secret-2",
+        expires_at: t.now + 120,
+      })
+    );
+    const pairing = t.client.call("accountSessions.pairRaycast", { challenge });
+    await t.time.pass(100);
+    expect(await pairing).toEqual({
+      pairingId: "pair-2",
+      pairingSecret: "secret-2",
+      expiresAt: t.now + 120,
+    });
+    expect(
+      t.api.seen("POST", "/v1/comma/auth/raycast/pairing").map((r) => r.body)
+    ).toEqual([{ challenge }]);
+    await expect(
+      t.client.call("accountSessions.pairRaycast", { challenge: "short" })
+    ).rejects.toMatchObject({ message: "challenge is required" });
+  });
+
   it("says a first read that failed, and reads again on refresh", async () => {
     const t = setup();
     let up = false;

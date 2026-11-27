@@ -197,7 +197,10 @@ defmodule SalixWeb.SignalTest do
     group_id = ctx.group_id
 
     assert_received {:signal_bound,
-                     %{"group_id" => ^group_id, "binding" => %{"peer" => ^alice, "kind" => "user"}}}
+                     %{
+                       "group_id" => ^group_id,
+                       "binding" => %{"peer" => ^alice, "kind" => "user"}
+                     }}
 
     status = req_as(ctx.tenant_key, :get, base).body
 

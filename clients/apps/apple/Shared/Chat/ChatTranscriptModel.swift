@@ -23,6 +23,7 @@ struct ChatRow: Identifiable, Equatable {
     let isUser: Bool
     let actorRole: ChatActorRole?
     let actorID: String?
+    let participantID: String?
     let createdBy: String?
     let threadRoot: String
     let createdAt: Double?
@@ -34,7 +35,7 @@ struct ChatRow: Identifiable, Equatable {
     var activityLabel: String?
 
     init(id: String, relationshipID: String, content: Content, isUser: Bool, actorRole: ChatActorRole?,
-         actorID: String? = nil, createdBy: String? = nil, threadRoot: String, createdAt: Double? = nil) {
+         actorID: String? = nil, participantID: String? = nil, createdBy: String? = nil, threadRoot: String, createdAt: Double? = nil) {
         self.id = id; self.relationshipID = relationshipID; self.content = content
         // A user's agent command (`<salix-command>…`) reads as `/command`, as the composer showed it, and the files
         // listed under the message read as chips, as the composer showed them.
@@ -47,7 +48,7 @@ struct ChatRow: Identifiable, Equatable {
             text = AgentCommand.bubbleText(value); files = attachments.compactMap { $0.fields["name"]?.string }
         case .draft(let value): text = value; files = []
         }
-        self.isUser = isUser; self.actorRole = actorRole; self.actorID = actorID; self.createdBy = createdBy
+        self.isUser = isUser; self.actorRole = actorRole; self.actorID = actorID; self.participantID = participantID; self.createdBy = createdBy
         self.threadRoot = threadRoot; self.createdAt = createdAt
     }
 
@@ -55,7 +56,10 @@ struct ChatRow: Identifiable, Equatable {
     var isDraft: Bool { if case .draft = content { true } else { false } }
 
     func sameSender(_ other: ChatRow) -> Bool {
-        isUser == other.isUser && actorRole == other.actorRole && actorID == other.actorID && createdBy == other.createdBy
+        if let lhs = participantID, !lhs.isEmpty, let rhs = other.participantID, !rhs.isEmpty, lhs != rhs {
+            return false
+        }
+        return isUser == other.isUser && actorRole == other.actorRole && actorID == other.actorID && createdBy == other.createdBy
     }
 }
 
@@ -114,6 +118,7 @@ enum ChatTranscriptModel {
             return ChatRow(id: identity.rowID(for: message), relationshipID: message.id,
                            content: .message(message), isUser: isUser, actorRole: role,
                            actorID: message.actorType == "agent" ? message.agentID : nil,
+                           participantID: message.participantID,
                            createdBy: isUser ? message.userID : nil,
                            threadRoot: message.threadRootMessageID ?? message.id, createdAt: message.createdAt)
         }

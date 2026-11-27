@@ -649,8 +649,14 @@ func TestBuildHelmValuesPreservesRuntimeWorkloadIdentity(t *testing.T) {
 			if values.Runtime.AgentVmmGatewayEnabled != test.gatewayEnabled || values.Runtime.ComputeRuntimeBaseURL != test.computeRuntimeURL {
 				t.Fatalf("%s Agent VMM runtime values = %#v", test.environment, values.Runtime)
 			}
-			if values.References["agentVmmGatewayRuntimeSecret"] != "salix-vmm-gateway-runtime" || values.References["agentVmmGatewayClientTlsSecret"] != "salix-vmm-gateway-client-tls" || values.References["computeWorkloadCredentialSecret"] != "salix-compute-runtime" {
+			if values.References["agentVmmGatewayTlsSecret"] != "salix-vmm-gateway-tls" || values.References["computeWorkloadCredentialSecret"] != "salix-compute-runtime" {
 				t.Fatalf("%s Agent VMM Secret references = %#v", test.environment, values.References)
+			}
+			if _, ok := values.References["agentVmmGatewayRuntimeSecret"]; ok {
+				t.Fatalf("%s Helm values retained retired agentVmmGatewayRuntimeSecret", test.environment)
+			}
+			if _, ok := values.References["agentVmmGatewayClientTlsSecret"]; ok {
+				t.Fatalf("%s Helm values retained retired agentVmmGatewayClientTlsSecret", test.environment)
 			}
 			if _, ok := values.References["bridgeDatabaseSecret"]; ok {
 				t.Fatalf("%s normal Helm values retained bridgeDatabaseSecret reference", test.environment)
@@ -689,6 +695,60 @@ func TestBuildHelmValuesPinsTheStationRelease(t *testing.T) {
 		}
 		if values.Stations["releaseManifestUrl"] != manifest {
 			t.Fatalf("stations = %v", values.Stations)
+		}
+	})
+}
+
+func TestBuildHelmValuesEnablesVMMRemoteOnlyWhenGatewayAndIPAreSet(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		replacements := testCandidateReplacements()
+		replacements["COMMA_VMM_REMOTE_IP"] = "203.0.113.7"
+
+		enabled := KubectlPlatform{Spec: EnvironmentSpec{
+			Environment:            "staging",
+			Project:                "example-staging-project",
+			RuntimeServiceAccount:  "runtime-staging@example-staging-project.iam.gserviceaccount.com",
+			AgentVmmGatewayEnabled: true,
+		}}
+		body, err := enabled.buildHelmValues(replacements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var values struct {
+			VMMRemote struct {
+				Enabled        bool              `json:"enabled"`
+				Port           int               `json:"port"`
+				ContainerPort  int               `json:"containerPort"`
+				LoadBalancerIP string            `json:"loadBalancerIP"`
+				Annotations    map[string]string `json:"annotations"`
+			} `json:"vmmRemote"`
+		}
+		if err = json.Unmarshal(body, &values); err != nil {
+			t.Fatal(err)
+		}
+		if !values.VMMRemote.Enabled || values.VMMRemote.Port != 7443 || values.VMMRemote.ContainerPort != 7443 || values.VMMRemote.LoadBalancerIP != "203.0.113.7" {
+			t.Fatalf("vmmRemote = %#v", values.VMMRemote)
+		}
+		if values.VMMRemote.Annotations["cloud.google.com/l4-rbs"] != "enabled" || values.VMMRemote.Annotations["cloud.google.com/network-tier"] != "Premium" {
+			t.Fatalf("vmmRemote annotations = %#v", values.VMMRemote.Annotations)
+		}
+
+		disabled := KubectlPlatform{Spec: EnvironmentSpec{
+			Environment:            "staging",
+			Project:                "example-staging-project",
+			RuntimeServiceAccount:  "runtime-staging@example-staging-project.iam.gserviceaccount.com",
+			AgentVmmGatewayEnabled: false,
+		}}
+		body, err = disabled.buildHelmValues(replacements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err = json.Unmarshal(body, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := raw["vmmRemote"]; ok {
+			t.Fatalf("disabled gateway rendered vmmRemote: %#v", raw["vmmRemote"])
 		}
 	})
 }
@@ -1650,6 +1710,69 @@ func TestReleaseJobsRunInTheirEnvironment(t *testing.T) {
 		}
 		if !strings.Contains(string(body), `{"name":"COMMA_ENVIRONMENT","value":"staging"}`) {
 			t.Fatalf("release Job does not carry its environment: %s", body)
+		}
+	})
+}
+
+func TestParsePlanOutputIgnoresTrailingJSONLogs(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		validJSON := `{"schemaVersion":2,"manifestDigest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","requiredMode":"online","pendingIDs":[],"pendingSteps":[],"providerPendingIDs":[]}`
+		trailingJSONLog := `{"time":"2026-11-25T10:19:13Z","severity":"WARNING","message":"Postgrex.Protocol disconnected"}`
+
+		markedLogs := []byte(strings.Join([]string{
+			`{"time":"2026-11-25T10:19:10Z","severity":"INFO","message":"booting"}`,
+			planOutputMarkerPrefix + validJSON,
+			trailingJSONLog,
+		}, "\n"))
+		plan, err := parsePlanOutput(markedLogs)
+		if err != nil {
+			t.Fatalf("marked plan with trailing JSON log failed: %v", err)
+		}
+		if err := plan.Validate(); err != nil {
+			t.Fatalf("marked plan failed validation: %v", err)
+		}
+
+		unmarkedLogs := []byte(strings.Join([]string{
+			validJSON,
+			trailingJSONLog,
+		}, "\n"))
+		fallbackPlan, err := parsePlanOutput(unmarkedLogs)
+		if err != nil {
+			t.Fatalf("unmarked plan with trailing JSON log failed: %v", err)
+		}
+		if err := fallbackPlan.Validate(); err != nil {
+			t.Fatalf("unmarked fallback plan failed validation: %v", err)
+		}
+
+		duplicateMarked := []byte(planOutputMarkerPrefix + validJSON + "\n" + planOutputMarkerPrefix + validJSON)
+		if _, err := parsePlanOutput(duplicateMarked); err == nil {
+			t.Fatal("duplicate marked plan output was accepted")
+		}
+
+		malformedMarked := []byte(planOutputMarkerPrefix + "{not-json")
+		if _, err := parsePlanOutput(malformedMarked); err == nil {
+			t.Fatal("malformed marked plan output was accepted")
+		}
+
+		onlyLogs, err := parsePlanOutput([]byte(trailingJSONLog))
+		if err != nil {
+			t.Fatalf("unexpected parse error for log-only output: %v", err)
+		}
+		if err := onlyLogs.Validate(); err == nil {
+			t.Fatal("log-only output passed plan validation")
+		}
+	})
+}
+
+func TestPlanJobManifestUsesPlanOutputMarker(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := KubectlPlatform{Spec: EnvironmentSpec{Namespace: "comma", Environment: "staging"}}
+		body, err := json.Marshal(p.jobManifest(JobSpec{Name: "plan", Stage: "plan", Image: "image"}, map[string]string{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), planOutputMarkerPrefix) || !strings.Contains(string(body), "Comma.Release.plan_json()") {
+			t.Fatalf("plan Job manifest omitted marked plan command: %s", body)
 		}
 	})
 }

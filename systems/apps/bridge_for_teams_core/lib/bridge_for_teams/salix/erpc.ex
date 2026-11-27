@@ -50,17 +50,20 @@ defmodule BridgeForTeams.Salix.Erpc do
   @triage_status_directory_timeout 1_000
   @kubernetes_dns_strategy :"Elixir.Cluster.Strategy.Kubernetes.DNS"
   @slack_history_read_timeout 30_000
+  @issue_states_timeout 60_000
 
   @tenants Salix.Control.Tenants
   @groups Salix.Control.Groups
   @oauth_apps Salix.Control.OAuthApps
   @composio_settings Salix.Control.ComposioSettings
+  @m2square_settings Salix.Control.M2squareSettings
   @signal Salix.Control.Signal
   @tailnet Salix.Control.Tailnet
   # Connect and disconnect wait up to 15 s for the Group's node.
   @tailnet_write_timeout 30_000
   @composio Salix.Composio
   @plugins Salix.Control.Plugins
+  @colab_account SalixAgent.Colab.Account
   @remote_mcp_oauth Salix.Control.RemoteMCPOAuth
   @oauth_bindings Salix.Control.OAuthBindings
   @oauth_flow SalixWeb.OAuthFlow
@@ -76,7 +79,14 @@ defmodule BridgeForTeams.Salix.Erpc do
   @daily_brief_source SalixIM.DailyBriefSource
   @daily_brief_member_auth Salix.Bindings.DailyBriefMemberAuth
   @daily_brief_personal_source Salix.Bindings.DailyBriefPersonalSource
+  @daily_brief_issues Salix.Bindings.DailyBriefIssues
+  @daily_brief_jev_recall Salix.Bindings.DailyBriefJevRecall
   @daily_brief_surface SalixIM.DailyBriefSurface
+  @feishu_daily_brief_source SalixIM.FeishuDailyBriefSource
+  @lark_daily_brief_source SalixIM.LarkDailyBriefSource
+  @feishu_daily_brief_surface SalixIM.FeishuDailyBriefSurface
+  @lark_daily_brief_surface SalixIM.LarkDailyBriefSurface
+  @lark_suite_triage_admin SalixIM.LarkSuiteTriage.Admin
   @triage_read_model SalixIM.Triage.ReadModel
   @ifc_admin SalixIM.IFC.Admin
   @ssh_known_hosts SalixAgent.SSH.KnownHosts
@@ -195,6 +205,14 @@ defmodule BridgeForTeams.Salix.Erpc do
 
   @impl true
   def get_group(group_id), do: call(@groups, :get, [group_id], hint: group_id)
+
+  @impl true
+  def ifc_on_group_ids(tenant_id) do
+    case call(@groups, :ifc_on_group_ids, [tenant_id], hint: tenant_id) do
+      {:error, _reason} = error -> error
+      ids when is_list(ids) -> {:ok, ids}
+    end
+  end
 
   @impl true
   def create_group_conversation(group_id, attrs),
@@ -457,6 +475,41 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
+  def set_im_connect_member_scope(tenant_id, group_id, connect_id, scope),
+    do:
+      call(@provider_connects, :set_member_scope, [tenant_id, group_id, connect_id, scope],
+        hint: group_id
+      )
+
+  # A grant reads the person from the provider once.
+  @impl true
+  def put_im_connect_member_grant(tenant_id, group_id, connect_id, subject, days, granted_by),
+    do:
+      call(
+        @provider_connects,
+        :put_member_grant,
+        [tenant_id, group_id, connect_id, subject, days, granted_by],
+        hint: group_id,
+        timeout: 15_000
+      )
+
+  @impl true
+  def delete_im_connect_member_grant(tenant_id, group_id, connect_id, subject),
+    do:
+      call(@provider_connects, :delete_member_grant, [tenant_id, group_id, connect_id, subject],
+        hint: group_id
+      )
+
+  # As `ifc_people/4`: a Feishu or Lark name may walk the Contacts data range.
+  @impl true
+  def search_im_connect_people(tenant_id, group_id, connect_id, query),
+    do:
+      call(@provider_connects, :search_member_people, [tenant_id, group_id, connect_id, query],
+        hint: group_id,
+        timeout: 60_000
+      )
+
+  @impl true
   def create_feishu_im_connect(tenant_id, group_id, attrs),
     do:
       call(@provider_connects, :create_feishu_im_connect, [tenant_id, group_id, attrs],
@@ -469,6 +522,23 @@ defmodule BridgeForTeams.Salix.Erpc do
       call(
         @provider_connects,
         :update_feishu_im_connect,
+        [tenant_id, group_id, connect_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def create_wecom_im_connect(tenant_id, group_id, attrs),
+    do:
+      call(@provider_connects, :create_wecom_im_connect, [tenant_id, group_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def update_wecom_im_connect(tenant_id, group_id, connect_id, attrs),
+    do:
+      call(
+        @provider_connects,
+        :update_wecom_im_connect,
         [tenant_id, group_id, connect_id, attrs],
         hint: group_id
       )
@@ -946,12 +1016,28 @@ defmodule BridgeForTeams.Salix.Erpc do
   @impl true
   def daily_brief_user_names(request), do: daily_brief_call(:user_names, request)
 
-  defp daily_brief_call(function, request),
-    do:
-      call(@daily_brief_source, function, [request],
-        hint: request[:group_id],
-        timeout: @slack_history_read_timeout
-      )
+  # A request names its provider (Slack when absent); a Feishu or Lark
+  # source is new in this release, so a node of the release before has none.
+  defp daily_brief_call(function, request) do
+    module = daily_brief_module(request[:provider], :source)
+
+    module
+    |> call(function, [request], hint: request[:group_id], timeout: @slack_history_read_timeout)
+    |> daily_brief_result(module)
+  end
+
+  defp daily_brief_module("feishu", :source), do: @feishu_daily_brief_source
+  defp daily_brief_module("lark", :source), do: @lark_daily_brief_source
+  defp daily_brief_module(_slack, :source), do: @daily_brief_source
+  defp daily_brief_module("feishu", :surface), do: @feishu_daily_brief_surface
+  defp daily_brief_module("lark", :surface), do: @lark_daily_brief_surface
+  defp daily_brief_module(_slack, :surface), do: @daily_brief_surface
+
+  defp daily_brief_result(result, module)
+       when module in [@daily_brief_source, @daily_brief_surface],
+       do: result
+
+  defp daily_brief_result(result, module), do: unknown_before_release(result, module)
 
   @impl true
   def daily_brief_permalinks(request), do: daily_brief_call(:permalinks, request)
@@ -977,8 +1063,67 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
-  def daily_brief_post(request),
-    do: call(@daily_brief_surface, :post, [request], hint: request[:group_id])
+  def daily_brief_issue_states(request),
+    do:
+      call(@daily_brief_issues, :states, [request],
+        hint: request[:agent_id],
+        timeout: @issue_states_timeout
+      )
+
+  @impl true
+  def daily_brief_member_login(request),
+    do:
+      call(@daily_brief_issues, :member_login, [request],
+        hint: request[:agent_id],
+        timeout: @issue_states_timeout
+      )
+
+  @impl true
+  def daily_brief_member_pulls(request),
+    do:
+      call(@daily_brief_issues, :member_pulls, [request],
+        hint: request[:agent_id],
+        timeout: @issue_states_timeout
+      )
+
+  @impl true
+  def daily_brief_station_tasks(group_id) when is_binary(group_id) do
+    case call(SalixStore.StationTaskIndex, :list_group, [group_id, 200], hint: group_id) do
+      rows when is_list(rows) -> {:ok, rows}
+      other -> other
+    end
+  end
+
+  @impl true
+  def daily_brief_jev_recall(request) when is_map(request) do
+    @daily_brief_jev_recall
+    |> call(:score, [request],
+      hint: request[:group_id],
+      timeout: @issue_states_timeout
+    )
+    |> unknown_before_release(@daily_brief_jev_recall)
+  end
+
+  # Feishu / Lark group triage is new in this release: a node of the release
+  # before has no admin module.
+  @impl true
+  def lark_suite_triage(function, request) when is_atom(function) and is_map(request),
+    do:
+      @lark_suite_triage_admin
+      |> call(:call, [function, request],
+        hint: request[:group_id],
+        timeout: @slack_history_read_timeout
+      )
+      |> unknown_before_release(@lark_suite_triage_admin)
+
+  @impl true
+  def daily_brief_post(request) do
+    module = daily_brief_module(request[:provider], :surface)
+
+    module
+    |> call(:post, [request], hint: request[:group_id])
+    |> daily_brief_result(module)
+  end
 
   @impl true
   def ensure_task_agent(tenant_id, group_id),
@@ -1081,6 +1226,10 @@ defmodule BridgeForTeams.Salix.Erpc do
   @impl true
   def get_composio_settings(tenant_id),
     do: call(@composio_settings, :view, [tenant_id], hint: tenant_id)
+
+  @impl true
+  def get_m2square_settings,
+    do: call(@m2square_settings, :get, [], timeout: @workspace_read_timeout)
 
   @impl true
   def put_composio_settings(tenant_id, attrs),
@@ -1196,6 +1345,59 @@ defmodule BridgeForTeams.Salix.Erpc do
     do: call(@remote_mcp_oauth, :disconnect, [tenant_id, group_id, binding_id], hint: group_id)
 
   @impl true
+  def start_colab_oauth_attempt(tenant_id, group_id, initiator_user_id, opts),
+    do:
+      call(@colab_account, :start_oauth_attempt, [tenant_id, group_id, initiator_user_id, opts],
+        hint: group_id
+      )
+
+  @impl true
+  def complete_colab_oauth_attempt(
+        tenant_id,
+        group_id,
+        initiator_user_id,
+        attempt_id,
+        pasted_input,
+        opts
+      ),
+      do:
+        call(
+          @colab_account,
+          :complete_oauth_attempt,
+          [tenant_id, group_id, initiator_user_id, attempt_id, pasted_input, opts],
+          hint: group_id,
+          timeout: 30_000
+        )
+
+  @impl true
+  def list_colab_group_accounts(tenant_id, group_id),
+    do:
+      call(@colab_account, :list_group_accounts_with_stats, [tenant_id, group_id], hint: group_id)
+
+  @impl true
+  def disconnect_colab_account(tenant_id, group_id, binding_id)
+      when is_binary(binding_id) and binding_id != "" do
+    if String.trim(binding_id) == "" do
+      {:error, :missing_binding_id}
+    else
+      call(
+        @colab_account,
+        :disconnect_binding,
+        [tenant_id, group_id, binding_id, [sync_plugin_state: false]],
+        hint: group_id,
+        timeout: 60_000
+      )
+    end
+  end
+
+  def disconnect_colab_account(_tenant_id, _group_id, _binding_id),
+    do: {:error, :missing_binding_id}
+
+  @impl true
+  def retire_group_colab(tenant_id, group_id),
+    do: call(@colab_account, :retire_group, [tenant_id, group_id], hint: group_id)
+
+  @impl true
   def list_group_oauth_bindings(group_id),
     do: call(@oauth_bindings, :list, [group_id], hint: group_id)
 
@@ -1221,6 +1423,10 @@ defmodule BridgeForTeams.Salix.Erpc do
   @impl true
   def delete_feishu_tenant_app(tenant_id),
     do: call(@tenants, :delete_feishu_tenant_app, [tenant_id], hint: tenant_id)
+
+  @impl true
+  def delete_feishu_tenant_app(tenant_id, app_id),
+    do: call(@tenants, :delete_feishu_tenant_app, [tenant_id, app_id], hint: tenant_id)
 
   @impl true
   def get_feishu_tenant_app(tenant_id),
@@ -1276,6 +1482,10 @@ defmodule BridgeForTeams.Salix.Erpc do
 
   @impl true
   def platform_model(role), do: call(@agent_model, :platform_public, [role])
+
+  @impl true
+  def platform_router(tenant_id),
+    do: call(SalixAgent.PlatformRouter, :public, [tenant_id], hint: tenant_id)
 
   @impl true
   def get_group_task_model(group_id), do: call(@task_model, :get, [group_id], hint: group_id)
@@ -1434,8 +1644,11 @@ defmodule BridgeForTeams.Salix.Erpc do
   end
 
   @impl true
-  def station_usage(group_id, from, to, by, source),
-    do: call(@station_stats, :usage, [group_id, from, to, by, source], hint: group_id)
+  def station_usage(group_id, from, to, by, source, device_id),
+    do:
+      call(@station_stats, :usage, [group_id, from, to, by, source, nil, device_id],
+        hint: group_id
+      )
 
   @impl true
   def stillfail_stations(group_id),
@@ -1447,6 +1660,14 @@ defmodule BridgeForTeams.Salix.Erpc do
       call(@stillfail_devices, :connect_line, [group_id, tenant_id, %{"product" => "cft"}],
         hint: group_id
       )
+
+  @impl true
+  def remove_stillfail_station(group_id, device_id) do
+    case call(@stillfail_devices, :remove, [group_id, device_id], hint: group_id) do
+      :ok -> {:ok, :removed}
+      other -> other
+    end
+  end
 
   @impl true
   def remove_stillfail_stations(group_id) do

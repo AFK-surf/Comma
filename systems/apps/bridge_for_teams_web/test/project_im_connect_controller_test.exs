@@ -83,6 +83,15 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
       update_connect(connect_id, &Map.put(&1, "disabled_at", "2026-06-26T00:00:00Z"))
     end
 
+    def set_im_connect_member_scope(_tenant_id, _group_id, connect_id, scope) do
+      with :ok <- update_connect(connect_id, &Map.put(&1, "member_scope", scope)) do
+        {:ok,
+         Agent.get(__MODULE__, fn connects ->
+           Enum.find(connects, &(&1["connect_id"] == connect_id))
+         end)}
+      end
+    end
+
     def enable_im_connect(_tenant_id, _group_id, connect_id) do
       update_connect(connect_id, &Map.put(&1, "disabled_at", nil))
     end
@@ -267,6 +276,18 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
     missing = api(:patch, base <> "/conn_slack_1", token, %{})
     assert missing.status == 400
     assert Jason.decode!(missing.resp_body)["error"]["code"] == "missing_inbound_agent"
+
+    # Whose people the workspace's people are changes alone too.
+    updated =
+      api(:patch, base <> "/conn_slack_1", token, %{"member_scope" => "external"})
+      |> json_data()
+
+    assert updated["connect"]["member_scope"] == "external"
+    assert updated["connect"]["auto_join_public_channels"] == false
+
+    invalid = api(:patch, base <> "/conn_slack_1", token, %{"member_scope" => "everyone"})
+    assert invalid.status == 400
+    assert Jason.decode!(invalid.resp_body)["error"]["code"] == "invalid_member_scope"
   end
 
   test "project Slack connect API enforces project read and write permissions", %{

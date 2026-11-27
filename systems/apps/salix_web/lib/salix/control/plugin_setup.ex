@@ -10,9 +10,17 @@ defmodule Salix.Control.PluginSetup do
   # Mac, not an OAuth grant, is what connects it (connect_device/5).
   # Binding and tool-call statuses that mean the server refused the credential.
   @rejected_credential_statuses ~w(auth_failed not_authorized reauthorization_required)
-  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key device_client stillfail_connect)
+  # requester_mcp_oauth: nothing to connect for the Group; each person signs in
+  # with their own account when they first ask (SalixMCP.Provider).
+  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key device_client stillfail_connect requester_mcp_oauth oauth_code_paste)
 
   def credential_setup(definition, connection_id \\ nil)
+
+  def credential_setup(
+        %{"setup" => %{"connections" => [%{"kind" => "oauth_code_paste"}]}},
+        _connection_id
+      ),
+      do: nil
 
   # still.fail's line is shown, not asked for: the member pastes it into a
   # still.fail station's connects (`CommaWeb.PluginConnections`).
@@ -40,6 +48,14 @@ defmodule Salix.Control.PluginSetup do
         "label" => connection["credential_label"],
         "helpUrl" => connection["help_url"]
       }
+      |> then(fn setup ->
+        if param = connection["credential_param"],
+          do:
+            setup
+            |> Map.put("param", param)
+            |> Map.put("address", connection["credential_address"]),
+          else: setup
+      end)
     else
       _ -> nil
     end
@@ -60,8 +76,9 @@ defmodule Salix.Control.PluginSetup do
         connection_id \\ nil,
         opts \\ []
       ) do
-    with %{"key" => key} <- credential_setup(definition, connection_id),
+    with %{"key" => key} = setup <- credential_setup(definition, connection_id),
          {:ok, value} <- credential_value(values, key),
+         {:ok, value} <- param_value(value, setup["param"], setup["address"]),
          config <- credential_config(definition, key, value, opts),
          definition <- credential_definition(definition, config),
          {:ok, %{"bindings" => [binding]}} <-
@@ -77,15 +94,15 @@ defmodule Salix.Control.PluginSetup do
       case connection["status"] do
         "running" ->
           if credential_rejected_by_tool?(tenant_id, group_id, binding["binding_id"], check),
-            do: reject_credential(tenant_id, group_id, binding["binding_id"]),
+            do: reject_credential(tenant_id, group_id, definition, binding["binding_id"], key),
             else: :ok
 
         status when status in @rejected_credential_statuses ->
-          {:error, :plugin_credential_rejected}
+          reject_credential(tenant_id, group_id, definition, binding["binding_id"], key)
 
         _ ->
           if rejected_credential?(connection["last_error"], check),
-            do: reject_credential(tenant_id, group_id, binding["binding_id"]),
+            do: reject_credential(tenant_id, group_id, definition, binding["binding_id"], key),
             else: {:error, :plugin_connection_unavailable}
       end
     else
@@ -119,6 +136,9 @@ defmodule Salix.Control.PluginSetup do
        when is_binary(tool) do
     case Gateway.call_tool(tenant_id, group_id, binding_id, tool, check["arguments"] || %{}) do
       {:ok, %{"status" => status}} when status in @rejected_credential_statuses -> true
+      # A server that reports a dead key inside a successful result: the
+      # gateway turned it into this (`SalixMCP.Gateway.credential_failure/2`).
+      {:ok, %{"error_class" => "credential_invalid"}} -> true
       {:ok, %{"status" => "error"} = result} -> rejected_credential?(result, check)
       _result -> false
     end
@@ -126,8 +146,20 @@ defmodule Salix.Control.PluginSetup do
 
   defp credential_rejected_by_tool?(_tenant_id, _group_id, _binding_id, _check), do: false
 
-  # A rejected key must not stay behind as a connected binding.
-  defp reject_credential(tenant_id, group_id, binding_id) do
+  # A rejected key must not stay behind as a connected binding. X keeps its
+  # binding for a coexisting OAuth connection, so only the key is removed.
+  defp reject_credential(tenant_id, group_id, %{"plugin_id" => "x-twitter"}, binding_id, key) do
+    with {:ok, current} <- Store.get_binding(tenant_id, group_id, binding_id) do
+      _ =
+        Gateway.update_binding(tenant_id, group_id, binding_id, %{
+          "config_values" => Map.delete(current["config_values"] || %{}, key)
+        })
+    end
+
+    {:error, :plugin_credential_rejected}
+  end
+
+  defp reject_credential(tenant_id, group_id, _definition, binding_id, _key) do
     _ = Gateway.delete_binding(tenant_id, group_id, binding_id)
     {:error, :plugin_credential_rejected}
   end
@@ -163,7 +195,70 @@ defmodule Salix.Control.PluginSetup do
 
   defp credential_definition(definition, _config), do: definition
 
+  @doc """
+  The plugin's MCP bindings that need nothing to connect (`requester_mcp_oauth`),
+  made when the Group enables it: its tools are listed without a credential.
+  """
+  def ensure_automatic_bindings(tenant_id, group_id, definition) do
+    case automatic_connection(definition) do
+      nil ->
+        :ok
+
+      connection ->
+        with {:ok, _prepared} <- prepare(tenant_id, group_id, definition, connection["id"]),
+             do: :ok
+    end
+  end
+
+  defp automatic_connection(definition) do
+    case contract(definition) do
+      {:ok, setup} -> Enum.find(setup.connections, &(&1["kind"] == "requester_mcp_oauth"))
+      _ -> nil
+    end
+  end
+
   def disconnect_credentials(tenant_id, group_id, definition, connection_id) do
+    case selected_connection(definition, connection_id) do
+      {:ok, %{"kind" => "oauth_code_paste", "provider" => "google_colab"}} ->
+        case SalixAgent.Colab.Account.disconnect_all_for_group(tenant_id, group_id) do
+          {:ok, _result} -> :ok
+          {:error, _reason} = error -> error
+        end
+
+      _other ->
+        case automatic_connection(definition) do
+          %{"id" => id} when connection_id in [nil, id] ->
+            disconnect_automatic(tenant_id, group_id, definition, id)
+
+          _ ->
+            disconnect_key_credentials(tenant_id, group_id, definition, connection_id)
+        end
+    end
+  end
+
+  defp selected_connection(definition, connection_id) do
+    with {:ok, setup} <- contract(definition) do
+      select_connection(setup, connection_id)
+    end
+  end
+
+  # The binding goes, and every person's sign-in to it with it.
+  defp disconnect_automatic(tenant_id, group_id, definition, connection_id) do
+    {:ok, setup} = contract(definition)
+    bindings = Store.list_group_bindings(tenant_id, group_id, include_disabled: true)
+
+    setup.mcps
+    |> Enum.filter(&(connection_id in mcp_auth_refs(&1)))
+    |> Enum.flat_map(fn mcp -> Enum.filter(bindings, &same_mcp?(&1, mcp)) end)
+    |> Enum.reduce_while(:ok, fn binding, :ok ->
+      case Gateway.delete_binding(tenant_id, group_id, binding["binding_id"]) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp disconnect_key_credentials(tenant_id, group_id, definition, connection_id) do
     with %{"key" => key} <- credential_setup(definition, connection_id),
          {:ok, %{"bindings" => [binding]}} <-
            prepare(tenant_id, group_id, definition, connection_id) do
@@ -197,6 +292,31 @@ defmodule Salix.Control.PluginSetup do
 
   defp credential_value(_, _),
     do: {:error, {:bad_request, "enter the required plugin credential"}}
+
+  @doc false
+  # A connection whose console shows the key inside an address
+  # (`credential_param`, `credential_address`) also takes that address: the
+  # key is its query parameter of that name. An address is taken only when it
+  # is exactly that service's address; the refusal repeats nothing that was
+  # pasted. Anything that is not an address is the key itself.
+  def param_value(value, param, address) when is_binary(param) and is_binary(address) do
+    if String.contains?(value, "://") do
+      expected = URI.parse(address)
+
+      with %URI{scheme: "https", host: host, port: 443, path: path, query: query}
+           when is_binary(query) <- URI.parse(value),
+           true <- host == expected.host and path == expected.path,
+           %{^param => key} when key != "" <- URI.decode_query(query) do
+        {:ok, key}
+      else
+        _ -> {:error, :credential_address_mismatch}
+      end
+    else
+      {:ok, value}
+    end
+  end
+
+  def param_value(value, _param, _address), do: {:ok, value}
 
   @doc """
   The tool groups of a plugin's MCP (`setup.mcps[].tool_groups`), each with
@@ -290,7 +410,15 @@ defmodule Salix.Control.PluginSetup do
       oauth_bindings = oauth_bindings_for_status(definitions, group_id)
       mcp_bindings = Store.list_group_bindings(tenant_id, group_id, include_disabled: true)
       im_connects = group_im_connects(group_id)
-      Enum.map(definitions, &put_status(&1, oauth_bindings, mcp_bindings, im_connects))
+      colab_state = group_colab_state(definitions, tenant_id, group_id)
+
+      Enum.map(
+        definitions,
+        &put_status(&1, oauth_bindings, mcp_bindings, %{
+          im_connects: im_connects,
+          colab_state: colab_state
+        })
+      )
     else
       definitions
     end
@@ -473,6 +601,12 @@ defmodule Salix.Control.PluginSetup do
       else: Map.put(attrs, "oauth_binding_refs", %{})
   end
 
+  defp binding_attrs(mcp, %{"kind" => "requester_mcp_oauth"}) do
+    mcp
+    |> Map.take(~w(mcp_id alias target_ref placement))
+    |> Map.put("oauth_binding_refs", %{})
+  end
+
   defp binding_attrs(mcp, %{"kind" => "mcp_api_key"}) do
     mcp
     |> Map.take(~w(mcp_id alias target_ref placement))
@@ -512,6 +646,11 @@ defmodule Salix.Control.PluginSetup do
     ref["provider"] == connection["provider"] and ref["alias"] == connection["alias"] and
       normalize_scopes(ref["scopes"]) == normalize_scopes(connection["scopes"])
   end
+
+  defp auth_matches?(binding, _mcp, %{"kind" => "requester_mcp_oauth"}),
+    do:
+      binding["oauth_binding_refs"] in [nil, %{}] and
+        not present?(binding["remote_oauth_binding_id"])
 
   defp auth_matches?(binding, _mcp, %{"kind" => "mcp_api_key"}),
     do:
@@ -651,6 +790,18 @@ defmodule Salix.Control.PluginSetup do
   defp connection_state(%{"kind" => "stillfail_connect"}, _mcps, _oauth, _bindings, _),
     do: "connected"
 
+  # Set up once the binding is there: each person signs in on first use.
+  defp connection_state(%{"id" => id, "kind" => "requester_mcp_oauth"}, mcps, _oauth, bindings, _) do
+    mcp = Enum.find(mcps, &(id in mcp_auth_refs(&1)))
+    binding = mcp && Enum.find(bindings, &same_mcp?(&1, mcp))
+
+    cond do
+      is_nil(binding) -> "not_connected"
+      binding["enabled"] == false -> "disabled"
+      true -> "connected"
+    end
+  end
+
   defp connection_state(%{"id" => id, "kind" => "device_client"}, mcps, _oauth, bindings, _) do
     mcp = Enum.find(mcps, &(id in mcp_auth_refs(&1)))
     binding = mcp && Enum.find(bindings, &same_mcp?(&1, mcp))
@@ -667,7 +818,7 @@ defmodule Salix.Control.PluginSetup do
          _mcps,
          _oauth,
          _bindings,
-         im_connects
+         %{im_connects: im_connects}
        ) do
     provider_connects = Enum.filter(im_connects, &(&1["provider"] == provider))
 
@@ -677,6 +828,24 @@ defmodule Salix.Control.PluginSetup do
       true -> "not_connected"
     end
   end
+
+  defp connection_state(
+         %{"kind" => "oauth_code_paste", "provider" => "google_colab"},
+         _mcps,
+         _oauth,
+         _bindings,
+         %{colab_state: colab_state}
+       ),
+       do: colab_state
+
+  defp connection_state(
+         %{"kind" => "oauth_code_paste"},
+         _mcps,
+         _oauth,
+         _bindings,
+         _group_states
+       ),
+       do: "not_connected"
 
   defp mcp_state(nil, _mcp, _auth), do: "not_configured"
 
@@ -724,6 +893,12 @@ defmodule Salix.Control.PluginSetup do
 
         %{"kind" => "device_client"} ->
           present?(binding["device_runtime_id"])
+
+        %{"kind" => "requester_mcp_oauth"} ->
+          true
+
+        %{"kind" => "oauth_code_paste"} ->
+          false
 
         _connection ->
           false
@@ -798,6 +973,12 @@ defmodule Salix.Control.PluginSetup do
 
   defp connection_fields_valid?(%{"kind" => "device_client"}), do: true
   defp connection_fields_valid?(%{"kind" => "stillfail_connect"}), do: true
+  defp connection_fields_valid?(%{"kind" => "requester_mcp_oauth"}), do: true
+
+  defp connection_fields_valid?(%{"kind" => "oauth_code_paste"} = c),
+    do:
+      c["provider"] == "google_colab" and present?(c["alias"]) and present?(c["config_key"]) and
+        present?(c["credential_label"]) and is_list(c["scopes"]) and c["scopes"] != []
 
   defp validate_mcps([], _connections), do: :ok
 
@@ -825,6 +1006,9 @@ defmodule Salix.Control.PluginSetup do
 
                 %{"kind" => "device_client"} ->
                   mcp["placement"] == "device" and length(auth_refs) == 1
+
+                %{"kind" => "requester_mcp_oauth"} ->
+                  mcp["placement"] == "server" and length(auth_refs) == 1
 
                 _connection ->
                   false
@@ -888,6 +1072,22 @@ defmodule Salix.Control.PluginSetup do
     case ProviderConnects.list_group_im_connects(group_id, nil) do
       {:ok, connects} when is_list(connects) -> connects
       _other -> []
+    end
+  end
+
+  defp group_colab_state(definitions, tenant_id, group_id) do
+    has_colab? =
+      Enum.any?(definitions, fn definition ->
+        definition
+        |> get_in(["setup", "connections"])
+        |> List.wrap()
+        |> Enum.any?(&(&1["kind"] == "oauth_code_paste" and &1["provider"] == "google_colab"))
+      end)
+
+    if has_colab? do
+      SalixAgent.Colab.Account.connection_state(tenant_id, group_id)
+    else
+      "not_connected"
     end
   end
 

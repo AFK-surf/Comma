@@ -53,14 +53,15 @@ defmodule SalixAgent.MemoryToolsTest do
 
   # Dispatch through the ordinary registry path; role eligibility on the memory
   # entries makes them available to router sessions.
-  defp run(name, args, ctx) do
+  defp run(name, args, ctx, declaration \\ nil) do
     [res] =
       Tools.execute(
         [
           %{
             "id" => "t-#{SystemsRuntime.Proc.unique_integer([:positive])}",
             "name" => name,
-            "args" => args
+            "args" => args,
+            "ifc" => declaration
           }
         ],
         ctx
@@ -277,6 +278,196 @@ defmodule SalixAgent.MemoryToolsTest do
            %{"path" => "/memory/index.md", "content" => "x", "mode" => "append"},
            "error: memory.write append mode is only allowed for today's daily memory file"}
         ] do
+    end
+  end
+
+  # An administrator can let only named people change memory (the Group's
+  # `memory_writers`, set on the CFT Data policy page).
+  describe "memory.write — who may write" do
+    defmodule WritersGroupContext do
+      @moduledoc false
+      @behaviour SalixAgent.GroupContext
+
+      @impl true
+      def list(_tenant_id), do: []
+
+      @impl true
+      def get(group_id, tenant_id) do
+        {:ok,
+         %{
+           "group_id" => group_id,
+           "tenant_id" => tenant_id,
+           "memory_writers" => SystemsRuntime.get_env(:salix_agent, :memory_writers_stub)
+         }}
+      end
+    end
+
+    setup do
+      prev = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
+      SystemsRuntime.put_env(:salix_agent, :group_context_mod, WritersGroupContext)
+
+      on_exit(fn ->
+        SystemsRuntime.put_env(:salix_agent, :group_context_mod, prev)
+        SystemsRuntime.delete_env(:salix_agent, :memory_writers_stub)
+      end)
+    end
+
+    defp writers(restricted, writers),
+      do:
+        SystemsRuntime.put_env(:salix_agent, :memory_writers_stub, %{
+          "restricted" => restricted,
+          "writers" => writers
+        })
+
+    defp sent_by(ctx, origin),
+      do: Map.merge(ctx, %{group_id: "grp-mem", tenant_id: "ten-mem", trusted_origin: origin})
+
+    defp person(user),
+      do: %{"principal_ref" => %{"connect_id" => "imc-lark", "subject_id" => user}}
+
+    defp write(a, origin) do
+      run(
+        "memory.write",
+        %{"path" => "/memory/semantic/people.md", "content" => "- note"},
+        a |> ctx(nil) |> sent_by(origin)
+      )
+    end
+
+    test "anyone writes while the switch is off, even with people named", %{agent: a} do
+      writers(false, ["provider_user|imc-lark|ou_boss"])
+      refute write(a, person("ou_new")).error
+    end
+
+    test "with the switch on only a named person writes", %{agent: a} do
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+
+      refute write(a, person("ou_boss")).error
+
+      refused = write(a, person("ou_new"))
+      assert refused.error
+      assert refused.content =~ "only by the people an administrator named"
+      assert refused.events in [nil, []]
+    end
+
+    test "Easy preserves the shared memory writer whitelist", %{agent: a} do
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+      context = a |> ctx(nil) |> sent_by(person("ou_new")) |> Map.put(:ifc_mode, :easy)
+
+      refused =
+        run(
+          "memory.write",
+          %{"path" => "/memory/semantic/people.md", "content" => "note"},
+          context,
+          %{"sources" => []}
+        )
+
+      assert refused.error
+      assert refused.content =~ "only by the people an administrator named"
+      assert refused.events in [nil, []]
+
+      allowed = sent_by(context, person("ou_boss"))
+
+      refute run(
+               "memory.write",
+               %{"path" => "/memory/semantic/people.md", "content" => "note"},
+               allowed,
+               %{"sources" => []}
+             ).error
+    end
+
+    test "with the switch on a request with nobody to name is refused", %{agent: a} do
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+      assert write(a, %{"provider" => "internal"}).error
+    end
+
+    # The limit sits where every tool's events are checked, so file tools
+    # cannot reach /memory around memory.write.
+    test "with the switch on, file tools cannot change memory for anyone else", %{agent: a} do
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+      state_with(a, [{"/memory/semantic/people.md", "- boss"}, {"/notes.md", "x"}])
+      ctx = a |> ctx(nil) |> sent_by(person("ou_new"))
+
+      for {tool, args} <- [
+            {"fs.write_file", %{"path" => "/memory/semantic/people.md", "content" => "- new"}},
+            {"fs.edit_file",
+             %{"path" => "/memory/semantic/people.md", "old" => "boss", "new" => "x"}},
+            {"fs.delete_file", %{"path" => "/memory/semantic/people.md"}},
+            {"fs.copy_file", %{"from" => "/notes.md", "to" => "/memory/semantic/people.md"}},
+            {"fs.move_file", %{"from" => "/memory/semantic/people.md", "to" => "/old.md"}}
+          ] do
+        refused = run(tool, args, ctx)
+        assert refused.error, "#{tool} was allowed"
+        assert refused.content =~ "only by the people an administrator named"
+        assert refused.events == []
+      end
+
+      assert {:ok, "- boss"} = AgentWorkspace.read(a, "/memory/semantic/people.md")
+
+      # Files outside memory are untouched by the switch.
+      refute run("fs.write_file", %{"path" => "/notes.md", "content" => "y"}, ctx).error
+
+      boss = a |> ctx(nil) |> sent_by(person("ou_boss"))
+
+      refute run(
+               "fs.edit_file",
+               %{"path" => "/memory/semantic/people.md", "old" => "boss", "new" => "x"},
+               boss
+             ).error
+    end
+
+    test "a schedule writes for the named person who made it", %{agent: a} do
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+
+      schedule = fn creator ->
+        %{
+          "provider" => "schedule",
+          "ifc" => %{"principal" => "provider_user|imc-lark|" <> creator}
+        }
+      end
+
+      refute write(a, schedule.("ou_boss")).error
+      assert write(a, schedule.("ou_new")).error
+    end
+
+    # Only provider users can be named, so a Comma user in an internal
+    # conversation is refused even though Comma knows who they are.
+    test "with the switch on a Comma user in an internal conversation is refused", %{agent: a} do
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+      origin = %{"provider" => "internal", "principal_ref" => %{"subject_id" => "usr_owner"}}
+
+      assert write(a, origin).error
+
+      by_ifc =
+        run(
+          "memory.write",
+          %{"path" => "/memory/semantic/people.md", "content" => "- note"},
+          a
+          |> ctx(nil)
+          |> sent_by(origin)
+          |> Map.put(:ifc, %{"requester" => "comma_user|usr_owner"})
+        )
+
+      assert by_ifc.error
+      assert by_ifc.content =~ "only by the people an administrator named"
+    end
+
+    # A writer is a provider user on one connect. The same person on another
+    # connect is someone else until they are named there too, even when that
+    # connect reports the same user id (one Telegram user seen by two bots).
+    test "a person named on one connect writes only from that connect", %{agent: a} do
+      on = fn connect, user ->
+        %{"principal_ref" => %{"connect_id" => connect, "subject_id" => user}}
+      end
+
+      writers(true, ["provider_user|imc-lark|ou_boss"])
+
+      refute write(a, person("ou_boss")).error
+      assert write(a, on.("imc-telegram", "4242")).error
+
+      writers(true, ["provider_user|imc-lark|ou_boss", "provider_user|imc-telegram|4242"])
+
+      refute write(a, on.("imc-telegram", "4242")).error
+      assert write(a, on.("imc-telegram-2", "4242")).error
     end
   end
 end

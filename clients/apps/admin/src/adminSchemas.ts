@@ -76,6 +76,7 @@ export const AdminSession = Schema.Struct({
       "google",
       "apple",
       "watch_pairing",
+      "raycast_pairing",
       "ssh_public_key",
     ])
   ),
@@ -85,7 +86,16 @@ export const AdminSession = Schema.Struct({
   last_seen_at: Schema.NullOr(Schema.Finite),
   revoked_at: Schema.NullOr(Schema.Finite),
   client_kind: Schema.NullOr(
-    Schema.Literals(["web", "electron", "android", "ios", "watch", "api", "ssh"])
+    Schema.Literals([
+      "web",
+      "electron",
+      "android",
+      "ios",
+      "watch",
+      "raycast",
+      "api",
+      "ssh",
+    ])
   ),
   device_label: Schema.NullOr(Schema.String),
   restricted: Schema.Boolean,

@@ -10,7 +10,7 @@
  * below, or the base level for a change ui.create cannot see in a widget.
  * `pnpm generate:card-contract` then renders the levels for ui.create.
  */
-export const dynamicUiLevel = 2;
+export const dynamicUiLevel = 3;
 
 /**
  * The level every widget needs. Level 1 is the runtime of release v1.0.14,
@@ -26,6 +26,8 @@ export const dynamicUiBaseLevel = 1;
 export const dynamicUiFeatureLevels = {
   // comma.chart with several named series.
   chartSeries: 2,
+  // A place card whose places all have lat and lng, drawn on a map.
+  placeMap: 3,
 } as const;
 
 /** Whether this client's runtime shows a widget of that version. */

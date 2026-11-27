@@ -384,7 +384,7 @@ defmodule SalixWeb.OAuthFlow do
                  OAuthBindings.count_for_connection(connection_id) == 0 do
               # V1: connections are group-local — revoke (best-effort) + delete.
               case Connections.get(connection_id) do
-                {:ok, conn} -> best_effort_revoke(tenant_id, conn)
+                {:ok, conn} -> revoke_unless_shared(tenant_id, connection_id, conn)
                 _ -> :ok
               end
 
@@ -405,7 +405,7 @@ defmodule SalixWeb.OAuthFlow do
   def delete_member_connection(tenant_id, connection_id, bft_member) when is_map(bft_member) do
     case Connections.get(connection_id) do
       {:ok, %{"tenant" => ^tenant_id, "bft_member" => owner} = conn} when owner == bft_member ->
-        best_effort_revoke(tenant_id, conn)
+        revoke_unless_shared(tenant_id, connection_id, conn)
 
         case delete_connection_record(connection_id) do
           {:error, reason} -> {:error, reason}
@@ -441,7 +441,7 @@ defmodule SalixWeb.OAuthFlow do
               "skipping oauth provider revoke; new binding shares token material connection_id=#{connection_id} provider=#{conn["provider"]}"
             )
           else
-            best_effort_revoke(tenant_id, conn)
+            revoke_unless_shared(tenant_id, connection_id, conn)
           end
 
         {:error, reason} ->
@@ -462,6 +462,55 @@ defmodule SalixWeb.OAuthFlow do
     else
       # Future-proofing: a shared connection must outlive this binding.
       :ok
+    end
+  end
+
+  # Slack gives one user the same token on every grant of an app, so another
+  # binding's connection can hold the token this one holds. Revoking it would
+  # cut that credential off while it still shows as connected. When that
+  # cannot be read, the provider grant is left alone; only our record goes.
+  defp revoke_unless_shared(tenant_id, connection_id, conn) do
+    case token_holders(tenant_id, connection_id, conn) do
+      :none ->
+        best_effort_revoke(tenant_id, conn)
+
+      :shared ->
+        Logger.info(
+          "skipping oauth provider revoke; another connection shares token material connection_id=#{connection_id} provider=#{conn["provider"]}"
+        )
+
+      :unknown ->
+        Logger.warning(
+          "skipping oauth provider revoke; could not read which connections share token material connection_id=#{connection_id} provider=#{conn["provider"]}"
+        )
+    end
+  end
+
+  defp token_holders(tenant_id, connection_id, conn) do
+    tokens = Enum.filter([conn["access_token"], conn["refresh_token"]], &present?/1)
+
+    with [_ | _] <- tokens,
+         {:ok, ids} <-
+           OAuthBindings.connection_ids(tenant_id, normalize_provider(conn["provider"])) do
+      ids
+      |> Enum.reject(&(&1 == connection_id))
+      |> Enum.reduce_while(:none, fn id, :none ->
+        case Connections.get(id) do
+          {:ok, other} ->
+            if other["access_token"] in tokens or other["refresh_token"] in tokens,
+              do: {:halt, :shared},
+              else: {:cont, :none}
+
+          {:error, :not_found} ->
+            {:cont, :none}
+
+          {:error, _reason} ->
+            {:halt, :unknown}
+        end
+      end)
+    else
+      [] -> :none
+      {:error, _reason} -> :unknown
     end
   end
 

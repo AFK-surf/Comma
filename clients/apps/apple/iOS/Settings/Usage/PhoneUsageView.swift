@@ -61,6 +61,7 @@ struct PhoneUsageView: View {
                     }
                 }
             }
+            if model.showStoreSection { store }
             if !model.grants.isEmpty {
                 SettingsSection(Text("Credit balances")) {
                     ForEach(Array(model.grants.enumerated()), id: \.offset) { _, grant in
@@ -75,6 +76,90 @@ struct PhoneUsageView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Plans and credit packs the App Store sells, restore and the App Store's own management.
+    @ViewBuilder private var store: some View {
+        if let notice = model.notice {
+            let isWarning = notice == .managedElsewhere || notice == .unrecordable
+            SettingsSection {
+                SettingsNote {
+                    CentralIcon(isWarning ? "central-exclamation-triangle" : "icon-check", size: 20, relativeTo: .body)
+                        .foregroundStyle(isWarning ? CommaTheme.errorPrimary : CommaTheme.brandSolid)
+                } message: {
+                    noticeText(notice).font(.subheadline).foregroundStyle(CommaTheme.textPrimary)
+                }.surfaceRowFrame(vertical: GroupedSurface.inset)
+            }
+        }
+        if model.showPlansSection {
+            SettingsSection(Text("Plans"), footer: Text(model.managedElsewhere
+                ? LocalizedStringKey("Your subscription was bought outside the App Store. Change or cancel it where you bought it.")
+                : LocalizedStringKey("Subscriptions renew automatically through your Apple Account until you cancel them at least 24 hours before the period ends. [Terms of Use](https://www.apple.com/legal/internet-services/itunes/dev/stdeula/) · [Privacy Policy](https://comma.surf/privacy/)"))) {
+                if model.managedElsewhere {
+                    SettingsRow(Text("Subscription"), value: Text(model.provider == "stripe" ? "Managed on the web" : "Managed in Google Play"))
+                } else {
+                    ForEach(model.subscriptionPlans, id: \.self) { plan in purchaseRow(plan) }
+                }
+                if model.provider == "apple" {
+                    Button { Task { await model.manage() } } label: {
+                        SettingsRow(Text("Manage subscription"), icon: "central-arrow-up-right", role: .action)
+                    }.buttonStyle(SurfaceRowButtonStyle())
+                }
+            }
+        }
+        if model.showCreditPacksSection {
+            SettingsSection(Text("Credit packs"), footer: Text("Pack credits expire at the end of the month you buy them in (UTC).")) {
+                ForEach(model.creditPacks, id: \.self) { plan in purchaseRow(plan) }
+            }
+        }
+        SettingsSection {
+            Button { Task { await model.restore() } } label: {
+                SettingsRow(Text("Restore purchases"), icon: "central-arrow-rotate-counter-clockwise", role: .action)
+            }.buttonStyle(SurfaceRowButtonStyle())
+        }
+    }
+
+    private func purchaseRow(_ plan: NSDictionary) -> some View {
+        let current = model.isCurrent(plan)
+        let buying = model.purchasing == plan.string("plan_key")
+        return Button { Task { await model.buy(plan) } } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    planTitle(plan).font(.body).foregroundStyle(current ? CommaTheme.textTertiary : CommaTheme.textPrimary)
+                    planCredits(plan).font(.subheadline).foregroundStyle(CommaTheme.textTertiary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if buying { ProgressView() }
+                else if current { Text("Current").font(.body).foregroundStyle(CommaTheme.textTertiary) }
+                else { Text(model.price(plan) ?? "").font(.body.weight(.semibold)).foregroundStyle(CommaTheme.brandSolid) }
+            }
+            .surfaceRowFrame()
+            .accessibilityElement(children: .combine)
+        }
+        .buttonStyle(SurfaceRowButtonStyle())
+        .disabled(current || model.purchasing != nil)
+    }
+
+    private func planTitle(_ plan: NSDictionary) -> Text {
+        let name = Text(plan.string("name") ?? "")
+        return plan.string("billing_period") == "year" ? Text("\(name) · Yearly") : name
+    }
+
+    private func planCredits(_ plan: NSDictionary) -> Text {
+        let credits = (plan.int("grant_credits") ?? 0).formatted(.number.notation(.compactName))
+        guard plan.string("mode") == "subscription" else { return Text("\(credits) credits") }
+        return Text("\(credits) credits / month")
+    }
+
+    private func noticeText(_ notice: PhoneUsageModel.StoreNotice) -> Text {
+        switch notice {
+        case .recorded: Text("Purchase complete. Your credits are ready.")
+        case .pending: Text("Purchase received. Your credits appear once it is confirmed.")
+        case .restored(let count):
+            count == 0 ? Text("No purchases to restore.") : Text("Purchases restored.")
+        case .managedElsewhere: Text("Your subscription was bought outside the App Store. Change it where you bought it.")
+        case .unrecordable: Text("This purchase could not be applied to your account.")
         }
     }
 
@@ -93,7 +178,7 @@ struct PhoneUsageView: View {
         switch source {
         case "subscription_cycle", "redeem_subscription_cycle": Text("Subscription credits")
         case "comma_signup": Text("Welcome credits")
-        case "credit_pack", "purchase": Text("Credit pack")
+        case "credit_pack", "purchase", "apple_purchase", "google_purchase", "stripe_checkout": Text("Credit pack")
         default: Text("Credits")
         }
     }

@@ -83,6 +83,8 @@ def toolTrace (event : Term) : KernelM Term :=
     "turn_id", "round_id", "request_id", "trace_id", "started_at", "completed_at"]
 
 def putIfc (message event : Term) : KernelM Term := do
+  let upper ← Data.event event "ifc_view_label"
+  let message := if upper.isList then message.put (a "ifc_view_label") upper else message
   let ifc ← Data.event event "ifc"
   match ifc with
   | .map (_ :: _) => put message (a "ifc") ifc

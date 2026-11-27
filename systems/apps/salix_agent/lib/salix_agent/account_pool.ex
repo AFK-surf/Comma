@@ -132,6 +132,9 @@ defmodule SalixAgent.AccountPool do
         {:ok, data} ->
           Jason.decode(data)
 
+        {:error, 401, _, _} when path == "/prepare" ->
+          {:error, :authorization_unavailable}
+
         {:error, status, _, _} when status in [400, 422] ->
           {:error, :invalid_input}
 
@@ -844,19 +847,18 @@ defmodule SalixAgent.AccountPool do
            "force_refresh" => force,
            "credentials" => credentials
          }) do
-      {:error, {:worker_rejected, _, _}} = error ->
-        # No executor ran, so the original credential remains usable for a later refresh.
-        # The claim is lifted only while it is still this refresh's: a replacement
-        # or deletion meanwhile is kept, a user's other change is kept too.
+      {:error, _} = error ->
+        # Only an explicit authentication rejection requires sign-in. Transient
+        # failures release this claim without changing replacement credentials.
+        status =
+          if error == {:error, :authorization_unavailable}, do: "login", else: record["status"]
+
         with {:ok, _} <-
                Store.apply_background(
                  tenant,
                  record["id"],
                  &still_claimed?(&1, claimed),
-                 &Map.merge(&1, %{
-                   "status" => record["status"],
-                   "refresh_deadline" => record["refresh_deadline"]
-                 })
+                 &Map.merge(&1, %{"status" => status, "refresh_deadline" => nil})
                ),
              do: error
 
@@ -1339,7 +1341,9 @@ defmodule SalixAgent.AccountPool do
 
     base =
       config
-      |> Map.drop(~w(catalog_tenant catalog_model allow_paid profile_id protocol base_url))
+      |> Map.drop(
+        ~w(catalog_tenant catalog_model allow_paid profile_id protocol base_url platform platform_admit)
+      )
       |> put_route_session(identity)
 
     Log.context([tenant_id: tenant] ++ Log.sanitize(identity), fn ->
@@ -1367,6 +1371,33 @@ defmodule SalixAgent.AccountPool do
         end
       end)
     end)
+  end
+
+  # A Router with the platform Router mark (`SalixAgent.PlatformRouter`), while
+  # its Tenant's record names this model: the platform keys that serve it
+  # first, then the Tenant's subscriptions, and its API keys only when the
+  # record allows pay-per-use (the record decides, not the stored choice).
+  # Without the record no platform key serves: the normal rules of the
+  # unmarked choice apply, with the choice's own `allow_paid`.
+  defp catalog_attempts(tenant, base, model, %{"platform" => true} = config) do
+    case SalixAgent.PlatformRouter.serving(tenant, model) do
+      nil ->
+        catalog_attempts(tenant, base, model, Map.delete(config, "platform"))
+
+      %{"billing" => billing, "allow_paid" => allow_paid} ->
+        with {:ok, platform} <- platform_attempts(base, model, billing, config["platform_admit"]),
+             {:ok, keys} <- tenant_paid_keys(tenant, %{"allow_paid" => allow_paid}) do
+          tenant_funding = %{"scope" => "tenant", "billing" => billing}
+
+          tenant_attempts =
+            for {kind, funding, prepare} <-
+                  subscription_attempts(tenant, base, model) ++
+                    key_attempts(tenant, base, model, keys),
+                do: {kind, Map.put(funding, :served, tenant_funding), prepare}
+
+          {:ok, platform ++ tenant_attempts}
+        end
+    end
   end
 
   # The Agent kept to one Profile: only it serves, a key included (choosing a
@@ -1403,10 +1434,14 @@ defmodule SalixAgent.AccountPool do
   # Only the Tenant's own Profiles serve a catalog model; the platform pays
   # only for the Comma model, never for a model the member chose.
   defp catalog_attempts(tenant, base, model, config) do
-    with {:ok, keys} <-
-           if(config["allow_paid"] == true, do: Store.usable_api_keys(tenant), else: {:ok, []}) do
+    with {:ok, keys} <- tenant_paid_keys(tenant, config) do
       {:ok, subscription_attempts(tenant, base, model) ++ key_attempts(tenant, base, model, keys)}
     end
+  end
+
+  # The Tenant's API keys serve a catalog choice only when it allows pay-per-use.
+  defp tenant_paid_keys(tenant, config) do
+    if config["allow_paid"] == true, do: Store.usable_api_keys(tenant), else: {:ok, []}
   end
 
   @platform SalixStore.Ids.platform_tenant_id()
@@ -1429,6 +1464,53 @@ defmodule SalixAgent.AccountPool do
         end
       end)
     end
+  end
+
+  # Every enabled platform key that serves the model, by id. In `deduct`
+  # billing a gate asks the caller's fee check (`platform_admit`) first; a
+  # refusal skips them all. The member sees only `"source" => "platform"`,
+  # never a platform Profile.
+  defp platform_attempts(base, model, billing, admit) do
+    with {:ok, keys} <- Store.usable_api_keys(@platform) do
+      served = %{"scope" => "platform", "billing" => billing}
+
+      attempts =
+        for record <- keys, {:ok, request, protocol} <- [key_route(record, model)] do
+          {:platform_key, %{"source" => "platform", served: served},
+           fn -> open_platform_key(base, record, request, protocol) end}
+        end
+
+      gate =
+        if billing == "deduct" and is_function(admit, 0) and attempts != [],
+          do: [{:platform_gate, %{"source" => "platform"}, admit}],
+          else: []
+
+      {:ok, gate ++ attempts}
+    end
+  end
+
+  defp open_platform_key(base, record, request, protocol) do
+    with %{} = opts <- open_key(@platform, base, record, request, protocol, "platform") do
+      case SalixAgent.ProviderAdapters.headers(record["source"]) do
+        headers when headers == %{} ->
+          opts
+
+        headers ->
+          Map.update(opts, "default_headers", headers, &Map.merge(headers, &1))
+      end
+    end
+  end
+
+  # A fee refusal before a platform attempt, as the stop the member sees when
+  # nothing else serves.
+  defp platform_refused(decision) do
+    {:error, meta} =
+      SalixAgent.LLM.Error.http("catalog", 503, "credits do not cover the platform model")
+
+    {:error,
+     meta
+     |> Map.merge(SalixAgent.BillingAvailability.error(decision))
+     |> Map.merge(%{"retryable" => false, "funding" => %{"source" => "platform"}})}
   end
 
   @doc "Whether a tenant's Profile can serve a catalog model at all."
@@ -1719,7 +1801,15 @@ defmodule SalixAgent.AccountPool do
 
     case held do
       [] ->
-        not_served(model)
+        Enum.find_value(@pool_sources, fn source ->
+          with {:ok, route} <- plan_route(model, source),
+               {:ok, %{} = record} <-
+                 Store.reauthorization_account(tenant, source, route["model"], pin, model) do
+            subscription_sign_in(source, record)
+          else
+            _ -> nil
+          end
+        end) || not_served(model)
 
       held ->
         held
@@ -2051,6 +2141,26 @@ defmodule SalixAgent.AccountPool do
 
   defp run_attempts([], _call, _started?, _identity, last), do: last
 
+  # The fee check before the platform keys in `deduct` billing: a refusal
+  # skips them, and is the answer when no Profile of the Tenant serves.
+  defp run_attempts([{:platform_gate, _funding, admit} | rest], calls, started?, identity, last) do
+    case admit.() do
+      :ok ->
+        run_attempts(rest, calls, started?, identity, last)
+
+      {:error, decision} ->
+        rest = Enum.reject(rest, &match?({:platform_key, _, _}, &1))
+
+        run_attempts(
+          rest,
+          calls,
+          started?,
+          identity,
+          first_error(last, platform_refused(decision))
+        )
+    end
+  end
+
   defp run_attempts(
          [{kind, funding, prepare} | rest],
          {call, on_received} = calls,
@@ -2058,6 +2168,8 @@ defmodule SalixAgent.AccountPool do
          identity,
          last
        ) do
+    {served, funding} = Map.pop(funding, :served)
+
     case prepare.() do
       nil ->
         run_attempts(rest, calls, started?, identity, last)
@@ -2068,7 +2180,7 @@ defmodule SalixAgent.AccountPool do
             {:subscription, model} ->
               dispatch_pool(opts, call, started?, identity, on_received, model)
 
-            :api_key ->
+            kind when kind in [:api_key, :platform_key] ->
               call.(opts)
           end
 
@@ -2080,10 +2192,28 @@ defmodule SalixAgent.AccountPool do
               else: error
 
           ok ->
-            ok
+            tag_served(ok, served)
         end
     end
   end
+
+  # On a platform Router's route, the response meta names what served it:
+  # `%{"scope" => "platform" | "tenant", "billing" => ...}`. Metering reads it.
+  defp tag_served(result, nil), do: result
+
+  defp tag_served(result, served) when is_tuple(result) and tuple_size(result) >= 2 do
+    last = tuple_size(result) - 1
+
+    case {elem(result, 0), elem(result, last)} do
+      {kind, %{} = meta} when kind in [:final, :assistant, :ok] and (last >= 2 or kind == :ok) ->
+        put_elem(result, last, Map.put(meta, "funding", served))
+
+      _ ->
+        result
+    end
+  end
+
+  defp tag_served(result, _served), do: result
 
   # Another Profile helps only when this one could not take the request: its
   # credential, quota or route was refused, or the provider was down. A timeout
@@ -2114,6 +2244,14 @@ defmodule SalixAgent.AccountPool do
   end
 
   def catalog_route?(_), do: false
+
+  @doc "Whether a resolved route is a catalog route with the platform Router mark."
+  def platform_route?(opts) when is_map(opts) or is_list(opts) do
+    catalog_route?(opts) and
+      Enum.any?(opts, fn {key, value} -> to_string(key) == "platform" and value == true end)
+  end
+
+  def platform_route?(_), do: false
 
   # A pinned account is the only candidate, whatever its rank in the pool. It
   # still passes the pool's filter: its plan, enabled and active, and quota
@@ -2160,7 +2298,27 @@ defmodule SalixAgent.AccountPool do
               )
 
               {:error, unavailable} =
-                SalixAgent.LLM.Error.http(provider, 503, "subscription accounts unavailable")
+                if candidates == [] do
+                  case Store.reauthorization_account(
+                         tenant,
+                         provider,
+                         config["model"],
+                         config["account_pin"],
+                         catalog_model
+                       ) do
+                    {:ok, %{} = record} ->
+                      subscription_sign_in(provider, record)
+
+                    _ ->
+                      SalixAgent.LLM.Error.http(
+                        provider,
+                        503,
+                        "subscription accounts unavailable"
+                      )
+                  end
+                else
+                  SalixAgent.LLM.Error.http(provider, 503, "subscription accounts unavailable")
+                end
 
               unavailable =
                 case cooling do
@@ -2203,7 +2361,13 @@ defmodule SalixAgent.AccountPool do
                 {call, on_received},
                 started?,
                 {:error, unavailable},
-                %{tried: [], refill: refill, budget: @account_attempts}
+                %{
+                  tried: [],
+                  refill: refill,
+                  budget: @account_attempts,
+                  refreshed: [],
+                  catalog_model: catalog_model
+                }
               )
 
             {:error, :not_configured} ->
@@ -2217,6 +2381,46 @@ defmodule SalixAgent.AccountPool do
     else
       call.(opts)
     end
+  end
+
+  defp subscription_sign_in(provider, record) do
+    {:error, meta} =
+      SalixAgent.LLM.Error.http(provider, 401, "subscription authorization required")
+
+    {:error,
+     Map.merge(meta, %{
+       "error_class" => "billing_unavailable",
+       "reason" => "subscription_authentication_required",
+       "retryable" => false,
+       "funding" => funding(provider, record)
+     })}
+  end
+
+  defp recovery_failure(tenant, provider, rejected) do
+    case Store.get(tenant, rejected["id"]) do
+      {:ok, current} ->
+        if same_credentials?(current, rejected) and current["status"] == "login" and
+             is_nil(current["refresh_deadline"]) do
+          subscription_sign_in(provider, current)
+        else
+          refresh_unavailable(provider, current["refresh_deadline"])
+        end
+
+      _ ->
+        refresh_unavailable(provider, nil)
+    end
+  end
+
+  defp refresh_unavailable(provider, deadline) do
+    delay =
+      if is_integer(deadline),
+        do: max(1_000, min(10_000, (deadline - SystemsClock.system_time(:second)) * 1000)),
+        else: 1_000
+
+    {:error, meta} =
+      SalixAgent.LLM.Error.http(provider, 503, "subscription refresh temporarily unavailable")
+
+    {:error, Map.merge(meta, %{"retryable" => true, "retry_after_ms" => delay})}
   end
 
   defp cooldown_ms(%{"cooldown_until" => until}) when is_integer(until),
@@ -2267,7 +2471,7 @@ defmodule SalixAgent.AccountPool do
 
           credential = %{"provider" => provider, "credentials" => credentials}
 
-          received = SystemsRuntime.Atomics.new(2, [])
+          received = SystemsRuntime.Atomics.new(3, [])
 
           transport = fn url, opts ->
             path = URI.parse(url).path
@@ -2280,7 +2484,8 @@ defmodule SalixAgent.AccountPool do
                 SystemsRuntime.Atomics.put(received, 1, 1)
                 on_received.()
               end,
-              fn -> SystemsRuntime.Atomics.put(received, 2, 1) end
+              fn -> SystemsRuntime.Atomics.put(received, 2, 1) end,
+              fn -> SystemsRuntime.Atomics.put(received, 3, 1) end
             )
           end
 
@@ -2290,14 +2495,21 @@ defmodule SalixAgent.AccountPool do
           case result do
             {:error, meta} ->
               status = error_status(meta)
+              recover_auth? = status == 401 and provider in ["codex", "claude"]
 
               # Owner decision: a 400, 403 or 404 rejects this model or
-              # request, not the account, so other requests keep it. 401,
+              # request, not the account, so other requests keep it.
+              # Only Codex and Claude have classified refresh authentication failures.
+              # Their 401 responses use recovery. Other providers' 401, and
               # 402, 429, 5xx and transport failures still cool it down.
-              # A worker that refused before running says nothing of the account.
+              # A worker that refused before running says nothing of the account,
+              # nor does a failure of this node's worker (`worker_down`,
+              # `worker_unavailable`, `worker_busy`), even after a partial stream.
               rejected = SystemsRuntime.Atomics.get(received, 2) == 1
+              local = SystemsRuntime.Atomics.get(received, 3) == 1
 
-              unless rejected or status in [400, 403, 404], do: cool_down(tenant, record)
+              unless rejected or local or recover_auth? or status in [400, 403, 404],
+                do: cool_down(tenant, record)
 
               # A 403 for every model means the account itself is refused;
               # each one is logged against the account so that shows.
@@ -2315,7 +2527,50 @@ defmodule SalixAgent.AccountPool do
                   Log.emit("subscription_retry_stopped", candidate_count: length(rest))
                   result
 
+                recover_auth? and record["id"] not in attempts.refreshed and attempts.budget > 0 ->
+                  attempts = %{attempts | refreshed: [record["id"] | attempts.refreshed]}
+
+                  case recover_rejected_credentials(
+                         tenant,
+                         provider,
+                         config,
+                         record,
+                         attempts.catalog_model
+                       ) do
+                    {:ok, renewed, _credentials} ->
+                      execute_candidates(
+                        tenant,
+                        provider,
+                        config,
+                        [renewed | rest],
+                        calls,
+                        started?,
+                        result,
+                        attempts
+                      )
+
+                    _ ->
+                      execute_candidates(
+                        tenant,
+                        provider,
+                        config,
+                        rest,
+                        calls,
+                        started?,
+                        recovery_failure(tenant, provider, record),
+                        attempts
+                      )
+                  end
+
                 true ->
+                  result =
+                    if recover_auth? do
+                      if record["id"] in attempts.refreshed, do: require_sign_in(tenant, record)
+                      recovery_failure(tenant, provider, record)
+                    else
+                      result
+                    end
+
                   Log.emit("subscription_retry_next", candidate_count: length(rest))
 
                   execute_candidates(
@@ -2337,10 +2592,43 @@ defmodule SalixAgent.AccountPool do
         {:error, {:worker_rejected, status, code}} ->
           SalixAgent.LLM.Error.http(provider, status, code)
 
+        {:error, :authorization_unavailable} ->
+          execute_candidates(
+            tenant,
+            provider,
+            config,
+            rest,
+            calls,
+            started?,
+            recovery_failure(tenant, provider, candidate),
+            attempts
+          )
+
         _ ->
           execute_candidates(tenant, provider, config, rest, calls, started?, last, attempts)
       end
     end)
+  end
+
+  # Reload through the same model and account policy. A concurrent sign-in may
+  # already have replaced the rejected credentials. The refresh claim remains
+  # the existing compare-and-swap owner, so only one request exchanges them.
+  defp recover_rejected_credentials(tenant, provider, config, rejected, catalog_model) do
+    with {:ok, [current]} <-
+           Store.candidates(tenant, provider, config["model"], rejected["id"], [], catalog_model) do
+      if same_credentials?(current, rejected),
+        do: refresh(tenant, current, true),
+        else: prepare(tenant, current)
+    end
+  end
+
+  defp require_sign_in(tenant, rejected) do
+    Store.apply_background(
+      tenant,
+      rejected["id"],
+      &(same_credentials?(&1, rejected) and &1["status"] == "ok"),
+      &Map.merge(&1, %{"status" => "login", "refresh_deadline" => nil})
+    )
   end
 
   defp error_status(%{} = meta), do: meta["status"] || meta[:status]
@@ -2432,7 +2720,8 @@ defmodule SalixAgent.AccountPool do
          "profile_id" => config["profile_id"],
          "catalog_tenant" => tenant,
          "base_url" => "catalog://"
-       })}
+       })
+       |> then(&if(config["platform"] == true, do: Map.put(&1, "platform", true), else: &1))}
     end
   end
 

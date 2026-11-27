@@ -172,7 +172,7 @@ defmodule SalixAgent.Tools.MCPImageTest do
       body = round_request(agent, "mcp.blender.spoof", text)
 
       refute body =~ Base.encode64(@png)
-      refute body =~ "device_offline_or_screenshot_expired"
+      refute body =~ ~r/reason=(device_|screenshot_expired)/
     end
   end
 

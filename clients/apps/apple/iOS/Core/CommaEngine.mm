@@ -119,6 +119,16 @@ constexpr NSUInteger kStackBytes = 8 * 1024 * 1024;
   [self join];
 }
 
++ (void)setPerfTimingEnabled:(BOOL)enabled {
+  comma::Engine::setPerfTiming(enabled ? true : false);
+}
+
++ (NSString *)takePerfSummaryForSpanMs:(double)spanMs {
+  std::string summary = comma::Engine::takePerfSummary(spanMs);
+  if (summary.empty()) return @"";
+  return [[NSString alloc] initWithBytes:summary.data() length:summary.size() encoding:NSUTF8StringEncoding] ?: @"";
+}
+
 /// Waits for the loop to return, unless called on the core's own thread (a host call that ends it): the loop returns
 /// once that call does.
 - (void)join {

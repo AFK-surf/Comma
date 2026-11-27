@@ -4,10 +4,7 @@ import { getNativeBridge, type NearbyState } from "@comma/native-bridge";
 import { toast } from "@comma/ui/components/toast";
 import { useEffect, useState, type ReactNode } from "react";
 import { NearbyPeopleDialog, type NearbyPerson } from "./NearbyPeopleDialog";
-
-/** “Ada’s Comma” is Ada; a name the person chose stays as it is. */
-const owner = (airDropName: string) =>
-  airDropName.replace(/’s Comma$/, "") || airDropName;
+import { nearbyOwnerName } from "./nearbyName";
 
 /**
  * Settings › Task requests › Add › Someone nearby (macOS). `open` shows the
@@ -43,15 +40,15 @@ export function useNearbyPeople(workspace: string | undefined): {
     const ask = state.asks.find((candidate) => candidate.peerId === peer.id);
     return {
       id: peer.id,
-      name: owner(peer.name),
+      name: nearbyOwnerName(peer.name),
       via: peer.via,
       status:
         ask?.status === "asking"
           ? "asking"
           : ask?.status === "accepted"
             ? "connected"
-            : ask?.status === "unanswered"
-              ? "unanswered"
+            : ask?.status === "unanswered" || ask?.status === "unreachable"
+              ? ask.status
               : "idle",
     };
   });

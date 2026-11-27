@@ -45,13 +45,7 @@ const BRAND_MARKS = new Set([
 
 // Central ships these as a fill in both packages, so no stroke rule reaches
 // them. They take the stroke-2 package (centralIconVariants.ts).
-const FILL_ONLY = new Set([
-  "ColumnWideAddIcon",
-  "LayoutColumnIcon",
-  "PanelLeftIcon",
-  "PanelRightIcon",
-  "ShapesPlusXSquareCircleIcon",
-]);
+const FILL_ONLY = new Set(["ShapesPlusXSquareCircleIcon"]);
 
 describe("icon stroke weight", () => {
   it("renders adjustable strokes for outlined interface glyphs", () => {

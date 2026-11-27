@@ -4,13 +4,21 @@ defmodule Comma.EmailDelivery.SMTP do
 
   @impl true
   def send_login_code(email, code, opts) do
+    rendered = Comma.EmailDelivery.render(opts[:purpose], code, opts)
+    deliver(email, rendered)
+  end
+
+  @impl true
+  def send_notice(email, subject, text, html),
+    do: deliver(email, %{subject: subject, text: text, html: html})
+
+  defp deliver(email, rendered) do
     mail = SystemsRuntime.get_env(:comma_core, :mail, [])
     host = System.get_env("COMMA_MAIL_HOST") || Keyword.get(mail, :host, "localhost")
     port = System.get_env("COMMA_MAIL_PORT") || Keyword.get(mail, :port, 1025)
     from = System.get_env("COMMA_MAIL_FROM") || Keyword.get(mail, :from, "no-reply@comma.local")
-    rendered = Comma.EmailDelivery.render(opts[:purpose], code, opts)
 
-    if Enum.any?([from, email], &String.contains?(&1, ["\r", "\n"])) do
+    if Enum.any?([from, email, rendered.subject], &String.contains?(&1, ["\r", "\n"])) do
       {:error, :recipient_rejected}
     else
       text_params = %{content_type_params: [{"charset", "utf-8"}]}

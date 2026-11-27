@@ -46,6 +46,15 @@ defmodule Salix.Bindings.IMAgentWorkspace do
   end
 
   @impl true
+  def entries(agent_id, prefix) do
+    if trim(agent_id) == "" do
+      {:error, "agent VFS is not available"}
+    else
+      AgentWorkspace.entries(agent_id, prefix)
+    end
+  end
+
+  @impl true
   def write(agent_id, path, body) do
     cond do
       trim(agent_id) == "" ->
@@ -63,7 +72,10 @@ defmodule Salix.Bindings.IMAgentWorkspace do
   end
 
   @impl true
-  def put_ref(agent_id, path, ref) do
+  def put_ref(agent_id, path, ref), do: put_ref(agent_id, path, ref, [])
+
+  @impl true
+  def put_ref(agent_id, path, ref, opts) do
     cond do
       trim(agent_id) == "" ->
         {:error, "agent VFS is not available"}
@@ -72,10 +84,23 @@ defmodule Salix.Bindings.IMAgentWorkspace do
         {:error, "path is required"}
 
       true ->
-        case SalixAgent.Workspace.put_ref(agent_id, path, ref, create: true) do
+        case SalixAgent.Workspace.put_ref(
+               agent_id,
+               path,
+               ref,
+               [create: true] ++ Keyword.take(opts, [:ifc_label])
+             ) do
           {:ok, file} -> {:ok, %{path: file["path"] || path, size: file["size"]}}
           {:error, reason} -> {:error, reason}
         end
+    end
+  end
+
+  @impl true
+  def label_for_ref(agent_id, path, ref) do
+    case AgentWorkspace.entry(agent_id, path) do
+      {:ok, %{"ref" => ^ref, "ifc_label" => label}} when is_list(label) -> label
+      _ -> nil
     end
   end
 

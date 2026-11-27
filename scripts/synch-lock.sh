@@ -31,7 +31,7 @@ synch_lock_acquire() {
   headers="$(mktemp "${RUNNER_TEMP:-/tmp}/synch-lock.XXXXXX")"
   deadline=$((SECONDS + ${SYNCH_LOCK_WAIT:-600}))
   while :; do
-    status="$(curl --silent --connect-timeout 5 --max-time 60 "${auth[@]}" -X PUT \
+    status="$(curl --silent --connect-timeout 5 --max-time "$((deadline - SECONDS > 60 ? 60 : deadline - SECONDS > 5 ? deadline - SECONDS : 5))" "${auth[@]}" -X PUT \
       -H 'If-None-Match: *' -H "x-amz-meta-synch-lock-ttl: ${SYNCH_LOCK_TTL:-900}" \
       --data-binary "${RUNNER_NAME:-runner} ${GITHUB_RUN_ID:-} ${GITHUB_JOB:-}" \
       -D "$headers" -o /dev/null -w '%{http_code}' "$url")" || status=000

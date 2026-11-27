@@ -41,7 +41,7 @@ struct MarkdownBubbles: View {
                     }
                 case .table(let table):
                     ChatBubbleSurface(fill: CommaTheme.markdownTable, tail: tail && last ? .leading : .none, radius: radius) {
-                        MarkdownTableView(table: table, style: style).padding(4)
+                        MarkdownTableView(table: table, style: style, cornerRadius: radius - 4).padding(4)
                             .selectableMessageText()
                     }
                 }

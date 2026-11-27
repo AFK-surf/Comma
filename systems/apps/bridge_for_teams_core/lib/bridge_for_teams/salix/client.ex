@@ -59,15 +59,19 @@ defmodule BridgeForTeams.Salix.Client do
               method :: String.t(),
               params :: map()
             ) :: result()
+  @callback get_m2square_settings() :: result()
   @optional_callbacks revoke_group_connector_token: 3,
                       create_group_voice_key: 3,
                       list_group_voice_keys: 2,
                       delete_group_voice_key: 3,
                       group_voice_urls: 1,
-                      connector_request: 3
+                      connector_request: 3,
+                      get_m2square_settings: 0
   @callback create_group(attrs()) :: result()
   @callback update_group(group_id :: String.t(), tenant_id :: String.t(), attrs()) :: result()
   @callback get_group(group_id :: String.t()) :: result()
+  @callback ifc_on_group_ids(tenant_id :: String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  @optional_callbacks ifc_on_group_ids: 1
   @callback create_group_conversation(group_id :: String.t(), attrs()) :: result()
   @callback create_task_conversation(
               group_id :: String.t(),
@@ -221,6 +225,39 @@ defmodule BridgeForTeams.Salix.Client do
               connect_id :: String.t(),
               attrs()
             ) :: result()
+  # Whose people a Slack, Feishu or Lark connect's people are
+  # (`SalixIM.ProviderConnects.Members`): its member scope, the people an
+  # admin granted by name, and the people search of the grant picker.
+  @callback set_im_connect_member_scope(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              scope :: String.t()
+            ) :: result()
+  @callback put_im_connect_member_grant(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              subject :: String.t(),
+              expires_in_days :: pos_integer() | nil,
+              granted_by :: String.t() | nil
+            ) :: result()
+  @callback delete_im_connect_member_grant(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              subject :: String.t()
+            ) :: result()
+  @callback search_im_connect_people(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              query :: String.t()
+            ) :: result()
+  @optional_callbacks set_im_connect_member_scope: 4,
+                      put_im_connect_member_grant: 6,
+                      delete_im_connect_member_grant: 4,
+                      search_im_connect_people: 4
   @callback create_feishu_im_connect(
               tenant_id :: String.t(),
               group_id :: String.t(),
@@ -244,6 +281,17 @@ defmodule BridgeForTeams.Salix.Client do
   @callback poll_lark_registration(domain :: String.t(), device_code :: String.t()) ::
               {:ok, map()} | {:pending, String.t()} | {:slow_down, String.t()} | {:error, term()}
   @callback update_lark_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback create_wecom_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback update_wecom_im_connect(
               tenant_id :: String.t(),
               group_id :: String.t(),
               connect_id :: String.t(),
@@ -498,6 +546,31 @@ defmodule BridgeForTeams.Salix.Client do
               binding_id :: String.t()
             ) :: :ok | result()
 
+  # ---- Google Colab plugin accounts (SalixAgent.Colab.Account) ----
+  @callback start_colab_oauth_attempt(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              initiator_user_id :: String.t(),
+              opts :: keyword()
+            ) :: result()
+  @callback complete_colab_oauth_attempt(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              initiator_user_id :: String.t(),
+              attempt_id :: String.t() | nil,
+              pasted_input :: String.t() | nil,
+              opts :: keyword()
+            ) :: result()
+  @callback list_colab_group_accounts(tenant_id :: String.t(), group_id :: String.t()) ::
+              result()
+  @callback disconnect_colab_account(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              binding_id :: String.t()
+            ) :: result()
+  @callback retire_group_colab(tenant_id :: String.t(), group_id :: String.t()) ::
+              :ok | {:error, term()}
+
   # ---- Group OAuth account bindings (Salix.Control.OAuthBindings / SalixWeb.OAuthFlow) ----
   # Project-scoped (group-scoped) connected third-party accounts produced by
   # running a tenant provider app's OAuth authorization flow. `list` returns the
@@ -526,7 +599,7 @@ defmodule BridgeForTeams.Salix.Client do
             ) :: :ok | result()
 
   # ---- Tenant Feishu app (bot secrets) (Salix.Control.Tenants, app :salix_web) ----
-  # The org's Feishu custom app, keyed per tenant, holding the bot-side secrets
+  # The org's Feishu custom apps, keyed per (tenant, app id), holding the bot-side secrets
   # (`app_secret`, `verification_token`, `encrypt_key`). Bot secrets live in
   # Salix; BFT keeps only the non-secret posture. `put`
   # mirrors `put_oauth_provider_app`'s arg shape (tenant id + write-only attrs
@@ -538,6 +611,8 @@ defmodule BridgeForTeams.Salix.Client do
               attrs()
             ) :: result()
   @callback delete_feishu_tenant_app(tenant_id :: String.t()) :: :ok | result()
+  @callback delete_feishu_tenant_app(tenant_id :: String.t(), app_id :: String.t()) ::
+              :ok | result()
   @callback get_feishu_tenant_app(tenant_id :: String.t()) :: result()
 
   @callback subscription_operation(String.t(), atom(), list()) :: result()
@@ -565,6 +640,10 @@ defmodule BridgeForTeams.Salix.Client do
   # The credential-free view of the platform model that a role
   # ("router", "worker") follows (`SalixAgent.AgentModel.platform_public/1`).
   @callback platform_model(role :: String.t()) :: result()
+  # The tenant's platform Router as its organization may see it
+  # (`SalixAgent.PlatformRouter.public/1`): `%{"model", "label"}` or nil.
+  # No billing and nothing about platform Profiles.
+  @callback platform_router(tenant_id :: String.t()) :: {:ok, map() | nil} | {:error, term()}
   # Catalog models a Codex or Claude Code runtime serves with its own sign-in
   # (`SalixAgent.Models.served_by/1`).
   @callback runtime_catalog(provider :: String.t()) :: {:ok, [map()]} | {:error, term()}
@@ -654,18 +733,21 @@ defmodule BridgeForTeams.Salix.Client do
               from :: String.t(),
               to :: String.t(),
               by :: atom(),
-              source :: String.t() | nil
+              source :: String.t() | nil,
+              device_id :: String.t() | nil
             ) :: result()
   @callback station_tasks(group_id :: String.t(), since :: integer()) :: result()
   # The Group's still.fail stations (`SalixEnv.StillfailDevices`): those it
-  # has, a new one's line to connect with, and removing them.
+  # has, a new one's line to connect with, and removing one or all of them.
   @callback stillfail_stations(group_id :: String.t()) :: result()
   @callback stillfail_connect_line(tenant_id :: String.t(), group_id :: String.t()) :: result()
+  @callback remove_stillfail_station(group_id :: String.t(), device_id :: String.t()) :: result()
   @callback remove_stillfail_stations(group_id :: String.t()) :: result()
-  @optional_callbacks station_usage: 5,
+  @optional_callbacks station_usage: 6,
                       station_tasks: 2,
                       stillfail_stations: 1,
                       stillfail_connect_line: 2,
+                      remove_stillfail_station: 2,
                       remove_stillfail_stations: 1
   @callback session_trace(agent_id :: String.t(), session_id :: String.t(), opts :: keyword()) ::
               result()
@@ -986,7 +1068,8 @@ defmodule BridgeForTeams.Salix.Client do
   # One generation- and channel-fenced normalized history/replies page.
   @callback slack_history_read_page(request :: map()) :: result()
 
-  # ---- Daily brief Slack source (SalixIM.DailyBriefSource) ----
+  # ---- Daily brief source (SalixIM.DailyBriefSource; Feishu and Lark by
+  # `request[:provider]`: SalixIM.FeishuDailyBriefSource, SalixIM.LarkDailyBriefSource) ----
   # Readable public channels of a connect's bot.
   @callback daily_brief_channels(request :: map()) :: result()
   # One page of a readable channel's current messages in a time window.
@@ -1012,9 +1095,32 @@ defmodule BridgeForTeams.Salix.Client do
   @callback daily_brief_dm_delete(request :: map()) :: :ok | {:error, term()}
   # The member's direct messages in a window, read with their own grant.
   @callback daily_brief_direct_messages(request :: map()) :: result()
+  # The state of the GitHub pull requests and issues a brief names, read with
+  # the brief agent's group GitHub connection.
+  @callback daily_brief_issue_states(request :: map()) :: result()
+  # The pull requests a member's GitHub login merged or closed in a window.
+  @callback daily_brief_member_pulls(request :: map()) :: result()
+  # The GitHub login of the organization member whose name is the member's.
+  @callback daily_brief_member_login(request :: map()) :: result()
+
+  # Connected still.fail / station-hosted chats for the Swarm's group
+  # (`SalixStore.StationTaskIndex.list_group/2`).
+  @callback daily_brief_station_tasks(group_id :: String.t()) :: result()
+
+  # Scores P2 Daily Brief candidate messages via `SalixAgent.Decide` (`Jev`)
+  # (`Salix.Bindings.DailyBriefJevRecall.score/1`).
+  @callback daily_brief_jev_recall(request :: map()) :: result()
 
   # Posts one brief into a member's direct conversation with the Swarm's bot.
   @callback daily_brief_post(request :: map()) :: result()
+
+  # ---- Feishu / Lark group triage (SalixIM.LarkSuiteTriage.Admin) ----
+  # One admin function by name: :overview, :chats, :set_source, :add_chats,
+  # :set_chat, :activity or :reveal. Every request names tenant_id and group_id.
+  @callback lark_suite_triage(function :: atom(), request :: map()) :: result()
+
+  @optional_callbacks daily_brief_station_tasks: 1,
+                      daily_brief_jev_recall: 1
 
   # ---- Slack Triage authority writes (SalixIM.ProviderConnects) ----
   # The one-way provisioning door: stamps the approved channel, the router
@@ -1066,6 +1172,7 @@ defmodule BridgeForTeams.Salix.Client do
   end
 
   @optional_callbacks servable_models: 1,
+                      platform_router: 1,
                       get_signal_number: 1,
                       put_signal_number: 2,
                       get_group_signal: 2,
@@ -1076,5 +1183,10 @@ defmodule BridgeForTeams.Salix.Client do
                       disconnect_group_tailnet: 3,
                       page_group_envs: 3,
                       slack_history_source_authority: 1,
-                      slack_history_read_page: 1
+                      slack_history_read_page: 1,
+                      start_colab_oauth_attempt: 4,
+                      complete_colab_oauth_attempt: 6,
+                      list_colab_group_accounts: 2,
+                      disconnect_colab_account: 3,
+                      retire_group_colab: 2
 end

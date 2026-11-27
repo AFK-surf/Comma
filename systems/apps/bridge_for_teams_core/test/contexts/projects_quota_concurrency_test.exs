@@ -30,6 +30,7 @@ defmodule BridgeForTeams.ProjectsQuotaConcurrencyTest do
 
   test "concurrent creates by the same member yield exactly one project" do
     Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+    Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
     suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     org =
@@ -41,6 +42,14 @@ defmodule BridgeForTeams.ProjectsQuotaConcurrencyTest do
         billing_account_id: "bridge-ba-quota-race-#{suffix}"
       })
       |> Repo.insert!()
+
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        billing_account_id: org.billing_account_id,
+        surface: "bridge",
+        product_owner_type: "organization",
+        product_owner_id: org.id
+      })
 
     try do
       {:ok, member} = Accounts.create_user(%{email: "quota-race-#{suffix}@example.com"})
@@ -83,6 +92,7 @@ defmodule BridgeForTeams.ProjectsQuotaConcurrencyTest do
       refute Projects.can_create_project?(org.id, member.id)
     after
       cleanup(org)
+      Ecto.Adapters.SQL.Sandbox.checkin(BillingCore.Repo)
       Ecto.Adapters.SQL.Sandbox.checkin(Repo)
     end
   end

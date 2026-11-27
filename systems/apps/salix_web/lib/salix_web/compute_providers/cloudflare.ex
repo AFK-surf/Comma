@@ -15,6 +15,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   alias SalixStore.{Keys, RuntimeIds, S3}
   alias SalixWeb.CloudVM.DurableArchive
   alias SalixStore.Compute, as: GroupCompute
+  alias SalixWeb.{GroupStationLifecycle, VMAuthorization}
 
   @env_alias "cloud-vm"
 
@@ -24,7 +25,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     verify_connector: true,
     bootstrap_timeout_ms: 300_000,
     bootstrap_poll_ms: 1_000,
-    idle_archive_ms: 300_000,
     stale_claim_ms: 60_000,
     max_provision_age_ms: 300_000,
     metering_provider: "cloudflare"
@@ -33,8 +33,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   # A station's Task activity restarts the idle clock; writes within this span
   # of the last one are not repeated.
   @station_activity_coalesce_ms 30_000
-  # Refused idle archives wait idle_archive_ms x 2^(n-1), capped here.
-  @idle_archive_refusal_backoff_max 4
 
   @mutating_vm_operations MapSet.new([
                             "exec",
@@ -45,69 +43,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                           ])
 
   @type provision_outcome :: :ready | :failed | :orphaned | :billing_suspended
-
-  defmodule VMAuthorization do
-    @moduledoc false
-    @callback authorize_vm(map()) :: :ok | {:error, term()}
-
-    defmodule Noop do
-      @moduledoc false
-      @behaviour SalixWeb.ComputeProviders.Cloudflare.VMAuthorization
-
-      @impl true
-      def authorize_vm(_attrs), do: :ok
-    end
-
-    defmodule BillingCore do
-      @moduledoc false
-      @behaviour SalixWeb.ComputeProviders.Cloudflare.VMAuthorization
-
-      @impl true
-      def authorize_vm(attrs) do
-        owner = attrs[:billing_owner] || %{}
-
-        account_id = owner["billing_account_id"] || owner[:billing_account_id]
-        entrypoint = attrs[:entrypoint] || "cloud_vm_reconcile"
-        actor_type = attrs[:actor_type] || "system"
-
-        request =
-          Module.concat([:BillingCore, :FeeControl, :Request])
-          |> struct(%{
-            billing_account_id: owner["billing_account_id"] || owner[:billing_account_id],
-            resource_kind: :vm,
-            action: attrs[:action] || :resume,
-            mode: :enforce,
-            estimated_credits: 1,
-            balance_snapshot: attrs[:balance_snapshot] || owner["balance_snapshot"] || 0,
-            provider: attrs[:provider] || "cloudflare",
-            sku: attrs[:sku] || "runtime-minimum",
-            typed_sink: attrs[:typed_sink],
-            source: "vm_authorization",
-            source_key: attrs[:source_key] || "vm:#{account_id}:#{entrypoint}",
-            row_context: %{
-              "billing_account_id" => account_id,
-              "surface" => owner["surface"] || owner[:surface] || "unknown",
-              "product_owner_type" =>
-                owner["product_owner_type"] || owner[:product_owner_type] || "unknown",
-              "product_owner_id" =>
-                owner["product_owner_id"] || owner[:product_owner_id] || "unknown",
-              "tenant_id" => owner["salix_tenant_id"] || owner[:salix_tenant_id] || "",
-              "group_id" => owner["salix_group_id"] || owner[:salix_group_id] || "",
-              "entrypoint" => entrypoint,
-              "actor_type" => actor_type
-            }
-          })
-
-        fee_control = Module.concat([:BillingCore, :FeeControl])
-
-        case apply(fee_control, :authorize, [request]) do
-          {:ok, %{allowed?: true}} -> :ok
-          {:ok, decision} -> {:error, {:billing_unavailable, decision}}
-          {:error, _} = err -> err
-        end
-      end
-    end
-  end
 
   @doc "Advance one claimed Group Workload without replaying user operations."
   def reconcile(_allocation, workload, opts) do
@@ -617,7 +552,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         "ready" ->
           with :ok <- seal_release_source(rec),
                {:ok, current} <- get_record(group_id),
-               :ok <- idle_archive_eligible?(current, force: true) do
+               :ok <- GroupStationLifecycle.idle_eligible(current, force: true) do
             start_image_archive_worker(current, force: true, maintenance_id: maintenance_id)
           else
             {:skip, reason} -> {:error, {:archive_not_quiet, reason}}
@@ -1361,7 +1296,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   def begin_operation(group_id, kind, opts)
       when is_binary(group_id) and is_binary(kind) do
-    with :ok <- SalixWeb.CloudVM.RuntimeLifecycle.wake(group_id) do
+    with :ok <- SalixWeb.GroupStationLifecycle.wake(group_id) do
       begin_awake_operation(group_id, kind, opts)
     end
   end
@@ -1385,7 +1320,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
            if(mutating?, do: vm_maintenance())
          ) do
       {:wake, {:error, _} = error} ->
-        case SalixWeb.CloudVM.RuntimeLifecycle.wake(group_id) do
+        case SalixWeb.GroupStationLifecycle.wake(group_id) do
           {:error, %{"error_class" => _} = reason} -> {:error, reason}
           _ -> error
         end
@@ -1451,7 +1386,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @doc "Repair a missing ready connection or return retryable archive/wake state."
   @spec wake_if_archived(String.t()) :: {:error, term()} | :no_environment
   def wake_if_archived(group_id) when is_binary(group_id) do
-    case SalixWeb.CloudVM.RuntimeLifecycle.wake(group_id) do
+    case SalixWeb.GroupStationLifecycle.wake(group_id) do
       {:error, %{"error_class" => _} = error} ->
         {:error, error}
 
@@ -1552,7 +1487,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp reattach_container(:running, _rec, _group, _client), do: :ok
 
   defp reattach_container(:archived, rec, _group, _client) do
-    _ = SalixWeb.CloudVM.RuntimeLifecycle.wake(rec["group_id"])
+    _ = SalixWeb.GroupStationLifecycle.wake(rec["group_id"])
     :ok
   end
 
@@ -2485,7 +2420,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     do: delete_record(group_id)
 
   # The VM is wanted stopped: its archive waits for no idle time and for no
-  # operation still counted active (`idle_archive_eligible?/2`,
+  # operation still counted active (`SalixWeb.GroupStationLifecycle.idle_eligible/2`,
   # `abandon_operations/2`).
   defp teardown_cloudflare(%{"status" => "ready"} = rec, opts) do
     opts = opts |> Keyword.put(:force, true) |> Keyword.put(:abandon_operations, true)
@@ -2515,80 +2450,13 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           {:ok, map()} | {:skipped, term()} | {:error, term()}
   def archive_idle_once(group_id, opts \\ []) when is_binary(group_id) do
     with {:ok, rec} <- get_record(group_id),
-         :ok <- idle_archive_eligible?(rec, opts),
+         :ok <- GroupStationLifecycle.idle_eligible(rec, opts),
          {:ok, archived} <- archive_cloudflare_idle(rec, opts) do
       {:ok, archived}
     else
       {:skip, reason} -> {:skipped, reason}
       {:error, _} = err -> err
     end
-  end
-
-  @doc """
-  Whether a ready Group Cloud VM is idle long enough to sleep: archived on
-  Cloudflare, its container stopped on an Agent VMM Host
-  (`SalixWeb.ComputeProviders.AgentVMMCloudVM`). Answers `:ok` or `{:skip, why}`.
-  """
-  def idle_eligible(rec, opts), do: idle_archive_eligible?(rec, opts)
-
-  defp idle_archive_eligible?(%{"provider" => provider, "status" => "ready"} = rec, opts)
-       when provider in ["cloudflare", "agent_vmm"] do
-    now = opts[:now] || now_ms()
-    idle_ms = cfg(:idle_archive_ms, opts)
-    settled = rec["last_agent_settled_after_vm_at"]
-    # A provisioned VM that has never run an operation has no agent settlement
-    # to wait for. Start its idle grace at readiness, not at provision start.
-    idle_since =
-      settled ||
-        if(is_nil(rec["last_operation_at"]), do: rec["ready_at"])
-
-    active_count = rec["active_operation_count"] || 0
-
-    cond do
-      provider_cutover_archive_hold?(rec) ->
-        {:skip, :provider_cutover_archive_pending}
-
-      not Keyword.get(opts, :force, false) and (rec["archive_retry_at"] || 0) > now ->
-        {:skip, :archive_retry_pending}
-
-      (rec["runtime_selection_until"] || 0) > now ->
-        {:skip, :runtime_selection}
-
-      # A teardown abandons the operations still counted active (one that
-      # never finished would hold the stop for good, `abandon_operations/2`)
-      # and waits for no agent settle: the VM is wanted stopped.
-      Keyword.get(opts, :abandon_operations, false) ->
-        :ok
-
-      active_count > 0 ->
-        {:skip, :active_operations}
-
-      is_nil(idle_since) ->
-        {:skip, :not_settled_after_vm}
-
-      Keyword.get(opts, :force, false) ->
-        :ok
-
-      now - idle_clock_start(rec, idle_since) >= idle_ms ->
-        :ok
-
-      true ->
-        {:skip, :not_idle}
-    end
-  end
-
-  defp idle_archive_eligible?(_rec, _opts), do: {:skip, :not_cloudflare_ready}
-
-  # The idle clock starts at the latest of: readiness, the last operation Salix
-  # ran on the VM, the agent's settle after it, and the station's last Task
-  # activity (`mark_station_activity/2`).
-  defp idle_clock_start(rec, idle_since) do
-    Enum.max([
-      rec["last_operation_at"] || 0,
-      idle_since || 0,
-      rec["ready_at"] || 0,
-      rec["last_station_activity_at"] || 0
-    ])
   end
 
   @doc """
@@ -2624,26 +2492,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   def mark_station_activity(_group_id, _device_id), do: :ok
 
-  @doc """
-  The station refused to park for an idle archive (it was busy): the record,
-  back to ready, waits a full idle period before the next one, doubled for
-  each refusal in a row (at most #{@idle_archive_refusal_backoff_max} times),
-  until the VM is used again (a Salix operation, or the station's Task
-  activity) or archives.
-  """
-  @spec refused_idle_archive(map(), keyword()) :: map()
-  def refused_idle_archive(current, opts) do
-    refusals = (current["archive_refusals"] || 0) + 1
-
-    wait =
-      cfg(:idle_archive_ms, opts) *
-        min(Integer.pow(2, refusals - 1), @idle_archive_refusal_backoff_max)
-
-    current
-    |> Map.put("archive_refusals", refusals)
-    |> Map.put("archive_retry_at", now_ms() + wait)
-  end
-
   defp archive_cloudflare_idle(%{"group_id" => group_id, "tenant_id" => tenant_id} = rec, opts) do
     archive_operation_id = Keyword.get(opts, :archive_operation) || random_operation_id("archive")
     archive_started = SystemsClock.monotonic_time(:millisecond)
@@ -2657,7 +2505,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                   current["archive_operation_id"] == archive_operation_id do
                current
              else
-               if idle_archive_eligible?(current, opts) == :ok do
+               if GroupStationLifecycle.idle_eligible(current, opts) == :ok do
                  if length(current["archive_gc_operations"] || []) < 64 do
                    current
                    |> Map.put("status", "archiving")
@@ -2836,7 +2684,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   # A teardown's archive abandons the operations still counted active
-  # (`idle_archive_eligible?/2`): they move to `abandoned_operations`, so the
+  # (`SalixWeb.GroupStationLifecycle.idle_eligible/2`): they move to `abandoned_operations`, so the
   # count the archive's end requires is zero, and a finish for one of them
   # afterwards finds nothing to count down.
   defp abandon_operations(rec, opts) do
@@ -2861,7 +2709,8 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         if(is_nil(rec["last_operation_at"]), do: rec["ready_at"])
 
     if is_integer(idle_since) and is_integer(rec["archive_started_at"]) do
-      due_at = idle_clock_start(rec, idle_since) + cfg(:idle_archive_ms, opts)
+      due_at =
+        GroupStationLifecycle.idle_clock_start(rec, idle_since) + cfg(:idle_archive_ms, opts)
 
       SystemsRuntime.Telemetry.execute(
         [:salix, :vm, :idle_archive, :start],
@@ -3052,7 +2901,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   # The station was busy: nothing of the archive began. The VM is ready again
-  # and waits longer before the next try (`refused_idle_archive/2`).
+  # and waits longer before the next try (`SalixWeb.GroupStationLifecycle.refused_idle_archive/2`).
   defp restore_unquiesced_archiving_record(group_id, archive_operation_id, opts) do
     with {:ok, rec} <- get_record(group_id),
          :ok <- reopen_unquiesced_source(rec),
@@ -3064,7 +2913,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                current
                |> Map.put("status", "ready")
                |> rollback_failed_archive(archive_operation_id)
-               |> refused_idle_archive(opts)
+               |> GroupStationLifecycle.refused_idle_archive(opts)
                |> Map.delete("archive_operation_id")
                |> Map.delete("archive_progress")
                |> Map.delete("archive_cancel_requested")
@@ -3902,6 +3751,8 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp age_ms(value, now) when is_integer(value), do: max(now - value, 0)
   defp age_ms(_value, _now), do: nil
 
+  defp cfg(:idle_archive_ms, opts), do: GroupStationLifecycle.idle_period(opts)
+
   defp cfg(key, opts) do
     case Keyword.fetch(opts, key) do
       {:ok, value} -> value
@@ -4061,13 +3912,8 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  defp provider_cutover_archive_hold?(rec),
-    do:
-      get_in(rec, ["provider_migration", "archive_hold"]) ==
-        "awaiting_durable_archive"
-
   defp require_no_archive_hold(rec) do
-    if provider_cutover_archive_hold?(rec),
+    if GroupStationLifecycle.provider_cutover_archive_hold?(rec),
       do: {:error, :provider_cutover_archive_pending},
       else: :ok
   end

@@ -146,7 +146,6 @@ for (const [layout, status] of [
       const cards = page.locator(
         '.comma-recommendation-card[aria-label="Mail follow-up"]'
       );
-      await expect(cards).toBeAttached();
       const row = page
         .getByRole("button", { name: "Follow up on contract", exact: true })
         .first();
@@ -165,8 +164,10 @@ for (const [layout, status] of [
         await sidebar.getByRole("button", { name: "Open task", exact: true }).click();
         await expect(page).toHaveURL(/cnv_public_task_smoke$/);
       } else {
-        // The source's only row left with its Task, so the source takes no place.
-        await expect(cards).toBeHidden();
+        // The briefing's only row left with its Task, so the briefing reads as
+        // cleared and the card takes no place.
+        await expect(page.getByTestId("routines-cleared")).toBeVisible();
+        await expect(cards).toHaveCount(0);
         await expect(row).toHaveCount(0);
         await expect(
           page.getByRole("button", { name: "Open mail", exact: true })

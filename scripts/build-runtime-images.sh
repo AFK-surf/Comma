@@ -16,12 +16,17 @@ command -v docker >/dev/null
 command -v jq >/dev/null
 
 mkdir -p "${output_dir}"
-rm -f "${output_dir}/shell.oci.tar" "${output_dir}/station.oci.tar" "${output_dir}/manifest.json" "${output_dir}/inputs.json"
+rm -f \
+  "${output_dir}/shell.erofs.zst" "${output_dir}/station.erofs.zst" \
+  "${output_dir}/shell.oci.tar" "${output_dir}/station.oci.tar" \
+  "${output_dir}/manifest.json" "${output_dir}/inputs.json"
 build_context="$(mktemp -d)"
 meetnative_context="$(mktemp -d)"
 station_context="$(mktemp -d)"
+erofs_work_root="$(mktemp -d)"
+erofs_tools_ready=""
 cleanup() {
-  rm -rf "${build_context}" "${meetnative_context}" "${station_context}"
+  rm -rf "${build_context}" "${meetnative_context}" "${station_context}" "${erofs_work_root}"
 }
 trap cleanup EXIT
 
@@ -48,6 +53,7 @@ lock_value() {
 
 go_image="$(lock_value '.baseImages.go')"
 station_image="$(lock_value '.baseImages.station')"
+coding_sandbox_image="$(lock_value '.baseImages.codingSandbox')"
 package_snapshot="$(lock_value '.packageSnapshot')"
 npm_version="$(lock_value '.npm.version')"
 npm_tarball="$(lock_value '.npm.tarball')"
@@ -96,10 +102,22 @@ go -C "${repository_root}/systems/runtime-images" run ./cmd/runtime-reuse \
   --approved "${reuse_bundle_dir}" \
   --output "${output_dir}"
 
+ensure_erofs_tools_image() {
+  if [[ -n "${erofs_tools_ready}" ]]; then
+    return
+  fi
+  # Use the locked trixie image tools (erofs-utils 1.8) to avoid Ubuntu 24.04's 1.7.1 bugs.
+  printf '%s\n' \
+    "FROM ${coding_sandbox_image}" \
+    "RUN --mount=type=bind,source=systems/runtime-images/station/apt-package-recovery.mjs,target=/tmp/apt-package-recovery.mjs printf 'Types: deb\\nURIs: http://snapshot.debian.org/archive/debian/${package_snapshot}\\nSuites: trixie\\nComponents: main\\nCheck-Valid-Until: no\\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\\n' > /etc/apt/sources.list.d/debian.sources && apt-get update && node /tmp/apt-package-recovery.mjs ${package_snapshot} install -y --no-install-recommends erofs-utils zstd && rm -rf /var/lib/apt/lists/*" |
+    docker build -t comma-runtime-erofs-tools -f - "${build_context}"
+  erofs_tools_ready=1
+}
+
 build_archive() {
   local image_class="$1"
   shift
-  if [[ -f "${output_dir}/${image_class}.oci.tar" ]]; then
+  if [[ -f "${output_dir}/${image_class}.erofs.zst" ]]; then
     return
   fi
   local input_digest
@@ -107,17 +125,53 @@ build_archive() {
     [.images[] | select(.class == $class) | .inputDigest] |
     if length == 1 then .[0] else error("missing or duplicate runtime input") end
   ' "${output_dir}/inputs.json")"
+  local work_dir="${erofs_work_root}/${image_class}"
+  rm -rf "${work_dir}"
+  mkdir -p "${work_dir}"
+
   docker buildx build \
     --file "${repository_root}/systems/runtime-images/station/Dockerfile" \
     --target "${image_class/station/vmm-station}" \
     --platform linux/arm64 \
     --provenance=false \
     --tag "comma.local/runtime/${image_class}:sha256-${input_digest#sha256:}" \
-    --output "type=oci,dest=${output_dir}/${image_class}.oci.tar" \
+    --output "type=oci,dest=${work_dir}/${image_class}.oci.tar" \
     --build-arg "GO_IMAGE=${go_image}" \
     --build-arg "PACKAGE_SNAPSHOT=${package_snapshot}" \
     "$@" \
     "${build_context}"
+
+  ensure_erofs_tools_image
+
+  go -C "${repository_root}/systems/runtime-images" run ./cmd/erofs-bundle flatten-oci \
+    --oci "${work_dir}/${image_class}.oci.tar" \
+    --tar-out - \
+    --meta-out "${work_dir}/${image_class}.meta.json" |
+    docker run --rm -i -v "${work_dir}:/work" comma-runtime-erofs-tools sh -euc '
+      if mkfs.erofs --help 2>&1 | grep -q "zstd"; then
+        compress="-zzstd,level=15"
+      elif mkfs.erofs --help 2>&1 | grep -q "lzma"; then
+        compress="-zlzma,level=6"
+      else
+        compress="-zlz4hc,level=12"
+      fi
+      mkfs.erofs --quiet -T0 --tar=f "$compress" -b4096 /work/rootfs.erofs
+      size=$(stat -c %s /work/rootfs.erofs)
+      rem=$((size % 4096))
+      if [ "$rem" -ne 0 ]; then
+        truncate -s $((size + 4096 - rem)) /work/rootfs.erofs
+      fi
+      fsck.erofs /work/rootfs.erofs
+      zstd -q -15 --long=27 -T0 --no-check -f /work/rootfs.erofs -o /work/rootfs.erofs.zst
+    '
+
+  go -C "${repository_root}/systems/runtime-images" run ./cmd/erofs-bundle pack \
+    --meta "${work_dir}/${image_class}.meta.json" \
+    --erofs "${work_dir}/rootfs.erofs" \
+    --zstd-erofs "${work_dir}/rootfs.erofs.zst" \
+    --output "${output_dir}/${image_class}.erofs.zst"
+
+  rm -rf "${work_dir}"
 }
 
 shared_args=(
@@ -143,7 +197,7 @@ build_archive shell "${shared_args[@]}"
 # The station release (systems/station/scripts/bundle.sh) is built only when the
 # station archive is not reused: it needs the station's pnpm dependencies and
 # its published linux-arm64 native parts.
-if [[ ! -f "${output_dir}/station.oci.tar" ]]; then
+if [[ ! -f "${output_dir}/station.erofs.zst" ]]; then
   rm -rf "${station_context}"
   sh "${repository_root}/systems/station/scripts/bundle.sh" "${station_context}" linux-arm64
 fi
@@ -164,5 +218,5 @@ go -C "${repository_root}/systems/runtime-images" run ./cmd/bundle-manifest \
   --revision "${release_revision}" \
   --inputs "${output_dir}/inputs.json" \
   --output "${output_dir}/manifest.json" \
-  --image "shell=${output_dir}/shell.oci.tar" \
-  --image "station=${output_dir}/station.oci.tar"
+  --image "shell=${output_dir}/shell.erofs.zst" \
+  --image "station=${output_dir}/station.erofs.zst"

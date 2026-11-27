@@ -11,10 +11,19 @@ import {
 } from "../../composer/conversationDraft";
 import { useConversation } from "../useConversation";
 
-const context = vi.hoisted(() => ({ registry: {} as Record<string, unknown> }));
+const { context, MockStaleChatSessionError } = vi.hoisted(() => ({
+  context: { registry: {} as Record<string, unknown> },
+  MockStaleChatSessionError: class extends Error {
+    constructor() {
+      super("The chat session is no longer active.");
+      this.name = "StaleChatSessionError";
+    }
+  },
+}));
 vi.mock("../../ChatProvider", () => ({
   useChatRegistry: () => context.registry,
-  isStaleChatSessionError: () => false,
+  isStaleChatSessionError: (error: unknown) =>
+    error instanceof MockStaleChatSessionError,
 }));
 
 const readyState = (id: string) => ({
@@ -123,4 +132,65 @@ it("re-renders the draft reader, not the conversation host, for a keystroke", ()
   // Conversation content still reaches the host.
   emit({ ...snapshot, status: "loading" });
   expect(hostRenders).toBe(settled + 1);
+});
+
+it("drops stale-session upkeep but keeps the error for actions the person waits on", () => {
+  const throwStale = () => {
+    throw new MockStaleChatSessionError();
+  };
+  let stale = true;
+  const snapshot = readyState("guarded");
+  const unexpected = new Error("unexpected failure");
+  const guardedChannel = {
+    subscribe: () => () => {},
+    getSnapshot: () => snapshot,
+    refresh: () => {
+      if (stale) throwStale();
+      throw unexpected;
+    },
+    older: throwStale,
+    readTaskActivity: throwStale,
+    clearPresentation: throwStale,
+    setDraft: throwStale,
+    send: throwStale,
+    retry: throwStale,
+    discard: throwStale,
+    setTaskRun: throwStale,
+    answerQuestion: throwStale,
+  };
+  context.registry = {
+    retain: () => ({
+      channel: guardedChannel,
+      release: vi.fn(),
+    }),
+    getRetainedSnapshot: () => undefined,
+  };
+
+  let captured: ReturnType<typeof useConversation> | undefined;
+  function Probe() {
+    captured = useConversation("workspace", "group", "guarded");
+    return null;
+  }
+
+  render(<Probe />);
+  expect(captured).toBeDefined();
+  const actions = captured!;
+
+  expect(actions.refresh()).toBeUndefined();
+  expect(actions.older()).toBeUndefined();
+  expect(actions.readTaskActivity()).toBeUndefined();
+  expect(actions.clearPresentation()).toBeUndefined();
+  expect(actions.setDraft("draft")).toBeUndefined();
+
+  // The composer undoes its send launch only when send throws.
+  expect(() => actions.send("hello")).toThrow(MockStaleChatSessionError);
+  expect(() => actions.retry("req_1")).toThrow(MockStaleChatSessionError);
+  expect(() => actions.discard("req_1")).toThrow(MockStaleChatSessionError);
+  expect(() => actions.setTaskRun({ mode: "auto" } as never)).toThrow(
+    MockStaleChatSessionError
+  );
+  expect(() => actions.answerQuestion({} as never)).toThrow(MockStaleChatSessionError);
+
+  stale = false;
+  expect(() => actions.refresh()).toThrow(unexpected);
 });

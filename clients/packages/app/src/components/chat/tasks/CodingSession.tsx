@@ -24,6 +24,7 @@ import {
   DifferenceModifiedIcon,
   GithubBrandIcon,
   LoaderIcon,
+  MacbookIcon,
   MergeConflictIcon,
   MergedIcon,
   MoreHorizontalIcon,
@@ -62,6 +63,8 @@ import {
   openNativePlatformExternalUrl,
   openNativePlatformExternalUrlFromUserAction,
 } from "../../../nativePlatformActions";
+import { useOptionalChatSidebar } from "../../chat-sidebar/ChatSidebarContext";
+import { useScreenDevicesEnabled } from "../../remote-screen/useScreenListing";
 import { useTimeLabel } from "../../tasks/useTimeLabel";
 import { useWindowAttended } from "../../useWindowAttended";
 import {
@@ -367,10 +370,85 @@ function RowMenu({
   );
 }
 
+/** Why the sandbox's screen did not open, as the core's refusal says. */
+function screenRefusal(
+  messages: ReturnType<typeof useCommaMessages>,
+  error: unknown
+): string {
+  switch ((error as { code?: string } | null)?.code) {
+    case "forbidden":
+      return messages.coding_screen_owner_only();
+    case "sandbox_has_no_screen":
+      return messages.coding_screen_none();
+    case "sandbox_not_running":
+      return messages.coding_screen_unavailable();
+    case "sandbox_unreachable":
+      return messages.coding_screen_unreachable();
+    default:
+      // (no network, a server error: nothing is known of the sandbox)
+      return messages.coding_screen_failed();
+  }
+}
+
+/**
+ * The row that shows the sandbox's screen in the side panel, to the Task's owner (`owner`, as the sandbox's station
+ * says it can show its display: `place.screenOwner`), where this app reaches screens over the mesh and has a side
+ * panel to show one in. No one else is offered it: the server answers the owner alone. The sandbox's Device is asked
+ * for at the press. The page only looks, and says whose Task's sandbox it is, so its view keeps asking for the screen
+ * while it is open.
+ */
+function CodingScreenRow({
+  coding,
+  owner,
+}: {
+  coding: CodingPanelTarget;
+  owner: string;
+}) {
+  const enabled = useScreenDevicesEnabled();
+  const sidebar = useOptionalChatSidebar();
+  const messages = useCommaMessages();
+  const call = useCall();
+  const { value: session } = useTopic({ topic: "session" });
+  const [opening, setOpening] = useState(false);
+  const host = sidebar?.activeHost;
+  const mine = session?.phase === "signed_in" && session.userId === owner;
+  if (!enabled || !sidebar || !host || !mine) return null;
+  const open = () => {
+    setOpening(true);
+    void call("coding.screen", coding)
+      .then(({ deviceId }) =>
+        sidebar.openScreen(host, {
+          workspaceId: coding.workspaceId,
+          device: deviceId,
+          apps: [],
+          target: "display",
+          task: coding.taskId,
+        })
+      )
+      .catch((error: unknown) => toast.error(screenRefusal(messages, error)))
+      .finally(() => setOpening(false));
+  };
+  return (
+    <div className="comma-task-panel-row" data-testid="task-panel-coding-screen">
+      <button
+        className="comma-task-panel-pill min-w-0"
+        data-interactive="true"
+        disabled={opening}
+        onClick={open}
+        type="button"
+      >
+        <MacbookIcon className="size-5 shrink-0 text-quaternary" />
+        <span className="truncate">{messages.coding_screen_open()}</span>
+        <ChevronRightSmallIcon aria-hidden className="comma-task-coding-affordance" />
+      </button>
+    </div>
+  );
+}
+
 /**
  * The Environment rows of a coding Task's sandbox, after its model: the repository (opens on GitHub), the session
- * branch (copies its name, with the branch it starts from), its terminal while the sandbox runs, and, while it does
- * not, a line on what to do.
+ * branch (copies its name, with the branch it starts from), its terminal and its screen while the sandbox runs, and,
+ * while it does not, a line on what to do.
  */
 export function CodingSandboxRows({
   coding,
@@ -483,6 +561,9 @@ export function CodingSandboxRows({
             )}
           </button>
         </div>
+      ) : null}
+      {coding && place.state === "ready" && place.screenOwner ? (
+        <CodingScreenRow coding={coding} owner={place.screenOwner} />
       ) : null}
       {hint && !branchNote ? (
         <p
@@ -1469,10 +1550,19 @@ export function CodingRecordSections({
 
   const requests = history ? requestsOf(history.items) : [];
   // Until the record is read, and while the sandbox cannot be read (it answers no usage then), the token use the
-  // server kept stands in. A record read says null only when the Session made no model calls.
-  const usage = history?.available
-    ? history.usage
-    : (history?.usage ?? facts?.usage ?? null);
+  // server kept stands in. When a multi-session Task has aggregated usage in facts, do not let a single-session
+  // history payload overwrite it with a partial single-session count.
+  const hasMultiSessionFacts =
+    facts?.usage?.bySlot !== undefined && Object.keys(facts.usage.bySlot).length > 1;
+  const historyHasMultiSession =
+    history?.usage?.bySlot !== undefined &&
+    Object.keys(history.usage.bySlot).length > 1;
+  const usage =
+    hasMultiSessionFacts && !historyHasMultiSession
+      ? (facts?.usage ?? null)
+      : history?.available
+        ? history.usage
+        : (history?.usage ?? facts?.usage ?? null);
   return (
     <>
       <section className="comma-task-panel-section" data-testid="task-panel-execution">
@@ -1634,6 +1724,14 @@ function UsageBlock({ usage }: { usage: CodingUsage }) {
             calls: compact.format(usage.modelCalls),
           })}
         </span>
+        {usage.partial ? (
+          <span
+            className="comma-task-coding-usage-model"
+            data-testid="task-panel-usage-partial"
+          >
+            {messages.coding_usage_partial()}
+          </span>
+        ) : null}
       </p>
       {total > 0 ? (
         <>

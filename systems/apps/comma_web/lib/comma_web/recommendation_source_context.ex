@@ -1,9 +1,11 @@
 defmodule CommaWeb.RecommendationSourceContext do
   @moduledoc false
 
-  # Context has a separate byte budget so descriptions cannot displace the
-  # member's candidate identities. It is run-local evidence, never memory.
-  @max_bytes 16_384
+  # Context travels apart from record data so descriptions cannot displace the
+  # member's candidate identities. Each record is bounded independently so
+  # unrelated items entering or leaving the source never alter another record's
+  # pooled context or version fingerprint. Routine applies its per-source prompt
+  # budget when projecting model candidates (`Comma.RecommendationMemberSelection`).
   @record_bytes 1_200
   @urls ~w(url webUrl html_url htmlLink webViewLink permalink)
 
@@ -20,10 +22,12 @@ defmodule CommaWeb.RecommendationSourceContext do
       end)
       |> Enum.join("\n")
 
+    bounded = Comma.JsonText.fit(text, @record_bytes)
+
     Map.put(record, "context", %{
       "scope" => scope,
-      "text" => prefix(text, @record_bytes),
-      "truncated" => byte_size(text) > @record_bytes
+      "text" => bounded,
+      "truncated" => bounded != text
     })
   end
 
@@ -60,70 +64,10 @@ defmodule CommaWeb.RecommendationSourceContext do
 
   def separate(data), do: {data, %{}}
 
-  # The budget is for the text the model reads. A context reaches the model
-  # inside its candidate, so the URL keys do not count. A short text leaves
-  # its unused share to the longer ones.
+  # Keep only the contexts of records whose links survived `data` bounding,
+  # without cross-item truncation.
   def retain(contexts, data) do
     allowed = Comma.RecommendationContract.http_urls(data)
-    contexts = contexts |> Map.take(MapSet.to_list(allowed)) |> Enum.sort()
-
-    overhead =
-      contexts
-      |> Enum.map(fn {_url, context} ->
-        context |> Map.put("text", "") |> Map.put("truncated", false)
-      end)
-      |> Jason.encode!()
-      |> byte_size()
-
-    allowances = allowances(contexts, max(@max_bytes - overhead, 0))
-
-    Map.new(contexts, fn {url, context} ->
-      text = fit(context["text"], allowances[url])
-
-      {url,
-       context
-       |> Map.put("text", text)
-       |> Map.update!("truncated", &(&1 or text != context["text"]))}
-    end)
-  end
-
-  # Shortest texts first: each takes what it needs, up to an even share of
-  # what is left.
-  defp allowances(contexts, budget) do
-    contexts
-    |> Enum.map(fn {url, context} -> {url, encoded_size(context["text"])} end)
-    |> Enum.sort_by(&elem(&1, 1))
-    |> Enum.with_index()
-    |> Enum.reduce({budget, %{}}, fn {{url, size}, index}, {budget, allowances} ->
-      allowance = min(size, div(budget, length(contexts) - index))
-      {budget - allowance, Map.put(allowances, url, allowance)}
-    end)
-    |> elem(1)
-  end
-
-  # JSON escaping can cost more than UTF-8. Keep the serialized budget exact.
-  defp fit(text, budget) do
-    if encoded_size(text) <= budget do
-      text
-    else
-      text
-      |> String.codepoints()
-      |> Enum.reduce_while({[], 0}, fn char, {kept, size} ->
-        size = size + encoded_size(char)
-        if size <= budget, do: {:cont, {[char | kept], size}}, else: {:halt, {kept, size}}
-      end)
-      |> elem(0)
-      |> Enum.reverse()
-      |> IO.iodata_to_binary()
-    end
-  end
-
-  defp encoded_size(text), do: byte_size(Jason.encode!(text)) - 2
-
-  defp prefix(text, bytes) when byte_size(text) <= bytes, do: text
-
-  defp prefix(text, bytes) do
-    value = binary_part(text, 0, max(bytes, 0))
-    if String.valid?(value), do: value, else: prefix(value, byte_size(value) - 1)
+    Map.filter(contexts, fn {url, _context} -> MapSet.member?(allowed, url) end)
   end
 end

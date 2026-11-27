@@ -44,7 +44,7 @@ defmodule SalixAgent.WorkerTaskFailureReport do
           source_id,
           origin,
           conversation_id,
-          text(reason, detail)
+          text(reason, detail, loop_state(origin, conversation_id))
         )
 
       _ ->
@@ -74,6 +74,7 @@ defmodule SalixAgent.WorkerTaskFailureReport do
       name: "call",
       args: %{
         "tool" => @send,
+        "ifc" => %{"sources" => []},
         "params" => %{
           "connect_id" => "internal",
           "conversation_id" => cid,
@@ -116,15 +117,179 @@ defmodule SalixAgent.WorkerTaskFailureReport do
 
   defp task_origin(_session, _source_ids), do: nil
 
-  defp text(:model, detail) do
-    "I stopped without a result: the model service could not continue this request" <>
-      cause(detail) <>
-      ". Nothing more will happen on this Task until it receives a new message."
+  @billing_stops ~w(model_unavailable quota_exhausted provider_quota_exhausted
+                    insufficient_credits account_inactive missing_account)
+
+  @idle " Nothing more will happen on this Task until it receives a new message."
+
+  # A billing stop (`SalixAgent.AccountPool`, `SalixAgent.LLM.Error`,
+  # `SalixAgent.BillingAvailability`) is not a provider outage: a retry fails
+  # the same way. The report names the reason and what changes the outcome, as
+  # the kernel's notice to a person does (`Session/Loop.lean` `noticeText`),
+  # so the Router neither retries nor tells people the provider is down
+  # (HyperShell, 2026-11-18).
+  defp text(:model, %{} = detail, loop_state) do
+    reason = field(detail, :reason)
+
+    case field(detail, :error_class) do
+      "billing_unavailable" when reason in @billing_stops ->
+        "I stopped without a result: this Task cannot run (#{reason}" <>
+          body(detail) <>
+          "). This is not a temporary provider failure. " <> remedy(reason, detail, loop_state)
+
+      _ ->
+        generic(detail)
+    end
   end
 
-  defp text(:guard, _detail) do
+  defp text(:model, detail, _loop_state), do: generic(detail)
+
+  defp text(:guard, _detail, _loop_state) do
     "I stopped without a result: the runtime ended this execution because my responses stopped making progress. " <>
       "Nothing more will happen on this Task until it receives a new message."
+  end
+
+  defp generic(detail) do
+    "I stopped without a result: the model service could not continue this request" <>
+      cause(detail) <> "." <> @idle
+  end
+
+  @verify_goal "If this conversation's original request is not already in your context, read this Task with im_api.internal.read_conversation first; never infer its goal from unrelated messages or notices. "
+
+  @replace_loop_warning "If you create a replacement Loop Task, end this old Task so two Loops do not run. "
+
+  # Leaving out the model does not avoid the stop: the swarm's or org's
+  # default Task model may be the same model no account serves.
+  defp remedy("model_unavailable", _detail, loop_state) do
+    replace_warning = if loop_state, do: @replace_loop_warning, else: ""
+
+    tail =
+      if loop_state,
+        do:
+          "Otherwise tell the requester that an admin must enable an account that serves the model or change the default Task model. " <>
+            loop_tail(loop_state),
+        else:
+          "Otherwise mark this Task failed and tell the requester " <>
+            "that an admin must enable an account that serves the model or change the default Task model." <>
+            @idle
+
+    "No enabled account of this workspace serves this model, so every retry with it fails. " <>
+      @verify_goal <>
+      "Call agent.models and create a replacement Task with a model it lists or with its platform model " <>
+      "({\"kind\":\"platform\",\"tier\":\"worker\"}) only after confirming this Task's goal and that it can be recreated. " <>
+      "Leaving out the model may run the default Task model, " <>
+      "which can be the same unserved model. " <>
+      replace_warning <>
+      tail
+  end
+
+  defp remedy("quota_exhausted", detail, loop_state) do
+    reset =
+      case get_in(detail, ["funding", "reset_at"]) do
+        seconds when is_integer(seconds) ->
+          " It resets at " <>
+            (seconds |> DateTime.from_unix!() |> DateTime.to_iso8601()) <> "."
+
+        _ ->
+          " It resets on its own."
+      end
+
+    replace_warning = if loop_state, do: " " <> @replace_loop_warning, else: ""
+    tail = if loop_state, do: loop_tail(loop_state), else: @idle
+
+    "The workspace's own subscription for this model has reached its usage limit." <>
+      reset <>
+      " " <>
+      @verify_goal <>
+      "Create a replacement Task with another model that agent.models lists only after confirming this Task's goal, or send this Task a message after the reset." <>
+      replace_warning <>
+      tail
+  end
+
+  defp remedy("provider_quota_exhausted", _detail, loop_state) do
+    replace_warning = if loop_state, do: @replace_loop_warning, else: ""
+
+    tail =
+      if loop_state,
+        do: "or tell the requester to add funds with that provider. " <> loop_tail(loop_state),
+        else:
+          "or mark this Task failed and tell the requester to add funds with that provider." <>
+            @idle
+
+    "The provider account behind the workspace's own API key or subscription has run out, " <>
+      "and Comma credits do not cover it; it does not refill by itself. " <>
+      @verify_goal <>
+      "Create a replacement Task with another model that agent.models lists only after confirming this Task's goal, " <>
+      replace_warning <>
+      tail
+  end
+
+  # Comma credits or the billing account (`SalixAgent.BillingAvailability`):
+  # another model or a wait does not help.
+  defp remedy(_denial, _detail, nil) do
+    "The workspace's Comma credits or billing account cannot pay for this request; another model or a wait " <>
+      "does not change that. Mark this Task failed and tell the requester to add credits or have an admin " <>
+      "check the billing account." <> @idle
+  end
+
+  defp remedy(_denial, _detail, loop_state) do
+    "The workspace's Comma credits or billing account cannot pay for this request; another model or a wait " <>
+      "does not change that. Tell the requester to add credits or have an admin check the billing account. " <>
+      loop_tail(loop_state)
+  end
+
+  defp loop_tail(:active) do
+    "Keep this Loop Task active so its Background Loop stays scheduled; only mark it failed if " <>
+      "the requester asks to stop the recurring Loop (ending the Task ends its Loop for good)."
+  end
+
+  defp loop_tail(:paused) do
+    "This Task's Background Loop is currently paused rather than running, but has not ended. " <>
+      "Keep this Loop Task active so it can be resumed once resolved; only mark it failed if " <>
+      "the requester asks to stop the recurring Loop for good." <> @idle
+  end
+
+  defp loop_tail(:failed) do
+    "This Task's Background Loop is currently stopped in a failed state rather than running, " <>
+      "so nothing will run on its own once resolved until this Task receives instructions with " <>
+      "im_api.internal.send_message to repair it; mark it failed if the recurring Loop should " <>
+      "end for good." <> @idle
+  end
+
+  defp loop_tail(:pending) do
+    "This Task's requested Background Loop is still pending (never created), so nothing will " <>
+      "run on its own once resolved until this Task receives instructions again with " <>
+      "im_api.internal.send_message, or mark it failed (which ends the requested Loop)." <> @idle
+  end
+
+  # One indexed read: an unended requested Loop is ended for good if the Router
+  # marks the Task failed, so a single blocked run must not instruct the Router
+  # to fail an active/paused Loop Task. Fails open to `:active` if the Loop
+  # store is unavailable so a transient read fault never tells the Router to
+  # destroy a running Loop.
+  defp loop_state(%{"agent_group_id" => group_id}, conversation_id)
+       when is_binary(group_id) and group_id != "" do
+    case SalixAgent.Loops.task_loops(group_id, [conversation_id]) do
+      {:ok, %{^conversation_id => %{"trigger" => %{}, "status" => "active"}}} -> :active
+      {:ok, %{^conversation_id => %{"trigger" => %{}, "status" => "paused"}}} -> :paused
+      {:ok, %{^conversation_id => %{"trigger" => %{}, "status" => "pending"}}} -> :pending
+      {:ok, %{^conversation_id => %{"trigger" => %{}, "status" => "failed"}}} -> :failed
+      {:ok, _other} -> nil
+      {:error, _reason} -> :active
+    end
+  rescue
+    _ -> :active
+  catch
+    _, _ -> :active
+  end
+
+  defp loop_state(_origin, _conversation_id), do: nil
+
+  defp body(detail) do
+    case field(detail, :body) do
+      body when is_binary(body) and body != "" -> ": " <> String.slice(body, 0, 200)
+      _ -> ""
+    end
   end
 
   defp cause(%{} = detail) do

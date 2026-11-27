@@ -4,7 +4,8 @@ import SwiftUI
 /// server decides how it ends; the card shows what the core says, so every device shows the same ending. On a phone it
 /// says only what is asked and why: authorizing opens the provider's page in the browser, whose verified answer ends
 /// the request; declining asks the core. A status line shows only after the person acted. At its deadline the card
-/// closes into its receipt. A request with `input` first asks the person to fill it in on the card.
+/// closes into its receipt. A request with `input` first asks the person to fill it in on the card. A plugin install
+/// is the Plugins page's own install, over the conversation: the server ends the request once the plugin is installed.
 struct AgentRequestCard: View {
     let request: AgentRequest
     let pane: ConversationPane
@@ -40,11 +41,15 @@ private struct AgentRequestForm: View {
     @State private var declineFailed = false
     @State private var clientID = ""
     @State private var value = ""
+    /// A secret with fields: what the person typed, by field name.
+    @State private var fieldValues: [String: String] = [:]
     @State private var revealed = false
     @State private var filling = false
     @State private var fillFailed = false
     @State private var locating = false
     @State private var locationNote: LocalizedStringKey?
+    /// The plugin's install is open over the conversation.
+    @State private var installing = false
     @Environment(\.openURL) private var openURL
     @Environment(\.displayScale) private var displayScale
 
@@ -83,37 +88,76 @@ private struct AgentRequestForm: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16).padding(.top, 8)
             }
-            ThirdsLayout(spacing: 8) {
-                Button("Decline", action: decline)
-                    .buttonStyle(CommaButtonStyle(hierarchy: .secondary))
-                    .disabled(declining)
-                if request.isLocation {
-                    Button("Share location", action: shareLocation)
+            if request.isLocation {
+                // Always also turns on Settings › Share location: later messages carry the position without a card.
+                HStack(spacing: 8) {
+                    Button("Decline", action: decline)
+                        .buttonStyle(CommaButtonStyle(hierarchy: .tertiary))
+                        .disabled(declining)
+                    Button("Only this time") { shareLocation(always: false) }
+                        .buttonStyle(CommaButtonStyle(hierarchy: .secondary))
+                        .disabled(locating || answering)
+                    Button("Always share") { shareLocation(always: true) }
                         .buttonStyle(CommaButtonStyle())
                         .disabled(locating || answering)
-                } else if let input = request.input, input.fills {
-                    Button(input.kind == .app ? "Next" : input.kind == .paste ? "Submit" : "Save", action: fill)
-                        .buttonStyle(CommaButtonStyle())
-                        .disabled(!ready || filling)
-                } else {
-                    Button(opened ? "Open again" : request.input?.code != nil ? "Copy code and open" : form ? "Open form" : "Authorize in browser", action: authorize)
-                        .buttonStyle(CommaButtonStyle())
-                        .disabled(request.authorizationURL == nil)
                 }
+                .padding(8).padding(.top, 4)
+            } else {
+                ThirdsLayout(spacing: 8) {
+                    Button("Decline", action: decline)
+                        .buttonStyle(CommaButtonStyle(hierarchy: .secondary))
+                        .disabled(declining)
+                    if let plugin = request.plugin {
+                        Button("Add to Comma") { installing = true }
+                            .buttonStyle(CommaButtonStyle())
+                            .disabled(!canInstall(plugin))
+                    } else if let input = request.input, input.fills {
+                        Button(input.kind == .app ? "Next" : input.kind == .paste ? "Submit" : "Save", action: fill)
+                            .buttonStyle(CommaButtonStyle())
+                            .disabled(!ready || filling)
+                    } else {
+                        Button(opened ? "Open again" : request.input?.code != nil ? "Copy code and open" : form ? "Open form" : "Authorize in browser", action: authorize)
+                            .buttonStyle(CommaButtonStyle())
+                            .disabled(request.authorizationURL == nil)
+                    }
+                }
+                .padding(8).padding(.top, 4)
             }
-            .padding(8).padding(.top, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CommaTheme.bgSecondary, in: card)
         .overlay(card.strokeBorder(CommaTheme.borderPrimary, lineWidth: 1 / displayScale))
-        .shadowXs()
         .accessibilityElement(children: .contain)
+        .sheet(isPresented: $installing) {
+            if let store = pane.store, let plugin = request.plugin {
+                PhonePluginInstallSheet(store: store, workspace: pane.workspace, pluginID: plugin.id)
+            }
+        }
+    }
+
+    /// A plugin goes into the Workspace the request names, which is the one this conversation is in.
+    private func canInstall(_ plugin: AgentRequest.Plugin) -> Bool {
+        pane.store != nil && plugin.workspace == pane.workspace.id
     }
 
     /// What the person fills in. It stays in this view until it is sent to the server.
     private func fields(_ input: AgentRequest.Input) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            if input.kind == .paste {
+            ForEach(input.fields, id: \.name) { item in
+                field(item.optional ? "\(item.label) (optional)" : LocalizedStringKey(item.label)) {
+                    Group {
+                        if item.secret {
+                            SecureField("", text: fieldBinding(item.name))
+                        } else {
+                            TextField("", text: fieldBinding(item.name))
+                        }
+                    }
+                    .onSubmit(fill)
+                }
+            }
+            if !input.fields.isEmpty {
+                EmptyView()
+            } else if input.kind == .paste {
                 field("Code from the page") {
                     TextField("", text: $value).onSubmit(fill)
                 }
@@ -125,7 +169,7 @@ private struct AgentRequestForm: View {
                     TextField("App ID", text: $clientID)
                 }
             }
-            if input.kind != .paste { field(input.kind == .app ? "App Secret" : LocalizedStringKey(request.secretName)) {
+            if input.kind != .paste && input.fields.isEmpty { field(input.kind == .app ? "App Secret" : LocalizedStringKey(request.secretName)) {
                 HStack(spacing: 8) {
                     Group {
                         if revealed {
@@ -178,8 +222,19 @@ private struct AgentRequestForm: View {
         }
     }
 
+    private func fieldBinding(_ name: String) -> Binding<String> {
+        Binding(get: { fieldValues[name] ?? "" }, set: { fieldValues[name] = $0 })
+    }
+
+    private func filled(_ name: String) -> Bool {
+        !(fieldValues[name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var ready: Bool {
-        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let fields = request.input?.fields, !fields.isEmpty {
+            return fields.allSatisfy { $0.optional || filled($0.name) } && fields.contains { filled($0.name) }
+        }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (request.input?.kind != .app || !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -187,7 +242,9 @@ private struct AgentRequestForm: View {
         guard ready, !filling, let input = request.input else { return }
         filling = true
         fillFailed = false
-        let values = input.kind == .app
+        let values: [String: Any] = !input.fields.isEmpty
+            ? ["fields": Dictionary(uniqueKeysWithValues: input.fields.map { ($0.name, fieldValues[$0.name] ?? "") })]
+            : input.kind == .app
             ? ["client_id": clientID.trimmingCharacters(in: .whitespacesAndNewlines),
                "client_secret": value.trimmingCharacters(in: .whitespacesAndNewlines)]
             : ["value": value]
@@ -195,19 +252,21 @@ private struct AgentRequestForm: View {
             let taken = await pane.fillRequest(request.id, values: values)
             filling = false
             fillFailed = !taken
-            if taken { value = "" }
+            if taken { value = ""; fieldValues = [:] }
         }
     }
 
-    /// The account's mark on a bordered, lightly shadowed tile beside the title; monochrome marks (GitHub) follow the
+    /// The account's mark on a bordered tile beside the title; monochrome marks (GitHub) follow the
     /// text colour.
     private var mark: some View {
         let tile = RoundedRectangle(cornerRadius: 10, style: .continuous)
         return Group {
             if request.isLocation {
                 CentralIcon("central-map-pin", size: 22).foregroundStyle(CommaTheme.textPrimary)
-            } else if let image = ProviderArtwork.image(request.provider) {
+            } else if let image = ProviderArtwork.image(request.markKey) {
                 Image(uiImage: image).resizable().scaledToFit().foregroundStyle(CommaTheme.textPrimary)
+            } else if form {
+                CentralIcon("central-key-2", size: 22).foregroundStyle(CommaTheme.textPrimary)
             } else {
                 CentralIcon("central-puzzle", size: 22).foregroundStyle(CommaTheme.sidebarIcon)
             }
@@ -216,7 +275,6 @@ private struct AgentRequestForm: View {
         .frame(width: 40, height: 40)
         .background(CommaTheme.bgPrimary, in: tile)
         .overlay(tile.strokeBorder(CommaTheme.borderPrimary, lineWidth: 1))
-        .shadowXs()
         .accessibilityHidden(true)
     }
 
@@ -237,7 +295,7 @@ private struct AgentRequestForm: View {
         openURL(url)
     }
 
-    private func shareLocation() {
+    private func shareLocation(always: Bool) {
         guard !locating else { return }
         locating = true
         locationNote = nil
@@ -246,6 +304,8 @@ private struct AgentRequestForm: View {
                 let position = try await DeviceLocation().read()
                 if !(await pane.shareLocation(request.id, position: position)) {
                     locationNote = "Could not share. Try again."
+                } else if always, let sharing = pane.store?.locationSharing {
+                    await sharing.set(true)
                 }
             } catch DeviceLocation.Failure.denied {
                 locationNote = "Location is off for Comma. Turn it on in your settings, then try again."
@@ -273,7 +333,7 @@ private struct AgentRequestReceipt: View {
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
     private var connected: Bool {
-        request.status == .completed && (request.outcome == .connected || request.outcome == .shared)
+        request.status == .completed && (request.outcome == .connected || request.outcome == .shared || request.outcome == .installed)
     }
 
     var body: some View {
@@ -291,13 +351,16 @@ private struct AgentRequestReceipt: View {
         .padding(.vertical, 12).padding(.leading, 12).padding(.trailing, 16)
         .background(CommaTheme.bgSecondary, in: shape)
         .overlay(shape.strokeBorder(CommaTheme.borderSecondary, lineWidth: 1))
-        .shadowXs()
         .accessibilityElement(children: .combine)
     }
 
     private var outcome: Text {
         switch (request.status, request.outcome) {
         case (.completed, .shared): return Text("Location shared")
+        case (.completed, .installed): return Text("Added \(request.plugin?.name ?? request.providerName)")
+        case (.completed, .declined) where request.plugin != nil: return Text("You did not add \(request.plugin?.name ?? "")")
+        case (.expired, _) where request.plugin != nil, (.pending, _) where request.plugin != nil:
+            return Text("The request expired. The Agent did not get the plugin.")
         case (.completed, .declined) where request.isLocation: return Text("You did not share your location")
         case (.completed, .connected):
             if request.provider == "secret" { return Text("Saved") }
@@ -315,7 +378,7 @@ private struct AgentRequestReceipt: View {
         ZStack {
             Circle().fill(connected ? CommaTheme.brandSolid : CommaTheme.bgTertiary)
             switch (request.status, request.outcome) {
-            case (.completed, .connected), (.completed, .shared): CentralIcon("icon-check", size: 18).foregroundStyle(.white)
+            case (.completed, .connected), (.completed, .shared), (.completed, .installed): CentralIcon("icon-check", size: 18).foregroundStyle(.white)
             case (.completed, .declined): glyph("icon-cross-small")
             case (.pending, _), (.expired, _): glyph("central-history")
             default: glyph("central-arrow-rotate-clockwise")
@@ -327,12 +390,5 @@ private struct AgentRequestReceipt: View {
 
     private func glyph(_ name: String) -> some View {
         CentralIcon(name, size: 14).foregroundStyle(CommaTheme.textTertiary)
-    }
-}
-
-private extension View {
-    /// The design's shadow xs: 0 1 2, gray 900 (#101828) at 5%.
-    func shadowXs() -> some View {
-        shadow(color: Color(red: 16 / 255, green: 24 / 255, blue: 40 / 255).opacity(0.05), radius: 1, y: 1)
     }
 }

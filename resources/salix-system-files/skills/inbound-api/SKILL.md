@@ -1,6 +1,8 @@
 ---
 name: inbound-api
 description: Wire an external system up to post messages to you through an inbound API key. Use when a user wants an alerting system, CI pipeline, cron job, form backend, or another product to send you messages, asks how something outside Comma can reach you, or asks to stop or replace such an integration.
+roles: router
+prompt_summary: "Create, list, replace, or revoke Group inbound webhook keys for external alerts, CI, cron, or forms; handle incoming API events."
 ---
 
 # Inbound API

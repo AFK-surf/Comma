@@ -105,6 +105,35 @@ describe("Settings › Compute", () => {
     await t2.time.pass(100);
     expect(limited().observationPaused).toBe(false);
     expect(limited().creation?.requestId).toBe(requestId);
+
+    // When one preparing workload settles (`Shell -> ready`), the read budget renews once for remaining preparing workloads (`Service`).
+    const t3 = setup(undefined, { computeReadsPerVisit: 5 });
+    let multiRows = [
+      workload("w_shell", "starting"),
+      workload("w_service", "starting"),
+    ];
+    t3.api.on("GET", base, () => json(200, projection(multiRows)));
+    const multiShown = t3.watch<ComputeValue>({ topic: "compute" });
+    await t3.time.pass(100);
+    await t3.time.pass(15_000, 500);
+    expect(t3.api.seen("GET", base)).toHaveLength(4);
+    expect(multiShown().observationPaused).toBe(false);
+    // On read 5, Shell becomes ready while Service is still starting -> budget renews instead of pausing!
+    multiRows = [workload("w_shell", "ready"), workload("w_service", "starting")];
+    await t3.time.pass(5_000, 500);
+    expect(t3.api.seen("GET", base)).toHaveLength(5);
+    expect(multiShown().observationPaused).toBe(false);
+    // Service continues polling past the original 5-read mark and settles on read 7.
+    await t3.time.pass(5_000, 500);
+    expect(t3.api.seen("GET", base)).toHaveLength(6);
+    multiRows = [workload("w_shell", "ready"), workload("w_service", "ready")];
+    await t3.time.pass(5_000, 500);
+    expect(t3.api.seen("GET", base)).toHaveLength(7);
+    expect(multiShown().observationPaused).toBe(false);
+    expect(multiShown().projection?.workloads.map((w) => w.phase)).toEqual([
+      "ready",
+      "ready",
+    ]);
   });
 
   it("shows a workload's problem, and a problem code it does not know as `other`", async () => {

@@ -45,6 +45,8 @@ const registrationSchema = lazySchema(() =>
       .object({
         id: z.string(),
         host_bound: z.boolean().optional(),
+        device_id: z.string().max(200).nullable().optional(),
+        connected: z.boolean().optional(),
         status: z.enum([
           "processing",
           "ready",
@@ -362,6 +364,8 @@ export class ComputeNodeOperations {
       return {
         status: o.status,
         ...(o.host_bound !== undefined ? { hostBound: o.host_bound } : {}),
+        ...(o.device_id ? { deviceId: o.device_id } : {}),
+        ...(o.connected !== undefined ? { connected: o.connected } : {}),
         workActivity: o.work_activity,
         ...(o.shell_phase ? { shellPhase: o.shell_phase } : {}),
         ...(o.error_code ? { errorCode: o.error_code } : {}),

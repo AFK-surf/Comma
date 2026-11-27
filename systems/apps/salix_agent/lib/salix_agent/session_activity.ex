@@ -26,6 +26,11 @@ defmodule SalixAgent.SessionActivity do
 
   defp internal(session) do
     cond do
+      # A running compaction is the session's current work, whatever its
+      # committed baseline says. The baseline returns once it ends.
+      value(session, "compacting") == true ->
+        activity(session, "active", "is compacting context...")
+
       value(session, "status") == "failed" or
           value(session, "activity_status") == "failed" ->
         error(session, "runtime_failed")
@@ -76,7 +81,8 @@ defmodule SalixAgent.SessionActivity do
   # Structured facts for a funding stop, so clients can name what to fix
   # without parsing `status`: the provider source and Profile behind a
   # member's own key, or when a runtime's own subscription resets.
-  defp issue_detail("provider_quota_exhausted", session) do
+  defp issue_detail(issue, session)
+       when issue in ["provider_quota_exhausted", "subscription_authentication_required"] do
     funding = value(session, "funding")
 
     if is_map(funding) do
@@ -184,6 +190,9 @@ defmodule SalixAgent.SessionActivity do
 
   defp error_text("provider_quota_exhausted"),
     do: "your own model provider account or subscription has run out"
+
+  defp error_text("subscription_authentication_required"),
+    do: "the model subscription needs reauthorization in Settings > Model & API"
 
   defp error_text("model_connection_failed"), do: "the model request failed"
 

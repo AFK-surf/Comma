@@ -18,6 +18,8 @@ defmodule SalixWeb.StationHostedTasks do
 
   @timeout_ms 15_000
   @read_limit 100
+  @max_email_bytes 200
+  @email_regex ~r/^[^\s@]+@[^\s@]+$/
 
   @impl true
   def read(scope, station_id, thread, opts) do
@@ -30,27 +32,94 @@ defmodule SalixWeb.StationHostedTasks do
   end
 
   @impl true
-  def say(scope, station_id, thread, text, key, requester) do
+  def read_file(scope, station_id, thread, seq, file, offset \\ 0)
+      when is_integer(seq) and seq > 0 and is_binary(file) and file != "" and
+             is_integer(offset) and offset >= 0 do
+    ask(scope, station_id, thread, "task.read_file", fn task ->
+      %{"task" => task, "seq" => seq, "file" => file, "offset" => offset}
+    end)
+  end
+
+  @impl true
+  def say(scope, station_id, thread, text, key, requester, opts \\ %{}) do
     ask(scope, station_id, thread, "task.say", fn task ->
-      %{
+      base = %{
         "task" => task,
         "text" => text,
         "key" => key,
         "requester" => requester,
         "requester_name" => requester_name(scope, requester)
       }
+
+      base =
+        if is_map(opts) and (opts[:close_card] == true or opts["close_card"] == true),
+          do: Map.put(base, "close_card", true),
+          else: base
+
+      expected_seq =
+        if is_map(opts), do: opts["expected_card_seq"] || opts[:expected_card_seq]
+
+      base =
+        if is_integer(expected_seq) and expected_seq > 0,
+          do: Map.put(base, "expected_card_seq", expected_seq),
+          else: base
+
+      raw_email =
+        (is_map(opts) && (opts["requester_email"] || opts[:requester_email])) ||
+          scope[:requester_email] || scope["requester_email"]
+
+      case normalize_requester_email(raw_email) do
+        email when is_binary(email) -> Map.put(base, "requester_email", email)
+        nil -> base
+      end
     end)
+  end
+
+  @impl true
+  def workspace_names(group_id) do
+    with {:ok, devices, _more?} <- SalixEnv.StillfailDevices.first_page(group_id) do
+      {:ok,
+       for(
+         %{"id" => id, "name" => name} when is_binary(name) <- devices,
+         into: %{},
+         do: {id, name}
+       )}
+    end
   end
 
   # Who writes, as people see it where several Groups write in one place (a
   # still.fail workspace connected to several Comma workspaces and Agent
-  # Swarms): the Group, by its name; the Router's own name when it has none.
+  # Swarms): the Group, by its name; "Comma" when it still has the default
+  # unnamed workspace name (unless the Router has a custom name).
+  @default_workspace_name "default workspace"
+
   defp requester_name(scope, requester) do
     case Salix.Control.Groups.get(scope.group_id) do
-      {:ok, %{"name" => name}} when is_binary(name) and name != "" -> name
-      _ -> requester
+      {:ok, %{"name" => name}} when is_binary(name) ->
+        trimmed = String.trim(name)
+
+        if trimmed != "" and String.downcase(trimmed) != @default_workspace_name do
+          trimmed
+        else
+          fallback_requester_name(requester)
+        end
+
+      _ ->
+        fallback_requester_name(requester)
     end
   end
+
+  defp fallback_requester_name(requester) when is_binary(requester) do
+    trimmed = String.trim(requester)
+
+    if trimmed != "" and String.downcase(trimmed) not in ["router", @default_workspace_name] do
+      trimmed
+    else
+      "Comma"
+    end
+  end
+
+  defp fallback_requester_name(_requester), do: "Comma"
 
   defp ask(scope, station_id, thread, method, params) do
     with %StationTaskIndex.Row{} = row <-
@@ -79,6 +148,17 @@ defmodule SalixWeb.StationHostedTasks do
 
   defp non_negative(value) when is_integer(value) and value >= 0, do: value
   defp non_negative(_value), do: nil
+
+  defp normalize_requester_email(value) when is_binary(value) do
+    trimmed = value |> String.trim() |> String.downcase()
+
+    if trimmed != "" and byte_size(trimmed) <= @max_email_bytes and
+         not String.contains?(trimmed, ":") and Regex.match?(@email_regex, trimmed) do
+      trimmed
+    end
+  end
+
+  defp normalize_requester_email(_value), do: nil
 
   defp reason(reason) when is_binary(reason), do: reason
   defp reason(reason), do: inspect(reason)

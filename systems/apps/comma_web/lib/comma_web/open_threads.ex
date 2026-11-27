@@ -35,7 +35,7 @@ defmodule CommaWeb.OpenThreads do
     unique: [
       period: 86_400,
       fields: [:worker, :args],
-      states: [:available, :scheduled, :executing, :retryable, :suspended, :completed]
+      states: [:available, :scheduled, :executing, :retryable, :suspended, :completed, :cancelled]
     ]
 
   require Logger
@@ -43,11 +43,14 @@ defmodule CommaWeb.OpenThreads do
   alias Comma.Repo
   alias CommaWeb.{Proactive, RecommendationOAuthSource, RecommendationRenderer}
   alias CommaWeb.{RecommendationMemberIdentity, RecommendationMemberRead, RecommendationRuntime}
+  alias SalixAgent.BillingAvailability
 
   @own_limit 60
   @own_bytes 24_000
+  @own_max_fetched 300
   @quote_chars 300
   @timeout_ms 60_000
+  @github_issue_url ~r<https://github\.com/[\w.-]+/[\w.-]+/(?:pull|issues)/\d+>
 
   @doc "Queues the day's open thread refresh; later calls the same day join it."
   def enqueue(%RecommendationProfile{} = profile),
@@ -92,15 +95,25 @@ defmodule CommaWeb.OpenThreads do
       {:error, reason} = error ->
         Logger.warning("open_threads failed reason=#{inspect(reason, limit: 3)}")
 
-        # Without credits a retry fails the same way; the next day tries again.
-        case reason do
-          :insufficient_credits -> {:cancel, reason}
-          {:billing_unavailable, _} -> {:cancel, reason}
-          :member_source_changed -> :ok
-          _ -> error
+        # Explicit billing denials fail the same way on retry; the next window tries again.
+        # Billing infrastructure errors retain Oban recovery.
+        cond do
+          billing_denied?(reason) -> {:cancel, reason}
+          reason == :member_source_changed -> :ok
+          true -> error
         end
     end
   end
+
+  defp billing_denied?(:insufficient_credits), do: true
+
+  defp billing_denied?({:billing_unavailable, decision}) when is_map(decision),
+    do: BillingAvailability.denied?({:billing_unavailable, decision})
+
+  defp billing_denied?({:billing_unavailable, code}) when is_binary(code),
+    do: BillingAvailability.denied?({:billing_unavailable, %{reason: code}})
+
+  defp billing_denied?(_reason), do: false
 
   defp personal?(workspace, owner),
     do: Enum.map(workspace["members"] || [], & &1["user_id"]) in [[], [owner]]
@@ -112,16 +125,17 @@ defmodule CommaWeb.OpenThreads do
       [%{"connectionId" => source_id} = source | _] when is_binary(source_id) ->
         with {:ok, identity} <-
                RecommendationMemberIdentity.resolve(workspace, profile.user_id, source),
+             cursor = Comma.OpenThreads.cursor(profile.id, source_id),
              {:ok, own, subject} <-
                RecommendationOAuthSource.own_slack_messages(
                  workspace,
                  profile.user_id,
                  source,
                  RecommendationMemberRead.deadline(),
-                 replies: true
+                 replies: true,
+                 since_ts: cursor
                ),
              true <- subject["provider_user_id"] == identity["provider_user_id"],
-             cursor = Comma.OpenThreads.cursor(profile.id, source_id),
              fresh = fresh(own, cursor, SystemsClock.utc_now()),
              open =
                Enum.filter(
@@ -257,28 +271,37 @@ defmodule CommaWeb.OpenThreads do
     |> Enum.join()
   end
 
-  # The newest 100 own messages reach back past the cursor, or some sent
-  # since the last read were never returned.
+  # The newest #{@own_max_fetched} own messages reach back past the cursor, or
+  # some sent since the last read were never returned.
   defp gap?(_own, nil), do: false
   defp gap?([], _cursor), do: false
 
   defp gap?(own, cursor),
-    do: Enum.all?(own, &(ts_seconds(&1["ts"]) > ts_seconds(cursor))) and length(own) >= 100
+    do:
+      Enum.all?(own, &(ts_seconds(&1["ts"]) > ts_seconds(cursor))) and
+        length(own) >= @own_max_fetched
 
   @doc """
   Reads the news of the source's tracked open threads and asks the model
-  which are closed. Returns the IDs whose thread was read, the newest ts
-  read per thread the model judged, and the closed thread IDs. A thread
-  the model did not judge keeps its checked ts, so its news is read again.
+  which are closed. A tracked thread whose cited GitHub pull requests or
+  issues are all merged or closed settles without a model call. Returns the
+  IDs whose thread was read, the newest ts read per thread the model judged,
+  and the closed thread IDs.
   """
   def track(workspace, profile, source, source_id) do
     tracked = Map.new(Comma.OpenThreads.tracked(profile.id, source_id), &{&1.id, &1})
 
+    github_settled =
+      for {id, thread} <- tracked,
+          github_closed?(workspace, profile, thread),
+          into: MapSet.new(),
+          do: id
+
     threads =
       Map.new(
         Enum.flat_map(tracked, fn {id, thread} ->
-          case split_key(thread.thread_key) do
-            {channel, ts} when is_binary(channel) ->
+          case {MapSet.member?(github_settled, id), split_key(thread.thread_key)} do
+            {false, {channel, ts}} when is_binary(channel) ->
               [{id, {channel, ts, thread.checked_ts || url_ts(thread.url) || ts}}]
 
             _ ->
@@ -287,23 +310,55 @@ defmodule CommaWeb.OpenThreads do
         end)
       )
 
-    with true <- threads != %{},
-         {:ok, read} <-
-           RecommendationOAuthSource.slack_thread_news(
-             workspace,
-             profile.user_id,
-             source,
-             threads
-           ) do
-      news = Map.reject(read, fn {_id, messages} -> messages == [] end)
-      {judged, closed} = closed(workspace, news, tracked)
+    {read_ids, checked, slack_closed} =
+      with true <- threads != %{},
+           {:ok, read} <-
+             RecommendationOAuthSource.slack_thread_news(
+               workspace,
+               profile.user_id,
+               source,
+               threads
+             ) do
+        news = Map.reject(read, fn {_id, messages} -> messages == [] end)
+        {judged, closed} = closed(workspace, news, tracked)
 
-      checked =
-        for {id, messages} <- news, id in judged, into: %{}, do: {id, List.last(messages)["ts"]}
+        checked =
+          for {id, messages} <- news, id in judged, into: %{}, do: {id, List.last(messages)["ts"]}
 
-      {Map.keys(read), checked, closed}
+        {Map.keys(read), checked, closed}
+      else
+        _ -> {[], %{}, []}
+      end
+
+    settled = MapSet.to_list(github_settled)
+    {Enum.uniq(read_ids ++ settled), checked, Enum.uniq(slack_closed ++ settled)}
+  end
+
+  defp github_closed?(workspace, profile, thread) do
+    text = Enum.join([thread.summary || "", thread.quote || ""], "\n")
+
+    urls =
+      @github_issue_url
+      |> Regex.scan(text)
+      |> List.flatten()
+      |> Enum.uniq()
+      |> Enum.take(3)
+
+    if urls == [] do
+      false
     else
-      _ -> {[], %{}, []}
+      linked =
+        CommaWeb.ProactiveEvidence.linked(
+          workspace,
+          profile.user_id,
+          profile.sources,
+          %{"url" => nil, "excerpt" => text}
+        )
+
+      length(linked) == length(urls) and
+        Enum.all?(linked, fn item ->
+          item["merged"] == true or item["state"] == "closed"
+        end)
     end
   end
 

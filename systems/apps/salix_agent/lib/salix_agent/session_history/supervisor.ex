@@ -22,10 +22,36 @@ defmodule SalixAgent.SessionHistory.Supervisor do
     )
   end
 
+  # Only the Agent's ring node indexes and archives its Sessions, so this
+  # supervisor restarts after a failure. A keeper between it and the
+  # application bounds the restarts: a crash loop stops history work on this
+  # node and leaves the Agents running.
+  @keeper_max_restarts 5
+  @keeper_max_seconds 60
+
   def children do
     if SystemsRuntime.get_env(:salix_store, :start_repo, false) and
          SystemsRuntime.get_env(:salix_agent, :session_history_enabled, true),
-       do: [Supervisor.child_spec(__MODULE__, restart: :temporary)],
+       do: [keeper_spec()],
        else: []
+  end
+
+  def keeper_spec do
+    %{
+      id: SalixAgent.SessionHistory.Keeper,
+      start:
+        {SystemsRuntime.Supervisor, :start_link,
+         [
+           [__MODULE__],
+           [
+             strategy: :one_for_one,
+             max_restarts: @keeper_max_restarts,
+             max_seconds: @keeper_max_seconds,
+             name: SalixAgent.SessionHistory.Keeper
+           ]
+         ]},
+      type: :supervisor,
+      restart: :temporary
+    }
   end
 end

@@ -42,6 +42,8 @@ def knownBlock (anthropic : Bool) (block : Term) : Bool :=
   let type := get block "type"
   if member type ["text", "input_text", "output_text"] then block.has (b "text")
   else if member type ["file", "input_file"] then true
+  else if type == b "dynamic_ui" && (nonempty (get block "ui_ref") || nonempty (get block "path")) then true
+  else if type == b "conversation_ref" && nonempty (get block "conversation_id") then true
   else if anthropic && type == b "image" && (get block "source").isMap then get block "source" != empty
   else member type ["image", "image_url", "input_image"] && imageUrl block != nil
 
@@ -57,6 +59,13 @@ def fileText (block : Term) : KernelM Term := do
   cat [b "[Attached file is available in the agent workspace, not in this request: ", name,
     b " (VFS path: ", path, b "). Read it with fs.read_file, or stage it on a connected runner with env.copy and convert it with env.exec, before describing it.]"]
 
+def dynamicUiText (block : Term) : KernelM Term := do
+  cat [b "[Attached dynamic_ui block (preserve as a structured content block in im_api.internal.send_message): ",
+    ← encode block, b "]"]
+
+def conversationRefText (block : Term) : KernelM Term := do
+  cat [b "[Inline Task reference: ", ← encode block, b "]"]
+
 def block (protocol : String) (value : Term) : KernelM (List Term) := do
   let type := get value "type"
   let textType := if protocol == "responses" then "input_text" else "text"
@@ -64,6 +73,10 @@ def block (protocol : String) (value : Term) : KernelM (List Term) := do
     return [obj [("type", b textType), ("text", ← str (get value "text"))]]
   if member type ["file", "input_file"] then
     return [obj [("type", b textType), ("text", ← fileText value)]]
+  if type == b "dynamic_ui" then
+    return [obj [("type", b textType), ("text", ← dynamicUiText value)]]
+  if type == b "conversation_ref" then
+    return [obj [("type", b textType), ("text", ← conversationRefText value)]]
   if !member type ["image", "image_url", "input_image"] then return []
   if protocol == "anthropic" && type == b "image" && (get value "source").isMap then
     return [obj [("type", b "image"), ("source", get value "source")]]

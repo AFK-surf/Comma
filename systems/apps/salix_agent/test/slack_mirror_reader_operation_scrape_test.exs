@@ -13,6 +13,8 @@ defmodule Salix.SlackMirrorReaderOperationScrapeTest do
     feishu_mirror_search
     qq_mirror_search
     lark_mirror_search
+    feishu_mirror_brief
+    lark_mirror_brief
   )
 
   test "Slack and Feishu mirror reader query families retain finite operation labels" do

@@ -7,7 +7,11 @@
     --chat-panel-image-group-card-expanded-width: 165px;
     /* A lone image keeps its ratio within this box instead of the 3:4 card. */
     --chat-panel-image-group-single-max-width: 320px;
-    --chat-panel-image-group-single-max-height: 240px;
+    --chat-panel-image-group-single-max-height: 320px;
+    --chat-panel-image-group-single-max-inline-size: min(
+      var(--chat-panel-image-group-single-max-width),
+      100%
+    );
     --chat-panel-image-group-stack-rotation-step: 3.5deg;
     --chat-panel-image-group-stack-shift-step: 3px;
     --chat-panel-image-group-stack-scale-step: 0.03;
@@ -24,6 +28,23 @@
     gap: var(--spacing-xs);
     max-width: 100%;
     margin: 0;
+  }
+
+  .chat-panel-image-group[data-align="start"] {
+    align-items: flex-start;
+  }
+
+  .chat-panel-image-group[data-single="true"] {
+    max-width: var(--chat-panel-image-group-single-max-inline-size);
+  }
+
+  @container comma-window (width < 560px) {
+    .chat-panel-image-group[data-single="true"] {
+      --chat-panel-image-group-single-max-inline-size: min(
+        var(--chat-panel-image-group-single-max-width),
+        75%
+      );
+    }
   }
 
   .chat-panel-image-group-toggle {
@@ -95,10 +116,14 @@
     position: relative;
     min-width: 0;
     max-width: 100%;
-    /* The fan allowance stays constant across both states so the deck's
-       top-right anchor never moves through expand/collapse — only the cards
-       travel, never the frame or the toggle above it. Both inline sides
-       reserve room: history fans out to the left, upcoming to the right. */
+    /* Non-stackable groups (1–3 images) never fan or rotate, so they sit flush
+       with message text and bubbles. Stackable groups (4+ images) keep the fan
+       allowance constant across collapsed and expanded states so the deck's
+       anchor never moves through expand/collapse. */
+    padding: var(--spacing-none);
+  }
+
+  .chat-panel-image-group-cards[data-stackable="true"] {
     padding-block: var(--chat-panel-image-group-fan-allowance-block);
     padding-inline: var(--chat-panel-image-group-fan-allowance-inline);
   }
@@ -112,6 +137,11 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: var(--spacing-md);
+  }
+
+  .chat-panel-image-group[data-align="start"]
+    .chat-panel-image-group-cards[data-expanded="true"] {
+    justify-content: flex-start;
   }
 
   /* The wrapper height is measured and driven inline while the deck expands or
@@ -167,9 +197,13 @@
   }
 
   /* Expanded wrapping rows can grow taller than the scrollport. Skip paint
-     for cards that have left the visible band; the 3:4 box is reserved so
-     stick-to-bottom does not see height jumps as they enter. */
-  .chat-panel-image-group-cards[data-expanded="true"] .chat-panel-image-group-card {
+     for multi-image cards that have left the visible band; their fixed 3:4
+     box is reserved so stick-to-bottom does not see height jumps as they
+     enter. Single-image cards size to their image's natural ratio instead of
+     a fixed 3:4 box, so skipping them with a guessed intrinsic height causes
+     scroll height to collapse mid-gesture when they un-skip offscreen. */
+  .chat-panel-image-group-cards[data-expanded="true"]:not([data-single="true"])
+    .chat-panel-image-group-card {
     content-visibility: auto;
     contain-intrinsic-width: auto var(--chat-panel-image-group-card-expanded-width);
     contain-intrinsic-height: auto
@@ -230,14 +264,38 @@
      message's, like any other attachment. */
   .chat-panel-image-group-cards[data-single="true"] {
     padding: var(--spacing-none);
+    --icon-swap-ease: var(--motion-easing-generated-media-swap);
+  }
+
+  .chat-panel-image-group-cards[data-single="true"] .t-icon-swap {
+    --icon-swap-dur: var(--motion-duration-state-change);
   }
 
   .chat-panel-image-group-cards[data-single="true"] .chat-panel-image-group-card {
     width: fit-content;
-    max-width: min(var(--chat-panel-image-group-single-max-width), 100%);
+    max-width: 100%;
     aspect-ratio: auto;
-    contain-intrinsic-width: auto var(--chat-panel-image-group-single-max-width);
-    contain-intrinsic-height: auto var(--chat-panel-image-group-single-max-height);
+    background: transparent;
+  }
+
+  /* A single-image placeholder has no <img> to size the inline-flex wrapper;
+     give the wrapper and card explicit inline sizes so the 4:3 box actually
+     reserves height instead of collapsing to its borders. */
+  .chat-panel-image-group[data-comma-image-group-placeholder][data-single="true"] {
+    width: var(--chat-panel-image-group-single-max-inline-size);
+  }
+
+  .chat-panel-image-group[data-comma-image-group-placeholder][data-single="true"]
+    .chat-panel-image-group-cards {
+    width: 100%;
+  }
+
+  .chat-panel-image-group[data-comma-image-group-placeholder][data-single="true"]
+    .chat-panel-image-group-card {
+    width: var(--chat-panel-image-group-single-max-width);
+    max-width: 100%;
+    aspect-ratio: 4 / 3;
+    background: var(--color-bg-quaternary);
   }
 
   .chat-panel-image-group-cards[data-single="true"]
@@ -247,6 +305,54 @@
     max-width: 100%;
     max-height: var(--chat-panel-image-group-single-max-height);
     object-fit: contain;
+  }
+
+  .chat-panel-image-group-cards[data-single="true"]:focus-within
+    .chat-panel-image-toolbar {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate3d(0, 0, 0);
+    transition: none !important;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .chat-panel-image-group-cards[data-single="true"]:hover .chat-panel-image-toolbar {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translate3d(0, 0, 0);
+      transition-duration: var(--motion-duration-state-change);
+    }
+  }
+
+  .chat-panel-image-group-cards[data-single="true"][data-keyboard-focus-motion="instant"]
+    .chat-panel-image-toolbar {
+    transition: none !important;
+  }
+
+  .chat-panel-image-group-card[data-shared-hidden="true"] {
+    visibility: hidden;
+  }
+
+  .chat-panel-image-toolbar[data-shared-hidden="true"] {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: none !important;
+  }
+
+  .chat-panel-image-group-shared-flight {
+    position: fixed;
+    z-index: 60;
+    overflow: hidden;
+    pointer-events: none;
+    will-change: left, top, width, height, border-radius;
+  }
+
+  .chat-panel-image-group-shared-flight-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    user-select: none;
   }
 
   /* Depth dimming for cards tucked behind the front of the deck. */

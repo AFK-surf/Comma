@@ -26,7 +26,10 @@ struct ChatRow: Identifiable, Equatable {
     let isUser: Bool
     let actorRole: ChatActorRole?
     let actorID: String?
+    let participantID: String?
     let createdBy: String?
+    /// In a Task together, the user id of another person who wrote this message; nil for the account's own.
+    var otherWriter: String?
     let threadRoot: String
     let createdAt: Double?
     var groupFirst = true
@@ -37,7 +40,7 @@ struct ChatRow: Identifiable, Equatable {
     var activityLabel: String?
 
     init(id: String, relationshipID: String, content: Content, isUser: Bool, actorRole: ChatActorRole?,
-         actorID: String? = nil, createdBy: String? = nil, threadRoot: String, createdAt: Double? = nil) {
+         actorID: String? = nil, participantID: String? = nil, createdBy: String? = nil, threadRoot: String, createdAt: Double? = nil) {
         self.id = id; self.relationshipID = relationshipID; self.content = content
         switch content {
         case .message(let message) where isUser:
@@ -48,11 +51,13 @@ struct ChatRow: Identifiable, Equatable {
         case .pending(let pending): text = pending.text; attachedTexts = pending.attachedTexts; files = pending.files.map(\.name)
         case .draft(let draft): text = draft?.text ?? ""; attachedTexts = []; files = []
         }
-        self.isUser = isUser; self.actorRole = actorRole; self.actorID = actorID; self.createdBy = createdBy
+        self.isUser = isUser; self.actorRole = actorRole; self.actorID = actorID; self.participantID = participantID; self.createdBy = createdBy
         self.threadRoot = threadRoot; self.createdAt = createdAt
     }
 
     var message: ChatItem? { if case .message(let value) = content { value } else { nil } }
+    /// The account's own message, on the right in its bubble. Another person's sits on the left as an Agent's does.
+    var isMine: Bool { isUser && otherWriter == nil }
     var isDraft: Bool { if case .draft = content { true } else { false } }
     /// The Markdown tree an agent's bubbles draw; nil for a person's message.
     var markdown: CoreJSON? {
@@ -64,7 +69,10 @@ struct ChatRow: Identifiable, Equatable {
     }
 
     func sameSender(_ other: ChatRow) -> Bool {
-        isUser == other.isUser && actorRole == other.actorRole && actorID == other.actorID && createdBy == other.createdBy
+        if let lhs = participantID, !lhs.isEmpty, let rhs = other.participantID, !rhs.isEmpty, lhs != rhs {
+            return false
+        }
+        return isUser == other.isUser && actorRole == other.actorRole && actorID == other.actorID && createdBy == other.createdBy
     }
 
     /// A person's words with the passages they quote ahead, as Markdown quotes.
@@ -117,13 +125,16 @@ struct ReplyRowIdentity: Equatable {
 enum ChatTranscriptModel {
     /// The rows of an open conversation, with its reply identity. Build them once per view update.
     @MainActor static func rows(for pane: ConversationPane) -> [ChatRow] {
-        rows(timeline: pane.state.timeline, isTask: pane.isTask, activity: pane.replyActivity, identity: pane.replyRows)
+        rows(timeline: pane.state.timeline, isTask: pane.isTask, activity: pane.replyActivity, identity: pane.replyRows,
+             selfID: pane.store?.session?.user.id)
     }
 
     /// Port of the desktop `messageRelationships`: one pass groups consecutive rows by sender and thread,
     /// then connects each non-user group to the last group of the same thread.
+    /// `selfID` is the account's user id: a Task stores each writer's id, and a message by anyone else is another
+    /// person's. The Router's chat calls its one user `current`.
     static func rows(timeline: [ChatEntry], isTask: Bool, activity: String? = nil,
-                     identity: ReplyRowIdentity = ReplyRowIdentity()) -> [ChatRow] {
+                     identity: ReplyRowIdentity = ReplyRowIdentity(), selfID: String? = nil) -> [ChatRow] {
         var rows: [ChatRow] = []
         var messages: [String: ChatItem] = [:]
         var lastUser: String?
@@ -136,10 +147,15 @@ enum ChatTranscriptModel {
                 if isUser { lastUser = message.createdBy }
                 let role: ChatActorRole? = isUser ? nil
                     : message.actorRole == "router" ? .router : message.actorRole == "worker" ? .worker : (isTask ? .worker : .router)
-                rows.append(ChatRow(id: identity.rowID(for: message), relationshipID: message.id, content: .message(message),
-                                    isUser: isUser, actorRole: role, actorID: message.actorType == "agent" ? message.actorID : nil,
-                                    createdBy: isUser ? message.createdBy : nil,
-                                    threadRoot: message.threadRootMessageID ?? message.id, createdAt: message.createdAt))
+                var row = ChatRow(id: identity.rowID(for: message), relationshipID: message.id, content: .message(message),
+                                  isUser: isUser, actorRole: role, actorID: message.actorType == "agent" ? message.actorID : nil,
+                                  participantID: message.participantID,
+                                  createdBy: isUser ? message.createdBy : nil,
+                                  threadRoot: message.threadRootMessageID ?? message.id, createdAt: message.createdAt)
+                if isUser, let writer = message.createdBy, let selfID, writer != selfID, writer != "current" {
+                    row.otherWriter = writer
+                }
+                rows.append(row)
             case .pending(_, let pending):
                 // A reply joins its parent's thread before the server names the root.
                 let root = pending.replyToMessageID.map { parent in

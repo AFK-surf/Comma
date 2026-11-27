@@ -41,6 +41,8 @@ internal interface SettingsContext {
     fun onRender(page: SettingsPage, render: () -> Unit)
     /** Shows a short notice; [failure] marks it as one. */
     fun toast(text: String, failure: Boolean)
+    /** Settings › Share location; null where this phone cannot share it. */
+    val locationSharing: surf.comma.android.chat.live.LocationSharing? get() = null
 
     /** Opens a page from the Settings list; in columns it replaces the page shown beside the list. */
     fun openFromList(page: SettingsPage) = open(page)
@@ -55,6 +57,8 @@ internal interface SettingsContext {
     fun openTask(id: String) {}
     /** Shows the Router chat. */
     fun openRouter() {}
+    /** Opens Settings › Comma › Apps; null where the app has no Apps pages. */
+    val openApps: (() -> Unit)? get() = null
     /** Adds a file to the Router chat's draft; false when it took none. */
     suspend fun attachToRouter(name: String, bytes: ByteArray): Boolean = false
 }
@@ -122,6 +126,10 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
     private val notifications = SettingsRow(activity, R.drawable.ic_settings_bell, activity.getString(R.string.settings_notifications))
     private val labels = SettingsRow(activity, R.drawable.ic_filter_label, activity.getString(R.string.settings_task_labels))
     private val language = SettingsRow(activity, R.drawable.ic_settings_globe, activity.getString(R.string.settings_language))
+    /** On: each message carries where this phone is, so the Agent can suggest things nearby without asking. */
+    private val locationSwitch = SettingsSwitch(activity)
+    private val location = SettingsRow(activity, R.drawable.ic_action_location, activity.getString(R.string.settings_share_location))
+        .trailing(locationSwitch)
     private val theme = SettingsRow(activity, R.drawable.ic_settings_theme, activity.getString(R.string.settings_theme))
     private val textSize = SettingsRow(activity, R.drawable.ic_settings_text_size, activity.getString(R.string.settings_font_size))
     private val glass = SettingsRow(activity, R.drawable.ic_settings_sparkles, activity.getString(R.string.settings_glass))
@@ -187,11 +195,41 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
         val drive = link(R.drawable.ic_settings_file, R.string.ds_drive_and_files, open { surf.comma.android.settings.desktop.DrivePage(ctx) }).opens(surf.comma.android.settings.desktop.DrivePage.KEY)
         val plugins = link(R.drawable.ic_routine_puzzle, R.string.ds_plugins, open { surf.comma.android.settings.desktop.PluginsPage(ctx) }).opens(surf.comma.android.settings.desktop.PluginsPage.KEY)
         workspaceRows += listOf(drive, plugins)
+        ctx.openApps?.let { openApps ->
+            val apps = link(R.drawable.ic_tab_apps, R.string.shell_tab_apps) { openApps() }.opens(surf.comma.android.miniapps.MiniAppsListPage.KEY)
+            apps.id = R.id.settings_apps
+            workspaceRows += apps
+            commaSection.add(apps)
+        }
         layout.section(commaSection.add(drive).add(plugins))
 
         val router = link(R.drawable.ic_settings_sparkles, R.string.ds_router_settings, open { surf.comma.android.settings.desktop.RouterSettingsPage(ctx) }).opens(surf.comma.android.settings.desktop.RouterSettingsPage.KEY)
         notifications.id = R.id.settings_reply_notifications
         notifications.value(null, chevron = true).onClick { ctx.openFromList(NotificationsPage(ctx)) }
+        val sharing = ctx.locationSharing
+        location.id = R.id.settings_share_location
+        location.onClick {
+            sharing?.set(activity, !locationSwitch.checked) {
+                ctx.toast(activity.getString(R.string.chat_request_location_denied), failure = true)
+            }
+        }
+        var firstLocation = true
+        val showLocation = {
+            location.isVisible = sharing?.enabled != null
+            locationSwitch.set(sharing?.enabled == true, animate = !firstLocation)
+            // On, but the system no longer lets Comma read the location: nothing is sent until it does.
+            val blocked = sharing?.enabled == true &&
+                !surf.comma.android.chat.live.DeviceLocation.allowed(activity)
+            location.detail(activity.getString(
+                if (blocked) R.string.chat_request_location_denied else R.string.settings_share_location_detail))
+            firstLocation = false
+        }
+        showLocation()
+        val unwatchLocation = sharing?.watch(showLocation) ?: {}
+        location.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) = unwatchLocation()
+        })
         language.id = R.id.settings_language
         language.onClick { row ->
             val options = Language.entries
@@ -221,7 +259,7 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
         val usage = link(R.drawable.ic_settings_info, R.string.ds_usage, open { surf.comma.android.settings.desktop.UsagePage(ctx) }).opens(surf.comma.android.settings.desktop.UsagePage.KEY)
         workspaceRows += listOf(router, usage)
         layout.section(SettingsSection(activity, activity.getString(R.string.ds_group_preferences))
-            .add(router).add(notifications).add(language).add(theme).add(textSize).add(glass).add(usage))
+            .add(router).add(notifications).add(location).add(language).add(theme).add(textSize).add(glass).add(usage))
 
         val routines = link(R.drawable.ic_settings_sparkles, R.string.ds_routines, open { surf.comma.android.settings.desktop.RoutinesSettingsPage(ctx) }).opens(surf.comma.android.settings.desktop.RoutinesSettingsPage.KEY)
         val channels = link(R.drawable.ic_settings_link, R.string.ds_channels, open { surf.comma.android.settings.desktop.ChannelsPage(ctx) }).opens(surf.comma.android.settings.desktop.ChannelsPage.KEY)

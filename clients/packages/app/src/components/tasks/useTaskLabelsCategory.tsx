@@ -3,7 +3,6 @@ import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import type { SettingsCategoryDefinition } from "@comma/ui/components/settings";
 import { useNavigate } from "@tanstack/react-router";
 import { useCall, useTopic } from "@comma/core-client";
-import type { CommaTaskLabelApprovalPolicy } from "@comma/core/api-schemas";
 import { useProductInboxProjection } from "../../product-inbox";
 import { useActiveWorkspaceId } from "../activeWorkspace";
 import { useTaskLabelsCatalogStatus } from "../chat/tasks/labels/useTaskLabelsCatalog";
@@ -12,17 +11,17 @@ import { TaskLabelsPage, type TaskLabelDraft } from "./TaskLabelsSettings";
 
 /**
  * The Settings › Labels category: a page of its own (title, toolbar, table)
- * rather than a list of setting rows. Agent proposals still waiting for the
- * person sit above the table. General Permissions shares this Group's catalog
- * and server-owned approval policy.
+ * rather than a list of setting rows. Whether Comma may change labels without
+ * asking (the Group's server-owned approval policy) and the proposals still
+ * waiting for the person sit above the table.
  */
-export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
+export function useTaskLabelsCategory(enabled: boolean) {
   const messages = useCommaMessages();
   const navigate = useNavigate();
   const locale = useCommaLocale();
   const workspaceId = useActiveWorkspaceId();
   const { result } = useProductInboxProjection({
-    enabled: enabled || policyEnabled,
+    enabled,
     ...(workspaceId ? { workspaceId } : {}),
   });
   const workspace = result?.workspaces?.find(
@@ -33,10 +32,12 @@ export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
   const call = useCall();
   const { catalog, error, loading, refresh } = useTaskLabelsCatalogStatus(
     groupId,
-    enabled || policyEnabled
+    enabled
   );
   const [busy, setBusy] = useState<string>();
-  const [saveError, setSaveError] = useState(false);
+  // The mutation that failed last: the label policy reports on its own row,
+  // the label edits above the table.
+  const [saveError, setSaveError] = useState<string>();
 
   // Label usage counts come from the Task list (the core reads its first page again when the catalog changes); a
   // failed count read only hides the column, never the catalog.
@@ -52,11 +53,11 @@ export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
 
   const mutate = useCallback(async (key: string, run: () => Promise<unknown>) => {
     setBusy(key);
-    setSaveError(false);
+    setSaveError(undefined);
     try {
       await run();
     } catch {
-      setSaveError(true);
+      setSaveError(key);
     } finally {
       setBusy(undefined);
     }
@@ -136,6 +137,12 @@ export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
             title: messages.settings_labels_title(),
             description: messages.settings_labels_description(),
           },
+          {
+            id: "permissions.label-changes",
+            title: messages.settings_label_changes(),
+            description: messages.settings_label_changes_description(),
+            keywords: ["label", "permission", "标签", "权限"],
+          },
         ],
       },
     ],
@@ -147,7 +154,7 @@ export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
         error={
           error
             ? messages.settings_labels_error()
-            : saveError
+            : saveError && saveError !== "policy"
               ? messages.settings_labels_save_failed()
               : undefined
         }
@@ -168,21 +175,19 @@ export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
         }}
         pendingProposals={pendingProposals}
         proposalTitle={proposalTitle}
+        approvalPolicy={{
+          value: catalog?.approval_policy ?? "ask",
+          disabled: !groupId || !catalog || loading || busy !== undefined,
+          failed: saveError === "policy",
+          onChange: (policy) => {
+            if (!groupId) return;
+            void mutate("policy", () =>
+              call("taskLabels.setPolicy", { group: groupId, policy })
+            );
+          },
+        }}
       />
     ),
   };
-  return {
-    category,
-    approvalPolicy: {
-      value: catalog?.approval_policy ?? "ask",
-      disabled: !groupId || !catalog || loading || busy !== undefined,
-      error: error || saveError,
-      set: (policy: CommaTaskLabelApprovalPolicy) => {
-        if (!groupId) return;
-        void mutate("policy", () =>
-          call("taskLabels.setPolicy", { group: groupId, policy })
-        );
-      },
-    },
-  };
+  return category;
 }

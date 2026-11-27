@@ -434,4 +434,146 @@ describe("an Agent's question card", () => {
     await t.time.pass(100);
     expect(t.state().draftAttachments).toEqual([]);
   });
+
+  it("sends a dismiss reply instead of 'you decide' when skip_behavior is dismiss", async () => {
+    const dismissAsked = {
+      ...asked,
+      content: [
+        { type: "text", text: "still.fail 卡片等待处理" },
+        {
+          type: "question",
+          prompt: "需要改代码吗？",
+          skip_behavior: "dismiss",
+          choices: [
+            { id: "c1", label: "顺便改掉" },
+            { id: "c2", label: "不用改" },
+          ],
+          multi_select: false,
+          allow_other: true,
+        },
+      ],
+    };
+    const host = new FakeHost();
+    let postedBody: Record<string, unknown> | undefined;
+    host.api
+      .onStream(events)
+      .onStream("/v1/comma/groups/grp_1/conversations/events")
+      .on("GET", base, detail([dismissAsked]))
+      .on("POST", `${base}/messages`, (req) => {
+        postedBody = req.body as Record<string, unknown>;
+        return json(
+          200,
+          detail([
+            dismissAsked,
+            {
+              message_id: "m2",
+              seq: 2,
+              kind: "message",
+              actor_type: "user",
+              created_at: 2,
+              reply_to_message_id: "m1",
+              content: [
+                { type: "text", text: "Dismissed." },
+                {
+                  type: "question_answer",
+                  question_message_id: "m1",
+                  choice_ids: [],
+                  skipped: true,
+                },
+              ],
+            },
+          ])
+        );
+      });
+    const core = startTestCore(host);
+    core.observeSession(signedIn());
+    const client = new CoreClient(inProcessOpener(core, host, "win_main"), {
+      schedule: () => undefined,
+    });
+    let value: ChatViewValue | undefined;
+    client.subscribe(
+      view,
+      (v) => (value = v as ChatViewValue),
+      () => undefined
+    );
+    await host.time!.pass(1_500);
+    host.api.open(events)!.named("snapshot", snapshot([dismissAsked]));
+    await host.time!.pass(100);
+
+    const card = value!
+      .state!.messages.find((m) => m.messageId === "m1")!
+      .parts!.find((part): part is ChatQuestionPart => part.kind === "question")!;
+    expect(card.skipBehavior).toBe("dismiss");
+
+    await client.call("chatView.answerQuestion", {
+      ...named,
+      questionMessageId: "m1",
+      choiceIds: [],
+      skipped: true,
+    });
+    await host.time!.pass(100);
+
+    const sentText = JSON.stringify(postedBody);
+    expect(sentText).toContain("Dismissed.");
+    expect(sentText).not.toContain("You decide");
+  });
+
+  it("folds a targeted card answered later without closing another open card", async () => {
+    const q1 = {
+      ...asked,
+      message_id: "m1",
+      seq: 1,
+    };
+    const q2 = {
+      ...asked,
+      message_id: "m2",
+      seq: 2,
+      created_at: 2,
+    };
+    const answerQ1 = {
+      message_id: "m3",
+      seq: 3,
+      kind: "message",
+      actor_type: "user",
+      created_at: 3,
+      reply_to_message_id: "m1",
+      content: [
+        { type: "text", text: "挪到周四" },
+        {
+          type: "question_answer",
+          question_message_id: "m1",
+          choice_ids: ["c1"],
+          skipped: false,
+        },
+      ],
+    };
+    const host = new FakeHost();
+    host.api
+      .onStream(events)
+      .onStream("/v1/comma/groups/grp_1/conversations/events")
+      .on("GET", base, detail([q1, q2, answerQ1]));
+    const core = startTestCore(host);
+    core.observeSession(signedIn());
+    const client = new CoreClient(inProcessOpener(core, host, "win_main"), {
+      schedule: () => undefined,
+    });
+    let value: ChatViewValue | undefined;
+    client.subscribe(
+      view,
+      (v) => (value = v as ChatViewValue),
+      () => undefined
+    );
+    await host.time!.pass(1_500);
+    host.api.open(events)!.named("snapshot", snapshot([q1, q2, answerQ1]));
+    await host.time!.pass(100);
+
+    const card1 = value!
+      .state!.messages.find((m) => m.messageId === "m1")!
+      .parts!.find((part): part is ChatQuestionPart => part.kind === "question")!;
+    const card2 = value!
+      .state!.messages.find((m) => m.messageId === "m2")!
+      .parts!.find((part): part is ChatQuestionPart => part.kind === "question")!;
+    expect(card1.state).toEqual({ status: "answered", choiceIds: ["c1"] });
+    expect(card2.state).toEqual({ status: "open" });
+  });
 });

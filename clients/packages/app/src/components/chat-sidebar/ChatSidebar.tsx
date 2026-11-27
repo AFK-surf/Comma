@@ -2,7 +2,7 @@ import { openMiniAppRunLink } from "../../miniAppRunLink";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
 import { useTaskSummary } from "../tasks/useTaskArchive";
-import { taskLoopStoppedOnError } from "../tasks/taskLoopLabels";
+import { taskLoopStoppedOnError, taskLoopTriggerType } from "../tasks/taskLoopLabels";
 import { openUrlInExternalBrowser } from "../chat/thread/inline/linkActions";
 import { Button } from "@comma/ui/components/Button";
 import {
@@ -13,11 +13,9 @@ import {
   MacbookIcon,
   PhoneDynamicIslandIcon,
   SquareGridCircleIcon,
-  WindowAppIcon,
 } from "@comma/ui/components/icons";
 import { DeviceScreenPanel } from "../remote-screen/DeviceScreenPanel";
 import { screenName } from "../remote-screen/useScreenListing";
-import { useScreenWindows } from "../remote-screen/screenWindows";
 import { SidebarMiniApp } from "../apps/SidebarMiniApp";
 import { miniAppWindowRoute, useMiniAppWindows } from "../apps/miniAppOpen";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
@@ -90,7 +88,14 @@ import {
 } from "./ChatSidebarContext";
 import { useStageDraftSelection } from "../chat/composer/draftSelections";
 import { browserElementSelection } from "./browserElementInspection";
-import { FilePreviewPanel } from "./FilePreviewPanel";
+import { documentVersionsIn, FilePreviewPanel } from "./FilePreviewPanel";
+import { sentPictures } from "./sentDocuments";
+import {
+  documentWindowOf,
+  documentWindowRoute,
+  openDocumentWindow,
+} from "./documentWindow";
+import type { ConversationFileSource } from "../../runtime-files/fileSources";
 import { CodingChangesPanel } from "../chat/tasks/CodingChangesPanel";
 import { DrivePreviewPanel } from "../drive/DrivePreviewPanel";
 import {
@@ -100,6 +105,10 @@ import {
 import { useRouterDisplayName } from "../router-identity/RouterIdentityProvider";
 import { useCommaClientSettings } from "../commaClientSettings";
 import { needsDesktopApp, requestDesktopApp } from "../DesktopAppPrompt";
+import { StillfailPreviewPanel } from "./StillfailPreviewPanel";
+import { MailPreviewPanel } from "./MailPreviewPanel";
+import { LinkProviderIcon, providerFromHref } from "../links/linkPreviewCards";
+import { isMailPreviewLink, isStillfailChatLink } from "../links/useLinkPreview";
 
 const nativeBrowserUnavailable =
   "The embedded browser is unavailable here. Open the link in your browser instead.";
@@ -113,6 +122,10 @@ const driveTabId = (fileId: string) => `${driveTabPrefix}${fileId}`;
 const screenTabPrefix = "screen:";
 const appTabPrefix = "app:";
 const historyTabPrefix = "history:";
+const stillfailTabPrefix = "stillfail:";
+const stillfailTabId = (previewId: string) => `${stillfailTabPrefix}${previewId}`;
+const mailTabPrefix = "mail:";
+const mailTabId = (previewId: string) => `${mailTabPrefix}${previewId}`;
 const historyTabId = (pageId: string) => `${historyTabPrefix}${pageId}`;
 const changesTabPrefix = "changes:";
 const changesTabId = (pageId: string) => `${changesTabPrefix}${pageId}`;
@@ -199,11 +212,14 @@ export function ChatSidebarSurface({
     closeChat,
     closeDrivePreview,
     closeFilePreview,
+    openFilePreview,
     selectFilePreview,
     closeHistoryPage,
     closeChangesPage,
     closeScreenPage,
     closeAppPage,
+    closeStillfailPreview,
+    closeMailPreview,
     duplicateBrowserPage,
     getNativeBrowserCapacityBlockedEpoch,
     isOpen,
@@ -212,6 +228,8 @@ export function ChatSidebarSurface({
     nativeBrowserStates,
     openBrowser,
     openChat,
+    openStillfailPreview,
+    openMailPreview,
     recordNativeBrowserState,
     selectBrowserPage,
     selectChat,
@@ -220,10 +238,14 @@ export function ChatSidebarSurface({
     selectChangesPage,
     selectScreenPage,
     selectAppPage,
+    selectStillfailPreview,
+    selectMailPreview,
     setTabPinned,
     trailingRef,
     updateBrowserPage,
     updateBrowserPageMetadata,
+    updateStillfailPreviewTitle,
+    updateMailPreviewTitle,
   } = useChatSidebar();
   // A full-window DOM overlay (dialog, media preview) holds this while open;
   // the native browser view composites above the DOM, so for the duration it
@@ -275,6 +297,43 @@ export function ChatSidebarSurface({
     canSendBrowserInspection ? displayedHost?.conversationId : undefined
   );
   const inspectionChannel = inspectionConversation.channel;
+  // The versions of the document shown: each message of the conversation that carried a file of its name.
+  const shownDocument = (displayedSession?.filePreviews ?? []).find(
+    (preview) => preview.id === displayedSession?.activeFilePreviewId
+  )?.source;
+  const conversationMessages = inspectionConversation.state.messages;
+  const documentVersions = useMemo(
+    () =>
+      shownDocument &&
+      displayedHost &&
+      shownDocument.conversationId === displayedHost.conversationId
+        ? documentVersionsIn(conversationMessages, shownDocument)
+        : undefined,
+    [conversationMessages, displayedHost, shownDocument]
+  );
+  // The pictures the conversation's people sent: a document's own pictures are read from them, by their names.
+  const documentPictures = useMemo(
+    () => (documentVersions ? sentPictures(conversationMessages) : undefined),
+    [conversationMessages, documentVersions]
+  );
+  // A document in a window of its own (desktop) says so on its tab and in its panel, as an app does.
+  const shownDocumentWindow =
+    shownDocument && displayedHost
+      ? documentWindowRoute(documentWindowOf(displayedHost.workspaceId, shownDocument))
+      : undefined;
+  const selectDocumentVersion = useCallback(
+    (source: ConversationFileSource) => {
+      if (displayedHost) openFilePreview(displayedHost, source);
+    },
+    [displayedHost, openFilePreview]
+  );
+  // An Agent of the shown conversation is at work: the caret of the document it writes stays in the page.
+  const documentWriterActive = (
+    inspectionConversation.state.participantStatuses ??
+    (inspectionConversation.state.participantStatus
+      ? [inspectionConversation.state.participantStatus]
+      : [])
+  ).some((status) => status.state === "active");
   const sendInspection = inspectionConversation.send;
   // A picked element, with what the person wrote about it, waits in the chat's composer as an attachment: they pick
   // as many as they want, and send them from there.
@@ -356,10 +415,19 @@ export function ChatSidebarSurface({
     screenPages[0];
   const appPages = displayedSession?.appPages ?? [];
   const appWindows = useMiniAppWindows();
-  const screenWindows = new Set(useScreenWindows().map((shown) => shown.id));
   const activeAppPage =
     appPages.find((page) => page.id === displayedSession?.activeAppPageId) ??
     appPages[0];
+  const stillfailPreviews = displayedSession?.stillfailPreviews ?? [];
+  const activeStillfailPreview =
+    stillfailPreviews.find(
+      (preview) => preview.id === displayedSession?.activeStillfailPreviewId
+    ) ?? stillfailPreviews[0];
+  const mailPreviews = displayedSession?.mailPreviews ?? [];
+  const activeMailPreview =
+    mailPreviews.find(
+      (preview) => preview.id === displayedSession?.activeMailPreviewId
+    ) ?? mailPreviews[0];
   const activeBrowserPageId = displayedSession?.activeBrowserPageId;
   const activeBrowserPage =
     browserPages.find((page) => page.id === activeBrowserPageId) ?? browserPages[0];
@@ -379,12 +447,16 @@ export function ChatSidebarSurface({
     screen: screenPages.length > 0,
     changes: changesPages.length > 0,
     app: appPages.length > 0,
+    stillfail: stillfailPreviews.length > 0,
+    mail: mailPreviews.length > 0,
   };
   const activeSurface = availableSurfaces[requestedSurface]
     ? requestedSurface
     : ((
         [
           "chat",
+          "stillfail",
+          "mail",
           "app",
           "browser",
           "drive",
@@ -401,17 +473,21 @@ export function ChatSidebarSurface({
         ? activeChat
           ? chatTabId(activeChat)
           : ""
-        : activeSurface === "app"
-          ? `${appTabPrefix}${activeAppPage?.id ?? ""}`
-          : activeSurface === "screen"
-            ? `${screenTabPrefix}${activeScreenPage?.id ?? ""}`
-            : activeSurface === "history"
-              ? historyTabId(activeHistoryPage?.id ?? "")
-              : activeSurface === "changes"
-                ? changesTabId(activeChangesPage?.id ?? "")
-                : activeSurface === "drive"
-                  ? driveTabId(activeDrivePreview?.id ?? "")
-                  : (activeBrowserPage?.id ?? browserPages[0]?.id ?? "");
+        : activeSurface === "stillfail"
+          ? stillfailTabId(activeStillfailPreview?.id ?? "")
+          : activeSurface === "mail"
+            ? mailTabId(activeMailPreview?.id ?? "")
+            : activeSurface === "app"
+              ? `${appTabPrefix}${activeAppPage?.id ?? ""}`
+              : activeSurface === "screen"
+                ? `${screenTabPrefix}${activeScreenPage?.id ?? ""}`
+                : activeSurface === "history"
+                  ? historyTabId(activeHistoryPage?.id ?? "")
+                  : activeSurface === "changes"
+                    ? changesTabId(activeChangesPage?.id ?? "")
+                    : activeSurface === "drive"
+                      ? driveTabId(activeDrivePreview?.id ?? "")
+                      : (activeBrowserPage?.id ?? browserPages[0]?.id ?? "");
 
   const expandChat = () => {
     if (!activeChat) return;
@@ -421,7 +497,7 @@ export function ChatSidebarSurface({
     if (!displayedHost || conversationRef.kind !== "agent_task") return;
     openChat(displayedHost, {
       conversationId: conversationRef.conversationId,
-      groupId: displayedHost.groupId,
+      groupId: conversationRef.groupId ?? displayedHost.groupId,
       kind: "agent_task",
       title: conversationRef.title,
       workspaceId: displayedHost.workspaceId,
@@ -443,6 +519,7 @@ export function ChatSidebarSurface({
     })),
     ...filePreviews.map((preview) => ({
       closable: true,
+      // A document's tab keeps the file's own icon, in a window of its own too: the panel says where it is.
       icon: (
         <FileTypeIcon
           className="size-5"
@@ -463,26 +540,20 @@ export function ChatSidebarSurface({
     })),
     ...appPages.map((page) => ({
       closable: true,
-      // An app running in a window of its own says so on its tab.
-      icon: appWindows.has(miniAppWindowRoute(page)) ? (
-        <WindowAppIcon className="size-5" />
-      ) : (
-        <SquareGridCircleIcon className="size-5" />
-      ),
+      // A tab keeps its own icon while what it shows is in a window of its own: the panel says where it is.
+      icon: <SquareGridCircleIcon className="size-5" />,
       id: `${appTabPrefix}${page.id}`,
       label: page.name,
       panelId: `chat-sidebar-app-panel-${page.id}`,
     })),
     ...screenPages.map((page) => ({
       closable: true,
-      // A screen in a window of its own says so on its tab, as an app does.
-      icon: screenWindows.has(page.id) ? (
-        <WindowAppIcon className="size-5" />
-      ) : page.screen || page.target === "models" ? (
-        <PhoneDynamicIslandIcon className="size-5" />
-      ) : (
-        <MacbookIcon className="size-5" />
-      ),
+      icon:
+        page.screen || page.target === "models" ? (
+          <PhoneDynamicIslandIcon className="size-5" />
+        ) : (
+          <MacbookIcon className="size-5" />
+        ),
       id: `${screenTabPrefix}${page.id}`,
       label: page.screen
         ? screenName(page.screen)
@@ -508,6 +579,31 @@ export function ChatSidebarSurface({
         : messages.coding_changes(),
       panelId: `chat-sidebar-changes-panel-${page.id}`,
     })),
+    ...stillfailPreviews.map((preview) => ({
+      closable: true,
+      icon: (
+        <span className="flex size-5 items-center justify-center [&>svg]:size-4">
+          <LinkProviderIcon source={{ appId: "stillfail", appName: "still.fail" }} />
+        </span>
+      ),
+      id: stillfailTabId(preview.id),
+      label: preview.title?.trim() || "still.fail",
+      panelId: `chat-sidebar-stillfail-panel-${preview.id}`,
+    })),
+    ...mailPreviews.map((preview) => {
+      const source = providerFromHref(preview.href);
+      return {
+        closable: true,
+        icon: (
+          <span className="flex size-5 items-center justify-center [&>svg]:size-4">
+            <LinkProviderIcon source={source} />
+          </span>
+        ),
+        id: mailTabId(preview.id),
+        label: preview.title?.trim() || source?.appName || "Mail",
+        panelId: `chat-sidebar-mail-panel-${preview.id}`,
+      };
+    }),
     ...browserPages.map((page) => ({
       closable: true,
       duplicable: page.kind !== "terminal" && Boolean(page.url),
@@ -554,6 +650,14 @@ export function ChatSidebarSurface({
       selectChangesPage(displayedHost, tabId.slice(changesTabPrefix.length));
       return;
     }
+    if (tabId.startsWith(stillfailTabPrefix)) {
+      selectStillfailPreview(displayedHost, tabId.slice(stillfailTabPrefix.length));
+      return;
+    }
+    if (tabId.startsWith(mailTabPrefix)) {
+      selectMailPreview(displayedHost, tabId.slice(mailTabPrefix.length));
+      return;
+    }
     if (tabId.startsWith(chatTabPrefix)) {
       selectChat(displayedHost, tabId.slice(chatTabPrefix.length));
       return;
@@ -586,6 +690,14 @@ export function ChatSidebarSurface({
     }
     if (tabId.startsWith(changesTabPrefix)) {
       closeChangesPage(displayedHost, tabId.slice(changesTabPrefix.length));
+      return;
+    }
+    if (tabId.startsWith(stillfailTabPrefix)) {
+      closeStillfailPreview(displayedHost, tabId.slice(stillfailTabPrefix.length));
+      return;
+    }
+    if (tabId.startsWith(mailTabPrefix)) {
+      closeMailPreview(displayedHost, tabId.slice(mailTabPrefix.length));
       return;
     }
     if (tabId.startsWith(chatTabPrefix)) {
@@ -748,6 +860,37 @@ export function ChatSidebarSurface({
                   : undefined
               }
               source={activeFilePreview.source}
+              versions={documentVersions}
+              pictures={documentPictures}
+              onSelectVersion={selectDocumentVersion}
+              inWindow={
+                getNativeBridge().platform === "electron" &&
+                displayedHost.workspaceId !== "__global__"
+                  ? {
+                      windowId: shownDocumentWindow
+                        ? appWindows.get(shownDocumentWindow)
+                        : undefined,
+                      onOpen: (from) =>
+                        void openDocumentWindow(
+                          documentWindowOf(
+                            displayedHost.workspaceId,
+                            activeFilePreview.source
+                          ),
+                          from
+                        ),
+                    }
+                  : undefined
+              }
+              editConversationId={inspectedConversationId}
+              shareable={
+                inspectionConversation.state.conversation?.kind === "agent_task" &&
+                !inspectionConversation.state.unsupported?.includes("share")
+              }
+              writer={
+                activeFilePreview.writer
+                  ? { name: activeFilePreview.writer, active: documentWriterActive }
+                  : undefined
+              }
               panelId="chat-sidebar-file-panel"
               onAttachFiles={attachPreviewImage}
               onAttachConversationFiles={attachPreviewConversationFiles}
@@ -843,10 +986,75 @@ export function ChatSidebarSurface({
               </section>
             );
           })}
+          {stillfailPreviews.map((preview) => {
+            const shown =
+              activeSurface === "stillfail" &&
+              activeStillfailPreview?.id === preview.id;
+            return (
+              <section
+                key={preview.id}
+                role="tabpanel"
+                id={`chat-sidebar-stillfail-panel-${preview.id}`}
+                aria-label={preview.title ?? "still.fail"}
+                hidden={!shown}
+                style={{ display: shown ? "flex" : "none" }}
+                className="min-h-0 min-w-0 flex-1 flex-col"
+              >
+                <StillfailPreviewPanel
+                  active={open && shown}
+                  onTitleChange={(nextTitle) =>
+                    updateStillfailPreviewTitle(displayedHost, preview.id, nextTitle)
+                  }
+                  preview={preview}
+                />
+              </section>
+            );
+          })}
+          {mailPreviews.map((preview) => {
+            const shown =
+              activeSurface === "mail" && activeMailPreview?.id === preview.id;
+            return (
+              <section
+                key={preview.id}
+                role="tabpanel"
+                id={`chat-sidebar-mail-panel-${preview.id}`}
+                aria-label={preview.title ?? "Mail"}
+                hidden={!shown}
+                style={{ display: shown ? "flex" : "none" }}
+                className="min-h-0 min-w-0 flex-1 flex-col"
+              >
+                <MailPreviewPanel
+                  active={open && shown}
+                  onTitleChange={(nextTitle) =>
+                    updateMailPreviewTitle(displayedHost, preview.id, nextTitle)
+                  }
+                  preview={preview}
+                />
+              </section>
+            );
+          })}
           {activeSurface === "chat" && activeChat ? (
             <ChatSidebarConversation
               key={chatSidebarHostKey(activeChat)}
-              onOpenBrowser={(url) => openBrowser(displayedHost, { url })}
+              onOpenBrowser={(url) => {
+                if (isStillfailChatLink(url)) {
+                  openStillfailPreview(displayedHost, {
+                    id: url.trim(),
+                    href: url.trim(),
+                    workspaceId: displayedHost.workspaceId,
+                  });
+                  return;
+                }
+                if (isMailPreviewLink(url)) {
+                  openMailPreview(displayedHost, {
+                    id: url.trim(),
+                    href: url.trim(),
+                    workspaceId: displayedHost.workspaceId,
+                  });
+                  return;
+                }
+                openBrowser(displayedHost, { url });
+              }}
               onOpenConversationRef={openChildChat}
               onOpenTasksFilter={onOpenTasksFilter}
               surfaceActive={open}
@@ -1748,6 +1956,7 @@ function NativeBrowserViewport({
     }
     const openingIntent = requestedNavigationRef.current;
     lastSubmittedNavigationRevisionRef.current = openingIntent.navigationRevision;
+    const openingVisible = visibleRef.current;
     void getNativeBridge()
       .browserSidebar.open({
         ...placement,
@@ -1756,6 +1965,7 @@ function NativeBrowserViewport({
         sessionId,
         tabId,
         url: openingIntent.url,
+        visible: openingVisible,
       })
       .then(async (result) => {
         if (
@@ -1807,7 +2017,33 @@ function NativeBrowserViewport({
             openingCapacityEpoch
           );
           if (settled && result.available && result.active && visibleRef.current) {
-            syncBounds();
+            if (openingVisible) {
+              syncBounds();
+            } else {
+              // The overlay left while this view opened hidden. The show sent
+              // then found no opened view, so show it now.
+              const shownPlacement = readPlacement();
+              void getNativeBridge()
+                .browserSidebar.update({ ...shownPlacement, sessionId, visible: true })
+                .then((state) =>
+                  settleState(
+                    state,
+                    openingViewportGeneration,
+                    undefined,
+                    openingIntent
+                  )
+                )
+                .catch((error: unknown) => {
+                  if (
+                    !isCurrentViewportIntent(openingViewportGeneration, openingIntent)
+                  ) {
+                    return;
+                  }
+                  onUnavailable(
+                    error instanceof Error ? error.message : nativeBrowserUnavailable
+                  );
+                });
+            }
           }
         }
         const requestedIntent = requestedNavigationRef.current;
@@ -1831,6 +2067,7 @@ function NativeBrowserViewport({
               sessionId,
               tabId,
               url: requestedIntent.url,
+              visible: visibleRef.current,
             })
             .then((state) => {
               const settled = settleOpenState(
@@ -1879,6 +2116,7 @@ function NativeBrowserViewport({
     return true;
   }, [
     isCurrentViewportGeneration,
+    isCurrentViewportIntent,
     onUnavailable,
     readPlacement,
     sessionId,
@@ -2037,6 +2275,12 @@ function NativeBrowserViewport({
         } else {
           void hide();
         }
+      } else if (visible && !capacityBlockedRef.current) {
+        // The panel shows this page, but a full-window overlay holds it back
+        // (a dialog, the command palette, a menu). Open the view hidden now so
+        // the page loads: an agent's open-tab waits for that load, and the
+        // overlay can stay up longer than the agent waits.
+        openView();
       }
       return;
     }
@@ -2103,6 +2347,7 @@ function NativeBrowserViewport({
         sessionId,
         tabId,
         url,
+        visible: visibleRef.current,
       })
       .then((state) =>
         settleOpenState(
@@ -2352,7 +2597,21 @@ function BrowserPageIcon({ favicon }: { favicon: string | undefined }) {
 
 function SidebarTaskIcon({ target }: { target: ChatSidebarConversationTarget }) {
   const task = useTaskSummary(target.groupId, target.conversationId);
-  const bucket = taskStatusBucket(task?.status ?? "unknown");
+  const loop = task?.loop;
+  const bucket = taskStatusBucket(task?.status ?? "unknown", {
+    loopState: loop?.state,
+  });
+  const loopStanding =
+    loop?.state === "pending"
+      ? ({ kind: "pending" } as const)
+      : loop?.state === "active"
+        ? ({
+            kind: (() => {
+              const trigger = taskLoopTriggerType(loop.cadence);
+              return trigger === "unknown" ? "other" : trigger;
+            })(),
+          } as const)
+        : undefined;
   return (
     <span
       className="comma-inline-task-icon"
@@ -2360,11 +2619,12 @@ function SidebarTaskIcon({ target }: { target: ChatSidebarConversationTarget }) 
     >
       {taskStatusIcon(bucket, {
         spins: task !== undefined,
-        // A Task whose Loop stopped does not run, so its tab does not spin.
+        // A Task whose Loop stopped or stands waiting between runs does not spin.
         loopStop:
-          task?.loop?.state === "paused"
-            ? { failed: taskLoopStoppedOnError(task.loop) }
+          loop?.state === "paused"
+            ? { failed: taskLoopStoppedOnError(loop) }
             : undefined,
+        loopStanding,
       })}
     </span>
   );

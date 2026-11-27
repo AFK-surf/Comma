@@ -50,6 +50,7 @@ theorem field_ok_congr {s s' v : Term} {k : String} {j j' : List Term} (hm : s'.
 
 theorem contextPrefix_congr {s s' r : Term} {j k : List Term} (hm : s'.isMap = s.isMap)
     (hc : SameKey s s' "provider_compaction") (hs : SameKey s s' "summary")
+    (hv : SameKey s s' "summary_ifc_view_label")
     (h : Session.CompactionQuery.contextPrefix s' j = .ok (r, k)) :
     Session.CompactionQuery.contextPrefix s j = .ok (r, k) := by
   unfold Session.CompactionQuery.contextPrefix at h ⊢
@@ -63,6 +64,12 @@ theorem contextPrefix_congr {s s' r : Term} {j k : List Term} (hm : s'.isMap = s
     · simp only [t, ↓reduceIte] at h ⊢; exact h
     · simp only [t, Bool.false_eq_true, ↓reduceIte] at h ⊢
       obtain ⟨sm, j₂, hsm, h⟩ := Session.bind_ok_iff.mp h
-      exact Session.bind_ok_iff.mpr ⟨sm, j₂, field_ok_congr hm hs hsm, h⟩
+      refine Session.bind_ok_iff.mpr ⟨sm, j₂, field_ok_congr hm hs hsm, ?_⟩
+      by_cases visible : sm.truthy = true
+      · simp only [visible, ↓reduceIte] at h ⊢
+        rw [hv.2.1] at h
+        exact h
+      · simp only [visible, Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact h
 
 end VerifiedKernel.RequestPrefix

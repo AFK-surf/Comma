@@ -12,7 +12,7 @@ import { askOf, helperInput, makeScreenViews } from "../src/mesh/screens.ts";
 import { deviceServing } from "../src/mesh/comma.ts";
 import { DeviceMeshAdmissions, deviceMeshFacts } from "../src/mesh/device-mesh.ts";
 import { LOW_BOUNDS, START_RATE, START_UNACKED, hostNow } from "../src/mesh/screen-pace.ts";
-import { TIMING_COLUMNS } from "../src/mesh/screen-timing.ts";
+import { type LinkStats, TIMING_COLUMNS } from "../src/mesh/screen-timing.ts";
 import type { Access } from "../src/device/access.ts";
 import { ScreenHelpers, helperSources } from "../src/screens/helper.ts";
 import type { ScreenInput, ScreenSource } from "../src/screens/source.ts";
@@ -144,7 +144,7 @@ const ISSUED = 1_700_000_000;
 const EXPIRES = 4_102_444_800;
 
 /// A station serving Comma's mesh, and a member's client on it.
-async function setup(t: TestContext, options: { role?: string; first?: unknown | ((n: number) => unknown); helper?: boolean; sub?: string; exp?: number; credential?: string; ensure?: () => Promise<void>; window?: number; sources?: ScreenSource[]; via?: string; timing?: (fields: Record<string, unknown>) => void } = {}) {
+async function setup(t: TestContext, options: { role?: string; first?: unknown | ((n: number) => unknown); helper?: boolean; sub?: string; exp?: number; credential?: string; ensure?: () => Promise<void>; window?: number; sources?: ScreenSource[]; via?: string; link?: () => LinkStats | null; now?: () => number; timing?: (fields: Record<string, unknown>) => void } = {}) {
   const helper = fakeHelper(t, options.first);
   await helper.ready;
   const helpers = new ScreenHelpers();
@@ -178,6 +178,7 @@ async function setup(t: TestContext, options: { role?: string; first?: unknown |
     },
     timing: options.timing !== undefined,
     ...(options.timing ? { timingLine: options.timing } : {}),
+    ...(options.now ? { now: options.now } : {}),
   });
   // What an ordinary request would take: nothing here goes to the admin API but what is not a screen's.
   const admin = { handle: async () => ({ status: 200, headers: {}, body: Buffer.from("{}") }) };
@@ -191,7 +192,7 @@ async function setup(t: TestContext, options: { role?: string; first?: unknown |
     for (;;) {
       const connection = await station.accept();
       if (connection === null) return;
-      void serveMeshConnection(connection, deviceServing(members, admissions, undefined, () => options.via ?? null));
+      void serveMeshConnection(connection, deviceServing(members, admissions, undefined, () => options.via ?? null, options.link));
     }
   })();
   const credentialOf = (device: string, sub: string, ws = WS) => GRANT.credential({ typ: COMMA.credential.types[0] }, { iss: COMMA.credential.issuers[0], ws, device, sub, email: "m@example.com", name: "M", role: options.role ?? "member", sid: "sess_1", iat: ISSUED, exp: options.exp ?? ISSUED + 365 * 86400 * 100});
@@ -750,6 +751,68 @@ test("the pointer and how the pictures are made, as the helper says them", async
   await until(() => other.states().some((s) => s.video));
   assert.equal(other.states().find((s) => s.video).video.hardware, false);
   other.finish();
+});
+
+test("a view tells the client its path's round trip and packet loss as they change, and stops looking once it ends", async (t) => {
+  let now = 0;
+  const link: LinkStats = { via: "relay", relay: "https://relay.example/", rttMs: 57.4, sentDatagrams: 100, lostPackets: 0 };
+  const s = await setup(t, { link: () => ({ ...link }), now: () => now });
+  const view = await openView(s.client, s.peer);
+  await until(() => s.helper.got.requests.length === 1 && view.states().length === 1);
+  // The first state has the round trip the connection has; no loss before packets went.
+  assert.equal(view.states()[0].rtt, 57);
+  assert.equal(view.states()[0].loss, undefined);
+  /// The view's next look at its link, a second on.
+  const look = async (at: number, change: Partial<LinkStats>) => {
+    now = at;
+    Object.assign(link, change);
+    await until(() => s.deadlines.length === 1);
+    s.deadlines.shift()!();
+  };
+  await look(1000, { sentDatagrams: 150 });
+  await until(() => view.states().length === 2);
+  assert.deepEqual(view.states()[1], { rtt: 57, loss: 0 });
+  // Nothing changed, or the round trip by less than 2 ms: nothing said.
+  await look(2000, { sentDatagrams: 160 });
+  await look(3000, { rttMs: 58.2, sentDatagrams: 170 });
+  // 20 of the 70 packets since lost: said, with the round trip as it is now.
+  await look(4000, { sentDatagrams: 170, lostPackets: 20 });
+  await until(() => view.states().length === 3);
+  assert.deepEqual(view.states()[2], { rtt: 58, loss: 28.6 });
+  // A round trip into another band is said.
+  await look(5000, { rttMs: 420 });
+  await until(() => view.states().length === 4);
+  assert.deepEqual(view.states()[3], { rtt: 420, loss: 28.6 });
+
+  // Once it ended no look is left waiting.
+  view.finish();
+  await view.read;
+  assert.equal(view.states().at(-1).ended, "finished");
+  await until(() => s.helper.got.closed === 1);
+  assert.equal(s.deadlines.length, 0);
+  assert.equal(view.states().filter((state) => "rtt" in state).length, 4);
+});
+
+test("a preview is not told of its link", async (t) => {
+  let ended = () => {};
+  const source: ScreenSource = {
+    id: "camera",
+    kind: "desktop",
+    peek: true,
+    open: async () => ({
+      next: () => new Promise((resolve) => (ended = () => resolve(null))),
+      keyframe: () => {},
+      async input() {},
+      close: () => ended(),
+    }),
+  };
+  const s = await setup(t, { helper: false, sources: [source], link: () => ({ via: "direct", rttMs: 24, sentDatagrams: 10, lostPackets: 0 }) });
+  const view = await openView(s.client, s.peer, { codecs: ["h264"], peek: true }, "camera");
+  await until(() => view.states().length === 1);
+  assert.equal(view.states()[0].rtt, undefined);
+  assert.equal(s.deadlines.length, 0, "a preview does not look at its link");
+  view.finish();
+  await view.read;
 });
 
 test("a preview is asked of a screen that says it can be, and neither of the helper's does", async (t) => {

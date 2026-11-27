@@ -2,7 +2,7 @@ import { chatImagePreviewMaxBytes } from "@comma/chat-contract";
 import type { GroupImagePreviewRenderer } from "../chat/coordinator/hostContract.ts";
 
 /** The web core worker's counterpart of Electron Main's image preview (`Host.renderImagePreview`). Preserve source resolution
- * for the full-size viewer; only downscale when PNG exceeds the bridge limit. */
+ * for the full-size viewer; only re-encode, and downscale, a source over the bridge limit. */
 export const renderWebChatImagePreview: GroupImagePreviewRenderer = async ({
   bytes,
   mediaType,
@@ -14,13 +14,9 @@ export const renderWebChatImagePreview: GroupImagePreviewRenderer = async ({
     if (bitmap.width > 4096 || bitmap.height > 4096) {
       throw new Error("Workspace image exceeds preview dimensions.");
     }
-    // Like Main, preserve animation for formats the browser decodes directly.
-    if (
-      (mediaType === "image/gif" || mediaType === "image/webp") &&
-      bytes.byteLength <= chatImagePreviewMaxBytes
-    ) {
-      return bytes;
-    }
+    // Like Main, a source that fits ships as-is (GIF and WebP keep their
+    // animation); only one over the byte bound is re-encoded smaller.
+    if (bytes.byteLength <= chatImagePreviewMaxBytes) return bytes;
     for (const scale of [1, 0.75, 0.5, 0.35, 0.25]) {
       const canvas = new OffscreenCanvas(
         Math.max(1, Math.round(bitmap.width * scale)),

@@ -1,6 +1,7 @@
 import type {
   CodingRepo,
   ModelsValue,
+  PluginStation,
   ShownProfile,
   StationProfile,
   TaskRequestRun,
@@ -13,15 +14,18 @@ import { Button } from "@comma/ui/components/Button";
 import type { DropdownItem } from "@comma/ui/components/dropdown";
 import {
   BranchIcon,
+  ExclamationTriangleIcon,
   CloudIcon,
   CodeIcon,
   GithubBrandIcon,
   LoadingCircleIcon,
   MacbookIcon,
   PaperclipIcon,
+  XIcon,
 } from "@comma/ui/components/icons";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
 import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
+import { StillfailProviderLogo } from "@comma/ui/components/provider-brand-logos";
 import { toast } from "@comma/ui/components/toast";
 import { cx, isImeKeyEvent } from "@comma/ui/components/utils";
 import { useNavigate } from "@tanstack/react-router";
@@ -52,6 +56,12 @@ import {
 import { openTaskTarget } from "../openTaskTarget";
 import { useTaskAttachments } from "./useTaskAttachments";
 import { RequestPersonAvatar } from "../RequestPersonAvatar";
+import { useOptionalCommaClientSettings } from "../../commaClientSettings";
+import { startFailure } from "../../people/startFailure";
+import {
+  taskCreateBillingFailure,
+  taskRequestAcceptBillingFailure,
+} from "../../billing/billingError";
 
 /** A Task request the window shows as a card: its id, a title for the card, who sent it, and the words it opens with. */
 export interface TaskRequestCard {
@@ -80,6 +90,10 @@ const SANDBOX = "sandbox";
  */
 const PLAIN_SANDBOX = "plain_sandbox";
 const SANDBOX_RUNTIMES = ["codex", "claude"] as const;
+/** A cloud model's key in the model menu: Comma's built-in one, or a catalog model by its id. */
+const BUILTIN_MODEL_KEY = "builtin";
+const cloudModelKey = (model: { id: string | null }) =>
+  model.id === null ? BUILTIN_MODEL_KEY : `model:${model.id}`;
 type SandboxRuntime = (typeof SANDBOX_RUNTIMES)[number];
 type SandboxProfile = ShownProfile;
 type SandboxRun = {
@@ -93,14 +107,19 @@ const sandboxRunKey = (run: SandboxRun) =>
 
 /**
  * What a sandbox may run: for each usable Codex or Claude subscription, the runtime's default and the catalog models
- * that subscription serves. A runtime with no such subscription is offered on its default, on whatever account Salix
- * lends.
+ * that subscription serves. A runtime with no such subscription is offered on its default where the accounts Salix
+ * lends a sandbox run it (`task_place.sandbox_runtimes`): an Anthropic API key runs Claude, the platform's model
+ * Codex. A server that does not list them limits none.
  */
 function sandboxRunsOf(shown: ModelsValue | undefined): SandboxRun[] {
   const usable = (shown?.profiles ?? []).filter((p) => p.subscription && p.usable);
+  const lent = shown?.agents?.task_place.sandbox_runtimes;
   return SANDBOX_RUNTIMES.flatMap((runtime): SandboxRun[] => {
     const profiles = usable.filter((p) => p.source === runtime);
-    if (profiles.length === 0) return [{ runtime, profile: null, model: null }];
+    if (profiles.length === 0)
+      return lent && !lent.includes(runtime)
+        ? []
+        : [{ runtime, profile: null, model: null }];
     return profiles.flatMap((profile) => [
       { runtime, profile, model: null },
       ...(shown?.models ?? [])
@@ -113,7 +132,44 @@ function sandboxRunsOf(shown: ModelsValue | undefined): SandboxRun[] {
 const repoKey = (repo: CodingRepo) => `${repo.owner}/${repo.name}`;
 
 /** Whose models each runtime runs, for their mark. */
-const VENDORS: Record<string, string> = { claude: "anthropic", codex: "openai" };
+const VENDORS: Record<string, string> = {
+  claude: "anthropic",
+  codex: "openai",
+  agy: "google",
+  dsh: "deepseek",
+};
+
+/** Prefix for a Monoid (`stillfail`) workspace in the machine picker, distinct from Comma station ids. */
+const STILLFAIL_PREFIX = "stillfail:";
+const stillfailMachineKey = (deviceId: string) => `${STILLFAIL_PREFIX}${deviceId}`;
+const STILLFAIL_DEFAULT_MODEL = "workspace_default";
+type StillfailRun = { provider: string | null; model: string | null };
+const stillfailRunKey = (run: StillfailRun) =>
+  run.provider === null
+    ? STILLFAIL_DEFAULT_MODEL
+    : `${run.provider}\t${run.model ?? ""}`;
+
+function stillfailRunsOf(station: PluginStation | undefined): StillfailRun[] {
+  const runs: StillfailRun[] = [{ provider: null, model: null }];
+  if (!station?.taskModels) return runs;
+  for (const [provider, models] of Object.entries(station.taskModels)) {
+    if (models.length === 0) {
+      runs.push({ provider, model: null });
+    } else {
+      for (const model of models) runs.push({ provider, model });
+    }
+  }
+  return runs;
+}
+
+function stillfailRuntimeLabel(
+  provider: string,
+  messages: ReturnType<typeof useCommaMessages>
+): string {
+  if (provider === "codex") return messages.coding_runtime_codex();
+  if (provider === "claude") return messages.coding_runtime_claude();
+  return provider;
+}
 
 const runKey = (run: Run) => `${run.profile.id}\t${run.model ?? ""}`;
 
@@ -228,7 +284,7 @@ function PropertyChip({
 }
 
 /** What the window makes: a Task here, or a request to a workspace whose invite the person accepted. */
-type Kind = "task" | "request";
+type Kind = "task" | "request" | "together";
 
 /** Who a request goes to: the workspace's owner, by name. */
 const targetLabel = (target: TaskRequestTarget) =>
@@ -277,6 +333,7 @@ function newKey() {
 export function NewStationTaskDialog({
   onAccepted,
   onClose,
+  onCreated,
   request,
   requestTo,
   workspace,
@@ -284,10 +341,12 @@ export function NewStationTaskDialog({
   /** With a request: where its Task goes once made, instead of opening it among the Tasks. */
   onAccepted?: ((task: { id: string; group_id: string }) => void) | undefined;
   onClose: () => void;
+  /** Called instead of navigating away when the caller wants to stay in place (e.g. Task Feed). */
+  onCreated?: ((task: { conversationId: string; groupId: string }) => void) | undefined;
   /**
    * Someone's Task request to this workspace: the window shows as a card (not a dialog) with the request's words, and
-   * making the Task accepts the request (`taskRequests.accept`) with the place and model chosen here. It can also go to
-   * the Router or be declined. Files cannot be added to it.
+   * making the Task accepts the request (`taskRequests.accept`) with the place and model chosen here, or the request can
+   * be declined. Files cannot be added to it.
    */
   request?: TaskRequestCard | undefined;
   /**
@@ -304,6 +363,11 @@ export function NewStationTaskDialog({
   const stationsTopic = useTopic({ topic: "stations", workspace });
   const stations = stationsTopic.value?.stations ?? [];
   const shownModels = useTopic({ topic: "models", prefer: workspace }).value;
+  // Opening the window reads the models again, as the Model & API page does: the menu-bar item can hold this topic,
+  // which then does not start (and read) as the window opens, and what a sandbox can run follows from the accounts.
+  useEffect(() => {
+    void call("models.refresh", {}).catch(() => null);
+  }, [call]);
   const [chosen, setChosen] = useState<string>();
   const [profiles, setProfiles] = useState<StationProfile[] | null>(null);
   const [profilesFailed, setProfilesFailed] = useState<string>();
@@ -323,8 +387,50 @@ export function NewStationTaskDialog({
     request ? null : { topic: "taskRequests", prefer: workspace }
   );
   const targets = targetsTopic.value?.targets ?? null;
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
   const [kind, setKind] = useState<Kind>(requestTo ? "request" : "task");
   const asking = kind === "request";
+  // A Task together, started here as from People: with one of the person's People, its first message, no files.
+  const together = peopleEnabled && kind === "together";
+  const people = targetsTopic.value?.people ?? null;
+  const [personId, setPerson] = useState<string>();
+  const person = people?.find((p) => p.id === personId) ?? people?.[0];
+  const personItems: DropdownItem[] = (people ?? []).map((p) => ({
+    id: p.id,
+    label: p.name || p.email || messages.task_requests_unknown_person(),
+    leading: (
+      <RequestPersonAvatar
+        email={p.email}
+        name={p.name || p.email || messages.task_requests_unknown_person()}
+        source={p.avatar ?? undefined}
+      />
+    ),
+  }));
+  const startTogether = async () => {
+    if (!person || body === "" || pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      const { task } = await call("collaborations.start", {
+        workspace,
+        people: [person.id],
+        content: body,
+        key,
+      });
+      onClose();
+      void navigate(
+        openTaskTarget({
+          conversationId: task.id,
+          groupId: task.group_id,
+          workspaceId: workspace,
+        })
+      );
+    } catch (failure) {
+      setError(startFailure(failure, messages));
+    } finally {
+      setPending(false);
+    }
+  };
   // The recipient the person chose (or the window was opened for) stays chosen, also once it can take no more
   // requests (Send waits until they choose another); without one, the first who can take one is chosen.
   const [chosenId, setTarget] = useState(requestTo);
@@ -370,6 +476,31 @@ export function NewStationTaskDialog({
   const inSandbox = chosen === SANDBOX;
   const inPlainSandbox = chosen === PLAIN_SANDBOX;
   const inAnySandbox = inSandbox || inPlainSandbox;
+  const stillfailTopic = useTopic(
+    asking || together || request
+      ? null
+      : { topic: "pluginStations", workspace, plugin: "stillfail" }
+  );
+  const stillfailStations = stillfailTopic.value?.stations ?? [];
+  const inStillfail =
+    !asking &&
+    !together &&
+    !request &&
+    chosen !== undefined &&
+    chosen.startsWith(STILLFAIL_PREFIX);
+  const stillfailDeviceId = inStillfail
+    ? chosen.slice(STILLFAIL_PREFIX.length)
+    : undefined;
+  const chosenStillfail = inStillfail
+    ? stillfailStations.find((s) => s.id === stillfailDeviceId)
+    : undefined;
+  const stillfailRuns = useMemo(
+    () => stillfailRunsOf(chosenStillfail),
+    [chosenStillfail]
+  );
+  const [stillfailRun, setStillfailRun] = useState<string>();
+  const chosenStillfailRun =
+    stillfailRuns.find((r) => stillfailRunKey(r) === stillfailRun) ?? stillfailRuns[0];
   const sandboxes = shownModels?.agents?.task_place.sandboxes === true;
   // A coding session's repository (one page of the account's, recently pushed first), base branch and runtime.
   const [repos, setRepos] = useState<CodingRepo[] | null>(null);
@@ -381,6 +512,9 @@ export function NewStationTaskDialog({
   const [sandboxRun, setSandboxRun] = useState<string>();
   const chosenSandboxRun =
     sandboxRuns.find((r) => sandboxRunKey(r) === sandboxRun) ?? sandboxRuns[0];
+  // Nothing the workspace lends a sandbox runs Codex or Claude Code: it can start nothing, and says why.
+  const noSandboxRun =
+    inAnySandbox && !!shownModels?.catalog && sandboxRuns.length === 0;
   const sandboxProfileCount = new Set(
     sandboxRuns.flatMap((r) => (r.profile ? [r.profile.id] : []))
   ).size;
@@ -422,24 +556,34 @@ export function NewStationTaskDialog({
     };
   }, [call, chosenRepo, inSandbox, workspace]);
   const chosenBase = base ?? chosenRepo?.defaultBranch ?? branches?.[0];
-  // The cloud's models: those of the catalog a profile serves, the workspace's default Task model first.
+  // The cloud's models: the workspace's default Task model first, then those of the catalog a profile serves. Comma's
+  // built-in model (id null), where the workspace chose it, goes as no model, which the server runs with it.
   const cloudModels = useMemo(() => {
-    const served = (shownModels?.models ?? []).filter((m) => m.serving.length > 0);
+    const served: { id: string | null; name: string; vendor: string }[] = (
+      shownModels?.models ?? []
+    ).filter((m) => m.serving.length > 0);
     const selection = shownModels?.agents?.task_model.selection;
     const preferred = selection?.kind === "catalog" ? selection.model : undefined;
+    const builtin =
+      selection?.kind === "builtin"
+        ? [{ id: null, name: messages.station_task_builtin_model(), vendor: "comma" }]
+        : [];
     return [
+      ...builtin,
       ...served.filter((m) => m.id === preferred),
       ...served.filter((m) => m.id !== preferred),
     ];
-  }, [shownModels]);
+  }, [messages, shownModels]);
   const [cloudModel, setCloudModel] = useState<string>();
   const chosenCloudModel =
-    cloudModels.find((m) => m.id === cloudModel) ?? cloudModels[0];
+    cloudModels.find((m) => cloudModelKey(m) === cloudModel) ?? cloudModels[0];
   useEffect(() => {
     setProfiles(null);
     setProfilesFailed(undefined);
     setRun(undefined);
-    if (chosen === undefined || inCloud || inAnySandbox) return undefined;
+    setStillfailRun(undefined);
+    if (chosen === undefined || inCloud || inAnySandbox || inStillfail)
+      return undefined;
     let live = true;
     call("stations.profiles", { station: chosen, workspace }).then(
       (answer) => live && setProfiles(answer),
@@ -448,7 +592,7 @@ export function NewStationTaskDialog({
     return () => {
       live = false;
     };
-  }, [call, chosen, inCloud, inAnySandbox, workspace]);
+  }, [call, chosen, inCloud, inAnySandbox, inStillfail, workspace]);
 
   const runs = useMemo(() => runsOf(profiles ?? []), [profiles]);
   const profileCount = new Set(runs.map((r) => r.profile.id)).size;
@@ -483,6 +627,25 @@ export function NewStationTaskDialog({
         ? { subtitle: messages.station_task_offline() }
         : {}),
     })),
+    ...(!asking && !together && !request
+      ? stillfailStations.map((s) => {
+          const waiting = !s.connectedAt;
+          const offline = !waiting && !s.connected;
+          return {
+            id: stillfailMachineKey(s.id),
+            label: s.workspace || s.name || "Monoid",
+            leading: <StillfailProviderLogo className="size-4" />,
+            disabled: waiting || offline,
+            subtitle: waiting
+              ? messages.station_task_waiting()
+              : offline
+                ? messages.station_task_offline()
+                : s.station
+                  ? messages.plugins_station_via({ station: s.station })
+                  : "Monoid",
+          };
+        })
+      : []),
   ];
   const repoItems: DropdownItem[] = (repos ?? []).map((r) => ({
     id: repoKey(r),
@@ -517,27 +680,47 @@ export function NewStationTaskDialog({
       }))
     : inCloud
       ? cloudModels.map((m) => ({
-          id: m.id,
+          id: cloudModelKey(m),
           label: m.name,
           leading: <ModelVendorIcon vendor={m.vendor} />,
         }))
-      : runs.map((r) => ({
-          id: runKey(r),
-          label: r.model ?? messages.station_task_default_model(),
-          leading: (
-            <ModelVendorIcon
-              vendor={VENDORS[r.profile.runtimes[0] ?? ""] ?? "openai"}
-            />
-          ),
-          // The profile names whose account runs it, where the machine has more than one.
-          ...(profileCount > 1 ? { subtitle: r.profile.name } : {}),
-        }));
+      : inStillfail
+        ? stillfailRuns.map((r) =>
+            r.provider === null
+              ? {
+                  id: STILLFAIL_DEFAULT_MODEL,
+                  label: messages.station_task_workspace_default(),
+                  leading: <StillfailProviderLogo className="size-4" />,
+                }
+              : {
+                  id: stillfailRunKey(r),
+                  label: r.model ?? stillfailRuntimeLabel(r.provider, messages),
+                  leading: (
+                    <ModelVendorIcon vendor={VENDORS[r.provider] ?? r.provider} />
+                  ),
+                  subtitle:
+                    r.model !== null
+                      ? stillfailRuntimeLabel(r.provider, messages)
+                      : messages.station_task_default_model(),
+                }
+          )
+        : runs.map((r) => ({
+            id: runKey(r),
+            label: r.model ?? messages.station_task_default_model(),
+            leading: (
+              <ModelVendorIcon
+                vendor={VENDORS[r.profile.runtimes[0] ?? ""] ?? "openai"}
+              />
+            ),
+            // The profile names whose account runs it, where the machine has more than one.
+            ...(profileCount > 1 ? { subtitle: r.profile.name } : {}),
+          }));
   // The files go where the Task runs, each as it is added, as the composer's go up. A sandbox Task's (a coding
-  // session's or a plain one's) go up as the cloud's do, to the Router chat: its sandbox's station fetches those its
-  // first message names.
+  // session's or a plain one's) or a Monoid workspace Task's go up as the cloud's do, to the Router chat: its
+  // station fetches those its first message names.
   const files = useTaskAttachments({
     cloud: SALIX,
-    place: inAnySandbox ? SALIX : chosen,
+    place: inAnySandbox || inStillfail ? SALIX : chosen,
     workspace,
   });
   // While the Task is being made, its files are those it goes with: none is added or taken away.
@@ -606,15 +789,19 @@ export function NewStationTaskDialog({
   const fileRowRef = useRef<HTMLDivElement>(null);
 
   const body = text.trim();
+  // An edit, or another person, answers what went wrong: it goes.
+  useEffect(() => setError(undefined), [text, personId]);
   const ready =
     chosen !== undefined &&
     (inSandbox
-      ? !!chosenRepo
+      ? !!chosenRepo && !!chosenSandboxRun
       : inPlainSandbox
-        ? true
+        ? !!chosenSandboxRun
         : inCloud
           ? !!chosenCloudModel
-          : !!chosenRun);
+          : inStillfail
+            ? !!chosenStillfail && chosenStillfail.connected
+            : !!chosenRun);
   // A file still uploading goes with the Task, which waits for it; a failed one holds it back.
   const hasContent = body !== "" || files.attachments.length > 0;
   const send = async () => {
@@ -640,27 +827,34 @@ export function NewStationTaskDialog({
   };
   const create = async () => {
     if (asking) return send();
+    if (together) return startTogether();
     if (!ready || !hasContent || files.anyFailed || pending) return;
     setPending(true);
     setError(undefined);
     try {
       if (request) {
         const requestRun: TaskRequestRun | undefined = inSandbox
-          ? chosenRepo && {
+          ? chosenRepo &&
+            chosenSandboxRun && {
               kind: "sandbox",
               repo: {
                 owner: chosenRepo.owner,
                 name: chosenRepo.name,
                 ...(chosenBase ? { baseRef: chosenBase } : {}),
               },
-              provider: chosenSandboxRun?.runtime ?? "codex",
-              ...(chosenSandboxRun?.model ? { model: chosenSandboxRun.model } : {}),
-              ...(chosenSandboxRun?.profile
+              provider: chosenSandboxRun.runtime,
+              ...(chosenSandboxRun.model ? { model: chosenSandboxRun.model } : {}),
+              ...(chosenSandboxRun.profile
                 ? { accountId: chosenSandboxRun.profile.id }
                 : {}),
             }
           : inCloud
-            ? chosenCloudModel && { kind: "cloud", model: chosenCloudModel.id }
+            ? chosenCloudModel
+              ? {
+                  kind: "cloud",
+                  ...(chosenCloudModel.id ? { model: chosenCloudModel.id } : {}),
+                }
+              : undefined
             : chosenRun && chosen !== undefined
               ? {
                   kind: "station",
@@ -673,7 +867,6 @@ export function NewStationTaskDialog({
         const accepted = await call("taskRequests.accept", {
           workspace,
           request: request.id,
-          to: "task",
           content: body,
           run: requestRun,
         });
@@ -694,7 +887,7 @@ export function NewStationTaskDialog({
       }
       const uploads = await files.uploads();
       if (inAnySandbox) {
-        if (inSandbox && !chosenRepo) return;
+        if (!chosenSandboxRun || (inSandbox && !chosenRepo)) return;
         const made = await call("coding.start", {
           workspaceId: workspace,
           key,
@@ -713,14 +906,18 @@ export function NewStationTaskDialog({
               }
             : {}),
           model: {
-            provider: chosenSandboxRun?.runtime ?? "codex",
-            ...(chosenSandboxRun?.model ? { model: chosenSandboxRun.model } : {}),
+            provider: chosenSandboxRun.runtime,
+            ...(chosenSandboxRun.model ? { model: chosenSandboxRun.model } : {}),
           },
-          ...(chosenSandboxRun?.profile
+          ...(chosenSandboxRun.profile
             ? { accountId: chosenSandboxRun.profile.id }
             : {}),
         });
         onClose();
+        if (onCreated) {
+          onCreated({ conversationId: made.taskId, groupId: made.groupId });
+          return;
+        }
         await navigate(
           openTaskTarget({
             conversationId: made.taskId,
@@ -734,7 +931,44 @@ export function NewStationTaskDialog({
         const made = await call("chat.startTask", {
           workspaceId: workspace,
           key,
-          model: { id: chosenCloudModel!.id, name: chosenCloudModel!.name },
+          ...(chosenCloudModel!.id === null
+            ? {}
+            : { model: { id: chosenCloudModel!.id, name: chosenCloudModel!.name } }),
+          text: body,
+          ...(uploads.length > 0
+            ? { uploads: uploads.map(({ name, path }) => ({ name, path })) }
+            : {}),
+        });
+        onClose();
+        if (onCreated) {
+          onCreated({ conversationId: made.conversationId, groupId: made.groupId });
+          return;
+        }
+        await navigate(
+          openTaskTarget({
+            conversationId: made.conversationId,
+            groupId: made.groupId,
+            workspaceId: workspace,
+          })
+        );
+        return;
+      }
+      if (inStillfail) {
+        if (!chosenStillfail) return;
+        const made = await call("chat.startTask", {
+          workspaceId: workspace,
+          key,
+          stillfail: {
+            deviceId: chosenStillfail.id,
+            ...(chosenStillfailRun?.provider
+              ? {
+                  provider: chosenStillfailRun.provider,
+                  ...(chosenStillfailRun.model
+                    ? { model: chosenStillfailRun.model }
+                    : {}),
+                }
+              : {}),
+          },
           text: body,
           ...(uploads.length > 0
             ? { uploads: uploads.map(({ name, path }) => ({ name, path })) }
@@ -762,6 +996,10 @@ export function NewStationTaskDialog({
         ...(uploads.length > 0 ? { attachments: uploads } : {}),
       });
       onClose();
+      if (onCreated) {
+        onCreated({ conversationId: made.conversationId, groupId: made.groupId });
+        return;
+      }
       await navigate(
         openTaskTarget({
           conversationId: made.conversationId,
@@ -771,17 +1009,28 @@ export function NewStationTaskDialog({
       );
     } catch (failure) {
       const code = (failure as { code?: string }).code;
+      const billingError = request
+        ? taskRequestAcceptBillingFailure(failure, messages)
+        : taskCreateBillingFailure(
+            failure,
+            messages,
+            inAnySandbox ? "sandbox" : "task"
+          );
       // A Task refused is not made: another try is another Task. Any other failure may have made it, so another try
       // keeps the key and gets that Task.
-      if (code === "refused") setKey(newKey());
+      if (billingError || code === "refused" || code === "machine_offline")
+        setKey(newKey());
       setError(
-        code === "machine_offline"
-          ? messages.station_task_machine_offline()
-          : code === "github_not_connected"
-            ? messages.coding_github_not_connected()
-            : code === "task_unavailable"
-              ? messages.station_task_create_failed()
-              : (failure as Error).message || messages.station_task_create_failed()
+        billingError ??
+          (code === "machine_offline"
+            ? messages.station_task_machine_offline()
+            : code === "github_not_connected"
+              ? messages.coding_github_not_connected()
+              : code === "rate_limited"
+                ? messages.station_task_create_rate_limited()
+                : code === "refused"
+                  ? (failure as Error).message || messages.station_task_create_failed()
+                  : messages.station_task_create_failed())
       );
     } finally {
       setPending(false);
@@ -789,7 +1038,16 @@ export function NewStationTaskDialog({
   };
 
   // Where it runs leads the title, as the team leads Linear's New issue; a request's, whom it goes to.
-  const titleLeading = asking ? (
+  const titleLeading = together ? (
+    <PropertyChip
+      disabled={pending || personItems.length === 0}
+      items={personItems}
+      label={messages.people_add_people()}
+      loading={people === null}
+      onChange={setPerson}
+      value={person?.id}
+    />
+  ) : asking ? (
     <PropertyChip
       disabled={pending || targetItems.length === 0}
       items={targetItems}
@@ -810,16 +1068,30 @@ export function NewStationTaskDialog({
   );
   // Where the person may send requests, the title is a chip as the place's is: it switches what the window makes.
   const title =
-    !request && (asking || (targets?.length ?? 0) > 0) ? (
+    !request &&
+    (asking ||
+      together ||
+      (targets?.length ?? 0) > 0 ||
+      (peopleEnabled && (people?.length ?? 0) > 0)) ? (
       <PropertyChip
         disabled={pending}
         items={[
           { id: "task", label: messages.station_task_new() },
           { id: "request", label: messages.station_task_new_request() },
+          ...(peopleEnabled
+            ? [{ id: "together", label: messages.people_task_together() }]
+            : []),
         ]}
         label={messages.station_task_kind()}
         onChange={(next) => {
-          if (next !== "task" && next !== "request") return;
+          if (next !== "task" && next !== "request" && next !== "together") return;
+          // From a request to its person: the Task together is with them.
+          if (
+            next === "together" &&
+            kind === "request" &&
+            chosenTarget?.workspace.owner
+          )
+            setPerson(chosenTarget.workspace.owner.id);
           setKind(next);
           setError(undefined);
         }}
@@ -828,20 +1100,11 @@ export function NewStationTaskDialog({
     ) : (
       messages.station_task_new()
     );
-  const answer = (to: "router" | "decline") => {
+  const decline = () => {
     if (!request || pending) return;
     setPending(true);
     setError(undefined);
-    void (
-      to === "router"
-        ? call("taskRequests.accept", {
-            workspace,
-            request: request.id,
-            to: "router",
-            content: body,
-          })
-        : call("taskRequests.decline", { workspace, request: request.id })
-    ).then(
+    void call("taskRequests.decline", { workspace, request: request.id }).then(
       () => {
         setPending(false);
         onClose();
@@ -862,7 +1125,6 @@ export function NewStationTaskDialog({
         {...shellDropProps}
       >
         {intake.fileInput}
-        {request?.sender ?? null}
         <textarea
           aria-label={messages.station_task_first_message()}
           ref={messageRef}
@@ -880,7 +1142,7 @@ export function NewStationTaskDialog({
           placeholder={messages.station_task_first_message()}
           value={text}
         />
-        {request || asking ? null : (
+        {request || asking || together ? null : (
           <AiInputAttachmentRow
             attachments={fileTiles}
             onRemove={(attachment) => removeFile(attachment.id)}
@@ -888,14 +1150,51 @@ export function NewStationTaskDialog({
             rowRef={fileRowRef}
           />
         )}
-        {error || (!asking && (profilesFailed || (inSandbox && reposFailed))) ? (
+        {error ? (
+          // What went wrong, in words, until the person closes it or edits (as People says it).
+          <div
+            className="flex w-full items-center gap-xs rounded-lg bg-utility-error-50 py-xs ps-md pe-xs text-left text-xs text-error-primary"
+            role="alert"
+          >
+            <ExclamationTriangleIcon aria-hidden className="size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">{error}</span>
+            <Button
+              aria-label={messages.people_close()}
+              className="text-error-primary"
+              hierarchy="tertiary-gray"
+              iconLeading={<XIcon />}
+              iconOnly
+              onPress={() => setError(undefined)}
+              size="xs"
+            />
+          </div>
+        ) : !asking &&
+          !together &&
+          (noSandboxRun || profilesFailed || (inSandbox && reposFailed)) ? (
           <p className="m-0 text-sm text-error-primary" role="alert">
-            {error ?? (inSandbox ? reposFailed : profilesFailed)}
+            {noSandboxRun
+              ? messages.coding_no_sandbox_runtime()
+              : inSandbox
+                ? reposFailed
+                : profilesFailed}
           </p>
         ) : null}
         {/* Its files and what runs it, beside the button that makes it. A request has neither: its owner picks what runs it. */}
         <div className="flex items-center gap-md">
-          {asking ? (
+          {together ? (
+            <Button
+              className="ml-auto"
+              hierarchy="primary"
+              {...(pending
+                ? { iconLeading: <LoadingCircleIcon className="animate-spin" /> }
+                : {})}
+              isDisabled={pending || !person || body === ""}
+              onPress={() => void startTogether()}
+              size="xs"
+            >
+              {messages.station_task_together_start()}
+            </Button>
+          ) : asking ? (
             <Button
               className="ml-auto"
               hierarchy="primary"
@@ -957,14 +1256,20 @@ export function NewStationTaskDialog({
                 items={runItems}
                 label={messages.station_task_model()}
                 loading={
-                  chosen === undefined
+                  chosen === undefined || inStillfail
                     ? false
                     : inAnySandbox || inCloud
                       ? !shownModels?.catalog && !shownModels?.error
                       : profiles === null && !profilesFailed
                 }
                 onChange={
-                  inAnySandbox ? setSandboxRun : inCloud ? setCloudModel : setRun
+                  inAnySandbox
+                    ? setSandboxRun
+                    : inCloud
+                      ? setCloudModel
+                      : inStillfail
+                        ? setStillfailRun
+                        : setRun
                 }
                 raised
                 value={
@@ -973,10 +1278,14 @@ export function NewStationTaskDialog({
                       ? sandboxRunKey(chosenSandboxRun)
                       : undefined
                     : inCloud
-                      ? chosenCloudModel?.id
-                      : chosenRun
-                        ? runKey(chosenRun)
-                        : undefined
+                      ? chosenCloudModel && cloudModelKey(chosenCloudModel)
+                      : inStillfail
+                        ? chosenStillfailRun
+                          ? stillfailRunKey(chosenStillfailRun)
+                          : undefined
+                        : chosenRun
+                          ? runKey(chosenRun)
+                          : undefined
                 }
               />
               {request ? (
@@ -986,18 +1295,10 @@ export function NewStationTaskDialog({
                     className="ml-auto"
                     hierarchy="tertiary-gray"
                     isDisabled={pending}
-                    onPress={() => answer("decline")}
+                    onPress={decline}
                     size="xs"
                   >
                     {messages.task_requests_decline()}
-                  </Button>
-                  <Button
-                    hierarchy="secondary-gray"
-                    isDisabled={pending || !hasContent}
-                    onPress={() => answer("router")}
-                    size="xs"
-                  >
-                    {messages.task_requests_to_router()}
                   </Button>
                 </>
               ) : null}
@@ -1040,6 +1341,7 @@ export function NewStationTaskDialog({
         <DialogPanel
           title={request.title}
           titleLeading={titleLeading}
+          titleTrailing={request.sender}
           variant="compose"
         >
           {form}

@@ -127,6 +127,7 @@ class TaskTheme(context: Context) {
 fun statusIconRes(bucket: TaskStatusBucket?): Int = when (bucket) {
     null -> R.drawable.ic_task_neutral
     TaskStatusBucket.IN_PROGRESS -> R.drawable.ic_task_in_progress
+    TaskStatusBucket.LOOPS -> R.drawable.ic_task_loops
     TaskStatusBucket.NEEDS_REVIEW -> R.drawable.ic_task_needs_review
     TaskStatusBucket.DONE -> R.drawable.ic_task_done
     TaskStatusBucket.CANCELLED -> R.drawable.ic_task_cancelled
@@ -139,6 +140,7 @@ fun statusTintRes(bucket: TaskStatusBucket): Int = when (bucket) {
     TaskStatusBucket.DONE -> R.color.token_fg_success
     TaskStatusBucket.CANCELLED -> R.color.token_fg_error
     TaskStatusBucket.IN_PROGRESS,
+    TaskStatusBucket.LOOPS,
     TaskStatusBucket.ARCHIVED,
     -> R.color.token_fg_quaternary
 }
@@ -146,6 +148,7 @@ fun statusTintRes(bucket: TaskStatusBucket): Int = when (bucket) {
 @StringRes
 fun statusLabelRes(bucket: TaskStatusBucket): Int = when (bucket) {
     TaskStatusBucket.IN_PROGRESS -> R.string.task_status_in_progress
+    TaskStatusBucket.LOOPS -> R.string.task_status_loops
     TaskStatusBucket.NEEDS_REVIEW -> R.string.task_status_needs_review
     TaskStatusBucket.DONE -> R.string.task_status_done
     TaskStatusBucket.CANCELLED -> R.string.task_status_cancelled

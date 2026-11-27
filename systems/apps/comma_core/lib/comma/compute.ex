@@ -924,7 +924,7 @@ defmodule Comma.Compute do
   defp workload_problem(%{last_error: %{"kind" => kind} = error})
        when kind in ["error", "provider_error", "unknown", "retryable", "action_required"],
        do: %{
-         "code" => problem_code(error_name(error)),
+         "code" => problem_code(error),
          "retryable" => kind != "action_required"
        }
 
@@ -940,6 +940,15 @@ defmodule Comma.Compute do
   end
 
   defp error_name(_error), do: nil
+
+  defp problem_code(%{"stage" => "image_import"} = error) do
+    case problem_code(error_name(error)) do
+      code when code in ~w(capacity_unavailable host_unreachable) -> code
+      _ -> "image_unavailable"
+    end
+  end
+
+  defp problem_code(%{} = error), do: problem_code(error_name(error))
 
   defp problem_code(name)
        when name in ~w(resource_capacity_exhausted resource_exhausted capacity_wait_expired capacity_unavailable),

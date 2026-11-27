@@ -36,16 +36,16 @@ Pages24/100/50, explicit more. Draft response/source/connection checks. Cancel r
 Retry IDs/canonical Messages reconcile. Attachments8×10MB/Message, authorized downloads, iOS isolated Dynamic UI, Watch widget summaries.
 Watch revocable bearer: Home/Tasks/messages/review. Phone revocation revokes Watch. Errors preserve work.
 
-Ordinary local intent: new accounts off. Intent/OS permission/acknowledgment differ.
-Unknown intent: authenticated `DELETE /v1/comma/notifications/devices`, current Session device slot only.
-Failed unsubscribe stays unknown/last acknowledged. Authority fences account/Workspace changes. Scope: Workspace default Group, old scope possible offline.
-Router/provider assistant replies: generic en/zh-Hans banners, absolute unread badges. Inbound/tool/hidden Messages do not count.
-Workspace read position/counts. Enrollment skips history. Reconcile100 Messages/turn, queued continuation.
-`GET .../router-notifications`: unread state. `POST .../router-notifications/read`: canonical Message ID ACK.
-Active unobscured Home acknowledges visible committed Messages. Task sheets/background do not. Foreground/session synchronize badges.
-Review/escalation/completion/failure alerts omit title/content/Workspace/identity. Opt-out preserves Activity titles.
+Local intent: new accounts off; intent/OS permission/ACK differ.
+Unknown intent: auth `DELETE /v1/comma/notifications/devices`, current Session slot only.
+Failed unsubscribe stays unknown/last ACK. Authority fences account/Workspace changes. Scope: default Group, old scope possible offline.
+Router/provider replies: <=140-char preview (en/zh-Hans fallback), `router:<workspace_id>` `thread-id`, unread badges. Registering a `device` token retires older Sessions' `(env, bundle, token)` rows. Inbound/tool/hidden excluded.
+Workspace read position/counts; enrollment skips history; reconcile 100/turn + queued continuation.
+`GET .../router-notifications`: unread state. `POST .../router-notifications/read`: Message ID ACK.
+Active unobscured Home ACKs visible committed Messages; Task sheets/background do not. Foreground/session sync badges.
+Task alerts omit title/content/Workspace/identity. Opt-out preserves Activity titles.
 
-APNs reauthorizes Session/Group owner/facts. One subscription/Group. Recovery/fan-out100/page, four workers, missed starts/updates/badges.
+APNs reauthorizes Session/Group owner/facts. Oban leader: one subscription/Group. Recovery/fan-out100/page, 4 workers, missed starts/updates/badges.
 Rotation fences late deletes. Revoked targets expire. Bundle/env/locale: [schema](../systems/config/config.example.json).
 Secret `config.json`: `comma.apns.{sandbox,production}`, no profile fallback. Activity topic: main ID + `.push-type.liveactivity`.
 Legacy env requires absent `comma.apns`, dual-env key/verified topic. Nullable rows remain. Only operator-trusted `legacy_bundle_id`. Locale defaults English.

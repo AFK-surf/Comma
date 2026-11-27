@@ -300,14 +300,16 @@ defmodule SalixWeb.L4ES do
   L4ES with Comma then finds the workspace and its sandboxes' terminals.
   """
   def set_members(workspace_id, members) when is_list(members) do
-    key = {:members, workspace_id, :erlang.phash2(Enum.sort_by(members, & &1.subject))}
+    members = Enum.sort_by(members, & &1.subject)
+    key = {:members, workspace_id, :current}
 
-    with :error <- Recent.recall(key),
-         :ok <- sync_members(workspace_id, members) do
-      Recent.remember(key, true)
-    else
-      {:ok, true} -> :ok
-      error -> error
+    case Recent.recall(key) do
+      {:ok, ^members} ->
+        :ok
+
+      _ ->
+        with :ok <- sync_members(workspace_id, members),
+             do: Recent.remember(key, members)
     end
   end
 

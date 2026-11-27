@@ -83,6 +83,32 @@ defmodule SalixWeb.StationPlace do
   end
 
   @doc """
+  Tells the station of a coding Task's sandbox, on its run, that `owner` may
+  see its screen now: the Group's facts with `owner` in the Device owner's
+  place, as `device_mesh/1` reads them. Nothing is kept for it here and no
+  check follows: the station admits `owner` for a few minutes from each word
+  (`systems/station/src/mesh/device-mesh.ts` `STALE_MS`), so a client that
+  views asks again meanwhile, and a role or a credential taken back is not
+  said again. The word's number is the time it was read at, so a later word
+  is the higher one. `{:error, :forbidden}` when `owner` may admit no one,
+  `{:error, :station_unreachable}` when the station was not told.
+  """
+  def show_screen(%{tenant_id: tenant, group_id: group, connector_run_id: run}, owner) do
+    case device_mesh(%{tenant_id: tenant, group_id: group, owner_user_id: owner}) do
+      nil ->
+        {:error, :forbidden}
+
+      mesh ->
+        seq = DateTime.to_unix(SystemsClock.utc_now(), :millisecond)
+
+        case tell_device_mesh(%{connector_run_id: run}, seq, mesh) do
+          :ok -> :ok
+          :error -> {:error, :station_unreachable}
+        end
+    end
+  end
+
+  @doc """
   Tells the run's station what changed (a revocation, the keys), or that it
   admits no one. `:error` when it could not be told.
   """

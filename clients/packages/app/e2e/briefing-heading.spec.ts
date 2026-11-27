@@ -2,8 +2,8 @@ import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { chatSmokeWorkspace, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
-// The paragraph gap and focus treatment are layout concerns, pinned in a real
-// browser against a fixed UTC clock. The greeting itself is covered by the
+// The rail's focus treatment is a layout concern, pinned in a real browser
+// against a fixed UTC clock. The greeting itself is covered by the
 // RecommendationRail tests.
 test.use({ timezoneId: "UTC" });
 
@@ -17,8 +17,6 @@ const sources = [
     label: "Gmail",
   },
 ];
-
-const modelOpener = "Here’s your clearest path through today";
 
 function envelope() {
   return {
@@ -56,12 +54,7 @@ function envelope() {
       protocolVersion: 1,
       sourceRevision: 1,
       templateCatalogVersion: 1,
-      summary: [
-        // An authored title line, then two blocks. Paragraph breaks are blank
-        // lines inside the markdown text — the catalog's authoring contract.
-        { kind: "markdown", text: `${modelOpener}\n\nA review is waiting today.` },
-        { kind: "markdown", text: "\n\nThere are also two follow-ups." },
-      ],
+      summary: [{ kind: "markdown", text: "Good morning.\n\nA review is waiting." }],
       warnings: [],
     },
     state: "fresh",
@@ -87,35 +80,6 @@ async function openBriefing(page: import("@playwright/test").Page, baseUrl: stri
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 }
-
-test("adjacent briefing paragraphs render as separated blocks", async ({ page }) => {
-  const stub = await startChatSmokeStub();
-
-  try {
-    await page.clock.setFixedTime(new Date("2026-08-27T09:15:00Z"));
-    await openBriefing(page, stub.baseUrl);
-
-    const body = page.locator(".comma-recommendations-summary-body");
-    await expect(body).toBeVisible();
-
-    // Two authored blocks, not one run-together paragraph.
-    // Assert per paragraph: a container-level text check concatenates them and
-    // would pass either way.
-    const paragraphs = body.locator(".markdown-stream p");
-    await expect(paragraphs).toHaveCount(2);
-    await expect(paragraphs.nth(0)).toHaveText("A review is waiting today.");
-    await expect(paragraphs.nth(1)).toHaveText("There are also two follow-ups.");
-
-    // The gap lives on the block wrapper, and the first block stays flush to
-    // the title.
-    const slots = body.locator(".markdown-stream .node-slot");
-    await expect(slots.first()).toHaveCSS("margin-top", "0px");
-    await expect(slots.nth(1)).toHaveCSS("margin-top", "8px");
-    await expect(body).toHaveCSS("text-wrap", "pretty");
-  } finally {
-    await stub.close();
-  }
-});
 
 test("the briefing scroll area takes keyboard focus without the browser's focus ring", async ({
   page,

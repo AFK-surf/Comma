@@ -585,3 +585,45 @@ test("Salix's Tasks: task.invite, task.put and task.status come in, task.post an
       yield* c.close();
     }),
   ));
+
+// A Task's sandbox that shows its screen (`taskScreen`) says whether there is something on it: Salix hears it as a
+// Session's browser opens and as it goes, on the connection it has, and so shows the Task's owner the screen only then.
+test("a Task's sandbox tells Salix when a Session's browser opens on its display and when it goes", { skip: process.platform !== "linux" }, () =>
+  run(
+    Effect.gen(function* () {
+      let open = false;
+      let changed: () => void = () => {};
+      const tasks = {
+        handle: async () => ({}),
+        models: () => ({}),
+        browsing: () => open,
+        listen: (said: () => void) => ((changed = said), () => {}),
+        attach: () => {},
+      };
+      const relay = { endpointId: "ab".repeat(32), sign: () => Buffer.alloc(64), incoming: () => {}, attach: () => {}, taskScreen: true };
+      const salix = yield* memorySockets();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "t", name: "sandbox", root: tempDir(), testClock: true }, salix.layer, { tasks, relay });
+      const session = yield* Effect.forkChild(c.runRemoteOnce);
+      const peer = yield* Queue.take(salix.accepted);
+      const first = yield* peer.receive;
+      assert.deepEqual([first.capabilities.screen_view, "screen_active" in first.capabilities], [true, false]);
+      yield* peer.send({ type: "connected", connector_run_id: "run-1" });
+      yield* settle;
+      const metadata = function* () {
+        let message = yield* peer.receive;
+        while (message.type !== "metadata") message = yield* peer.receive;
+        return message;
+      };
+      open = true;
+      changed();
+      assert.equal((yield* metadata()).capabilities.screen_active, true);
+      // Said again with nothing changed (the station's profiles were edited): nothing is sent for it.
+      changed();
+      open = false;
+      changed();
+      assert.equal("screen_active" in (yield* metadata()).capabilities, false);
+      yield* peer.close;
+      yield* Fiber.await(session);
+      yield* c.close();
+    }),
+  ));

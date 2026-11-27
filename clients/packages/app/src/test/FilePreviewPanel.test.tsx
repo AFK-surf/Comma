@@ -179,16 +179,102 @@ describe("selected file preview ownership", () => {
     ).toBeVisible();
   });
 
-  it("reads nothing of a file whose type it cannot show", async () => {
+  it("shows a source code file as numbered source, whatever type it was stored as", async () => {
+    const core = coreWith(() => text("import bpy", "application/octet-stream"));
+    render(
+      panel(core, {
+        ...file,
+        fileName: "eva_body2.py",
+        mimeType: "application/octet-stream",
+      })
+    );
+    // Colors split a line into tokens, so the line is read as a whole.
+    const line = await screen.findByRole("listitem");
+    expect(line.querySelector('[data-line="1"]')).toBeInTheDocument();
+    expect(line).toHaveTextContent(/^import bpy$/);
+  });
+
+  it("shows TypeScript stored as an MPEG transport stream as source, not video", async () => {
+    const core = coreWith(() => text("export {};", "video/mp2t"));
+    render(panel(core, { ...file, fileName: "index.ts", mimeType: "video/mp2t" }));
+    const line = await screen.findByRole("listitem");
+    expect(line).toHaveTextContent(/^export \{\};$/);
+  });
+
+  it("shows a text file with no ending as plain text, not numbered source", async () => {
+    const core = coreWith(() => text("Read me first."));
+    const view = render(
+      panel(core, { ...file, fileName: "README", mimeType: "text/plain" })
+    );
+    expect(await screen.findByText("Read me first.")).toBeVisible();
+    expect(
+      view.container.querySelector('[data-slot="skill-file-source"]')
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not take a binary file with no ending for source named like a language", async () => {
     const read = vi.fn(() => text("never read"));
     const core = coreWith(read);
     render(
-      panel(core, { ...file, fileName: "archive.zip", mimeType: "application/zip" })
+      panel(core, { ...file, fileName: "go", mimeType: "application/octet-stream" })
     );
     expect(
       await screen.findByText("A preview is not available for this file type.")
     ).toBeVisible();
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it("reads nothing of a file whose type it cannot show", async () => {
+    const read = vi.fn(() => text("never read"));
+    const core = coreWith(read);
+    render(
+      panel(core, {
+        ...file,
+        fileName: "installer.dmg",
+        mimeType: "application/octet-stream",
+      })
+    );
+    expect(
+      await screen.findByText("A preview is not available for this file type.")
+    ).toBeVisible();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("renders CSV attachments as a structured table with headers and clickable links", async () => {
+    const core = coreWith(() =>
+      text(
+        'identifier,title,url\nBRI-1523,"首句延迟, 排查",https://linear.app/surf-cue/issue/BRI-1523\n',
+        "text/csv"
+      )
+    );
+    render(
+      panel(core, {
+        ...file,
+        fileName: "issues.csv",
+        mimeType: "text/csv",
+      })
+    );
+    const preview = await screen.findByTestId("file-preview-csv");
+    expect(preview.querySelector("thead")?.textContent).toContain("identifier");
+    expect(preview.querySelector("tbody")?.textContent).toContain("首句延迟, 排查");
+    const link = preview.querySelector("a");
+    expect(link).toHaveAttribute("href", "https://linear.app/surf-cue/issue/BRI-1523");
+  });
+
+  it("renders .csv attachments tagged as application/vnd.ms-excel (Windows Excel) as CSV", async () => {
+    const core = coreWith(() =>
+      text("region,revenue\nAPAC,1200\n", "application/vnd.ms-excel")
+    );
+    render(
+      panel(core, {
+        ...file,
+        fileName: "sales.csv",
+        mimeType: "application/vnd.ms-excel",
+      })
+    );
+    const preview = await screen.findByTestId("file-preview-csv");
+    expect(preview.querySelector("thead")?.textContent).toContain("region");
+    expect(preview.querySelector("tbody")?.textContent).toContain("APAC");
   });
 
   it("retires a displayed object URL when the Session is revoked", async () => {

@@ -1,6 +1,6 @@
 module github.com/comma/salix-account-proxy
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/cloudflare/circl v1.6.5

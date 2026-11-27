@@ -135,6 +135,58 @@ defmodule Salix.Bindings.MCPCredentials do
     Salix.Control.RemoteMCPOAuth.mark_binding_reauthorization_required(binding, reason)
   end
 
+  # Only when the call carried the refs' tokens: a binding whose own remote
+  # OAuth grant resolves sends that instead (`SalixMCP.Config`). A connection
+  # with a refresh token is left to its next refresh: a 401 may only mean its
+  # access token expired.
+  @impl true
+  def oauth_refs_refused(%{"oauth_binding_refs" => refs} = mcp_binding) when is_map(refs) do
+    case Salix.Control.RemoteMCPOAuth.resolve_headers(mcp_binding) do
+      {:ok, headers} when map_size(headers) > 0 -> :ok
+      _ -> mark_refs_refused(mcp_binding, refs)
+    end
+  end
+
+  def oauth_refs_refused(_binding), do: :ok
+
+  defp mark_refs_refused(mcp_binding, refs) do
+    group_id = to_string(mcp_binding["group_id"] || "")
+    tenant_id = to_string(mcp_binding["tenant_id"] || "")
+
+    Enum.each(refs, fn {name, ref} ->
+      with {:ok, normalized} <- normalize_ref(to_string(name), ref),
+           {:ok, binding} <- find_binding(group_id, normalized),
+           :ok <- ensure_binding_scope(binding, tenant_id, group_id),
+           {:ok, conn_id} <- connection_id(binding),
+           {:ok, conn} <- load_connection(conn_id),
+           {:ok, adapter} <- adapter(nonblank(normalized.provider, binding["provider"])),
+           {:ok, token} <- adapter.resolve_credential_value(conn, normalized.credential) do
+        _ = OAuth.mark_token_refused(conn_id, token, refreshable: :keep)
+      end
+    end)
+
+    :ok
+  end
+
+  @impl true
+  def requester_headers(binding, requester),
+    do: Salix.Control.RemoteMCPDeviceSignIn.requester_headers(binding, requester)
+
+  @impl true
+  def request_requester_sign_in(binding, requester, waiter),
+    do: Salix.Control.RemoteMCPDeviceSignIn.request(binding, requester, waiter)
+
+  @impl true
+  def requester_sign_in_rejected(binding, requester),
+    do: Salix.Control.RemoteMCPDeviceSignIn.rejected(binding, requester)
+
+  @impl true
+  def binding_deleted(binding) do
+    if SalixMCP.HostedServices.per_requester?(binding["mcp_id"]),
+      do: Salix.Control.RemoteMCPDeviceSignIn.remove_all(binding),
+      else: :ok
+  end
+
   defp resolve_ref(tenant_id, group_id, name, ref) do
     with {:ok, normalized} <- normalize_ref(name, ref),
          {:ok, binding} <- find_binding(group_id, normalized),

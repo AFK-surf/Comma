@@ -29,6 +29,18 @@ defmodule SalixIM.Ports.AgentWorkspace do
   @callback put_ref(agent_id :: String.t(), path :: String.t(), ref :: map()) ::
               {:ok, %{path: String.t(), size: non_neg_integer()}} | {:error, term()}
 
+  @callback put_ref(String.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @callback label_for_ref(String.t(), String.t(), map()) :: [String.t()] | nil
+  @optional_callbacks put_ref: 4, label_for_ref: 3
+
+  def label_for_ref(agent_id, path, ref) do
+    mod = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(mod) and function_exported?(mod, :label_for_ref, 3),
+      do: mod.label_for_ref(agent_id, path, ref),
+      else: nil
+  end
+
   @callback file_ref(agent_id :: String.t(), path :: String.t()) ::
               {:ok, map()} | {:error, term()}
 
@@ -46,7 +58,12 @@ defmodule SalixIM.Ports.AgentWorkspace do
               range :: {non_neg_integer(), non_neg_integer()}
             ) ::
               {:ok, Enumerable.t(), non_neg_integer(), String.t()} | {:error, term()}
-  @optional_callbacks read_ref_stream: 4
+
+  @doc "All file entries under `prefix` as `{path, size}` tuples."
+  @callback entries(agent_id :: String.t(), prefix :: String.t()) ::
+              {:ok, [{String.t(), non_neg_integer()}]} | {:error, term()}
+
+  @optional_callbacks read_ref_stream: 4, entries: 2
 
   @spec read_upload(String.t() | nil, term(), term()) :: {:ok, map()} | {:error, term()}
   def read_upload(agent_id, path, title \\ "") do
@@ -57,6 +74,18 @@ defmodule SalixIM.Ports.AgentWorkspace do
           {:ok, [map()]} | {:file, map()} | {:error, :not_found} | {:error, term()}
   def list(agent_id, path) do
     impl().list(to_string(agent_id || ""), to_string(path || ""))
+  end
+
+  @spec entries(String.t() | nil, term()) ::
+          {:ok, [{String.t(), non_neg_integer()}]} | {:error, term()}
+  def entries(agent_id, prefix) do
+    mod = impl()
+
+    if function_exported?(mod, :entries, 2) do
+      mod.entries(to_string(agent_id || ""), to_string(prefix || ""))
+    else
+      {:error, :unsupported}
+    end
   end
 
   @spec write(String.t() | nil, term(), binary()) :: {:ok, map()} | {:error, term()}
@@ -72,7 +101,19 @@ defmodule SalixIM.Ports.AgentWorkspace do
   """
   @spec put_ref(String.t() | nil, term(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def put_ref(agent_id, path, ref, opts \\ []) do
-    result = impl().put_ref(to_string(agent_id || ""), to_string(path || ""), ref)
+    mod = impl()
+
+    result =
+      if SystemsRuntime.Proc.ensure_loaded?(mod) and function_exported?(mod, :put_ref, 4) do
+        mod.put_ref(
+          to_string(agent_id || ""),
+          to_string(path || ""),
+          ref,
+          Keyword.take(opts, [:ifc_label])
+        )
+      else
+        mod.put_ref(to_string(agent_id || ""), to_string(path || ""), ref)
+      end
 
     case result do
       {:error, reason} ->

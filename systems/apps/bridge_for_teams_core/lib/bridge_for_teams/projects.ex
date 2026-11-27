@@ -7,10 +7,19 @@ defmodule BridgeForTeams.Projects do
   """
   import Ecto.Query
 
-  alias BridgeForTeams.{Models, Observability, Repo}
+  alias BridgeForTeams.{Departments, Models, Observability, Repo}
   alias BridgeForTeams.Outbox
   alias BridgeForTeams.Salix.{Client, Identity}
-  alias BridgeForTeams.Schema.{Agent, OrgMembership, Organization, Project, ProjectMembership}
+
+  alias BridgeForTeams.Schema.{
+    Agent,
+    Department,
+    OrgMembership,
+    Organization,
+    Project,
+    ProjectMembership
+  }
+
   alias SalixStore.Ids
 
   # How many non-archived Agent Swarms an ordinary org member may create per org.
@@ -54,23 +63,36 @@ defmodule BridgeForTeams.Projects do
   end
 
   defp create_project_once(org_id, attrs, org, creator_user_id, opts) do
-    attrs =
-      attrs
-      |> Map.merge(%{
-        "org_id" => org_id,
-        "salix_group_id" => project_group_id(org)
-      })
-      |> maybe_put("created_by_user_id", creator_user_id)
-
-    changeset = Project.changeset(%Project{}, attrs)
+    raw_dept = attrs["department_id"]
 
     Repo.transaction(fn ->
+      Departments.lock_organization!(org_id)
+      before_search = Departments.effective_search_group_ids_by_project(org_id)
+
       with :ok <- check_member_quota(org_id, creator_user_id),
+           {:ok, dept_id} <-
+             authorize_and_resolve_create_department(org_id, creator_user_id, raw_dept),
            %Organization{} = org <- org,
-           {:ok, project} <- Repo.insert(changeset),
+           merged_attrs =
+             attrs
+             |> Map.merge(%{
+               "org_id" => org_id,
+               "salix_group_id" => project_group_id(org)
+             })
+             |> Map.delete("department_id")
+             |> maybe_put("created_by_user_id", creator_user_id),
+           {:ok, project} <-
+             %Project{}
+             |> Project.changeset(merged_attrs)
+             |> Project.put_department(dept_id)
+             |> Repo.insert(),
+           :ok <- Departments.check_effective_target_limit(org_id),
            {:ok, router} <- insert_default_router(project, org),
            {:ok, _acl} <- maybe_insert_creator_acl(project, creator_user_id) do
-        enqueue_create(project, org, router)
+        {initial_search_group_ids, :ok} =
+          Departments.reconcile_after_project_created(org, project, before_search)
+
+        enqueue_create(project, org, router, initial_search_group_ids)
 
         with {:ok, _audit} <- maybe_record_project_audit("project.created", project, opts) do
           project
@@ -82,6 +104,21 @@ defmodule BridgeForTeams.Projects do
         {:error, cs} -> Repo.rollback(cs)
       end
     end)
+  end
+
+  defp authorize_and_resolve_create_department(_org_id, _creator_user_id, dept)
+       when dept in [nil, ""],
+       do: {:ok, nil}
+
+  defp authorize_and_resolve_create_department(org_id, nil, dept),
+    do: Departments.resolve_department_id(org_id, dept)
+
+  defp authorize_and_resolve_create_department(org_id, creator_user_id, dept) do
+    if Departments.org_admin?(org_id, creator_user_id) do
+      Departments.resolve_department_id(org_id, dept)
+    else
+      {:error, :department_forbidden}
+    end
   end
 
   defp project_group_id(%Organization{salix_tenant_id: tenant_id}),
@@ -145,50 +182,90 @@ defmodule BridgeForTeams.Projects do
 
   @doc """
   One page of the projects in an org visible to a user (the rows of
-  `list_projects_for_user/2`), by name, in one query. Options: `:query`
-  matches a case-insensitive substring of the name, slug or Salix group id;
-  `:after` takes a previous page's `next_cursor`; `:limit` is at most
-  #{@project_page_limit}. An unreadable cursor starts from the first page.
+  `list_projects_for_user/2`) in one query, grouped by department: departments
+  by name (case-insensitive), then Projects without a department, each group by
+  Project name. A later page only appends to the last group of the page before
+  it. Options: `:query` matches a case-insensitive substring of the name, slug,
+  Salix group id or department name; `:after` takes a previous page's
+  `next_cursor`; `:limit` is at most #{@project_page_limit}. An unreadable
+  cursor starts from the first page.
+
+  `department_counts` (by department id) and `unassigned_count` count every
+  Project that matches the same visibility and query, not only this page's.
   """
   @spec page_projects_for_user(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: %{
           entries: [Project.t()],
-          next_cursor: String.t() | nil
+          next_cursor: String.t() | nil,
+          department_counts: %{Ecto.UUID.t() => non_neg_integer()},
+          unassigned_count: non_neg_integer()
         }
   def page_projects_for_user(org_id, user_id, opts \\ []) do
     limit = opts |> Keyword.get(:limit, @project_page_limit) |> min(@project_page_limit) |> max(1)
+    visible = visible_projects_query(org_id, user_id, opts[:query])
 
     rows =
-      from(p in Project,
-        as: :project,
-        where: p.org_id == ^org_id and is_nil(p.archived_at),
-        where:
-          exists(
-            from(m in OrgMembership,
-              where:
-                m.org_id == ^org_id and m.user_id == ^user_id and m.role in ["owner", "admin"]
-            )
-          ) or
-            exists(
-              from(m in ProjectMembership,
-                where: m.project_id == parent_as(:project).id and m.user_id == ^user_id
-              )
-            ),
-        order_by: [asc: p.name, asc: p.id],
-        limit: ^(limit + 1)
+      visible
+      |> join(:left, [project: p], d in Department, as: :department, on: d.id == p.department_id)
+      |> order_by([project: p, department: d],
+        asc: fragment("CASE WHEN ? IS NULL THEN 1 ELSE 0 END", d.id),
+        asc: fragment("lower(COALESCE(?, ''))", d.name),
+        asc: fragment("COALESCE(?::text, '')", d.id),
+        asc: p.name,
+        asc: p.id
       )
-      |> matching_projects(opts[:query])
       |> after_project_cursor(opts[:after])
+      |> limit(^(limit + 1))
+      |> select([project: p, department: d], {p, d})
       |> Repo.all()
 
-    entries = Enum.take(rows, limit)
-    last = List.last(entries)
+    page = Enum.take(rows, limit)
+    entries = Enum.map(page, &elem(&1, 0))
 
     next_cursor =
-      if length(rows) > limit,
-        do: Base.url_encode64(Jason.encode!([last.name, last.id]), padding: false)
+      if length(rows) > limit do
+        {last, dept} = List.last(page)
+        Base.url_encode64(Jason.encode!(page_key(last, dept)), padding: false)
+      end
 
-    %{entries: entries, next_cursor: next_cursor}
+    counts =
+      visible
+      |> group_by([project: p], p.department_id)
+      |> select([project: p], {p.department_id, count(p.id)})
+      |> Repo.all()
+
+    %{
+      entries: entries,
+      next_cursor: next_cursor,
+      department_counts: for({id, n} <- counts, not is_nil(id), into: %{}, do: {id, n}),
+      unassigned_count: Enum.find_value(counts, 0, fn {id, n} -> if is_nil(id), do: n end)
+    }
   end
+
+  defp visible_projects_query(org_id, user_id, text) do
+    from(p in Project,
+      as: :project,
+      where: p.org_id == ^org_id and is_nil(p.archived_at),
+      where:
+        exists(
+          from(m in OrgMembership,
+            where: m.org_id == ^org_id and m.user_id == ^user_id and m.role in ["owner", "admin"]
+          )
+        ) or
+          exists(
+            from(m in ProjectMembership,
+              where: m.project_id == parent_as(:project).id and m.user_id == ^user_id
+            )
+          )
+    )
+    |> matching_projects(text)
+  end
+
+  # The sort key of a row, as the page orders rows: [unassigned flag,
+  # department name (compared lower-cased by Postgres), department id, name, id].
+  defp page_key(%Project{} = project, nil), do: [1, "", "", project.name, project.id]
+
+  defp page_key(%Project{} = project, %Department{} = dept),
+    do: [0, dept.name, dept.id, project.name, project.id]
 
   defp matching_projects(query, text) when is_binary(text) do
     case String.trim(text) do
@@ -201,7 +278,13 @@ defmodule BridgeForTeams.Projects do
         where(
           query,
           [p],
-          ilike(p.name, ^pattern) or ilike(p.slug, ^pattern) or ilike(p.salix_group_id, ^pattern)
+          ilike(p.name, ^pattern) or ilike(p.slug, ^pattern) or
+            ilike(p.salix_group_id, ^pattern) or
+            exists(
+              from(d in Department,
+                where: d.id == parent_as(:project).department_id and ilike(d.name, ^pattern)
+              )
+            )
         )
     end
   end
@@ -210,15 +293,63 @@ defmodule BridgeForTeams.Projects do
 
   defp after_project_cursor(query, cursor) when is_binary(cursor) do
     with {:ok, json} <- Base.url_decode64(cursor, padding: false),
-         {:ok, [name, id]} when is_binary(name) <- Jason.decode(json),
-         {:ok, id} <- Ecto.UUID.cast(id) do
-      where(query, [p], p.name > ^name or (p.name == ^name and p.id > ^id))
+         {:ok, decoded} <- Jason.decode(json),
+         {:ok, [flag, dept_name, dept_id, name, id]} <- cursor_key(decoded) do
+      where(
+        query,
+        [project: p, department: d],
+        fragment(
+          "(CASE WHEN ? IS NULL THEN 1 ELSE 0 END, lower(COALESCE(?, '')), COALESCE(?::text, '')) > (?, lower(?), ?)",
+          d.id,
+          d.name,
+          d.id,
+          ^flag,
+          ^dept_name,
+          ^dept_id
+        ) or
+          (fragment(
+             "(CASE WHEN ? IS NULL THEN 1 ELSE 0 END, lower(COALESCE(?, '')), COALESCE(?::text, '')) = (?, lower(?), ?)",
+             d.id,
+             d.name,
+             d.id,
+             ^flag,
+             ^dept_name,
+             ^dept_id
+           ) and
+             (p.name > ^name or (p.name == ^name and p.id > type(^id, :binary_id))))
+      )
     else
       _ -> query
     end
   end
 
   defp after_project_cursor(query, _cursor), do: query
+
+  defp cursor_key([flag, dept_name, dept_id, name, id])
+       when flag in [0, 1] and is_binary(dept_name) and is_binary(dept_id) and is_binary(name) do
+    with {:ok, id} <- Ecto.UUID.cast(id), do: {:ok, [flag, dept_name, dept_id, name, id]}
+  end
+
+  # A cursor of the release that ordered by name alone: continue after that
+  # Project's place in the department order.
+  defp cursor_key([name, id]) when is_binary(name) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         {%Project{} = project, dept} <-
+           Repo.one(
+             from(p in Project,
+               left_join: d in Department,
+               on: d.id == p.department_id,
+               where: p.id == ^id,
+               select: {p, d}
+             )
+           ) do
+      {:ok, page_key(%{project | name: name}, dept)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp cursor_key(_decoded), do: :error
 
   @doc """
   Whether a user may create another Agent Swarm in the org. Org owners/admins
@@ -322,80 +453,6 @@ defmodule BridgeForTeams.Projects do
     end
   end
 
-  @doc """
-  The Agent Swarm's owner email list: distinct emails of every user whose
-  effective project role is admin — explicit `"admin"` ACL grants (the role
-  project creators receive, i.e. ownership in this model) plus the org's
-  owner/admin members, who hold implied admin on every swarm. Users without an
-  email are skipped. Synced into the Salix group's `owner_emails` so the
-  agent-side `email.send_to_owners` tool can reach the swarm's owners without
-  ever seeing the list.
-  """
-  @spec owner_emails(Project.t()) :: [String.t()]
-  def owner_emails(%Project{} = project) do
-    explicit =
-      from(m in ProjectMembership,
-        join: u in assoc(m, :user),
-        where: m.project_id == ^project.id and m.role == "admin",
-        select: u.email
-      )
-
-    derived =
-      from(m in OrgMembership,
-        join: u in assoc(m, :user),
-        where: m.org_id == ^project.org_id and m.role in ["owner", "admin"],
-        select: u.email
-      )
-
-    (Repo.all(explicit) ++ Repo.all(derived))
-    |> Enum.filter(&is_binary/1)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq_by(&String.downcase/1)
-    |> Enum.sort()
-  end
-
-  @doc """
-  Enqueue reconcile of the swarm's current owner email list to its Salix
-  group. Call inside the transaction that changed the owner set (see
-  `BridgeForTeams.Memberships`) so the outbox row commits with the membership
-  write. No-op for archived projects and unknown project ids.
-  """
-  @spec enqueue_owner_emails_sync(Project.t() | Ecto.UUID.t()) :: :ok
-  def enqueue_owner_emails_sync(%Project{archived_at: archived_at}) when not is_nil(archived_at),
-    do: :ok
-
-  def enqueue_owner_emails_sync(%Project{} = project) do
-    %Organization{} = org = Repo.get!(Organization, project.org_id)
-
-    payload = %{
-      "group_id" => project.salix_group_id,
-      "tenant_id" => org.salix_tenant_id,
-      "attrs" => %{"owner_emails" => owner_emails(project)}
-    }
-
-    {:ok, _} = Outbox.enqueue("project", project.id, "update_group", payload)
-    :ok
-  end
-
-  def enqueue_owner_emails_sync(project_id) when is_binary(project_id) do
-    case Repo.get(Project, project_id) do
-      %Project{} = project -> enqueue_owner_emails_sync(project)
-      nil -> :ok
-    end
-  end
-
-  @doc """
-  Enqueue an owner email list reconcile for every non-archived swarm in the
-  org — org owner/admin membership implies ownership of all of them.
-  """
-  @spec enqueue_owner_emails_sync_for_org(Ecto.UUID.t()) :: :ok
-  def enqueue_owner_emails_sync_for_org(org_id) do
-    from(p in Project, where: p.org_id == ^org_id and is_nil(p.archived_at))
-    |> Repo.all()
-    |> Enum.each(&enqueue_owner_emails_sync/1)
-  end
-
   @doc "Update a project."
   @spec update_project(Project.t(), map(), keyword()) ::
           {:ok, Project.t()} | {:error, Ecto.Changeset.t() | term()}
@@ -458,11 +515,19 @@ defmodule BridgeForTeams.Projects do
       })
 
     Repo.transaction(fn ->
+      Departments.lock_organization!(project.org_id)
       org = Repo.get!(Organization, project.org_id)
+      before_search = Departments.effective_search_group_ids_by_project(project.org_id)
 
       with {:ok, archived} <- Repo.update(changeset),
+           :ok <- Departments.reconcile_after_project_archived(org, archived, before_search),
            {:ok, _cleanup} <-
              Outbox.enqueue("project", archived.id, "delete_group_im_connects", %{
+               "tenant_id" => org.salix_tenant_id,
+               "group_id" => archived.salix_group_id
+             }),
+           {:ok, _colab_cleanup} <-
+             Outbox.enqueue("project", archived.id, "retire_group_colab", %{
                "tenant_id" => org.salix_tenant_id,
                "group_id" => archived.salix_group_id
              }),
@@ -894,18 +959,28 @@ defmodule BridgeForTeams.Projects do
   # Create the project's Salix group inside the org's tenant. (The org's tenant
   # itself is created by Orgs.create_org's reconcile.) The Salix group validates
   # router references, so the router assignment is enqueued after create_agent.
-  defp enqueue_create(%Project{} = project, %Organization{} = org, %Agent{} = router) do
+  defp enqueue_create(
+         %Project{} = project,
+         %Organization{} = org,
+         %Agent{} = router,
+         initial_search_group_ids
+       ) do
     base = SystemsClock.timestamp(:utc_datetime_usec)
 
-    payload = %{
-      "attrs" => %{
+    group_attrs =
+      %{
         "group_id" => project.salix_group_id,
         "tenant_id" => org.salix_tenant_id,
         "name" => project.name,
-        "billing_owner" => group_billing_owner(org, project, router.salix_agent_id),
-        "owner_emails" => owner_emails(project)
+        "billing_owner" => group_billing_owner(org, project, router.salix_agent_id)
       }
-    }
+      |> then(fn map ->
+        if initial_search_group_ids == [],
+          do: map,
+          else: Map.put(map, "search_group_ids", initial_search_group_ids)
+      end)
+
+    payload = %{"attrs" => group_attrs}
 
     {:ok, _} =
       Outbox.enqueue("project", project.id, "create_group", payload,

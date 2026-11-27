@@ -1,6 +1,26 @@
 export { TaskWorkspace } from "./TaskWorkspace";
 export type { TaskWorkspaceProps, TaskWorkspaceTask } from "./TaskWorkspace";
 export {
+  TaskFeedEntryRow,
+  TaskFeedView,
+  sortMilestonesNewestFirst,
+  useHorizontalDragScroll,
+} from "../task-feed";
+export type {
+  HorizontalDragScrollResult,
+  TaskFeedColumnId,
+  TaskFeedEntry,
+  TaskFeedEntryRowProps,
+  TaskFeedFile,
+  TaskFeedMedia,
+  TaskFeedMilestone,
+  TaskFeedPullRequest,
+  TaskFeedSessionInspectorContext,
+  TaskFeedStatusFilter,
+  TaskFeedTriggerKind,
+  TaskFeedViewProps,
+} from "../task-feed";
+export {
   TASK_STATUS_COLUMNS,
   TaskSummaryCard,
   taskNeutralIcon,
@@ -10,6 +30,7 @@ export {
   taskUpdatedAtLabel,
 } from "./TaskSummaryCard";
 export type {
+  TaskLoopStanding,
   TaskLoopStop,
   TaskStatusBucket,
   TaskSummaryViewModel,

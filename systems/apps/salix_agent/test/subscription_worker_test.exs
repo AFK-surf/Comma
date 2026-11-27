@@ -14,6 +14,26 @@ defmodule SalixAgent.SubscriptionWorkerTest do
       do: {:reply, SubscriptionWorker.server(), state}
   end
 
+  # A port whose pipe the test fills: `command/3` refuses a `:nosuspend` write
+  # while the atomics slot is 0, as a pipe a large request just filled does.
+  defmodule FullPipePort do
+    def open({:spawn_executable, _}, opts) do
+      [owner, writable] = Keyword.fetch!(opts, :args)
+      {__MODULE__, owner, writable}
+    end
+
+    def command({__MODULE__, owner, writable}, payload, [:nosuspend]) do
+      if SystemsRuntime.Atomics.get(writable, 1) == 1 do
+        SystemsRuntime.Proc.send(owner, {:frame, Jason.decode!(payload)})
+        true
+      else
+        false
+      end
+    end
+
+    def close({__MODULE__, owner, _}), do: SystemsRuntime.Proc.send(owner, :closed)
+  end
+
   defmodule Upstream do
     def init(owner), do: owner
 
@@ -566,6 +586,85 @@ defmodule SalixAgent.SubscriptionWorkerTest do
         if model == "fail_tool", do: assert_receive({:tool, _})
         refute_receive {:upstream, _, %{"model" => ^model}}, 100
       end
+    end
+  end
+
+  describe "a pipe that refuses a control frame" do
+    setup do
+      SystemsClock.manual()
+      on_exit(&SystemsClock.reset/0)
+      writable = SystemsRuntime.Atomics.new(1, [])
+      SystemsRuntime.Atomics.put(writable, 1, 1)
+
+      worker =
+        start_supervised!(
+          {SubscriptionWorker,
+           name: nil,
+           port_module: FullPipePort,
+           command: {"full-pipe", [SystemsRuntime.Proc.self(), writable]}},
+          id: :full_pipe_worker
+        )
+
+      port = {FullPipePort, SystemsRuntime.Proc.self(), writable}
+
+      for id <- ["1", "2"] do
+        assert :ok = start_call(worker, id)
+        assert_received {:frame, %{"type" => "call", "id" => ^id}}
+      end
+
+      {:ok, pipe: worker, port: port, writable: writable}
+    end
+
+    defp start_call(worker, id) do
+      payload = Jason.encode!(%{type: "call", id: id})
+      SystemsClock.call(worker, {:start, id, payload, SystemsRuntime.Proc.self()}, 5_000)
+    end
+
+    defp data(id), do: Jason.encode!(%{id: id, type: "data", data: Base.encode64("x")})
+
+    test "waits for the pipe, then delivers the frames and keeps the other calls", ctx do
+      %{pipe: worker, port: port, writable: writable} = ctx
+      SystemsRuntime.Atomics.put(writable, 1, 0)
+
+      SystemsRuntime.Server.cast(worker, {:ack, "1", SystemsRuntime.Proc.self()})
+      SystemsRuntime.Server.cast(worker, {:ack, "2", SystemsRuntime.Proc.self()})
+      SystemsRuntime.Server.cast(worker, {:cancel, "2", SystemsRuntime.Proc.self()})
+      # A new request does not go into the full pipe.
+      assert {:error, "worker_busy"} = start_call(worker, "3")
+
+      refute_received {:subscription, _, _}
+      refute_received :closed
+      refute_received {:frame, _}
+
+      # The pipe drains: the retry delivers the ack of the live call and the
+      # cancel that replaced the other call's ack.
+      SystemsRuntime.Atomics.put(writable, 1, 1)
+      SystemsClock.advance(5)
+      _ = :sys.get_state(worker)
+      assert_received {:frame, %{"type" => "ack", "id" => "1"}}
+      assert_received {:frame, %{"type" => "cancel", "id" => "2"}}
+      refute_received {:frame, _}
+      refute_received :closed
+
+      SystemsRuntime.Proc.send(worker, {port, {:data, data("1")}})
+      assert :ok = start_call(worker, "4")
+      assert_received {:subscription, "1", %{"type" => "data"}}
+      assert_received {:frame, %{"type" => "call", "id" => "4"}}
+    end
+
+    test "a pipe full past the bound stops the subprocess and fails its calls", ctx do
+      %{pipe: worker, writable: writable} = ctx
+      SystemsRuntime.Atomics.put(writable, 1, 0)
+      SystemsRuntime.Server.cast(worker, {:ack, "1", SystemsRuntime.Proc.self()})
+      _ = :sys.get_state(worker)
+      refute_received :closed
+
+      SystemsClock.advance(10_000)
+      _ = :sys.get_state(worker)
+      assert_received :closed
+      assert_received {:subscription, "1", %{"code" => "worker_down"}}
+      assert_received {:subscription, "2", %{"code" => "worker_down"}}
+      refute_received {:frame, _}
     end
   end
 end

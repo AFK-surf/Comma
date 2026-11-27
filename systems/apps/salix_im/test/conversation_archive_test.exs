@@ -1,7 +1,7 @@
 defmodule SalixIM.ConversationArchiveTest do
   use SystemsClock.Case, async: false
 
-  alias SalixIM.{ConversationMessage, ConversationPGStore}
+  alias SalixIM.{ConversationMessage, ConversationPGStore, Conversations}
   alias SalixStore.{Ids, Keys, Repo, S3}
 
   setup do
@@ -447,9 +447,257 @@ defmodule SalixIM.ConversationArchiveTest do
              ConversationPGStore.append(scope, 2, message("legacy"))
   end
 
+  test "hydrate_many reads multiple archived segments in order and tail with after_seq skips older segments",
+       %{scope: scope} do
+    first = append!(scope, "seg-1")
+    assert {:ok, p1} = ConversationPGStore.prepare_archive(scope, 10)
+    assert {:ok, d1} = ConversationPGStore.execute(p1)
+
+    second = append!(scope, "seg-2")
+    assert {:ok, p2} = ConversationPGStore.prepare_archive(scope, 10)
+    assert {:ok, d2} = ConversationPGStore.execute(p2)
+
+    third = append!(scope, "seg-3")
+    assert {:ok, p3} = ConversationPGStore.prepare_archive(scope, 10)
+    assert {:ok, _d3} = ConversationPGStore.execute(p3)
+
+    fourth = append!(scope, "seg-4")
+    assert {:ok, p4} = ConversationPGStore.prepare_archive(scope, 10)
+    assert {:ok, d4} = ConversationPGStore.execute(p4)
+
+    fifth = append!(scope, "hot-5")
+
+    assert {:ok, [^first, ^second, ^third, ^fourth, ^fifth]} =
+             ConversationPGStore.messages(scope, 1, 5, 5)
+
+    # Remove segments 1 and 2: a tail read resuming after seq 2 never touches them.
+    assert :ok = S3.delete(d1.object_key)
+    assert :ok = S3.delete(d2.object_key)
+
+    assert {:ok, %{"messages" => [^third, ^fourth, ^fifth]}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 5,
+               after_seq: 2
+             )
+
+    assert {:ok, %{"messages" => []}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 5,
+               after_seq: 5
+             )
+
+    assert {:ok, %{"messages" => [^fourth, ^fifth]}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 2,
+               after_seq: 0
+             )
+
+    # Multi-segment read propagates storage errors from any required segment.
+    :ok = S3.Fake.blackhole({:fail, 503, :get, d4.object_key})
+
+    assert {:error, :archive_unreadable} = ConversationPGStore.messages(scope, 3, 5, 5)
+    :ok = S3.Fake.clear_blackhole()
+  end
+
+  test "get_group_conversation_with_messages preserves final_message_id on caught-up after_seq reads",
+       %{scope: scope} do
+    user_msg = append!(scope, "question")
+    agent_msg = append_agent!(scope, "answer")
+    assert {:ok, pending} = ConversationPGStore.prepare_archive(scope, 10)
+    assert {:ok, descriptor} = ConversationPGStore.execute(pending)
+
+    assert {:ok,
+            %{
+              "messages" => [^user_msg, ^agent_msg],
+              "final_message_id" => final_id
+            }} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 24
+             )
+
+    assert final_id == agent_msg["message_id"]
+
+    # Delete the archived segment: a caught-up after_seq read still returns final_message_id
+    # from conversation summary metadata without reading archived message bodies.
+    assert :ok = S3.delete(descriptor.object_key)
+
+    assert {:ok,
+            %{
+              "messages" => [],
+              "final_message_id" => ^final_id
+            }} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 24,
+               after_seq: 2
+             )
+
+    # A subsequent user message keeps the previous assistant final_message_id.
+    follow_up = append!(scope, "follow-up")
+
+    assert {:ok,
+            %{
+              "messages" => [^follow_up],
+              "final_message_id" => ^final_id
+            }} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 24,
+               after_seq: 2
+             )
+
+    # Legacy records without last_final_message_id still preserve final_message_id via bounded scan.
+    legacy_scope = ConversationPGStore.new(scope.group_id, Ids.new_conversation_id())
+
+    assert {:ok, :inserted, _, _} =
+             ConversationPGStore.create(legacy_scope, %{
+               "kind" => "user_chat",
+               "title" => "legacy"
+             })
+
+    _ = append!(legacy_scope, "legacy-question")
+    legacy_reply = append_agent!(legacy_scope, "legacy-answer")
+    legacy_reply_id = legacy_reply["message_id"]
+
+    %{rows: [[metadata]]} =
+      Repo.query!(
+        "SELECT metadata FROM salix_conversations WHERE group_id=$1 AND conversation_id=$2",
+        [legacy_scope.group_id, legacy_scope.conversation_id]
+      )
+
+    stripped =
+      metadata
+      |> :erlang.binary_to_term([:safe])
+      |> Map.drop(["last_final_message_id", "last_final_message_seq"])
+
+    Repo.query!(
+      "UPDATE salix_conversations SET metadata=$3 WHERE group_id=$1 AND conversation_id=$2",
+      [legacy_scope.group_id, legacy_scope.conversation_id, :erlang.term_to_binary(stripped)]
+    )
+
+    assert {:ok,
+            %{
+              "messages" => [],
+              "final_message_id" => ^legacy_reply_id
+            }} =
+             Conversations.get_group_conversation_with_messages(
+               legacy_scope.group_id,
+               legacy_scope.conversation_id,
+               tail: 24,
+               after_seq: 2
+             )
+  end
+
+  test "final_message_id honors the requested tail window identically for summary-backed and legacy records",
+       %{scope: scope} do
+    reply = append_agent!(scope, "initial-reply")
+    reply_id = reply["message_id"]
+
+    for seq <- 2..25 do
+      _ = append!(scope, "user-follow-up-#{seq}")
+    end
+
+    # With summary metadata: seq 1 is outside tail 24 (seq 2..25), inside tail 25 (seq 1..25).
+    assert {:ok, %{"final_message_id" => nil}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 24
+             )
+
+    assert {:ok, %{"messages" => [], "final_message_id" => nil}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 24,
+               after_seq: 25
+             )
+
+    assert {:ok, %{"final_message_id" => ^reply_id}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 25
+             )
+
+    assert {:ok, %{"messages" => [], "final_message_id" => ^reply_id}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 25,
+               after_seq: 25
+             )
+
+    # Strip summary metadata to exercise the legacy scan path on the exact same history.
+    %{rows: [[metadata]]} =
+      Repo.query!(
+        "SELECT metadata FROM salix_conversations WHERE group_id=$1 AND conversation_id=$2",
+        [scope.group_id, scope.conversation_id]
+      )
+
+    stripped =
+      metadata
+      |> :erlang.binary_to_term([:safe])
+      |> Map.drop(["last_final_message_id", "last_final_message_seq"])
+
+    Repo.query!(
+      "UPDATE salix_conversations SET metadata=$3 WHERE group_id=$1 AND conversation_id=$2",
+      [scope.group_id, scope.conversation_id, :erlang.term_to_binary(stripped)]
+    )
+
+    assert {:ok, %{"messages" => [], "final_message_id" => nil}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 24,
+               after_seq: 25
+             )
+
+    assert {:ok, %{"messages" => [], "final_message_id" => ^reply_id}} =
+             Conversations.get_group_conversation_with_messages(
+               scope.group_id,
+               scope.conversation_id,
+               tail: 25,
+               after_seq: 25
+             )
+  end
+
   defp append!(scope, text) do
     assert {:ok, _, revision} = ConversationPGStore.read(scope)
     input = message(text)
+    assert {:ok, :inserted, _, _, _} = ConversationPGStore.append(scope, revision, input)
+    assert {:ok, body} = ConversationPGStore.message_by_id(scope, input["message_id"])
+    body
+  end
+
+  defp append_agent!(scope, text) do
+    assert {:ok, _, revision} = ConversationPGStore.read(scope)
+
+    {:ok, attrs} =
+      ConversationMessage.prepare(%{
+        "kind" => "message",
+        "actor_type" => "agent",
+        "client_request_id" => text,
+        "content" => text
+      })
+
+    input =
+      ConversationMessage.build(
+        attrs,
+        %{"actor_type" => "agent", "agent_id" => "agt1_test"},
+        1_000
+      )
+
     assert {:ok, :inserted, _, _, _} = ConversationPGStore.append(scope, revision, input)
     assert {:ok, body} = ConversationPGStore.message_by_id(scope, input["message_id"])
     body

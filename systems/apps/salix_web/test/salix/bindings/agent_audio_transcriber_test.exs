@@ -49,6 +49,38 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
     assert_receive {:transcribed, ^size, ^size, "audio.ogg", _prompt}
   end
 
+  # 2026-11-12: an 86-minute desktop meeting in Drive (31,793,612 bytes) was
+  # refused twice: its Drive path was not accepted, and 30 MiB was the limit.
+  test "transcribes a long Drive recording in place" do
+    size = 31_793_612
+    path = SalixAgent.DriveMount.prefix() <> "/Meetings/customer.m4a"
+
+    stream_fun = fn _scope, ^path -> {:ok, [:binary.copy(<<0>>, size)], size} end
+
+    assert {:ok, _} =
+             AgentAudioTranscriber.transcribe("agent-1", path,
+               config_fun: fn -> {:ok, %{}} end,
+               stream_fun: stream_fun,
+               transcriber: RecordingTranscriber
+             )
+
+    assert_received {:transcribed, ^size, ^size, "customer.m4a", _prompt}
+  end
+
+  test "refuses a recording over the size limit before reading it" do
+    size = SalixLlm.AudioChunker.max_audio_bytes() + 1
+    stream_fun = fn _scope, _path -> {:ok, [], size} end
+
+    assert {:error, :asr_audio_too_large} =
+             AgentAudioTranscriber.transcribe("agent-1", "/meetings/test/audio.ogg",
+               config_fun: fn -> {:ok, %{}} end,
+               stream_fun: stream_fun,
+               transcriber: RecordingTranscriber
+             )
+
+    refute_received {:transcribed, _, _, _, _}
+  end
+
   # 2026-10-29: the recording ASR wrote "Steel.fall" and "Cloud Code" and took
   # names addressed in speech for speakers.
   test "a meeting recording asks for the meeting's own spellings, and no others" do

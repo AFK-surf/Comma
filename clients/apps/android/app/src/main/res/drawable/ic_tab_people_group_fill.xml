@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconPeopleGroup2, round-filled-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12 13.75C14.2137 13.75 15.9998 15.5521 16 17.7646V19C16 19.5523 15.5523 20 15 20H3C2.44772 20 2 19.5523 2 19V17.7646C2.0002 15.5521 3.78628 13.75 6 13.75H12Z"
+        android:fillColor="#FF000000" />
+    <path android:pathData="M18 13.75C20.2137 13.75 21.9998 15.5521 22 17.7646V18.9492C22 19.5015 21.5523 19.9492 21 19.9492H18V17.7646L17.9922 17.4561C17.9204 16.0371 17.3545 14.7454 16.4639 13.75H18Z"
+        android:fillColor="#FF000000" />
+    <path android:pathData="M9 4C11.4853 4 13.5 6.01472 13.5 8.5C13.5 10.9853 11.4853 13 9 13C6.51472 13 4.5 10.9853 4.5 8.5C4.5 6.01472 6.51472 4 9 4Z"
+        android:fillColor="#FF000000" />
+    <path android:pathData="M15 4C17.4853 4 19.5 6.01472 19.5 8.5C19.5 10.7809 17.8028 12.6634 15.6025 12.958C15.2117 12.6629 14.7855 12.4119 14.3281 12.2188C15.0651 11.1647 15.5 9.88373 15.5 8.5C15.5 6.82857 14.8686 5.30493 13.832 4.15332C14.2045 4.05348 14.596 4 15 4Z"
+        android:fillColor="#FF000000" />
+</vector>

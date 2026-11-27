@@ -55,11 +55,14 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
 
   @doc """
   One agent: the list facts plus its model, prompt and, for a Router, its
-  canonical session. A Worker made before Workers were retired reads as
-  history (`read_only`).
+  canonical session. `model_platform_provided` says that the org's platform
+  Router provides the model (`BridgeForTeams.Models.platform_provided?/2`).
+  A Worker made before Workers were retired reads as history (`read_only`).
   """
   def show(org, project, role, agent_id) do
     with {:ok, agent} <- project_agent(project, agent_id) do
+      current = current_model(agent)
+
       {:ok,
        %{
          "project" => public_project(project, role),
@@ -70,6 +73,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
              "created_at" => agent.created_at,
              "runtime_id" => agent.salix_agent_id,
              "model" => model(agent, org),
+             "model_platform_provided" => platform_provided?(current, org),
              "system_prompt" => Agent.instructions(agent),
              "read_only" => agent.role != "router"
            }),
@@ -83,16 +87,23 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
   The Configure form: the model choices this org's admins can give (the
   allowed list, or the catalog when the list is empty), the platform model the
   agent follows when it has no choice (key `""`), and a current choice the org
-  no longer offers, kept visible but not selectable. The Router's instructions
-  show to every swarm admin; only an org owner may change them
-  (`prompt_editable`).
+  no longer offers, kept visible but not selectable. A current choice that the
+  platform Router provides (`platform_provided`) is such a row in the
+  Platform group: choosing another model leaves it for good, since no org
+  write can give it back. The Router's instructions show to every swarm
+  admin; only an org owner may change them (`prompt_editable`).
   """
   def config(org, user, project, role, agent_id) do
     with :ok <- admin(role),
          {:ok, agent} <- project_agent(project, agent_id),
          :ok <- router_only(agent) do
-      offered = org_models(org)
+      catalog = Models.catalog()
+      allowed = org_models(org, catalog)
+      served = Models.servable(org)
+      offered = Models.offered(org, catalog, served, &paid_label/1)
       current = current_model(agent)
+      platform_router = if Models.platform?(current), do: Models.platform_router(org)
+      provided? = Models.platform_provided?(current, platform_router)
 
       {:ok,
        %{
@@ -100,8 +111,15 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
          "system_prompt" => Agent.instructions(agent) || "",
          "prompt_editable" => org_owner?(org, user),
          "model_key" => if(current, do: Models.key(current), else: ""),
-         "available" => offered != [],
-         "models" => model_options(agent, offered, current)
+         "available" => allowed != [],
+         "platform_provided" => provided?,
+         "models" =>
+           model_options(
+             agent,
+             {org, catalog, allowed, offered, served},
+             current,
+             provided? && platform_router
+           )
        }}
     end
   end
@@ -385,30 +403,56 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
 
   defp current_model(_agent), do: nil
 
+  # Salix is asked only for a marked choice.
+  defp platform_provided?(choice, org) do
+    Models.platform?(choice) and Models.platform_provided?(choice, Models.platform_router(org))
+  end
+
   # ---- Models ----
 
-  defp org_models(org) do
-    case Models.allowed(org, Models.catalog()) do
+  defp org_models(org, catalog) do
+    case Models.allowed(org, catalog) do
       {:ok, options} -> options
       {:error, _reason} -> []
     end
   end
 
   # The picker: the platform model first, then a current choice the org no
-  # longer offers (disabled), then the offered choices grouped by vendor.
-  defp model_options(agent, offered, current) do
+  # longer offers or no enabled account serves (disabled), then the offered
+  # choices an account serves, grouped by vendor. A current choice the
+  # platform Router provides is a disabled Platform row.
+  defp model_options(agent, {org, catalog, allowed, offered, served}, current, platform_router) do
     unavailable =
-      if is_nil(current) or Enum.any?(offered, &(&1["choice"] == current)) do
-        []
-      else
-        option = Models.option(current, [])
+      cond do
+        platform_router ->
+          option = Models.option(current, [])
 
-        [
-          option_row(option, true,
-            label:
-              gettext("%{model} (current; unavailable for selection)", model: option["label"])
-          )
-        ]
+          [
+            option_row(option, true,
+              label:
+                gettext("%{model} (provided by the platform)",
+                  model: Models.label(Map.put(current, "model", platform_router["label"]))
+                ),
+              group: gettext("Platform")
+            )
+          ]
+
+        is_nil(current) or Enum.any?(offered, &(&1["choice"] == current)) ->
+          []
+
+        true ->
+          option = Models.option(current, allowed)
+
+          label =
+            if Models.served?(current, served) or not Models.allowed?(org, current, catalog),
+              do:
+                gettext("%{model} (current; unavailable for selection)", model: option["label"]),
+              else:
+                gettext("%{model} (current; no enabled account serves it)",
+                  model: option["label"]
+                )
+
+          [option_row(option, true, label: label)]
       end
 
     [
@@ -429,11 +473,14 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
       "choice" => option["choice"],
       "label" => Keyword.get(opts, :label, option["label"]),
       "disabled" => disabled,
-      "group" => vendor_group(option["vendor"])
+      "group" => Keyword.get_lazy(opts, :group, fn -> vendor_group(option["vendor"]) end)
     }
   end
 
   defp vendor_group(vendor), do: Models.vendor_label(vendor) || gettext("Other")
+
+  defp paid_label(option),
+    do: gettext("%{model} (pay-per-use)", model: option["label"])
 
   defp follow_default(agent) do
     case Models.platform_default(agent.role) do

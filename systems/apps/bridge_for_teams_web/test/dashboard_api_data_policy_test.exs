@@ -315,6 +315,66 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
     end
   end
 
+  describe "memory writers" do
+    test "the switch and the people are written together and read back",
+         %{conn: conn, org: org, project: project} do
+      Process.put(
+        :ifc_overview,
+        {:ok,
+         Client.overview(project.salix_group_id, %{
+           "memory_writers" => %{
+             "restricted" => true,
+             "writers" => ["provider_user|cnx1|ou_boss"]
+           },
+           "connects" => [%{"connect_id" => "cnx1", "provider" => "lark"}]
+         })}
+      )
+
+      assert %{
+               "memory_writers" => %{
+                 "restricted" => true,
+                 "writers" => [%{"connect_id" => "cnx1", "id" => "ou_boss"}]
+               }
+             } =
+               conn
+               |> patch(policy_path(org, project), %{
+                 "memory_writers" => %{
+                   "restricted" => true,
+                   "writers" => [%{"connect_id" => "cnx1", "id" => "ou_boss"}]
+                 }
+               })
+               |> json_response(200)
+               |> data()
+
+      assert_received {:update_group, group_id,
+                       %{
+                         "memory_writers" => %{
+                           "restricted" => true,
+                           "writers" => ["provider_user|cnx1|ou_boss"]
+                         }
+                       }}
+
+      assert group_id == project.salix_group_id
+
+      for invalid <- [
+            %{"restricted" => "yes", "writers" => []},
+            %{"restricted" => true, "writers" => [%{"connect_id" => "elsewhere", "id" => "ou"}]}
+          ] do
+        assert conn
+               |> patch(policy_path(org, project), %{"memory_writers" => invalid})
+               |> json_response(422)
+      end
+
+      refute_received {:update_group, _, _}
+    end
+
+    test "anyone may write until an administrator turns the switch on",
+         %{conn: conn, org: org, project: project} do
+      assert %{"memory_writers" => %{"restricted" => false, "writers" => []}} =
+               conn |> get(policy_path(org, project)) |> json_response(200) |> data()
+    end
+  end
+
   describe "conversations, clearances and placements" do
     test "classifying sends the tags, audience and sealed flag as set",
          %{conn: conn, org: org, project: project} do

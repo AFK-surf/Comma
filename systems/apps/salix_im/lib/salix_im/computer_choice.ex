@@ -4,9 +4,10 @@ defmodule SalixIM.ComputerChoice do
 
   When more than one of the person's computers is connected, the person says
   which one. A Task the Router aims at one of them (`runs_on {kind: station}`,
-  or a Task inside Salix whose title or content carries the computer's device
-  id or station id, the way its Worker is told where to drive) is refused
-  until this conversation shows the person's choice.
+  automatic placement landing on one of them, or a Task inside Salix whose
+  title or content carries the computer's device id or station id, the way its
+  Worker is told where to drive) is refused until this conversation shows the
+  person's choice.
 
   Only a structured answer can refuse a Task for being on the wrong computer:
   the choice picked on a question card, or the computer a local-account card
@@ -14,13 +15,17 @@ defmodule SalixIM.ComputerChoice do
   understanding of what the person meant, so they can only let a Task through:
   a clause with a negation counts for nothing, and a mention of another
   computer is passed over. When nothing settles it the Router asks once. A
-  which-computer card answered in words the match cannot place counts as
+  which-computer card (or an external-IM reply immediately naming at least two
+  of the computers) answered in words the match cannot place counts as
   answered, so the Router does not ask again.
 
-  The check reads a bounded window of the conversation's newest Messages. It
-  applies only to a Router's Task from a person's Message in Comma
-  (`SalixIM.Provider.Internal`) and is never asked otherwise. Failed lookups
-  do not refuse a Task: this rule is about asking, not authorization.
+  The check reads a bounded window of the conversation's newest Messages:
+  Conversation history for Comma chats (`provider == "internal"`), or the
+  current turn's `trusted_origin` text and the Router session's recent
+  same-conversation messages for external IMs (`provider_user`). It applies
+  only to a Router's Task from a person's Message (`SalixIM.Provider.Internal`)
+  and is never asked otherwise. Failed lookups do not refuse a Task: this rule
+  is about asking, not authorization.
   """
 
   alias SalixIM.{ConversationQuestion, Conversations}
@@ -44,7 +49,8 @@ defmodule SalixIM.ComputerChoice do
 
   @doc """
   `:ok`, or `{:error, reason}` for `SalixIM.TaskPlacement.message/1`:
-  `{:computer_choice_required, computers}` when the person has not said which,
+  `{:computer_choice_required, computers}` (or `{:computer_choice_required,
+  computers, provider}` for an external IM) when the person has not said which,
   `{:computer_choice_other, chosen}` when they picked another computer on a
   card.
   """
@@ -54,12 +60,20 @@ defmodule SalixIM.ComputerChoice do
          [_ | _] = aimed <- aimed(computers, params, runs_on),
          {:ok, messages} <- messages(scope, origin) do
       decide(computers, aimed, messages, &question(scope, origin, &1))
+      |> tag_external_reason(origin)
     else
       _not_applicable -> :ok
     end
   end
 
   def check(_scope, _params, _runs_on), do: :ok
+
+  defp tag_external_reason({:error, {tag, value}}, %{"provider" => provider})
+       when tag in [:computer_choice_required, :computer_choice_other] and is_binary(provider) and
+              provider != "" and provider != "internal",
+       do: {:error, {tag, value, provider}}
+
+  defp tag_external_reason(result, _origin), do: result
 
   defp computers(scope) do
     case TaskCreate.personal_computers(scope) do
@@ -81,7 +95,7 @@ defmodule SalixIM.ComputerChoice do
   def aimed(_computers, _params, _runs_on), do: []
 
   # Newest first; only when a person's Message started this turn.
-  defp messages(scope, origin) do
+  defp messages(scope, %{"provider" => "internal"} = origin) do
     with id when is_binary(id) <- origin["message_id"],
          conversation when is_binary(conversation) <- origin["conversation_id"],
          {:ok, %{"messages" => messages}} <-
@@ -95,7 +109,112 @@ defmodule SalixIM.ComputerChoice do
     end
   end
 
-  defp question(scope, origin, message_id) do
+  defp messages(scope, %{"provider" => provider, "source_actor_type" => "provider_user"} = origin)
+       when is_binary(provider) and provider != "" do
+    key = external_thread_key(origin)
+
+    current =
+      ([origin] ++ List.wrap(scope[:computer_choice_origins]))
+      |> Enum.filter(fn item ->
+        is_map(item) and item["source_actor_type"] == "provider_user" and
+          external_thread_key(item) == key
+      end)
+      |> Enum.map(&external_user_message/1)
+      |> Enum.reject(&is_nil/1)
+
+    history =
+      case TaskCreate.external_choice_messages(scope, origin, @window) do
+        {:ok, list} when is_list(list) -> list
+        _unavailable -> []
+      end
+
+    {:ok, merge_external_messages(current, history)}
+  end
+
+  defp messages(_scope, _origin), do: :no_person
+
+  @doc false
+  @spec external_thread_key(map()) :: term()
+  def external_thread_key(%{"provider" => provider} = origin)
+      when is_binary(provider) and provider != "" and provider != "internal" do
+    ctx = map_field(origin, "provider_context") || %{}
+    connect = nonblank(map_field(ctx, "connect_id"))
+
+    room =
+      case provider do
+        "slack" ->
+          channel = nonblank(map_field(ctx, "channel_id"))
+          thread = nonblank(map_field(ctx, "thread_ts"))
+
+          cond do
+            is_binary(thread) -> {channel, thread}
+            nonblank(map_field(ctx, "channel_type")) == "im" -> {channel, nil}
+            true -> {channel, nonblank(map_field(ctx, "message_ts"))}
+          end
+
+        _other ->
+          {nonblank(map_field(ctx, "chat_id")) || nonblank(map_field(ctx, "channel_id")) ||
+             nonblank(map_field(ctx, "conversation_id")) || nonblank(map_field(ctx, "wechat_id")) ||
+             nonblank(map_field(ctx, "from_user_id")) || nonblank(map_field(ctx, "sender_id")),
+           nonblank(map_field(ctx, "message_thread_id")) ||
+             nonblank(map_field(ctx, "root_message_id"))}
+      end
+
+    {provider, connect, room}
+  end
+
+  def external_thread_key(_origin), do: nil
+
+  defp external_user_message(origin) do
+    case nonblank(origin["source_text"]) do
+      nil ->
+        nil
+
+      text ->
+        %{
+          "actor_type" => "user",
+          "message_id" => origin["source_message_id"],
+          "content" => [%{"type" => "text", "text" => text}]
+        }
+    end
+  end
+
+  defp merge_external_messages(current, history) do
+    {merged, _seen} =
+      Enum.reduce(current ++ history, {[], MapSet.new()}, fn msg, {acc, seen} ->
+        id = msg["message_id"]
+
+        cond do
+          length(acc) >= @window ->
+            {acc, seen}
+
+          is_binary(id) and id != "" and MapSet.member?(seen, id) ->
+            {acc, seen}
+
+          is_binary(id) and id != "" ->
+            {[msg | acc], MapSet.put(seen, id)}
+
+          true ->
+            {[msg | acc], seen}
+        end
+      end)
+
+    Enum.reverse(merged)
+  end
+
+  defp map_field(map, key) when is_map(map), do: Map.get(map, key)
+  defp map_field(_map, _key), do: nil
+
+  defp nonblank(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp nonblank(_value), do: nil
+
+  defp question(scope, %{"provider" => "internal"} = origin, message_id) do
     case Conversations.get_group_conversation_message(
            scope.group_id,
            origin["conversation_id"],
@@ -105,6 +224,8 @@ defmodule SalixIM.ComputerChoice do
       _missing -> nil
     end
   end
+
+  defp question(_scope, _origin, _message_id), do: nil
 
   @doc false
   # `messages` newest first. `question` reads a question Message by id.
@@ -124,8 +245,33 @@ defmodule SalixIM.ComputerChoice do
           nil
       end)
 
-    settled || {:error, {:computer_choice_required, computers}}
+    cond do
+      settled != nil -> settled
+      external_question_answered?(computers, messages) -> :ok
+      true -> {:error, {:computer_choice_required, computers}}
+    end
   end
+
+  # In an external IM (no structured question card), if the user's newest
+  # unplaced reply immediately follows a Router reply that named at least two
+  # of their computers, treat the question as answered so the Router does not
+  # loop asking again.
+  defp external_question_answered?(computers, [%{"actor_type" => "user"} | _] = messages) do
+    {leading_users, rest} = Enum.split_while(messages, &(&1["actor_type"] == "user"))
+
+    all_unplaced? =
+      Enum.all?(leading_users, &(mentioned(text_of(&1["content"]), computers) == nil))
+
+    case {all_unplaced?, rest} do
+      {true, [%{"actor_type" => "agent", "external_reply" => true} = asked | _]} ->
+        length(named(text_of(asked["content"]), computers)) >= 2
+
+      _ ->
+        false
+    end
+  end
+
+  defp external_question_answered?(_computers, _messages), do: false
 
   defp settled(kind, named, aimed) do
     cond do

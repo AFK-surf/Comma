@@ -104,6 +104,8 @@ func Run(args []string, stdout, stderr io.Writer, env envFunc) int {
 		return rt.qq(args[1:])
 	case "telegram":
 		return rt.telegram(args[1:])
+	case "wecom":
+		return rt.wecom(args[1:])
 	case "slack":
 		return rt.slack(args[1:])
 	case "meetings":
@@ -1654,6 +1656,80 @@ func (rt runtime) qq(args []string) int {
 	return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_qq_command", "Unknown QQ command.", map[string]any{"command": args[0]}))
 }
 
+func (rt runtime) wecom(args []string) int {
+	if len(args) == 0 {
+		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_wecom_command", "Run bft wecom connect or status.", nil))
+	}
+	switch args[0] {
+	case "connect":
+		return rt.wecomConnect(args[1:])
+	case "status":
+		return rt.wecomStatus(args[1:])
+	}
+	return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_wecom_command", "Unknown WeCom command.", map[string]any{"command": args[0]}))
+}
+
+// wecomConnect connects a WeCom (企业微信) AI bot to a project. The Secret
+// comes from an environment variable, so it is never an argument or in shell
+// history.
+func (rt runtime) wecomConnect(args []string) int {
+	fs, opts := rt.newFlagSet("bft wecom connect")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	botID := fs.String("bot-id", "", "WeCom AI bot Bot ID")
+	secretEnv := fs.String("secret-env", "", "environment variable containing the WeCom AI bot Secret")
+	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	for name, value := range map[string]string{"org": *org, "project": *project, "bot-id": *botID, "secret-env": *secretEnv} {
+		if err := require(name, value); err.ExitCode != 0 {
+			return output.RenderError(rt.stderr, opts.outputOptions(), err)
+		}
+	}
+	body := map[string]any{"org": *org, "project": *project, "bot_id": *botID}
+	putSecretFromEnv(body, "secret", *secretEnv, rt.env)
+	if _, ok := body["secret"]; !ok {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_wecom_secret", "The environment variable named by --secret-env is empty.", map[string]any{"env": *secretEnv}))
+	}
+	if !*confirm {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating to connect the WeCom bot.", map[string]any{"command": "wecom.connect"}))
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Post(context.Background(), "/v1/cli/wecom/connect", body)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return wecomConnectText(data) }, output.ExitOK)
+}
+
+func (rt runtime) wecomStatus(args []string) int {
+	fs, opts := rt.newFlagSet("bft wecom status")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("org", *org); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Get(context.Background(), "/v1/cli/wecom/status", map[string]string{"org": *org, "project": *project})
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return wecomStatusText(data) }, output.ExitOK)
+}
+
 // qqConnect connects a QQ bot to a project. The AppSecret comes from an
 // environment variable, so it is never an argument or in shell history.
 func (rt runtime) qqConnect(args []string) int {
@@ -2024,6 +2100,7 @@ func (rt runtime) slackConnectsCreate(args []string) int {
 	clientSecretEnv := fs.String("client-secret-env", "", "environment variable containing Slack client secret")
 	signingSecretEnv := fs.String("signing-secret-env", "", "environment variable containing Slack signing secret")
 	inboundAgent := fs.String("inbound-agent", "", "Salix agent id that should receive inbound Slack messages")
+	memberScope := fs.String("member-scope", "", memberScopeUsage)
 	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
 	if err := parse(fs, args, opts); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
@@ -2032,6 +2109,9 @@ func (rt runtime) slackConnectsCreate(args []string) int {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
 	}
 	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := validMemberScope(*memberScope); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
 	}
 	if err := require("app-id", *appID); err.ExitCode != 0 {
@@ -2063,6 +2143,7 @@ func (rt runtime) slackConnectsCreate(args []string) int {
 	}
 	putIfPresent(body, "app_name", *appName)
 	putIfPresent(body, "inbound_agent_id", *inboundAgent)
+	putIfPresent(body, "member_scope", *memberScope)
 	data, apiErr := api.Post(context.Background(), slackConnectsPath(*org, *project), body)
 	if apiErr.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
@@ -2077,6 +2158,7 @@ func (rt runtime) slackConnectsUpdate(args []string) int {
 	connectID := fs.String("connect", "", "Slack connect id")
 	inboundAgent := fs.String("inbound-agent", "", "Salix agent id that should receive inbound Slack messages")
 	autoJoin := fs.String("auto-join-public-channels", "", "on or off: whether the app joins each new public channel by itself")
+	memberScope := fs.String("member-scope", "", memberScopeUsage)
 	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
 	if err := parse(fs, args, opts); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
@@ -2103,8 +2185,12 @@ func (rt runtime) slackConnectsUpdate(args []string) int {
 	default:
 		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("invalid_auto_join_public_channels", "Pass --auto-join-public-channels on or off.", map[string]any{"value": *autoJoin}))
 	}
+	if err := validMemberScope(*memberScope); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	putIfPresent(body, "member_scope", *memberScope)
 	if len(body) == 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_slack_connect_update", "Pass --inbound-agent, --auto-join-public-channels, or both.", nil))
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_slack_connect_update", "Pass --inbound-agent, --auto-join-public-channels, --member-scope, or more than one.", nil))
 	}
 	if !*confirm {
 		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the target connect and the change.", map[string]any{"command": "slack.connects.update"}))
@@ -2119,6 +2205,18 @@ func (rt runtime) slackConnectsUpdate(args []string) int {
 		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
 	}
 	return rt.render(opts.outputOptions(), data, func() string { return slackConnectText("Slack connect updated.", data) }, output.ExitOK)
+}
+
+const memberScopeUsage = "organization or external: whether the workspace's members are the project's people (organization) or only people an admin grants by name on the Connections page (external)"
+
+// validMemberScope accepts an absent --member-scope or one of its two values.
+func validMemberScope(scope string) output.Error {
+	switch scope {
+	case "", "organization", "external":
+		return output.Error{}
+	default:
+		return output.Usage("invalid_member_scope", "Pass --member-scope organization or external.", map[string]any{"value": scope})
+	}
 }
 
 func (rt runtime) slackConnectsLifecycle(action string, args []string) int {
@@ -2295,7 +2393,7 @@ func (rt runtime) onboardingPayload(opts *commonOptions, step, org, project, app
 			exitCode = output.ExitNeedsManual
 		}
 	case "first-message":
-		gates = append(gates, map[string]any{"gate_id": "bot.first_message", "label": "First message round-trips", "classification": "manual", "status": "needs_manual", "reason_class": "real_feishu_message_required", "required": true, "next_action": "Send a real @Bridge message in the target Feishu group and verify a reply.", "evidence": map[string]any{}, "redacted": true})
+		gates = append(gates, map[string]any{"gate_id": "bot.first_message", "label": "First message round-trips", "classification": "manual", "status": "needs_manual", "reason_class": "real_feishu_message_required", "required": true, "next_action": "Send a real @Comma message in the target Feishu group and verify a reply.", "evidence": map[string]any{}, "redacted": true})
 		exitCode = output.ExitNeedsManual
 	case "runner":
 		payload, code := rt.runnerSmoke(opts, org)

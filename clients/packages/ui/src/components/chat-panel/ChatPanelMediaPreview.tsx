@@ -20,6 +20,7 @@ export interface ChatPanelMediaPreviewProps {
   isOpen: boolean;
   onOpenChange: (isOpen: boolean) => void;
   returnFocusRef?: RefObject<HTMLElement | null>;
+  sharedElementTransition?: "opening" | "closing" | null;
   title: string;
   variant?: "default" | "filmstrip";
 }
@@ -31,6 +32,7 @@ export const ChatPanelMediaPreview = ({
   isOpen,
   onOpenChange,
   returnFocusRef,
+  sharedElementTransition = null,
   title,
   variant = "default",
 }: ChatPanelMediaPreviewProps) => {
@@ -87,11 +89,15 @@ export const ChatPanelMediaPreview = ({
       className={(state) =>
         cx(
           "chat-panel-media-preview-overlay",
-          state.isEntering && !instantMotion && "is-entering",
-          state.isExiting && "is-exiting",
-          state.isExiting && keyboardClosing && "is-instant"
+          state.isEntering &&
+            !instantMotion &&
+            !sharedElementTransition &&
+            "is-entering",
+          state.isExiting && !sharedElementTransition && "is-exiting",
+          state.isExiting && (keyboardClosing || instantMotion) && "is-instant"
         )
       }
+      data-shared-transition={sharedElementTransition ?? undefined}
       isDismissable
       isOpen={isOpen}
       onOpenChange={onOpenChange}
@@ -100,11 +106,15 @@ export const ChatPanelMediaPreview = ({
         className={(state) =>
           cx(
             "chat-panel-media-preview-modal",
-            state.isEntering && !instantMotion && "is-entering",
-            state.isExiting && "is-exiting",
-            state.isExiting && keyboardClosing && "is-instant"
+            state.isEntering &&
+              !instantMotion &&
+              !sharedElementTransition &&
+              "is-entering",
+            state.isExiting && !sharedElementTransition && "is-exiting",
+            state.isExiting && (keyboardClosing || instantMotion) && "is-instant"
           )
         }
+        data-shared-transition={sharedElementTransition ?? undefined}
         data-variant={variant}
         onClick={
           variant === "filmstrip"

@@ -21,39 +21,65 @@ defmodule SalixAgent.ToolDisclosure do
   @summary "summary"
   @revision_contract 2
 
-  # Staging usage, 2026-09-19..26: >=100 calls OR >=20 distinct sessions.
-  # 42 catalog tools plus the direct wait_for control cover 19,984/21,695 calls.
+  # The few tools nearly every activation calls show their manual and schema
+  # in the prompt, so they need no help round. Every other tool shows one line
+  # and is read with `help` before its first call: whole manuals for the ~40
+  # most used tools made the Tool Disclosure ~60K characters of a ~130K Router
+  # prompt (staging, 2026-11-17).
   # Other IM provider operations (`im_api.*`) are left out: the model finds
   # them with `im.provider_apis_list` and `help`. The Comma reply path,
   # im_api.internal.send_message, stays: most activations send through it.
   # Selection affects presentation only, after session capability filtering.
   @common_tools ~w(
-    composio.execute
-    composio.get_tool
-    composio.list_connections
-    device.get
-    device.list
-    env.exec
     fs.edit_file
     fs.read_file
     fs.write_file
     help
-    im.connects_list
-    im.provider_apis_list
     im_api.internal.send_message
-    loop.get
-    mcp.list
-    memory.write
-    oauth.list_credentials
-    proactive.state
-    process.start
-    recommendation.read
-    script.run_file
-    script.sdk
-    tool_call.get_result
-    web.http_request
     web.read_pages
     web.search
+  )
+
+  # Pre-disclosed only for Worker sessions holding a `triage_investigation` grant.
+  # Non-triage tools remain callable and helpable but stay hidden from the
+  # initial prompt listing to keep uncached per-batch Triage prompts lean.
+  @triage_manual_tools ~w(
+    im_api.internal.triage.read_source
+    im_api.internal.triage.read_context
+    im_api.internal.triage.read_memory
+    im_api.internal.triage.complete
+  )
+
+  @triage_common_manual_tools ~w(
+    help
+    im_api.internal.send_message
+    web.read_pages
+    web.search
+  )
+
+  @triage_summary_tools ~w(
+    im_api.slack.get_channel_history
+    im_api.slack.get_thread_replies
+    im_api.slack.get_user_info
+    im_api.slack.search
+    im_api.slack.message_search
+    im_api.internal.station_task.list
+  )
+
+  @triage_worker_summary_tools ~w(
+    composio.list_connections
+    composio.list_tools
+    composio.get_tool
+    composio.execute
+    tool_call.get_result
+    tool_call.get_status
+    fs.read_file
+    fs.list_files
+    im.connects_list
+    im.provider_apis_list
+    mcp.list
+    history.search
+    history.get
   )
 
   @internal_controls ~w(wait_for)
@@ -83,35 +109,89 @@ defmodule SalixAgent.ToolDisclosure do
     if entries == [] do
       nil
     else
-      rendered =
-        entries
-        |> Enum.map_join("\n", fn entry ->
-          lines =
-            case entry["prompt_visibility"] do
-              @manual ->
-                [
-                  "- #{entry["name"]}: #{entry["summary"]}",
-                  restriction_line(entry),
-                  manual_line(entry),
-                  "  schema: " <> Jason.encode!(entry_schema(entry) || %{}),
-                  examples_line(entry, runtime_kind)
-                ]
-
-              _ ->
-                ["- #{entry["name"]}: #{entry["summary"]}", restriction_line(entry)]
-            end
-
-          lines |> Enum.reject(&is_nil/1) |> Enum.join("\n")
-        end)
+      rendered = render_entries(entries, runtime_kind)
 
       """
       ## Tool Disclosure
 
-      #{runtime_call_instruction(runtime_kind)} Every listed tool is callable and has a help manual unless a line under it says otherwise.
+      #{runtime_call_instruction(runtime_kind)} Every listed tool is callable and has a help manual unless a line under it says otherwise. A tool listed with one line and no schema: read it with help before its first call in this session.
 
       #{rendered}
       """
       |> String.trim()
+    end
+  end
+
+  @doc "Render selected platform tools from canonical registry content only."
+  def projected_prompt_section(disclosure, role, runtime_kind) do
+    selected = disclosure |> disclosure_tools() |> Map.new(&{&1["name"], &1})
+
+    # IM operations have a static producer separate from the tool registry.
+    # Only pre-disclosed operations need materialization here.
+    builtin_im =
+      @common_tools
+      |> Enum.filter(&String.starts_with?(&1, "im_api."))
+      |> Enum.map(&SalixAgent.Tools.ImRouter.builtin_help_entry/1)
+
+    entries =
+      (all_candidates() ++ builtin_im)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(&role_candidate?(&1, role))
+      |> Enum.filter(&runtime_candidate?(&1, runtime_kind))
+      |> Enum.filter(fn entry ->
+        match?(%{"callable" => true}, Map.get(selected, entry["name"]))
+      end)
+      |> Enum.map(&candidate_to_disclosure(&1, role, runtime_kind, false))
+
+    prompt_section(%{"tools" => entries}, runtime_kind)
+  end
+
+  @doc """
+  Renders disclosure entries as Tool Disclosure lines. A `manual` entry, or
+  every entry with `full: true`, shows its manual and schema; the rest show
+  one line.
+  """
+  def render_entries(entries, runtime_kind \\ :internal, opts \\ []) when is_list(entries) do
+    full? = Keyword.get(opts, :full, false)
+
+    Enum.map_join(entries, "\n", fn entry ->
+      lines =
+        if full? or entry["prompt_visibility"] == @manual do
+          [
+            "- #{entry["name"]}: #{entry["summary"]}",
+            restriction_line(entry),
+            manual_line(entry),
+            "  schema: " <> Jason.encode!(entry_schema(entry) || %{}),
+            examples_line(entry, runtime_kind)
+          ]
+        else
+          [
+            "- #{entry["name"]}: #{first_sentence(entry["summary"])}",
+            restriction_line(entry)
+          ]
+        end
+
+      lines |> Enum.reject(&is_nil/1) |> Enum.join("\n")
+    end)
+  end
+
+  # A one-line tool shows only what it is for; its manual says the rest.
+  @one_line_limit 100
+
+  defp first_sentence(summary) do
+    summary = summary |> to_string() |> String.trim()
+
+    sentence =
+      case Regex.run(~r/\A.+?[.!?](?=\s|\z)/su, summary) do
+        [sentence] -> sentence
+        _ -> summary
+      end
+
+    if String.length(sentence) <= @one_line_limit do
+      sentence
+    else
+      cut = String.slice(sentence, 0, @one_line_limit)
+      String.replace(cut, ~r/\s+\S*\z/u, "") <> "…"
     end
   end
 
@@ -188,8 +268,19 @@ defmodule SalixAgent.ToolDisclosure do
     materialize_candidates(role, runtime_kind, ctx, [])
   end
 
+  defp materialize_candidates("meeting", runtime_kind, _ctx, _dynamic) do
+    %{
+      "revision" => revision("meeting", runtime_kind, []),
+      "tools" => [],
+      "listed_fingerprints" => ""
+    }
+  end
+
   defp materialize_candidates(role, runtime_kind, ctx, dynamic) do
     disabled_tools = disabled_tools(ctx)
+
+    triage_investigation? =
+      normalize_role(role) == "worker" and triage_investigation_context?(ctx)
 
     candidate_list =
       all_candidates()
@@ -207,26 +298,80 @@ defmodule SalixAgent.ToolDisclosure do
       |> Enum.filter(&SalixAgent.PluginPolicy.allowed_tool?(ctx, &1["name"]))
       |> Enum.filter(&SalixAgent.RecommendationPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.filter(&SalixAgent.GuestPolicy.allowed_disclosure?(ctx, &1))
+      |> Enum.filter(&SalixAgent.CollaborationPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.filter(&SalixAgent.InspectorPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.map(&SalixAgent.InspectorPolicy.describe(&1, ctx))
       |> reject_unconfigured_capabilities(ctx)
+      |> Enum.map(&SalixAgent.Tools.GroupSearch.describe(&1, ctx))
       |> reject_for_sandboxes(role, ctx)
       |> Enum.with_index()
       |> Enum.map(fn {candidate, index} -> Map.put(candidate, "__order__", index) end)
 
     tools =
       candidate_list
-      |> Enum.map(&candidate_to_disclosure(&1, role, runtime_kind))
+      |> Enum.map(&candidate_to_disclosure(&1, role, runtime_kind, triage_investigation?))
       |> Enum.uniq_by(& &1["name"])
       |> Enum.sort_by(& &1["__order__"])
       |> Enum.map(&Map.drop(&1, ["__order__"]))
 
     # The revision covers the full entries. The stored entries then omit
     # what the registry already holds; see `entry_schema/1`.
-    %{
+    stored = compact_registry_entries(tools)
+
+    disclosure = %{
       "revision" => revision(role, runtime_kind, tools),
-      "tools" => compact_registry_entries(tools)
+      "tools" => stored,
+      "listed_fingerprints" => fingerprints_of(stored)
     }
+
+    if triage_investigation?,
+      do: Map.put(disclosure, "triage_investigation", true),
+      else: disclosure
+  end
+
+  @doc """
+  The tools the prompt's Tool Disclosure lists: callable and not hidden.
+  """
+  def listed_tools(%{"tools" => tools}) when is_list(tools) do
+    Enum.filter(tools, fn tool ->
+      tool["callable"] == true and tool["prompt_visibility"] != @hidden and
+        is_binary(tool["name"]) and tool["name"] != ""
+    end)
+  end
+
+  def listed_tools(_disclosure), do: []
+
+  @doc """
+  One `name=digest` line per listed tool, sorted by name, so a later
+  revision can name the tools that were added, changed or removed. The
+  digest covers what the model sees of the tool, its registry schema
+  included. One string keeps the stored provider state a single leaf.
+  """
+  def listed_fingerprints(%{"listed_fingerprints" => fingerprints}) when is_binary(fingerprints),
+    do: fingerprints
+
+  def listed_fingerprints(disclosure), do: fingerprints_of(disclosure_tools(disclosure))
+
+  defp disclosure_tools(%{"tools" => tools}) when is_list(tools), do: tools
+  defp disclosure_tools(_disclosure), do: []
+
+  defp fingerprints_of(tools) do
+    %{"tools" => tools}
+    |> listed_tools()
+    |> Enum.map(fn tool ->
+      digest =
+        tool
+        |> Map.take(~w(prompt_visibility summary manual manual_available helpable router_only))
+        |> Map.put("input_schema", entry_schema(tool))
+        |> Jason.encode!()
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.url_encode64(padding: false)
+        |> binary_part(0, 8)
+
+      tool["name"] <> "=" <> digest
+    end)
+    |> Enum.sort()
+    |> Enum.join("\n")
   end
 
   @doc """
@@ -429,13 +574,16 @@ defmodule SalixAgent.ToolDisclosure do
     end
   end
 
-  defp candidate_to_disclosure(candidate, role, runtime_kind) do
+  defp candidate_to_disclosure(candidate, role, runtime_kind, triage_investigation?) do
     name = candidate["name"]
 
     %{
       "name" => name,
       "prompt_visibility" =>
-        if(name in @internal_controls, do: @hidden, else: default_visibility(candidate)),
+        if(name in @internal_controls,
+          do: @hidden,
+          else: default_visibility(candidate, triage_investigation?)
+        ),
       "summary" => candidate["summary"] || "",
       "manual_available" => candidate["manual_available"] != false,
       "helpable" => candidate["helpable"] != false,
@@ -551,9 +699,67 @@ defmodule SalixAgent.ToolDisclosure do
       end
 
     candidates
-    |> maybe_reject_family("email.", fn -> owner_emails_configured?(ctx) end)
+    |> maybe_reject_family("group.", fn -> group_search_configured?(ctx) end)
     |> maybe_reject_family("station.", fn -> SalixAgent.Stations.offered?(ctx) end)
     |> maybe_reject_family("video.generate", fn -> video_configured?(ctx) end)
+    |> reject_unconfigured_colab(ctx)
+  end
+
+  defp reject_unconfigured_colab(candidates, ctx) do
+    has_colab? = Enum.any?(candidates, &String.starts_with?(&1["name"], "colab."))
+
+    if not has_colab? do
+      candidates
+    else
+      tenant = tenant_id(ctx)
+      group = group_id(ctx)
+
+      cond do
+        not SalixAgent.GuestPolicy.allowed_tool?(ctx, "colab.status") ->
+          Enum.reject(candidates, &String.starts_with?(&1["name"], "colab."))
+
+        tenant == "" or group == "" ->
+          candidates
+
+        SalixStore.TenantProfiles.router_only?(tenant) ->
+          Enum.reject(candidates, &String.starts_with?(&1["name"], "colab."))
+
+        SalixAgent.Colab.Account.has_active_account?(tenant, group) ->
+          candidates
+
+        true ->
+          case owner_has_colab_leases?(tenant, ctx) do
+            :yes ->
+              Enum.reject(
+                candidates,
+                &(&1["name"] in ~w(colab.exec colab.upload colab.download))
+              )
+
+            :no ->
+              Enum.reject(candidates, &String.starts_with?(&1["name"], "colab."))
+
+            :error ->
+              candidates
+          end
+      end
+    end
+  rescue
+    _ -> candidates
+  end
+
+  defp owner_has_colab_leases?(tenant, ctx) do
+    group = group_id(ctx)
+
+    with true <- group != "",
+         {:ok, scope} <- SalixAgent.Colab.Leases.owner_scope(ctx) do
+      case SalixAgent.Colab.Leases.has_owner_leases?(tenant, group, scope) do
+        {:ok, true} -> :yes
+        {:ok, false} -> :no
+        {:error, _} -> :error
+      end
+    else
+      _ -> :no
+    end
   end
 
   defp video_configured?(ctx) do
@@ -586,7 +792,7 @@ defmodule SalixAgent.ToolDisclosure do
       cloud_vm_retired?(ctx) ->
         Enum.reject(candidates, &String.starts_with?(&1["name"], "cloud_vm."))
 
-      normalize_role(role) == "router" ->
+      normalize_role(role) == "router" or SalixAgent.CollaborationPolicy.restricted?(ctx) ->
         candidates
 
       true ->
@@ -618,29 +824,8 @@ defmodule SalixAgent.ToolDisclosure do
   # Any supported provider with resolvable client credentials (tenant record
   # or platform default — the store's provider_app already falls back) keeps
   # the oauth.* family visible.
-  # `email.send_to_owners` is only useful when the session's group carries a
-  # non-empty platform-managed `owner_emails` list, so the family is dropped
-  # when the group record definitively has none. Fail-open mirrors the tenant
-  # gates above: no wired group-context seam, blank tenant/group in ctx, or a
-  # transient store error keeps the family visible.
-  defp owner_emails_configured?(ctx) do
-    tenant = tenant_id(ctx)
-    group = group_id(ctx)
-
-    cond do
-      is_nil(SystemsRuntime.get_env(:salix_agent, :group_context_mod)) ->
-        true
-
-      tenant == "" or group == "" ->
-        true
-
-      true ->
-        case SalixAgent.GroupContext.get(group, tenant) do
-          {:ok, record} -> SalixAgent.Tools.OwnerEmail.owner_emails(record) != []
-          {:error, :not_found} -> false
-          _other -> true
-        end
-    end
+  defp group_search_configured?(ctx) do
+    SalixAgent.Tools.GroupSearch.authorized_targets(tenant_id(ctx), group_id(ctx)) != []
   end
 
   defp composio_configured?(tenant) do
@@ -690,18 +875,58 @@ defmodule SalixAgent.ToolDisclosure do
   defp normalize_role(nil), do: "worker"
   defp normalize_role(role), do: to_string(role)
 
+  defp triage_investigation_context?(ctx) when is_map(ctx) do
+    triage_investigation_origin?(ctx[:trusted_origin]) or
+      triage_investigation_origin?(ctx["trusted_origin"]) or
+      Enum.any?(
+        List.wrap(ctx[:trusted_origins] || ctx["trusted_origins"]),
+        &triage_investigation_origin?/1
+      ) or
+      List.wrap(ctx[:triage_scopes] || ctx["triage_scopes"]) != [] or
+      ctx[:triage_investigation] == true or
+      ctx["triage_investigation"] == true
+  end
+
+  defp triage_investigation_context?(_ctx), do: false
+
+  defp triage_investigation_origin?(origin) when is_map(origin),
+    do: is_map(origin["triage_investigation"])
+
+  defp triage_investigation_origin?(_origin), do: false
+
+  defp default_visibility(%{"name" => name}, true)
+       when name in @triage_manual_tools or name in @triage_common_manual_tools,
+       do: @manual
+
+  defp default_visibility(%{"name" => name}, true)
+       when name in @triage_summary_tools or name in @triage_worker_summary_tools,
+       do: @summary
+
+  defp default_visibility(_candidate, true), do: @hidden
+
+  defp default_visibility(candidate, _triage_investigation?), do: default_visibility(candidate)
+
   defp default_visibility(%{"name" => name}) when name in @common_tools, do: @manual
 
   # Other IM provider operations are not pre-disclosed. The model lists them
   # with `im.provider_apis_list` and reads one with `help` before its first call.
   defp default_visibility(%{"name" => "im_api." <> _operation}), do: @hidden
 
-  # Opt-in and Group-gated: an Agent that has the tool is expected to use it
-  # without a help round.
+  # Opt-in: an Agent that has the tool is expected to use it without a help round.
   defp default_visibility(%{"name" => "condensed_workspace.update"}), do: @manual
+
+  # Group-gated: `group.search_conversations` carries the authorized target
+  # Groups (`GroupSearch.describe/2`), which a one-line entry would cut off.
+  defp default_visibility(%{"name" => "group." <> _operation}), do: @manual
 
   # Other dynamic entries, such as MCP tools, have their own discovery tools.
   defp default_visibility(%{"__source__" => :dynamic}), do: @hidden
+
+  # A person asks for a Comma plugin in chat far more often than an Agent
+  # manages one, so the install request is disclosed without a
+  # `help("plugin")` round. It answers `installed` for an installed plugin
+  # and the catalog for an unknown id. Plugin definitions stay hidden.
+  defp default_visibility(%{"name" => "plugin.request_install"}), do: @manual
 
   defp default_visibility(%{"name" => name}) do
     if Enum.any?(discovery_namespaces(), &String.starts_with?(name, &1 <> ".")),
@@ -711,7 +936,8 @@ defmodule SalixAgent.ToolDisclosure do
 
   @doc false
   def discovery_namespaces,
-    do: ~w(mcp_manager plugin calendar inbound_api ssh tailnet browser im_api.internal.label)
+    do:
+      ~w(mcp_manager plugin calendar inbound_api ssh tailnet browser colab im_api.internal.label)
 
   defp wait_for_spec do
     entry = SalixAgent.Tools.AsyncOps.wait_for_def()

@@ -2,7 +2,7 @@
   "catalogVersion": 1,
   "limits": {
     "cards": 6,
-    "itemsPerCard": 4,
+    "itemsPerCard": 7,
     "payloadBytes": 65536,
     "sources": 12,
     "summaryCharacters": 1200,
@@ -97,7 +97,7 @@
         "id": "required",
         "parts": "required:one-line pre-task; an imperative Task-style line with its specific object, verb first, the entity as an inline-link inside it (GitHub PR items include owner/repository context followed by #<number>; Linear issue labels are their identifier), target under 60 visible characters including the chip label; the item's action is that task and its prompt opens with why now"
       },
-      "maxItems": 4,
+      "maxItems": 7,
       "allowedItemFields": ["action", "id", "parts"],
       "additionalItemFields": false
     },
@@ -112,7 +112,7 @@
         "imageUrl": "required:absolute-credential-free-https-url",
         "title": "required:max-160"
       },
-      "maxItems": 4,
+      "maxItems": 7,
       "allowedItemFields": ["action", "description", "id", "imageUrl", "title"],
       "additionalItemFields": false
     }

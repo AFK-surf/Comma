@@ -1,6 +1,7 @@
 ---
 name: tailcat-ssh
 description: Reach a user's own computer or server over SSH through Tailcat, with no public IP, open port, VPN or account. Guide the user to install tailcat and start its SSH server with the Group SSH key, then connect with ssh.open tailcat and work through the ssh.* tools.
+prompt_summary: "Connect over SSH/Tailcat to a user's machine using the Group key and Tailcat address."
 ---
 
 # SSH Through Tailcat

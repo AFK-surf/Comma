@@ -77,6 +77,7 @@ defmodule SalixIM.Triage.ProductObligation do
              Map.values(sources)
            ),
          {:ok, delegations} <- restore_refs(decision["delegations"], sources),
+         true <- delegations_anchored?(delegations, authorization.raw_bundle, target),
          {:ok, delegations} <-
            SalixIM.Triage.WorkerSelection.restore(
              delegations,
@@ -362,6 +363,35 @@ defmodule SalixIM.Triage.ProductObligation do
     |> Enum.map(& &1["recheck_context_ref"])
     |> Enum.uniq()
   end
+
+  defp delegations_anchored?([], _raw_bundle, _target), do: true
+
+  defp delegations_anchored?(delegations, raw_bundle, target) when is_list(delegations) do
+    messages = List.wrap(get_in(raw_bundle, ["raw_context", "slack_context", "messages"]))
+    authority = raw_bundle["source_authority"]
+
+    slack_anchors =
+      if ChannelBatch.channel?(authority) do
+        for %{"source_ref" => ref} = message <- messages,
+            is_binary(ref) and ref != "" and
+              (message["root_thread_ts"] || message["message_ts"]) == target["thread_ts"],
+            do: ref
+      else
+        for %{"source_ref" => ref} <- messages, is_binary(ref) and ref != "", do: ref
+      end
+
+    anchors = MapSet.new(slack_anchors ++ Enum.filter(recheck_refs(raw_bundle), &is_binary/1))
+
+    Enum.all?(delegations, fn
+      %{"source_refs" => refs} when is_list(refs) ->
+        Enum.any?(refs, &MapSet.member?(anchors, &1))
+
+      _other ->
+        false
+    end)
+  end
+
+  defp delegations_anchored?(_delegations, _raw_bundle, _target), do: false
 
   @doc false
   def bind_recheck_context(candidates, refs, sources) do

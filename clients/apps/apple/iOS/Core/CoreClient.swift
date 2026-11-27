@@ -161,6 +161,8 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
     private var engine: (any CoreEngine)?
     private var nextId: UInt64 = 1
     private var calls: [UInt64: (Result<CoreJSON, CoreError>) -> Void] = [:]
+    /// The names of calls under way while performance recording is on.
+    private var callNames: [UInt64: String] = [:]
     /// The progress of the calls that asked for it, by id; gone with their answer.
     private var progress: [UInt64: (CoreJSON) -> Void] = [:]
     private var subscriptions: [UInt64: Subscription] = [:]
@@ -263,6 +265,9 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
 
     private func restart(_ reason: String) {
         onFault(reason)
+        if PerformanceRecord.isRecordingFast {
+            PerformanceRecord.noteShared("core: fatal \(reason)")
+        }
         // A core that ran a while failed for a new reason: the pauses start over.
         if DispatchTime.now().uptimeNanoseconds - startedAt > Self.steadyNanos { failures = 0 }
         let old = engine
@@ -284,6 +289,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
     private func rejectCalls(_ error: CoreError) {
         let waiting = Array(calls.values)
         calls.removeAll()
+        callNames.removeAll()
         progress.removeAll()
         for call in waiting { call(.failure(error)) }
     }
@@ -293,37 +299,68 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
     }
 
     private func receive(_ json: Data) {
+        let recording = PerformanceRecord.isRecordingFast
+        let t0 = recording ? DispatchTime.now().uptimeNanoseconds : 0
+        if !recording && !callNames.isEmpty { callNames.removeAll() }
         guard let message = (try? JSONSerialization.jsonObject(with: json)) as? NSDictionary,
               let id = (message["id"] as? NSNumber)?.uint64Value else { return }
         if let subscription = subscriptions[id] {
+            let kind: String
             if let value = message["value"] {
                 subscription.value = value
                 subscription.has = true
+                kind = "value"
             } else if let delta = message["delta"] {
                 guard subscription.has else { return }
                 subscription.value = Delta.apply(subscription.value, delta as? NSArray ?? [])
+                kind = "delta"
             } else if message["error"] != nil {
                 subscription.has = false
                 subscription.value = nil
                 subscription.onError(Self.error(message["error"]))
+                if recording {
+                    let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000.0
+                    let topic = (subscription.topic["topic"] as? String) ?? "?"
+                    CoreBridgePerfCounters.shared.recordIn("topic \(topic) error", bytes: json.count, ms: ms)
+                }
                 return
             } else {
                 return
             }
             subscription.onValue(subscription.value)
+            if recording {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000.0
+                let topic = (subscription.topic["topic"] as? String) ?? "?"
+                CoreBridgePerfCounters.shared.recordIn("topic \(topic) \(kind)", bytes: json.count, ms: ms)
+            }
             return
         }
         guard let call = calls[id] else { return }
         if let ok = message["ok"] {
             calls[id] = nil
             progress[id] = nil
+            let callName = callNames.removeValue(forKey: id)
             call(.success(CoreJSON(value: ok is NSNull ? nil : ok)))
+            if recording {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000.0
+                CoreBridgePerfCounters.shared.recordIn("call \(callName ?? "?") ok", bytes: json.count, ms: ms)
+            }
         } else if message["error"] != nil {
             calls[id] = nil
             progress[id] = nil
+            let callName = callNames.removeValue(forKey: id)
             call(.failure(Self.error(message["error"])))
+            if recording {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000.0
+                CoreBridgePerfCounters.shared.recordIn("call \(callName ?? "?") error", bytes: json.count, ms: ms)
+            }
         } else if let value = message["value"] {
+            let callName = callNames[id]
             progress[id]?(CoreJSON(value: value is NSNull ? nil : value))
+            if recording {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000.0
+                CoreBridgePerfCounters.shared.recordIn("call \(callName ?? "?") progress", bytes: json.count, ms: ms)
+            }
         }
     }
 
@@ -370,6 +407,10 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
                         self.nextId += 1
                         state.id = id
                         self.calls[id] = { result in continuation.resume(with: result.mapError { $0 as any Error }) }
+                        if PerformanceRecord.isRecordingFast {
+                            self.callNames[id] = name
+                            CoreBridgePerfCounters.shared.recordOut(name)
+                        }
                         if let onProgress { self.progress[id] = onProgress }
                         self.post(["id": id, "call": name, "params": box.params])
                     }
@@ -379,6 +420,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
             queue.async {
                 state.cancelled = true
                 guard let id = state.id, let waiting = self.calls.removeValue(forKey: id) else { return }
+                self.callNames[id] = nil
                 self.progress[id] = nil
                 self.post(["id": id, "cancel": true])
                 waiting(.failure(CoreError(code: "cancelled", message: "The call was cancelled.")))
@@ -435,6 +477,10 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
                     onValue: { continuation.yield(.value(read($0))) },
                     onError: { continuation.yield(.failed($0)) })
                 self.order.append(id)
+                if PerformanceRecord.isRecordingFast {
+                    let topicName = (box.params["topic"] as? String) ?? "?"
+                    CoreBridgePerfCounters.shared.recordOut("sub \(topicName)")
+                }
                 self.post(["id": id, "subscribe": box.params])
             }
             continuation.onTermination = { _ in

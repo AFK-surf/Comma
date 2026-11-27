@@ -5,10 +5,14 @@ import getExePath from "@effect/tsgo/lib/getExePath";
 
 const sourceFile = /\.(?:ts|tsx|mts|cts)$/;
 
-// Files that no project checks on purpose. Each entry needs a reason.
-const uncheckedByDesign = [
+// Files that no project checks on purpose: a path prefix, or a pattern. Each entry needs a reason.
+const uncheckedByDesign: (string | RegExp)[] = [
   // Storybook configuration was never type-checked and has known type errors.
   "packages/ui/.storybook/",
+  // The Raycast extension's commands import @raycast/api, which only the extension's own npm project
+  // installs (it pins another React). `npm run build` there checks them. Its `src/lib` is not excepted:
+  // it must stay in the build graph (apps/raycast/tsconfig.lib.json).
+  /^apps\/raycast\/src\/(?!lib\/)/,
 ];
 
 function configPath(path: string): string {
@@ -52,7 +56,9 @@ export function findUncheckedFiles(clients: string): string[] {
       (file) =>
         sourceFile.test(file) &&
         !file.split("/").some((part) => part === "node_modules" || part === "dist") &&
-        !uncheckedByDesign.some((prefix) => file.startsWith(prefix)) &&
+        !uncheckedByDesign.some((rule) =>
+          typeof rule === "string" ? file.startsWith(rule) : rule.test(file)
+        ) &&
         existsSync(join(clients, file)) &&
         !checked.has(resolve(clients, file))
     )

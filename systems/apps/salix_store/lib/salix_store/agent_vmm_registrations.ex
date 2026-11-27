@@ -648,6 +648,8 @@ defmodule SalixStore.AgentVMMRegistrations do
       :surface,
       :environment_id,
       :initial_workload_id,
+      :device_id,
+      :connected,
       :delivery_target_type,
       :delivery_target_id,
       :authorizing_subject_id,

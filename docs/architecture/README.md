@@ -77,6 +77,6 @@ pnpm architecture:validate
 
 LikeC4 模型只陈述当前代码、持久化约束和直接测试支持的已实现事实。部署图还需核对生产配置。未实现内容和剩余验收点记录在对应领域文档及关联 issue/PR 中，不作为 planned 节点进入生产拓扑。`finished/` 中的历史 RFC 不能单独证明当前实现。
 
-发布迁移遵循根 [AGENTS.md](../../AGENTS.md#release-convergence-and-migrations)。
+发布迁移遵循[systems/AGENTS.md](../../systems/AGENTS.md#release-convergence-and-migrations)。
 
 生成物受版本控制且可确定性重建，但本原型尚未接入 CI 强制新鲜度；现阶段优先验证信息层次和阅读体验。

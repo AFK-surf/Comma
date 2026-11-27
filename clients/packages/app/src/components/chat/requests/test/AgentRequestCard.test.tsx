@@ -7,6 +7,7 @@ import type {
   PluginRow,
 } from "@comma/core-client";
 import { act, render, screen, within } from "@comma/test-utils/render";
+import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,7 +79,7 @@ describe("An Agent's location request", () => {
     const card = screen.getByTestId("agent-request-card");
     expect(within(card).getByText("Share your location")).toBeTruthy();
     expect(within(card).getByText("Find cafes near you.")).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "Share location" }));
+    await userEvent.click(screen.getByRole("button", { name: "Only this time" }));
     expect(core.sentTo("agentRequests.shareLocation")).toEqual([
       {
         group: "grp-1",
@@ -89,14 +90,64 @@ describe("An Agent's location request", () => {
         accuracy: 20,
       },
     ]);
+    // Once only: later messages carry no position.
+    expect(core.sentTo("locationSharing.set")).toEqual([]);
+  });
+
+  it("shares and turns on sharing with each message when the person always shares", async () => {
+    devicePosition.mockResolvedValue({
+      ok: true,
+      value: {
+        latitude: 35.67,
+        longitude: 139.76,
+        accuracy: 20,
+        at: "2026-11-23T03:14:00.000Z",
+      },
+    });
+    const { core } = show(asked());
+    await userEvent.click(screen.getByRole("button", { name: "Always share" }));
+    expect(core.sentTo("agentRequests.shareLocation")).toHaveLength(1);
+    expect(core.sentTo("locationSharing.set")).toEqual([{ enabled: true }]);
+    // The next message carries this reading.
+    await vi.waitFor(() =>
+      expect(core.sentTo("locationSharing.report")).toHaveLength(1)
+    );
+    expect(core.sentTo("locationSharing.report")).toEqual([
+      {
+        position: {
+          latitude: 35.67,
+          longitude: 139.76,
+          accuracy: 20,
+          readAt: Date.parse("2026-11-23T03:14:00.000Z"),
+        },
+      },
+    ]);
   });
 
   it("says when the system refused, sending nothing", async () => {
     devicePosition.mockResolvedValue({ ok: false, code: "denied", message: "No." });
     const { core } = show(asked());
-    await userEvent.click(screen.getByRole("button", { name: "Share location" }));
+    await userEvent.click(screen.getByRole("button", { name: "Always share" }));
     expect(screen.getByText(/Location is off for Comma/)).toBeTruthy();
     expect(core.sentTo("agentRequests.shareLocation")).toEqual([]);
+    expect(core.sentTo("locationSharing.set")).toEqual([]);
+  });
+
+  it("on the desktop, stops at macOS when location is off for Comma, reading nothing", async () => {
+    devicePosition.mockClear();
+    installNativeBridgeMock({
+      appPreferences: {
+        requestLocationAuthorization: vi.fn(async () => "denied" as const),
+      },
+      os: "macos",
+      platform: "electron",
+    });
+    const { core } = show(asked());
+    await userEvent.click(screen.getByRole("button", { name: "Always share" }));
+    expect(screen.getByText(/Location is off for Comma/)).toBeTruthy();
+    expect(devicePosition).not.toHaveBeenCalled();
+    expect(core.sentTo("agentRequests.shareLocation")).toEqual([]);
+    expect(core.sentTo("locationSharing.set")).toEqual([]);
   });
 
   it("passes a decline on and closes into a receipt without coordinates", async () => {
@@ -170,6 +221,58 @@ describe("An Agent's connect-account request", () => {
     expect(receipt().textContent).toContain("Saved");
     expect(receipt().textContent).toContain("OpenAI API Key");
     expect(receipt().textContent).not.toContain("sk-typed");
+  });
+
+  it("takes a secret's fields on the card: each required one, and an optional one may stay empty", async () => {
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    const { core } = show(
+      request({
+        oauth: {
+          provider: "secret",
+          alias: "lumen-erp",
+          reason: "The ERP needs an app key and a secret.",
+          scopes: [],
+          authorizationUrl: "https://salix.example.com/oauth/secret/form?state=s",
+          input: {
+            kind: "secret",
+            fields: [
+              { name: "app_key", label: "App Key", secret: false, optional: false },
+              {
+                name: "app_secret",
+                label: "App Secret",
+                secret: true,
+                optional: false,
+              },
+              { name: "token", label: "Token", secret: true, optional: true },
+            ],
+          },
+        },
+      })
+    );
+    const card = screen.getByTestId("agent-request-card");
+    expect(within(card).queryByRole("button", { name: /Open form/ })).toBeNull();
+    const save = within(card).getByRole("button", { name: "Save" });
+    const disabled = () =>
+      save.getAttribute("disabled") ?? save.getAttribute("data-disabled");
+
+    expect(within(card).getByLabelText("App Key").getAttribute("type")).not.toBe(
+      "password"
+    );
+    expect(within(card).getByLabelText("App Secret").getAttribute("type")).toBe(
+      "password"
+    );
+    await user.type(within(card).getByLabelText("App Key"), "key-1");
+    // A required field is still empty.
+    expect(disabled()).not.toBeNull();
+    await user.type(within(card).getByLabelText("App Secret"), "s3cr3t{Enter}");
+    expect(core.sentTo("agentRequests.fill")).toEqual([
+      {
+        group: "grp-1",
+        conversation: "cnv-1",
+        request: "cap-1",
+        values: { fields: { app_key: "key-1", app_secret: "s3cr3t", token: "" } },
+      },
+    ]);
   });
 
   it("shows a CLI login's device code and opens its page", async () => {
@@ -304,6 +407,26 @@ describe("An Agent's connect-account request", () => {
       "noopener,noreferrer"
     );
     expect(within(card).getByText("Finish filling in the form…")).toBeTruthy();
+  });
+
+  it("shows a secret's service logo when its alias names a known brand, else a key", () => {
+    const secret = (alias: string) =>
+      request({
+        oauth: {
+          provider: "secret",
+          alias,
+          reason: "It is needed.",
+          scopes: [],
+          authorizationUrl: "https://salix.example.com/oauth/secret/form?state=s",
+        },
+      });
+    const branded = show(secret("didi"));
+    expect(
+      branded.container.querySelector('[data-plugin-brand="didi"]')
+    ).not.toBeNull();
+    branded.unmount();
+    const plain = show(secret("lumen-erp"));
+    expect(plain.container.querySelector("[data-plugin-brand]")).toBeNull();
   });
 
   it("passes a decline on to the core", async () => {
@@ -595,7 +718,7 @@ describe("A Router's plugin install request", () => {
       );
     });
     expect(
-      screen.getByRole("dialog", { name: "Let your Routine read Notion" })
+      screen.getByRole("dialog", { name: "Let Comma use Notion as you" })
     ).toBeTruthy();
     expect(receipt().textContent).toContain("Added Notion");
     await act(async () => {

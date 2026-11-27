@@ -15,6 +15,7 @@ defmodule SalixIM.PrivateChatStatusActor do
   alias SalixIM.{
     GroupDirectory,
     IMessageStatusTransport,
+    LineStatusTransport,
     ProviderConnects,
     PrivateChatStatusPlacement,
     SignalStatusTransport,
@@ -25,6 +26,7 @@ defmodule SalixIM.PrivateChatStatusActor do
   @refresh_ms 4_000
   @signal_refresh_ms 10_000
   @imessage_refresh_ms 10_000
+  @line_refresh_ms 15_000
   @idle_ms 60_000
   @max_age_ms 30 * 60_000
 
@@ -86,6 +88,7 @@ defmodule SalixIM.PrivateChatStatusActor do
   defp transport("wechat"), do: WeChatStatusTransport
   defp transport("signal"), do: SignalStatusTransport
   defp transport("imessage"), do: IMessageStatusTransport
+  defp transport("line"), do: LineStatusTransport
   defp transport(_provider), do: TelegramStatusTransport
 
   # Each Signal typing indicator is an encrypted message to the peer, and
@@ -94,6 +97,9 @@ defmodule SalixIM.PrivateChatStatusActor do
   # Photon allows 5 requests per second per project, shared with receiving and
   # sending. One refresh per chat every 10 s keeps ten chats at 1 request/s.
   defp refresh_ms("imessage"), do: @imessage_refresh_ms
+  # A LINE loading animation lasts `LineStatusTransport.loading_seconds/0`
+  # (20 s); a refresh every 15 s keeps it visible while the Router works.
+  defp refresh_ms("line"), do: @line_refresh_ms
   defp refresh_ms(_provider), do: @refresh_ms
 
   @impl true
@@ -272,7 +278,7 @@ defmodule SalixIM.PrivateChatStatusActor do
   end
 
   defp clear_typing(%{provider: provider, typing?: true} = state, connect)
-       when provider in ["wechat", "signal", "imessage"] do
+       when provider in ["wechat", "signal", "imessage", "line"] do
     case state.transport.send(connect, state.target, :cancel, state.typing_ticket, "") do
       {:ok, _} -> {:ok, %{state | typing?: false}}
       {:error, :revoked} -> :revoked

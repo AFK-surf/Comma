@@ -35,9 +35,24 @@ defmodule SalixIM.Triage.WorkerSelection do
   # scheduled reminder settlement keep their frozen decision contract.
   def intake?(context) when is_map(context) do
     mode = get_in(context, ["identity_context", "source_mode"])
+    slack_context = context["slack_context"]
 
-    mode in ~w(callback clickhouse_etl periodic_patrol) and
-      SalixIM.Triage.ProductDecision.target_route(context["slack_context"], mode) == "none"
+    case slack_context do
+      %{"decision_target" => %{"syntactic_addressee" => addressee} = target}
+      when is_binary(mode) and is_binary(addressee) ->
+        target_ref = target["source_ref"]
+
+        actor_is_agent? =
+          Enum.any?(List.wrap(slack_context["messages"]), fn
+            %{"source_ref" => ^target_ref, "actor_kind" => "agent"} -> true
+            _ -> false
+          end)
+
+        SalixVerifiedKernel.Proactive.triage_intake?(mode, addressee, actor_is_agent?)
+
+      _ ->
+        false
+    end
   end
 
   def intake?(_), do: false

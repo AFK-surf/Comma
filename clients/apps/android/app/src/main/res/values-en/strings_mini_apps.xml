@@ -11,7 +11,11 @@
     <string name="mini_apps_app_failed">The app could not load. Try again.</string>
     <string name="mini_apps_action_failed">That did not work. Try again.</string>
     <string name="mini_apps_empty">No apps yet</string>
-    <string name="mini_apps_empty_detail">Ask Comma to build an app. Apps you create or install in this workspace appear here.</string>
+    <!-- Two lines on purpose: the example stays whole on its own line. -->
+    <string name="mini_apps_empty_detail">Ask Comma to build one, such as\n“Build a habit tracker for my team.”</string>
+    <string name="mini_apps_new">New app</string>
+    <!-- The start of a request to build an app, left in the router composer for the member to finish. -->
+    <string name="mini_apps_new_prompt">"Build a Comma app that "</string>
     <string name="mini_apps_no_results">No apps match “%s”</string>
     <string name="mini_apps_no_workspace">No workspace</string>
     <string name="mini_apps_no_workspace_detail">Choose or create a workspace to see your apps.</string>

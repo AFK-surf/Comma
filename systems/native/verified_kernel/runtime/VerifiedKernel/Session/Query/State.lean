@@ -247,6 +247,8 @@ def table : OpTable :=
    ("covered_seq", coveredSeq),
    ("total_message_count", query totalMessageCount),
    ("human_source_origin?", fun _ args => return Term.bool (← humanSourceOrigin args)),
+   ("origin_thread", fun _ args => originThread args),
+   ("active_unanswered_thread", query activeUnansweredThread),
    ("pending_assistant_id", query pendingAssistantId),
    ("decision_required?", predicate decisionRequired),
    ("consecutive_timeouts", query consecutiveTimeouts),

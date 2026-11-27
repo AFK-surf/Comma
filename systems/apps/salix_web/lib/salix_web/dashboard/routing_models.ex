@@ -60,6 +60,7 @@ defmodule SalixWeb.Dashboard.RoutingModels do
 
          %{
            "key" => RoutingForm.model_key(choice),
+           "model" => model["id"],
            "name" => model["name"],
            "routing_efforts" => Enum.uniq([nil | List.wrap(model["efforts"])])
          }

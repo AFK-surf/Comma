@@ -3,6 +3,27 @@ import { flushSync } from "react-dom";
 import { scheduleLayoutRead, type CancelUiTimer } from "@comma/ui/clock";
 import type { MessageReply } from "./messageRelationships";
 
+const ASSISTANT_ANCHOR_SELECTOR = [
+  ".markdown-stream-bubble",
+  ".comma-chat-block-extras",
+  ".comma-chat-task-cards",
+  ".comma-agent-card",
+  ".comma-agent-receipt",
+  ".comma-mac-item-list",
+  '[data-testid="mini-app-message-card"]',
+].join(", ");
+
+const BUBBLE_EDGE_GAP_PX = 8;
+const MIN_VISIBLE_STROKE_PX = 4;
+
+type AnchorPoint = {
+  x: number;
+  y: number;
+  radius: number;
+  bubbleEdge?: true;
+  edgeGap?: number;
+};
+
 export function MessageReplyLines({
   columnRef,
   initialDraftId,
@@ -39,7 +60,8 @@ export function MessageReplyLines({
     return () => observer.disconnect();
   }, [paths]);
   useLayoutEffect(() => {
-    const column = columnRef.current;
+    const column =
+      columnRef.current ?? (svgRef.current?.parentElement as HTMLDivElement | null);
     if (!column) return;
     if (replies.size === 0) {
       setPaths((previous) => (previous.length === 0 ? previous : []));
@@ -57,20 +79,25 @@ export function MessageReplyLines({
           (row) => [row.dataset.messageId!, row]
         )
       );
-      const anchor = (id: string, edge: "start" | "end") => {
+      const anchor = (id: string, edge: "start" | "end"): AnchorPoint | undefined => {
         const row = rows.get(id);
         if (row?.dataset.routerIdentityHidden === "true") {
-          const bubbles = row.querySelectorAll<HTMLElement>(
-            ".markdown-stream-bubble, .comma-chat-block-extras"
-          );
-          const bubble = edge === "start" ? bubbles[0] : [...bubbles].at(-1);
-          if (!bubble) return;
-          const rect = bubble.getBoundingClientRect();
+          const rects = [
+            ...row.querySelectorAll<HTMLElement>(ASSISTANT_ANCHOR_SELECTOR),
+          ]
+            .map((el) => el.getBoundingClientRect())
+            .filter((rect) => rect.height > 0);
+          if (rects.length === 0) return;
+          const rect =
+            edge === "start"
+              ? rects.reduce((best, r) => (r.top < best.top ? r : best))
+              : rects.reduce((best, r) => (r.bottom > best.bottom ? r : best));
           return {
             x: rect.left - bounds.left + 13,
-            y: (edge === "start" ? rect.top - 8 : rect.bottom + 8) - bounds.top,
+            y: (edge === "start" ? rect.top : rect.bottom) - bounds.top,
             radius: 0,
             bubbleEdge: true,
+            edgeGap: BUBBLE_EDGE_GAP_PX,
           };
         }
         const avatar = row?.querySelector<HTMLElement>(
@@ -79,11 +106,9 @@ export function MessageReplyLines({
         const element =
           avatar ??
           row?.querySelector<HTMLElement>(".comma-chat-user-bubble") ??
-          [
-            ...(row?.querySelectorAll<HTMLElement>(
-              ".markdown-stream-bubble, .comma-chat-block-extras"
-            ) ?? []),
-          ].at(-1);
+          [...(row?.querySelectorAll<HTMLElement>(ASSISTANT_ANCHOR_SELECTOR) ?? [])].at(
+            -1
+          );
         if (!element) return;
         const rect = element.getBoundingClientRect();
         return {
@@ -100,7 +125,7 @@ export function MessageReplyLines({
             : reply.sourceAnchorId,
           "start"
         );
-        const target =
+        const target: AnchorPoint | undefined =
           reply.presentation === "line"
             ? anchor(reply.targetAnchorId, "end")
             : (() => {
@@ -122,6 +147,7 @@ export function MessageReplyLines({
                     y: rect.bottom - bounds.top,
                     radius: 0,
                     bubbleEdge: true,
+                    edgeGap: 0,
                   };
                 return {
                   x: rect.left - bounds.left + rect.width / 2,
@@ -130,7 +156,7 @@ export function MessageReplyLines({
                 };
               })();
         if (!source || !target) continue;
-        const top = target.y + target.radius;
+        const rawTop = target.y + target.radius;
         const row = rows.get(reply.messageId);
         const key = row?.dataset.replyAnimationKey ?? reply.messageId;
         const animate =
@@ -147,6 +173,12 @@ export function MessageReplyLines({
           if (!bubble) continue;
           const rect = bubble.getBoundingClientRect();
           const y = rect.top - bounds.top + rect.height / 2;
+          const wantTop = target.edgeGap ?? 0;
+          const topGap = Math.min(
+            wantTop,
+            Math.max(0, Math.floor(y - rawTop - MIN_VISIBLE_STROKE_PX))
+          );
+          const top = rawTop + topGap;
           if (y <= top) continue;
           const turn = Math.min(24, y - top);
           const d = `M ${target.x} ${top} V ${y - turn} Q ${target.x} ${y} ${target.x + turn} ${y} H ${target.x + 24}`;
@@ -160,7 +192,16 @@ export function MessageReplyLines({
           });
           continue;
         }
-        const bottom = source.y - source.radius;
+        const rawBottom = source.y - source.radius;
+        const gap = rawBottom - rawTop;
+        const wantTop = target.edgeGap ?? 0;
+        const wantBottom = source.edgeGap ?? 0;
+        const requested = wantTop + wantBottom;
+        const available = Math.max(0, gap - MIN_VISIBLE_STROKE_PX);
+        const scale =
+          requested > available && requested > 0 ? available / requested : 1;
+        const top = rawTop + Math.floor(wantTop * scale);
+        const bottom = rawBottom - Math.floor(wantBottom * scale);
         if (bottom <= top) continue;
         const bend = Math.min(24, bottom - top);
         const middle = (top + bottom) / 2;

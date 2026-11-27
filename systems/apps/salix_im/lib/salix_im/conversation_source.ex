@@ -11,6 +11,9 @@ defmodule SalixIM.ConversationSource do
   alias SalixStore.{CasRecord, Keys}
 
   @batch_size 32
+  @recording_device_wait_ms 24 * 60 * 60 * 1_000
+  @recording_read_retry_ms 30 * 60 * 1_000
+  @recording_read_failures [:local_file_unavailable, :local_file_import_timeout]
 
   def notify(nil, source) do
     SystemsRuntime.TaskSupervisor.start_child(SalixIM.ConversationNotificationTasks, fn ->
@@ -235,9 +238,13 @@ defmodule SalixIM.ConversationSource do
         )
         |> Map.merge(%{
           "participant_agent_id" => binding.agent["agent_id"],
+          "participant_target_key" => binding.participant["target_key"],
+          "participant_notification_filter" => binding.participant["notification_filter"],
+          "conversation_multi_session" => binding.conversation["multi_session"] == true,
+          "source_start_seq" => binding.start_seq,
           "participant_payload" =>
             (binding.participant["payload"] || %{})
-            |> Map.take(["session_model"])
+            |> Map.take(["session_model", "session_slot", "session_label", "role_instructions"])
             |> Map.put("session_id", binding.session_id)
         })
 
@@ -254,6 +261,11 @@ defmodule SalixIM.ConversationSource do
            conversation_source: source
          }}
       else
+        {:error, reason, true} = error ->
+          if recording_held?(message, reason, SystemsClock.system_time(:millisecond)),
+            do: {:error, {:source_unready, reason}},
+            else: error
+
         error ->
           error
       end
@@ -261,12 +273,67 @@ defmodule SalixIM.ConversationSource do
       {:ok,
        %{
          source_message_id: nil,
-         payload: %{session_id: binding.session_id},
+         payload: scan_only_payload(binding, message),
          conversation_source: source,
          conversation_scan_only: true
        }}
     end
   end
+
+  # A scan-only frontier advance can still be the first event that births a new
+  # Worker Session (for example a Meeting Task whose `seq=1` is context-only).
+  # Reuse `AgentDeliveryPayload.session_birth_attrs/1` so the Session gets the
+  # exact same birth attributes (`name`, `billing_context`, `model`) as a full
+  # delivery and never drops its Task model choice on `seq=2`.
+  defp scan_only_payload(binding, message) do
+    defaults =
+      if is_map(binding[:group]) and is_map(binding[:agent]) do
+        SalixIM.AgentDeliveryPayload.participant_delivery_defaults(
+          binding.group,
+          binding.agent,
+          binding.conversation
+        )
+      else
+        %{}
+      end
+
+    defaults
+    |> Map.merge(%{
+      "session_id" => binding.session_id,
+      "message_created_at" => message["created_at"],
+      "conversation_title" => get_in(binding, [:conversation, "title"]),
+      "participant_payload" => get_in(binding, [:participant, "payload"])
+    })
+    |> SalixIM.AgentDeliveryPayload.session_birth_attrs()
+  end
+
+  @doc """
+  Whether a meeting recording's failed import keeps the Task's frontier instead
+  of rejecting the message. The recording reaches its Task only as a reference to
+  the Mac that holds it, so rejecting it loses the meeting: it waits for a device
+  that is away, and tries a failed read again, each for a bounded time.
+  Later messages of the Task wait behind it: they are most often about the
+  recording, and the Worker reads them after it.
+  """
+  def recording_held?(
+        %{"metadata" => %{"message_type" => "meeting_recording"}, "created_at" => created_at},
+        reason,
+        now
+      )
+      when is_integer(created_at) do
+    case reason do
+      :local_file_device_disconnected ->
+        now - created_at < @recording_device_wait_ms
+
+      reason when reason in @recording_read_failures ->
+        now - created_at < @recording_read_retry_ms
+
+      _ ->
+        false
+    end
+  end
+
+  def recording_held?(_message, _reason, _now), do: false
 
   def target?(participant, message),
     do:

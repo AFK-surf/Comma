@@ -1,6 +1,7 @@
 ---
 name: comma-client
 description: Discover and use the live Comma desktop Client API from a Comma-launched environment. Use for Comma client controls and AirDrop file receiving and sending with an iPhone or Mac. Query the runtime API catalog before claiming availability.
+prompt_summary: "Control Comma desktop/macOS client capabilities (AirDrop, browser, notes, etc.); query the runtime API catalog before claiming availability."
 ---
 
 # Comma Client
@@ -21,6 +22,17 @@ discovery reports that Comma requires permission, ask the user to turn on Allow 
 in Settings > Devices before retrying. If no usable Comma environment is available, say
 the live client cannot be verified; never present an earlier catalog or result as current
 or exhaustive.
+
+## Restart Comma
+
+Restart Comma only when the user asks for it, or when a setting applies only after a restart.
+Use `comma call app restart`. It quits Comma through its ordinary shutdown and starts it again.
+If the result is `relaunching: false`, this build cannot restart itself. Tell the user to restart Comma.
+The station and every command that runs through it stop with Comma.
+The answer to the call is the last thing you receive from that command.
+To check the restart, wait, then start a new command: `comma modules`.
+Never quit, kill or start Comma in a different way: osascript, `kill`, `open`, `launchctl` or a background script.
+Such a job can outlive the request and restart Comma again and again.
 
 ## Receive files through AirDrop
 

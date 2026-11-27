@@ -11,6 +11,7 @@ rev=${1:-HEAD}
 # Read first, so that a revision git does not have fails here instead of hashing nothing.
 entries=$(git ls-tree -r --full-tree "$rev" -- \
   systems/runtime-images/coding-sandbox \
+  systems/runtime-images/export-sandbox-image.sh \
   systems/runtime-images/station \
   systems/runtime-images/runtime-dependencies.lock.json \
   systems/station \

@@ -5,10 +5,15 @@ import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { useCallback, useContext, useMemo, useState } from "react";
-import { useCall } from "@comma/core-client";
+import { useCall, type TaskLoop } from "@comma/core-client";
+import { taskLoopStanding, taskLoopStop } from "./taskLoopLabels";
 import { readFileBlob } from "../../runtime-files/fileSources";
 import type { CommaConversationPreview } from "@comma/core/api-schemas";
-import type { ChatImagePreviewRef, ChatMessage } from "@comma/core/chat";
+import type {
+  ChatImagePreviewRef,
+  ChatMessage,
+  ChatWorkerSession,
+} from "@comma/core/chat";
 import { MAX_ATTACHMENT_BYTES } from "@comma/core/chat";
 import { attachmentLabel } from "../chat/thread/attachments/attachmentLabels";
 import {
@@ -63,9 +68,13 @@ type LoadState =
  */
 export function TaskPanelReport({
   conversation,
+  loop,
+  workerSessions,
   workspaceId,
 }: {
   conversation: CommaConversationPreview;
+  loop?: TaskLoop | undefined;
+  workerSessions?: readonly ChatWorkerSession[] | undefined;
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
@@ -111,6 +120,14 @@ export function TaskPanelReport({
   }
 
   const workerName = conversation.bound_worker?.name ?? messages.chat_actor_worker();
+  const sessionLabelFor = (message: ChatMessage | undefined) => {
+    if (!message?.participantId || !workerSessions?.length) return workerName;
+    const matched = workerSessions.find(
+      (s) => s.participantId === message.participantId
+    );
+    if (!matched) return workerName;
+    return workerSessions.length > 1 || !matched.isPrimary ? matched.label : workerName;
+  };
   const latest = state.messages.findLast(
     (message) => message.role === "assistant" && message.actorRole === "worker"
   );
@@ -120,7 +137,7 @@ export function TaskPanelReport({
         {latest ? (
           <LatestReply
             message={latest}
-            workerName={workerName}
+            workerName={sessionLabelFor(latest)}
             groupId={groupId}
             workspaceId={workspaceId}
           />
@@ -130,8 +147,10 @@ export function TaskPanelReport({
         <Progress
           conversation={conversation}
           latest={latest}
+          loop={loop}
           messages={state.messages}
           workerName={workerName}
+          workerSessions={workerSessions}
           workspaceId={workspaceId}
         />
       </InlineTaskLinkAdapterProvider>
@@ -192,21 +211,27 @@ function LatestReply({
 function Progress({
   conversation,
   latest,
+  loop,
   messages: chatMessages,
   workerName,
+  workerSessions,
   workspaceId,
 }: {
   conversation: CommaConversationPreview;
   workspaceId: string;
   latest: ChatMessage | undefined;
+  loop: TaskLoop | undefined;
   messages: ChatMessage[];
   workerName: string;
+  workerSessions?: readonly ChatWorkerSession[] | undefined;
 }) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
   const time = useTimeLabel();
   const [expanded, setExpanded] = useState<string>();
-  const bucket = taskStatusBucket(conversation.status);
+  const bucket = taskStatusBucket(conversation.status, { loopState: loop?.state });
+  const loopStop = taskLoopStop(bucket, loop, messages);
+  const loopStanding = taskLoopStanding(bucket, loop, messages, locale);
   return (
     <section
       aria-label={messages.task_panel_progress()}
@@ -215,12 +240,19 @@ function Progress({
       <p className="comma-embedded-task-eyebrow">{messages.task_panel_progress()}</p>
       <ol>
         {chatMessages.map((message) => {
+          const matchedSession =
+            message.participantId && workerSessions?.length
+              ? workerSessions.find((s) => s.participantId === message.participantId)
+              : undefined;
           const actor =
             message.role !== "assistant"
               ? messages.task_you()
               : message.actorRole === "router"
                 ? messages.chat_actor_router()
-                : workerName;
+                : matchedSession &&
+                    (workerSessions!.length > 1 || !matchedSession.isPrimary)
+                  ? matchedSession.label
+                  : workerName;
           const current = message === latest;
           const open = expanded === message.messageId;
           const text = messagePartsPlainText(
@@ -280,9 +312,11 @@ function Progress({
             </span>
             <span className="comma-embedded-task-step-summary">
               <span aria-hidden className="comma-embedded-task-step-status">
-                {taskStatusIcon(bucket)}
+                {taskStatusIcon(bucket, { loopStop, loopStanding })}
               </span>
-              {taskStatusLabel(conversation.status, locale)}
+              {loopStop?.text ??
+                loopStanding?.text ??
+                taskStatusLabel(conversation.status, locale)}
             </span>
           </div>
         </li>

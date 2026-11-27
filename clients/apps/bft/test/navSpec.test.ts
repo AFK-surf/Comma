@@ -40,6 +40,7 @@ describe("BFT navigation spec", () => {
       "meetings",
       "daily-brief",
       "triage",
+      "lark-triage",
       "data-policy",
       "health",
       "runners",
@@ -57,6 +58,11 @@ describe("BFT navigation spec", () => {
       ["Timeline", "/orgs/acme/triage/timeline"],
       ["Knowledge", "/orgs/acme/triage/knowledge"],
     ]);
+    const larkTriage = nav.find((item) => item.id === "lark-triage");
+    expect(larkTriage?.children.map((child) => [child.label, child.href])).toEqual([
+      ["Overview", "/orgs/acme/lark-triage"],
+      ["Timeline", "/orgs/acme/lark-triage/timeline"],
+    ]);
     const meetings = nav.find((item) => item.id === "meetings");
     expect(meetings?.children.map((child) => [child.label, child.href])).toEqual([
       ["Upcoming", "/orgs/acme/meetings"],
@@ -65,7 +71,7 @@ describe("BFT navigation spec", () => {
     ]);
     // The palette lists sub-pages but not the "General", "Upcoming" and
     // "Overview" duplicates of their parent.
-    expect(flattenNav(nav)).toHaveLength(11 + 1 + 3 + 2 + 2);
+    expect(flattenNav(nav)).toHaveLength(12 + 1 + 3 + 2 + 2 + 1);
   });
 
   it("lists the four Settings pages", () => {

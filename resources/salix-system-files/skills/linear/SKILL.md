@@ -1,6 +1,7 @@
 ---
 name: linear
 description: Work with Linear through the `linear` CLI, including issue listing, creation, updates, comments, team/project/label lookup, JSON issue views, and OAuth-backed CLI access on persistent environments.
+prompt_summary: "Manage Linear issues, projects, and cycles via native OAuth/official MCP or CLI; check existing connections before creating duplicates."
 ---
 
 # Linear

@@ -197,4 +197,108 @@ describe("Toaster", () => {
     await act(() => vi.advanceTimersByTimeAsync(1001));
     expect(screen.queryByTestId("download-completed")).not.toBeInTheDocument();
   });
+
+  it("retires a persistent action toast when dismissed before sonner inserts it", async () => {
+    const { container } = render(<Toaster />);
+    const deferredInserts: (() => void)[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof handler === "function" && (delay ?? 0) === 0) {
+        deferredInserts.push(() => handler(...args));
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(handler, delay, ...args);
+    }) as typeof setTimeout);
+
+    try {
+      act(() => {
+        toast.warning("Connection is stale", {
+          id: "stale-sync-race",
+          testId: "stale-sync-race",
+          actions: [{ label: "Retry", onPress: vi.fn() }],
+        });
+        toast.dismiss("stale-sync-race");
+      });
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+
+    expect(deferredInserts.length).toBeGreaterThan(0);
+
+    // Let sonner's two-frame dismissal run while the creation insert is still delayed.
+    await act(async () => {
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
+
+    // Now flush the delayed insert that would otherwise leave an immortal zombie toast.
+    await act(async () => {
+      for (const run of deferredInserts) run();
+    });
+    await act(async () => {
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+
+    expect(screen.queryByTestId("stale-sync-race")).not.toBeInTheDocument();
+    expect(container.querySelectorAll("[data-sonner-toast]")).toHaveLength(0);
+  });
+
+  it("keeps a re-raised toast with the same id alive when an older insert lands late", async () => {
+    render(<Toaster />);
+    const deferredInserts: (() => void)[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof handler === "function" && (delay ?? 0) === 0) {
+        deferredInserts.push(() => handler(...args));
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(handler, delay, ...args);
+    }) as typeof setTimeout);
+
+    try {
+      act(() => {
+        toast.warning("First warning", {
+          id: "reused-warning",
+          testId: "reused-warning-first",
+          actions: [{ label: "Retry", onPress: vi.fn() }],
+        });
+        toast.dismiss("reused-warning");
+      });
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+
+    await act(async () => {
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
+
+    // Re-raise the same id, then flush the stale first insert before the new one settles.
+    act(() => {
+      toast.warning("Second warning", {
+        id: "reused-warning",
+        testId: "reused-warning-second",
+        actions: [{ label: "Retry", onPress: vi.fn() }],
+      });
+    });
+    await act(async () => {
+      for (const run of deferredInserts) run();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
+
+    expect(screen.queryByTestId("reused-warning-first")).not.toBeInTheDocument();
+    expect(screen.getByTestId("reused-warning-second")).toBeInTheDocument();
+  });
 });

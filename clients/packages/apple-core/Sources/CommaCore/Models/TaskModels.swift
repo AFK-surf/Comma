@@ -3,7 +3,7 @@ import Foundation
 // Task status buckets, the Group label catalog, share links and pins.
 
 public enum TaskBucket: String, Codable, Sendable, CaseIterable {
-    case inProgress, needsReview, done, cancelled, archived
+    case inProgress, needsReview, done, cancelled, loops, archived
     public init(status: String) {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "active", "in_progress", "running", "working": self = .inProgress
@@ -13,6 +13,12 @@ public enum TaskBucket: String, Codable, Sendable, CaseIterable {
         case "archived": self = .archived
         default: self = .inProgress
         }
+    }
+
+    /// The bucket of a Task with its Loop's state: a Task in progress whose Loop has not ended is automated.
+    public init(status: String, loopState: String?) {
+        self.init(status: status)
+        if self == .inProgress, let loopState, loopState != "ended" { self = .loops }
     }
 }
 

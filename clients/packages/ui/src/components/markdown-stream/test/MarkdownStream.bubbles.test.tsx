@@ -347,6 +347,31 @@ describe("MarkdownStream bubble presentation", () => {
     }
   });
 
+  it("skips unrenderable relative images instead of emitting empty bubbles", () => {
+    const content = [
+      "**A · 酒红歌剧千金**",
+      "",
+      "![](r1999_new_A_burgundy.jpg)",
+      "",
+      "**B · 红袍剑士**",
+      "",
+      "![](r1999_new_B_fencer.jpg)",
+      "",
+      "你挑哪一张？",
+    ].join("\n");
+    const { container } = render(
+      <MarkdownStream content={content} blockPresentation="bubbles" final />
+    );
+    const bubbles = [
+      ...container.querySelectorAll<HTMLElement>(".markdown-stream-bubble"),
+    ];
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]!.dataset.kind).toBe("prose");
+    expect(bubbles[0]).toHaveTextContent("A · 酒红歌剧千金");
+    expect(bubbles[0]).toHaveTextContent("B · 红袍剑士");
+    expect(bubbles[0]).toHaveTextContent("你挑哪一张？");
+  });
+
   it("leaves ordinary document presentation unwrapped by default", () => {
     const { container } = render(
       <MarkdownStream content={"First.\n\nSecond."} final />

@@ -439,7 +439,12 @@ export type MiniAppFrameProps = {
  */
 export function MiniAppFrame(props: MiniAppFrameProps) {
   const { appId, via, version, idle = false, keepKey } = props;
-  const viaKey = "workspace" in via ? `w:${via.workspace}` : `l:${via.token}`;
+  const viaKey =
+    "workspace" in via
+      ? `w:${via.workspace}`
+      : "token" in via
+        ? `l:${via.token}`
+        : `c:${via.collaboration.group}/${via.collaboration.task}`;
   const messages = useCommaMessages();
   const call = useCall();
   const keeper = useContext(FrameKeeperContext);

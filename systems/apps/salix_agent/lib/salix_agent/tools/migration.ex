@@ -45,7 +45,8 @@ defmodule SalixAgent.Tools.Migration do
     "properties" => %{
       "path" => %{
         "type" => "string",
-        "description" => "Workspace path of the uploaded zip, for example /uploads/<file>.zip."
+        "description" =>
+          "Workspace path of the uploaded archive (.zip, .tar.gz, .tgz or .tar), for example /uploads/<file>.zip."
       },
       "platform" => %{
         "type" => "string",
@@ -121,7 +122,7 @@ defmodule SalixAgent.Tools.Migration do
   def entries do
     [
       {"migration.import",
-       "Import a zip exported from OpenClaw, Hermes, Claude Code, Codex or Pi: archive every file, copy dated logs and skills, and list what is left to place. Read the agent-migration skill first.",
+       "Import a zip or tar.gz archive exported from OpenClaw, Hermes, Claude Code, Codex or Pi: archive every file, copy dated logs and skills, and list what is left to place. Read the agent-migration skill first.",
        @import_schema, &__MODULE__.import/2, @normal_auto_wait_seconds, @router_role_opts},
       {"migration.resolve",
        "Record where imported files went (mapped) or why they were only archived.",
@@ -143,20 +144,15 @@ defmodule SalixAgent.Tools.Migration do
     ctx = complete_ctx(ctx)
     source = args |> required_arg("path") |> clean_path()
 
-    zip =
-      case AgentWorkspace.read(ctx.agent_id, source) do
-        {:ok, body} -> body
-        {:error, :not_found} -> raise "#{source} does not exist"
-        {:error, reason} -> raise "read failed: #{inspect(reason)}"
-      end
+    archive = read_archive!(ctx.agent_id, source)
 
     {files, refused} =
-      case Migration.unzip(zip) do
+      case Migration.extract(archive) do
         {:ok, files, refused} -> {files, refused}
         {:error, message} -> raise message
       end
 
-    if files == [], do: raise("the zip has no files")
+    if files == [], do: raise("the archive has no files")
     ctx = with_source_label(ctx, source)
 
     platform =
@@ -203,6 +199,39 @@ defmodule SalixAgent.Tools.Migration do
         episode_events ++ [write_manifest!(ctx, base, manifest)] ++ skill_events
 
     {Jason.encode!(import_summary(base, manifest)), events}
+  end
+
+  # A full read stops at the 10 MiB blob cap, so the archive is streamed.
+  # The manifest size refuses it before any read. The running count holds
+  # if that size is wrong.
+  defp read_archive!(agent_id, source) do
+    max = Migration.limits().archive_bytes
+    too_large = "the archive is larger than #{div(max, 1_000_000)} MB"
+
+    case AgentWorkspace.stream(agent_id, source) do
+      {:ok, _stream, size} when size > max ->
+        raise too_large
+
+      {:ok, stream, _size} ->
+        stream
+        |> Enum.reduce_while({[], 0}, fn chunk, {chunks, total} ->
+          total = total + byte_size(chunk)
+
+          if total > max,
+            do: {:halt, :too_large},
+            else: {:cont, {[chunk | chunks], total}}
+        end)
+        |> case do
+          :too_large -> raise too_large
+          {chunks, _total} -> chunks |> Enum.reverse() |> IO.iodata_to_binary()
+        end
+
+      {:error, :not_found} ->
+        raise "#{source} does not exist"
+
+      {:error, reason} ->
+        raise "read failed: #{inspect(reason)}"
+    end
   end
 
   defp place_episodes(ctx, platform, entries, bodies) do

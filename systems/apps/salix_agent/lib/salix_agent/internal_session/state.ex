@@ -93,7 +93,11 @@ defmodule SalixAgent.InternalSession.State do
             source_session_id: nil,
             source_schedule_id: nil,
             system_prompt: nil,
+            summary_ifc_view_label: nil,
             context_provider_states: %{},
+            # The provider states compacted history adopted, kept with the
+            # context after the archive drops the messages that carried them.
+            compacted_provider_states: %{},
             miniskills: %{},
             live_context_bytes: nil,
             storage_format: 1,

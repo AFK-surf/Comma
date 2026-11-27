@@ -109,7 +109,7 @@ defmodule SalixIM.FeishuDocsTest do
     @behaviour SalixIM.Ports.FeishuUserAccounts
 
     @impl true
-    def list(_group_id) do
+    def list(_group_id, _acting) do
       {:ok,
        [
          %{"alias" => "feishu-ray", "open_id" => "ou_ray", "name" => "Ray", "status" => "active"},
@@ -119,7 +119,39 @@ defmodule SalixIM.FeishuDocsTest do
     end
 
     @impl true
-    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+    def access_token(_agent_id, alias_name, _acting), do: {:ok, "u-" <> alias_name}
+  end
+
+  defmodule OwnerAccounts do
+    @moduledoc "A member's own sign-in, there only for a read the port is told acts for them."
+    @behaviour SalixIM.Ports.FeishuUserAccounts
+
+    @impl true
+    def list(_group_id, acting) do
+      {:ok,
+       if(owner?(acting),
+         do: [
+           %{
+             "alias" => "feishu-member",
+             "open_id" => "ou_owner",
+             "name" => "Owner",
+             "status" => "active"
+           }
+         ],
+         else: []
+       )}
+    end
+
+    @impl true
+    def access_token(_agent_id, "feishu-member", acting),
+      do: if(owner?(acting), do: {:ok, "u-owner"}, else: {:error, :not_found})
+
+    def access_token(_agent_id, _alias, _acting), do: {:error, :not_found}
+
+    defp owner?(acting),
+      do:
+        get_in(acting, ["trusted_origin", "principal_ref", "subject_id"]) == "owner" and
+          acting["connect_id"] == "cnx_feishu_docs"
   end
 
   defmodule ManyAccounts do
@@ -127,7 +159,7 @@ defmodule SalixIM.FeishuDocsTest do
     @behaviour SalixIM.Ports.FeishuUserAccounts
 
     @impl true
-    def list(_group_id) do
+    def list(_group_id, _acting) do
       {:ok,
        [%{"alias" => "app", "open_id" => "ou_appy", "name" => "Appy", "status" => "active"}] ++
          for(
@@ -142,7 +174,7 @@ defmodule SalixIM.FeishuDocsTest do
     end
 
     @impl true
-    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+    def access_token(_agent_id, alias_name, _acting), do: {:ok, "u-" <> alias_name}
   end
 
   setup do
@@ -1388,6 +1420,42 @@ defmodule SalixIM.FeishuDocsTest do
         "connect_id" => @connect_id,
         "params" => params
       })
+    end
+
+    test "a read for the member reaches their own sign-in by itself, and no other read sees it",
+         ctx do
+      SystemsRuntime.put_env(:salix_im, :feishu_user_accounts_mod, OwnerAccounts)
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/drive/v1/files",
+        ok(%{"files" => [%{"name" => "Plans", "token" => "fld1"}], "has_more" => false})
+      )
+
+      call_for = fn api, principal_ref ->
+        SalixIM.Provider.call_api(ctx.worker_id, "feishu", api, %{
+          "connect_id" => @connect_id,
+          "params" => %{},
+          "tool_context" => %{
+            "trusted_origin" => principal_ref && %{"principal_ref" => principal_ref}
+          }
+        })
+      end
+
+      owner = %{"subject_id" => "owner"}
+
+      assert {:ok, %{"accounts" => [%{"account" => "feishu-member"}]}} =
+               call_for.("feishu.list_accounts", owner)
+
+      assert {:ok, %{"files" => files}} = call_for.("feishu.list_drive_files", owner)
+      assert Enum.map(files, & &1["account"]) == ["app", "feishu-member"]
+
+      assert requests("GET", "/open-apis/drive/v1/files") |> Enum.map(& &1.authorization) ==
+               ["Bearer t-docs", "Bearer u-owner"]
+
+      for other <- [%{"subject_id" => "someone-else"}, nil] do
+        assert {:ok, %{"accounts" => []}} = call_for.("feishu.list_accounts", other)
+      end
     end
 
     test "a chat the bot cannot read is read as a signed-in member", ctx do

@@ -32,6 +32,7 @@ test("hovering rich chat links shows the Slack and Outlook preview cards", async
     assistantReply: `请看 [deploy update](${slackHref}) 这条消息。\n\n[planning event](${outlookEventHref})\n\n[mail inbox](${outlookInboxHref})`,
   });
   let previewRequests = 0;
+  let onSlackRequest: (() => void) | undefined;
   const outlookRequests = new Map<string, number>();
   let inboxAnswered!: () => void;
   const inboxRead = new Promise<void>((resolve) => {
@@ -46,6 +47,9 @@ test("hovering rich chat links shows the Slack and Outlook preview cards", async
       if (href === slackHref) {
         previewRequests += 1;
         await route.fulfill({ json: slackPreview });
+        const notify = onSlackRequest;
+        onSlackRequest = undefined;
+        notify?.();
         return;
       }
       outlookRequests.set(href, (outlookRequests.get(href) ?? 0) + 1);
@@ -101,13 +105,18 @@ test("hovering rich chat links shows the Slack and Outlook preview cards", async
     await expect(card).toContainText("Are we go for the 0.9 release?");
     await expect(card).toContainText("dana");
 
-    // A private card is never reused: each open reauthorizes server-side.
+    // A recent private card shows at once while each open reauthorizes
+    // server-side.
     const settledRequests = previewRequests;
     expect(settledRequests).toBeGreaterThanOrEqual(1);
     await prompt.hover();
     await expect(card).toHaveCount(0);
+    const reauthorized = new Promise<void>((resolve) => {
+      onSlackRequest = resolve;
+    });
     await link.hover();
     await expect(card).toContainText("Are we go for the 0.9 release?");
+    await reauthorized;
     expect(previewRequests).toBe(settledRequests + 1);
 
     // An Outlook event the member's source collected shows its card, with the
@@ -144,7 +153,7 @@ test("hovering rich chat links shows the Slack and Outlook preview cards", async
   }
 });
 
-test("a link with no rich preview still shows its destination card without a read", async ({
+test("a public link with no metadata shows its destination card after a read", async ({
   page,
 }) => {
   const docsHref = "https://docs.example.com/guide/setup";
@@ -181,8 +190,7 @@ test("a link with no rich preview still shows its destination card without a rea
     }).toPass();
     await expect(hoverCard).toContainText("setup guide");
     await expect(page.getByTestId("recommendation-link-card-skeleton")).toHaveCount(0);
-    // The server has no preview for this shape, so hovering never asks.
-    expect(previewRequests).toBe(0);
+    expect(previewRequests).toBe(1);
   } finally {
     await stub.close();
   }

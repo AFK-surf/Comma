@@ -152,11 +152,17 @@ defmodule SalixAgent.MultimodalReadTest do
           (message[:source_tool_call_id] || message["source_tool_call_id"]) == "t1"
       end)
 
+    # The completion notice stays ahead of the image, so the model knows `t1`
+    # completed and does not wait for it.
     assert [
+             %{"type" => "text", "text" => notice},
              %{"type" => "image_url", "image_url" => %{"url" => "data:image/png;base64," <> b64}},
              _text
            ] =
              Jason.decode!(attachment_seen.content)
+
+    assert notice =~ ~s("tool_call_id":"t1")
+    assert notice =~ ~s("status":"completed")
 
     assert Base.decode64!(b64) == @png
 
@@ -168,7 +174,7 @@ defmodule SalixAgent.MultimodalReadTest do
           (message[:source_tool_call_id] || message["source_tool_call_id"]) == "t1"
       end)
 
-    assert [%{"type" => "image_url", "image_url" => %{"url" => repeated}}, _summary] =
+    assert [_notice, %{"type" => "image_url", "image_url" => %{"url" => repeated}}, _summary] =
              Jason.decode!(repeated_attachment.content)
 
     assert repeated == "data:image/png;base64," <> Base.encode64(@png)

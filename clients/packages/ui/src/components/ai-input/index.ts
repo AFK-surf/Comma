@@ -1,4 +1,5 @@
 export { AiInput } from "./composer/AiInput";
+export { MiddleEllipsis, splitMiddleEllipsis } from "./attachments/MiddleEllipsis";
 export { dataTransferHasFiles } from "./files/dataTransferHasFiles";
 export { AiInputDropOverlay } from "./files/AiInputDropOverlay";
 export { AiInputMenuPanel } from "./menu/AiInputMenuPanel";

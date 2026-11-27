@@ -51,6 +51,15 @@ class DesignSpring<T : Any> internal constructor(
     }
 
     /**
+     * Switches to [token] for this and later motion. The value and the velocity stay, so one property can move on
+     * a different spring when its target changes for another reason.
+     */
+    @MainThread
+    fun use(token: DesignMotion.SpringToken) {
+        animation.spring!!.setStiffness(token.stiffness).setDampingRatio(token.dampingRatio)
+    }
+
+    /**
      * Moves the current value by [delta] and keeps velocity and target. For a value measured
      * against a reference that just jumped: shifting by the jump keeps what is drawn in place.
      */

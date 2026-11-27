@@ -21,6 +21,11 @@ defmodule SalixStore.TriageProductRuntime do
   @max_lease_ms 300_000
   @max_error_bytes 1_000
   @max_recent 100
+  @max_agent_owned_rechecks 5
+  @max_reminder_rechecks 3
+  @max_agent_owned_age_ms 7 * 24 * 60 * 60 * 1_000
+  @max_backoff_recheck_hours 72
+  @max_recheck_hours 24 * 30
 
   @outcome_columns """
   p.obligation_id,
@@ -915,7 +920,8 @@ defmodule SalixStore.TriageProductRuntime do
              outcome in [:answered, :admitted, :stale_authority] do
     Repo.transaction(fn ->
       case lock_follow_up(entry_id) do
-        {:ok, %{state: "active", payload: payload, due_ms: due_ms}} ->
+        {:ok,
+         %{state: "active", payload: payload, due_ms: due_ms, inserted_at_ms: inserted_at_ms}} ->
           if exact_follow_up_wakeup?(
                payload,
                authority_generation,
@@ -923,7 +929,7 @@ defmodule SalixStore.TriageProductRuntime do
                due_ms,
                scheduled_for_ms
              ) do
-            settle_current_follow_up(entry_id, payload, scheduled_for_ms, outcome)
+            settle_current_follow_up(entry_id, payload, inserted_at_ms, scheduled_for_ms, outcome)
           else
             :stale
           end
@@ -970,7 +976,7 @@ defmodule SalixStore.TriageProductRuntime do
           non_neg_integer(),
           (-> :ok | {:ok, String.t()} | {:stale, term()} | {:error, term()})
         ) ::
-          {:ok, :rescheduled | :stale}
+          {:ok, :rescheduled | :stopped | :stale}
           | {:stale, term()}
           | {:error, term()}
   def admit_follow_up_wakeup(
@@ -984,33 +990,60 @@ defmodule SalixStore.TriageProductRuntime do
              is_integer(scheduled_for_ms) and scheduled_for_ms >= 0 and is_function(admit, 0) do
     Repo.transaction(fn ->
       case lock_follow_up(entry_id) do
-        {:ok, %{state: "active", payload: payload, due_ms: due_ms}} ->
-          if exact_follow_up_wakeup?(
-               payload,
-               authority_generation,
-               schedule_id,
-               due_ms,
-               scheduled_for_ms
-             ) do
-            case admit.() do
-              {:ok, event_id} when is_binary(event_id) and event_id != "" ->
-                payload = Map.put(payload, "last_wakeup_event_id", event_id)
-                settle_current_follow_up(entry_id, payload, scheduled_for_ms, :admitted)
+        {:ok,
+         %{state: "active", payload: payload, due_ms: due_ms, inserted_at_ms: inserted_at_ms}} ->
+          cond do
+            not exact_follow_up_wakeup?(
+              payload,
+              authority_generation,
+              schedule_id,
+              due_ms,
+              scheduled_for_ms
+            ) ->
+              :stale
 
-              :ok ->
-                settle_current_follow_up(entry_id, payload, scheduled_for_ms, :admitted)
+            follow_up_expired_before_admission?(payload, inserted_at_ms, scheduled_for_ms) ->
+              settle_current_follow_up(
+                entry_id,
+                payload,
+                inserted_at_ms,
+                scheduled_for_ms,
+                :expired
+              )
 
-              {:stale, _reason} = stale ->
-                Repo.rollback({:admission_callback, stale})
+            true ->
+              case admit.() do
+                {:ok, event_id} when is_binary(event_id) and event_id != "" ->
+                  payload = Map.put(payload, "last_wakeup_event_id", event_id)
 
-              {:error, _reason} = error ->
-                Repo.rollback({:admission_callback, error})
+                  settle_current_follow_up(
+                    entry_id,
+                    payload,
+                    inserted_at_ms,
+                    scheduled_for_ms,
+                    :admitted
+                  )
 
-              _invalid ->
-                Repo.rollback({:admission_callback, {:error, :triage_follow_up_admission_failed}})
-            end
-          else
-            :stale
+                :ok ->
+                  settle_current_follow_up(
+                    entry_id,
+                    payload,
+                    inserted_at_ms,
+                    scheduled_for_ms,
+                    :admitted
+                  )
+
+                {:stale, _reason} = stale ->
+                  Repo.rollback({:admission_callback, stale})
+
+                {:error, _reason} = error ->
+                  Repo.rollback({:admission_callback, error})
+
+                _invalid ->
+                  Repo.rollback(
+                    {:admission_callback, {:error, :triage_follow_up_admission_failed}}
+                  )
+              end
           end
 
         {:ok, _inactive} ->
@@ -1634,15 +1667,16 @@ defmodule SalixStore.TriageProductRuntime do
   defp lock_follow_up(entry_id) do
     case Repo.query(
            """
-           SELECT state, payload, extract(epoch FROM next_check_at) * 1000
+           SELECT state, payload, extract(epoch FROM next_check_at) * 1000,
+                  extract(epoch FROM inserted_at) * 1000
            FROM triage_context_entries
            WHERE entry_id = $1 AND kind = 'follow_up'
            FOR UPDATE
            """,
            [entry_id]
          ) do
-      {:ok, %{rows: [[state, payload, due_ms]]}} ->
-        {:ok, %{state: state, payload: payload, due_ms: due_ms}}
+      {:ok, %{rows: [[state, payload, due_ms, inserted_at_ms]]}} ->
+        {:ok, %{state: state, payload: payload, due_ms: due_ms, inserted_at_ms: inserted_at_ms}}
 
       {:ok, %{rows: []}} ->
         :missing
@@ -1666,7 +1700,26 @@ defmodule SalixStore.TriageProductRuntime do
       integer_ms(due_ms) == scheduled_for_ms
   end
 
-  defp settle_current_follow_up(entry_id, payload, scheduled_for_ms, :answered) do
+  defp follow_up_expired_before_admission?(payload, inserted_at_ms, scheduled_for_ms) do
+    recheck_count = non_neg_int(payload["recheck_count"])
+
+    if payload["follow_up_basis"] == "reminder_confirmed" do
+      recheck_count >= @max_reminder_rechecks
+    else
+      inserted_ms = integer_ms(inserted_at_ms)
+
+      recheck_count >= @max_agent_owned_rechecks or
+        (has_prior_wakeup?(payload) and is_integer(inserted_ms) and
+           scheduled_for_ms - inserted_ms >= @max_agent_owned_age_ms)
+    end
+  end
+
+  defp has_prior_wakeup?(payload) do
+    non_neg_int(payload["recheck_count"]) > 0 or
+      is_integer(payload["last_wakeup_scheduled_for_ms"])
+  end
+
+  defp settle_current_follow_up(entry_id, payload, _inserted_at_ms, scheduled_for_ms, :answered) do
     resolved_payload =
       payload
       |> Map.put("last_wakeup_schedule_id", payload["schedule_id"])
@@ -1688,7 +1741,13 @@ defmodule SalixStore.TriageProductRuntime do
     end
   end
 
-  defp settle_current_follow_up(entry_id, payload, scheduled_for_ms, :stale_authority) do
+  defp settle_current_follow_up(
+         entry_id,
+         payload,
+         _inserted_at_ms,
+         scheduled_for_ms,
+         :stale_authority
+       ) do
     resolved_payload =
       payload
       |> Map.put("last_wakeup_schedule_id", payload["schedule_id"])
@@ -1711,46 +1770,119 @@ defmodule SalixStore.TriageProductRuntime do
     end
   end
 
-  defp settle_current_follow_up(entry_id, payload, scheduled_for_ms, :admitted) do
-    schedule_id = Ids.new_schedule_id()
-    recheck_hours = payload["recheck_after_hours"]
+  defp settle_current_follow_up(entry_id, payload, _inserted_at_ms, scheduled_for_ms, :expired) do
+    resolved_payload =
+      payload
+      |> Map.put("last_wakeup_schedule_id", payload["schedule_id"])
+      |> Map.put("last_wakeup_scheduled_for_ms", scheduled_for_ms)
+      |> Map.put("resolved_reason", "follow_up_expired")
 
     case Repo.query(
            """
            UPDATE triage_context_entries
-           SET next_check_at = statement_timestamp() + ($3::bigint * interval '1 hour'),
-               payload = $2,
+           SET state = 'resolved', payload = $2, resolved_at = statement_timestamp(),
                updated_at = statement_timestamp()
            WHERE entry_id = $1 AND state = 'active'
-           RETURNING next_check_at
+           RETURNING 1
            """,
-           [
-             entry_id,
-             payload
-             |> Map.put("last_wakeup_schedule_id", payload["schedule_id"])
-             |> Map.put("last_wakeup_scheduled_for_ms", scheduled_for_ms)
-             |> Map.put("schedule_id", schedule_id),
-             recheck_hours
-           ]
+           [entry_id, resolved_payload]
          ) do
-      {:ok, %{rows: [[%DateTime{} = next_check_at]]}} ->
-        :ok =
-          create_follow_up_schedule(
-            entry_id,
-            payload["authority_generation"],
-            schedule_id,
-            next_check_at
-          )
-
-        :rescheduled
-
-      {:ok, %{rows: []}} ->
-        :stale
-
-      {:error, _reason} ->
-        Repo.rollback(:unavailable)
+      {:ok, %{rows: [[1]]}} -> :stopped
+      {:ok, %{rows: []}} -> :stale
+      {:error, _reason} -> Repo.rollback(:unavailable)
     end
   end
+
+  defp settle_current_follow_up(entry_id, payload, inserted_at_ms, scheduled_for_ms, :admitted) do
+    next_recheck_count = non_neg_int(payload["recheck_count"]) + 1
+    reminder? = payload["follow_up_basis"] == "reminder_confirmed"
+    max_rechecks = if(reminder?, do: @max_reminder_rechecks, else: @max_agent_owned_rechecks)
+    base_hours = max(non_neg_int(payload["recheck_after_hours"]), 1)
+
+    next_recheck_hours =
+      if reminder? do
+        base_hours
+      else
+        min(
+          base_hours * Bitwise.bsl(1, min(next_recheck_count, 6)),
+          min(max(base_hours, @max_backoff_recheck_hours), @max_recheck_hours)
+        )
+      end
+
+    inserted_ms = integer_ms(inserted_at_ms)
+
+    expired_after_admission? =
+      next_recheck_count >= max_rechecks or
+        (not reminder? and is_integer(inserted_ms) and
+           scheduled_for_ms + next_recheck_hours * 3_600_000 - inserted_ms >
+             @max_agent_owned_age_ms)
+
+    if expired_after_admission? do
+      resolved_payload =
+        payload
+        |> Map.put("recheck_count", next_recheck_count)
+        |> Map.put("last_wakeup_schedule_id", payload["schedule_id"])
+        |> Map.put("last_wakeup_scheduled_for_ms", scheduled_for_ms)
+        |> Map.put("resolved_reason", "follow_up_expired")
+
+      case Repo.query(
+             """
+             UPDATE triage_context_entries
+             SET state = 'resolved', payload = $2, resolved_at = statement_timestamp(),
+                 updated_at = statement_timestamp()
+             WHERE entry_id = $1 AND state = 'active'
+             RETURNING 1
+             """,
+             [entry_id, resolved_payload]
+           ) do
+        {:ok, %{rows: [[1]]}} -> :stopped
+        {:ok, %{rows: []}} -> :stale
+        {:error, _reason} -> Repo.rollback(:unavailable)
+      end
+    else
+      schedule_id = Ids.new_schedule_id()
+
+      case Repo.query(
+             """
+             UPDATE triage_context_entries
+             SET next_check_at = statement_timestamp() + ($3::bigint * interval '1 hour'),
+                 payload = $2,
+                 updated_at = statement_timestamp()
+             WHERE entry_id = $1 AND state = 'active'
+             RETURNING next_check_at
+             """,
+             [
+               entry_id,
+               payload
+               |> Map.put("recheck_count", next_recheck_count)
+               |> Map.put("last_wakeup_schedule_id", payload["schedule_id"])
+               |> Map.put("last_wakeup_scheduled_for_ms", scheduled_for_ms)
+               |> Map.put("schedule_id", schedule_id),
+               next_recheck_hours
+             ]
+           ) do
+        {:ok, %{rows: [[%DateTime{} = next_check_at]]}} ->
+          :ok =
+            create_follow_up_schedule(
+              entry_id,
+              payload["authority_generation"],
+              schedule_id,
+              next_check_at
+            )
+
+          :rescheduled
+
+        {:ok, %{rows: []}} ->
+          :stale
+
+        {:error, _reason} ->
+          Repo.rollback(:unavailable)
+      end
+    end
+  end
+
+  defp non_neg_int(value) when is_integer(value) and value >= 0, do: value
+  defp non_neg_int(_value), do: 0
 
   defp integer_ms(value) when is_integer(value), do: value
   defp integer_ms(value) when is_float(value), do: trunc(value)
@@ -1767,7 +1899,7 @@ defmodule SalixStore.TriageProductRuntime do
   defp normalize_follow_up_transaction({:error, _reason}), do: {:error, :unavailable}
 
   defp normalize_follow_up_admission_transaction({:ok, result})
-       when result in [:rescheduled, :stale],
+       when result in [:rescheduled, :stopped, :stale],
        do: {:ok, result}
 
   defp normalize_follow_up_admission_transaction({:error, {:admission_callback, result}}),
@@ -1904,7 +2036,9 @@ defmodule SalixStore.TriageProductRuntime do
          inserted_at,
          updated_at
        ]) do
-    stopped? = state == "resolved" and payload["resolved_reason"] == "source_authority_stale"
+    stopped? =
+      state == "resolved" and
+        payload["resolved_reason"] in ["source_authority_stale", "follow_up_expired"]
 
     %{
       entry_id: entry_id,

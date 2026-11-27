@@ -13,9 +13,9 @@ defmodule SystemsSim.Scheduler do
   # (a message of the world is in it: one of 80,000 words is usual), and
   # the one normal scheduler thread is then free: a process the holder just
   # spawned, which the scheduler has not suspended yet, could run there. So
-  # while the scheduler is away from that thread, its guard takes it
-  # (`guard/0`). A process of the world other than the holder that is
-  # scheduled in fails the run (`running/2`).
+  # while the scheduler is away from that thread in the middle of its work,
+  # its guard takes it (`guard/0`). A process of the world other than the
+  # holder that is scheduled in fails the run (`running/2`).
   #
   # A suspended process still takes in its signals, when the VM runs it for
   # that: a message only joins its mailbox, an exit signal ends it. Left to
@@ -78,8 +78,9 @@ defmodule SystemsSim.Scheduler do
         Process.flag(:priority, :high)
         # The trace messages wait outside its heap until it takes them.
         Process.flag(:message_queue_data, :off_heap)
-        guard()
-        send(caller, {tag, start(fun, seed, opts, tag)})
+        {parked, holders} = guard()
+        Process.put({__MODULE__, :parked}, parked)
+        send(caller, {tag, start(fun, seed, opts, tag, holders)})
       end)
 
     receive do
@@ -93,39 +94,172 @@ defmodule SystemsSim.Scheduler do
   end
 
   # Each time the scheduler is scheduled out, its guard, as urgent as it,
-  # holds the normal scheduler thread for as long as a dirty CPU scheduler
-  # has work: the scheduler's own collection, or a native function of the
-  # holder, which no process of the world runs beside either. The guard
-  # yields between its looks, so the scheduler runs when it is back. When
-  # the scheduler waits, no dirty CPU scheduler has work of the world, and
-  # the guard waits too.
+  # holds the normal scheduler thread while the scheduler is on a dirty CPU
+  # scheduler in the middle of its work, or the holder runs a native function
+  # there: no process of the world runs beside either. The guard yields
+  # between its looks, so the scheduler runs when it is back. The scheduler
+  # marks where it waits for others to run (`parked/1`); the guard then lets
+  # them, whatever else keeps a dirty CPU scheduler busy.
+  #
+  # The guard reads only an atomic, a table, the run queues and the
+  # processes' state flags: asking a process (`process_info/2`) can wait for
+  # it, and a guard that waits holds nothing.
   defp guard do
     sched = self()
-    guard = :erlang.spawn_opt(fn -> guarding(sched, Process.monitor(sched)) end, priority: :high)
-    :erlang.trace(sched, true, [:running, {:tracer, guard}])
+    # 1 while the scheduler waits for other processes to run, 0 while it works.
+    parked = :atomics.new(1, [])
+    holders = :ets.new(__MODULE__, [:set, :protected])
+    :ets.insert(holders, {:holder, nil})
+
+    guard =
+      :erlang.spawn_opt(
+        fn -> guarding(sched, Process.monitor(sched), parked, holders) end,
+        priority: :high
+      )
+
+    # With `:scheduler_id`, each trace message ends with the scheduler it
+    # was scheduled in or out on: 0 for a dirty one.
+    :erlang.trace(sched, true, [:running, :scheduler_id, {:tracer, guard}])
+    {parked, holders}
   end
 
-  defp guarding(sched, mref) do
+  defp guarding(sched, mref, parked, holders) do
     receive do
-      {:trace, ^sched, :out, _} -> hold_thread(sched, mref)
-      {:trace, ^sched, _, _} -> guarding(sched, mref)
+      {:trace, ^sched, :out, _, _} -> hold_thread(sched, mref, parked, holders, false)
+      {:trace, ^sched, _, _, _} -> guarding(sched, mref, parked, holders)
       {:DOWN, ^mref, :process, _, _} -> :ok
     end
   end
 
-  defp hold_thread(sched, mref) do
-    # The run queues' active tasks: the normal ones', then the dirty CPU
-    # one's, then the dirty I/O one's.
-    # ast-grep-ignore: ex-harness-real-clock -- decides only when the world may run, never what it does
-    if Enum.at(:erlang.statistics(:active_tasks_all), -2) > 0 do
-      :erlang.yield()
-      hold_thread(sched, mref)
-    else
-      guarding(sched, mref)
+  # `dirty?`: the scheduler went to a dirty CPU scheduler while it worked,
+  # and has not been scheduled in on a normal one since. A dirty scheduler
+  # marks it no longer running there a few steps before it queues it for the
+  # normal one again: until then the guard holds the thread.
+  defp hold_thread(sched, mref, parked, holders, dirty?) do
+    case runs(sched, mref, parked, dirty?, false) do
+      :down ->
+        :ok
+
+      {dirty?, back?} ->
+        case hold?(sched, parked, holders, dirty?, back?) do
+          {true, dirty?} ->
+            :erlang.yield()
+            hold_thread(sched, mref, parked, holders, dirty?)
+
+          {false, _} ->
+            guarding(sched, mref, parked, holders)
+        end
     end
   end
 
-  defp start(fun, seed, opts, tag) do
+  # Where the scheduler has been scheduled in and out since the guard last
+  # looked; `back?` when it was last scheduled in on a normal scheduler.
+  defp runs(sched, mref, parked, dirty?, back?) do
+    receive do
+      {:DOWN, ^mref, :process, _, _} ->
+        :down
+
+      {:trace, ^sched, :in, _, 0} ->
+        runs(sched, mref, parked, dirty? or :atomics.get(parked, 1) == 0, false)
+
+      {:trace, ^sched, :out, _, 0} ->
+        runs(sched, mref, parked, dirty?, false)
+
+      {:trace, ^sched, :in, _, _} ->
+        runs(sched, mref, parked, false, true)
+
+      {:trace, ^sched, :out, _, _} ->
+        runs(sched, mref, parked, false, false)
+    after
+      0 -> {dirty?, back?}
+    end
+  end
+
+  # Whether the guard holds the thread, and whether the scheduler is known
+  # to be on a dirty CPU scheduler in the middle of its work.
+  defp hold?(sched, parked, holders, dirty?, back?) do
+    case holder(holders) do
+      # The scheduler has ended: the guard takes its `:DOWN`.
+      :gone ->
+        {false, dirty?}
+
+      holder ->
+        working? = :atomics.get(parked, 1) == 0
+        holder_dirty? = is_pid(holder) and :erts_internal.is_process_executing_dirty(holder)
+
+        cond do
+          back? -> {holder_dirty?, false}
+          :erts_internal.is_process_executing_dirty(sched) -> {true, dirty? or working?}
+          dirty? and working? -> {true, true}
+          holder_dirty? -> {true, dirty?}
+          working? and dirty_cpu_active?() -> {true, dirty?}
+          working? and dirty_cpu_taken?(sched) -> {true, true}
+          true -> {false, dirty?}
+        end
+    end
+  end
+
+  # A dirty CPU scheduler takes a process off its queue and marks it running
+  # both under the queue's lock, and between the two the queue counts no
+  # task: reading the queue's length through its lock (`:run_queue`) and then
+  # the mark leaves no gap.
+  defp dirty_cpu_taken?(sched) do
+    # ast-grep-ignore: ex-harness-real-clock -- decides only when the world may run, never what it does
+    _ = :erlang.statistics(:run_queue)
+    :erts_internal.is_process_executing_dirty(sched)
+  end
+
+  # The table is gone with the scheduler.
+  defp holder(holders) do
+    :ets.lookup_element(holders, :holder, 2)
+  rescue
+    ArgumentError -> :gone
+  end
+
+  defp dirty_cpu_active? do
+    # The run queues' active tasks: the normal ones', then the dirty CPU
+    # one's, then the dirty I/O one's.
+    # ast-grep-ignore: ex-harness-real-clock -- decides only when the world may run, never what it does
+    Enum.at(:erlang.statistics(:active_tasks_all), -2) > 0
+  end
+
+  # Runs `fun`, in which the scheduler waits for other processes to run.
+  defp parked(fun) do
+    parked = Process.get({__MODULE__, :parked})
+    clean()
+    :atomics.put(parked, 1, 1)
+
+    try do
+      fun.()
+    after
+      :atomics.put(parked, 1, 0)
+    end
+  end
+
+  # Collects the scheduler's garbage before it parks, while the guard still
+  # holds the thread for a collection on a dirty CPU scheduler. Parked with
+  # a small heap, the scheduler has no collection of its own to make: one
+  # starts on a dirty CPU scheduler only from 131,072 words, and the
+  # literal area collector checks a heap there only from about 40,000 (the
+  # messages it has not taken in yet are off its heap). A heap that grew
+  # from what the last collection left is collected again.
+  defp clean do
+    {:total_heap_size, words} = Process.info(self(), :total_heap_size)
+
+    if words >= max(16_384, 2 * Process.get({__MODULE__, :kept_words}, 0)) do
+      :erlang.garbage_collect(self(), type: :major)
+      {:total_heap_size, kept} = Process.info(self(), :total_heap_size)
+      Process.put({__MODULE__, :kept_words}, kept)
+    end
+
+    :ok
+  end
+
+  # What `Process.info/2` says of another process; it can wait for that
+  # process to take in its signals.
+  defp info(pid, spec), do: parked(fn -> Process.info(pid, spec) end)
+
+  defp start(fun, seed, opts, tag, holders) do
     :persistent_term.put(__MODULE__, self())
     SystemsClock.fire_only_from(self())
     sched = self()
@@ -147,7 +281,7 @@ defmodule SystemsSim.Scheduler do
       end)
 
     :erlang.trace(root, true, @trace_flags)
-    :erlang.suspend_process(root)
+    suspend(root)
     send(root, {tag, :go})
 
     st = %{
@@ -168,22 +302,28 @@ defmodule SystemsSim.Scheduler do
       trace: [],
       # The record's steps, by number.
       record: :ets.new(__MODULE__, [:ordered_set, :private]),
-      # What happened since the last step was written down, newest first.
-      events: [],
+      # What happened since the last step was written down, in its order,
+      # and what the run keeps for its end: the world's result and the calls
+      # into it from outside. Messages of the world are large (one of 80,000
+      # words is usual): they stay out of the scheduler's heap (`clean/0`).
+      events: :ets.new(__MODULE__, [:ordered_set, :private]),
+      kept: :ets.new(__MODULE__, [:ordered_set, :private]),
       changes: 0,
       steps: 0,
-      result: nil,
+      result?: false,
       outside: false,
       # A process of the world in `SystemsSim.until/1`, waiting for the world
       # to be idle: %{pid, tag, move?, moved?}.
       idle_waiter: nil,
-      # The process that holds the turn, and the one that held it last.
+      # The process that holds the turn, and the one that held it last;
+      # `holders` tells the guard the first.
       holder: nil,
+      holders: holders,
       last_holder: nil,
       # Processes of the world that ran without the turn, and calls into the
       # world from outside it.
       escapes: [],
-      intrusions: [],
+      intrusions: 0,
       clock?: Keyword.get(opts, :clock, true),
       max_steps: Keyword.get(opts, :max_steps, 100_000),
       deadline: System.monotonic_time(:millisecond) + Keyword.get(opts, :timeout, 60_000)
@@ -191,17 +331,19 @@ defmodule SystemsSim.Scheduler do
 
     try do
       st = loop(st)
-      finish(st, escaped(st) || intruded(st) || st.result)
+      finish(st, escaped(st), nil)
     catch
       {__MODULE__, :stop, st, reason} ->
-        finish(st, escaped(st) || intruded(st) || {:error, reason})
+        finish(st, escaped(st), {:error, reason})
     after
+      # The world has ended: the guard has nothing left to hold the thread for.
+      :atomics.put(Process.get({__MODULE__, :parked}), 1, 1)
       :persistent_term.erase(__MODULE__)
       SystemsClock.fire_only_from(nil)
     end
   end
 
-  defp loop(%{result: result} = st) when result != nil, do: st
+  defp loop(%{result?: true} = st), do: st
 
   defp loop(st) do
     if st.steps >= st.max_steps,
@@ -210,7 +352,7 @@ defmodule SystemsSim.Scheduler do
     {st, lengths} = settle(st)
 
     case ready(st, lengths) do
-      _ when st.result != nil ->
+      _ when st.result? ->
         st
 
       [] ->
@@ -246,7 +388,7 @@ defmodule SystemsSim.Scheduler do
       |> Enum.sort_by(fn {_, p} -> p.id end)
       |> Enum.reduce({st, %{}}, fn {pid, _}, {st, lengths} ->
         if pid != except and Map.has_key?(st.procs, pid) do
-          case Process.info(pid, :message_queue_len) do
+          case info(pid, :message_queue_len) do
             {:message_queue_len, n} -> {st, Map.put(lengths, pid, n)}
             nil -> {ended(st, pid), lengths}
           end
@@ -274,7 +416,15 @@ defmodule SystemsSim.Scheduler do
   # can send, or ends.
   defp turn(st, pid) do
     running(pid, true)
-    st = if resume(pid), do: hold(%{st | holder: pid}, pid), else: ended(st, pid)
+    :ets.insert(st.holders, {:holder, pid})
+
+    st =
+      try do
+        if resume(pid), do: hold(%{st | holder: pid}, pid), else: ended(st, pid)
+      after
+        :ets.insert(st.holders, {:holder, nil})
+      end
+
     running(pid, false)
     %{st | holder: nil, last_holder: pid}
   end
@@ -303,23 +453,7 @@ defmodule SystemsSim.Scheduler do
           hold(%{intrusion(st, holder, msg) | outside: false}, holder)
 
         {:trace, ^holder, :out, _} ->
-          # The others take in what it sent them so far.
-          {st, _} = settle(st, holder)
-
-          case alive?(st, holder) && Process.info(holder, [:status, :message_queue_len]) do
-            # Still waiting for a reply from outside. Reading the stack
-            # again would schedule the process in and out once more.
-            [status: :waiting, message_queue_len: _] when st.outside ->
-              hold(st, holder)
-
-            [status: :waiting, message_queue_len: seen] ->
-              if waiting_outside?(st, holder),
-                do: hold(%{st | outside: true}, holder),
-                else: stop(st, holder, seen)
-
-            _running_or_gone ->
-              hold(st, holder)
-          end
+          out(st, holder)
 
         {:trace, ^holder, tag, _} = ending when tag in [:exit, :out_exiting, :out_exited] ->
           {st, _} = st |> event(ending) |> settle(holder)
@@ -334,15 +468,50 @@ defmodule SystemsSim.Scheduler do
     end
   end
 
-  # The holder waits for the world, having looked at the `seen` messages of
-  # its mailbox. A message that comes from outside the world from now on
-  # does not run it: the mailbox is then longer than `seen`, and the process
-  # ready.
-  defp stop(st, holder, seen) do
-    :erlang.suspend_process(holder)
-    put_in(st.procs[holder].seen, seen)
-  rescue
-    ArgumentError -> st
+  # The holder was scheduled out. One that waits is suspended while the
+  # others take in what it sent them so far and the scheduler reads its
+  # stack: a message that wakes it then does not run it, so it starts no
+  # process the scheduler has not seen. When a message came meanwhile, or it
+  # waits for a reply from outside the world, it goes on; else it waits for
+  # the world, having looked at the `seen` messages of its mailbox, and a
+  # message that comes from outside the world from now on does not run it:
+  # the mailbox is then longer than `seen`, and the process ready.
+  defp out(st, holder) do
+    case alive?(st, holder) && info(holder, [:status, :message_queue_len]) do
+      # Still waiting for a reply from outside, and it has run no step since
+      # (a message would have ended `outside`). Suspending it again would
+      # schedule it in and out once more, and again after that.
+      [status: :waiting, message_queue_len: _] when st.outside ->
+        hold(st, holder)
+
+      [status: :waiting, message_queue_len: before] ->
+        if suspend(holder) do
+          {st, _} = settle(st, holder)
+
+          case alive?(st, holder) && info(holder, :message_queue_len) do
+            {:message_queue_len, seen} when seen > before ->
+              resume(holder)
+              hold(st, holder)
+
+            {:message_queue_len, seen} ->
+              if waiting_outside?(st, holder) do
+                resume(holder)
+                hold(%{st | outside: true}, holder)
+              else
+                put_in(st.procs[holder].seen, seen)
+              end
+
+            _gone ->
+              hold(st, holder)
+          end
+        else
+          {st, _} = settle(st, holder)
+          hold(st, holder)
+        end
+
+      _running_or_gone ->
+        hold(st, holder)
+    end
   end
 
   defp alive?(st, pid), do: Map.has_key?(st.procs, pid) or MapSet.member?(st.ending, pid)
@@ -372,7 +541,7 @@ defmodule SystemsSim.Scheduler do
   # Moves the clock `ms` to the next timer of the world; the timers that fire
   # send their messages, which the next pass over the world finds.
   defp advance(st, ms) do
-    SystemsClock.advance(ms)
+    parked(fn -> SystemsClock.advance(ms) end)
     record(%{st | trace: [{:clock, ms} | st.trace]}, {:clock, ms})
   end
 
@@ -405,11 +574,24 @@ defmodule SystemsSim.Scheduler do
 
   # The next message for the scheduler. The run's real-time limit only stops
   # a world that hangs outside the scheduler's reach.
+  #
+  # While the scheduler waits here, the processes of the world run. The
+  # scheduler is marked parked for the receive alone: nothing between the
+  # marks takes heap, where a large collection of its own, on a dirty
+  # scheduler, would start while the guard lets the world run.
   defp next(st) do
+    timeout = max(st.deadline - System.monotonic_time(:millisecond), 0)
+    parked = Process.get({__MODULE__, :parked})
+    clean()
+    :atomics.put(parked, 1, 1)
+
     receive do
-      message -> message
+      message ->
+        :atomics.put(parked, 1, 0)
+        message
     after
-      max(st.deadline - System.monotonic_time(:millisecond), 0) ->
+      timeout ->
+        :atomics.put(parked, 1, 0)
         throw({__MODULE__, :stop, st, {:timeout, holding(st), describe(st)}})
     end
   end
@@ -498,7 +680,10 @@ defmodule SystemsSim.Scheduler do
     st =
       if Map.has_key?(st.procs, pid) do
         Process.exit(pid, :kill)
+        # The caller starts nothing while the others take the kill in.
+        suspended? = from != pid and Map.has_key?(st.procs, from) and suspend(from)
         {st, _} = settle(st, from)
+        if suspended?, do: resume(from)
         st
       else
         st
@@ -513,7 +698,11 @@ defmodule SystemsSim.Scheduler do
 
   defp event(st, {:trace, pid, :receive, msg}), do: intrusion(st, pid, msg)
 
-  defp event(st, {tag, :result, result}) when tag == st.tag, do: %{st | result: result}
+  defp event(st, {tag, :result, result}) when tag == st.tag do
+    :ets.insert(st.kept, {:result, result})
+    %{st | result?: true}
+  end
+
   defp event(st, _other), do: st
 
   # A value for `SystemsSim.draw/2`, from the run's seed.
@@ -535,27 +724,53 @@ defmodule SystemsSim.Scheduler do
   # One counter serves every modifier: its integers are positive and grow.
   defp draw(st, {:unique_integer, _modifiers}), do: {st.unique + 1, %{st | unique: st.unique + 1}}
 
+  # `:erlang.suspend_process/1`, false when the process is gone. When the
+  # process has signals to take in, the scheduler waits for it to take in
+  # the one that suspends it, and is parked for that receive alone: a
+  # process the holder just spawned is not suspended yet, and a collection
+  # of the scheduler while the guard lets it run would let it run its code.
   defp suspend(pid) do
-    :erlang.suspend_process(pid)
-  rescue
-    ArgumentError -> false
+    case :erts_internal.suspend_process(pid, []) do
+      ref when is_reference(ref) ->
+        parked = Process.get({__MODULE__, :parked})
+        clean()
+        :atomics.put(parked, 1, 1)
+
+        receive do
+          {^ref, result} ->
+            :atomics.put(parked, 1, 0)
+            result == true
+        end
+
+      result ->
+        result == true
+    end
   end
 
   defp id(st, pid), do: (st.procs[pid] && st.procs[pid].id) || st.gone[pid] || :outside
 
-  defp note(st, event), do: %{st | events: [event | st.events], changes: st.changes + 1}
+  defp note(st, event) do
+    :ets.insert(st.events, {st.changes, event})
+    %{st | changes: st.changes + 1}
+  end
 
   # One step of the record: what its process did, in its order, the values
   # it drew, then what that made others do, by process. Trace messages of
   # different processes reach the scheduler in an order the VM does not
   # promise, nor do a process's trace messages and its own requests to it.
-  defp write(%{events: []} = st, nil), do: st
-
   defp write(st, id) do
-    {own, others} = st.events |> Enum.reverse() |> Enum.split_with(&(elem(&1, 1) == id))
-    {draws, own} = Enum.split_with(own, &match?({:draw, _, _, _}, &1))
-    {step, refs} = stable({id, own ++ draws ++ Enum.sort_by(others, &elem(&1, 1))}, st)
-    record(%{st | events: [], refs: refs}, step)
+    case :ets.tab2list(st.events) do
+      [] when id == nil ->
+        st
+
+      events ->
+        :ets.delete_all_objects(st.events)
+        events = Enum.map(events, &elem(&1, 1))
+        {own, others} = Enum.split_with(events, &(elem(&1, 1) == id))
+        {draws, own} = Enum.split_with(own, &match?({:draw, _, _, _}, &1))
+        {step, refs} = stable({id, own ++ draws ++ Enum.sort_by(others, &elem(&1, 1))}, st)
+        record(%{st | refs: refs}, step)
+    end
   end
 
   defp record(st, entry) do
@@ -649,8 +864,8 @@ defmodule SystemsSim.Scheduler do
   # processes of the world, the world answers it, whatever its stack holds
   # open below, as a database transaction.
   defp waiting_outside?(st, pid) do
-    with {:current_stacktrace, [top | _] = stack} <- Process.info(pid, :current_stacktrace),
-         {:monitors, monitors} <- Process.info(pid, :monitors) do
+    with {:current_stacktrace, [top | _] = stack} <- info(pid, :current_stacktrace),
+         {:monitors, monitors} <- info(pid, :monitors) do
       outside = Enum.reject(monitors, &in_world?(st, &1))
 
       if call_frame?(top) and outside == [] do
@@ -715,19 +930,19 @@ defmodule SystemsSim.Scheduler do
     do: %{id: id(st, pid), initial_call: initial_call(pid), waits_in: stack(pid)}
 
   defp stack(pid) do
-    case Process.info(pid, :current_stacktrace) do
+    case info(pid, :current_stacktrace) do
       {:current_stacktrace, stack} -> Enum.take(stack, 8)
       nil -> nil
     end
   end
 
   defp initial_call(pid) do
-    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+    with {:dictionary, dictionary} <- info(pid, :dictionary),
          {_, mfa} <- List.keyfind(dictionary, :"$initial_call", 0) do
       mfa
     else
       _ ->
-        case Process.info(pid, :initial_call) do
+        case info(pid, :initial_call) do
           {:initial_call, mfa} -> mfa
           nil -> nil
         end
@@ -735,7 +950,7 @@ defmodule SystemsSim.Scheduler do
   end
 
   defp current_function(pid) do
-    case Process.info(pid, :current_function) do
+    case info(pid, :current_function) do
       {:current_function, mfa} -> mfa
       nil -> nil
     end
@@ -748,14 +963,13 @@ defmodule SystemsSim.Scheduler do
   defp intrusion(st, pid, {:"$gen_call", {from, _tag}, request}) when is_pid(from) do
     if Map.has_key?(st.procs, pid) and from != self() and not alive?(st, from) and
          not Map.has_key?(st.gone, from) do
-      intrusion = %{
-        to: id(st, pid),
-        from: initial_call(from),
-        name: Process.info(from, :registered_name),
-        request: request
-      }
-
-      %{st | intrusions: [intrusion | st.intrusions]}
+      # The request is kept before the scheduler asks the caller anything.
+      key = {:intrusion, st.intrusions}
+      :ets.insert(st.kept, {key, %{to: id(st, pid), request: request}})
+      found = %{from: initial_call(from), name: info(from, :registered_name)}
+      [{^key, intrusion}] = :ets.lookup(st.kept, key)
+      :ets.insert(st.kept, {key, Map.merge(intrusion, found)})
+      %{st | intrusions: st.intrusions + 1}
     else
       st
     end
@@ -763,8 +977,12 @@ defmodule SystemsSim.Scheduler do
 
   defp intrusion(st, _pid, _msg), do: st
 
-  defp intruded(%{intrusions: []}), do: nil
-  defp intruded(st), do: {:error, {:called_from_outside, Enum.reverse(st.intrusions)}}
+  defp intruded(%{intrusions: 0}), do: nil
+
+  defp intruded(st) do
+    calls = :ets.select(st.kept, [{{{:intrusion, :_}, :"$1"}, [], [:"$1"]}])
+    {:error, {:called_from_outside, calls}}
+  end
 
   # A process of the world that ran without the turn makes the run's steps
   # depend on the VM's timing, not the seed: the run fails, naming it.
@@ -776,8 +994,10 @@ defmodule SystemsSim.Scheduler do
   end
 
   # The world's processes are gone when the run returns, so the next run can
-  # register the same names.
-  defp finish(st, result) do
+  # register the same names. The run fails first for a process that ran
+  # without the turn, then for a call from outside, then for `stopped`; else
+  # it has the world's result.
+  defp finish(st, escaped, stopped) do
     refs =
       for pid <- Map.keys(st.procs) ++ MapSet.to_list(st.ending) do
         ref = Process.monitor(pid)
@@ -785,15 +1005,24 @@ defmodule SystemsSim.Scheduler do
         ref
       end
 
-    for ref <- refs do
-      receive do
-        {:DOWN, ^ref, :process, _, _} -> :ok
+    parked(fn ->
+      for ref <- refs do
+        receive do
+          {:DOWN, ^ref, :process, _, _} -> :ok
+        end
       end
-    end
+    end)
+
+    result =
+      escaped || intruded(st) || stopped ||
+        case :ets.lookup(st.kept, :result) do
+          [{:result, result}] -> result
+          [] -> {:error, :no_result}
+        end
 
     %SystemsSim.Run{
       seed: st.seed,
-      result: result || {:error, :no_result},
+      result: result,
       steps: st.steps,
       trace: Enum.reverse(st.trace),
       record: st.record |> :ets.tab2list() |> Enum.map(&elem(&1, 1))

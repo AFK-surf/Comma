@@ -34,7 +34,7 @@ defmodule SalixAgent.Tools.DynamicUI do
   @presentation """
   ## Presentation
 
-  Widgets suit structured results: forecasts, options to pick from, comparisons, metrics, trends, schedules, orders and deliveries, and lists of places, items or updates. Simple answers and missing-data reports remain text. The original user's format choice governs.
+  Widgets suit structured results: forecasts, options to pick from, comparisons, metrics, trends, schedules, orders and deliveries, routes, and lists of places, items or updates. Simple answers and missing-data reports remain text. The original user's format choice governs.
   A list of the user's own to-dos is a checklist card, not Markdown checkboxes. An item can carry actions that propose adding it to the user's calendar, reminders or Routine, such as {label: "加到日历", prompt: "把「…」加到我的日历，11/5 16:00"}; the prompt names the item, its time and its source, so the Router can do it once the user sends it.
   The source and observation time stand in the visible widget as one short line (a card's source and observedAt fields; widget-meta or small in custom HTML) and in the fallback summary. In a widget of several cards, one card carries that line.
   Widget data gives observation times as ISO times; the widget shows them in the viewer's time zone.
@@ -291,9 +291,12 @@ defmodule SalixAgent.Tools.DynamicUI do
       @levels["level"]
     else
       features =
-        if charts != [] and chart_series?(script, data),
-          do: [@levels["features"]["chartSeries"]],
-          else: []
+        [
+          {charts != [] and chart_series?(script, data), "chartSeries"},
+          {"place" in kinds and place_map?(script, data), "placeMap"}
+        ]
+        |> Enum.filter(&elem(&1, 0))
+        |> Enum.map(&@levels["features"][elem(&1, 1)])
 
       Enum.max([@levels["base"]] ++ Enum.map(kinds, &@levels["kinds"][&1]) ++ features)
     end
@@ -302,13 +305,17 @@ defmodule SalixAgent.Tools.DynamicUI do
   # A chart's values can come from data or from the script, so a widget that
   # draws a chart and names `series` in either counts as using several series.
   defp chart_series?(script, data),
-    do: Regex.match?(~r/\bseries\b/, script) or names_series?(data)
+    do: Regex.match?(~r/\bseries\b/, script) or names?(data, "series")
 
-  defp names_series?(map) when is_map(map),
-    do: Map.has_key?(map, "series") or Enum.any?(Map.values(map), &names_series?/1)
+  # Places with coordinates draw on a map, which an older runtime lists without.
+  defp place_map?(script, data),
+    do: Regex.match?(~r/\blat\b/, script) or names?(data, "lat")
 
-  defp names_series?(list) when is_list(list), do: Enum.any?(list, &names_series?/1)
-  defp names_series?(_value), do: false
+  defp names?(map, key) when is_map(map),
+    do: Map.has_key?(map, key) or Enum.any?(Map.values(map), &names?(&1, key))
+
+  defp names?(list, key) when is_list(list), do: Enum.any?(list, &names?(&1, key))
+  defp names?(_value, _key), do: false
 
   defp card_data_problem(kind, source, data) do
     case fetch_card_data(data, source |> String.split(".") |> Enum.drop(2)) do
@@ -856,9 +863,76 @@ defmodule SalixAgent.Tools.DynamicUI do
         "text" => payload["summary"]
       }
 
+      block =
+        case extract_title(payload) do
+          nil -> block
+          title -> Map.put(block, "title", title)
+        end
+
       {Jason.encode!(%{"ui_ref" => ui_ref, "content" => block}), [event]}
     else
       {:error, reason} -> raise "create dynamic UI: #{inspect(reason)}"
     end
   end
+
+  defp extract_title(payload) when is_map(payload) do
+    script = payload["script"] || ""
+    data = payload["data"] || %{}
+    html = payload["html"] || ""
+
+    card_title(script, data) ||
+      normalize_title(data["title"]) ||
+      html_title(html)
+  end
+
+  defp extract_title(_payload), do: nil
+
+  defp card_title(script, data) when is_binary(script) and is_map(data) do
+    script
+    |> card_calls()
+    |> Enum.find_value(fn
+      [_id, _kind, source] ->
+        case fetch_card_data(data, source |> String.split(".") |> Enum.drop(2)) do
+          {:ok, %{"title" => title}} -> normalize_title(title)
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp card_title(_script, _data), do: nil
+
+  defp html_title(html) when is_binary(html) do
+    case Floki.parse_fragment(html) do
+      {:ok, nodes} ->
+        ~w(.widget-title h1 h2 h3)
+        |> Enum.find_value(fn selector ->
+          nodes
+          |> Floki.find(selector)
+          |> Enum.find_value(fn node -> node |> Floki.text() |> normalize_title() end)
+        end)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp html_title(_html), do: nil
+
+  defp normalize_title(value) when is_binary(value) do
+    cleaned =
+      value
+      |> String.replace(~r/\s+/u, " ")
+      |> String.trim()
+
+    if cleaned == "" do
+      nil
+    else
+      String.slice(cleaned, 0, 200)
+    end
+  end
+
+  defp normalize_title(_value), do: nil
 end

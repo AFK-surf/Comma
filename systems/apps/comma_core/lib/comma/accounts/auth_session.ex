@@ -7,6 +7,9 @@ defmodule Comma.Accounts.AuthSession do
 
   alias Comma.Accounts.User
 
+  # A paired session names the full session that delegated it (`Comma.SessionPairing`).
+  @pairing_methods ["watch_pairing", "raycast_pairing"]
+
   @primary_key {:id, Ecto.UUID, autogenerate: true}
   @foreign_key_type :string
   @timestamps_opts [
@@ -100,6 +103,7 @@ defmodule Comma.Accounts.AuthSession do
         "google",
         "apple",
         "watch_pairing",
+        "raycast_pairing",
         "ssh_public_key",
         "telegram_miniapp",
         "guest"
@@ -109,7 +113,7 @@ defmodule Comma.Accounts.AuthSession do
     |> validate_inclusion(:session_source, ["user_login", "ops_api", "channel_task_panel"])
     |> validate_inclusion(
       :client_kind,
-      ["web", "electron", "android", "ios", "watch", "api", "ssh"],
+      ["web", "electron", "android", "ios", "watch", "raycast", "api", "ssh"],
       allow_nil: true
     )
     |> validate_inclusion(
@@ -125,7 +129,7 @@ defmodule Comma.Accounts.AuthSession do
     |> validate_length(:channel_connect_id, max: 200)
     |> validate_restricted_input(attrs)
     |> validate_capability_shape()
-    |> validate_watch_parent()
+    |> validate_pairing_parent()
     |> validate_apple_identity()
     |> foreign_key_constraint(:user_id)
     |> foreign_key_constraint(:parent_session_id)
@@ -140,21 +144,23 @@ defmodule Comma.Accounts.AuthSession do
     |> check_constraint(:restricted, name: :comma_auth_sessions_scope_valid)
   end
 
+  @doc "The auth methods of a session another session paired."
+  def pairing_methods, do: @pairing_methods
+
   defp validate_apple_identity(changeset) do
     if get_field(changeset, :auth_method) == "apple",
       do: validate_required(changeset, [:login_identity_id]),
       else: changeset
   end
 
-  defp validate_watch_parent(changeset) do
-    method = get_field(changeset, :auth_method)
+  defp validate_pairing_parent(changeset) do
+    paired = get_field(changeset, :auth_method) in @pairing_methods
     parent = get_field(changeset, :parent_session_id)
 
-    if (method == "watch_pairing" and is_binary(parent) and
-          get_field(changeset, :restricted) == false) or
-         (method != "watch_pairing" and is_nil(parent)),
+    if (paired and is_binary(parent) and get_field(changeset, :restricted) == false) or
+         (not paired and is_nil(parent)),
        do: changeset,
-       else: add_error(changeset, :parent_session_id, "requires an ordinary paired Watch session")
+       else: add_error(changeset, :parent_session_id, "requires an ordinary paired session")
   end
 
   defp validate_restricted_input(changeset, attrs) when is_map(attrs) do

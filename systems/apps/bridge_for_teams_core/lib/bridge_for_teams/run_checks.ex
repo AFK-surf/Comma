@@ -996,7 +996,7 @@ defmodule BridgeForTeams.RunChecks do
   defp bot_first_message_gate(_connect, list_error) when not is_nil(list_error) do
     gate(%{
       gate_id: "bot.first_message",
-      label: "First message round-trips (@Bridge -> reply)",
+      label: "First message round-trips (@Comma -> reply)",
       status: :skipped,
       reason_class: list_error,
       next_action: "Could not load Feishu connects. Re-run checks after Salix is available.",
@@ -1007,7 +1007,7 @@ defmodule BridgeForTeams.RunChecks do
   defp bot_first_message_gate(nil, _list_error) do
     gate(%{
       gate_id: "bot.first_message",
-      label: "First message round-trips (@Bridge -> reply)",
+      label: "First message round-trips (@Comma -> reply)",
       status: :skipped,
       reason_class: :not_connected,
       next_action: "Create a Feishu connect before sending a first message.",
@@ -1018,11 +1018,10 @@ defmodule BridgeForTeams.RunChecks do
   defp bot_first_message_gate(connect, _list_error) do
     gate(%{
       gate_id: "bot.first_message",
-      label: "First message round-trips (@Bridge -> reply)",
+      label: "First message round-trips (@Comma -> reply)",
       status: :needs_manual,
       reason_class: :explicit_admin_action_required,
-      next_action:
-        "Send a real @Bridge message in the target Feishu group and watch for a reply.",
+      next_action: "Send a real @Comma message in the target Feishu group and watch for a reply.",
       evidence: %{
         "connect_id" => connect["connect_id"],
         "auto_run" => false,

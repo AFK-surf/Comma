@@ -22,35 +22,36 @@ final class CoreRuntime: Sendable {
     /**
      * Builds the process's client core for the Comma API at `baseURL`: Hermes running the shared TypeScript core, its
      * requests and databases in this app, the bearer in `SessionCustody`. A session an earlier version kept in the
-     * Keychain moves into the new credential store first, so an update does not sign the person out.
+     * Keychain moves into the new credential store first, so an update does not sign the person out. `storageSuffix`
+     * names the local stores apart for a backend other than the built one (`AppConfiguration.storageSuffix`).
      */
-    static func make(baseURL: URL) throws -> CoreRuntime {
+    static func make(baseURL: URL, storageSuffix: String = "") throws -> CoreRuntime {
         let audience = try SessionCustody.canonicalAudience(baseURL.absoluteString)
         let custody = try SessionCustody(record: KeychainRecord(service: "surf.comma.ios.credentials", account: audience),
                                          apiOrigin: audience)
         adoptEarlierSession(audience: audience, custody: custody)
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         // The core bounds the downloads itself and keeps an index of them: they are not a cache the system may clear.
-        var downloadRoot = support.appendingPathComponent("core-downloads", isDirectory: true)
+        var downloadRoot = support.appendingPathComponent("core-downloads" + storageSuffix, isDirectory: true)
         try FileManager.default.createDirectory(at: downloadRoot, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try? downloadRoot.setResourceValues(values)
         let caches = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        return try make(custody: custody, dataDirectory: support.appendingPathComponent("core", isDirectory: true),
-                        downloadRoot: downloadRoot,
-                        localFilesRoot: caches.appendingPathComponent("core-local-files", isDirectory: true))
+        return try make(custody: custody, dataDirectory: support.appendingPathComponent("core" + storageSuffix, isDirectory: true),
+                        downloadRoot: downloadRoot, store: StoreKitPurchases(),
+                        localFilesRoot: caches.appendingPathComponent("core-local-files" + storageSuffix, isDirectory: true))
     }
 
     /// The client core with the credential store, directories and URL loading given (the app's, or a test's).
-    static func make(custody: SessionCustody, dataDirectory: URL, downloadRoot: URL, localFilesRoot: URL? = nil,
-                     configuration: URLSessionConfiguration = .default,
+    static func make(custody: SessionCustody, dataDirectory: URL, downloadRoot: URL, store: StoreKitPurchases? = nil,
+                     localFilesRoot: URL? = nil, configuration: URLSessionConfiguration = .default,
                      google: any GoogleIdentityTokens = GoogleSignInSheet()) throws -> CoreRuntime {
         let apple = AppleSignInSheet()
         // Picked files wait here to upload; by default beside the core's data (a test's own directory).
         let localFiles = HostLocalFiles(root: localFilesRoot ?? dataDirectory.appendingPathComponent("local-files"))
         let host = CoreHost(custody: custody, dataDirectory: dataDirectory, downloads: HostDownloads(root: downloadRoot),
-                            localFiles: localFiles, apple: apple, google: google, configuration: configuration)
+                            localFiles: localFiles, store: store, apple: apple, google: google, configuration: configuration)
         guard let url = Bundle.main.url(forResource: "core", withExtension: "hbc") else {
             throw HostFailure(message: "The app carries no client core (\(script)).")
         }

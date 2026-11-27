@@ -635,6 +635,8 @@ export interface StationLinks {
     workspace: string,
     ticket: StationRelayTicket
   ): Effect.Effect<Effect.Effect<void>, HostError, Scope.Scope>;
+  /** The device is awake again (`MeshEndpoint.networkChange`). Absent: the endpoint needs no telling. */
+  networkChange?(): Effect.Effect<void>;
 }
 
 /** Direct connections to stations (Electron's host: iroh). A host without them reaches no station. */
@@ -820,6 +822,8 @@ export interface Host {
   readonly screenFrames?: ScreenFramePorts;
   /** Files of any size downloaded to the device's storage (downloads.ts). Only the Android app's host has them. */
   readonly downloads?: DownloadPorts;
+  /** The platform's in-app purchases (billing.ts). Only a phone app that sells through its store has them. */
+  readonly store?: StorePorts;
 
   /** Bringing the app back to a new install's state (`app.reset`). Only Electron's host has it. */
   readonly reset?: ResetPorts | undefined;
@@ -842,6 +846,49 @@ export interface Host {
    * `bearerSession`); `host`, a test tells the core each change (`Core.observeSession`).
    */
   readonly sessionSource: "host" | "core";
+}
+
+/** A product as the device's store sells it: its price as the store words it for this person. */
+export interface StoreProduct {
+  id: string;
+  displayPrice: string;
+}
+
+/** A transaction the store verified on the device. `id`: what the server reads it from the store by. */
+export interface StoreTransaction {
+  id: string;
+  productId: string;
+}
+
+/**
+ * What a purchase came to: paid (`transaction`, not yet finished), waiting for someone's approval (Ask to Buy, a
+ * payment the bank holds), or given up by the person.
+ */
+export type StorePurchase =
+  | { status: "purchased"; transaction: StoreTransaction }
+  | { status: "pending" }
+  | { status: "cancelled" };
+
+/**
+ * The platform's in-app purchases (StoreKit, Play Billing). The server records a transaction from the store's own
+ * answer, then the core finishes it here: a transaction left unfinished is reported again (`unfinished`).
+ */
+export interface StorePorts {
+  readonly provider: "apple" | "google";
+  /** The products of `ids` the store sells; one it does not is left out. */
+  products(ids: readonly string[]): Effect.Effect<StoreProduct[], HostError>;
+  /** Buys a product for the Billing Account that `accountToken` names. */
+  purchase(input: {
+    productId: string;
+    accountToken: string;
+  }): Effect.Effect<StorePurchase, HostError>;
+  /** The verified transactions not yet finished: paid, and perhaps not yet recorded. */
+  readonly unfinished: Effect.Effect<StoreTransaction[], HostError>;
+  finish(transaction: string): Effect.Effect<void, HostError>;
+  /** Asks the store again for what this store account bought (restore purchases). */
+  readonly sync: Effect.Effect<void, HostError>;
+  /** Opens the store's own subscription management. */
+  readonly manage: Effect.Effect<void, HostError>;
 }
 
 /** Native operations never pass through a renderer. Each setup has a fresh session locator. */

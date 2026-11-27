@@ -53,4 +53,32 @@ defmodule SalixIM.TaskArchiveTest do
     assert :ok = TaskArchive.admit_message(archived, %{"actor_type" => "agent"}, :uncommitted)
     assert {:error, _} = TaskArchive.transition(task("archived"), :unarchive, 1, 2)
   end
+
+  test "canonical TaskStatus validation rejects archive typos and unknown statuses" do
+    for status <- SalixIM.TaskStatus.ordinary_mutable() do
+      assert :ok =
+               SalixIM.TaskStatus.validate_ordinary_update(task("active"), %{"status" => status})
+    end
+
+    assert {:error, {:conflict, msg}} =
+             SalixIM.TaskStatus.validate_ordinary_update(task("completed"), %{
+               "status" => "archived"
+             })
+
+    assert msg =~ "im_api.internal.task.archive"
+
+    for bad <- ["archive", "done", "in_progress", "closed"] do
+      assert {:error, {:bad_request, reason}} =
+               SalixIM.TaskStatus.validate_ordinary_update(task("completed"), %{"status" => bad})
+
+      assert reason =~ "im_api.internal.task.archive"
+    end
+
+    assert :none ==
+             SalixIM.TaskContinuation.ifc_request(
+               "im_api.internal.task.archive",
+               %{"conversation_ids" => ["cnv1_1"]},
+               %{}
+             )
+  end
 end

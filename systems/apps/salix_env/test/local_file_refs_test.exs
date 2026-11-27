@@ -100,7 +100,7 @@ defmodule SalixEnv.LocalFileRefsTest do
 
     assert {:ok, _record} = Registry.mark_disconnected(ctx.connector_run_id)
 
-    assert {:error, :local_file_unavailable} =
+    assert {:error, :local_file_device_disconnected} =
              LocalFileRefs.resolve_committed(ctx.group_id, conversation_id, message, ref)
 
     assert :ok = LocalFileRefs.revoke(ctx.group_id, ctx.owner_user_id, ctx.device_id, ref)

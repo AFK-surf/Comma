@@ -172,6 +172,83 @@ defmodule SalixAgent.SandboxesGatingTest do
     refute prompt.("worker", false) =~ "A Task created by a Worker creates no Task."
   end
 
+  # What the prompts offer a sandbox Task, as the Router and a Worker read it.
+  defp sandbox_providers(prompt) do
+    refute prompt =~ "{{"
+
+    ~r/"provider":((?:"[a-z]+"\|?)+)\}/
+    |> Regex.scan(prompt, capture: :all_but_first)
+    |> Enum.map(fn [providers] -> providers end)
+    |> Enum.uniq()
+  end
+
+  test "a sandbox Task is offered only the runtimes the workspace's sandbox runs" do
+    cloud_vm_retired!()
+
+    prompt = fn role, runtimes ->
+      ctx = SalixAgent.TestSupport.with_plugin_projection(%{agent_id: "gating-agent"})
+
+      disclosure =
+        role
+        |> ToolDisclosure.materialize(:internal, ctx)
+        |> Map.put("cloud_vm_retired", true)
+        |> Map.put("sandbox_runtimes", runtimes)
+
+      ToolPolicy.session_prompt(role, %{}, nil, :internal, disclosure)
+    end
+
+    for role <- ["router", "worker"] do
+      assert sandbox_providers(prompt.(role, ["codex"])) == [~s("codex")]
+      assert sandbox_providers(prompt.(role, ["claude", "codex"])) == [~s("codex"|"claude")]
+      # Not read: both, and placement refuses the one the sandbox cannot run.
+      assert sandbox_providers(prompt.(role, nil)) == [~s("codex"|"claude")]
+      # Read and none: the prompt says no sandbox can run a Task.
+      refute prompt.(role, []) == prompt.(role, nil)
+    end
+  end
+
+  test "a warm round follows an account lent or removed in Settings" do
+    start_supervised!(SalixStore.S3.Fake)
+    cloud_vm_retired!()
+    agent = SalixAgent.TestSupport.new_agent_id()
+    SalixAgent.TestSupport.create_control_agent!(agent, %{"role" => "router"})
+
+    tenant =
+      agent |> SalixStore.Ids.group_id_from_agent!() |> SalixStore.Ids.tenant_id_from_group!()
+
+    lend(tenant, "codex-team", "codex")
+    {:ok, cold} = SalixAgent.RoundConfig.build_round_snapshot(agent, %{})
+    assert sandbox_providers(cold.session_config.system_prompt) == [~s("codex")]
+
+    # Nothing changed: the snapshot is kept.
+    assert {:ok, ^cold} = SalixAgent.RoundConfig.refresh_round_snapshot(agent, cold, %{})
+
+    lend(tenant, "claude-team", "claude")
+    {:ok, warm} = SalixAgent.RoundConfig.refresh_round_snapshot(agent, cold, %{})
+    assert sandbox_providers(warm.session_config.system_prompt) == [~s("codex"|"claude")]
+  end
+
+  test "a subscription that needs a new sign-in is not lent to a station" do
+    tenant = SalixStore.Ids.new_tenant_id()
+    # Ordered first by id, as the expired account was in production.
+    lend(tenant, "a-claude-expired", "claude", "login")
+    lend(tenant, "b-claude-ok", "claude")
+
+    assert {:ok, [%{"id" => "b-claude-ok"}]} =
+             SalixAgent.SubscriptionStore.station_accounts(tenant)
+  end
+
+  defp lend(tenant, id, source, status \\ "ok") do
+    {:ok, _account} =
+      SalixAgent.SubscriptionStore.create(tenant, %{
+        "id" => id,
+        "credential" => "subscription",
+        "source" => source,
+        "status" => status,
+        "disabled" => false
+      })
+  end
+
   defp session_prompt(role) do
     ctx = SalixAgent.TestSupport.with_plugin_projection(%{agent_id: "gating-agent"})
     disclosure = ToolDisclosure.materialize(role, :internal, ctx)

@@ -595,6 +595,8 @@ The Lean name is the Elixir name without `?`. The wire name is the Elixir name.
 | `covered_seq` | compacted_through integer | integer | `State.covered_seq/2` |
 | `total_message_count` | | integer | `State.total_message_count/1` |
 | `human_source_origin?` | origin | boolean | `State.human_source_origin?/1` |
+| `origin_thread` | origin | list or `nil` | `StateCore.originThread` |
+| `active_unanswered_thread` | | list or `nil` | `StateCore.activeUnansweredThread` |
 | `pending_assistant_id` | | integer or `nil` | `TurnOutcome.pending_assistant_id/1` |
 | `decision_required?` | | boolean | `TurnOutcome.decision_required?/1` |
 | `consecutive_timeouts` | | integer | `Waits.consecutive_timeouts/1` on `messages` |

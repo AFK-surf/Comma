@@ -62,6 +62,46 @@ defmodule SystemsObservability.ApplicationTest do
              ~s(salix_sandbox_start_duration_seconds_count{kind="wake",outcome="failed"} 0)
   end
 
+  test "the Agent VMM worker's facts reach the scrape under finite labels" do
+    assert :ok = Application.stop(:systems_observability)
+    assert {:ok, _} = Application.ensure_all_started(:systems_observability)
+    await_reporter(20)
+
+    sample = %{connections: 3, sessions: 2}
+    SystemsRuntime.Telemetry.execute([:salix, :agent_vmm, :worker, :sample], sample, %{})
+
+    for event <- ["control_error", "registration-7/secret"] do
+      SystemsRuntime.Telemetry.execute([:salix, :agent_vmm, :worker, :event], %{count: 1}, %{
+        event: event
+      })
+    end
+
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :agent_vmm, :image_import, :stop],
+      %{duration: 2_000, bytes: 4_096},
+      %{outcome: "success"}
+    )
+
+    scrape = SystemsObservability.scrape()
+
+    for series <- [
+          "salix_agent_vmm_worker_connections 3",
+          "salix_agent_vmm_worker_sessions 2",
+          ~s(salix_agent_vmm_worker_events_total{kind="control_error"} 1),
+          # A name the worker never defined is counted, not labelled.
+          ~s(salix_agent_vmm_worker_events_total{kind="other"} 1),
+          ~s(salix_agent_vmm_image_import_total{outcome="success"} 1),
+          ~s(salix_agent_vmm_image_import_bytes_total{outcome="success"} 4096),
+          ~s(salix_agent_vmm_image_import_duration_seconds_count{outcome="success"} 1),
+          ~s(salix_agent_vmm_image_import_duration_seconds_bucket{outcome="success",le="2.5"} 1),
+          ~s(salix_agent_vmm_image_import_duration_seconds_bucket{outcome="success",le="1"} 0)
+        ] do
+      assert scrape =~ series
+    end
+
+    refute scrape =~ "registration-7"
+  end
+
   test "release telemetry applications can terminate without terminating the VM" do
     systems_root = Path.expand("../../..", __DIR__)
 

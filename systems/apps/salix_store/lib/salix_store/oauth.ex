@@ -108,6 +108,42 @@ defmodule SalixStore.OAuth do
     end
   end
 
+  @doc """
+  Mark a connection as needing reauthorization after its provider refused
+  `token`. Skipped when the stored record holds another token by now (a
+  refresh or a new authorization replaced it), since that one is not known to
+  be bad. Written with `If-Match`.
+
+  `refreshable: :keep` also skips a connection that holds a refresh token:
+  a bare 401 may only mean its access token expired, which the next refresh
+  renews (and a revoked grant then fails that refresh and is marked).
+  """
+  @spec mark_token_refused(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def mark_token_refused(id, token, opts \\ [])
+
+  def mark_token_refused(id, token, opts) when is_binary(token) and token != "" do
+    keep_refreshable? = Keyword.get(opts, :refreshable) == :keep
+
+    update(id, fn record ->
+      cond do
+        token not in [record["access_token"], record["slack_user_token"]] -> :skip
+        record["status"] == "reauthorization_required" -> :skip
+        keep_refreshable? and present_token?(record["refresh_token"]) -> :skip
+        true -> {:ok, Map.put(record, "status", "reauthorization_required")}
+      end
+    end)
+    |> case do
+      {:ok, _} -> :ok
+      :skipped -> :ok
+      {:error, :not_found} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  def mark_token_refused(_id, _token, _opts), do: :ok
+
+  defp present_token?(value), do: is_binary(value) and value != ""
+
   defp refresh(id, refresher, now, leeway_ms, attempts) do
     with {:ok, %{body: body, etag: etag}} <- S3.get(Keys.oauth_connection(id)) do
       record = Jason.decode!(body)

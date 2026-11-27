@@ -4,7 +4,7 @@
 // from the station's addon (node.ts `nativeStations`), with the same links over it (mesh.ts).
 //
 // Operations: mesh.bind {relayUrls, salixRelay} + key → {id, endpoint}; mesh.connect {id, addr} + alpn → {id, remote};
-// mesh.endpointClose {id}; mesh.openBi / mesh.acceptBi {id} → {id} or {end}; mesh.closed {id} → {reason};
+// mesh.networkChange {id}; mesh.endpointClose {id}; mesh.openBi / mesh.acceptBi {id} → {id} or {end}; mesh.closed {id} → {reason};
 // mesh.close {id, code, reason}; mesh.nextVia {id, last} → {via, closed}; mesh.read {id} → bytes or {end};
 // mesh.write {id} + bytes; mesh.finish {id}; mesh.stop {id, code}; mesh.reset {id, code}; mesh.carry {id, url, ticket} → {id};
 // mesh.carried {id} once that socket closed; mesh.uncarry {id}.
@@ -140,6 +140,12 @@ class BridgedEndpoint implements MeshEndpoint {
   close(): Promise<void> {
     return Effect.runPromise(
       Effect.asVoid(this.#ops.call("mesh.endpointClose", { id: this.#handle }))
+    );
+  }
+
+  networkChange(): Promise<void> {
+    return Effect.runPromise(
+      Effect.asVoid(this.#ops.call("mesh.networkChange", { id: this.#handle }))
     );
   }
 }

@@ -68,7 +68,7 @@ import { picturesOf, toldOf } from "../screens/sim-chrome.ts";
 import { type ClipType, type Codec, type DeviceDebugAction, type DeviceInput, type Frame, type ScreenInput, type ScreenSource, type ScreenVideo, type ScreenView, isDevice } from "../screens/source.ts";
 import type { PhoneChoice, PhoneChoices, PhoneListed } from "../screens/devices.ts";
 import type { Admitted } from "./credential.ts";
-import { FrameLatency, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, hostNow, loopStall, rateToAsk, viewCeiling } from "./screen-pace.ts";
+import { FrameLatency, LinkLoss, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, hostNow, loopStall, rateToAsk, viewCeiling } from "./screen-pace.ts";
 import { FrameTiming, type LinkStats, screenTimingOn } from "./screen-timing.ts";
 
 /// Capture sessions a station runs for views at once.
@@ -92,6 +92,13 @@ const ENDED_MS = 5000;
 const ALIVE_MS = 2000;
 /// How often a view reads its connection's round trip for its pace (a native call; QUIC's own estimate moves slowly).
 const LINK_READ_MS = 250;
+/// How often a view looks at its connection for the client's statistics (its round trip and packet loss, `state.rtt` and
+/// `state.loss`): what changed is said, nothing when nothing did.
+const LINK_STATE_MS = 1000;
+/// A round trip said to the client again only once it moved this far (ms), or crossed a band (`rttBand`).
+const RTT_MOVE_MS = 2;
+/// The client's bands of a round trip (ScreenStatsPanel.tsx `rttTone`): one crossed is said at once.
+const rttBand = (ms: number) => (ms < 300 ? 0 : ms < 1000 ? 1 : 2);
 /// What the helper takes of one input event (screens/screen-pipe.ts message 3).
 const MAX_INPUT_BYTES = 4096;
 const INPUT_TYPES = new Set(["move", "down", "up", "scroll", "keydown", "keyup", "text"]);
@@ -143,6 +150,9 @@ export type ScreenViewsOptions = {
   sources(): readonly ScreenSource[];
   /// The computer's one access value now.
   access(): Access;
+  /// This station is a Task's sandbox (device-mesh.ts `looks`): it has no access setting, so none stands in the way of
+  /// a view. None given: it is a computer's.
+  looks?(): boolean;
   /// Whether the station answers now.
   up(): boolean;
   /// Who may see and who may drive: device-mesh.ts says, each decided on its own.
@@ -182,6 +192,8 @@ export type ScreenViewsOptions = {
   };
   /// `f` after `ms` (default: the wall's); gives the function that calls it off.
   after?(ms: number, f: () => void): () => void;
+  /// The host's clock in ms (default: `hostNow`), for a view's packet loss over time.
+  now?(): number;
   /// Whether views log their frames' times (default: COMMA_STATION_SCREEN_TIMING), and where (default: the station log).
   timing?: boolean;
   timingLine?(fields: Record<string, unknown>): void;
@@ -210,6 +222,8 @@ function listed(source: ScreenSource): ScreenListed {
       // (its case and buttons, where Xcode has them on this Mac: their pictures by `GET /screens/<id>/chrome/<panel>/<turn>`)
       ...(source.chrome?.length ? { chrome: source.chrome.map(toldOf) } : {}),
       ...(poses.length > 0 ? { poses } : {}),
+      // (any hinge angle, `{t:"hinge", degrees, ms}`; a station from before says nothing, and takes only `poses`)
+      ...(source.hingeAngles?.() ? { hinge: true } : {}),
       ...(source.discard ? { closable: true } : {}),
       // (its running app's logs: `POST /screens/<id>/logs`; a station from before says nothing, and has none)
       ...(source.logs ? { logs: true } : {}),
@@ -228,7 +242,7 @@ function why(o: ScreenViewsOptions, admitted: Admitted): { status: number; error
   if (admitted.exp * 1000 <= wall.now()) return { status: 401, error: "credential expired" };
   if (!o.mayView(admitted)) return { status: 401, error: "credential revoked" };
   if (!o.up()) return { status: 502, error: "station unreachable: not started" };
-  if (o.access() !== "full") return { status: 403, error: "this computer does not allow its screen to be viewed: its access is not Full" };
+  if (!o.looks?.() && o.access() !== "full") return { status: 403, error: "this computer does not allow its screen to be viewed: its access is not Full" };
   return null;
 }
 
@@ -259,6 +273,7 @@ export function askOf(headers: Headers): ScreenAsk | null {
     ...(typeof v.maxHeight === "number" && Number.isFinite(v.maxHeight) ? { maxHeight: Math.min(8192, Math.max(MIN_SIDE, Math.round(v.maxHeight))) } : {}),
     ...(typeof v.background === "string" && /^#[0-9a-fA-F]{6}$/.test(v.background) ? { background: v.background } : {}),
     ...(typeof v.instance === "string" && v.instance.length <= 64 ? { instance: v.instance } : {}),
+    ...(v.panel === true && v.peek !== true ? { panel: true } : {}),
   };
 }
 
@@ -680,7 +695,7 @@ export function makeScreenViews(o: ScreenViewsOptions): ScreenViews {
       // Its first frame, a whole picture, is its largest: at START_RATE on a narrow link too.
       // The client draws the pointer (`cursor` states): a source that can leaves it out of a view's pictures. A preview's
       // keep it, as still.fail's JPEG pictures do.
-      const options: HelperViewOptions = { maxWidth: bounds.maxWidth, maxHeight: bounds.maxHeight, codecs: codecs as Codec[], control: drivable, bitrate: START_RATE, ...(ask.peek ? { peek: true } : { cursor: true }), ...(ask.audio ? { audio: true, ...(ask.audio === "opus" ? { opus: true } : {}) } : {}), ...(ask.apps ? { apps: ask.apps } : {}), ...(ask.background ? { background: ask.background } : {}), ...(timed ? { timing: true } : {}) };
+      const options: HelperViewOptions = { maxWidth: bounds.maxWidth, maxHeight: bounds.maxHeight, codecs: codecs as Codec[], control: drivable, bitrate: START_RATE, ...(ask.peek ? { peek: true } : { cursor: true }), ...(ask.audio ? { audio: true, ...(ask.audio === "opus" ? { opus: true } : {}) } : {}), ...(ask.apps ? { apps: ask.apps } : {}), ...(ask.background ? { background: ask.background } : {}), ...(ask.panel ? { panel: true } : {}), ...(timed ? { timing: true } : {}) };
       screen = await source.open(options);
     } catch (error) {
       freed();
@@ -702,7 +717,7 @@ export function makeScreenViews(o: ScreenViewsOptions): ScreenViews {
       return json(denied.status, { error: denied.error });
     }
     const control = ask.control && drive(true) === null;
-    const session = new ViewSession(screen, control, drive, isDevice(source) ? deviceInput : helperInput, request.signal, () => why(o, admitted), o.after ?? wall.after, { peek, via, bounds, ...(ask.quality ? { quality: ask.quality } : {}), clipboard: source.clipboard?.() ?? [], audio: ask.audio !== undefined && !peek, link, ...(timed ? { timing: { fields: { view: ++opened, screen: id }, link: () => ({ via: via(), ...link() }), ...(o.timingLine ? { line: o.timingLine } : {}) } } : {}) });
+    const session = new ViewSession(screen, control, drive, isDevice(source) ? deviceInput : helperInput, request.signal, () => why(o, admitted), o.after ?? wall.after, { peek, via, bounds, ...(o.now ? { now: o.now } : {}), ...(ask.quality ? { quality: ask.quality } : {}), clipboard: source.clipboard?.() ?? [], audio: ask.audio !== undefined && !peek, link, ...(timed ? { timing: { fields: { view: ++opened, screen: id }, link: () => ({ via: via(), ...link() }), ...(o.timingLine ? { line: o.timingLine } : {}) } } : {}) });
     const unlisten = o.listen(() => session.look());
     // It ends when its credential does: a client that keeps its connection renews it for what comes next, and opens anew.
     const stopExpiry = atExpiry(admitted.exp * 1000, () => session.look());
@@ -906,6 +921,13 @@ class ViewSession {
   /// read at most each LINK_READ_MS.
   readonly #link: () => LinkStats | null;
   #linkRead = -Infinity;
+  /// The host's clock, for the packet loss over time; the packet loss, and what the client was told of the link so far
+  /// (`state.rtt`, `state.loss`), and what stops looking at it.
+  readonly #now: () => number;
+  readonly #loss = new LinkLoss();
+  #toldRtt: number | null = null;
+  #toldLoss: number | null = null;
+  #stopLink: () => void = () => {};
   #ceiling: number | null = null;
   /// How the pictures are made as last said (the statistics' capture and encoder).
   #video: ScreenVideo | null = null;
@@ -934,8 +956,9 @@ class ViewSession {
   #done!: () => void;
   readonly #over = new Promise<void>((resolve) => (this.#done = resolve));
 
-  constructor(view: ScreenView, control: boolean, drive: (on: boolean) => string | null, inputOf: (event: unknown) => ScreenInput | null, signal: AbortSignal, denied: () => { error: string } | null, after: (ms: number, f: () => void) => () => void, o: { peek?: boolean; via?: () => string | null; bounds?: { maxWidth: number; maxHeight: number }; quality?: Quality; clipboard?: readonly ClipType[]; audio?: boolean; link?: () => LinkStats | null; timing?: ConstructorParameters<typeof FrameTiming>[0] } = {}) {
+  constructor(view: ScreenView, control: boolean, drive: (on: boolean) => string | null, inputOf: (event: unknown) => ScreenInput | null, signal: AbortSignal, denied: () => { error: string } | null, after: (ms: number, f: () => void) => () => void, o: { peek?: boolean; via?: () => string | null; bounds?: { maxWidth: number; maxHeight: number }; quality?: Quality; clipboard?: readonly ClipType[]; audio?: boolean; link?: () => LinkStats | null; now?: () => number; timing?: ConstructorParameters<typeof FrameTiming>[0] } = {}) {
     this.#after = after;
+    this.#now = o.now ?? hostNow;
     this.#timing = o.timing ? new FrameTiming({ ...o.timing, pace: () => ({ rate: this.#pacer.rate(), rtt: this.#pacer.rtt(), through: this.#pacer.through(), unacked: this.#pacer.unacked, stalled: this.#stall.stalled() }) }) : null;
     this.#clipTypes = o.clipboard ?? [];
     this.#audioAsked = o.audio === true && o.peek !== true;
@@ -1005,6 +1028,7 @@ class ViewSession {
   #stop(reason: string | null, endedCode?: "screen_refused") {
     if (this.#closed) return;
     this.#closed = true;
+    this.#stopLink();
     this.#clip(false);
     this.#view.close();
     this.#stall.done();
@@ -1027,7 +1051,7 @@ class ViewSession {
     // (the statistics' capture and encoder), where the source says it yet, as still.fail's first state: a source that
     // makes its encoder with the first picture says it with that picture (`#tellVideo`).
     this.#video = this.#view.video?.() ?? null;
-    void this.#send(encodeScreenJson(ScreenKind.state, { control: this.#control, switches: true, ...(this.#view.target?.() ?? {}), ...(this.#video ? { video: this.#video } : {}), ...(this.#timing ? { timing: true } : {}) }));
+    void this.#send(encodeScreenJson(ScreenKind.state, { control: this.#control, switches: true, ...(this.#view.target?.() ?? {}), ...(this.#video ? { video: this.#video } : {}), ...(this.#timing ? { timing: true } : {}), ...(this.#readLink(this.#now()) ?? {}) }));
     const stopListening = this.#view.onTarget?.(() => {
       if (!this.#closed) void this.#send(encodeScreenJson(ScreenKind.state, { ...(this.#view.target?.() ?? {}) }));
     });
@@ -1041,6 +1065,7 @@ class ViewSession {
     });
     this.#clip(this.#control);
     this.#alive();
+    this.#watchLink();
     void this.#read(body);
     if (this.#audioAsked && this.#view.nextAudio) void this.#audio();
     await this.#pump();
@@ -1101,6 +1126,39 @@ class ViewSession {
       // Behind what is waiting to go it says nothing new: that going is the sign.
       if (this.#out.length === 0) void this.#send(encodeScreenJson(ScreenKind.state, { alive: true }));
       this.#alive();
+    });
+  }
+
+  /// What the native mesh says of the view's connection now, to the pace; and for the client's statistics, its round
+  /// trip (ms) and packet loss (%) once either is had and changed from what the client was told (null: nothing to say,
+  /// and nothing to a preview). What is said carries both as they are known.
+  #readLink(now: number): { rtt?: number; loss?: number } | null {
+    const link = this.#link();
+    this.#linkRead = hostNow();
+    this.#pacer.link(link?.rttMs ?? null);
+    if (this.#peek || !link) return null;
+    const rtt = typeof link.rttMs === "number" && Number.isFinite(link.rttMs) && link.rttMs > 0 ? Math.round(link.rttMs) : null;
+    const loss = this.#loss.sample(now, link);
+    const toldRtt = this.#toldRtt;
+    const rttMoved = rtt !== null && (toldRtt === null || Math.abs(rtt - toldRtt) >= RTT_MOVE_MS || rttBand(rtt) !== rttBand(toldRtt));
+    const lossMoved = loss !== null && loss !== this.#toldLoss;
+    if (!rttMoved && !lossMoved) return null;
+    if (rtt !== null) this.#toldRtt = rtt;
+    if (loss !== null) this.#toldLoss = loss;
+    return { ...(this.#toldRtt !== null ? { rtt: this.#toldRtt } : {}), ...(this.#toldLoss !== null ? { loss: this.#toldLoss } : {}) };
+  }
+
+  /// Each LINK_STATE_MS while the view lasts (not a preview's), the link's figures that changed, unless much waits to go.
+  #watchLink() {
+    if (this.#peek || this.#closed) return;
+    this.#stopLink = this.#after(LINK_STATE_MS, () => {
+      if (this.#closed) return;
+      // (behind much still to go it waits: what it says is kept for when it is said)
+      if (this.#out.length <= 4) {
+        const next = this.#readLink(this.#now());
+        if (next) void this.#send(encodeScreenJson(ScreenKind.state, next));
+      }
+      this.#watchLink();
     });
   }
 
@@ -1326,6 +1384,21 @@ export function deviceInput(event: unknown): DeviceInput | null {
       return typeof v.text === "string" && v.text.length > 0 && v.text.length <= MAX_TEXT ? { t: "text", text: v.text } : null;
     case "pose":
       return POSES.has(v.name as string) ? { t: "pose", name: v.name as "closed" | "book" | "open" } : null;
+    case "frames":
+      return typeof v.panel === "boolean" ? { t: "frames", panel: v.panel } : null;
+    case "orient":
+      if (v.degrees !== 0 && v.degrees !== 90 && v.degrees !== 180 && v.degrees !== 270) return null;
+      // (the panel the turn is for, and the opening it goes with, when a hinge move follows it: `screen`, `hinge`)
+      return {
+        t: "orient",
+        degrees: v.degrees,
+        ...(v.screen === "cover" || v.screen === "inner" ? { screen: v.screen } : {}),
+        ...(typeof v.hinge === "number" && v.hinge >= 0 && v.hinge <= 180 ? { hinge: v.hinge } : {}),
+      };
+    case "hinge":
+      return number(v.degrees) && v.degrees >= 0 && v.degrees <= 180
+        ? { t: "hinge", degrees: v.degrees, ms: number(v.ms) ? Math.min(5000, Math.max(0, Math.round(v.ms))) : 600 }
+        : null;
     case "device":
       return DEVICE_NAMES.has(v.name as string) ? { t: "device", name: v.name as "volume_up" | "volume_down" | "rotate" } : null;
     // A button of a simulator's case by its HID usage, down or up (still.fail mesh/screens.ts `parseInput`).

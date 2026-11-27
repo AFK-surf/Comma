@@ -51,6 +51,7 @@ internal object CallPresentation {
     fun resultText(state: CallControllerState): Int = when (state.call.phase) {
         CallPhase.Failed -> when (state.call.result) {
             CallResult.Busy, CallResult.Unavailable -> R.string.call_not_connected
+            CallResult.KeyLimit -> R.string.devices_problem_limit
             CallResult.Disabled -> R.string.call_disabled
             CallResult.Interrupted -> R.string.call_interrupted
             else -> R.string.call_failed

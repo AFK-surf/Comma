@@ -144,6 +144,7 @@ defmodule SalixWeb.Dashboard.Layouts do
         <.nav_item label="Platform Profiles" icon="key" navigate="/dash/platform-profiles" active={@active_nav == :platform_profiles} />
         <.nav_item label="Platform model" icon="template" navigate="/dash/platform-model" active={@active_nav == :platform_models} />
         <.nav_item label="Media settings" icon="template" navigate="/dash/media-settings" active={@active_nav == :media_settings} />
+        <.nav_item label="M2square billing" icon="cog" navigate="/dash/m2square" active={@active_nav == :m2square_settings} />
         <.nav_item label="Agent Groups" icon="folder" navigate="/dash/groups" active={@active_nav == :groups} />
         <.nav_item label="Initial Agents" icon="cube" navigate="/dash/initial-agents" active={@active_nav == :initial_agents} />
         <.nav_item label="Agents" icon="cube" navigate="/dash/agents" active={@active_nav == :agents} />

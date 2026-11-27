@@ -1,10 +1,11 @@
-// An agent at work on a device: a glowing colourful edge round the device's body, outside it, and over its picture the
+// An agent at work on a device: a glowing edge round the device's body, outside it, and over its picture the
 // agent's cursor, which glides to where it presses. It is the look an agent has in an in-app browser tab, there drawn inside the page
-// (apps/electron/src/main/modules/browser-sidebar/agent/cursor.js, after Computer Use's ColorfulBorder and
-// OverlayCursor): the same colours, cursor, sizes and timings. Deviations: the edge glows out from behind the device's
-// body or case, where a page's glows in from its viewport's edge; it stays for as long as the lease lasts (the station
-// says when it starts and ends), not for the length of one command; the cursor follows a swipe's moves at once; and
-// the edge turns in steps, as every endless loop in the app does.
+// (apps/electron/src/main/modules/browser-sidebar/agent/cursor.js): the same cursor, sizes and timings, and the same
+// edge, a fine bright line, a short glow and a wide bloom in the brand blue's steps (styles.css draws it). Deviations:
+// the edge glows out from behind the device's body or case, where a page's glows in from its viewport's edge, so its
+// glows are blurred boxes, not masks; it stays for as long as the lease lasts (the station says when it starts and
+// ends), not for the length of one command, and its bloom does not arrive stronger; the cursor follows a swipe's moves
+// at once; and the edge turns in steps at an even pace, as every endless loop in the app does.
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   useEffect,
@@ -16,22 +17,14 @@ import {
 } from "react";
 import type { ScreenAgentPointer } from "./screenStreamStats";
 
-/** The agent's own colours, whatever the theme (cursor.js `EDGE_COLORS`, and its cursor's blue in a white rim). */
-const EDGE_COLORS = [
-  "#EFB04C",
-  "#E98056",
-  "#EA4B6B",
-  "#E661A5",
-  "#DF8AE9",
-  "#C0A0F5",
-  "#64B5F5",
-  "#7EC9EE",
-];
+/** The edge's layers, from the lowest up: a wide bloom, a short glow, and the fine line at the outline. */
+const EDGE_LAYERS = ["bloom", "rim", "line"] as const;
+/** The cursor's own colours, whatever the theme: the brand blue in a white rim. */
 const CURSOR_BLUE = "#1040F2";
 const CURSOR_RIM = "#FFFFFF";
 /** The cursor's outline on its 101-unit canvas, drawn at `SIZE` with its tip at (17, 13) (cursor.js). */
 const CURSOR_PATH = "M23.5 17.4L77.5 37.5L50.5 44.5L43.5 71.5Z";
-const SIZE = 28;
+const SIZE = 22;
 const TIP_X = (17 / 101) * SIZE;
 const TIP_Y = (13 / 101) * SIZE;
 /** How small the cursor dips while the finger is down (cursor.js `moveTo`'s press). */
@@ -42,9 +35,9 @@ const IDLE_MS = 3000;
 const glideMs = (distance: number) =>
   Math.round(Math.min(380, Math.max(120, distance * 0.6)));
 
-const EDGE = `conic-gradient(${[...EDGE_COLORS, EDGE_COLORS[0]].join(", ")})`;
 const cursorStyle = {
   "--comma-remote-screen-agent-press": PRESS_SCALE,
+  "--comma-remote-screen-agent-size": `${SIZE}px`,
 } as CSSProperties;
 
 /**
@@ -64,21 +57,24 @@ export function ScreenAgentEdge({
       aria-hidden
       className="comma-remote-screen-agent-edge"
       data-testid="remote-screen-agent"
-      style={{ "--comma-remote-screen-agent-edge": EDGE } as CSSProperties}
     >
-      <span
-        className="comma-remote-screen-agent-ring"
-        style={
-          outline
-            ? ({
-                borderRadius: outline,
-                ...(shape ? { cornerShape: shape } : {}),
-              } as CSSProperties)
-            : undefined
-        }
-      >
-        <span className="comma-remote-screen-agent-turning" />
-      </span>
+      {EDGE_LAYERS.map((layer) => (
+        <span
+          className="comma-remote-screen-agent-ring"
+          data-layer={layer}
+          key={layer}
+          style={
+            outline
+              ? ({
+                  borderRadius: outline,
+                  ...(shape ? { cornerShape: shape } : {}),
+                } as CSSProperties)
+              : undefined
+          }
+        >
+          <span className="comma-remote-screen-agent-turning" />
+        </span>
+      ))}
     </span>
   );
 }

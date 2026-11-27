@@ -201,7 +201,7 @@ internal class ArchivedTasksSheet(
                 }))
             }
         } + if (!loaded || hasMore) listOf(Row("footer", TYPE_FOOTER, loading, create = { parent ->
-            android.widget.ProgressBar(parent.context).apply { setPadding(0, parent.dp(12), 0, parent.dp(12)) }
+            surf.comma.android.ui.kit.ActivityIndicator(parent.context).apply { setPadding(0, parent.dp(12), 0, parent.dp(12)) }
         })) else emptyList()
         adapter.show(rows)
         empty.isVisible = loaded && !hasMore && tasks.isEmpty()

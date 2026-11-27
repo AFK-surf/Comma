@@ -179,11 +179,77 @@ defmodule CommaWeb.Coding.PullRequestEndpointsTest do
         "http://127.0.0.1:#{port}/v1/comma/workspaces/#{workspace.id}/coding/sessions/" <>
           task["conversation_id"] <> "/pull-request",
       owner: owner_session,
+      owner_id: owner_user["id"],
       viewer: viewer_session,
+      workspace: workspace,
       tenant: tenant,
       group: group,
       task: task["conversation_id"]
     }
+  end
+
+  test "only the Task's owner may ask to see its sandbox's screen, and each refusal says why",
+       ctx do
+    # Stations are on here (`Comma.Stations.Config.enabled?/0`), so the owner's
+    # ask reaches the station rather than stopping at the Group's mesh facts.
+    prior_stations = SystemsRuntime.get_env(:salix_store, :stations)
+    SalixStore.Repo.delete_all(SalixStore.Stations.SigningKeys.Key)
+    SystemsRuntime.put_env(:salix_store, :stations, kek: SystemsRuntime.Proc.random_bytes(32))
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :stations, prior_stations || []) end)
+
+    screen = String.replace_suffix(ctx.pr, "/pull-request", "/screen")
+    ask = &request(:post, screen, &1, %{})
+
+    assert %{status: 409, body: %{"error" => "sandbox_not_running"}} = ask.(ctx.owner)
+
+    {:ok, workload} =
+      SalixStore.CodingSandboxes.create(%{
+        tenant_id: ctx.tenant,
+        group_id: ctx.group,
+        conversation_id: ctx.task,
+        workspace: "comma:" <> ctx.group,
+        repo: %{"owner" => "acme", "name" => "api"},
+        requester: ctx.owner_id
+      })
+
+    # The sandbox's station connects: first as one from before, which says no screen.
+    connects = fn capabilities ->
+      {:ok, _, device} =
+        SalixEnv.Registry.connect(to_string(node()), %{
+          "tenant_id" => ctx.tenant,
+          "group_id" => ctx.group,
+          "device_id" => workload.spec["device_id"],
+          "connector_id" => workload.spec["connector_id"],
+          "workload_id" => workload.id,
+          "workload_generation" => workload.generation,
+          "managed_compute" => true,
+          "station_id" => String.duplicate("ab", 32),
+          "capabilities" => capabilities
+        })
+
+      {:ok, _} =
+        SalixStore.CodingSandboxes.update(workload.id, fn w ->
+          {:ok,
+           Map.merge(w.spec, %{
+             "state" => "ready",
+             "connector_run_id" => device["connector_run_id"]
+           })}
+        end)
+    end
+
+    connects.(%{})
+    assert %{status: 409, body: %{"error" => "sandbox_has_no_screen"}} = ask.(ctx.owner)
+
+    # Another member who may write, and a read-only one.
+    connects.(%{"screen_view" => true})
+    {member, session} = user!()
+    member!(ctx.workspace, member, "member")
+    assert %{status: 403, body: %{"error" => "forbidden"}} = ask.(session)
+    assert %{status: 403} = ask.(ctx.viewer)
+
+    # The owner's ask goes to the station: none is behind this run, so it is not told.
+    # (`CommaWeb.StationDeviceMeshTest` has the station that hears it.)
+    assert %{status: 503, body: %{"error" => "sandbox_unreachable"}} = ask.(ctx.owner)
   end
 
   test "the branch's change totals and pull request a read finds come with the Task's run",

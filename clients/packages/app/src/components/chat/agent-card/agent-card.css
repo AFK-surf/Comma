@@ -17,11 +17,35 @@
   border-radius: var(--radius-2xl);
   background: var(--color-bg-popup-secondary);
   box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.55),
     0 0 0 var(--border-width-default) var(--color-border-primary),
     var(--shadow-sm);
   color: var(--color-text-primary);
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
+  transition:
+    opacity var(--motion-duration-spatial-move) var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-spatial-move)
+      var(--motion-easing-surface-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+    translate: 0 5px;
+  }
+}
+
+:where(.dark, [data-theme="Dark mode"]) .comma-agent-card {
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 0.08),
+    0 0 0 var(--border-width-default) var(--color-border-primary),
+    var(--shadow-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-agent-card {
+    translate: none !important;
+    transition: none !important;
+  }
 }
 
 .comma-agent-card-head {
@@ -62,9 +86,10 @@
 
 .comma-agent-card-foot {
   display: flex;
+  flex-wrap: wrap-reverse;
   align-items: center;
   justify-content: space-between;
-  gap: var(--spacing-lg);
+  gap: var(--spacing-sm) var(--spacing-lg);
   padding: var(--spacing-lg) var(--spacing-md) var(--spacing-md) var(--spacing-xl);
 }
 
@@ -100,7 +125,9 @@
 
 .comma-agent-card-actions {
   display: flex;
-  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-inline-start: auto;
   gap: var(--spacing-xs);
 }
 
@@ -125,7 +152,9 @@
   flex: none;
   width: var(--spacing-2xl);
   height: var(--spacing-2xl);
-  margin-block-start: var(--spacing-md);
+  /* Anchored to the top header/answer zone with concentric clearance from the
+     12px corner radius, so multi-line wrapped answers never leave it floating. */
+  margin-block-start: var(--spacing-xxs);
   place-items: center;
   border-radius: var(--radius-full);
   background: var(--color-bg-brand-solid);

@@ -1,7 +1,7 @@
 defmodule SalixAgent.Tools.DailyBrief do
   @moduledoc """
-  The Router's tools for changing the Swarm's daily brief on a Slack
-  requester's explicit request: when it is sent, and which channels and
+  The Router's tools for changing the Swarm's daily brief on a Slack, Feishu,
+  or Lark requester's explicit request: when it is sent, and which channels and
   projects the requester's own brief follows. The requester comes from the signed
   current input, never from a name in text; the product decides what that
   person may change. A turn that several people wrote in changes nothing.
@@ -14,14 +14,17 @@ defmodule SalixAgent.Tools.DailyBrief do
   def defs do
     [
       {"daily_brief.set_time",
-       "Change when the daily brief is sent, for the current Slack requester's explicit request. brief \"mine\" sets the requester's own brief time; brief \"team\" sets the team brief's time and needs the requester to be an organization owner or admin. time is HH:MM in 24-hour form, in the requester's (mine) or the team's (team) time zone. Briefs are sent on workdays only. Report the result in plain words.",
+       "Change when the daily brief is sent, for the current Slack, Feishu, or Lark requester's explicit request. brief \"mine\" sets the requester's own brief time; brief \"team\" sets the team brief's time and needs the requester to be an organization owner or admin. time is HH:MM in 24-hour form, in the requester's (mine) or the team's (team) time zone. Briefs are sent on workdays only. Report the result in plain words.",
        &__MODULE__.set_time/2, @auto_wait_seconds, [roles: ["router"]]},
       {"daily_brief.set_channel",
-       "Change which channels the current Slack requester's own daily brief follows, for their explicit request. By default a brief follows the public channels its reader wrote most in lately; in a followed channel every human message reaches the brief. mode \"follow\" adds the channel, \"follow_with_bots\" adds it with its bot messages too (for an alerts channel), \"ignore\" stops following it, \"default\" forgets the choice. channel is the channel as the requester wrote it (a channel link, #name, or name). The answer lists the channels the brief follows now; report them in plain words.",
+       "Change which channels the current Slack, Feishu, or Lark requester's own daily brief follows, for their explicit request. By default a brief follows the public channels its reader wrote most in lately; in a followed channel every human message reaches the brief. mode \"follow\" adds the channel, \"follow_with_bots\" adds it with its bot messages too (for an alerts channel), \"ignore\" stops following it, \"default\" forgets the choice. channel is the channel as the requester wrote it (a Slack channel link, #name, a Feishu or Lark group link, or name). The answer lists the channels the brief follows now; report them in plain words.",
        &__MODULE__.set_channel/2, @auto_wait_seconds, [roles: ["router"]]},
       {"daily_brief.set_project",
-       "Add or remove a project term of the current Slack requester's own daily brief, for their explicit request: a message that names one reaches the brief even when the requester was not in it. mode is \"add\" or \"remove\". The answer lists the requester's project terms now; report them in plain words.",
-       &__MODULE__.set_project/2, @auto_wait_seconds, [roles: ["router"]]}
+       "Add or remove a project term of the current Slack, Feishu, or Lark requester's own daily brief, for their explicit request: a message that names one reaches the brief even when the requester was not in it. mode is \"add\" or \"remove\". The answer lists the requester's project terms now; report them in plain words.",
+       &__MODULE__.set_project/2, @auto_wait_seconds, [roles: ["router"]]},
+      {"daily_brief.set_github",
+       "Set the current Slack, Feishu, or Lark requester's GitHub login for their own daily brief, for their explicit request (\"我的 GitHub 是 alice\"): the brief then looks up the pull requests that login merged or closed. An empty login clears it. The answer is the login now; report it in plain words.",
+       &__MODULE__.set_github/2, @auto_wait_seconds, [roles: ["router"]]}
     ]
   end
 
@@ -38,6 +41,9 @@ defmodule SalixAgent.Tools.DailyBrief do
         value(args, "term"),
         value(args, "mode")
       ])
+
+  def set_github(args, ctx),
+    do: change(ctx, "daily_brief.set_github", :set_github, [value(args, "login")])
 
   defp change(ctx, name, function, args) do
     with {:ok, origin} <- requester_origin(ctx),
@@ -72,14 +78,14 @@ defmodule SalixAgent.Tools.DailyBrief do
   end
 
   # The signed origin proves who woke this turn. When people other than one
-  # Slack user wrote in it, nobody can tell whose request this is, so the
+  # person wrote in it, nobody can tell whose request this is, so the
   # change is refused rather than made with the wrong person's rights.
   defp requester_origin(ctx) do
     origins = List.wrap(ctx[:trusted_origins] || ctx[:trusted_origin])
 
     users =
       origins
-      |> Enum.map(&get_in(&1, ["provider_context", "user_id"]))
+      |> Enum.map(&person/1)
       # A Worker's or the system's input in the same turn is no requester.
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
@@ -87,9 +93,16 @@ defmodule SalixAgent.Tools.DailyBrief do
     case {ctx[:trusted_origin], users} do
       {%{} = origin, [_one]} -> {:ok, origin}
       {_origin, [_ | _]} -> {:error, :requester_ambiguous_ask_them_to_repeat_alone}
-      _none -> {:error, :daily_brief_requires_slack_request}
+      _none -> {:error, :daily_brief_requires_provider_request}
     end
   end
+
+  # A Slack message names its sender by user id, a Feishu or Lark message by
+  # the app's open id.
+  defp person(%{"provider_context" => context}) when is_map(context),
+    do: context["user_id"] || context["sender_open_id"]
+
+  defp person(_origin), do: nil
 
   defp value(args, key), do: Map.get(args, key, Map.get(args, String.to_atom(key)))
 end

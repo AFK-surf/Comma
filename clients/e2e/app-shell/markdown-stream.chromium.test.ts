@@ -473,6 +473,51 @@ test("a reader who scrolled up during a send stays there when a reply lands with
   await expect(fixture.locator(".comma-chat-new-pill")).toBeVisible();
 });
 
+test("a message opened at the tail unfolds downward from where the reader is", async ({
+  page,
+}) => {
+  // The reader went to the tail (End), which pins following to the bottom.
+  // Opening the clamped message above must not push its start up off screen.
+  await page.goto(`${fixtureUrl}?fixture=outgoing-user-motion-fixture`);
+  const fixture = page.getByTestId("outgoing-user-motion-fixture");
+  await fixture.evaluate((root) =>
+    Object.assign((root as HTMLElement).style, {
+      position: "fixed",
+      top: "0",
+      left: "0",
+      margin: "0",
+      height: "640px",
+      width: "960px",
+    })
+  );
+  await page.evaluate((text) => {
+    window.markdownStreamFixture!.setOutgoingUserText(text);
+    window.markdownStreamFixture!.replyWhenOutgoingUserLands();
+    window.markdownStreamFixture!.startOutgoingUser();
+  }, tallOutgoingUserText);
+  const viewport = fixture.locator('[data-slot="scroll-area-viewport"]').first();
+  await expect(viewport.locator('[data-message-id="outgoing-user-reply"]')).toHaveCount(
+    1
+  );
+  await expect(fixture.locator('[data-outgoing-presentation="flying"]')).toHaveCount(0);
+  const bubble = viewport.locator(".comma-chat-user-bubble").last();
+  await expect(bubble).toHaveAttribute("data-overflowing", "true");
+
+  await viewport.focus();
+  await page.keyboard.press("End");
+  await testClock().advanceFrames(2);
+  const readBubbleTop = () =>
+    bubble.evaluate((element) => Math.round(element.getBoundingClientRect().top));
+  const topBefore = await readBubbleTop();
+
+  await bubble.getByRole("button", { name: "Show more" }).click();
+  await expect(bubble).toHaveAttribute("data-expanded", "true");
+  await testClock().advance(1_400);
+
+  expect(await readBubbleTop()).toBe(topBefore);
+  await expect(bubble.getByRole("button", { name: "Show less" })).toBeVisible();
+});
+
 test("history fills a resized viewport without a new message", async ({ page }) => {
   await page.goto(
     `${fixtureUrl}?extendedHistory&fixture=delayed-activity-outgoing-route-fixture`
@@ -967,9 +1012,7 @@ test("a root font-size change re-measures the 480px disclosure of a settled bubb
   await page.evaluate(() => window.markdownStreamFixture?.ackOutgoingUser());
 
   await expect(bubble).not.toHaveAttribute("data-overflowing", "true");
-  await expect(bubble.getByRole("button", { name: "Show full message" })).toHaveCount(
-    0
-  );
+  await expect(bubble.getByRole("button", { name: "Show more" })).toHaveCount(0);
 
   try {
     await page.evaluate(() => {
@@ -978,9 +1021,7 @@ test("a root font-size change re-measures the 480px disclosure of a settled bubb
     // The clamped bubble box does not resize when only the root font grows;
     // the 1rem probe is what must trigger the overflow re-measure.
     await expect(bubble).toHaveAttribute("data-overflowing", "true");
-    await expect(
-      bubble.getByRole("button", { name: "Show full message" })
-    ).toBeVisible();
+    await expect(bubble.getByRole("button", { name: "Show more" })).toBeVisible();
   } finally {
     await page.evaluate(() => {
       document.documentElement.style.removeProperty("font-size");
@@ -1145,13 +1186,13 @@ test("line-dense text uses a blurred easing fade and expands from a stable top a
   expect(disclosure.fadeBackdropFilter).toContain("blur(");
   expect(disclosure.fadeGradient).toContain("linear-gradient(");
   expect(disclosure.fadeGradientStopCount).toBeGreaterThanOrEqual(5);
-  expect(disclosure.initialAccessibleName).toBe("Show full message");
+  expect(disclosure.initialAccessibleName).toBe("Show more");
   expect(disclosure.centralIconPreserved).toBe(true);
   expect(disclosure.collapsedToggleFadeCenterDeltaX).toBeLessThanOrEqual(1);
   expect(disclosure.collapsedToggleInsideFade).toBe(true);
   expect(disclosure.collapsedControlRowPosition).toBe("absolute");
   expect(disclosure.expanded).toBe(true);
-  expect(disclosure.expandedAccessibleName).toBe("Collapse message");
+  expect(disclosure.expandedAccessibleName).toBe("Show less");
   expect(disclosure.expandedHeight).toBeGreaterThanOrEqual(disclosure.fullHeight - 1);
   expect(disclosure.expandedLastGlyphControlOverlap).toBe(0);
   expect(disclosure.expandedControlGap).toBeGreaterThanOrEqual(0);

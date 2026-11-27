@@ -57,19 +57,20 @@ import { useDesktopCall } from "../voice/DesktopCall";
 type SidebarItem = {
   icon: AppIconName;
   id: SidebarNavItemId;
-  /** Its keyboard shortcut; Apps has none yet. */
+  /** Its keyboard shortcut; Apps and People have none yet. */
   shortcutId?:
     | "go-comma-assistant"
     | "go-inbox"
     | "go-drive"
     | "go-tasks"
     | "go-plugins";
-  to: "/" | "/inbox" | "/drive" | "/tasks" | "/apps" | "/plugins";
+  to: "/" | "/inbox" | "/people" | "/drive" | "/tasks" | "/apps" | "/plugins";
 };
 
 const sidebarItems: Record<SidebarNavItemId, SidebarItem> = {
   home: { icon: "home", id: "home", shortcutId: "go-comma-assistant", to: "/" },
   inbox: { icon: "inbox", id: "inbox", shortcutId: "go-inbox", to: "/inbox" },
+  people: { icon: "people", id: "people", to: "/people" },
   drive: { icon: "drive", id: "drive", shortcutId: "go-drive", to: "/drive" },
   tasks: { icon: "tasks", id: "tasks", shortcutId: "go-tasks", to: "/tasks" },
   apps: { icon: "apps", id: "apps", to: "/apps" },
@@ -88,10 +89,16 @@ export function SidebarChrome() {
   const inboxUnread = useInboxTabUnread();
   const { isGuest = false } = useCommaAuth();
   const storedOrder = settings.sidebarNavOrder;
-  // A guest Session has only Home's Router chat.
+  const peopleEnabled = settings.peopleEnabled;
+  // A guest Session has only Home's Router chat; People stays hidden until enabled in Debug.
   const settledOrder = useMemo(
-    () => (isGuest ? ["home"] : reconcileSidebarNavOrder(storedOrder)),
-    [isGuest, storedOrder]
+    () =>
+      isGuest
+        ? ["home"]
+        : reconcileSidebarNavOrder(storedOrder).filter(
+            (id) => peopleEnabled || id !== "people"
+          ),
+    [isGuest, peopleEnabled, storedOrder]
   );
   // The drop shows its order at once; the setting owner acknowledges after a
   // round trip on Electron, and the rows must not snap back in between.
@@ -327,6 +334,7 @@ function SidebarNavLink({
   const label = {
     home: messages.nav_home(),
     inbox: messages.nav_inbox(),
+    people: messages.nav_people(),
     drive: messages.nav_drive(),
     tasks: messages.nav_tasks(),
     apps: messages.nav_apps(),
@@ -335,6 +343,7 @@ function SidebarNavLink({
   const tooltipLabel = {
     home: messages.nav_go_home(),
     inbox: messages.nav_go_inbox(),
+    people: messages.nav_go_people(),
     drive: messages.nav_go_drive(),
     tasks: messages.nav_go_tasks(),
     apps: messages.nav_go_apps(),

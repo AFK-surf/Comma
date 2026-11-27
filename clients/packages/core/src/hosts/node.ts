@@ -40,6 +40,8 @@ import { listenLoopback } from "./loopback.ts";
 import { meshStationLinks } from "./mesh.ts";
 import {
   CORE_START,
+  MAIN_IPC_ACK_EVERY,
+  MAX_UNACKED_MAIN_MESSAGES,
   type CoreToMain,
   type MainToCore,
   type MeetingAnswer,
@@ -51,7 +53,13 @@ import {
   type UtilitySessionStart,
 } from "./utility-protocol.ts";
 
-export { CORE_START, type CoreToMain, type MainToCore };
+export {
+  CORE_START,
+  MAIN_IPC_ACK_EVERY,
+  MAX_UNACKED_MAIN_MESSAGES,
+  type CoreToMain,
+  type MainToCore,
+};
 import type {
   ApiRequest,
   ApiResponse,
@@ -189,7 +197,7 @@ class UtilityHost implements Host {
       catch: (e) => new HostError(e instanceof Error ? e.message : String(e)),
     }),
     restart: Effect.callback<void, HostError>(() => {
-      this.#send({ type: "reset" });
+      this.send({ type: "reset" });
     }),
   };
   readonly bearerSession: BearerSessionPorts;
@@ -225,6 +233,25 @@ class UtilityHost implements Host {
   readonly #answers = new Set<() => void>();
   /** The last id asked before the test clock's current move (`advance`). */
   #movedAfter = 0;
+  /** Ordinal of the last message posted to Main on `parent`. */
+  #sent = 0;
+  /** Highest `#sent` ordinal Main is known to have dequeued from `parent`. */
+  #acked = 0;
+  /** `#sent` ordinal of each in-flight request `id`, in insertion order. */
+  readonly #sentAt = new Map<number, number>();
+
+  #canSendToMain(): boolean {
+    return this.#sent - this.#acked < MAX_UNACKED_MAIN_MESSAGES;
+  }
+
+  ack(received: number): void {
+    if (received <= this.#acked) return;
+    this.#acked = received;
+    for (const [id, sent] of this.#sentAt) {
+      if (sent > this.#acked) break;
+      this.#sentAt.delete(id);
+    }
+  }
 
   #asked(): number {
     const id = ++this.#nextRequest;
@@ -286,11 +313,15 @@ class UtilityHost implements Host {
       this.deviceSetup = {
         call: (op, input) =>
           Effect.callback<unknown, HostError>((resume) => {
+            if (!this.#canSendToMain()) {
+              resume(Effect.fail(new HostError("Main is not responding")));
+              return;
+            }
             const id = this.#asked();
             this.#deviceSetupCalls.set(id, (value, error) =>
               resume(error ? Effect.fail(new HostError(error)) : Effect.succeed(value))
             );
-            this.#send({ type: "device-setup", id, op, input });
+            this.#sendRequest(id, { type: "device-setup", id, op, input });
             return Effect.sync(() => {
               this.#deviceSetupCalls.delete(id);
               this.#answered(id);
@@ -306,13 +337,17 @@ class UtilityHost implements Host {
             catch: (e) => new HostError(String(e)),
           }) as never;
         return Effect.callback<MeetingAnswer, HostError>((resume) => {
+          if (!this.#canSendToMain()) {
+            resume(Effect.fail(new HostError("Main is not responding")));
+            return;
+          }
           const id = this.#asked();
           this.#meetingCalls.set(id, (answer) =>
             resume(
               answer instanceof HostError ? Effect.fail(answer) : Effect.succeed(answer)
             )
           );
-          this.#send({ type: "meeting", id, op, input } as CoreToMain);
+          this.#sendRequest(id, { type: "meeting", id, op, input } as CoreToMain);
           return Effect.sync(() => {
             this.#meetingCalls.delete(id);
             this.#answered(id);
@@ -325,7 +360,10 @@ class UtilityHost implements Host {
       },
     };
     this.voiceCall = {
-      command: (op) => this.#send({ type: "voice-call", ...op } as CoreToMain),
+      command: (op) => {
+        if (this.#canSendToMain())
+          this.send({ type: "voice-call", ...op } as CoreToMain);
+      },
       listen: (listener) => {
         this.#voiceCallListener = listener;
       },
@@ -343,7 +381,7 @@ class UtilityHost implements Host {
       resumed: session.resumed,
       vault: this.#call({ op: "vault", input: null }),
       change: (change) => this.#call({ op: "change", input: change }),
-      gate: (snapshot, lease) => this.#send({ type: "gate", snapshot, lease }),
+      gate: (snapshot, lease) => this.send({ type: "gate", snapshot, lease }),
       google: (input) => this.#call({ op: "google", input }),
       googleDone: (grant, ok) =>
         Effect.ignore(this.#call({ op: "googleDone", input: { grant, ok } })),
@@ -435,11 +473,21 @@ class UtilityHost implements Host {
     length: number
   ): Effect.Effect<Uint8Array, HostError> {
     return Effect.callback<Uint8Array, HostError>((resume) => {
+      if (!this.#canSendToMain()) {
+        resume(Effect.fail(new HostError("Main is not responding")));
+        return;
+      }
       const id = this.#asked();
       this.#localReads.set(id, (out) =>
         resume(out instanceof HostError ? Effect.fail(out) : Effect.succeed(out))
       );
-      this.#send({ type: "local-read", id, localFileRef: ref, offset, length });
+      this.#sendRequest(id, {
+        type: "local-read",
+        id,
+        localFileRef: ref,
+        offset,
+        length,
+      });
       return Effect.sync(() => {
         this.#localReads.delete(id);
         this.#answered(id);
@@ -450,11 +498,15 @@ class UtilityHost implements Host {
   /** A workspace image drawn again by Main (Electron's nativeImage): the preview a window may show. */
   renderImagePreview(input: ImageBytes): Effect.Effect<Uint8Array, HostError> {
     return Effect.callback<Uint8Array, HostError>((resume) => {
+      if (!this.#canSendToMain()) {
+        resume(Effect.fail(new HostError("Main is not responding")));
+        return;
+      }
       const id = this.#asked();
       this.#previews.set(id, (out) =>
         resume(out instanceof HostError ? Effect.fail(out) : Effect.succeed(out))
       );
-      this.#send({
+      this.#sendRequest(id, {
         type: "preview",
         id,
         bytes: input.bytes,
@@ -491,6 +543,10 @@ class UtilityHost implements Host {
     call: C
   ): Effect.Effect<UtilitySessionAnswer[C["op"]], HostError> {
     return Effect.callback<UtilitySessionAnswer[C["op"]], HostError>((resume) => {
+      if (!this.#canSendToMain()) {
+        resume(Effect.fail(new HostError("Main is not responding")));
+        return;
+      }
       const id = this.#asked();
       this.#calls.set(id, (value, error) =>
         resume(
@@ -499,10 +555,10 @@ class UtilityHost implements Host {
             : Effect.succeed(value as UtilitySessionAnswer[C["op"]])
         )
       );
-      this.#send({ type: "session", id, ...call } as CoreToMain);
+      this.#sendRequest(id, { type: "session", id, ...call } as CoreToMain);
       return Effect.sync(() => {
         this.#answered(id);
-        if (this.#calls.delete(id)) this.#send({ type: "abort", id });
+        if (this.#calls.delete(id)) this.send({ type: "abort", id });
       });
     });
   }
@@ -523,6 +579,10 @@ class UtilityHost implements Host {
       | { op: "run"; name: LocalDriveOp; input: unknown }
   ): Effect.Effect<A, HostError> {
     return Effect.callback<A, HostError>((resume) => {
+      if (!this.#canSendToMain()) {
+        resume(Effect.fail(new HostError("Main is not responding")));
+        return;
+      }
       const id = this.#asked();
       this.#driveCalls.set(id, (value, error) =>
         resume(
@@ -531,7 +591,7 @@ class UtilityHost implements Host {
             : Effect.succeed(value as A)
         )
       );
-      this.#send({ type: "drive", id, ...call } as CoreToMain);
+      this.#sendRequest(id, { type: "drive", id, ...call } as CoreToMain);
       return Effect.sync(() => {
         this.#driveCalls.delete(id);
         this.#answered(id);
@@ -562,7 +622,12 @@ class UtilityHost implements Host {
 
   /** Main's answer to a request. */
   answer(message: Extract<MainToCore, { id: number }>): void {
-    if (message.type !== "head" && message.type !== "chunk") this.#answered(message.id);
+    const sent = this.#sentAt.get(message.id);
+    if (sent !== undefined) this.ack(sent);
+    if (message.type !== "head" && message.type !== "chunk") {
+      this.#sentAt.delete(message.id);
+      this.#answered(message.id);
+    }
     if (message.type === "drive-done") {
       const done = this.#driveCalls.get(message.id);
       this.#driveCalls.delete(message.id);
@@ -585,7 +650,7 @@ class UtilityHost implements Host {
       const done = this.#calls.get(message.id);
       if (!done) {
         // The core gave the request up before its answer came: Main settles what it carried.
-        this.#send({ type: "session-dropped", id: message.id });
+        this.send({ type: "session-dropped", id: message.id });
         return;
       }
       this.#calls.delete(message.id);
@@ -626,9 +691,15 @@ class UtilityHost implements Host {
     }
   }
 
-  #send(message: CoreToMain): void {
+  send(message: CoreToMain): void {
+    this.#sent += 1;
     // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a port has no target origin
     this.#parent.postMessage(message);
+  }
+
+  #sendRequest(id: number, message: CoreToMain): void {
+    this.send(message);
+    this.#sentAt.set(id, this.#sent);
   }
 
   /** A request through Main: its head once Main has it, its body as it comes; interrupted, Main lets it go. */
@@ -640,6 +711,10 @@ class UtilityHost implements Host {
     HostError
   > {
     return Effect.callback((resume) => {
+      if (!this.#canSendToMain()) {
+        resume(Effect.fail(new HostError("Main is not responding")));
+        return;
+      }
       const id = this.#asked();
       const body = new Pieces();
       this.#pending.set(id, {
@@ -654,7 +729,7 @@ class UtilityHost implements Host {
         },
         body,
       });
-      this.#send({
+      this.#sendRequest(id, {
         type: "fetch",
         id,
         method: request.method,
@@ -673,7 +748,7 @@ class UtilityHost implements Host {
   #abort(id: number): void {
     this.#answered(id);
     if (!this.#pending.delete(id)) return;
-    this.#send({ type: "abort", id });
+    this.send({ type: "abort", id });
   }
 
   fetch(request: ApiRequest): Effect.Effect<ApiResponse, HostError> {
@@ -966,6 +1041,9 @@ export function startCoreUtility(parent: ParentPort): void {
       case "voice-call-event":
         host.voiceCallEvent(message.event);
         return;
+      case "ack":
+        host.ack(message.received);
+        return;
       case "clock": {
         const { id, ms } = message;
         const moved = host;
@@ -978,8 +1056,7 @@ export function startCoreUtility(parent: ParentPort): void {
             const next = clock.nextDue();
             if (next !== undefined) out.nextDue = next;
           }
-          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a port has no target origin
-          parent.postMessage(out);
+          moved.send(out);
         };
         moving = moving.then(() =>
           (clock

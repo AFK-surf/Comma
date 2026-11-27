@@ -39,6 +39,8 @@ A contact form send records its page and an attempt to open the email app, not i
 
 Marketing reports use full UTC+8 days from production. Use `build_sha`. Activation joins Message IDs to `source_message_id`. D7 needs seven cohort days.
 
+Payment funnels, no amounts or provider IDs: `captureCommaBilling` (returns: desktop only) and `CommaWeb.CheckoutAnalytics` share `plan_key` (website entries: signed in; no plan changes). Teams: `cft_` by purchase (`BridgeForTeams.CftAnalytics`); DNT also hides the completion.
+
 Desktop events count new and existing profiles, version changes and repeats, not installs.
 Reloads deduplicate locally. Reinstalls keep state. Cleared profiles count as new. DNT and errors lose events.
 
@@ -52,9 +54,10 @@ See [Release operations](release-operations.md).
 ### Mention to first reply
 
 `salix_agent_message_*` measures a person's Slack, Feishu or Lark @mention from the provider's source time to the first provider-confirmed message in its thread or sent for that source ([SalixIM.MentionReplyLatency](../systems/apps/salix_im/lib/salix_im/mention_reply_latency.ex)).
+Slack replies match across the apps of one Comma group in one Slack workspace. A message several of them get is one mention, `no_reply` only when every delivery chose silence.
 Every pod keeps the same bounded in-memory table of pending mentions. Sum the counters and the histogram, and read the pending age from pods whose coverage is 1 and whose `observed_at` is fresh.
 Coverage is 0 on a pod until it copied the table from a complete peer or its window has run for the one-hour retention. An incomplete peer hands on its table and window, so a rolling restart usually keeps both.
-This transfer is best effort. A peer of an older release has no window to give, and a timeout or a lost peer can miss it. Then the mentions that peer held are lost with no signal and a new window starts.
+This transfer is best effort: an older peer, a timeout or a lost peer can miss it, and then its mentions are lost with no signal and a new window starts.
 Missing telemetry never shows that a mention was answered.
 A provider's coverage is also 0 for an hour after a lost measurement, which `salix_agent_message_latency_invalid_total` counts by `reason`: no usable source time, a reply with no usable time or place, no room in the table, or no reply within the hour (`expired`), when the mention leaves the gauge.
 Per pod, `observed_at` moves only while that provider's coverage is 1, so join them on the pod. A failover can lose or repeat a sample.
@@ -178,7 +181,7 @@ A sandbox Task's sandbox is one L4ES VM per Task ([coding sandboxes](compute-dev
 The start histogram, `salix_sandbox_ends_total` and the `salix_station_tasks_*` counters and histogram read 0 from process start for each label value except `other`.
 The Grafana Salix Runtime dashboard has a Sandbox row. Staging pages on four sandbox policies:
 
-- `comma_alerting:sandbox_start_failed` (P2): three failed starts in 30 minutes, summed across Pods. It catches a Task whose sandbox fails to start again and again. On 2026-10-29 a Task's own failure notice woke its sandbox again and made 802 failed starts in 40 hours.
+- `comma_alerting:sandbox_start_failed` (P2): three failed starts in 30 minutes, summed across Pods. It catches a Task whose sandbox fails to start again and again.
 - `comma_alerting:sandbox_lost` (P2): a run recorded `lost` in the last hour. L4ES ended the sandbox outside Comma.
 - `comma_alerting:sandbox_start_slow` (P3): the p90 of successful `wake` starts over an hour passes 120 seconds, from `starting` to the station's connection.
 - `comma_alerting:sandbox_checks_stalled` (P2): that age stays above 300 seconds for 10 minutes. The check loop does not end overdue starts, or every node's loop stopped. It also fires when no node published the timestamp in 5 minutes, then 10 more, while `salix_sandbox_ends_total` exists. This catches new nodes whose first pass hangs or whose pass crashes every time. An environment without the sandbox code has no such counter and stays quiet. One stuck node does not fire it while another node publishes.
@@ -187,8 +190,9 @@ The Grafana Salix Runtime dashboard has a Sandbox row. Staging pages on four san
 
 L4ES (`l4es.afk.surf`) is one production cluster that serves both Comma environments. Production probes it every minute from three regions:
 
-- `comma_alerting:l4es_ready_uptime` (P1): `/readyz` does not answer `ready`. The control-plane VM or its serving slot is down. Running sandboxes keep running, but new sandboxes, wakes, SSH and web sessions fail.
-- `comma_alerting:l4es_cluster_uptime` (P2): `/cluster-ok` is absent. A timer on the control VM (`l4es-health`) computes cluster health every minute. It writes this file only while every check passes: both nodes are active, no sandbox is pending over 2 minutes, no start failed for capacity in the last hour, one node's worth of slots is free, a serving slot answers, and an off-site database backup ran in the last 26 hours. The VM keeps the reasons in `/var/lib/l4es/health/status.txt`. The timer and the `/cluster-ok` route are in `AFK-surf/l4h-sandbox` under `deployments/latitude-sh-l4es/control`. The policy was pending until `/cluster-ok` first returned 200 (2026-11-03, after the first off-site backup), because an open incident hides new failures. The [L4ES cluster runbook](https://github.com/AFK-surf/l4h-sandbox/blob/main/deployments/latitude-sh-l4es/CLUSTER.md) covers a node that fails.
+- `comma_alerting:l4es_ready_uptime` (P1): `/readyz` does not answer `ready` (control-plane VM or serving slot down; running sandboxes continue, new sandboxes/wakes/SSH/web fail).
+- `comma_alerting:l4es_cluster_uptime` (P2): `/cluster-ok` absent 60s. Control-VM timer `l4es-health` writes it when five checks pass: all `/etc/l4es/health-nodes` active, no sandbox pending >2m, no capacity failure in 1h, a serving slot answers `/readyz`, and off-site DB backup <26h. Details: `/var/lib/l4es/health/status.txt`; source in `AFK-surf/l4h-sandbox` (`deployments/latitude-sh-l4es/control`); [runbook](https://github.com/AFK-surf/l4h-sandbox/blob/main/deployments/latitude-sh-l4es/CLUSTER.md).
+- `comma_alerting:l4es_capacity_low` (P3, Slack only): `/capacity-ok` absent 300s (free slots below smallest node's `max_sandboxes`). Check `status.txt` and `sbx node ls` on the control VM.
 
 ## Task Schedules
 

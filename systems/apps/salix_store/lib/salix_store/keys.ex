@@ -156,6 +156,7 @@ defmodule SalixStore.Keys do
   def ctl_system_voice, do: "ctl/system/voice.json"
   # The platform Signal account (SalixSignal.Settings).
   def ctl_system_signal, do: "ctl/system/signal.json"
+  def ctl_system_m2square_settings, do: "ctl/system/m2square_settings.json"
 
   def ctl_system_plugin_definitions_prefix, do: "ctl/system/plugins/definitions/"
 
@@ -492,6 +493,13 @@ defmodule SalixStore.Keys do
 
   def ctl_im_socket_connects_prefix, do: "ctl/im_socket_connects/"
 
+  # The index of WeCom AI bot connects, whose long connections
+  # `SalixIM.WeComSocketRuntime` holds.
+  def ctl_im_wecom_connect(connect_id),
+    do: ctl_im_wecom_connects_prefix() <> "#{Crypto.hex(connect_id)}.json"
+
+  def ctl_im_wecom_connects_prefix, do: "ctl/im_wecom_connects/"
+
   def ctl_im_slack_thread_binding(group_id, connect_id, channel_id, thread_ts) do
     identity = Enum.join([connect_id, channel_id, thread_ts], ":")
     "ctl/im_slack_thread_bindings/#{group_id}/#{Crypto.hex(identity)}.json"
@@ -626,6 +634,13 @@ defmodule SalixStore.Keys do
   def ctl_im_feishu_thread_participation_prefix(group_id),
     do: "ctl/im_feishu_thread_participation/#{group_id}/"
 
+  # A Feishu group thread the Router handed to one of its Tasks
+  # (`SalixIM.FeishuThreadTaskBinding`).
+  def ctl_im_feishu_thread_binding(group_id, connect_id, chat_id, thread_id) do
+    identity = Enum.join([connect_id, chat_id, thread_id], ":")
+    "ctl/im_feishu_thread_bindings/#{group_id}/#{Crypto.hex(identity)}.json"
+  end
+
   # A Lark message a connect's callback already handled (`SalixIM.LarkInbound`).
   def ctl_im_lark_event_receipt(connect_id, message_id),
     do: "ctl/im_lark_event_receipts/#{connect_id}/#{Crypto.hex(message_id)}.json"
@@ -634,6 +649,13 @@ defmodule SalixStore.Keys do
   def ctl_im_lark_thread(group_id, connect_id, chat_id, thread_id) do
     identity = Enum.join([connect_id, chat_id, thread_id], ":")
     "ctl/im_lark_threads/#{group_id}/#{Crypto.hex(identity)}.json"
+  end
+
+  # A Lark group thread the Router handed to one of its Tasks
+  # (`SalixIM.LarkThreadTaskBinding`).
+  def ctl_im_lark_thread_binding(group_id, connect_id, chat_id, thread_id) do
+    identity = Enum.join([connect_id, chat_id, thread_id], ":")
+    "ctl/im_lark_thread_bindings/#{group_id}/#{Crypto.hex(identity)}.json"
   end
 
   def ctl_im_telegram_chat(connect_id, chat_id),

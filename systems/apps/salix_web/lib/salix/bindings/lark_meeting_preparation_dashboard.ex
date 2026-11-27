@@ -136,7 +136,8 @@ defmodule Salix.Bindings.LarkMeetingPreparationDashboard do
     with {:ok, mode} <- mode(attrs),
          {:ok, delivery} <- delivery(attrs),
          true <- source in ["google", "feishu_lark"],
-         {:ok, configuration} <- scoped_configuration(group, connect, attrs, mode, source) do
+         {:ok, configuration} <-
+           scoped_configuration(group, connect, attrs, mode, delivery, source) do
       {:ok,
        Map.merge(configuration, %{
          "enabled" => true,
@@ -157,15 +158,17 @@ defmodule Salix.Bindings.LarkMeetingPreparationDashboard do
          connect,
          %{"calendar_scope" => "members"} = attrs,
          mode,
+         delivery,
          _source
        ) do
     lead = Map.get(attrs, "preparation_lead_minutes", 10)
     personal = Map.get(attrs, "personal_preparation", true)
     research = Map.get(attrs, "research_enabled", false)
+    chat_required = mode == "join" and delivery != "organizer"
 
     with true <- lead in @lead_minutes and is_boolean(personal) and is_boolean(research),
          true <- personal or mode == "join",
-         {:ok, chat} <- notice_chat(connect, attrs["channel_id"], false) do
+         {:ok, chat} <- notice_chat(connect, attrs["channel_id"], chat_required) do
       {:ok,
        %{
          "calendar_scope" => "members",
@@ -184,7 +187,7 @@ defmodule Salix.Bindings.LarkMeetingPreparationDashboard do
     end
   end
 
-  defp scoped_configuration(group, connect, attrs, mode, source) do
+  defp scoped_configuration(group, connect, attrs, mode, delivery, source) do
     channel_notice = Map.get(attrs, "channel_notice", true)
     personal = Map.get(attrs, "personal_preparation", true)
 
@@ -192,9 +195,10 @@ defmodule Salix.Bindings.LarkMeetingPreparationDashboard do
          true <- is_boolean(attrs["research_enabled"]),
          true <- is_boolean(channel_notice) and is_boolean(personal),
          true <- channel_notice or personal or mode == "join",
+         chat_required = channel_notice or (mode == "join" and delivery != "organizer"),
          {:ok, catalog} <- selectable_calendars(group, connect, source),
          {:ok, selected} <- selected_calendars(catalog, attrs["calendar_selections"]),
-         {:ok, chat} <- notice_chat(connect, attrs["channel_id"], channel_notice) do
+         {:ok, chat} <- notice_chat(connect, attrs["channel_id"], chat_required) do
       {:ok,
        %{
          "calendar_scope" => "selected",

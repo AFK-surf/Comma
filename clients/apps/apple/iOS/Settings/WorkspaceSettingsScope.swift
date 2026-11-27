@@ -28,14 +28,17 @@ final class WorkspaceSettingsScope {
         return value
     }
 
+    /// `handled` takes a refusal the page answers itself (such as asking for more input); it is not shown as an error.
     @discardableResult
-    func perform(_ name: String, _ params: [String: Any] = [:], workspaceParameter: Bool = true) async -> CoreJSON? {
+    func perform(_ name: String, _ params: [String: Any] = [:], workspaceParameter: Bool = true,
+                 handled: (CoreError) -> Bool = { _ in false }) async -> CoreJSON? {
         guard current, !busy else { return nil }
         busy = true
         error = nil
         defer { busy = false }
         do { return try await call(name, params, workspaceParameter: workspaceParameter) }
         catch is CancellationError { return nil }
+        catch let refusal as CoreError where handled(refusal) { return nil }
         catch {
             if current { self.error = error.localizedDescription }
             return nil

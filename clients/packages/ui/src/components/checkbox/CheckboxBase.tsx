@@ -45,7 +45,7 @@ export const CheckboxBase = ({
 }: CheckboxBaseProps) => (
   <div
     className={cx(
-      "comma-icon-slot relative flex size-4 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-xs border border-menu-primary bg-main-panel-bg shadow-xs",
+      "comma-icon-slot relative flex size-4 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-xs border border-menu-primary bg-main-panel-bg shadow-xs transition-[background-color,border-color,box-shadow] duration-[var(--motion-duration-feedback-in)] ease-[var(--motion-easing-smooth-out)] motion-reduce:transition-none",
       size === "md" && "size-5 rounded-md",
       (isSelected || isIndeterminate) && "border-transparent bg-brand-solid",
       // A disabled box keeps its own subtle fill in every state, so a checked
@@ -58,20 +58,20 @@ export const CheckboxBase = ({
   >
     <span
       className={cx(
-        "pointer-events-none absolute flex items-center justify-center opacity-0",
+        "pointer-events-none absolute flex scale-[0.65] items-center justify-center opacity-0 transition-[opacity,scale] duration-[var(--motion-duration-press-recoil)] ease-[var(--motion-easing-press-recoil)] motion-reduce:scale-100 motion-reduce:transition-none",
         iconInsetClasses[size],
         isDisabled ? "text-fg-disabled" : "text-white",
-        isIndeterminate && "opacity-100"
+        isIndeterminate && "scale-100 opacity-100"
       )}
     >
       <MinusIcon className={iconClasses} />
     </span>
     <span
       className={cx(
-        "pointer-events-none absolute flex items-center justify-center opacity-0",
+        "pointer-events-none absolute flex scale-[0.65] items-center justify-center opacity-0 transition-[opacity,scale] duration-[var(--motion-duration-press-recoil)] ease-[var(--motion-easing-press-recoil)] motion-reduce:scale-100 motion-reduce:transition-none",
         iconInsetClasses[size],
         isDisabled ? "text-fg-disabled" : "text-white",
-        isSelected && !isIndeterminate && "opacity-100"
+        isSelected && !isIndeterminate && "scale-100 opacity-100"
       )}
     >
       <CheckLargeIcon className={iconClasses} />

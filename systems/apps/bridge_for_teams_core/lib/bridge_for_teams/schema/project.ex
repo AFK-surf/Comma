@@ -24,6 +24,7 @@ defmodule BridgeForTeams.Schema.Project do
     field :archived_at, :utc_datetime_usec
 
     belongs_to :org, BridgeForTeams.Schema.Organization
+    belongs_to :department, BridgeForTeams.Schema.Department
     # Who created the Agent Swarm; nil for rows predating the column and for
     # system-created projects. Ordinary org members are quota-limited by it.
     belongs_to :created_by_user, BridgeForTeams.Schema.User
@@ -54,6 +55,24 @@ defmodule BridgeForTeams.Schema.Project do
     # surface the error on the field the user actually typed.
     |> unique_constraint(:slug, name: :projects_org_id_slug_index)
     |> unique_constraint(:salix_group_id)
+  end
+
+  @doc """
+  Set the Project's department. Only Project creation and
+  `BridgeForTeams.Departments` (under the organization lock, with search list
+  reconciliation) write `department_id`; `changeset/2` does not cast it.
+  """
+  @spec put_department(Ecto.Changeset.t(), Ecto.UUID.t() | nil) :: Ecto.Changeset.t()
+  def put_department(%Ecto.Changeset{} = changeset, department_id) do
+    changeset
+    |> put_change(:department_id, department_id)
+    |> foreign_key_constraint(:department_id)
+  end
+
+  @doc "Changeset that only moves an existing Project to `department_id` (or none)."
+  @spec department_changeset(t(), Ecto.UUID.t() | nil) :: Ecto.Changeset.t()
+  def department_changeset(%__MODULE__{} = project, department_id) do
+    project |> change() |> put_department(department_id)
   end
 
   defp reject_identity_update(%Ecto.Changeset{data: %{id: nil}} = changeset, _attrs, _field),

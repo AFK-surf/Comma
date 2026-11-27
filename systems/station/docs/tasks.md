@@ -16,8 +16,8 @@
 
 | 请求 | 谁发给谁 | 内容 | 回答 |
 | --- | --- | --- | --- |
-| `task.invite` | host → Station | `task`、`start`（`requester`、`runtime`、`model`、`effort`、`title`）。重新邀请时还有 `answered`（同 `task.put`）。换模型时带 `replace: true` | `session`、`thread`。跑不了就回错误，说明原因。已有 Session 参与时：不带 `replace` 回原来的 Session；带 `replace` 起一个新 Session 接替，见下面“换模型” |
-| `task.put` | host → 参与的 Station | `task`、`messages`（每条 `seq`、`author`、`text`、`declared`、`at`，对方的 Session 发的带 `author.session`；带文件的有 `files`，每个 `index`、`name`、`size`；有 milestone 的带 `milestones`；host 自己给 Message 编了 id 的（Salix）带 `id`）、`through`、`answered` | `through`。没有这个 Task 的 thread 就回 `unknown`（同时带 `gone`，给之前版本的 host）。有 thread 但 Session 都结束了就回 `gone` |
+| `task.invite` | host → Station | `task`、`start`（`requester`、`runtime`、`model`、`effort`、`title`）。重新邀请时还有 `answered`（同 `task.put`）。换模型时带 `replace: true`。host 是 Salix、Task 属于某个 Workspace 时带 `links`（同 `task.put`） | `session`、`thread`。跑不了就回错误，说明原因。已有 Session 参与时：不带 `replace` 回原来的 Session；带 `replace` 起一个新 Session 接替，见下面“换模型” |
+| `task.put` | host → 参与的 Station | `task`、`messages`（每条 `seq`、`author`、`text`、`declared`、`at`，对方的 Session 发的带 `author.session`；带文件的有 `files`，每个 `index`、`name`、`size`；有 milestone 的带 `milestones`；host 自己给 Message 编了 id 的（Salix）带 `id`）、`through`、`answered`。host 是 Salix、Task 属于某个 Workspace 时带 `links`：`web` 是 Task 在网页版的地址（`#/tasks/<workspace>/<group>/<task>`），`app` 是桌面端和手机端打开它的 deep link（`<scheme>://task?workspace=…&group=…&task=…`，scheme 是这个环境的 app 注册的，`CommaWeb.TaskLinkPort`）。Station 可以拿它让人跳回 Comma 里的这个 Task，不认识就忽略 | `through`。没有这个 Task 的 thread 就回 `unknown`（同时带 `gone`，给之前版本的 host）。有 thread 但 Session 都结束了就回 `gone` |
 | `task.post` | 参与的 Station → host | `task`、`session`、`text`、`key`、`declared`、`milestones`；Session 的一轮起不来时，Station 说的那一句带 `cannot_start`（`error`：为什么）；带文件的有 `files`，每个 `index`、`name`、`size`（host 是别的 Station 时，先用 `task.post_file` 把文件整个给它） | `seq` |
 | `task.post_file` | 参与的 Station → host 是 Station 时 | `task`、`session`、`key`（随后那条 post 的）、`index`、`name`、`size`、`offset`、`data`（最多 256 KiB，base64） | `have`：host 已有这个文件多少字节。`offset` 不等于它时什么都不写，参与的 Station 从 `have` 接着给。一条 post 最多 20 个文件、合计 1 GiB；post 来时文件不全就拒收。没被 post 用上的，host 一天后删掉 |
 | `task.leave` | host → 参与的 Station | `task` | 空。Task 换到别处跑了：这里参与的 Session 离开它的 thread，没交给它们的 Message 不再交，它之后发到这个 Task 的话 host 都拒收；正在跑的那一轮或等待会被发出中断，不等它停下就回答（runtime 正在做的那一步可能还会做完，但写不进 Task）；thread 留着。没有这个 Task 也回空 |
@@ -48,7 +48,7 @@
 - **Message 进了 Task 就一定送到。** host 给每个参与的 Session 记交到了哪（`task_sessions.sent`）。`sent` 之后的 Message 还没给它，用 `task.put` 给，对方回答了才往前移。
 - **什么时候给**：Task 有新 Message、host 启动、host 连上 still.fail cloud（拿到当前名册），以及参与的 Station 发来 `task.hello`。没有定时轮询，不设期限，不丢。
 - **对方连不上**（不在名册里、连接建不起来、Salix 的连接断了）：不再试，等它连上后发 `task.hello`。
-- **对方是 Group 的 Cloud VM**（host 是 Salix，设备是这个 Group 的 Workload 记的那台）：归档或停掉的 Cloud VM 只有 Salix 唤醒才回来。给它而连不上时，Salix 请求唤醒这台 VM（`SalixWeb.CloudVM.RuntimeLifecycle.wake/1`），然后等它的 `task.hello`。每次给只请求一次。唤醒不了（比如计费不允许、需要人工恢复）就记一条日志，Message 留着，下次给时再请求。VM 什么时候空闲只由 Station 自己说：有待处理的 Station 拒绝归档前的询问。
+- **对方是 Group 的 Cloud VM**（host 是 Salix，设备是这个 Group 的 Workload 记的那台）：归档或停掉的 Cloud VM 只有 Salix 唤醒才回来。给它而连不上时，Salix 请求唤醒这台 VM（`SalixWeb.GroupStationLifecycle.wake/1`），然后等它的 `task.hello`。每次给只请求一次。唤醒不了（比如计费不允许、需要人工恢复）就记一条日志，Message 留着，下次给时再请求。VM 什么时候空闲只由 Station 自己说：有待处理的 Station 拒绝归档前的询问。
 - **对方连上了但没回答**（超时、中途断了、回了错误）：只针对这个 Task 和这个 Station 退避再给（`PUT_AGAIN_MAX_MS`），给到为止。期间有新 Message 或 `task.hello` 就马上给。
 - **参与的 Station 收到 `task.put`**：写进它那条 thread，交给它的 Session，然后回答。按 seq 去重，同一批给两次也只写一条、只交一次。seq 不超过 `answered` 的不交（见下面“答过的不再答”）。
 - **交给了 Session 但这一轮没起来**（runtime 启动失败）：Message 留在这个 Session 的待处理里，thread 里说一次原因，然后这个 Session 退避再试，起来为止（`src/sessions/actor.ts` 的 `startAgain`）。期间来了新 Message 就马上试。还有待处理时 Station 不算空闲，Cloud VM 不会带着没交到的 Message 归档。
@@ -57,11 +57,17 @@
 - **Station 连上后**：给它参与的每个 host 发一次 `task.hello`（station transport 是拿到当前名册时，Salix 是 connector 连上时）。
 - **host 收到 `task.hello`**：对这个 Station 参与的每个 Task，按 `tasks` 里的 `fetched` 给。`fetched` 比 `sent` 小（Station 从备份恢复，丢了后面的），就把 `sent` 退到 `fetched`，再给一遍。按 seq 去重，已有的不会写两次。`tasks` 里没有的 Task 当作 `fetched` 是 0：Station 没有它的 thread，`task.put` 会回 `unknown`。没有 `tasks` 字段（之前版本的 Station）就从 `sent` 往后给。
 - **`task.put` 回 `unknown`**（Station 丢了这个 Task）：host 用当初邀请时的 `start`（`task_sessions.start`，Salix 是 `station_task_sessions.start`）再发一次 `task.invite`，新的 Session 替换这个 Station 原来的 Session，`sent` 归 0，从头给整个 Task。参与者不删。没存 `start` 的：station 上用 chat 的创建人和标题。Salix 上存 `start` 之前邀请的，迁移 `20261019220001` 按迁移时 Task 的 Worker 和它的 Station 绑定补存了 `start`（Worker 已不在就不带 `runtime`、`model`），之后绑定再改也不影响；仍没存的用 Task 的 Worker 作 `requester`，不带 `runtime`、`model`。邀请连不上就等 `task.hello`，邀请出错就跟 put 出错一样退避再试。
-- **答过的不再答：host 每次给 Message 都说“答到哪了”。** host 给一个 Station 东西时（每个 `task.put`，以及重新邀请的 `task.invite`），都带 `answered`：这个 Station 的 Session 在这个 Task 里已经答到哪个 seq。Station 记下它被告知过的最大值（`tasks_elsewhere.answered`）。seq 不超过它的 Message 只写进 thread 当作历史，不交给 Session，不起新的一轮。之后的照常交给 Session。Station 丢了整个 Task 和 Station 从存档恢复到更早的时候，用同一条规则。
-  - **`answered` 的值**：这个 Station 的 Session 发来一条结束了一轮的 Message（`declared` 是 `all_done` 或 `need_help`）时，host 把 `answered` 提到那时已经给到这个 Station 的 seq（`sent`），不超过这条 Message 自己的 seq。还没给到 Station 的 Message 不算被这一轮答过，之后照常交给 Session。没有答过就是 0，不带这个字段。只发了进度（不带 `declared`）不算答完。
-  - **host 怎么记**：跟 `sent` 记在一起（station 是 `task_sessions.answered`，Salix 是 `station_task_sessions.answered`），收到 `task.post` 时更新。重新邀请时换了 Session，值留着。列是空的就在第一次用到时从 Task 的 Message 里补上。
-  - **Station 上已经在等的**：Station 恢复到更早的时候，可能还留着一条“已交给 Session、还没听”的 Message，而 host 说它已经答过了。Station 被告知更大的 `answered` 时，把这个 Task 里 seq 不超过它、还没听的都记成已听，不再起一轮。恢复时正跑到一半的那一轮，Station 一启动就会接着跑，这种情况可能再答一次。
-  - host 给 Message 时，凡是这个 Station 的 Session 发的，都带 `author.session`，被替换掉的旧 Session 发的也带。Station 收到的 `author.session` 不是它现在的 Session，就记成现在这个 Session 自己的 Message，`declared` 照旧。这只管 thread 里怎么显示，不决定交不交。
+- **答过的不再答：host 每次给 Message 都说“答到哪了”。** host 给一个 Station 东西时（每个 `task.put`，以及重新邀请的 `task.invite`），都带 `answered`（旧单席）或 `answered_by_slot`（多席）：
+  - **单席兼容**：`task.put` 不带 `answered_by_slot` 时，Station 记下 `tasks_elsewhere.answered` 的最大值，并将 seq 不超过它的未听投递记为已听，不再起新的一轮。单席 Task 中对唯一 worker 不可见（`visible_to_slots == []`）的消息在 `task.put` 发送端省略正文与附件，但仍通过 `through` 推进水位。
+  - **多席 slot-keyed 协议**（Station 宣告 `capabilities.multi_session_tasks = true`）：
+    - `task.invite` 支持 `slot` 与 `join: true`（副席加入既有 Task 线程，不重启主席，回复必须回显 `{session, slot}`；线程已有活跃席位时，非 `join` 邀请仅允许命中当前主席席位（含自定义主席别名），拒绝任何副席或不一致 slot）。存量单席线程首次收到 `join: true` 时在单事务内原地回填 `("lead", existing, is_primary=1)`。
+    - `task.put` 携带每条消息的 `deliver_to_slots`（仅唤醒指定席位，不广播）、`visible_to_slots`（存在窄可见性过滤时严格限制补课与 `chat_history` 可见范围）、`roster`（`slot`/`primary`/`label`/`role`）与每席独立的 `answered_by_slot`（线程级 `answered` 取保守下界 `min`，Station 收到 `answered_by_slot` 时**绝不**跨席清除其他席的 pending 投递，仅由各席独立按 `answered_by_slot[slot]` 清理）。
+    - 终端 `task.post` 上报该席实际消费的最大 `answered_through_seq`；`task.status {all: true}` 返回全部活跃席位状态（计入 `task_arrivals` 待取附件消息数）与聚合空闲/worktree standing（含 `unmerged` / `standing_unknown`），Salix 核对活跃名册完整后才用于 `ready_for_review` 与 `idle_check`。
+    - 丢盘恢复（`task.put` 回 `unknown`）按主席优先逐席重邀，未完成副席持久化在 `pending_multi_starts` 中支持断线重连续传。
+  - **`answered` 的值**：这个 Station 的 Session 发来一条结束了一轮的 Message（`declared` 是 `all_done` 或 `need_help`）时，host 把对应 Session 的 `answered` 提到 `LEAST(post_seq, answered_through_seq)`（旧站无 `answered_through_seq` 时仍以 `LEAST(sent, post_seq)` 为准）。只发了进度（不带 `declared`）不算答完。
+  - **host 怎么记**：跟 `sent` 记在一起（station 是 `task_sessions.answered`，Salix 是 `station_task_sessions.answered`），收到 `task.post` 时仅更新对应 `(device_id, session)` 行。重新邀请时换了 Session，值留着。列是空的就在第一次用到时从 Task 的 Message 里补上。
+  - **Station 上已经在等的**：Station 恢复到更早的时候，可能还留着一条“已交给 Session、还没听”的 Message，而 host 说它已经答过了。单席下按 `answered`、多席下按各席 `answered_by_slot[slot]` 把不超过该值的未听投递记成已听，不再起一轮。恢复时正跑到一半的那一轮，Station 一启动就会接着跑，这种情况可能再答一次。
+  - host 给 Message 时，凡是这个 Station 的 Session 发的，都带 `author.session`，被替换掉的旧 Session 发的也带。单席广播下若 `author.session` 不是当前 Session，记为当前 Session 自己的 Message；多席下已退休副席的 `author.session` 保持 `own = null`，由 `deliver_to_slots` 精确控制投递，绝不劫持主席身份。
   - 任一方是不认识 `task.put` 里 `answered` 的旧版本时，Station 从存档恢复后可能重答。
 - host 只接受参与的 Session 的 `task.post`。参与的 Station 对它的 Session 都已结束的 Task 回 `gone`，host 就删掉这个参与者，不再给它。
 - 人的已读按人记，记在 Task 所在的 Station 上（station 是 `reads` 表，按 viewer 和 chat）。跟 `sent` 无关。

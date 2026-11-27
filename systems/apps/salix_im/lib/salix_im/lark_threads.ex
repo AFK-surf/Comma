@@ -45,10 +45,57 @@ defmodule SalixIM.LarkThreads do
     end
   end
 
+  @doc "Returns `:joined`, `:left`, or `:none` without extending the mark."
+  @spec status(map(), term(), term()) :: :joined | :left | :none
+  def status(connect, chat_id, thread_id) when is_map(connect) do
+    with {:ok, key} <- key(connect, chat_id, thread_id),
+         {:ok, record} <- CasRecord.get(key) do
+      cond do
+        is_integer(record["expires_at"]) and
+            record["expires_at"] > SystemsClock.system_time(:millisecond) ->
+          :joined
+
+        not is_nil(record["left_at"]) ->
+          :left
+
+        true ->
+          :none
+      end
+    else
+      _unknown -> :none
+    end
+  end
+
+  @doc """
+  Stops following a thread on the Router's request: the mark expires now, so
+  a message of the thread that does not mention the bot no longer reaches the
+  Router. A later send of the bot into the thread (`join/3`) follows it again.
+  A thread never joined has nothing to clear.
+  """
+  @spec leave(map(), term(), term()) :: :ok | {:error, term()}
+  def leave(connect, chat_id, thread_id) when is_map(connect) do
+    with {:ok, key} <- key(connect, chat_id, thread_id) do
+      left_at = SystemsClock.system_time(:millisecond)
+
+      case CasRecord.update(
+             key,
+             &(&1 |> Map.put("expires_at", 0) |> Map.put("left_at", left_at)),
+             create: false
+           ) do
+        {:ok, _record} -> :ok
+        {:error, :not_found} -> :ok
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
   defp extend(key) do
     expires_at = SystemsClock.system_time(:millisecond) + @ttl_ms
 
-    case CasRecord.update(key, &Map.put(&1, "expires_at", expires_at)) do
+    case CasRecord.update(
+           key,
+           &(&1 |> Map.put("expires_at", expires_at) |> Map.delete("left_at"))
+         ) do
       {:ok, _record} -> :ok
       {:error, _reason} = error -> error
     end

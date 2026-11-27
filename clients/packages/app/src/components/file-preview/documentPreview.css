@@ -1,0 +1,2486 @@
+/* The document mode of the file preview: a Markdown file read as a page, with
+   the writer's caret and a shine on the block being written while an Agent's
+   new version is typed in (DocumentFilePreview.tsx). */
+
+/* The document's palette (documentColors.ts), set in LCH. Every colour of a
+   kind has the same lightness and chroma and differs by its hue alone, so no
+   colour stands out from the others: `ink` colours text, `wash` is a ground
+   behind it. Brown is orange's hue at less chroma, and gray has none. The
+   palette is on the root, since the menu that offers the colours is outside
+   the page, and on every element that sets a theme of its own, so the
+   colours are made again from that theme's lightness and chroma. */
+:root,
+[data-theme] {
+  --comma-document-ink-l: 54;
+  --comma-document-ink-c: 52;
+  --comma-document-wash-l: 94;
+  --comma-document-wash-c: 8;
+  --comma-document-ink-gray: lch(var(--comma-document-ink-l) 0 0);
+  --comma-document-ink-brown: lch(
+    var(--comma-document-ink-l) calc(var(--comma-document-ink-c) * 0.45) 55
+  );
+  --comma-document-ink-orange: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 55
+  );
+  --comma-document-ink-yellow: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 85
+  );
+  --comma-document-ink-green: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 150
+  );
+  --comma-document-ink-blue: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 262
+  );
+  --comma-document-ink-purple: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 305
+  );
+  --comma-document-ink-pink: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 350
+  );
+  --comma-document-ink-red: lch(
+    var(--comma-document-ink-l) var(--comma-document-ink-c) 28
+  );
+  --comma-document-wash-gray: lch(var(--comma-document-wash-l) 0 0);
+  --comma-document-wash-brown: lch(
+    var(--comma-document-wash-l) calc(var(--comma-document-wash-c) * 0.45) 55
+  );
+  --comma-document-wash-orange: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 55
+  );
+  --comma-document-wash-yellow: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 85
+  );
+  --comma-document-wash-green: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 150
+  );
+  --comma-document-wash-blue: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 262
+  );
+  --comma-document-wash-purple: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 305
+  );
+  --comma-document-wash-pink: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 350
+  );
+  --comma-document-wash-red: lch(
+    var(--comma-document-wash-l) var(--comma-document-wash-c) 28
+  );
+}
+
+/* On a dark page the text's colours are lighter and the grounds darker, at
+   the same hues. */
+[data-theme="Dark mode"] {
+  --comma-document-ink-l: 74;
+  --comma-document-ink-c: 44;
+  --comma-document-wash-l: 30;
+  --comma-document-wash-c: 14;
+}
+
+.comma-document {
+  --comma-document-writer: var(--color-bg-brand-solid);
+  --comma-document-writer-text: var(--color-text-white);
+
+  /* The page's rhythm, the same where the renderer draws it and where the
+     page draws it itself (the editor, two versions compared). A heading
+     stands nearer the text it heads than the text before it, and a deeper
+     heading starts a smaller break. */
+  --comma-document-gap: var(--spacing-lg);
+  --comma-document-gap-item: var(--spacing-xs);
+  --comma-document-gap-title: var(--spacing-xl);
+  --comma-document-gap-h1: var(--spacing-4xl);
+  --comma-document-gap-h2: calc(var(--spacing-3xl) + var(--spacing-xs));
+  --comma-document-gap-h3: var(--spacing-2xl);
+  --comma-document-gap-h4: var(--spacing-xl);
+  --comma-document-gap-headed: var(--spacing-md);
+  --comma-document-gap-rule: var(--spacing-2xl);
+  --comma-document-indent: var(--spacing-3xl);
+  --comma-document-quote-bar: calc(var(--spacing-xxs) * 1.5);
+
+  container-type: inline-size;
+  flex: 1 0 auto;
+}
+
+/* The page is as wide as its panel, whatever it holds, up to the measure
+   (about 75 Latin characters or 37 Han characters of body text) and its
+   margins. The margins are set for three widths of the panel.
+
+   A phone, and the sidebar at its own width: the text starts where the
+   toolbar's file name does, and the page keeps all the width it can. */
+.comma-document-page {
+  --comma-document-margin: var(--spacing-xl);
+
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(var(--container-md) + 2 * var(--comma-document-margin));
+  margin-inline: auto;
+  padding-block: var(--spacing-3xl) var(--spacing-6xl);
+  padding-inline: var(--comma-document-margin);
+}
+
+/* A tablet beside another app, a small window, a sidebar pulled wide: the
+   page has margins of its own. */
+@container (min-width: 480px) {
+  .comma-document-page {
+    --comma-document-margin: var(--spacing-4xl);
+
+    padding-block: var(--spacing-5xl) var(--spacing-7xl);
+  }
+}
+
+/* A window on a desktop or a whole tablet: the measure stands in the middle
+   of the panel, under a wider head margin. */
+@container (min-width: 768px) {
+  .comma-document-page {
+    --comma-document-margin: var(--spacing-6xl);
+
+    padding-block: var(--spacing-7xl) var(--spacing-8xl);
+  }
+}
+
+/* The title of a document whose text opens with none, and a document's own
+   first heading, are the page's title. */
+.comma-document-title,
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot:first-child
+  h1.markdown-stream-heading {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-display-xs);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--text-display-xs--line-height);
+  letter-spacing: var(--text-display-xs--letter-spacing);
+}
+
+.comma-document-title {
+  margin-bottom: var(--comma-document-gap-title);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.comma-document .markdown-stream {
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  letter-spacing: var(--text-md--letter-spacing);
+  /* A space between Han and Latin text the source wrote without one. */
+  text-autospace: normal;
+}
+
+/* Heading sizes go down with the level, from the title's. A first-level
+   heading in the text is the title's size at a lighter weight; the last
+   levels share the body's size and differ from it by weight. */
+.comma-document .markdown-stream h1.markdown-stream-heading {
+  font-size: var(--text-display-xs);
+  line-height: var(--text-display-xs--line-height);
+  letter-spacing: var(--text-display-xs--letter-spacing);
+}
+
+.comma-document .markdown-stream h2.markdown-stream-heading {
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+  letter-spacing: var(--text-xl--letter-spacing);
+}
+
+.comma-document .markdown-stream h3.markdown-stream-heading {
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  letter-spacing: var(--text-lg--letter-spacing);
+}
+
+.comma-document .markdown-stream :is(h4, h5, h6).markdown-stream-heading {
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  letter-spacing: var(--text-md--letter-spacing);
+}
+
+.comma-document .markdown-stream > .markdown-renderer > .node-slot + .node-slot {
+  margin-top: var(--comma-document-gap);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="heading"]:not(:first-child) {
+  margin-top: var(--comma-document-gap-h4);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="heading"]:not(:first-child):has(h1) {
+  margin-top: var(--comma-document-gap-h1);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="heading"]:not(:first-child):has(h2) {
+  margin-top: var(--comma-document-gap-h2);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="heading"]:not(:first-child):has(h3) {
+  margin-top: var(--comma-document-gap-h3);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="heading"]
+  + .node-slot {
+  margin-top: var(--comma-document-gap-headed);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot:first-child[data-node-type="heading"]
+  + .node-slot {
+  margin-top: var(--comma-document-gap-title);
+}
+
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="thematic_break"]:not(:first-child),
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="thematic_break"]
+  + .node-slot {
+  margin-top: var(--comma-document-gap-rule);
+}
+
+/* A list's marks stand in a column of their own, and its items are close. */
+.comma-document .markdown-stream .markdown-stream-list {
+  padding-inline-start: var(--comma-document-indent);
+}
+
+.comma-document .markdown-stream .markdown-stream-list .markdown-stream-list {
+  margin-top: var(--comma-document-gap-item) !important;
+  padding-inline-start: var(--comma-document-indent);
+}
+
+.comma-document
+  .markdown-stream
+  .markdown-stream-list-item
+  + .markdown-stream-list-item {
+  margin-top: var(--comma-document-gap-item);
+}
+
+/* A list of tasks has its boxes where a list's marks are. */
+.comma-document
+  .markdown-stream
+  .markdown-stream-list:has(> .markdown-stream-list-item-task) {
+  padding-inline-start: 0;
+}
+
+/* A quote is its text beside a bar of the text's own colour. */
+.comma-document .markdown-stream .markdown-stream-quote {
+  padding-block: 0;
+  padding-inline: var(--spacing-xl) 0;
+}
+
+.comma-document .markdown-stream .markdown-stream-quote::after {
+  top: 0;
+  bottom: 0;
+  width: var(--comma-document-quote-bar);
+  border-radius: 0;
+  background: currentColor;
+}
+
+.comma-document-note {
+  margin: var(--spacing-3xl) 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+/* The block being written. A band of the page's own colour crosses it, so its
+   text fades and returns whatever the block holds; the band moves by a
+   transform alone. */
+.comma-document .node-slot[data-document-writing] {
+  position: relative;
+  contain: paint;
+}
+
+.comma-document .node-slot[data-document-writing]::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 45%;
+  min-width: var(--spacing-11xl);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-main-panel-bg) 68%, transparent) 50%,
+    transparent
+  );
+  content: "";
+  pointer-events: none;
+  transform: translate3d(-100%, 0, 0);
+  transition: opacity var(--motion-duration-feedback-out) ease;
+  /* 96 steps in 1.6 s, as every loading shine: 60 a second. */
+  animation: comma-document-writing-shine var(--motion-duration-loading-shine)
+    steps(var(--comma-loading-shine-steps)) infinite;
+}
+
+.comma-document .node-slot[data-document-writing="ending"]::after {
+  opacity: 0;
+}
+
+@keyframes comma-document-writing-shine {
+  from {
+    transform: translate3d(-100%, 0, 0);
+  }
+
+  to {
+    transform: translate3d(325%, 0, 0);
+  }
+}
+
+/* The writer's caret: a bar the height of its line, with the writer's name on
+   a flag above it. The script moves it; it enters and leaves by opacity. */
+.comma-document-caret {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  width: var(--spacing-xxs);
+  margin-left: calc(var(--spacing-xxs) / -2);
+  border-radius: var(--radius-xxs);
+  background-color: var(--comma-document-writer);
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  scroll-margin-block: var(--spacing-8xl);
+  transition: opacity var(--motion-duration-tooltip-exit) ease;
+}
+
+.comma-document-caret[data-present="true"] {
+  opacity: 1;
+  transition-duration: var(--motion-duration-state-change);
+}
+
+/* A caret that waits blinks; one that types stays lit. */
+.comma-document-caret[data-present="true"][data-typing="false"] {
+  animation: comma-document-caret-blink var(--motion-duration-caret-blink) steps(1, end)
+    infinite;
+}
+
+@keyframes comma-document-caret-blink {
+  50% {
+    background-color: transparent;
+  }
+}
+
+.comma-document-caret-flag {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  max-width: var(--spacing-11xl);
+  overflow: hidden;
+  padding: 0 var(--spacing-sm);
+  border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0;
+  background-color: var(--comma-document-writer);
+  color: var(--comma-document-writer-text);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  letter-spacing: var(--text-xs--letter-spacing);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Near the page's right edge the flag hangs to the caret's left. */
+.comma-document-caret[data-flag="end"] .comma-document-caret-flag {
+  right: 0;
+  left: auto;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 var(--radius-xs);
+}
+
+/* A document drawn as plain elements, where the page draws it itself: two
+   versions compared (DocumentDiffView) and the editor. It reads as the page
+   the Markdown renderer draws. */
+.comma-document-prose {
+  color: var(--color-markdown-text-primary);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  letter-spacing: var(--text-md--letter-spacing);
+  overflow-wrap: anywhere;
+  text-autospace: normal;
+  -webkit-font-smoothing: antialiased;
+}
+
+.comma-document-prose
+  :where(p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, pre, table, hr) {
+  margin: 0;
+}
+
+/* The page's blocks that are divs are named by their classes: a table's
+   wrapper and a block the editor draws itself. A sibling rule whose subject
+   is any `div` restyles a chat's whole transcript when a node is put at its
+   head (home-restyle-scope.spec.ts). */
+.comma-document-prose
+  :where(
+    p,
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6,
+    ul,
+    ol,
+    blockquote,
+    pre,
+    table,
+    hr,
+    .tableWrapper,
+    .react-renderer
+  )
+  + :where(p, ul, ol, blockquote, pre, table, .tableWrapper, .react-renderer) {
+  margin-top: var(--comma-document-gap);
+}
+
+.comma-document-prose :where(h1, h2, h3, h4, h5, h6) {
+  font-weight: var(--font-weight-semibold);
+}
+
+.comma-document-prose :where(* + h4, * + h5, * + h6) {
+  margin-top: var(--comma-document-gap-h4);
+}
+
+.comma-document-prose :where(* + h1) {
+  margin-top: var(--comma-document-gap-h1);
+}
+
+.comma-document-prose :where(* + h2) {
+  margin-top: var(--comma-document-gap-h2);
+}
+
+.comma-document-prose :where(* + h3) {
+  margin-top: var(--comma-document-gap-h3);
+}
+
+/* A heading stands near the text it heads. */
+.comma-document-prose
+  :is(h1, h2, h3, h4, h5, h6)
+  + :is(p, ul, ol, blockquote, pre, table, :where(.tableWrapper, .react-renderer)) {
+  margin-top: var(--comma-document-gap-headed);
+}
+
+.comma-document-prose h1 {
+  font-size: var(--text-display-xs);
+  line-height: var(--text-display-xs--line-height);
+  letter-spacing: var(--text-display-xs--letter-spacing);
+}
+
+/* The document's own first heading is the page's title. */
+.comma-document-prose > h1:first-child {
+  font-weight: var(--font-weight-bold);
+}
+
+.comma-document-prose
+  > h1:first-child
+  + :is(p, ul, ol, blockquote, pre, table, :where(.tableWrapper, .react-renderer), hr) {
+  margin-top: var(--comma-document-gap-title);
+}
+
+.comma-document-prose h2 {
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+  letter-spacing: var(--text-xl--letter-spacing);
+}
+
+.comma-document-prose h3 {
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  letter-spacing: var(--text-lg--letter-spacing);
+}
+
+/* A list's marks stand in a column of their own, and its items are close. */
+.comma-document-prose :where(ul, ol) {
+  padding-inline-start: var(--comma-document-indent);
+}
+
+.comma-document-prose ul {
+  list-style: disc outside;
+}
+
+.comma-document-prose ul ul {
+  list-style-type: circle;
+}
+
+.comma-document-prose ul ul ul {
+  list-style-type: square;
+}
+
+.comma-document-prose ol {
+  font-variant-numeric: tabular-nums;
+  list-style: decimal outside;
+}
+
+.comma-document-prose li {
+  padding-inline-start: var(--spacing-xxs);
+}
+
+.comma-document-prose li + li,
+.comma-document-prose li > :where(ul, ol),
+.comma-document-prose li > :where(p, div) + :where(ul, ol) {
+  margin-top: var(--comma-document-gap-item);
+}
+
+/* A quote is its text beside a bar of the text's own colour. */
+.comma-document-prose blockquote {
+  padding-inline-start: var(--spacing-xl);
+  box-shadow: inset var(--comma-document-quote-bar) 0 0 currentColor;
+}
+
+.comma-document-prose :where(code, pre) {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+.comma-document-prose :not(pre) > code {
+  padding: 0 var(--spacing-xs);
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-xs);
+  background: var(--color-markdown-bg-inline-code);
+  color: var(--color-markdown-text-inline-code);
+  font-size: 0.9em;
+}
+
+.comma-document-prose pre {
+  overflow-x: auto;
+  padding: var(--spacing-xl);
+  border-radius: var(--radius-xl);
+  background: var(--color-markdown-bg-table);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+/* A table of a document has square corners, where it is read and where it is
+   edited: it is part of the page, not a card on it as a chat's table is. */
+.comma-document .markdown-stream-surface:has(> * table, > table) {
+  border-radius: 0;
+}
+
+.comma-document-prose table {
+  width: 100%;
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: var(--border-width-0-5) solid var(--color-markdown-border-table);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  table-layout: fixed;
+}
+
+.comma-document-prose :where(th, td) {
+  padding: var(--spacing-lg) var(--spacing-xl);
+  text-align: left;
+  vertical-align: top;
+}
+
+.comma-document-prose th {
+  background: var(--color-markdown-bg-table);
+  font-weight: var(--font-weight-semibold);
+}
+
+.comma-document-prose :where(tbody, tr + tr) :where(th, td) {
+  border-top: var(--border-width-0-5) solid var(--color-markdown-border-table);
+}
+
+.comma-document-prose hr {
+  margin-block: var(--comma-document-gap-rule);
+  border: 0;
+  border-top: var(--border-width-0-5) solid var(--color-markdown-border-table);
+}
+
+.comma-document-prose a {
+  color: var(--color-markdown-text-link);
+  font-weight: var(--font-weight-medium);
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: var(--spacing-xxs);
+  cursor: pointer;
+}
+
+/* Two versions compared: what the newer one took away and what it added.
+   The marks keep the text's own colour, so both read at full contrast. */
+.comma-document-diff :is(del, [data-diff="del"]) {
+  border-radius: var(--radius-xxs);
+  background-color: var(--color-utility-error-50);
+  text-decoration-line: line-through;
+  text-decoration-color: var(--color-utility-error-300);
+}
+
+.comma-document-diff :is(ins, [data-diff="ins"]) {
+  border-radius: var(--radius-xxs);
+  background-color: var(--color-utility-success-50);
+  text-decoration-line: underline;
+  text-decoration-color: var(--color-utility-success-300);
+  text-decoration-thickness: var(--spacing-xxs);
+  text-underline-offset: var(--spacing-xs);
+}
+
+/* A whole block that came or went is marked through its text, and a row or a
+   table as a whole. */
+.comma-document-diff :is(tr, table)[data-diff] {
+  text-decoration-line: none;
+}
+
+.comma-document-diff tr[data-diff="del"] :where(th, td) {
+  text-decoration-line: line-through;
+  text-decoration-color: var(--color-utility-error-300);
+}
+
+.comma-document-diff :is(pre, blockquote, table)[data-diff] :where(th, code) {
+  background: transparent;
+}
+
+/* Text a reader gave a colour, and text on a ground they gave it. */
+.comma-document mark[data-color] {
+  padding: 0 var(--spacing-xxs);
+  border-radius: var(--radius-xxs);
+  color: inherit;
+}
+
+.comma-document span[data-color="gray"] {
+  color: var(--comma-document-ink-gray);
+}
+
+.comma-document mark[data-color="gray"] {
+  background: var(--comma-document-wash-gray);
+}
+
+.comma-document span[data-color="brown"] {
+  color: var(--comma-document-ink-brown);
+}
+
+.comma-document mark[data-color="brown"] {
+  background: var(--comma-document-wash-brown);
+}
+
+.comma-document span[data-color="orange"] {
+  color: var(--comma-document-ink-orange);
+}
+
+.comma-document mark[data-color="orange"] {
+  background: var(--comma-document-wash-orange);
+}
+
+.comma-document span[data-color="yellow"] {
+  color: var(--comma-document-ink-yellow);
+}
+
+.comma-document mark[data-color="yellow"] {
+  background: var(--comma-document-wash-yellow);
+}
+
+.comma-document span[data-color="green"] {
+  color: var(--comma-document-ink-green);
+}
+
+.comma-document mark[data-color="green"] {
+  background: var(--comma-document-wash-green);
+}
+
+.comma-document span[data-color="blue"] {
+  color: var(--comma-document-ink-blue);
+}
+
+.comma-document mark[data-color="blue"] {
+  background: var(--comma-document-wash-blue);
+}
+
+.comma-document span[data-color="purple"] {
+  color: var(--comma-document-ink-purple);
+}
+
+.comma-document mark[data-color="purple"] {
+  background: var(--comma-document-wash-purple);
+}
+
+.comma-document span[data-color="pink"] {
+  color: var(--comma-document-ink-pink);
+}
+
+.comma-document mark[data-color="pink"] {
+  background: var(--comma-document-wash-pink);
+}
+
+.comma-document span[data-color="red"] {
+  color: var(--comma-document-ink-red);
+}
+
+.comma-document mark[data-color="red"] {
+  background: var(--comma-document-wash-red);
+}
+
+/* A colour as a small tile: the letter in a text colour (its ink), on a
+   ground (its wash). The menu's tiles have one of the two; the toolbar's has
+   both, as the selection does. A tile with a colour has that colour's edge,
+   the wash's where it has both. */
+.comma-document-swatch {
+  --comma-document-swatch-ink: var(--color-text-primary);
+  --comma-document-swatch-wash: var(--color-bg-primary);
+  --comma-document-swatch-edge: var(--color-border-primary);
+
+  display: inline-flex;
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: var(--border-width-0-5) solid var(--comma-document-swatch-edge);
+  border-radius: var(--radius-xs);
+  background: var(--comma-document-swatch-wash);
+  color: var(--comma-document-swatch-ink);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
+}
+
+.comma-document-swatch[data-ink="gray"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-gray);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-gray) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="brown"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-brown);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-brown) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="orange"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-orange);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-orange) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="yellow"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-yellow);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-yellow) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="green"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-green);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-green) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="blue"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-blue);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-blue) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="purple"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-purple);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-purple) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="pink"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-pink);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-pink) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-ink="red"] {
+  --comma-document-swatch-ink: var(--comma-document-ink-red);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-red) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="gray"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-gray);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-gray) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="brown"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-brown);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-brown) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="orange"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-orange);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-orange) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="yellow"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-yellow);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-yellow) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="green"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-green);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-green) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="blue"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-blue);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-blue) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="purple"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-purple);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-purple) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="pink"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-pink);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-pink) 30%,
+    transparent
+  );
+}
+
+.comma-document-swatch[data-wash="red"] {
+  --comma-document-swatch-wash: var(--comma-document-wash-red);
+  --comma-document-swatch-edge: color-mix(
+    in srgb,
+    var(--comma-document-ink-red) 30%,
+    transparent
+  );
+}
+
+/* The page as an editor (DocumentEditor). */
+.comma-document-editor {
+  min-height: var(--spacing-11xl);
+  outline: none;
+  white-space: pre-wrap;
+}
+
+/* An empty line the caret is in says how blocks are put in. */
+.comma-document-editor :is(p, h1, h2, h3, h4).is-empty::before {
+  height: 0;
+  float: left;
+  color: var(--color-text-quaternary);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.comma-document-editor ul[data-type="taskList"] {
+  padding-inline-start: 0;
+  list-style: none;
+}
+
+.comma-document-editor ul[data-type="taskList"] > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  padding-inline-start: 0;
+}
+
+.comma-document-editor ul[data-type="taskList"] > li > label {
+  display: inline-flex;
+  height: var(--text-md--line-height);
+  flex: none;
+  align-items: center;
+  user-select: none;
+}
+
+.comma-document-editor ul[data-type="taskList"] > li > label input {
+  accent-color: var(--color-markdown-text-link);
+}
+
+.comma-document-editor ul[data-type="taskList"] > li > div {
+  min-width: 0;
+  flex: 1;
+}
+
+/* A task that is done reads as done. */
+.comma-document-editor ul[data-type="taskList"] > li[data-checked="true"] > div > p {
+  color: var(--color-text-tertiary);
+  text-decoration-line: line-through;
+  text-decoration-color: var(--color-text-quaternary);
+}
+
+.comma-document-editor .selectedCell {
+  background: color-mix(in srgb, var(--comma-document-writer) 10%, transparent);
+}
+
+/* Markdown the editor keeps as written: a block drawn as the page draws it,
+   and its source while it is edited. */
+.comma-document-raw {
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.comma-document-raw:is([data-selected="true"], .ProseMirror-selectednode) {
+  box-shadow: 0 0 0 var(--spacing-xxs)
+    color-mix(in srgb, var(--comma-document-writer) 45%, transparent);
+}
+
+.comma-document-raw-source {
+  display: block;
+  width: 100%;
+  padding: var(--spacing-lg);
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  outline: none;
+  resize: vertical;
+  field-sizing: content;
+}
+
+/* A picture of the document's own (a file that goes with it): as wide as it
+   is, no wider than the page. Until its file is read, and where the document
+   has no such file here, its words stand in its place. */
+.comma-document-image {
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+/* In a page that is read the picture is in its paragraph: it has the paragraph's
+   whole width, as the block it is in the page a reader edits. */
+span.comma-document-image {
+  display: block;
+}
+
+.comma-document-image-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.comma-document-image-frame > :is(img, video) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+}
+
+.comma-document-image-frame[data-kind="drawing"] {
+  display: block;
+}
+
+.comma-document-image-frame[data-kind="drawing"] > img {
+  width: 100%;
+}
+
+/* A skeleton stands for a picture that is not there to see yet: over one a
+   message is carrying, and in the place of one whose file is being read. A
+   band of light crosses it, moved by its transform alone, as the app's other
+   skeletons are crossed. */
+.comma-document-image-skeleton {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}
+
+.comma-document-image-skeleton[data-wait="true"] {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+}
+
+.comma-document-image-skeleton::after {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-bg-quaternary) 50%,
+    transparent
+  );
+  content: "";
+  transform: translate3d(-100%, 0, 0);
+  animation: comma-document-image-skeleton var(--motion-duration-loading-shine)
+    var(--motion-loop-skeleton-shimmer) infinite;
+}
+
+@keyframes comma-document-image-skeleton {
+  to {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+:root[data-comma-reduced-motion="true"] .comma-document-image-skeleton::after {
+  animation: none;
+}
+
+/* A picture is set to a side of the page, and is as wide as a reader made it. */
+.comma-document-image[data-align="center"] {
+  text-align: center;
+}
+
+.comma-document-image[data-align="right"] {
+  text-align: right;
+}
+
+.comma-document-image-frame[data-sized="true"] > :is(img, video) {
+  width: 100%;
+}
+
+/* The picture a reader selected has a ring, and what they do with it: a bar
+   over it that sets its side and deletes it, and a grip on each side that
+   sets its width. */
+.comma-document-image:is([data-selected="true"], .ProseMirror-selectednode)
+  .comma-document-image-frame {
+  box-shadow: 0 0 0 var(--spacing-xxs) var(--color-fg-brand-primary);
+  border-radius: var(--radius-sm);
+}
+
+.comma-document-image-bar {
+  top: 0;
+  left: 0;
+  text-align: start;
+}
+
+.comma-document-image[data-align="right"] .comma-document-image-bar {
+  right: 0;
+  left: auto;
+}
+
+.comma-document-image-grip {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  width: var(--spacing-sm);
+  height: min(var(--spacing-6xl), 50%);
+  border: var(--border-width-0-5) solid var(--color-bg-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-tertiary);
+  cursor: ew-resize;
+  touch-action: none;
+  translate: -50% -50%;
+  transition: background-color var(--motion-duration-state-change) ease;
+}
+
+.comma-document-image-grip[data-side="start"] {
+  left: 0;
+}
+
+.comma-document-image-grip[data-side="end"] {
+  left: 100%;
+}
+
+/* The grip is thin: a press a little off it is still the grip's. */
+.comma-document-image-grip::before {
+  position: absolute;
+  inset: 0 calc(-1 * var(--spacing-sm));
+  content: "";
+}
+
+.comma-document-image-grip:is(:hover, :active) {
+  background: var(--color-fg-primary);
+}
+
+.comma-document-image-wait {
+  display: block;
+  padding: var(--spacing-lg) var(--spacing-xl);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-document-raw-inline {
+  padding: 0 var(--spacing-xs);
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* The toolbar over a selection: it stands above the selection's start. Its
+   buttons are one size, and their corners follow the bar's (its radius less
+   its padding). */
+.comma-document-format {
+  --comma-document-format-size: calc(var(--spacing-3xl) + var(--spacing-xs));
+
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xs);
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: var(--shadow-lg);
+  transform: translate3d(0, calc(-100% - var(--spacing-md)), 0);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* After a selection made with the pointer the toolbar comes in as the chat's
+   bar over a selection does (selection-action-bar.css): by its opacity, at
+   the menus' scale from its corner by the selection, and along the way the
+   selection was drawn. A sweep to the right hands it in from the left, a
+   sweep to the left from the right; a double press drew nothing, so it does
+   not travel. The travel is a signed share of one distance, and the timing is
+   a tooltip's, so the travel is not spent before the first frame. A selection
+   made at the keyboard has the toolbar at once, and it goes at once. */
+.comma-document-format[data-direction] {
+  --comma-document-format-travel: 0;
+
+  /* The toolbar is drawn above its own box, by its height and its distance
+     from the selection: its corner by the selection is that far up. */
+  transform-origin: 0 calc(-1 * var(--spacing-md));
+  transition:
+    opacity var(--motion-duration-tooltip-enter) var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-tooltip-enter)
+      var(--motion-easing-surface-smooth-out),
+    scale var(--motion-duration-tooltip-enter) var(--motion-easing-surface-smooth-out);
+  will-change: opacity, transform;
+
+  @starting-style {
+    opacity: 0;
+    translate: calc(var(--comma-document-format-travel) * var(--spacing-md)) 0;
+    scale: var(--motion-scale-menu-enter);
+  }
+}
+
+.comma-document-format[data-direction="forward"] {
+  --comma-document-format-travel: -1;
+}
+
+.comma-document-format[data-direction="backward"] {
+  --comma-document-format-travel: 1;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-document-format[data-direction] {
+  transition-property: opacity;
+}
+
+.comma-document-format-button {
+  display: inline-flex;
+  min-width: var(--comma-document-format-size);
+  height: var(--comma-document-format-size);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xxs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg-secondary);
+  font: inherit;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color var(--motion-duration-state-change) ease,
+    color var(--motion-duration-state-change) ease,
+    scale var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+}
+
+.comma-document-format-button:is(:hover, [data-hovered], [data-pressed]) {
+  background: var(--color-bg-quaternary);
+  color: var(--color-fg-primary);
+}
+
+.comma-document-format-button:is(:active, [data-pressed]) {
+  scale: var(--motion-scale-pressed);
+}
+
+.comma-document-format-button:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* A form the selection has. */
+.comma-document-format-button:is([aria-pressed="true"], [data-active="true"]) {
+  background: color-mix(in srgb, var(--color-fg-brand-primary) 10%, transparent);
+  color: var(--color-fg-brand-primary);
+}
+
+.comma-document-format-button:disabled {
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: default;
+  opacity: 0.5;
+  scale: 1;
+}
+
+/* A button that opens a menu: its glyph, then the chevron close by it. */
+.comma-document-format-menu {
+  padding: 0 var(--spacing-xs) 0 var(--spacing-sm);
+}
+
+.comma-document-format-menu > :last-child {
+  color: var(--color-fg-quaternary);
+}
+
+/* The chevron of a menu whose form the selection has is in that form's colour, as its glyph is. */
+.comma-document-format-menu:is([aria-pressed="true"], [data-active="true"])
+  > :last-child {
+  color: inherit;
+}
+
+/* A block's level where the glyphs have none. */
+.comma-document-format-type {
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Asking Comma about the selection: the one action that is its name. */
+.comma-document-format-ask {
+  padding: 0 var(--spacing-md);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-document-format-rule {
+  width: var(--border-width-0-5);
+  height: var(--spacing-xl);
+  flex: none;
+  margin: 0 var(--spacing-xs);
+  background: var(--color-border-primary);
+}
+
+/* The link's address, in the toolbar's place. */
+.comma-document-format-link {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding-left: var(--spacing-md);
+  color: var(--color-fg-quaternary);
+}
+
+.comma-document-format-link input {
+  width: var(--spacing-11xl);
+  height: var(--comma-document-format-size);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+}
+
+.comma-document-format-link input::placeholder {
+  color: var(--color-text-quaternary);
+}
+
+/* In a panel narrower than the whole toolbar, the forms used less are in a
+   second bar that More opens. It stands over the toolbar from the toolbar's
+   end, where More is, so the toolbar itself stays by the selection. */
+.comma-document-format-more {
+  position: absolute;
+  right: calc(-1 * var(--border-width-0-5));
+  bottom: calc(100% + var(--spacing-sm));
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xs);
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: var(--shadow-lg);
+}
+
+/* A section of the page that is folded away (DocumentSections): its blocks
+   take no room. The chevron of a heading is in the page's margin, at the
+   middle of the heading's first line. It points down over a section that is
+   shown and to the side by one that is folded, and turns between the two. */
+.comma-document-editor > .comma-document-folded {
+  display: none;
+}
+
+.comma-document-fold {
+  position: absolute;
+  z-index: 2;
+  display: inline-flex;
+  width: var(--spacing-xl);
+  align-items: center;
+  justify-content: center;
+  margin-left: calc(-1 * (var(--spacing-xl) + var(--spacing-xxs)));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+  outline: none;
+  transition: color var(--motion-duration-state-change) ease;
+}
+
+.comma-document-fold > svg {
+  transition: rotate var(--motion-duration-disclosure-turn)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-document-fold[aria-expanded="false"] {
+  color: var(--color-fg-tertiary);
+}
+
+.comma-document-fold[aria-expanded="false"] > svg {
+  rotate: -90deg;
+}
+
+.comma-document-fold:is(:hover, [data-hovered]) {
+  color: var(--color-fg-secondary);
+}
+
+.comma-document-fold:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+:root[data-comma-reduced-motion="true"] .comma-document-fold > svg {
+  transition: none;
+}
+
+/* A table of the page that is edited (DocumentTableControls). It is in a
+   window of its own: a table of more columns than the page has room for is
+   moved sideways under it. */
+.comma-document-editor .tableWrapper {
+  overflow-x: auto;
+}
+
+/* Cells a reader selected as cells (a drag over them, or the table's corner
+   mark) are tinted as a selection is; the caret's own selection in them is
+   not drawn over the tint. */
+.comma-document-editor :is(th, td) {
+  position: relative;
+}
+
+/* The tint is one ground over the cells: it covers the line between two
+   selected rows, which is not drawn under it. */
+.comma-document-editor .selectedCell {
+  border-top-color: transparent;
+}
+
+.comma-document-editor .selectedCell::after {
+  position: absolute;
+  inset: calc(-1 * var(--border-width-0-5)) 0 0;
+  background: color-mix(in srgb, var(--color-fg-brand-primary) 12%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.comma-document-editor .selectedCell ::selection {
+  background: transparent;
+}
+
+/* The handles of the caret's column and row: one on the table's top edge
+   over the column, one on its left edge by the row. Each is a short pill
+   across the edge it stands on. A press opens its menu; a drag moves the
+   column or the row. */
+.comma-document-table-handle {
+  position: absolute;
+  z-index: 2;
+  display: inline-flex;
+  width: var(--spacing-3xl);
+  height: var(--spacing-lg);
+  translate: -50% -50%;
+}
+
+.comma-document-table-handle[data-side="row"] {
+  rotate: 90deg;
+}
+
+.comma-document-table-handle > button {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  box-shadow: var(--shadow-xs);
+  color: var(--color-fg-quaternary);
+  cursor: grab;
+  outline: none;
+  touch-action: none;
+  transition:
+    background-color var(--motion-duration-state-change) ease,
+    border-color var(--motion-duration-state-change) ease,
+    color var(--motion-duration-state-change) ease,
+    scale var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+}
+
+/* A press is answered at once: the pill gives a little. */
+.comma-document-table-handle > button:is(:active, [data-pressed]) {
+  scale: var(--motion-scale-tactile-pressed);
+}
+
+/* The pill is short: a press a little off it is still the handle's. */
+.comma-document-table-handle > button::before {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-sm));
+  content: "";
+}
+
+.comma-document-table-handle
+  > button:is(:hover, [data-hovered], [aria-expanded="true"]) {
+  border-color: var(--color-border-secondary);
+  background: var(--color-bg-secondary);
+  color: var(--color-fg-secondary);
+}
+
+.comma-document-table-handle > button:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* A handle that is dragged, and the edge its row or column would go to. */
+.comma-document-table-handle[data-dragging="true"] > button {
+  border-color: var(--color-fg-brand-primary);
+  background: var(--color-fg-brand-primary);
+  color: var(--color-text-white);
+  cursor: grabbing;
+}
+
+/* The edge the dragged row or column would go to. It comes in by its
+   opacity, and goes from edge to edge by its transform: quick, since it
+   follows the pointer. */
+.comma-document-table-drop {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  min-width: var(--spacing-xxs);
+  min-height: var(--spacing-xxs);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-brand-primary);
+  pointer-events: none;
+  translate: calc(var(--spacing-xxs) / -2) calc(var(--spacing-xxs) / -2);
+  transition:
+    opacity var(--motion-duration-reveal-item) ease,
+    transform var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* The row or column that is dragged is tinted where it stands. Once it is
+   let go, the same tint marks where it went and fades: the reader sees which
+   row moved, with nothing left on the table. */
+.comma-document-table-lift {
+  position: absolute;
+  z-index: 1;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--color-fg-brand-primary) 10%, transparent);
+  pointer-events: none;
+}
+
+/* While it is dragged the row or column is lifted off the table: a ring in
+   the tint's own colour, and the shadow a surface over the page has. They
+   come in by their opacity, as the drag starts. */
+.comma-document-table-lift:not([data-landed]) {
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-fg-brand-primary),
+    var(--shadow-lg);
+  transition: opacity var(--motion-duration-reveal-item) ease;
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.comma-document-table-lift[data-landed="true"] {
+  opacity: 0;
+  transition: opacity var(--motion-duration-toast-enter) var(--motion-easing-smooth-out);
+
+  @starting-style {
+    opacity: 1;
+  }
+}
+
+/* Six dots in the page's margin by the table's first row: they select the
+   whole table. They are a bare mark, as high as the row, so the row's own
+   handle on the table's edge stays clear of them. */
+.comma-document-table-corner {
+  position: absolute;
+  z-index: 2;
+  display: inline-flex;
+  width: var(--spacing-lg);
+  align-items: center;
+  justify-content: center;
+  margin-left: calc(-1 * (var(--spacing-lg) + var(--spacing-xs)));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+  outline: none;
+  transition:
+    color var(--motion-duration-state-change) ease,
+    scale var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+}
+
+.comma-document-table-corner:is(:hover, [data-hovered]) {
+  color: var(--color-fg-secondary);
+}
+
+.comma-document-table-corner:active {
+  scale: var(--motion-scale-tactile-pressed);
+}
+
+.comma-document-table-corner:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* A row more under the table, and a column more at its end: a bar as long
+   as the edge it adds to, a little off it. */
+.comma-document-table-add {
+  position: absolute;
+  z-index: 1;
+  display: inline-flex;
+  height: var(--spacing-lg);
+  align-items: center;
+  justify-content: center;
+  margin-top: var(--spacing-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color var(--motion-duration-state-change) ease,
+    color var(--motion-duration-state-change) ease;
+}
+
+/* The bar at the table's end is as wide as the page's least margin has room
+   for, with its distance from the table. */
+.comma-document-table-add[data-side="column"] {
+  width: var(--spacing-lg);
+  margin-top: 0;
+  margin-left: var(--spacing-xs);
+}
+
+.comma-document-table-add:is(:hover, [data-hovered]) {
+  background: var(--color-bg-quaternary);
+  color: var(--color-fg-secondary);
+}
+
+.comma-document-table-add:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+:root[data-comma-reduced-motion="true"]
+  :is(.comma-document-table-handle > button, .comma-document-table-corner) {
+  scale: 1;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-document-table-drop {
+  transition-property: opacity;
+}
+
+/* The bar under a table takes room the page keeps for it. */
+.comma-document-editor .tableWrapper {
+  padding-bottom: calc(var(--spacing-lg) + var(--spacing-xs));
+}
+
+/* The menu of blocks under a `/`. */
+.comma-document-slash {
+  position: absolute;
+  z-index: 3;
+  width: var(--container-xxs);
+  max-width: 100%;
+  /* No taller than the room it has in what the reader sees of the page
+     (set by the page), and than a list a reader takes in at once. */
+  max-height: min(var(--container-xs), var(--comma-document-slash-room, 100vh));
+  margin-top: var(--spacing-sm);
+  overflow-y: auto;
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-xl);
+  user-select: none;
+}
+
+/* Over the caret, where the page has no room for it under the caret. */
+.comma-document-slash[data-side="above"] {
+  margin-top: 0;
+  margin-bottom: var(--spacing-sm);
+}
+
+.comma-document-slash-group + .comma-document-slash-group {
+  margin-top: var(--spacing-sm);
+  padding-top: var(--spacing-sm);
+  border-top: var(--border-width-0-5) solid var(--color-border-primary);
+}
+
+.comma-document-slash-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  cursor: pointer;
+}
+
+.comma-document-slash-item[aria-selected="true"] {
+  background: var(--color-button-tertiary-bg-hover);
+}
+
+.comma-document-slash-mark {
+  display: inline-flex;
+  width: var(--spacing-2xl);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-fg-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.comma-document-slash-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.comma-document-slash-hint {
+  color: var(--color-text-quaternary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* A document's picture on a preview card (AttachmentPreviewCard): the top of
+   its page, a little smaller than it is read. */
+.comma-document-thumbnail {
+  padding: var(--spacing-2xl) var(--spacing-3xl) 0;
+  zoom: 0.875;
+}
+
+/* A picture that is being made: its place, on a tinted ground. */
+.comma-attachment-preview-wait {
+  height: 100%;
+  background: var(--color-bg-secondary);
+}
+
+/* A PDF's first page or an office file's thumbnail fills the picture from its
+   top; what is taller runs off the card. */
+.comma-attachment-preview-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+
+/* An office file's first page drawn on its card (OfficeCover): from the
+   card's top, as its thumbnail would be; it takes no clicks, as the card opens
+   the file. It is in place before the page is drawn into it, so it comes in by
+   its opacity once the page is there. */
+.comma-office-cover {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--motion-duration-state-change) ease;
+
+  &[data-arrived="true"] {
+    opacity: 1;
+  }
+}
+
+.comma-office-cover-page {
+  position: absolute;
+  inset: 0;
+}
+
+/* A sheet's cells on a card sit on the card's own surface. */
+.comma-office-cover[data-kind="xlsx"] {
+  background: var(--color-bg-primary);
+}
+
+/* A Word document's pages (DocxFilePreview, OfficeCover): paper, whatever the
+   app's theme, one under another. */
+.comma-docx-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-xl);
+
+  & > section {
+    border: var(--border-width-0-5) solid var(--color-border-secondary);
+    background: var(--color-base-white);
+    box-shadow: var(--shadow-sm);
+  }
+}
+
+/* A workbook's sheet tabs (SheetFilePreview), along the bottom of the grid as
+   in a spreadsheet app: the status bar's strip (PreviewStatusBar) turned over,
+   whose shown tab is the sheet's own surface, open to the grid above it. */
+.comma-sheet-tabs {
+  display: flex;
+  flex-shrink: 0;
+  align-items: stretch;
+  min-height: var(--spacing-4xl);
+  background: var(--color-bg-secondary);
+  /* The strip's top edge is drawn under the tabs, so the shown tab covers it. */
+  box-shadow: inset 0 var(--border-width-0-5) 0 var(--color-border-primary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-sheet-tab {
+  --comma-sheet-tab-edge: inset 0 var(--border-width-0-5) 0 var(--color-border-primary);
+
+  display: flex;
+  max-width: var(--spacing-11xl);
+  align-items: center;
+  padding: 0 var(--spacing-lg);
+  border: 0;
+  border-right: var(--border-width-0-5) solid var(--color-border-secondary);
+  background: transparent;
+  box-shadow: var(--comma-sheet-tab-edge);
+  color: var(--color-text-tertiary);
+  font: inherit;
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color var(--motion-duration-state-change) ease,
+    color var(--motion-duration-state-change) ease;
+
+  &:hover {
+    background: var(--color-bg-secondary-hover);
+    color: var(--color-text-secondary);
+  }
+
+  /* The shown tab and the tab before it close it in at the strip's border tone. */
+  &:has(+ [aria-selected="true"]),
+  &[aria-selected="true"] {
+    border-right-color: var(--color-border-primary);
+  }
+
+  /* The shown tab: the sheet's surface, its name in full tone over a brand
+     mark along its foot (the toolbar's pressed tint, PreviewViewToggle). */
+  &[aria-selected="true"] {
+    --comma-sheet-tab-edge: inset 0 calc(-1 * var(--spacing-xxs)) 0
+      var(--color-fg-brand-primary);
+
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    cursor: default;
+  }
+
+  &:focus-visible {
+    box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-brand);
+  }
+}
+
+/* The data grids: a delimited table (.comma-csv-table) and a workbook's sheet
+   (.comma-sheet) look the same. Sticky header row and sticky row numbers sit
+   flush inside the scroll viewport, the grid is at least as wide as the
+   panel, and each sticky edge casts a shadow only once the body scrolls
+   under it. Explicit class-prefixed selectors keep every rule out of Blink's
+   universal bucket during whole-document restyles. */
+.comma-csv-table,
+.comma-sheet {
+  --comma-csv-stuck-shadow: var(--color-alpha-black-10);
+
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: 100%;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-primary);
+}
+
+.comma-csv-table th,
+.comma-csv-table td,
+.comma-sheet th,
+.comma-sheet td {
+  overflow: hidden;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-right: var(--border-width-0-5) solid var(--color-border-secondary);
+  border-bottom: var(--border-width-0-5) solid var(--color-border-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.comma-csv-table tr > th:last-child,
+.comma-csv-table tr > td:last-child,
+.comma-sheet tr > th:last-child,
+.comma-sheet tr > td:last-child {
+  border-right: 0;
+}
+
+.comma-csv-table thead th,
+.comma-sheet thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom-color: var(--color-border-primary);
+  background: var(--color-bg-secondary);
+  animation: comma-csv-stuck-top linear both;
+  animation-timeline: scroll(nearest block);
+  animation-range: 0 var(--spacing-md);
+}
+
+/* The sticky cells' shadows: a stuck edge's colour goes from transparent
+   to the shadow over the first few pixels of scroll. */
+.comma-csv-table th,
+.comma-sheet th {
+  box-shadow:
+    0 var(--spacing-xxs) var(--spacing-xs) 0 var(--comma-csv-stuck-top),
+    var(--spacing-xxs) 0 var(--spacing-xs) 0 var(--comma-csv-stuck-left);
+}
+
+.comma-csv-table thead th.comma-csv-corner,
+.comma-sheet thead th.comma-sheet-corner {
+  left: 0;
+  z-index: 3;
+  border-right-color: var(--color-border-primary);
+  color: var(--color-text-quaternary);
+  font-weight: var(--font-weight-regular);
+  text-align: right;
+  user-select: none;
+  animation:
+    comma-csv-stuck-top linear both,
+    comma-csv-stuck-left linear both;
+  animation-timeline: scroll(nearest block), scroll(nearest inline);
+  animation-range: 0 var(--spacing-md);
+}
+
+.comma-csv-table tbody th,
+.comma-sheet tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  border-right-color: var(--color-border-primary);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-quaternary);
+  font-weight: var(--font-weight-regular);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+  animation: comma-csv-stuck-left linear both;
+  animation-timeline: scroll(nearest inline);
+  animation-range: 0 var(--spacing-md);
+}
+
+.comma-csv-table tbody td,
+.comma-sheet tbody td {
+  background: var(--color-bg-primary);
+}
+
+.comma-csv-table tbody tr:hover td:not(.comma-sheet-filler),
+.comma-sheet tbody tr:hover td:not(.comma-sheet-filler) {
+  background: var(--color-bg-secondary-hover);
+}
+
+.comma-csv-table tbody tr:hover th,
+.comma-sheet tbody tr:hover th {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+
+.comma-csv-table th[data-number="true"],
+.comma-csv-table td[data-number="true"],
+.comma-sheet th[data-number="true"],
+.comma-sheet td[data-number="true"] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-csv-table a,
+.comma-sheet a {
+  color: var(--color-markdown-text-link);
+  text-decoration: none;
+}
+
+.comma-csv-table a:hover,
+.comma-sheet a:hover {
+  text-decoration: underline;
+}
+
+[data-theme="Dark mode"] .comma-csv-table,
+[data-theme="Dark mode"] .comma-sheet {
+  --comma-csv-stuck-shadow: var(--color-alpha-black-60);
+}
+
+/* A delimited table (CsvFilePreview, JsonFilePreview JSONL): columns grow to
+   their content from their estimated width (a cell's text is capped by
+   .comma-csv-cell), and PreviewDataTable gives the slack to one column. Its
+   header names the columns. */
+.comma-csv-table {
+  /* A very long value stops at this width and ends in an ellipsis; its cell's
+     title has all of it. */
+  & .comma-csv-cell {
+    display: block;
+    max-width: calc(var(--spacing-10xl) * 4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  & thead th {
+    color: var(--color-text-secondary);
+    font-weight: var(--font-weight-medium);
+    text-align: left;
+  }
+}
+
+/* A workbook's sheet (SheetFilePreview, OfficeCover): its columns take the
+   file's widths, and the last column (.comma-sheet-filler) has no width and
+   takes the rest of the panel. The header has the columns' letters, quiet as
+   the row numbers. Cells keep Excel's bottom alignment, which a merged
+   cell's text sits on. */
+.comma-sheet {
+  table-layout: fixed;
+
+  & th,
+  & td {
+    vertical-align: bottom;
+  }
+
+  & thead th {
+    color: var(--color-text-quaternary);
+    font-weight: var(--font-weight-regular);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    user-select: none;
+  }
+}
+
+.comma-sheet-row-number {
+  width: var(--spacing-5xl);
+}
+
+@property --comma-csv-stuck-top {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: transparent;
+}
+
+@property --comma-csv-stuck-left {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: transparent;
+}
+
+@keyframes comma-csv-stuck-top {
+  to {
+    --comma-csv-stuck-top: var(--comma-csv-stuck-shadow);
+  }
+}
+
+@keyframes comma-csv-stuck-left {
+  to {
+    --comma-csv-stuck-left: var(--comma-csv-stuck-shadow);
+  }
+}
+
+/* The JSON tree (JsonFilePreview): one flat row per line, each indented by a
+   guide per ancestor that runs under that ancestor's chevron. Values take the
+   hues of the source view's highlighting (Shiki's Vitesse: gold keys, terracotta
+   strings, teal numbers, green booleans, rose null), built from the theme's
+   utility colours so both themes keep their contrast. */
+.comma-json-tree {
+  --comma-json-indent: var(--spacing-xl);
+  /* Light warning is a burnt orange, dark warning a yellow: light needs more
+     green to reach the same gold, else keys read as strings, but not so much
+     that a key and a boolean on one row read as one green run. */
+  --comma-json-key-warmth: 70%;
+  --comma-json-key: color-mix(
+    in oklch,
+    color-mix(
+        in oklch,
+        var(--color-utility-warning-700) var(--comma-json-key-warmth),
+        var(--color-utility-success-700)
+      )
+      80%,
+    var(--color-text-secondary)
+  );
+  --comma-json-string: color-mix(
+    in oklch,
+    var(--color-utility-orange-700) 80%,
+    var(--color-text-secondary)
+  );
+  --comma-json-number: color-mix(
+    in oklch,
+    color-mix(
+        in oklch,
+        var(--color-utility-blue-700) 55%,
+        var(--color-utility-success-700)
+      )
+      80%,
+    var(--color-text-secondary)
+  );
+  --comma-json-boolean: color-mix(
+    in oklch,
+    var(--color-utility-success-700) 80%,
+    var(--color-text-secondary)
+  );
+  --comma-json-null: color-mix(
+    in oklch,
+    var(--color-utility-pink-700) 55%,
+    var(--color-text-tertiary)
+  );
+
+  padding: var(--spacing-md) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--text-sm--line-height);
+  color: var(--color-text-primary);
+}
+
+[data-theme="Dark mode"] .comma-json-tree {
+  --comma-json-key-warmth: 85%;
+}
+
+.comma-json-row {
+  display: flex;
+  min-width: max-content;
+  align-items: stretch;
+  padding-inline: var(--spacing-lg) var(--spacing-xl);
+
+  &:hover {
+    background: var(--color-bg-secondary-hover);
+  }
+}
+
+.comma-json-guide {
+  flex: none;
+  width: var(--comma-json-indent);
+  background: linear-gradient(var(--color-border-primary), var(--color-border-primary))
+    center / var(--border-width-default) 100% no-repeat;
+}
+
+.comma-json-chevron {
+  display: inline-flex;
+  flex: none;
+  width: var(--comma-json-indent);
+  align-items: center;
+  justify-content: center;
+  color: var(--color-fg-quaternary);
+
+  & svg {
+    width: var(--spacing-lg);
+    height: var(--spacing-lg);
+    transition: transform var(--motion-duration-state-change) ease-out;
+  }
+}
+
+.comma-json-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-xs);
+  padding-block: var(--spacing-xxs);
+  white-space: pre;
+}
+
+.comma-json-branch {
+  margin: 0;
+  padding-inline: 0 var(--spacing-xs);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  /* The chevron centres on the row, not the text's baseline. */
+  & > .comma-json-chevron {
+    align-self: stretch;
+  }
+
+  &:hover .comma-json-chevron {
+    color: var(--color-fg-secondary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus-gray);
+  }
+}
+
+.comma-json-key {
+  color: var(--comma-json-key);
+}
+
+.comma-json-index {
+  color: var(--color-text-quaternary);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-json-punct {
+  color: var(--color-text-quaternary);
+}
+
+.comma-json-meta {
+  color: var(--color-text-quaternary);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-json-string {
+  color: var(--comma-json-string);
+
+  & a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in oklch, currentColor 40%, transparent);
+    text-underline-offset: var(--spacing-xxs);
+  }
+
+  & a:hover {
+    text-decoration-color: currentColor;
+  }
+}
+
+.comma-json-number {
+  color: var(--comma-json-number);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-json-boolean {
+  color: var(--comma-json-boolean);
+}
+
+.comma-json-null {
+  color: var(--comma-json-null);
+}
+
+/* "Copy value" shows on the row under the pointer or with keyboard focus, and
+   always where there is no hover (touch). The xs icon-only button keeps its own
+   icon slot; only its box shrinks to fit the row's line. */
+.comma-json-row .comma-json-copy {
+  width: auto;
+  height: auto;
+  align-self: center;
+  margin-inline-start: var(--spacing-sm);
+  padding: var(--spacing-xxs);
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .comma-json-row .comma-json-copy {
+    opacity: 1;
+  }
+}
+
+.comma-json-row:hover .comma-json-copy,
+.comma-json-row:focus-within .comma-json-copy,
+.comma-json-row .comma-json-copy.comma-json-copy-done {
+  opacity: 1;
+}
+
+/* Sanitized HTML rendered inside Jupyter Notebook outputs. A Pandas DataFrame reads like the CSV preview's table:
+   hairline rules, a grey header row, the index column quiet, and values right-aligned in tabular figures the way
+   Jupyter sets them. The table keeps its own width; the output scrolls sideways when it is wider than the cell. */
+.comma-notebook-html {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-primary);
+
+  & table {
+    border-collapse: separate;
+    border-spacing: 0;
+    border-top: var(--border-width-0-5) solid var(--color-border-primary);
+    border-left: var(--border-width-0-5) solid var(--color-border-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  & th,
+  & td {
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-right: var(--border-width-0-5) solid var(--color-border-secondary);
+    border-bottom: var(--border-width-0-5) solid var(--color-border-secondary);
+    text-align: right;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  & tr > th:last-child,
+  & tr > td:last-child {
+    border-right-color: var(--color-border-primary);
+  }
+
+  & tr:last-child > th,
+  & tr:last-child > td {
+    border-bottom-color: var(--color-border-primary);
+  }
+
+  & thead th {
+    border-bottom-color: var(--color-border-primary);
+    background: var(--color-bg-secondary);
+    color: var(--color-text-secondary);
+    font-weight: var(--font-weight-medium);
+  }
+
+  /* The index column's header sits over row labels, which read from the left. */
+  & thead th:first-child {
+    text-align: left;
+  }
+
+  & tbody th {
+    background: var(--color-bg-secondary);
+    color: var(--color-text-tertiary);
+    font-weight: var(--font-weight-regular);
+    text-align: left;
+  }
+
+  & tbody td {
+    background: var(--color-bg-primary);
+  }
+
+  & tbody tr:hover td {
+    background: var(--color-bg-secondary-hover);
+  }
+
+  & a {
+    color: var(--color-markdown-text-link);
+    text-decoration: none;
+  }
+}
+
+/* A picture that is ready after its card was drawn comes in by its opacity,
+   whichever kind it is. One the card is drawn with (a row scrolled back to, a
+   tab opened again) is there at once. */
+:is(.comma-attachment-preview-image, .comma-document-thumbnail)[data-arrived="true"] {
+  transition: opacity var(--motion-duration-state-change) ease;
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* Asking for a change to a passage (DocumentSelectionEdit): the passages
+   asked about are marked under the page's text, and a small window by the
+   selection takes what to change. */
+.comma-document-edit {
+  position: relative;
+}
+
+.comma-document-edit-marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.comma-document-edit-mark {
+  position: absolute;
+  border-radius: var(--radius-xxs);
+  background-color: color-mix(in srgb, var(--comma-document-writer) 14%, transparent);
+  box-shadow: inset 0 calc(-1 * var(--spacing-xxs)) 0
+    color-mix(in srgb, var(--comma-document-writer) 55%, transparent);
+}
+
+/* The passage the window is about is the reader's own selection: its mark is
+   only for when the field has the focus and the selection is gone. */
+.comma-document-edit-mark[data-open="true"] {
+  box-shadow: none;
+}
+
+.comma-document-edit-window {
+  position: absolute;
+  z-index: 3;
+  left: clamp(
+    0px,
+    var(--comma-document-edit-left),
+    max(0px, 100% - var(--container-xs))
+  );
+  display: flex;
+  width: min(100%, var(--container-xs));
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-primary);
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-lg);
+  transition: opacity var(--motion-duration-menu-enter) ease;
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.comma-document-edit-quote {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  padding-left: var(--spacing-md);
+  border-left: var(--spacing-xxs) solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.comma-document-edit-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-md);
+}
+
+.comma-document-edit-field {
+  min-width: 0;
+  max-height: var(--spacing-10xl);
+  flex: 1;
+  padding: var(--spacing-xs) 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  outline: none;
+  resize: none;
+  field-sizing: content;
+}
+
+/* The hint is one line at any width; what does not fit is cut. */
+.comma-document-edit-field::placeholder {
+  overflow: hidden;
+  color: var(--color-text-quaternary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-document-edit-keys {
+  margin-left: var(--spacing-sm);
+  color: var(--color-text-quaternary);
+  font: inherit;
+  font-size: var(--text-xs);
+}
+
+/* A heading the outline goes to stops a little under the toolbar. */
+.comma-document
+  .markdown-stream
+  > .markdown-renderer
+  > .node-slot[data-node-type="heading"] {
+  scroll-margin-top: var(--spacing-3xl);
+}
+
+/* The notice of a writer at work out of view: it stays at the bottom of what
+   the reader sees and takes no room in the page. */
+.comma-document-notice-slot {
+  position: sticky;
+  z-index: 2;
+  bottom: var(--spacing-xl);
+  display: flex;
+  height: 0;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.comma-document-notice {
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  transform: translate3d(0, var(--spacing-xs), 0);
+  transition:
+    opacity var(--motion-duration-panel-exit) ease,
+    transform var(--motion-duration-panel-exit) ease;
+}
+
+.comma-document-notice[data-shown="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition-duration: var(--motion-duration-panel-enter);
+  transition-timing-function: var(--motion-easing-smooth-out);
+}
+
+:root[data-comma-reduced-motion="true"] .comma-document-notice {
+  transform: none;
+}
+
+/* Reduced motion (the root carries Comma's effective state): no sweep, the
+   block being written is dimmed instead, and the caret does not blink. */
+:root[data-comma-reduced-motion="true"]
+  .comma-document
+  .node-slot[data-document-writing]::after {
+  inset: 0;
+  width: auto;
+  background-image: none;
+  background-color: color-mix(in srgb, var(--color-main-panel-bg) 40%, transparent);
+  transform: none;
+  animation: none;
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-document-caret[data-present="true"][data-typing="false"] {
+  animation: none;
+}

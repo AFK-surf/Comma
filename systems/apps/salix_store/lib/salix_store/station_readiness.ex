@@ -39,6 +39,34 @@ defmodule SalixStore.StationReadiness do
     end
   end
 
+  @doc "Whether a device's capabilities map declares `multi_session_tasks: true`."
+  @spec multi_session_ready?(map() | nil) :: boolean()
+  def multi_session_ready?(%{"multi_session_tasks" => true}), do: true
+  def multi_session_ready?(%{multi_session_tasks: true}), do: true
+  def multi_session_ready?(_capabilities), do: false
+
+  @doc """
+  `:ready`, or `{:device_needs_station, info}` / `{:station_outdated, info}`
+  for a device taking a multi-session Task (`tasks: 2` AND `multi_session_tasks: true`).
+  """
+  @spec check_multi_session(map() | nil) ::
+          :ready | {:device_needs_station, refusal()} | {:station_outdated, refusal()}
+  def check_multi_session(capabilities) do
+    case check(capabilities) do
+      :ready ->
+        if multi_session_ready?(capabilities) do
+          :ready
+        else
+          {:station_outdated,
+           info("station_outdated", tasks(capabilities))
+           |> Map.put("required_capability", "multi_session_tasks")}
+        end
+
+      other ->
+        other
+    end
+  end
+
   @doc "The structured reason a device cannot take Tasks, or nil when it can."
   @spec refusal(map() | nil) :: refusal() | nil
   def refusal(capabilities) do

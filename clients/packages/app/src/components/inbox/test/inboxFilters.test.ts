@@ -162,6 +162,18 @@ describe("inboxFilters", () => {
     expect(applyInboxFilters(mixedItems, empty)).toEqual([]);
   });
 
+  it("filters a Task created from a Linear issue under the Linear platform", () => {
+    const linear = item({ id: "w1:linear", origin: "linear" });
+    const comma = item({ id: "w1:comma", origin: "comma" });
+
+    expect(
+      applyInboxFilters([linear, comma, chat], {
+        ...unfilteredInbox(),
+        platforms: new Set(["linear"]),
+      })
+    ).toEqual([linear]);
+  });
+
   it("groups absent and unrecognized origins under the Unspecified selection", () => {
     const slack = item({ origin: "slack" });
     const unknown = item({ id: "w1:future", origin: "future-provider" });

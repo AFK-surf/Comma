@@ -1,4 +1,5 @@
 import type {
+  ChatDraftEntry,
   ChatConversationFile,
   ChatTaskRunChoice,
   ManualTaskStatus,
@@ -85,7 +86,8 @@ export interface ChatChannel {
    * staged attachments.
    */
   send(text: string, options?: ChatSendOptions): unknown;
-  setDraft(draft: string): unknown;
+  /** Replaces the draft. `entry` marks it as written outside this app, until it is sent or emptied. */
+  setDraft(draft: string, entry?: ChatDraftEntry): unknown;
   /**
    * Adds `text` to the draft once the chat is ready, unless the draft has it;
    * sends nothing. Fails when the chat cannot load or is not ready within 10 s.

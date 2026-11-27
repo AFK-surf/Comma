@@ -25,6 +25,7 @@ import { publishCodingTaskFacts } from "../tasks/CodingSession";
 import { useRouter } from "@tanstack/react-router";
 import { acceptedSendPromise } from "./sendAcceptance";
 import type {
+  ChatDraftEntry,
   ChatConversationFile,
   ChatTaskRunChoice,
   ManualTaskStatus,
@@ -37,7 +38,10 @@ import type {
 } from "../composer/conversationDraft";
 import { useTaskSummary } from "../../tasks/useTaskArchive";
 import { TaskShareButton } from "../../tasks/TaskShareButton";
-import { taskLoopStop } from "../../tasks/taskLoopLabels";
+import { useOptionalCommaClientSettings } from "../../commaClientSettings";
+import { TaskMembers, useMembership, useTogetherRole } from "../../people/TaskMembers";
+import { CommaAuthContext } from "../../auth-context";
+import { taskLoopStanding, taskLoopStop } from "../../tasks/taskLoopLabels";
 import { taskStatusLabel as taskStatusLabelOf } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import type { AiInputAttachment } from "@comma/ui/components/ai-input";
@@ -69,6 +73,7 @@ import { copyWithFeedback, toast } from "@comma/ui/components/toast";
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -80,16 +85,25 @@ import {
 } from "react";
 import type { CommaSkill, CommaTaskLabelProposal } from "@comma/core/api-schemas";
 import type { ChatSuggestion, TaskFile } from "@comma/core/contract";
+import { filePreviewKind } from "../../file-preview/FilePreviewContent";
+import { sentDocuments } from "../../chat-sidebar/sentDocuments";
 import { createConversationAnalytics } from "../../../analytics/experience";
 import { beginCommaMessageSend } from "../../../analytics/client";
 import { FocusComputerUseScreen } from "../../remote-screen/WorkerComputerUseScreen";
+import { CodingScreenInline } from "../tasks/CodingScreenInline";
+import { useCodingScreenLive } from "../tasks/useCodingScreenLive";
 import { ParticipantStatusSlot } from "../thread/activity/ActivityLine";
 import { TaskRunDialog } from "../tasks/TaskRunDialog";
 import { TaskRunSwitchContext } from "../tasks/taskRunSwitch";
 import type { ActivityFocusTask } from "../thread/activity/activityFocus";
 import { useActivityFocus } from "../thread/activity/useActivityFocus";
-import { ThreadWorkerVendorContext } from "../thread/threadContexts";
+import {
+  ThreadWorkerNameContext,
+  ThreadWorkerSessionsContext,
+  ThreadWorkerVendorContext,
+} from "../thread/threadContexts";
 import { ChatBanner } from "./ChatBanner";
+import { isStaleChatSessionError } from "../ChatProvider";
 import { CreditWarningToast } from "../../billing/CreditWarningToast";
 import {
   OUT_OF_CREDITS_TOAST_ID,
@@ -108,7 +122,7 @@ import {
 } from "../tasks/labels/ChatLabelProposals";
 import { groupLabelProposalsByAnchor } from "../tasks/labels/labelProposalAnchor";
 import { useTaskLabelsCatalog } from "../tasks/labels/useTaskLabelsCatalog";
-import { ChatTaskDock } from "../tasks/ChatTaskDock";
+import { ChatTaskDock, type ChatTaskDockReplyOptions } from "../tasks/ChatTaskDock";
 import { ChatTaskCardsContext, useChatTaskCards } from "../tasks/chatTaskCards";
 import type { TaskDetailsStatusState } from "../tasks/TaskDetailsPanel";
 import { stateSwapExitMs, useLeaving } from "../motion/useLeaving";
@@ -125,11 +139,14 @@ import { createChatDraftQuote, type ChatDraftQuote } from "../composer/draftQuot
 import {
   composeMessageWithSelections,
   draftUploadCount,
+  noteSelectionsSent,
   selectionFiles,
   selectionsFit,
   useSayFilesBesideSelections,
   useConversationDraftSelections,
 } from "../composer/draftSelections";
+import { documentVersionsToCarry } from "../../chat-sidebar/documentCarry";
+import { savedDocumentEdits } from "../../chat-sidebar/savedDocumentEdits";
 import {
   composeMessageWithSnippets,
   createChatDraftSnippet,
@@ -172,8 +189,12 @@ import {
   isInteractiveChatMessageTarget,
   resolveChatMessageArticleFromEventTarget,
   resolveChatMessageCopyText,
+  resolveChatMessageSelectionShare,
   resolveChatMessageText,
+  resolveShareSourceTitle,
+  type ChatSelectionSharePayload,
 } from "./chatMessageContextMenu";
+import { TextShareImageDialog } from "../share-image/TextShareImageDialog";
 import {
   copyTextToClipboard,
   openUrlInExternalBrowser,
@@ -192,6 +213,7 @@ import {
   useAgentRequests,
 } from "../requests/useAgentRequests";
 import { useChatSuggestions } from "../suggestions/useChatSuggestions";
+import { workerStarting } from "../thread/activity/workerStarting";
 import { useMarkLoadedTaskReviewSeen } from "../tasks/useMarkLoadedTaskReviewSeen";
 import {
   MiniAppTaskContext,
@@ -238,17 +260,22 @@ export type ConversationViewActions = {
       skills?: { location: string }[];
     }
   ) => unknown;
-  setDraft: (draft: string) => unknown;
+  setDraft: (draft: string, entry?: ChatDraftEntry) => unknown;
   /** Async hosts that hide the channel result record send analytics at that boundary. */
   tracksSendAnalytics?: boolean;
   /** Whether the host re-encodes HEIC/HEIF before upload; browsers cannot. */
   transcodesImages?: boolean;
 };
 
+export type ComposerDraftRequest = { text: string; entry?: ChatDraftEntry | undefined };
+
 export type ConversationComposerPresentation = {
   disabled?: boolean | undefined;
-  /** Each new value writes its text after the draft, with the caret after it. */
-  draftRequest?: { text: string } | undefined;
+  /**
+   * Each new value writes its text after the draft, with the caret after it. `entry` says the text was written outside
+   * this app: the message sent from the draft reports it.
+   */
+  draftRequest?: ComposerDraftRequest | undefined;
   feedback?: ReactNode;
   /** Each new value focuses the composer's prompt. */
   focusRequest?: number | undefined;
@@ -257,6 +284,9 @@ export type ConversationComposerPresentation = {
   snippets?: ComposerDraftSnippets | undefined;
   submitDisabled?: boolean | undefined;
 };
+
+/** A line that names a Task together's Worker, which is what wakes it: `@Comma` (or `@Worker`). */
+const NAMES_WORKER = /@(comma|worker)\b/i;
 
 export const ConversationView = memo(function ConversationView({
   actions,
@@ -454,6 +484,11 @@ export const ConversationView = memo(function ConversationView({
   const linkMenuMessageTextRef = useRef<string>("");
   const copyMenuTextRef = useRef<string>("");
   const replyMenuTargetRef = useRef<ReplyThreadSelection | null>(null);
+  const shareMenuPayloadRef = useRef<ChatSelectionSharePayload | null>(null);
+  const [shareImageState, setShareImageState] = useState<{
+    isOpen: boolean;
+    payload: ChatSelectionSharePayload | null;
+  }>({ isOpen: false, payload: null });
   const {
     isOpen: isLinkMenuOpen,
     pointerOffsets: linkMenuPointerOffsets,
@@ -493,20 +528,40 @@ export const ConversationView = memo(function ConversationView({
   const title =
     homeSurfaceLabel ?? (presentation?.title || messages.chat_default_title());
   const isTask = presentation?.kind === "agent_task";
-  const taskStatus =
-    taskSummary &&
-    (taskSummary.updated_at ?? 0) >= (state.conversation?.updated_at ?? 0)
-      ? taskSummary.status
-      : state.conversation?.status;
-  const taskVersion =
-    taskSummary &&
-    (taskSummary.updated_at ?? 0) >= (state.conversation?.updated_at ?? 0)
-      ? taskSummary.updated_at
-      : state.conversation?.updated_at;
+  const taskSummaryIsNewer =
+    taskSummary !== undefined &&
+    (taskSummary.updated_at ?? 0) >= (state.conversation?.updated_at ?? 0);
+  const taskStatus = taskSummaryIsNewer
+    ? taskSummary.status
+    : state.conversation?.status;
+  const taskVersion = taskSummaryIsNewer
+    ? taskSummary.updated_at
+    : state.conversation?.updated_at;
+  // A share card names the Task it quotes by the Task's latest title.
+  const shareSourceTitle = resolveShareSourceTitle(state.conversation, taskSummary);
   const isArchived = isTask && taskStatus === "archived";
   // A Loop Task's Loop, as the core read it into the Task's summary.
   const taskLoop = taskSummary?.loop;
   const taskConversationId = state.conversation?.id;
+  // A Home or chat is no Task: it reads no Task's people.
+  const peopleTaskId = isTask ? taskConversationId : undefined;
+  // A Task together another person hosts: the member sees its conversation and its people, nothing else of theirs.
+  const peopleEnabled = useOptionalCommaClientSettings()?.peopleEnabled ?? false;
+  const taskGroupId = groupId ?? state.conversation?.group_id;
+  // A Task started with people says so in its summary: only such a Task reads its people.
+  const togetherTask = (taskSummary?.together?.length ?? 0) > 0;
+  // Who left or was taken out, as the Task says it: only that reads its people again.
+  const memberChanges = useMemo(
+    () => state.messages.filter((message) => message.memberChange).length,
+    [state.messages]
+  );
+  const membership = useMembership(peopleTaskId, taskGroupId);
+  const togetherRole = useTogetherRole(
+    peopleTaskId,
+    workspaceId,
+    taskGroupId,
+    togetherTask
+  );
   const taskReviewVersion = state.conversation?.review_version;
   // A deployed app's card offers Publish while this Task is in review.
   const miniAppTask = useMemo<MiniAppTaskState | undefined>(
@@ -516,9 +571,19 @@ export const ConversationView = memo(function ConversationView({
             conversationId: taskConversationId,
             status: taskStatus,
             reviewVersion: taskReviewVersion,
+            ...(togetherRole !== undefined && taskGroupId
+              ? { collaboration: { group: taskGroupId, task: taskConversationId } }
+              : {}),
           }
         : undefined,
-    [isTask, taskConversationId, taskStatus, taskReviewVersion]
+    [
+      isTask,
+      taskConversationId,
+      taskStatus,
+      taskReviewVersion,
+      togetherRole,
+      taskGroupId,
+    ]
   );
   // The right panel, outside this view, offers Publish for the apps this Task built.
   useShareMiniAppTask(miniAppTask);
@@ -529,15 +594,30 @@ export const ConversationView = memo(function ConversationView({
       ? settingTaskStatus
       : undefined;
   const shownTaskStatus = optimisticTaskStatus?.status ?? taskStatus;
+  // A Task together closed (done, or cancelled by its host): only its host reopens it.
+  const togetherDone =
+    shownTaskStatus === "completed" ||
+    shownTaskStatus === "ready_for_review" ||
+    shownTaskStatus === "cancelled";
   const headerTaskStatus =
-    isTask && shownTaskStatus ? taskStatusBucket(shownTaskStatus) : undefined;
+    isTask && shownTaskStatus
+      ? taskStatusBucket(shownTaskStatus, {
+          loopState: taskLoop?.state,
+        })
+      : undefined;
   // A Task in progress whose Loop stopped does not run: the header says why.
+  // An active or pending Loop waiting between runs shows its standing trigger instead of "In progress".
   const taskStop = headerTaskStatus
     ? taskLoopStop(headerTaskStatus, taskLoop, messages)
     : undefined;
+  const taskStanding = headerTaskStatus
+    ? taskLoopStanding(headerTaskStatus, taskLoop, messages, locale)
+    : undefined;
   const taskStatusLabel =
     isTask && shownTaskStatus
-      ? (taskStop?.text ?? taskStatusLabelOf(shownTaskStatus, locale))
+      ? (taskStop?.text ??
+        taskStanding?.text ??
+        taskStatusLabelOf(shownTaskStatus, locale))
       : undefined;
   const canAcceptTask =
     isTask &&
@@ -548,6 +628,8 @@ export const ConversationView = memo(function ConversationView({
     taskReviewVersion > 0 &&
     // A Task whose Loop still runs never waits for a review.
     (taskLoop === undefined || taskLoop.state === "ended") &&
+    // Only its host decides a Task together: a member reads where it stands.
+    !membership &&
     actions.acceptTaskReview !== undefined;
   // A user ends an in-progress or in-review Task by hand, a Loop Task included:
   // its Loop ends with it. The server also rejects Workflow and Triage Tasks,
@@ -561,6 +643,7 @@ export const ConversationView = memo(function ConversationView({
       taskStatus === "escalated") &&
     typeof taskVersion === "number" &&
     taskVersion > 0 &&
+    !membership &&
     actions.setTaskStatus !== undefined;
   // Until the canonical Task catches up, the menu stays open to focus but
   // offers no second change from the version the first one consumed.
@@ -613,24 +696,35 @@ export const ConversationView = memo(function ConversationView({
     (!hasCanonicalConversation && composerPresentation?.submitDisabled === true);
   // Sync degradation is transient channel state, not conversation content, so
   // it surfaces as a persistent toast that dismisses itself once sync recovers.
-  const syncWarning = state.syncWarning;
+  const syncWarning = surfaceActive ? state.syncWarning : undefined;
+  const syncWarningShown = Boolean(syncWarning);
   const refresh = actions.refresh;
+  // Raising the same id again updates the toast in place, so a change of
+  // wording or retry callback must not dismiss it first: that dismissal lands
+  // a couple of frames later and would take the re-raised toast with it.
   useEffect(() => {
     if (!syncWarning) return undefined;
+    const retrySync = createSyncWarningRetry(refresh, syncWarningToastId);
     toast.warning(
       syncWarning === "suspect-empty"
         ? messages.chat_suspect_empty()
         : messages.chat_stale(),
       {
-        actions: [{ label: messages.chat_retry_sync(), onPress: refresh }],
+        actions: [{ label: messages.chat_retry_sync(), onPress: retrySync.onPress }],
         id: syncWarningToastId,
         testId: "chat-sync-warning",
       }
     );
     return () => {
-      toast.dismiss(syncWarningToastId);
+      retrySync.deactivate();
     };
   }, [messages, refresh, syncWarning, syncWarningToastId]);
+  useEffect(() => {
+    if (!syncWarningShown) return undefined;
+    return () => {
+      toast.dismiss(syncWarningToastId);
+    };
+  }, [syncWarningShown, syncWarningToastId]);
   // A browser cannot decode HEIC/HEIF and the runtime cannot read it either,
   // so without a host transcoder the file is turned away with guidance
   // instead of parked in the draft as a failed row.
@@ -745,7 +839,7 @@ export const ConversationView = memo(function ConversationView({
       if (replyThread?.targetId) {
         setReplyThread((current) =>
           current?.rootId === replyThread.rootId
-            ? { rootId: current.rootId, targetId: undefined }
+            ? { ...current, advance: undefined, targetId: undefined, touched: true }
             : current
         );
       }
@@ -779,6 +873,14 @@ export const ConversationView = memo(function ConversationView({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
+  // Where the Task's Worker runs; a started Task reads as working until it reports.
+  const runPlace = state.taskRun?.place;
+  const taskStarting = workerStarting({
+    inProgress: headerTaskStatus === "in_progress" && taskLoop === undefined,
+    messages: state.messages,
+    place: runPlace,
+  });
+
   // Reuse settled-turn generation on full chat surfaces.
   const { clear: clearSuggestions, items: suggestionItems } = useChatSuggestions({
     conversationId,
@@ -786,6 +888,7 @@ export const ConversationView = memo(function ConversationView({
     groupId: threadGroupId || undefined,
     locale,
     state,
+    workerStarting: taskStarting,
   });
 
   // Tasks the agent created in this conversation dock above the composer, on
@@ -801,14 +904,22 @@ export const ConversationView = memo(function ConversationView({
   // does not see follows none of them: showing it again reads them afresh.
   const mentionScope = useMemo(
     () => ({
-      enabled: surfaceActive,
+      // A shared task's "@" names its Worker alone: the account's own Tasks, Routines and files are no one else's.
+      enabled: surfaceActive && !togetherRole,
       excludeConversationId: conversationId,
       groupId: threadGroupId || undefined,
       // Home is the Router chat: a model named there starts a Task with it.
       models: variant === "home",
       workspaceId: threadWorkspaceId || undefined,
     }),
-    [conversationId, surfaceActive, threadGroupId, threadWorkspaceId, variant]
+    [
+      conversationId,
+      surfaceActive,
+      threadGroupId,
+      threadWorkspaceId,
+      togetherRole,
+      variant,
+    ]
   );
 
   // Quoted passages are renderer-only draft state, folded into the message
@@ -952,7 +1063,10 @@ export const ConversationView = memo(function ConversationView({
     () =>
       draftSelections.map((selection) => ({
         id: selection.id,
-        name: selection.note,
+        // A passage staged with no note is named by its own words.
+        name:
+          selection.note ||
+          (selection.about.kind === "document" ? selection.about.quote : ""),
         onRemove: () =>
           setDraftSelections((current) =>
             current.filter((one) => one.id !== selection.id)
@@ -981,7 +1095,7 @@ export const ConversationView = memo(function ConversationView({
   // A page beside the conversation, such as a skill's "Try in Chat", writes
   // into the composer; the person finishes the message and sends it.
   const composerDraftRequest = composerPresentation?.draftRequest;
-  const playedDraftRequestRef = useRef<{ text: string } | undefined>(undefined);
+  const playedDraftRequestRef = useRef<ComposerDraftRequest | undefined>(undefined);
   useEffect(() => {
     if (!composerDraftRequest || composerDraftRequest === playedDraftRequestRef.current)
       return;
@@ -990,7 +1104,8 @@ export const ConversationView = memo(function ConversationView({
     const next = draft
       ? `${draft}\n\n${composerDraftRequest.text}`
       : composerDraftRequest.text;
-    setDraft(next);
+    if (composerDraftRequest.entry) setDraft(next, composerDraftRequest.entry);
+    else setDraft(next);
     setComposerFill({ draft: next });
   }, [composerDraftRequest, draftSource, setDraft]);
   const expandedSourceUrlsRef = useRef(new Map<string, Set<string>>());
@@ -1166,16 +1281,36 @@ export const ConversationView = memo(function ConversationView({
       const expandedKey = submittedConversationId ?? "";
       const expandedSourceUrls = expandedSourceUrlsRef.current.get(expandedKey);
       expandedSourceUrlsRef.current.delete(expandedKey);
-      const submittedSelections = draftSelectionsRef.current;
+      const stagedSelections = draftSelectionsRef.current;
+      // With the message go the documents the person edited: each one's saved version, where it is of the document's
+      // newest version here and no message has carried it. They have no tile, so they go only where the message has
+      // room for them beside what the person attached; otherwise they wait for the next message.
+      const carriedVersions = documentVersionsToCarry(
+        submittedConversationId,
+        stateRef.current.messages
+      );
+      const submittedSelections = selectionsFit(
+        [...stagedSelections, ...carriedVersions],
+        draftUploadCount(stateRef.current.draftAttachments)
+      )
+        ? [...stagedSelections, ...carriedVersions]
+        : stagedSelections;
       const setSelections = setDraftSelectionsRef.current;
       const submittedSelectionIds = new Set(
         submittedSelections.map((selection) => selection.id)
       );
+      /** Says the person's versions of documents went with the message, or did not after all. */
+      const markVersionsSent = (sent: boolean) => {
+        for (const { about } of submittedSelections)
+          if (about.kind === "document-version")
+            savedDocumentEdits.markSent(about.reference, sent);
+      };
       const restoreSubmittedSelections = () => {
         if (submittedSelections.length === 0) return;
+        markVersionsSent(false);
         setSelections((current) => {
           const currentIds = new Set(current.map((selection) => selection.id));
-          const missing = submittedSelections.filter(
+          const missing = stagedSelections.filter(
             (selection) => !currentIds.has(selection.id)
           );
           return missing.length === 0 ? current : [...missing, ...current];
@@ -1203,6 +1338,8 @@ export const ConversationView = memo(function ConversationView({
         submittedSelections
       );
       if (submittedSelections.length > 0) {
+        noteSelectionsSent(submittedSelectionIds);
+        markVersionsSent(true);
         setSelections((current) =>
           current.filter((selection) => !submittedSelectionIds.has(selection.id))
         );
@@ -1398,13 +1535,20 @@ export const ConversationView = memo(function ConversationView({
   // A Task row opened from the dock brings its announcement's thread up too,
   // so the reader sees what the Task came from beside the Task itself.
   const openMessageReplyThread = useCallback(
-    (messageId: string) => {
-      if (!canReply) return;
+    (messageId: string, options?: ChatTaskDockReplyOptions) => {
+      if (!canReply) return undefined;
       const message = stateRef.current.messages.find(
         (item) => item.messageId === messageId
       );
-      if (canReplyTo(message))
-        openReplyThread({ rootId: threadRootOf(message), targetId: messageId });
+      if (!canReplyTo(message)) return undefined;
+      const rootId = threadRootOf(message);
+      openReplyThread({
+        advance: options?.advance,
+        progress: options?.progress,
+        rootId,
+        targetId: messageId,
+      });
+      return rootId;
     },
     [canReply, openReplyThread]
   );
@@ -1421,6 +1565,30 @@ export const ConversationView = memo(function ConversationView({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [closeReplyThread, replyThreadOpen]);
+  // A card run moves on only after the reader acted in its thread, not when
+  // the card expires or is answered elsewhere while the thread is open.
+  const replyThreadTouched = replyThread?.touched === true;
+  useEffect(() => {
+    const route = routeRef.current;
+    if (!replyThreadOpen || replyThreadTouched || !route) return;
+    const touch = (event: Event) => {
+      const target = event.target;
+      if (
+        !(target instanceof Element) ||
+        !target.closest(".comma-chat-reply-thread, .comma-chat-composer")
+      )
+        return;
+      setReplyThread((current) =>
+        current && !current.touched ? { ...current, touched: true } : current
+      );
+    };
+    route.addEventListener("pointerdown", touch, true);
+    route.addEventListener("keydown", touch, true);
+    return () => {
+      route.removeEventListener("pointerdown", touch, true);
+      route.removeEventListener("keydown", touch, true);
+    };
+  }, [replyThreadOpen, replyThreadTouched]);
 
   const longPress = useTouchLongPressMenu();
   const handleClickCapture = useCallback(
@@ -1489,11 +1657,13 @@ export const ConversationView = memo(function ConversationView({
         state.assistantDraft
       );
       const replyTarget = canReply ? resolveReplyTarget(article) : null;
-      if (!copyText && !replyTarget) return;
+      const sharePayload = resolveChatMessageSelectionShare(article);
+      if (!copyText && !replyTarget && !sharePayload) return;
 
       event.preventDefault();
       copyMenuTextRef.current = copyText;
       replyMenuTargetRef.current = replyTarget;
+      shareMenuPayloadRef.current = sharePayload;
       setLinkMenuOpen(false);
       openCopyMenuAtPointer(
         event.currentTarget,
@@ -1570,10 +1740,18 @@ export const ConversationView = memo(function ConversationView({
         if (target) openReplyThread(target);
         return;
       }
+      if (action === "forward") {
+        const sharePayload = shareMenuPayloadRef.current;
+        if (sharePayload) {
+          finishSelectionQuote();
+          setShareImageState({ isOpen: true, payload: sharePayload });
+        }
+        return;
+      }
       const text = copyMenuTextRef.current;
       if (text) void copyWithFeedback(() => copyTextToClipboard(text), messages);
     },
-    [openReplyThread, messages]
+    [finishSelectionQuote, openReplyThread, messages]
   );
 
   const handleLinkMenuOpenChange = useCallback(
@@ -1603,6 +1781,7 @@ export const ConversationView = memo(function ConversationView({
       if (!open && changed) {
         copyMenuTextRef.current = "";
         replyMenuTargetRef.current = null;
+        shareMenuPayloadRef.current = null;
       }
     },
     [setCopyMenuOpen]
@@ -1635,6 +1814,9 @@ export const ConversationView = memo(function ConversationView({
     () => ({
       ariaLabel: messages.chat_text_menu(),
       copy: messages.common_copy(),
+      forward: shareMenuPayloadRef.current
+        ? messages.chat_forward_share_image()
+        : undefined,
       reply: replyMenuTargetRef.current ? messages.chat_reply() : undefined,
     }),
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- re-read on open
@@ -1746,7 +1928,46 @@ export const ConversationView = memo(function ConversationView({
       state.taskRun?.place.kind === "sandbox" && state.taskRun.place.repo !== undefined
     ) &&
     // Nor one the core says cannot switch (a Task a station hosts switches its model alone: `move`).
-    !state.unsupported?.includes("run");
+    !state.unsupported?.includes("run") &&
+    // Nor a Task together: it runs on Comma's own servers and model, never on its host's machine or account, since its
+    // members can have its Worker act.
+    !togetherRole &&
+    // Multi-session Tasks configure models per worker session; v1 does not offer single-model switching.
+    (state.workerSessions?.length ?? 0) <= 1;
+  useEffect(() => {
+    if (!canSwitchRun && switchingRun) {
+      setSwitchingRun(false);
+    }
+  }, [canSwitchRun, switchingRun]);
+  const workerSessionIdentityKey =
+    state.workerSessions &&
+    (state.workerSessions.length > 1 ||
+      state.workerSessions.some((session) => !session.isPrimary))
+      ? state.workerSessions
+          .map(
+            (session) =>
+              `${session.participantId}\0${session.slot}\0${session.label}\0${session.isPrimary ? 1 : 0}\0${session.runtime ?? ""}\0${session.model ?? ""}`
+          )
+          .join("\n")
+      : "";
+  const threadWorkerSessions = useMemo(
+    () =>
+      workerSessionIdentityKey && state.workerSessions
+        ? state.workerSessions.map(
+            ({ participantId, slot, label, isPrimary, runtime, model }) => ({
+              participantId,
+              slot,
+              label,
+              isPrimary,
+              runtime,
+              model,
+            })
+          )
+        : undefined,
+    // Intentionally keyed on identity fields only so status/updatedAt updates never re-render transcript rows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workerSessionIdentityKey]
+  );
   const openRunSwitch = useMemo(
     () => (canSwitchRun ? () => setSwitchingRun(true) : undefined),
     [canSwitchRun]
@@ -1854,6 +2075,8 @@ export const ConversationView = memo(function ConversationView({
                 conversationId: file.conversation_id,
                 messageId: file.message_id,
                 attachmentIndex: file.index,
+                // A Task together's file is read from its own folder.
+                ...(file.path ? { workspacePath: file.path } : {}),
                 fileName: file.file_name,
                 ...(file.mime_type ? { mimeType: file.mime_type } : {}),
                 size: file.size,
@@ -1862,6 +2085,78 @@ export const ConversationView = memo(function ConversationView({
         : undefined,
     [hasCanonicalConversation, sidebar, taskConversationId, threadGroupId, workspaceId]
   );
+  // A document an Agent sends while the reader is in its chat opens beside the chat: its tab comes to the front
+  // when the document is new there, and a tab that already shows an earlier version of it takes this one, as it
+  // takes a version the reader sends. Only a
+  // message that arrives after the conversation was first read counts, so opening a chat never opens its old files.
+  const documentsSince = useRef<{ conversationId: string; seq: number } | undefined>(
+    undefined
+  );
+  const openDocument = sidebar?.openFilePreview;
+  const getSidebarHost = sidebar?.getActiveHost;
+  useEffect(() => {
+    if (state.status !== "ready" || !taskConversationId) return;
+    const latest = state.serverMessages.at(-1)?.seq ?? 0;
+    const since = documentsSince.current;
+    documentsSince.current = { conversationId: taskConversationId, seq: latest };
+    if (
+      since?.conversationId !== taskConversationId ||
+      latest <= since.seq ||
+      variant === "rail" ||
+      !surfaceActive ||
+      !openDocument ||
+      !workspaceId ||
+      !threadGroupId
+    )
+      return;
+    const place = { groupId: threadGroupId, conversationId: taskConversationId };
+    const host = getSidebarHost?.() ?? { workspaceId, ...place };
+    for (const message of state.serverMessages) {
+      if (
+        (message.seq ?? 0) <= since.seq ||
+        (message.role !== "assistant" && message.role !== "user")
+      )
+        continue;
+      for (const attachment of message.attachments) {
+        if (
+          attachment.attachmentIndex === undefined ||
+          !attachment.fileName ||
+          filePreviewKind(attachment.fileName, attachment.mimeType) !== "markdown"
+        )
+          continue;
+        openDocument(
+          host,
+          {
+            ...place,
+            messageId: message.messageId,
+            attachmentIndex: attachment.attachmentIndex,
+            fileName: attachment.fileName,
+            ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+            ...(attachment.size === undefined ? {} : { size: attachment.size }),
+          },
+          // The page names the writer as Comma, whichever of its Agents wrote the file. The reader's own version
+          // (an edit of the page, sent) is written by no one: it only takes the tab the document has.
+          message.role === "assistant"
+            ? { writer: messages.file_preview_document_writer() }
+            : {}
+        );
+      }
+      // A version the reader sent (an edit of the page, a restored version) is a file of the Group's uploads.
+      for (const file of sentDocuments(message))
+        openDocument(host, { ...place, messageId: message.messageId, ...file }, {});
+    }
+  }, [
+    getSidebarHost,
+    messages,
+    openDocument,
+    state.serverMessages,
+    state.status,
+    surfaceActive,
+    taskConversationId,
+    threadGroupId,
+    variant,
+    workspaceId,
+  ]);
   // A Task file added from its row's menu joins this chat's message by reference, as an attachment's does.
   const attachConversationFiles = actions.attachConversationFiles;
   const attachTaskFile = useMemo(
@@ -1947,10 +2242,13 @@ export const ConversationView = memo(function ConversationView({
           conversation: {
             ...presentation,
             status: shownTaskStatus ?? presentation.status,
+            // Where its host asked for it (a channel, a device) is the host's: a member is not told.
+            ...(membership ? { origin: undefined, client_platform: undefined } : {}),
           },
           groupId: threadGroupId,
           loop: taskLoop,
           run: state.taskRun,
+          workerSessions: state.workerSessions,
           // A coding Task's panel reads its changes and record from its sandbox, and acts on it.
           coding: codingTarget,
           onSwitchRun: openRunSwitch,
@@ -1959,9 +2257,37 @@ export const ConversationView = memo(function ConversationView({
           onRevealActivityStep: revealActivityStep,
           onOpenCodingChanges: openCodingChanges,
           onOpenCodingTerminal: openCodingTerminal,
-          onOpenFile: openTaskFile,
-          onAttachFile: attachTaskFile,
-          onSetLabels: hasCanonicalConversation ? actions.setTaskLabels : undefined,
+          // A Task together the account joined: its host's files, labels and status are not the member's; a done one
+          // says so in the composer. It carries no labels: it runs in a Group of its own,
+          // apart from the host's labels.
+          ...(membership
+            ? { labeled: false, properties: false, onOpenFile: openTaskFile }
+            : togetherRole === "host"
+              ? {
+                  labeled: false,
+                  onOpenFile: openTaskFile,
+                  onAttachFile: attachTaskFile,
+                }
+              : {
+                  onOpenFile: openTaskFile,
+                  onAttachFile: attachTaskFile,
+                  onSetLabels: hasCanonicalConversation
+                    ? actions.setTaskLabels
+                    : undefined,
+                }),
+          members:
+            taskConversationId && peopleEnabled ? (
+              <TaskMembers
+                changes={memberChanges}
+                conversationId={taskConversationId}
+                groupId={taskGroupId}
+                together={togetherTask}
+                done={["completed", "ready_for_review"].includes(
+                  shownTaskStatus ?? presentation.status ?? ""
+                )}
+                workspaceId={threadWorkspaceId}
+              />
+            ) : undefined,
           onSetStatus: canSetTaskStatus ? handleSetTaskStatus : undefined,
           statusState: taskStatusState,
         }
@@ -1995,6 +2321,19 @@ export const ConversationView = memo(function ConversationView({
   );
 
   const workerVendor = state.taskRun?.vendor;
+  // Whom the Task's running sandbox shows its screen, while something is on it; none otherwise.
+  const sandboxScreen = useMemo(
+    () =>
+      runPlace?.kind === "sandbox" &&
+      runPlace.state === "ready" &&
+      runPlace.screenActive &&
+      runPlace.screenOwner &&
+      runPlace.screenDevice
+        ? { owner: runPlace.screenOwner, device: runPlace.screenDevice }
+        : undefined,
+    [runPlace]
+  );
+  const screenLive = useCodingScreenLive(sandboxScreen !== undefined, state.messages);
   const responseFeedback = useCallback(
     ({ hasResponse }: { hasResponse: boolean }) => (
       <>
@@ -2011,7 +2350,17 @@ export const ConversationView = memo(function ConversationView({
           taskLink={focusTaskLink}
           workerVendor={workerVendor}
           onSwitchRun={openRunSwitch}
+          workerStarting={taskStarting}
         />
+        {/* The sandbox's screen, live, while something is on it: the Station reports it only while a Session's browser is open in the turn under way. The Worker's message that ends that turn takes the screen away as it appears. */}
+        {codingTarget && threadGroupId && sandboxScreen && screenLive ? (
+          <CodingScreenInline
+            coding={codingTarget}
+            device={sandboxScreen.device}
+            groupId={threadGroupId}
+            owner={sandboxScreen.owner}
+          />
+        ) : null}
         {threadGroupId && state.participantStatus?.state === "active" ? (
           <FocusComputerUseScreen
             conversationId={state.participantStatus.conversationId}
@@ -2030,7 +2379,11 @@ export const ConversationView = memo(function ConversationView({
       focusTaskLink,
       threadGroupId,
       workerVendor,
+      taskStarting,
       openRunSwitch,
+      codingTarget,
+      sandboxScreen,
+      screenLive,
     ]
   );
   // The newest reply's identity: a Router reply may have filed label
@@ -2113,7 +2466,11 @@ export const ConversationView = memo(function ConversationView({
   ]);
   // An Agent's requests (connect an account): a card in the reply that owns it, or on the newest turn. A retained
   // surface the reader does not see follows none, as for the rest of the live data.
-  const { cards: requestCards, tails: requestTails } = useAgentRequests({
+  const {
+    cards: requestCards,
+    requests: liveAgentRequests,
+    tails: requestTails,
+  } = useAgentRequests({
     live: surfaceActive && live === true,
     groupId: threadGroupId,
     conversationId,
@@ -2126,10 +2483,37 @@ export const ConversationView = memo(function ConversationView({
         : [...(labelProposalsTails ?? []), ...requestTails],
     [labelProposalsTails, requestTails]
   );
+  // In a Task together the Worker answers only when named. The account's own newest line that did not name it gets
+  // one chip under it that does, so asking without @Comma is not left with no answer.
+  const auth = useContext(CommaAuthContext);
+  const lastMessage = state.messages.at(-1);
+  const askCommaShown =
+    togetherRole !== undefined &&
+    !togetherDone &&
+    !taskAgentWorking &&
+    !isArchived &&
+    lastMessage?.role === "user" &&
+    lastMessage.delivery === "sent" &&
+    (lastMessage.createdBy === "current" || lastMessage.createdBy === auth?.userId) &&
+    !NAMES_WORKER.test(JSON.stringify(lastMessage.parts));
+  const askComma = useMemo<ChatSuggestion | undefined>(
+    () =>
+      askCommaShown
+        ? { id: "ask-comma", label: messages.people_ask_comma(), prompt: "@Comma" }
+        : undefined,
+    [askCommaShown, messages]
+  );
   const transcriptTail = useMemo(
     () => (
       <>
         {showTaskPanel ? null : taskReviewAction}
+        {askComma ? (
+          <ChatSuggestionChips
+            align="end"
+            items={[askComma]}
+            onSelect={handleSelectSuggestion}
+          />
+        ) : null}
         {!isArchived && suggestionItems.length > 0 ? (
           <ChatSuggestionChips
             items={suggestionItems}
@@ -2140,6 +2524,7 @@ export const ConversationView = memo(function ConversationView({
       </>
     ),
     [
+      askComma,
       isTask,
       responseFeedback,
       showTaskPanel,
@@ -2271,51 +2656,68 @@ export const ConversationView = memo(function ConversationView({
                         value={questionAttachments}
                       >
                         <ThreadWorkerVendorContext.Provider value={workerVendor}>
-                          <TaskRunSwitchContext.Provider value={taskRunSwitch}>
-                            <AgentRequestCardsContext.Provider value={requestCards}>
-                              <MiniAppTaskContext.Provider value={miniAppTask}>
-                                <MiniAppDraftContext.Provider value={draftFromMiniApp}>
-                                  <ConversationThread
-                                    live={live}
-                                    assistantDraft={state.assistantDraft}
-                                    assistantResponseSlotId={
-                                      state.conversation?.id ?? "conversation"
-                                    }
-                                    conversationId={state.conversation?.id}
-                                    conversationKind={
-                                      isTask ? "agent_task" : "user_chat"
-                                    }
-                                    defaultAssistantActorRole={
-                                      isTask ? undefined : "router"
-                                    }
-                                    groupId={threadGroupId}
-                                    afterMessages={transcriptTail}
-                                    anchoredTails={anchoredTails}
-                                    responseFeedback={
-                                      isTask ? undefined : responseFeedback
-                                    }
-                                    messages={state.messages}
-                                    hasEarlier={state.history?.hasOlder === true}
-                                    loadingEarlier={
-                                      state.history?.loadingOlder === true
-                                    }
-                                    onLoadEarlier={actions.older}
-                                    onOpenConversationRef={onOpenConversationRef}
-                                    onOutgoingAnimationComplete={finishOutgoingLaunch}
-                                    onPreviewLocalFile={actions.previewLocalFile}
-                                    onDiscard={actionsMemo.discard}
-                                    onExitReplyThread={closeReplyThread}
-                                    onRetry={actionsMemo.retry}
-                                    outgoingLaunches={outgoingLaunches}
-                                    replyThread={replyThread}
-                                    revealMessageHandle={revealMessageHandleRef}
-                                    revealTurnHandle={revealTurnHandleRef}
-                                    workspaceId={threadWorkspaceId}
-                                  />
-                                </MiniAppDraftContext.Provider>
-                              </MiniAppTaskContext.Provider>
-                            </AgentRequestCardsContext.Provider>
-                          </TaskRunSwitchContext.Provider>
+                          <ThreadWorkerSessionsContext.Provider
+                            value={threadWorkerSessions}
+                          >
+                            {/* In a Task together everyone calls its Worker by @Comma: its replies are signed so. */}
+                            <ThreadWorkerNameContext.Provider
+                              value={
+                                togetherRole
+                                  ? messages.people_together_worker_name()
+                                  : undefined
+                              }
+                            >
+                              <TaskRunSwitchContext.Provider value={taskRunSwitch}>
+                                <AgentRequestCardsContext.Provider value={requestCards}>
+                                  <MiniAppTaskContext.Provider value={miniAppTask}>
+                                    <MiniAppDraftContext.Provider
+                                      value={draftFromMiniApp}
+                                    >
+                                      <ConversationThread
+                                        live={live}
+                                        assistantDraft={state.assistantDraft}
+                                        assistantResponseSlotId={
+                                          state.conversation?.id ?? "conversation"
+                                        }
+                                        conversationId={state.conversation?.id}
+                                        conversationKind={
+                                          isTask ? "agent_task" : "user_chat"
+                                        }
+                                        defaultAssistantActorRole={
+                                          isTask ? undefined : "router"
+                                        }
+                                        groupId={threadGroupId}
+                                        afterMessages={transcriptTail}
+                                        anchoredTails={anchoredTails}
+                                        responseFeedback={
+                                          isTask ? undefined : responseFeedback
+                                        }
+                                        messages={state.messages}
+                                        hasEarlier={state.history?.hasOlder === true}
+                                        loadingEarlier={
+                                          state.history?.loadingOlder === true
+                                        }
+                                        onLoadEarlier={actions.older}
+                                        onOpenConversationRef={onOpenConversationRef}
+                                        onOutgoingAnimationComplete={
+                                          finishOutgoingLaunch
+                                        }
+                                        onPreviewLocalFile={actions.previewLocalFile}
+                                        onDiscard={actionsMemo.discard}
+                                        onExitReplyThread={closeReplyThread}
+                                        onRetry={actionsMemo.retry}
+                                        outgoingLaunches={outgoingLaunches}
+                                        replyThread={replyThread}
+                                        revealMessageHandle={revealMessageHandleRef}
+                                        revealTurnHandle={revealTurnHandleRef}
+                                        workspaceId={threadWorkspaceId}
+                                      />
+                                    </MiniAppDraftContext.Provider>
+                                  </MiniAppTaskContext.Provider>
+                                </AgentRequestCardsContext.Provider>
+                              </TaskRunSwitchContext.Provider>
+                            </ThreadWorkerNameContext.Provider>
+                          </ThreadWorkerSessionsContext.Provider>
                         </ThreadWorkerVendorContext.Provider>
                       </QuestionCardAttachmentsContext.Provider>
                     </QuestionCardActionsContext.Provider>
@@ -2334,9 +2736,15 @@ export const ConversationView = memo(function ConversationView({
           >
             {showTaskDock ? (
               <ChatTaskDock
+                closeReplyThread={closeReplyThread}
+                conversationId={conversationId}
                 groupId={threadGroupId}
+                labelCatalog={isTask ? undefined : labelCatalog}
                 messages={state.messages}
                 openReplyThread={openMessageReplyThread}
+                replyRootId={replyThread?.rootId}
+                replyTouched={replyThreadTouched}
+                requests={liveAgentRequests}
                 revealTurnHandle={revealTurnHandleRef}
                 taskLinkAdapter={resolvedInlineTaskLinkAdapter}
                 workspaceId={threadWorkspaceId}
@@ -2375,6 +2783,7 @@ export const ConversationView = memo(function ConversationView({
                 ? { onPreviewLocalFile: actions.previewLocalFile }
                 : {})}
               mentionScope={mentionScope}
+              workerMention={togetherRole !== undefined}
               onDraftChange={actions.setDraft}
               onRemoveAttachment={actions.removeAttachment}
               onExpandSnippet={expandDraftSnippet}
@@ -2395,6 +2804,18 @@ export const ConversationView = memo(function ConversationView({
                 : {})}
               {...(replyThread
                 ? { placeholder: messages.chat_composer_placeholder() }
+                : {})}
+              {...(togetherRole
+                ? {
+                    // A Task together: the Worker answers when named, and a done one is the host's to reopen.
+                    placeholder: !togetherDone
+                      ? messages.people_composer_together()
+                      : togetherRole === "host"
+                        ? messages.people_composer_done_host()
+                        : shownTaskStatus === "cancelled"
+                          ? messages.people_composer_cancelled_member()
+                          : messages.people_composer_done_member(),
+                  }
                 : {})}
               size="small"
               skills={skills}
@@ -2425,8 +2846,9 @@ export const ConversationView = memo(function ConversationView({
     : state.participantStatus?.conversationId === conversationId
       ? state.participantStatus?.participantId
       : undefined;
+  // The browser a Task's Worker runs is its host's: a member is not shown it, so does not ask for it.
   const { browser, refresh: refreshBrowser } = useSessionBrowser(
-    surfaceActive && live,
+    surfaceActive && live && !membership,
     workspaceId,
     conversationId,
     browserParticipantId
@@ -2494,6 +2916,8 @@ export const ConversationView = memo(function ConversationView({
               live &&
               groupId &&
               selectedConversationId &&
+              // A Task together is not shared publicly: it holds its members' words, which they did not publish.
+              !togetherRole &&
               !state.unsupported?.includes("share") ? (
                 <TaskShareButton
                   conversationId={selectedConversationId}
@@ -2519,7 +2943,10 @@ export const ConversationView = memo(function ConversationView({
                         aria-hidden
                         className="comma-icon-slot size-4 shrink-0 [&_svg]:size-4"
                       >
-                        {taskStatusIcon(headerTaskStatus, { loopStop: taskStop })}
+                        {taskStatusIcon(headerTaskStatus, {
+                          loopStop: taskStop,
+                          loopStanding: taskStanding,
+                        })}
                       </span>
                       {taskStatusLabel}
                     </Badge>
@@ -2583,7 +3010,11 @@ export const ConversationView = memo(function ConversationView({
         />
         <SelectionActionBar
           actions={selectionActions}
-          anchor={selectionQuote?.anchor ?? null}
+          anchor={
+            isCopyMenuOpen || shareImageState.isOpen
+              ? null
+              : (selectionQuote?.anchor ?? null)
+          }
           ariaLabel={messages.chat_selection_menu()}
           direction={selectionQuote?.direction ?? "none"}
           {...(selectionReply ? { reply: selectionReply } : {})}
@@ -2596,6 +3027,14 @@ export const ConversationView = memo(function ConversationView({
           onOpenChange={handleCopyMenuOpenChange}
           pointerOffsets={copyMenuPointerOffsets}
           triggerRef={routeRef}
+        />
+        <TextShareImageDialog
+          isOpen={shareImageState.isOpen}
+          onClose={() =>
+            setShareImageState((current) => ({ ...current, isOpen: false }))
+          }
+          payload={shareImageState.payload}
+          sourceTitle={shareSourceTitle}
         />
         {imageMenu}
       </section>
@@ -2631,4 +3070,31 @@ function nextChatOutgoingLaunchId() {
 function measureChatComposer(root: HTMLElement | null) {
   const composer = root?.querySelector<HTMLElement>(".comma-chat-composer");
   return measureOutgoingBubbleSource(composer);
+}
+
+/**
+ * Builds the retry handler for a sync-warning toast outside `ConversationView`
+ * so Sonner's toast history never retains the component's render scope or
+ * detached DOM subtree after unmount.
+ */
+function createSyncWarningRetry(refresh: () => void, toastId: string) {
+  let currentRefresh: (() => void) | undefined = refresh;
+  return {
+    deactivate() {
+      currentRefresh = undefined;
+    },
+    onPress() {
+      const run = currentRefresh;
+      if (!run) return;
+      try {
+        run();
+      } catch (error) {
+        if (isStaleChatSessionError(error)) {
+          toast.dismiss(toastId);
+          return;
+        }
+        throw error;
+      }
+    },
+  };
 }

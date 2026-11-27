@@ -47,8 +47,20 @@ defmodule SalixWeb.OAuthFlowTest do
         end)
       )
 
-      case conn.method do
-        "POST" ->
+      case {conn.method, conn.request_path} do
+        {"POST", "/slack/oauth.v2.access"} ->
+          token = Agent.get(__MODULE__, & &1.token)
+
+          json(conn, %{
+            "ok" => true,
+            "team" => %{"id" => "T1", "name" => "Team"},
+            "authed_user" => %{"id" => "U1", "access_token" => token, "scope" => "users:read"}
+          })
+
+        {"POST", "/slack/auth.revoke"} ->
+          json(conn, %{"ok" => true, "revoked" => true})
+
+        {"POST", _} ->
           token = Agent.get(__MODULE__, & &1.token)
 
           json(conn, %{
@@ -57,7 +69,7 @@ defmodule SalixWeb.OAuthFlowTest do
             "scope" => "repo"
           })
 
-        "GET" ->
+        {"GET", _} ->
           json(conn, %{"id" => 12_345, "login" => "octocat", "name" => "Octo Cat"})
 
         _ ->
@@ -97,6 +109,11 @@ defmodule SalixWeb.OAuthFlowTest do
         "token_url" => mock_base <> "/login/oauth/access_token",
         "api_url" => mock_base,
         "revoke_url" => mock_base <> "/revoke"
+      },
+      "slack" => %{
+        "authorize_url" => mock_base <> "/slack/authorize",
+        "token_url" => mock_base <> "/slack/oauth.v2.access",
+        "revoke_url" => mock_base <> "/slack/auth.revoke"
       }
     })
 
@@ -133,6 +150,12 @@ defmodule SalixWeb.OAuthFlowTest do
       Salix.Control.OAuthApps.put(tenant_id, "github", %{
         "client_id" => "gh-client",
         "client_secret" => "gh-secret"
+      })
+
+    {:ok, _} =
+      Salix.Control.OAuthApps.put(tenant_id, "slack", %{
+        "client_id" => "slack-client",
+        "client_secret" => "slack-secret"
       })
 
     {:ok, group: group_id, mock_base: mock_base, tenant_id: tenant_id}
@@ -459,6 +482,34 @@ defmodule SalixWeb.OAuthFlowTest do
              "/v1/runtime/agent-groups/#{group}/oauth-connections/#{binding["binding_id"]}"
            ).status ==
              404
+  end
+
+  test "deleting one of two Slack grants that share a token leaves the token alive",
+       %{group: group} do
+    # Slack gives one user the same token on every grant of the app.
+    MockProvider.set_access_token("xoxp-shared")
+
+    for alias_name <- ["work", "personal"] do
+      {:ok, %{"state" => state}} =
+        OAuthFlow.start_authorization(tenant_id(), group, "slack", %{
+          "alias" => alias_name,
+          "scopes" => ["users:read"]
+        })
+
+      assert callback("slack", %{"state" => state, "code" => alias_name}).status == 200
+    end
+
+    bindings = Map.new(Salix.Control.OAuthBindings.list(group), &{&1["alias"], &1})
+    delete = &treq(:delete, "/v1/runtime/agent-groups/#{group}/oauth-connections/#{&1}")
+    revokes = fn -> Enum.count(MockProvider.requests(), &(&1.path == "/slack/auth.revoke")) end
+
+    assert delete.(bindings["work"]["binding_id"]).body["status"] == "deleted"
+    assert revokes.() == 0
+    assert {:ok, _} = SalixStore.OAuth.get(bindings["personal"]["connection_id"])
+
+    # The last holder's deletion revokes it.
+    assert delete.(bindings["personal"]["binding_id"]).body["status"] == "deleted"
+    assert revokes.() == 1
   end
 
   test "provider app reads never echo the stored secret" do

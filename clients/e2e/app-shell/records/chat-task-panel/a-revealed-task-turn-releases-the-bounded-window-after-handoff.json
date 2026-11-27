@@ -249,6 +249,27 @@
    "dir": "out",
    "data": {
     "id": 12,
+    "call": "chat.locale",
+    "params": {
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 13,
+    "subscribe": {
+     "topic": "locationSharing"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 14,
     "subscribe": {
      "topic": "profile"
     }
@@ -294,6 +315,18 @@
      "emailCooldown": null,
      "guestImports": 0
     }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "ok": null
    }
   },
   {
@@ -414,7 +447,17 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 12,
+    "id": 13,
+    "value": {
+     "enabled": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 14,
     "value": {
      "status": "loading",
      "profile": null
@@ -458,7 +501,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 13,
+    "id": 15,
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke"
@@ -469,29 +512,29 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 14,
-    "call": "tasks.focus",
-    "params": {
-     "workspace": "ws-smoke"
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 15,
-    "call": "tasks.focus",
-    "params": {
-     "workspace": "ws-smoke"
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
     "id": 16,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 17,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
     "subscribe": {
      "topic": "taskRequests",
      "prefer": "ws-smoke"
@@ -502,7 +545,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 17,
+    "id": 19,
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke",
@@ -514,7 +557,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 18,
+    "id": 20,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -525,7 +568,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 19,
+    "id": 21,
     "subscribe": {
      "topic": "router",
      "workspace": "ws-smoke",
@@ -558,7 +601,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 12,
+    "id": 14,
     "delta": [
      {
       "path": [
@@ -584,7 +627,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 20,
+    "id": 22,
     "call": "profile.update",
     "params": {
      "locale": "en"
@@ -622,7 +665,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 21,
+    "id": 23,
     "subscribe": {
      "topic": "recommendations",
      "workspace": "ws-smoke",
@@ -635,7 +678,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 22,
+    "id": 24,
     "subscribe": {
      "topic": "creditWarning",
      "workspace": "ws-smoke"
@@ -646,7 +689,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 23,
+    "id": 25,
     "subscribe": {
      "topic": "mentionTasks",
      "group": "grp-smoke"
@@ -657,7 +700,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 24,
+    "id": 26,
     "subscribe": {
      "topic": "recommendations",
      "workspace": "ws-smoke",
@@ -669,7 +712,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 25,
+    "id": 27,
     "subscribe": {
      "topic": "plugins",
      "workspace": "ws-smoke"
@@ -680,7 +723,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 26,
+    "id": 28,
     "subscribe": {
      "topic": "taskLabels",
      "group": "grp-smoke",
@@ -693,7 +736,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 27,
+    "id": 29,
     "subscribe": {
      "topic": "chatView",
      "workspace": "ws-smoke",
@@ -707,7 +750,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 28,
+    "id": 30,
     "subscribe": {
      "topic": "skills",
      "workspace": "ws-smoke"
@@ -718,7 +761,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 31,
     "call": "workspace.select",
     "params": {
      "workspace": "ws-smoke"
@@ -729,7 +772,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 32,
     "call": "chatView.setDraft",
     "params": {
      "draft": "创建任务",
@@ -752,7 +795,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 14,
+    "id": 16,
     "ok": null
    }
   },
@@ -760,19 +803,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 15,
-    "ok": null
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 18,
+    "id": 17,
     "ok": null
    }
   },
@@ -784,7 +815,19 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 20,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 31,
     "ok": null
    }
   },
@@ -792,7 +835,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 32,
     "ok": {
      "revision": 3,
      "draftEpoch": 1
@@ -803,7 +846,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 13,
+    "id": 15,
     "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
@@ -824,15 +867,17 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 18,
     "value": {
      "workspace": null,
      "incoming": null,
+     "received": null,
      "grants": null,
      "targets": null,
      "sent": null,
      "links": null,
      "own": null,
+     "people": null,
      "error": false
     }
    }
@@ -841,7 +886,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 19,
     "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
@@ -862,7 +907,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 33,
     "subscribe": {
      "topic": "taskOrder",
      "group": "grp-smoke"
@@ -873,7 +918,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 19,
+    "id": 21,
     "value": null
    }
   },
@@ -881,7 +926,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 12,
+    "id": 14,
     "delta": [
      {
       "path": [
@@ -897,7 +942,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 21,
+    "id": 23,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -905,22 +950,6 @@
      "discovering": false,
      "refreshing": false
     }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 22,
-    "value": null
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 23,
-    "value": null
    }
   },
   {
@@ -928,6 +957,22 @@
    "dir": "in",
    "data": {
     "id": 24,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -941,7 +986,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 27,
     "value": {
      "status": "loading"
     }
@@ -951,7 +996,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "value": {
      "catalog": null,
      "error": false,
@@ -963,7 +1008,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -1003,7 +1048,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "status": "loading",
      "skills": []
@@ -1033,7 +1078,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 22,
     "ok": {
      "avatar_id": null,
      "email": "smoke@comma.local",
@@ -1051,7 +1096,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 18,
     "delta": [
      {
       "path": [
@@ -1072,45 +1117,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 21,
-    "delta": [
-     {
-      "path": [
-       "envelope"
-      ],
-      "set": {
-       "settings": {
-        "autoEnableNewSources": true,
-        "schedule": {
-         "enabled": true,
-         "hour": 8,
-         "minute": 0,
-         "timezone": "UTC"
-        },
-        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
-        "sourceRevision": 1,
-        "sources": []
-       },
-       "snapshot": null,
-       "state": "empty"
-      }
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
     "id": 23,
-    "value": []
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 24,
     "delta": [
      {
       "path": [
@@ -1141,6 +1148,44 @@
    "dir": "in",
    "data": {
     "id": 25,
+    "value": []
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1174,7 +1219,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -1195,57 +1240,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 4
-     },
-     {
-      "path": [
-       "state",
-       "conversation"
-      ],
-      "set": {
-       "created_at": 1720000000,
-       "group_id": "grp-smoke",
-       "id": "cnv_public_chat_smoke",
-       "kind": "user_chat",
-       "messages": [],
-       "status": "active",
-       "title": "聊天",
-       "updated_at": 1720000000
-      }
-     },
-     {
-      "path": [
-       "state",
-       "status"
-      ],
-      "set": "ready"
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 32,
-    "subscribe": {
-     "topic": "agentRequests",
-     "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke"
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 31,
+    "id": 33,
     "value": {
      "orders": {},
      "sections": [
@@ -1264,6 +1259,10 @@
       {
        "bucket": "cancelled",
        "ids": []
+      },
+      {
+       "bucket": "loops",
+       "ids": []
       }
      ]
     }
@@ -1277,7 +1276,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "delta": [
      {
       "path": [
@@ -1338,7 +1337,77 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 4
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000000,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_chat_smoke",
+       "kind": "user_chat",
+       "messages": [],
+       "status": "active",
+       "title": "聊天",
+       "updated_at": 1720000000
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 34,
+    "subscribe": {
+     "topic": "agentRequests",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 34,
+    "value": {
+     "requests": [],
+     "loading": true,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1373,7 +1442,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 35,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
@@ -1386,23 +1455,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 32,
-    "value": {
-     "requests": [],
-     "loading": true,
-     "error": false
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 32,
+    "id": 34,
     "delta": [
      {
       "path": [
@@ -1421,9 +1474,13 @@
   },
   {
    "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 35,
     "value": null
    }
   },
@@ -1435,7 +1492,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 36,
     "call": "chatView.send",
     "params": {
      "text": "创建任务",
@@ -1459,7 +1516,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 36,
     "value": {
      "accepted": true
     }
@@ -1473,7 +1530,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 35,
     "value": {
      "browser": null
     }
@@ -1483,7 +1540,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1615,7 +1672,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 36,
     "ok": {
      "revision": 12,
      "draftEpoch": 2
@@ -1630,7 +1687,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -2766,7 +2823,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 37,
     "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
@@ -2778,7 +2835,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 36,
+    "id": 38,
     "subscribe": {
      "topic": "chatSuggestions",
      "group": "grp-smoke",
@@ -2792,7 +2849,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 37,
+    "id": 39,
     "subscribe": {
      "topic": "taskLabels",
      "group": "grp-smoke",
@@ -2805,7 +2862,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 38,
+    "id": 40,
     "subscribe": {
      "topic": "taskWorkers",
      "group": "grp-smoke",
@@ -2866,7 +2923,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 13,
+    "id": 15,
     "delta": [
      {
       "path": [
@@ -2911,7 +2968,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 19,
     "delta": [
      {
       "path": [
@@ -2956,7 +3013,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 35,
+    "id": 37,
     "value": {
      "summaries": [
       {
@@ -2982,7 +3039,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 36,
+    "id": 38,
     "value": null
    }
   },
@@ -2990,7 +3047,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -3005,7 +3062,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 37,
+    "id": 39,
     "value": {
      "catalog": null,
      "error": true,
@@ -3017,7 +3074,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 38,
+    "id": 40,
     "value": {}
    }
   },
@@ -3033,7 +3090,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 36,
+    "id": 38,
     "value": []
    }
   },
@@ -3041,7 +3098,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -3056,7 +3113,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 37,
+    "id": 39,
     "delta": [
      {
       "path": [
@@ -3071,7 +3128,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 38,
+    "id": 40,
     "delta": [
      {
       "path": [
@@ -3099,10 +3156,10 @@
    "dir": "due"
   },
   {
-   "at": 1184,
+   "at": 1424,
    "dir": "out",
    "data": {
-    "id": 39,
+    "id": 41,
     "call": "chatView.setDraft",
     "params": {
      "draft": "继续",
@@ -3118,14 +3175,14 @@
    }
   },
   {
-   "at": 1184,
+   "at": 1424,
    "dir": "rest"
   },
   {
-   "at": 1184,
+   "at": 1424,
    "dir": "in",
    "data": {
-    "id": 39,
+    "id": 41,
     "ok": {
      "revision": 15,
      "draftEpoch": 3
@@ -3133,10 +3190,10 @@
    }
   },
   {
-   "at": 1184,
+   "at": 1424,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3155,14 +3212,14 @@
    }
   },
   {
-   "at": 1184,
+   "at": 1424,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "out",
    "data": {
-    "id": 40,
+    "id": 42,
     "call": "chatView.send",
     "params": {
      "text": "继续",
@@ -3179,28 +3236,28 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 42,
     "value": {
      "accepted": true
     }
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3226,7 +3283,7 @@
        "state",
        "awaitingSince"
       ],
-      "set": 1768478401248
+      "set": 1768478401488
      },
      {
       "path": [
@@ -3260,7 +3317,7 @@
       "put": {
        "clientRequestId": "8c5d7180-0b8c-48f6-bd0a-6622d651e1b7",
        "attachments": [],
-       "createdAt": 1768478401248,
+       "createdAt": 1768478401488,
        "delivery": "sending",
        "messageId": "pending:8c5d7180-0b8c-48f6-bd0a-6622d651e1b7",
        "display": {
@@ -3292,7 +3349,7 @@
       ],
       "put": {
        "clientRequestId": "8c5d7180-0b8c-48f6-bd0a-6622d651e1b7",
-       "createdAt": 1768478401248,
+       "createdAt": 1768478401488,
        "status": "sending",
        "text": "继续"
       },
@@ -3325,14 +3382,14 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 42,
     "ok": {
      "revision": 19,
      "draftEpoch": 4
@@ -3340,14 +3397,14 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3586,10 +3643,10 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "out",
    "data": {
-    "id": 41,
+    "id": 43,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -3597,10 +3654,10 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "out",
    "data": {
-    "id": 42,
+    "id": 44,
     "subscribe": {
      "topic": "chatSuggestions",
      "group": "grp-smoke",
@@ -3611,11 +3668,11 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
     "id": 5,
@@ -3624,50 +3681,50 @@
       "path": [
        "lastSyncedAt"
       ],
-      "set": 1768478401248
+      "set": 1768478401488
      }
     ]
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 13,
+    "id": 15,
     "delta": [
      {
       "path": [
        "lastSyncedAt"
       ],
-      "set": 1768478401248
+      "set": 1768478401488
      }
     ]
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 19,
     "delta": [
      {
       "path": [
        "lastSyncedAt"
       ],
-      "set": 1768478401248
+      "set": 1768478401488
      }
     ]
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -3679,10 +3736,10 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 37,
+    "id": 39,
     "delta": [
      {
       "path": [
@@ -3694,22 +3751,22 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "value": null
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "in",
    "data": {
-    "id": 41,
+    "id": 43,
     "error": {
      "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
      "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
@@ -3721,7 +3778,7 @@
    }
   },
   {
-   "at": 1248,
+   "at": 1488,
    "dir": "rest"
   }
  ]

@@ -538,7 +538,7 @@ export function RunnersPanel({
 function QuickActions({ org, canViewHealth }: { org: string; canViewHealth: boolean }) {
   const actions: { label: string; href: string; spa?: boolean }[] = [
     { label: t.quickInvite, href: orgHref(org, "/members"), spa: true },
-    { label: t.quickConnectSlack, href: orgHref(org, "/settings/oauth") },
+    { label: t.quickConnectChat, href: orgHref(org, "/projects"), spa: true },
     { label: t.quickAddRunner, href: orgHref(org, "/fin"), spa: true },
   ];
   // The audit log lives on the owner/admin Health page.

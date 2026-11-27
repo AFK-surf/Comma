@@ -191,6 +191,211 @@ class WorkspacePagesModelTest {
         assertEquals("gmail", model.authorizationPlugin)
     }
 
+    private fun colabNotice(id: Int, attempt: String, reauthorize: Boolean = false, error: String? = null) = json(
+        "id" to id, "workspace" to "wsp_test", "kind" to "configure", "plugin" to "google-colab", "origin" to "plugins",
+        "configuration" to json("workspace" to "wsp_test", "operation" to if (reauthorize) "reauthorize" else "install",
+            "connectionId" to "google-colab-oauth".takeIf { reauthorize }, "bindingId" to "colab_acc_1".takeIf { reauthorize },
+            "setup" to json("key" to "GOOGLE_COLAB_AUTH_CODE", "label" to "Authorization code",
+                "helpUrl" to "https://accounts.google.com/o/oauth2/v2/auth?state=$attempt", "format" to "oauth_code",
+                "attemptId" to attempt, "error" to error)))
+
+    private fun colab(installed: Boolean) = Plugin.parse(json("id" to "google-colab", "name" to "Google Colab",
+        "brand" to "google-colab", "installed" to installed, "credentialSetup" to null))!!
+
+    @Test
+    fun aGoogleSignInFormComesFromTheConfigureNoticeAndARejectedCodeKeepsItsAttempt() {
+        val model = PluginsModel(h.scope)
+        h.core.on("plugin.notice.claim") { true }
+        val plugin = colab(installed = false)
+        assertNull("the catalog lists no form for it", plugin.credentialKey)
+        runBlocking { model.receiveNotice(colabNotice(1, "colab_att_1")) }
+        val form = model.configuration(plugin)!!
+        assertTrue(form.oauthCode)
+        assertEquals("https://accounts.google.com/o/oauth2/v2/auth?state=colab_att_1", form.helpUrl)
+
+        h.core.on("plugin.install") { json("failure" to "credential_rejected") }
+        runBlocking { model.install(plugin, "4/0Abc") }
+        val sent = h.core.called("plugin.install").last()
+        assertEquals("4/0Abc", sent.getJSONObject("configValues").getString("GOOGLE_COLAB_AUTH_CODE"))
+        assertEquals("colab_att_1", sent.getString("attemptId"))
+        assertEquals("wsp_test", sent.getString("workspace"))
+        assertEquals(PageError.Text(surf.comma.android.R.string.ds_plugins_code_rejected), model.formError)
+        assertNull(h.scope.error)
+        assertEquals("a rejected code keeps its sign-in", "colab_att_1", model.configuration(plugin)?.attemptId)
+
+        // The server's words for a code from another Google account reach the form as they are.
+        val wrongAccount = "Sign in with alice@gmail.com, the account this workspace connected."
+        h.core.on("plugin.install") { json("failure" to "credential_rejected", "message" to wrongAccount) }
+        runBlocking { model.install(plugin, "4/0Other") }
+        assertEquals(PageError.Message(wrongAccount), model.formError)
+        assertEquals("colab_att_1", model.configuration(plugin)?.attemptId)
+
+        // An expired sign-in comes back as a fresh link and attempt, which replaces the form in place.
+        runBlocking { model.receiveNotice(colabNotice(2, "colab_att_2", error = "The sign-in expired.")) }
+        assertEquals("colab_att_2", model.configuration(plugin)?.attemptId)
+        assertEquals("The sign-in expired.", model.configuration(plugin)?.error)
+        assertNull(model.formError)
+
+        h.core.on("plugin.install") { JSONObject() }
+        runBlocking { model.install(plugin, "4/0Def") }
+        assertEquals("colab_att_2", h.core.called("plugin.install").last().getString("attemptId"))
+        assertNull("a connected account puts the form away", model.configuration)
+        assertTrue(h.core.called("plugin.reauthorize").isEmpty())
+    }
+
+    @Test
+    fun aColabReconnectNamesItsAccountAndSendsTheCodeToTheReconnect() {
+        val model = PluginsModel(h.scope)
+        h.core.on("plugin.notice.claim") { true }
+        h.core.on("plugin.reauthorize") { JSONObject() }
+        val plugin = colab(installed = true)
+        runBlocking { model.install(plugin, connection = "google-colab-oauth", binding = "colab_acc_1") }
+        val started = h.core.called("plugin.reauthorize").last()
+        assertEquals("google-colab-oauth", started.getString("connection"))
+        assertEquals("colab_acc_1", started.getString("bindingId"))
+        assertFalse(started.has("configValues"))
+
+        runBlocking { model.receiveNotice(colabNotice(3, "colab_att_3", reauthorize = true)) }
+        assertTrue(model.configuration(plugin)!!.reauthorize)
+        runBlocking { model.install(plugin, "4/0Ghi") }
+        val sent = h.core.called("plugin.reauthorize").last()
+        assertEquals("colab_att_3", sent.getString("attemptId"))
+        assertEquals("colab_acc_1", sent.getString("bindingId"))
+        assertEquals("google-colab-oauth", sent.getString("connection"))
+        assertEquals("4/0Ghi", sent.getJSONObject("configValues").getString("GOOGLE_COLAB_AUTH_CODE"))
+        assertTrue("a reconnect's code never installs a second account", h.core.called("plugin.install").isEmpty())
+    }
+
+    @Test
+    fun aChatInstallTakesOnlyItsOwnPluginsNotices() {
+        val model = PluginsModel(h.scope, only = "google-colab")
+        h.core.on("plugin.notice.claim") { true }
+        runBlocking {
+            model.receiveNotice(json("id" to 4, "workspace" to "wsp_test", "kind" to "authorize", "plugin" to "gmail",
+                "url" to "https://auth.example.test/gmail"))
+        }
+        assertTrue("another plugin's notice stays for the Plugins page", h.core.called("plugin.notice.claim").isEmpty())
+        runBlocking { model.receiveNotice(colabNotice(5, "colab_att_5")) }
+        assertEquals(5, h.core.called("plugin.notice.claim").single().getInt("id"))
+        assertEquals("colab_att_5", model.configuration?.attemptId)
+    }
+
+    @Test
+    fun stillfailShowFormatNeverAsksForCredentialAndParsesConnectLine() {
+        val stillfail = Plugin.parse(json(
+            "id" to "stillfail",
+            "name" to "Monoid",
+            "brand" to "stillfail",
+            "installed" to false,
+            "stations" to true,
+            "credentialSetup" to json(
+                "key" to "STILLFAIL_CONNECT_LINE",
+                "label" to "Connect line",
+                "helpUrl" to "https://still.fail/docs/comma",
+                "format" to "show",
+            ),
+        ))!!
+        assertEquals("show", stillfail.credentialFormat)
+        assertTrue(stillfail.showsConnectLine)
+        assertFalse("format == show must not be treated as a secret input", stillfail.asksCredential)
+        assertTrue(stillfail.isStillfail)
+
+        val model = PluginsModel(h.scope)
+        h.core.on("plugin.notice.claim") { true }
+        runBlocking {
+            model.receiveNotice(json(
+                "id" to 9,
+                "workspace" to "wsp_test",
+                "kind" to "configure",
+                "plugin" to "stillfail",
+                "configuration" to json(
+                    "workspace" to "wsp_test",
+                    "operation" to "install",
+                    "setup" to json(
+                        "key" to "STILLFAIL_CONNECT_LINE",
+                        "label" to "Connect line",
+                        "format" to "show",
+                        "value" to "comma https://salix.comma.surf tok_test_line",
+                    ),
+                ),
+            ))
+        }
+        val config = model.configuration(stillfail)!!
+        assertTrue(config.showValue)
+        assertEquals("comma https://salix.comma.surf tok_test_line", config.value)
+    }
+
+    @Test
+    fun pluginStationsModelParsesWorkspacesDisconnectAndNotificationLevel() {
+        val model = PluginStationsModel(h.scope, Plugin.STILLFAIL)
+        val job = model.follow()
+        val sub = h.core.subscribed.last()
+        assertEquals("pluginStations", sub.getString("topic"))
+        assertEquals("wsp_test", sub.getString("workspace"))
+        assertEquals("stillfail", sub.getString("plugin"))
+
+        h.core.publish("pluginStations", json(
+            "stations" to JSONArray()
+                .put(json(
+                    "id" to "st_online",
+                    "workspace" to "Alpha Studio",
+                    "emoji" to "🚀",
+                    "station" to "mac-mini-1",
+                    "stationCount" to 3,
+                    "connected" to true,
+                    "connectedAt" to "2026-11-25T01:00:00Z",
+                ))
+                .put(json(
+                    "id" to "st_offline",
+                    "workspace" to "Beta Lab",
+                    "station" to "linux-box-2",
+                    "stationCount" to 1,
+                    "connected" to false,
+                    "connectedAt" to "2026-11-24T12:00:00Z",
+                ))
+                .put(json(
+                    "id" to "st_waiting",
+                    "connected" to false,
+                    "connectedAt" to null,
+                )),
+            "notificationLevel" to "issues",
+            "notificationPending" to false,
+            "pending" to null,
+            "error" to null,
+        ))
+        assertEquals(3, model.stations?.size)
+        assertTrue(model.hasOfflineStation)
+        assertTrue(model.stations!![1].offline)
+        assertTrue(model.stations!![2].waiting)
+        assertEquals(StillfailNotificationLevel.ISSUES, model.notificationLevel)
+
+        // Disconnect calls plugin.station.disconnect with workspace, plugin, station.
+        h.core.on("plugin.station.disconnect") { JSONObject() }
+        assertTrue(runBlocking { model.disconnect("st_offline") })
+        val disc = h.core.called("plugin.station.disconnect").single()
+        assertEquals("wsp_test", disc.getString("workspace"))
+        assertEquals("stillfail", disc.getString("plugin"))
+        assertEquals("st_offline", disc.getString("station"))
+        assertNull(model.pending)
+
+        // Notification level change calls plugin.station.notificationLevel.set.
+        h.core.on("plugin.station.notificationLevel.set") { JSONObject() }
+        assertTrue(runBlocking { model.setNotificationLevel(StillfailNotificationLevel.ALL) })
+        val setLevel = h.core.called("plugin.station.notificationLevel.set").single()
+        assertEquals("wsp_test", setLevel.getString("workspace"))
+        assertEquals("stillfail", setLevel.getString("plugin"))
+        assertEquals("all", setLevel.getString("level"))
+        assertEquals(StillfailNotificationLevel.ALL, model.notificationLevel)
+        assertFalse(model.notificationPending)
+
+        // Failed notification level save rolls back to previous level and sets error.
+        h.core.on("plugin.station.notificationLevel.set") { throw CoreError("server_error", "boom", 500) }
+        assertFalse(runBlocking { model.setNotificationLevel(StillfailNotificationLevel.OFF) })
+        assertEquals(StillfailNotificationLevel.ALL, model.notificationLevel)
+        assertEquals("notification_save_failed", model.error)
+        job.cancel()
+    }
+
     @Test
     fun aScreenViewOverTheMeshAcknowledgesFramesAndLeavesTheDeviceToAnAgent() {
         val events = kotlinx.coroutines.channels.Channel<JSONObject>(kotlinx.coroutines.channels.Channel.UNLIMITED)

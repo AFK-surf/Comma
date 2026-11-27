@@ -17,6 +17,8 @@ final class TaskDockState {
     var titlePressed = false
     /// What sits under the transcript: the Home indicator, or the keyboard while it is up.
     var bottomInset: CGFloat = 0
+    /// How far the keyboard reaches over the panel; 0 while it is down.
+    var keyboardOverlap: CGFloat = 0
     /// The full-height side panel keeps system clearance inside its surface.
     var topInset: CGFloat = 0
     /// What sits at either side of the transcript: in landscape, the sensor housing on one side and its mirror on

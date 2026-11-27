@@ -30,6 +30,13 @@ defmodule SalixIM.Provider do
     end
   end
 
+  def ifc_projection_targets(context) do
+    case SalixIM.TaskExecution.ifc_projection_targets(context) do
+      :none -> SalixIM.TaskContinuation.ifc_projection_targets(context)
+      targets -> targets
+    end
+  end
+
   # Role-based access remains separate from the exact Task execution scope.
   # Workers see every provider that has an operation they may call; WeChat,
   # iMessage and voice offer only sends.
@@ -121,6 +128,9 @@ defmodule SalixIM.Provider do
   # ---- manuals/contracts ----
 
   def provider_manual(platform), do: Manuals.manual(platform)
+
+  @doc false
+  def builtin_provider_manual(platform), do: Manuals.manual(platform)
 
   # Agent-aware manual used by discovery surfaces. Non-router agents get the
   # manual only for providers they can see, with external apis filtered to the
@@ -403,6 +413,11 @@ defmodule SalixIM.Provider do
           SalixIM.Provider.Line.call(scope.agent_id, connect, api, params)
         end)
 
+      "wecom" ->
+        call_external(scope, connect_id, "wecom", api, params, fn connect ->
+          SalixIM.Provider.WeCom.call(scope.agent_id, connect, api, params)
+        end)
+
       "lark" ->
         call_external(scope, connect_id, "lark", api, params, fn connect ->
           with :ok <-
@@ -412,9 +427,19 @@ defmodule SalixIM.Provider do
                    api,
                    params
                  ) do
-            if api == "lark.post_task_card",
-              do: SalixIM.LarkTaskCard.post(scope, connect, params),
-              else: SalixIM.Provider.Lark.call(scope.agent_id, connect, api, params, scope)
+            case api do
+              "lark.post_task_card" ->
+                SalixIM.LarkTaskCard.post(scope, connect, params)
+
+              "lark.leave_thread" ->
+                SalixIM.LarkThreadTaskBinding.leave_thread(scope, connect, params)
+
+              "lark.bind_thread_to_task" ->
+                SalixIM.LarkThreadTaskBinding.bind_thread_to_task(scope, connect, params)
+
+              _other ->
+                SalixIM.Provider.Lark.call(scope.agent_id, connect, api, params, scope)
+            end
           end
         end)
 
@@ -432,9 +457,19 @@ defmodule SalixIM.Provider do
                    api,
                    params
                  ) do
-            if api == "feishu.post_task_card",
-              do: SalixIM.FeishuTaskCard.post(scope, connect, params),
-              else: Feishu.call(scope.agent_id, connect, api, params, scope)
+            case api do
+              "feishu.post_task_card" ->
+                SalixIM.FeishuTaskCard.post(scope, connect, params)
+
+              "feishu.leave_thread" ->
+                SalixIM.FeishuThreadTaskBinding.leave_thread(scope, connect, params)
+
+              "feishu.bind_thread_to_task" ->
+                SalixIM.FeishuThreadTaskBinding.bind_thread_to_task(scope, connect, params)
+
+              _other ->
+                Feishu.call(scope.agent_id, connect, api, params, scope)
+            end
           end
         end)
 

@@ -1,6 +1,7 @@
 ---
 name: bug-report
 description: Prepare a privacy-reviewed report for bugs in Comma, Comma for Teams or still.fail. Reuse still.fail feedback when available. Public issues follow product-specific repository configuration and require an approved payload. Excludes bugs in user projects.
+prompt_summary: "File a bug report or feedback on Comma itself (not user project bugs); public issues require an approved destination repo and exact payload."
 ---
 
 # Report a product bug

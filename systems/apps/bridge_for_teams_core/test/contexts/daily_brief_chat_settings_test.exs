@@ -128,6 +128,22 @@ defmodule BridgeForTeams.DailyBriefChatSettingsTest do
       assert {:ok, %{"projects" => ["Photon"]}} =
                ChatSettings.set_project(ctx.group, bo, "screencam", "remove")
     end
+
+    test "a member sets their GitHub login, one at a time", ctx do
+      bo = origin(ctx.group, "UBO1")
+
+      assert {:ok, %{"github" => "bo-dev"}} = ChatSettings.set_github(ctx.group, bo, " @bo-dev ")
+      assert {:ok, %{"github" => "bo2"}} = ChatSettings.set_github(ctx.group, bo, "bo2")
+
+      assert Repo.all(from(a in DailyBriefAlias, where: a.kind == "github", select: a.term)) ==
+               ["bo2"]
+
+      assert {:error, :invalid_github_login} =
+               ChatSettings.set_github(ctx.group, bo, "not a login")
+
+      assert {:ok, %{"github" => nil}} = ChatSettings.set_github(ctx.group, bo, "")
+      assert Repo.all(from(a in DailyBriefAlias, where: a.kind == "github")) == []
+    end
   end
 
   test "a member moves their own brief", ctx do
@@ -149,10 +165,10 @@ defmodule BridgeForTeams.DailyBriefChatSettingsTest do
   end
 
   test "the requester comes from the signed Slack origin of this Swarm only", ctx do
-    assert {:error, :daily_brief_requires_slack_request} =
+    assert {:error, :daily_brief_requires_provider_request} =
              ChatSettings.set_time(ctx.group, origin("grp-other", "UADA1"), "team", "10:00")
 
-    assert {:error, :daily_brief_requires_slack_request} =
+    assert {:error, :daily_brief_requires_provider_request} =
              ChatSettings.set_time(
                ctx.group,
                %{origin(ctx.group, "UADA1") | "source_actor_type" => "agent"},

@@ -15,6 +15,13 @@ const publicPages = new Set([
   "/pricing",
   "/enterprise",
   "/download",
+  "/mobile",
+  "/mentions",
+  "/messages",
+  "/proactive",
+  "/automations",
+  "/support",
+  "/integrations",
   "/docs",
   "/blog",
   "/self-host",
@@ -25,8 +32,9 @@ const publicPages = new Set([
   "/contact",
   "/teams",
 ]);
-// A documentation page, blog post or comparison: the path names only the public page.
-const sectionPage = /^\/(?:docs|blog|alternatives)(?:\/[a-z0-9-]{1,64}){1,3}$/;
+// A documentation page, blog post, comparison or integration: the path names only the public page.
+const sectionPage =
+  /^\/(?:docs|blog|alternatives|integrations)(?:\/[a-z0-9-]{1,64}){1,3}$/;
 const localePrefix = /^[a-z]{2}(?:-[A-Za-z0-9]{2,3})?$/;
 const slug = /^[a-zA-Z0-9_.-]{1,64}$/;
 const host = (value: string) => value.length <= 253 && /^[a-z0-9.-]+$/.test(value);

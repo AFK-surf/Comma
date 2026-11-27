@@ -1,5 +1,7 @@
 @import "./components/chat/session-history/sessionHistory.css";
+@import "./components/chat/share-image/textShareImageDialog.css";
 @import "./components/chat/suggestions/suggestionAcceptance.css";
+@import "./components/file-preview/documentPreview.css";
 @import "@comma/ui/styles.css";
 @import "./auth/styles.css";
 @import "./components/commaAppearance.css";
@@ -78,9 +80,7 @@ body {
   container-type: inline-size;
   z-index: 1;
   border-radius: var(--comma-window-inner-corner-radius);
-  box-shadow:
-    0 1px 2px 0 #1018280f,
-    0 1px 3px 0 #1018281a;
+  box-shadow: var(--shadow-sm);
   -webkit-app-region: no-drag;
 }
 
@@ -195,6 +195,19 @@ body {
   min-width: 0;
   flex: 1;
   flex-direction: column;
+}
+
+.comma-feed-column-chat .comma-chat-route {
+  background: transparent;
+}
+
+.comma-feed-column-chat .comma-chat-header {
+  display: flex;
+}
+
+.comma-feed-column-chat .comma-scroll-area__content {
+  min-width: 0;
+  width: 100%;
 }
 
 /* What shows under the native view before it paints: the sidebar's own
@@ -649,6 +662,13 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
     margin-inline-start: var(--comma-chat-avatar-gutter);
     max-width: calc(100% - var(--comma-chat-avatar-gutter));
   }
+
+  .chat-panel-image-group[data-single="true"] {
+    --chat-panel-image-group-single-max-inline-size: min(
+      var(--chat-panel-image-group-single-max-width),
+      75%
+    );
+  }
 }
 
 /* A phone opens the public Task Share page, the one Task route that gets this
@@ -671,6 +691,22 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
 
     margin-inline-start: var(--comma-chat-avatar-gutter);
     max-width: calc(100% - var(--comma-chat-avatar-gutter));
+  }
+
+  .chat-panel-image-group[data-single="true"] {
+    --chat-panel-image-group-single-max-inline-size: min(
+      var(--chat-panel-image-group-single-max-width),
+      75%
+    );
+  }
+}
+
+/* A guest's page of a Task together on a phone: the same 16px edge, but its
+   avatar gutter stays, as each person's face sits in it. */
+@container comma-content (width < 560px) {
+  .comma-collab-guest .comma-chat-thread,
+  .comma-collab-guest .comma-chat-composer-zone {
+    padding-inline: var(--spacing-xl);
   }
 }
 
@@ -906,318 +942,23 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
   min-height: var(--comma-icon-button-size);
   align-items: center;
   justify-content: space-between;
+  gap: var(--spacing-md);
   padding: var(--spacing-none) var(--spacing-xs);
 }
 
-/* The gap the removed top padding used to provide, applied only when a summary
-   actually precedes the heading (never in the empty state). */
-.comma-recommendations-summary + .comma-recommendations-heading {
-  margin-top: var(--spacing-md);
-}
-
+/* One line beside the refresh control: a long status gives way with an
+   ellipsis, the control keeps its box. */
 .comma-recommendations-heading h2 {
+  overflow: hidden;
+  min-width: 0;
   margin: 0;
-  color: var(--color-text-tertiary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--text-sm--letter-spacing);
-  line-height: var(--text-sm--line-height);
-}
-
-.comma-recommendations-heading-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-}
-
-/* Sized by .comma-icon-button — the hover highlight and the hit area are the
-   same 28px box, so no ::after hit-area extension is needed here. */
-.comma-recommendations-heading-control[aria-expanded="true"] {
-  background: var(--color-sidebar-bg-item);
-  color: var(--color-sidebar-icon-primary);
-}
-
-.comma-routines-panel {
-  --comma-routines-row-height: calc(
-    var(--text-sm--line-height) + (var(--spacing-sm) * 2)
-  );
-
-  display: flex;
-  width: min(
-    calc(var(--container-xxs) + var(--spacing-4xl)),
-    calc(100vw - 2 * var(--spacing-lg))
-  );
-  max-height: calc(100vh - var(--spacing-3xl));
-  max-height: calc(100dvh - var(--spacing-3xl));
-  flex-direction: column;
-  overflow: hidden;
-  border: var(--border-width-0-5) solid var(--color-border-primary);
-  border-radius: var(--radius-xl);
-  outline: none;
-  background: var(--color-bg-popup-secondary);
-  box-shadow: var(--shadow-lg);
-  color: var(--color-text-primary);
-  padding: var(--spacing-xs);
-}
-
-.comma-routines-card-scroll {
-  min-height: 0;
-  flex: 0 1 auto;
-}
-
-.comma-routines-card-scroll > .comma-scroll-area__viewport {
-  height: auto;
-  max-height: calc(
-    100dvh - var(--spacing-3xl) - var(--spacing-8xl) - var(--spacing-xs)
-  );
-}
-
-.comma-routines-card-scroll-content {
-  min-width: 0;
-}
-
-.comma-routines-card-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-none);
-  outline: none;
-}
-
-.comma-routines-card-row {
-  display: grid;
-  height: var(--comma-routines-row-height);
-  min-width: 0;
-  min-height: var(--comma-routines-row-height);
-  grid-template-columns: var(--spacing-xl) var(--spacing-xl) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--spacing-md);
-  border-radius: var(--radius-md);
-  outline: none;
-  background: transparent;
-  padding: var(--spacing-none) var(--spacing-xs);
-  cursor: default;
-  position: relative;
-  /* The settle after a drop: the lift (background, pseudo shadow) fades over
-     the same spatial-move beat as the FLIP translation back into the slot.
-     Transform is deliberately absent — the drag writes it every frame;
-     box-shadow is absent so the keyboard focus ring stays instant. */
-  transition: background-color var(--motion-duration-spatial-move)
-    var(--motion-easing-surface-smooth-out);
-}
-
-/* Elevation lives on a pseudo-element's opacity so the row's box-shadow
-   channel stays free for the instant focus ring. Outer shadow only — the
-   pseudo has no fill and no pointer events. */
-.comma-routines-card-row::after {
-  position: absolute;
-  border-radius: inherit;
-  box-shadow: var(--shadow-md);
-  content: "";
-  inset: 0;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--motion-duration-spatial-move)
-    var(--motion-easing-surface-smooth-out);
-}
-
-.comma-routines-card-row[data-focus-visible] {
-  box-shadow: var(--shadow-focus-gray);
-}
-
-/* Picked up: an opaque lifted card, so crossing other rows reads as a surface
-   sliding above the list instead of two texts colliding. No scale: the scroll
-   viewport clips at its padding box, and a scaled row would poke past it and
-   lose its rounded corners. Lift-in is quicker than the settle-out on the
-   base rule. */
-.comma-routines-card-row[data-dragging],
-.comma-routines-card-row[data-pointer-dragging="true"] {
-  background: var(--color-bg-popup-secondary);
-  cursor: grabbing;
-  transition: background-color var(--motion-duration-state-change)
-    var(--motion-easing-smooth-out);
-}
-
-.comma-routines-card-row[data-dragging]::after,
-.comma-routines-card-row[data-pointer-dragging="true"]::after {
-  opacity: 1;
-  transition: opacity var(--motion-duration-state-change)
-    var(--motion-easing-smooth-out);
-}
-
-.comma-routines-card-row[data-pointer-dragging="true"],
-.comma-routines-card-row[data-routine-drag-settling] {
-  z-index: 2;
-}
-
-.comma-routines-card-row[data-pointer-dragging="true"] {
-  will-change: transform;
-}
-
-/* The edge fade would ghost the lifted card while the drag auto-scrolls into
-   the mask zone; suspend it for the drag's duration. */
-html[data-comma-routine-dragging="true"]
-  .comma-routines-card-scroll
-  .comma-scroll-area__viewport {
-  mask-image: none;
-  -webkit-mask-image: none;
-}
-
-.comma-routines-card-row[data-routine-drag-shift] {
-  transition: transform var(--motion-duration-state-change)
-    var(--motion-easing-surface-smooth-out);
-  will-change: transform;
-}
-
-.comma-routines-card-row[data-routine-drag-shift="up"] {
-  transform: translate3d(0, calc(-1 * var(--comma-routines-drag-shift)), 0);
-}
-
-.comma-routines-card-row[data-routine-drag-shift="down"] {
-  transform: translate3d(0, var(--comma-routines-drag-shift), 0);
-}
-
-.comma-routines-card-drag-hit-area {
-  display: inline-flex;
-  width: var(--spacing-2xl);
-  height: var(--spacing-2xl);
-  touch-action: none;
-  align-items: center;
-  justify-content: center;
-  justify-self: center;
-  cursor: grab;
-}
-
-.comma-routines-card-drag-handle {
-  display: inline-flex;
-  width: var(--spacing-xl);
-  height: var(--spacing-xl);
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: var(--radius-md);
-  outline: none;
-  background: transparent;
-  color: var(--color-text-quaternary);
-  cursor: grab;
-}
-
-.comma-routines-card-drag-handle:focus-visible {
-  box-shadow: var(--shadow-focus-gray);
-}
-
-.comma-routines-card-drag-handle svg {
-  width: var(--spacing-lg);
-  height: var(--spacing-lg);
-}
-
-.comma-routines-card-title {
-  overflow: hidden;
-  min-width: 0;
-  color: var(--color-text-primary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--text-sm--letter-spacing);
-  line-height: var(--text-sm--line-height);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.comma-routines-card-visibility {
-  width: calc(var(--spacing-9xl) + var(--spacing-lg));
-  height: var(--comma-routines-row-height);
-  min-width: calc(var(--spacing-9xl) + var(--spacing-lg));
-  flex: 0 0 auto;
-}
-
-.comma-routines-card-visibility [data-slot="dropdown-trigger"] {
-  width: 100%;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  cursor: pointer;
-}
-
-.comma-routines-card-visibility [data-slot="dropdown-trigger"][data-focus-visible] {
-  box-shadow: var(--shadow-focus-gray);
-}
-
-/* Trigger only (the popover is portaled out of this subtree): the label hugs
-   the chevron at the gap token's distance, while the popover's option list
-   stays start-aligned so Show/Hidden share a left ink edge. The selection
-   alignment anchors the TEXT: the popover slides sideways so the checked
-   option's ink opens exactly over this end-aligned trigger label. */
-.comma-routines-card-visibility [data-slot="dropdown-row-content"] {
-  gap: var(--spacing-xs);
-}
-
-.comma-routines-card-visibility [data-slot="dropdown-row-label"] {
-  text-align: end;
-}
-
-.comma-routines-panel-actions {
-  /* Full-bleed past the panel padding so the divider runs edge to edge; the
-     inline padding restores the panel's content box for the item inside. */
-  width: calc(100% + var(--spacing-xs) * 2);
-  flex: 0 0 auto;
-  margin-top: var(--spacing-xs);
-  margin-inline: calc(-1 * var(--spacing-xs));
-  border-top: var(--border-width-0-5) solid var(--color-border-primary);
-  background: transparent;
+  color: var(--color-text-tertiary);
   font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
   letter-spacing: var(--text-sm--letter-spacing);
   line-height: var(--text-sm--line-height);
-  padding-top: var(--spacing-xs);
-  padding-inline: var(--spacing-xs);
-}
-
-/* Trade the menu-item gutter for content padding equal to the card rows' inline
-   padding, so the label's left edge and the hover surface line up with the row
-   content above. */
-.comma-routines-panel-actions [data-slot="menu-item"] {
-  padding-inline: var(--spacing-none);
-}
-
-.comma-routines-panel-actions [data-slot="menu-item-content"] {
-  color: var(--color-text-tertiary);
-  padding-inline: var(--spacing-xs);
-}
-
-.comma-routines-panel[data-has-cards="false"] .comma-routines-panel-actions {
-  margin-top: var(--spacing-none);
-  border-top: 0;
-  padding-top: var(--spacing-none);
-}
-
-html[data-comma-routine-dragging="true"],
-html[data-comma-routine-dragging="true"] * {
-  cursor: grabbing !important;
-}
-
-.comma-routines-card-list .react-aria-DropIndicator {
-  position: relative;
-  z-index: 1;
-  height: 0;
-  outline: none;
-}
-
-.comma-routines-card-list .react-aria-DropIndicator::after {
-  position: absolute;
-  right: var(--spacing-md);
-  left: var(--spacing-md);
-  height: var(--spacing-xxs);
-  border-radius: var(--radius-full);
-  background: var(--color-border-brand);
-  content: "";
-  opacity: 0;
-  transform: translateY(-50%) scaleX(var(--motion-scale-menu-enter));
-  transition:
-    opacity var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
-    transform var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
-}
-
-.comma-routines-card-list .react-aria-DropIndicator[data-drop-target]::after {
-  opacity: 1;
-  transform: translateY(-50%) scaleX(1);
 }
 
 .comma-recommendations-scroll {
@@ -1232,46 +973,170 @@ html[data-comma-routine-dragging="true"] * {
   padding: 0 var(--spacing-xs) var(--spacing-xl);
 }
 
-.comma-recommendations-summary {
-  padding: var(--spacing-sm) 0 var(--spacing-md);
+/* Every card cleared: the content fills the rail, so the copy sits in the
+   middle of the room the cards left and the burst has the whole rail. */
+.comma-recommendations-content-cleared {
+  min-height: 100%;
+}
+
+.comma-routines-cleared {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-4xl) var(--spacing-md);
+}
+
+.comma-routines-cleared-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  text-align: center;
+}
+
+.comma-routines-cleared-mark {
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
   color: var(--color-text-tertiary);
-  font-size: 0.875rem;
-  line-height: 1.25rem;
 }
 
-.comma-recommendations-summary-title {
-  margin: 0 0 var(--spacing-md);
-  color: var(--color-text-primary);
-  font-size: 1.125rem;
-  font-weight: 600;
-  line-height: 1.75rem;
-}
-
-.comma-recommendations-summary-body {
-  /* Briefing prose is the one long-form block on Home: balance the ragged edge
-     so short trailing words do not strand on their own line. */
-  text-wrap: pretty;
-}
-
-/* A few lines, always at the top of the rail. markstream sets aside an 800 by
-   600 box for a renderer until it is drawn (content-visibility: auto), so the
-   cards under the briefing jumped when it drew at its real height. */
-.comma-recommendations-summary-body .markdown-renderer {
-  content-visibility: visible;
-}
-
-.comma-recommendations-summary-body .markdown-stream p {
+.comma-routines-cleared-title {
+  margin: 0;
   color: var(--color-text-tertiary);
   font-size: var(--text-sm);
-  font-weight: 400;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--text-sm--letter-spacing);
   line-height: var(--text-sm--line-height);
+  text-wrap: balance;
 }
 
-/* Separate paragraphs of the briefing; the first one stays flush to the title.
-   MarkdownStream wraps every block in its own .node-slot, so paragraph
-   adjacency lives there rather than on the <p> itself. */
-.comma-recommendations-summary-body .markdown-stream .node-slot + .node-slot {
-  margin-top: var(--spacing-md);
+/* Celebrated, the mark pops in from half its size, never seen at that size
+   (its opacity follows its scale), and the line fades in with it. */
+.comma-routines-cleared[data-celebrating="true"] .comma-routines-cleared-mark {
+  animation: comma-routines-cleared-pop var(--motion-duration-routine-cleared-enter)
+    var(--motion-easing-press-recoil) backwards;
+}
+
+.comma-routines-cleared[data-celebrating="true"] .comma-routines-cleared-title {
+  animation: comma-routines-cleared-fade var(--motion-duration-routine-cleared-enter)
+    var(--motion-easing-smooth-out) backwards;
+}
+
+@keyframes comma-routines-cleared-pop {
+  from {
+    opacity: 0;
+    transform: scale(var(--motion-scale-routine-cleared-mark));
+  }
+}
+
+@keyframes comma-routines-cleared-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The burst's stage is the whole content, which is the whole rail while it is
+   cleared. It clips the pieces, so a throw never adds to what the rail
+   scrolls. The content positions it (ScrollArea content is positioned). */
+.comma-routines-cleared-burst {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* A piece of paper. Until its flight starts it waits unseen at its popper. */
+.comma-routines-confetti {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--spacing-sm);
+  height: var(--spacing-lg);
+  border-radius: var(--radius-xxs);
+  background: currentColor;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.comma-routines-confetti[data-kind="dot"] {
+  height: var(--spacing-sm);
+  border-radius: var(--radius-full);
+}
+
+.comma-routines-confetti[data-kind="ribbon"] {
+  width: var(--spacing-4xl);
+  background: none;
+}
+
+.comma-routines-confetti[data-kind="ribbon"] > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.comma-routines-confetti[data-tone="0"] {
+  color: var(--color-utility-blue-300);
+}
+
+.comma-routines-confetti[data-tone="1"] {
+  color: var(--color-utility-pink-300);
+}
+
+.comma-routines-confetti[data-tone="2"] {
+  color: var(--color-utility-warning-300);
+}
+
+.comma-routines-confetti[data-tone="3"] {
+  color: var(--color-utility-success-300);
+}
+
+.comma-routines-confetti[data-tone="4"] {
+  color: var(--color-utility-purple-300);
+}
+
+.comma-routines-confetti[data-tone="5"] {
+  color: var(--color-utility-orange-300);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-routines-cleared[data-celebrating="true"] .comma-routines-cleared-mark,
+  .comma-routines-cleared[data-celebrating="true"] .comma-routines-cleared-title {
+    animation: none;
+  }
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-routines-cleared[data-celebrating="true"]
+  .comma-routines-cleared-mark,
+:root[data-comma-reduced-motion="true"]
+  .comma-routines-cleared[data-celebrating="true"]
+  .comma-routines-cleared-title {
+  animation: none;
+}
+
+/* The greeting, then the Routines heading a step under it. The greeting is
+   the Home screen's title; the heading keeps the Tasks rail's header box. */
+.comma-recommendations-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+  padding-top: var(--spacing-sm);
+}
+
+.comma-recommendations-greeting {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--text-lg--line-height);
+}
+
+/* The heading's own inset is the rail's when it stands alone; under the
+   greeting it shares the content's. */
+.comma-recommendations-header > .comma-recommendations-heading {
+  padding-inline: var(--spacing-none);
 }
 
 /* A source card only groups its rows: each row is a card of its own in the
@@ -1287,27 +1152,6 @@ html[data-comma-routine-dragging="true"] * {
    place in the column. */
 .comma-recommendation-card:empty {
   display: none;
-}
-
-.comma-recommendation-card-logo {
-  display: inline-flex;
-  width: var(--spacing-xl);
-  height: var(--spacing-xl);
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-sidebar-icon-primary);
-}
-
-.comma-recommendation-card-logo img,
-.comma-recommendation-card-logo svg {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-.comma-recommendation-card-logo img {
-  -webkit-user-drag: none;
 }
 
 /* A Routine row as a card: the task, the quoted source words as its
@@ -1345,8 +1189,14 @@ button.comma-recommendation-task-card:focus-visible,
 }
 
 /* The full-bleed button under a text card's words carries its press, so the
-   card presses the way a button does. */
+   card presses the way a button does. Wide cards step down to a 0.99 scale so
+   their edges travel ~2px rather than wobbling the whole paragraph. */
+button.comma-recommendation-task-card {
+  --button-press-scale: 0.99;
+}
+
 .comma-recommendation-text-item {
+  --button-press-scale: 0.99;
   scale: 1;
   transition:
     background-color var(--button-state-duration) var(--button-state-easing),
@@ -1357,6 +1207,8 @@ button.comma-recommendation-task-card:focus-visible,
   .comma-recommendation-text-item:has(> .comma-recommendation-text-item-action:active) {
     scale: var(--button-press-scale);
     transition-duration: var(--button-state-duration), var(--button-press-in-duration);
+    transition-timing-function:
+      var(--button-state-easing), var(--button-press-in-easing);
   }
 }
 
@@ -1472,6 +1324,26 @@ button.comma-recommendation-task-card:focus-visible,
   color: var(--color-text-quaternary);
 }
 
+.comma-web-link-preview-image {
+  width: 100%;
+  max-height: calc(var(--container-xs) / 2);
+  object-fit: cover;
+  border-radius: var(--radius-md);
+}
+
+.comma-web-link-preview-icon {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  object-fit: contain;
+}
+
+.comma-web-link-preview-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .comma-recommendation-link-card-ref {
   flex: 1 1 auto;
   overflow: hidden;
@@ -1512,42 +1384,30 @@ button.comma-recommendation-task-card:focus-visible,
   height: 100%;
 }
 
-.comma-recommendation-link-card-state[data-state="open"] {
-  background: var(--color-success-100);
-  color: var(--color-success-500);
-}
-
+.comma-recommendation-link-card-state[data-state="open"],
 .comma-recommendation-link-card-state[data-state="completed"],
 .comma-recommendation-link-card-state[data-state="confirmed"] {
-  background: var(--color-success-100);
-  color: var(--color-text-success-primary);
+  background: var(--comma-badge-success-bg);
+  color: var(--color-utility-success-700);
 }
 
 .comma-recommendation-link-card-state[data-state="merged"] {
-  background: var(--color-purple-100);
-  color: var(--color-purple-500);
+  background: var(--comma-badge-purple-bg);
+  color: var(--color-utility-purple-700);
 }
 
 .comma-recommendation-link-card-state[data-state="closed"],
-.comma-recommendation-link-card-state[data-state="cancelled"] {
-  background: var(--color-error-100);
-  color: var(--color-text-error-primary);
-}
-
+.comma-recommendation-link-card-state[data-state="cancelled"],
 .comma-recommendation-link-card-state[data-state="canceled"] {
-  background: var(--color-error-100);
-  color: var(--color-error-500);
+  background: var(--comma-badge-error-bg);
+  color: var(--color-utility-error-700);
 }
 
 .comma-recommendation-link-card-state[data-state="started"],
-.comma-recommendation-link-card-state[data-state="tentative"] {
-  background: var(--color-warning-100);
-  color: var(--color-fg-warning-secondary);
-}
-
+.comma-recommendation-link-card-state[data-state="tentative"],
 .comma-recommendation-link-card-state[data-state="review"] {
-  background: var(--color-yellow-50);
-  color: var(--color-yellow-500);
+  background: var(--comma-badge-warning-bg);
+  color: var(--color-utility-warning-700);
 }
 
 .comma-recommendation-link-card-body {
@@ -1809,22 +1669,11 @@ button.comma-recommendation-task-card:focus-visible,
   cursor: pointer;
 }
 
-.comma-recommendation-inline[data-variant="summary"] {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  border-radius: var(--radius-xs);
-  background: var(--color-bg-quaternary);
-  color: var(--color-text-tertiary);
-  padding: 0 var(--spacing-xxs);
-}
-
 /* The label is baseline-aligned so the chip's own baseline is the label's, not
    the icon's bottom edge: that is what puts the chip text on the prose baseline
    instead of a hand-tuned vertical-align nudge. The icon centres itself in the
    line box on top of that. */
-.comma-recommendation-inline-source,
-.comma-recommendation-inline-source[data-variant="summary"] {
+.comma-recommendation-inline-source {
   display: inline-flex;
   align-items: baseline;
   gap: calc(var(--spacing-sm) / 2);
@@ -1839,52 +1688,8 @@ button.comma-recommendation-task-card:focus-visible,
   white-space: nowrap;
 }
 
-/* In the briefing the chip is set in the paragraph's own type rather than the
-   card ramp above, so its label keeps the prose's size and baseline wherever
-   that prose is sized. */
-.comma-recommendation-inline-source[data-variant="summary"] {
-  font: inherit;
-  letter-spacing: inherit;
-}
-
-/* The chip's fill is held one step under the prose line so that the chips on
-   consecutive lines of a wrapped paragraph keep a gutter. At the prose
-   line-height the fill filled that box exactly and a citation-heavy paragraph
-   read as one grey slab. One step is as far as it goes: the mark inside is a
-   16px square, so a shorter box would leave it flush against both edges and
-   the chip would read as a tile with a label after it. Only the box closes up
-   — the font stays the paragraph's, so the label keeps its glyphs and its
-   baseline. */
-.comma-recommendation-inline[data-variant="summary"],
-.comma-recommendation-inline-source[data-variant="summary"] {
-  line-height: var(--text-xs--line-height);
-}
-
-/* A briefing chip is a citation, not the sentence: it caps at 240px and
-   truncates through its label span, so a long document title stays inline
-   with the prose instead of taking a whole line. Card-row chips are governed
-   by their row instead (.comma-recommendation-text-item-content above). */
-.comma-recommendation-inline[data-variant="summary"],
-.comma-recommendation-inline-source[data-variant="summary"] {
-  max-width: min(240px, 100%);
-}
-
-/* Two chips in a row are one citation list, not one wide pill: they carry no
-   prose between them, so the gap is the chip's own. It hangs off the trailing
-   edge of the first chip rather than the leading edge of the second, so a chip
-   that wraps still starts flush with the prose. `+` reads past text nodes, so
-   this leans on MarkdownStream rendering prose as its own element — the e2e
-   pins that a chip separated from the next by prose stays flush. */
-.comma-recommendation-inline[data-variant="summary"]:has(
-    + .comma-recommendation-inline[data-variant="summary"]
-  ) {
-  margin-inline-end: var(--spacing-xs);
-}
-
-/* A chip label longer than its line truncates instead of widening it — in
-   the briefing prose and in card rows alike, the ellipsis is the label
-   span's own. */
-.comma-recommendation-inline[data-variant="summary"] > span,
+/* A chip label longer than its line truncates instead of widening it: the
+   ellipsis is the label span's own. */
 .comma-recommendation-inline-source > span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1966,10 +1771,18 @@ button.comma-recommendation-task-card:focus-visible,
 
 /* Where a pointer can hover, the control shows only while it is over the card
    or focus is inside it; a touch screen keeps it in view. */
+.comma-recommendation-row-dismiss {
+  --button-press-scale: 0.94;
+}
+
 @media (hover: hover) {
   .comma-recommendation-row-dismiss {
     opacity: 0;
-    transition: opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+    transition:
+      opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
+      background-color var(--button-state-duration) var(--button-state-easing),
+      color var(--button-state-duration) var(--button-state-easing),
+      scale var(--button-press-current-duration) var(--button-press-current-easing);
   }
 
   .comma-recommendation-text-item:hover .comma-recommendation-row-dismiss,
@@ -1988,27 +1801,6 @@ button.comma-recommendation-task-card:focus-visible,
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   line-height: var(--text-xs--line-height);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* The attribute variants outrank the bare class; list them so reduced
-     motion actually reaches the drag transitions. */
-  .comma-routines-card-row,
-  .comma-routines-card-row::after,
-  .comma-routines-card-row[data-dragging],
-  .comma-routines-card-row[data-pointer-dragging="true"],
-  .comma-routines-card-row[data-dragging]::after,
-  .comma-routines-card-row[data-pointer-dragging="true"]::after,
-  .comma-routines-card-row[data-routine-drag-shift],
-  .comma-routines-card-list .react-aria-DropIndicator::after,
-  .comma-recommendation-row-icon {
-    transition: none;
-  }
-
-  .comma-recommendation-row-icon {
-    filter: none;
-    transform: none;
-  }
 }
 
 /* Empty / generating rail states: centered in the rail like the Tasks rail's
@@ -2289,11 +2081,11 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   transition: none;
 }
 
-/* The header trigger lands once the column has folded: the delay sequences
-   the two instead of racing them, then the icon pops in on the reveal clock. */
+/* The header trigger lands immediately as the column folds in one layout step,
+   popping in on the reveal clock without a dead-air gap. */
 .comma-task-panel-toggle {
   animation: comma-task-panel-toggle-reveal var(--motion-duration-reveal-item)
-    var(--motion-easing-surface-smooth-out) var(--motion-duration-panel-exit) both;
+    var(--motion-easing-surface-smooth-out) both;
 }
 
 @keyframes comma-task-panel-toggle-reveal {
@@ -3967,10 +3759,18 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
 
 /* In the Changes line and card the dots wait for the pointer or focus to
    reach the row, and stay while their menu is open. */
+.comma-task-coding-more {
+  --button-press-scale: 0.94;
+}
+
 .comma-task-coding-summary .comma-task-coding-more,
 .comma-task-coding-pr .comma-task-coding-more {
   opacity: 0;
-  transition: opacity var(--motion-duration-state-change) var(--motion-easing-calm-out);
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-calm-out),
+    background-color var(--button-state-duration) var(--button-state-easing),
+    color var(--button-state-duration) var(--button-state-easing),
+    scale var(--button-press-current-duration) var(--button-press-current-easing);
 }
 
 .comma-task-coding-summary:hover .comma-task-coding-more,
@@ -4656,14 +4456,15 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
   color: var(--color-text-tertiary);
 }
 
-/* Figma "Label" chip: a 1px pill with an 8px colour mark, the text set
-   medium; the mark sits 8px in, the text ends 12px before the edge. */
+/* Label chip: a 1px pill with balanced horizontal padding so the leading mark
+   and trailing text sit comfortably inside the rounded edge. */
 .comma-task-label-chip {
   display: inline-flex;
-  max-width: 100%;
+  max-width: min(100%, 220px);
   align-items: center;
   gap: var(--spacing-xs);
-  padding: var(--spacing-xxs) var(--spacing-lg) var(--spacing-xxs) var(--spacing-md);
+  overflow: hidden;
+  padding: var(--spacing-xxs) var(--spacing-md);
   border: var(--border-width-default) solid var(--color-border-primary);
   border-radius: var(--radius-full);
   color: var(--color-text-primary);
@@ -4676,6 +4477,11 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
 .comma-task-label-chip .comma-label-dot {
   width: var(--spacing-md);
   height: var(--spacing-md);
+  flex-shrink: 0;
+}
+
+.comma-task-label-chip-icon {
+  flex-shrink: 0;
 }
 
 /* Inside a line of text (the chat's confirmation card) the chip keeps its
@@ -4685,10 +4491,35 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
 }
 
 /* The chip's text never wraps, except for the trigger rule in Properties;
-   only a squeezed list row may truncate it. */
+   long labels truncate in the middle so both the leading place and trailing detail stay visible. */
 .comma-task-label-chip-text {
   min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
+}
+
+.comma-task-label-chip-text-middle {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.comma-task-label-chip-text-start {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.comma-task-label-chip-text-end {
+  flex: 0 0 auto;
+  max-width: 45%;
+  overflow: hidden;
+  white-space: pre;
 }
 
 /* "+N labels": present after the label chips everywhere, shown only where
@@ -4719,7 +4550,7 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
    and labels past the second fold into "+N labels" — the squeezed row still
    reads as chips, never as a bare ellipsis. Container queries accept no
    var(), so the theme's --container-lg (640px) is written out. */
-@container (width < 640px) {
+@container tasks-list (width < 640px) {
   /* The title keeps a readable share; only then do the chips give way. Without
      this floor the flex algorithm empties the basis-0 title before the
      auto-basis chips shrink at all. */
@@ -4761,7 +4592,7 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
 
   [data-slot="task-list-item"]
     [data-slot="task-list-item-badges"]
-    .comma-task-label-chip-text {
+    .comma-task-label-chip-text:not(.comma-task-label-chip-text-middle) {
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -4805,10 +4636,10 @@ button.comma-task-label-chip:focus-visible {
   transform: scale(var(--motion-scale-tactile-pressed));
 }
 
-/* Figma task card platform chip: the 20px brand mark sits 2px from the edge,
-   the name 8px before the end. */
+/* Task card platform & host chip: 16px brand/machine mark with 6px leading
+   inset and 8px trailing inset so square icons never crowd the rounded border. */
 .comma-task-platform-chip {
-  padding: var(--spacing-xxs) var(--spacing-md) var(--spacing-xxs) var(--spacing-xxs);
+  padding: var(--spacing-xxs) var(--spacing-md) var(--spacing-xxs) var(--spacing-sm);
 }
 
 .comma-task-platform-chip svg {
@@ -5577,6 +5408,48 @@ button.comma-task-label-chip:focus-visible {
   user-select: text;
 }
 
+/* In a Task together, another person's message reads as theirs: on the left,
+   under their face and name, in a quiet bubble rather than the account's. */
+.comma-chat-message-other {
+  position: relative;
+  align-items: flex-start;
+}
+
+.comma-chat-message-other > .comma-chat-assistant-source-avatar {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: calc(-1 * var(--comma-chat-avatar-gutter));
+}
+
+/* The bubble starts at the column's edge, as an Agent's does; Copy follows it. */
+.comma-chat-message-other .comma-chat-user-bubble-row {
+  flex-direction: row;
+}
+
+.comma-chat-message-other .comma-chat-user-bubble-slot {
+  justify-content: flex-start;
+}
+
+.comma-chat-message-other .comma-chat-user-bubble {
+  --comma-chat-user-bubble-background: var(--color-markdown-bg-message);
+  --comma-chat-user-bubble-foreground: var(--color-text-primary);
+}
+
+.comma-chat-message-other .comma-chat-block-extras,
+.comma-chat-message-other .comma-chat-attachments {
+  align-items: flex-start;
+}
+
+/* A Task together's word that someone left or was taken out: a quiet line
+   across the thread, as its time separators are. */
+.comma-chat-member-change {
+  padding-block: var(--spacing-sm);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-align: center;
+}
+
 /* A quoted passage the sender picked out of the thread. The tile itself is
    the composer's staged-quote chip (opening lines, full text on hover); this
    wrapper just seats it in the turn's evenly spaced stack. */
@@ -5915,37 +5788,32 @@ button.comma-task-label-chip:focus-visible {
   background: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--comma-chat-user-bubble-background) 0%, transparent) 0%,
-    color-mix(in srgb, var(--comma-chat-user-bubble-background) 4%, transparent) 14%,
-    color-mix(in srgb, var(--comma-chat-user-bubble-background) 12%, transparent) 28%,
-    color-mix(in srgb, var(--comma-chat-user-bubble-background) 28%, transparent) 44%,
-    color-mix(in srgb, var(--comma-chat-user-bubble-background) 52%, transparent) 62%,
-    color-mix(in srgb, var(--comma-chat-user-bubble-background) 76%, transparent) 78%,
-    color-mix(in srgb, var(--comma-chat-user-bubble-background) 94%, transparent) 92%,
-    var(--comma-chat-user-bubble-background) 100%
+    color-mix(in srgb, var(--comma-chat-user-bubble-background) 12%, transparent) 12%,
+    color-mix(in srgb, var(--comma-chat-user-bubble-background) 34%, transparent) 26%,
+    color-mix(in srgb, var(--comma-chat-user-bubble-background) 62%, transparent) 40%,
+    color-mix(in srgb, var(--comma-chat-user-bubble-background) 84%, transparent) 54%,
+    color-mix(in srgb, var(--comma-chat-user-bubble-background) 96%, transparent) 68%,
+    var(--comma-chat-user-bubble-background) 80%
   );
   -webkit-backdrop-filter: blur(var(--blur-sm));
   backdrop-filter: blur(var(--blur-sm));
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0%,
-    rgb(0 0 0 / 6%) 14%,
-    rgb(0 0 0 / 18%) 28%,
-    rgb(0 0 0 / 36%) 44%,
-    rgb(0 0 0 / 60%) 62%,
-    rgb(0 0 0 / 82%) 78%,
-    rgb(0 0 0 / 96%) 92%,
-    black 100%
+    rgb(0 0 0 / 16%) 12%,
+    rgb(0 0 0 / 40%) 26%,
+    rgb(0 0 0 / 68%) 40%,
+    rgb(0 0 0 / 88%) 54%,
+    black 68%
   );
   mask-image: linear-gradient(
     to bottom,
     transparent 0%,
-    rgb(0 0 0 / 6%) 14%,
-    rgb(0 0 0 / 18%) 28%,
-    rgb(0 0 0 / 36%) 44%,
-    rgb(0 0 0 / 60%) 62%,
-    rgb(0 0 0 / 82%) 78%,
-    rgb(0 0 0 / 96%) 92%,
-    black 100%
+    rgb(0 0 0 / 16%) 12%,
+    rgb(0 0 0 / 40%) 26%,
+    rgb(0 0 0 / 68%) 40%,
+    rgb(0 0 0 / 88%) 54%,
+    black 68%
   );
   transition: opacity var(--motion-duration-state-change)
     var(--motion-easing-smooth-out);
@@ -5964,14 +5832,18 @@ button.comma-task-label-chip:focus-visible {
 }
 
 .comma-chat-user-bubble-toggle {
-  display: grid;
-  width: var(--spacing-4xl);
+  display: inline-flex;
   height: var(--spacing-4xl);
-  place-items: center;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  padding-inline: var(--spacing-md) var(--spacing-sm);
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: color-mix(in srgb, var(--comma-chat-user-bubble-foreground) 72%, transparent);
+  color: color-mix(in srgb, var(--comma-chat-user-bubble-foreground) 80%, transparent);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
   cursor: pointer;
   pointer-events: auto;
 }
@@ -6260,6 +6132,111 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   line-height: var(--text-xs--line-height);
 }
 
+.comma-chat-assistant-source-label[data-session-slot] {
+  display: flex;
+  width: fit-content;
+  align-items: baseline;
+  gap: var(--spacing-xs);
+}
+
+/* The handle reads as the session's address, like a mention, not as a tag. */
+.comma-chat-assistant-source-slot {
+  color: var(--color-text-quaternary);
+}
+
+/* ---- Worker sessions roster ----------------------------------------
+   One identity per session everywhere: its model maker's mark carrying a
+   state dot, its name, its @handle, then what it is doing. */
+.comma-worker-session-mark {
+  position: relative;
+  display: inline-flex;
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.comma-worker-session-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: calc(var(--spacing-md) + var(--spacing-xxs));
+  height: calc(var(--spacing-md) + var(--spacing-xxs));
+  box-sizing: border-box;
+  border: var(--spacing-xxs) solid var(--color-bg-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quaternary);
+}
+
+.comma-worker-session-dot[data-state="active"] {
+  background: var(--color-fg-success-primary);
+}
+
+.comma-worker-session-dot[data-state="waiting"] {
+  background: var(--color-warning-500);
+}
+
+.comma-worker-session-dot[data-state="error"] {
+  background: var(--color-fg-error-primary);
+}
+
+.comma-worker-session-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-worker-session-slot {
+  flex-shrink: 0;
+  color: var(--color-text-quaternary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.comma-worker-sessions-panel-item {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* One line, in the Environment rows' type: the mark in their 20px glyph
+   slot, then the name and its handle on one baseline. */
+.comma-worker-session-item {
+  display: flex;
+  min-width: 0;
+  min-height: var(--spacing-3xl);
+  align-items: center;
+  gap: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  outline: none;
+}
+
+.comma-worker-session-item:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-worker-session-item > .comma-worker-session-slot {
+  flex-shrink: 0;
+  color: var(--color-text-quaternary);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.comma-worker-sessions-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .comma-chat-block-extras {
   display: flex;
   max-width: 480px;
@@ -6320,20 +6297,23 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 .comma-chat-ref-card {
   display: grid;
   width: min(480px, 100%);
-  min-height: 58px;
+  min-height: 56px;
   grid-template-columns: 32px minmax(0, 1fr) 18px;
   align-items: center;
   gap: 10px;
   border: 1px solid var(--color-border-primary);
-  border-radius: 8px;
+  border-radius: var(--radius-xl);
   background: var(--color-bg-primary);
-  padding: 10px 12px;
+  box-shadow: var(--shadow-xs);
+  padding: 8px 10px;
   color: var(--color-text-primary);
   text-decoration: none;
+  scale: 1;
   transition:
-    border-color 120ms ease,
-    background-color 120ms ease,
-    transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+    border-color var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
+    background-color var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
+    box-shadow var(--motion-duration-feedback-in) var(--motion-easing-smooth-out),
+    scale var(--motion-duration-press-recoil) var(--motion-easing-press-recoil);
 }
 
 .comma-chat-ref-card:hover {
@@ -6342,7 +6322,13 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 .comma-chat-ref-card:active {
-  transform: scale(0.995);
+  scale: 0.99;
+  transition-duration:
+    var(--motion-duration-press-travel), var(--motion-duration-press-travel),
+    var(--motion-duration-press-travel), var(--motion-duration-press-travel);
+  transition-timing-function:
+    var(--motion-easing-press-travel), var(--motion-easing-press-travel),
+    var(--motion-easing-press-travel), var(--motion-easing-press-travel);
 }
 
 .comma-chat-ref-card:focus-visible {
@@ -6357,7 +6343,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--color-border-primary);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
 }
@@ -6391,6 +6377,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 .comma-chat-attachments {
   display: flex;
+  inline-size: 100%;
   max-width: 100%;
   flex-direction: column;
   align-items: flex-start;
@@ -6435,49 +6422,22 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   border-radius: calc(var(--radius-md) - var(--border-width-0-5));
 }
 
-/* An image an agent produced keeps the ratio it was produced at: the frame
-   only bounds how large it may paint, so the whole picture stays visible
-   instead of a cropped fixed-ratio card. The hairline border stays. */
 .comma-chat-inline-images {
   display: flex;
+  inline-size: 100%;
+  max-inline-size: 100%;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--spacing-lg);
-  max-inline-size: 100%;
 }
 
-.comma-chat-inline-image.chat-panel-image {
-  inline-size: fit-content;
-  max-inline-size: 100%;
-  block-size: auto;
-  aspect-ratio: auto;
-  border: var(--border-width-0-5) solid var(--color-border-primary);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-quaternary);
-}
-
-.comma-chat-inline-image .chat-panel-image-preview-trigger {
-  inline-size: auto;
-  max-inline-size: 100%;
-  block-size: auto;
-  border-radius: calc(var(--radius-md) - var(--border-width-0-5));
-}
-
-/* Both caps must be able to lose to the column: an absolute 30rem alone left a
-   480px image inside a 240px frame, and the frame's overflow:hidden then cut
-   the right half away. `min(100%, 30rem)` also bounds the picture by the width
-   the frame actually got, so a narrow message shows less picture, not a crop. */
-.comma-chat-inline-image .chat-panel-image-content {
-  inline-size: auto;
-  block-size: auto;
-  max-inline-size: min(30rem, 100%);
-  max-block-size: 24rem;
-  object-fit: contain;
-}
-
+/* Definite width matching .comma-chat-block-extras (480px): user rows and
+   assistant bodies shrink-to-fit, so 100% alone collapses short file names to
+   their intrinsic width while max-width: 100% still narrows on tight layouts. */
 .comma-chat-file-card-column {
   display: flex;
-  width: 100%;
+  width: var(--container-sm);
+  max-width: 100%;
   flex-direction: column;
   gap: var(--spacing-md);
 }
@@ -6494,6 +6454,18 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   color: var(--color-text-secondary);
   font-size: 0.75rem;
   line-height: 1rem;
+}
+
+/* A pill that opens its file: a button that reads as the pill. */
+button.comma-chat-attachment-pill {
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+button.comma-chat-attachment-pill:hover {
+  background: var(--color-bg-secondary-hover);
 }
 
 .comma-chat-attachment-file-icon {
@@ -6518,6 +6490,26 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   color: var(--color-text-tertiary);
 }
 
+/* The folder a file is in on the sender's computer, at most 140px (its path holds the bound, so the pill sizes the
+   folder from there). A short one keeps its width; a long one (cut in its middle) gives way before the file's name
+   does, down to 4rem. */
+.comma-chat-attachment-folder {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+.comma-chat-attachment-folder[data-long] {
+  min-width: 4rem;
+  flex-shrink: 1000;
+  overflow: hidden;
+}
+
+.comma-chat-attachment-folder > span {
+  max-width: 140px;
+}
+
 .comma-chat-composer-shell {
   position: relative;
 }
@@ -6532,21 +6524,34 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   max-height: 16rem;
   flex-direction: column;
   overflow-y: auto;
-  border: 0.5px solid var(--color-border-primary);
-  border-radius: 8px;
-  background: var(--color-bg-popup-primary);
-  box-shadow: var(--shadow-sm);
-  padding: 4px;
+  scrollbar-width: thin;
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: var(--shadow-lg);
+  padding: var(--spacing-xs);
+  transform-origin: bottom left;
+  transition:
+    opacity var(--motion-duration-menu-enter) var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-menu-enter) var(--motion-easing-surface-smooth-out),
+    scale var(--motion-duration-menu-enter) var(--motion-easing-surface-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+    translate: 0 var(--motion-distance-menu-enter);
+    scale: var(--motion-scale-menu-enter);
+  }
 }
 
 .comma-chat-skill-option {
+  --button-press-scale: 0.985;
   display: flex;
   min-width: 0;
   cursor: pointer;
   flex-direction: column;
   gap: 2px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   padding: 7px 8px;
   color: var(--color-text-primary);
@@ -6555,7 +6560,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 .comma-chat-skill-option:hover,
 .comma-chat-skill-option[aria-selected="true"] {
-  background: var(--color-bg-secondary);
+  background: var(--color-sidebar-bg-item);
 }
 
 .comma-chat-skill-name,
@@ -6639,7 +6644,8 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 .comma-chat-reply-lines > path[data-reply-draw-enter="true"] {
-  animation: comma-chat-reply-draw var(--motion-duration-reply-draw) linear both paused;
+  animation: comma-chat-reply-draw 420ms var(--motion-easing-surface-smooth-out) both
+    paused;
 }
 
 .comma-chat-reply-lines > path[data-reply-draw-visible="true"] {
@@ -6692,6 +6698,32 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   pointer-events: none;
   animation: comma-chat-reply-thread-out var(--motion-duration-reply-thread-exit)
     var(--motion-easing-drawer) both;
+}
+
+/* Handing over to the next pending card: the backdrop is already up, so the
+   incoming layer does not fade it in again and the outgoing one draws no
+   backdrop of its own while its messages slide away above it. */
+.comma-chat-reply-thread[data-enter="advance"] {
+  animation: none;
+}
+
+.comma-chat-reply-thread[data-state="leaving"] {
+  pointer-events: none;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  animation: none;
+}
+
+.comma-chat-reply-thread-progress {
+  display: block;
+  margin-block-end: var(--spacing-md);
+  color: var(--color-text-quaternary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  text-align: center;
 }
 
 .comma-chat-reply-thread-content {
@@ -6765,14 +6797,18 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 .comma-chat-reply-preview-bubble {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
+  display: block;
   border: 1px solid var(--color-border-primary);
   border-radius: 14px;
   padding: 5px 10px;
   opacity: 0.7;
+}
+
+.comma-chat-reply-preview-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .comma-chat-reply-preview > .comma-chat-reply-preview-avatar {
@@ -6885,72 +6921,560 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   scale: 0.97;
 }
 
-/* Tasks the agent created in this conversation, pinned above the composer
-   (Figma Comma-App 1364:12145). Rows arrive with the home-tasks materialize
-   motion; the row's text actions live under the pointer only, and past five
-   rows the list scrolls inside the panel instead of growing it. */
+/* Dual-bubble sticky dock pinned above the composer:
+   1. Left focus strip surfaces the top-priority pending confirmation card
+      (Question / AgentRequest / Label proposal) or Needs Review / Escalated /
+      Failed Task, with a stacked peek and +N toggle when more items wait.
+   2. Right compact pill summarizes running Tasks and standing Loops.
+   Popovers float above the bar (position: absolute), so opening or closing
+   either popover never changes the dock's height in the flex column or
+   triggers a transcript scrollport resize cascade. */
 .comma-chat-task-panel {
   --comma-chat-task-row-block: calc(
     var(--text-sm--line-height) + 2 * var(--spacing-xs)
   );
+  --comma-chat-dock-attention-bg: var(--color-ai-input-panel-bg-input);
+  --comma-chat-dock-attention-bg-hover: var(--color-bg-primary);
+  --comma-chat-dock-attention-border: var(--color-border-primary);
+  position: relative;
   display: flex;
   flex-direction: column;
   margin-block-end: var(--spacing-md);
-  border: 1px solid var(--color-border-primary);
-  border-radius: var(--radius-2xl);
-  background: var(--color-ai-input-panel-bg-input);
-  box-shadow: var(--shadow-xs);
-  padding: var(--spacing-md);
-  /* The panel's height steps; it never tweens. This panel is a flex:none child
-     of the composer zone, so every intermediate height is another height for
-     the transcript's scroller in the same column: the thread re-reads its
-     geometry, stick-to-bottom rewrites scrollTop, and the viewport's edge mask
-     re-composites every message — once per animated frame. Stepping runs that
-     cascade once per press. Folded, the list is not rendered, so the panel is
-     exactly its header line; the beat is carried by the list's opacity below,
-     which paints inside this box only and is not a size the scroller can
-     observe. */
 }
 
-/* The header names the count and carries the disclosure chevron. */
-.comma-chat-task-panel-toggle {
+.comma-chat-dock-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--spacing-sm);
+  min-width: 0;
+}
+
+.comma-chat-dock-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-chat-dock-focus-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.comma-chat-dock-focus {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-block-size: calc(var(--spacing-3xl) + var(--spacing-lg));
+  padding-block: var(--spacing-xs);
+  padding-inline: var(--spacing-md) var(--spacing-xs);
+  border: var(--border-width-default) solid var(--comma-chat-dock-attention-border);
+  border-radius: var(--radius-xl);
+  background: var(--comma-chat-dock-attention-bg);
+  box-shadow: var(--shadow-xs);
+  transition: background-color var(--motion-duration-feedback-out)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-chat-dock-focus:hover,
+.comma-chat-dock-focus:has([data-focus-visible]),
+.comma-chat-dock-focus:has([aria-expanded="true"]) {
+  background: var(--comma-chat-dock-attention-bg-hover);
+}
+
+.comma-chat-dock-focus-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
   gap: var(--spacing-sm);
   border: 0;
   background: transparent;
-  padding-inline: var(--spacing-xs);
+  padding: 0;
+  text-align: start;
   cursor: pointer;
 }
 
-.comma-chat-task-panel-toggle[data-focus-visible] {
+/* The whole bubble answers: the main button's hit area covers the bubble,
+   and only the real buttons in the actions row sit above it. */
+.comma-chat-dock-focus-main::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-xl);
+}
+
+.comma-chat-dock-focus:has(.comma-chat-dock-focus-main:hover) .comma-chat-dock-cta {
+  background: var(--color-bg-secondary-hover);
+}
+
+.comma-chat-dock-focus-main[data-focus-visible] {
   outline: none;
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-focus-gray);
 }
 
-.comma-chat-task-panel-count {
-  color: var(--color-text-quaternary);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  line-height: var(--text-xs--line-height);
+.comma-chat-dock-dot {
+  flex: none;
+  inline-size: var(--spacing-sm);
+  block-size: var(--spacing-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-brand-solid);
 }
 
-/* The chevron points where the list is headed: down while the list is open
-   (press to fold it away), up once it is closed. Rotating one icon rather than
-   swapping two keeps the motion continuous and interruptible. */
-.comma-chat-task-panel-chevron {
+.comma-chat-dock-card-row .comma-chat-dock-dot {
+  inline-size: var(--spacing-md);
+  block-size: var(--spacing-md);
+}
+
+.comma-chat-dock-focus-glyph {
+  display: inline-flex;
   flex: none;
-  inline-size: var(--spacing-2xl);
-  block-size: var(--spacing-2xl);
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
+}
+
+.comma-chat-dock-focus-glyph svg {
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
+}
+
+/* An item's kind or status, quiet text after its title. */
+.comma-chat-dock-kicker {
+  flex: none;
+  color: var(--color-text-quaternary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+}
+
+.comma-chat-dock-kicker[data-tone="error"] {
+  color: var(--color-text-error-primary);
+}
+
+.comma-chat-dock-focus-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-chat-dock-focus-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-xs);
+  pointer-events: none;
+}
+
+.comma-chat-dock-focus-actions button {
+  pointer-events: auto;
+}
+
+.comma-chat-dock-countdown {
+  color: var(--color-text-warning-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--text-xs--line-height);
+  padding-inline-end: var(--spacing-xxs);
+  white-space: nowrap;
+}
+
+.comma-chat-dock-countdown[data-soon="true"] {
+  color: var(--color-text-error-primary);
+}
+
+.comma-chat-dock-cta {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  block-size: var(--spacing-3xl);
+  padding-inline: var(--spacing-md);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    border-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+.comma-chat-dock-more-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  block-size: var(--spacing-3xl);
+  padding-inline: var(--spacing-sm);
+  border: var(--border-width-default) solid var(--comma-chat-dock-attention-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--text-xs--line-height);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+.comma-chat-dock-more-btn:hover,
+.comma-chat-dock-more-btn[aria-expanded="true"] {
+  background: var(--color-bg-secondary-hover);
+  color: var(--color-text-primary);
+}
+
+.comma-chat-dock-more-btn[data-focus-visible] {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-chat-dock-focus[data-arriving="true"] {
+  animation: comma-chat-task-item-reveal var(--motion-duration-icon-swap)
+    var(--motion-easing-smooth-out) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-dock-focus[data-arriving="true"] {
+    animation-duration: 0s;
+  }
+}
+
+/* Single attention task: keep the bar clean at rest and reveal Dismiss / Reveal / Archive on hover or focus. */
+.comma-chat-dock-focus[data-single-task="true"] {
+  padding-inline-end: var(--spacing-md);
+}
+
+.comma-chat-dock-single-actions {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  z-index: 1;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  padding-inline-start: var(--spacing-3xl);
+  padding-inline-end: var(--spacing-xs);
+  pointer-events: none;
+}
+
+.comma-chat-dock-single-actions button {
+  flex: none;
+  pointer-events: auto;
+  opacity: 0;
+}
+
+@media (hover: hover) {
+  .comma-chat-dock-focus[data-single-task="true"]:hover
+    .comma-chat-dock-single-actions::before,
+  .comma-chat-dock-focus[data-single-task="true"]:has([data-focus-visible])
+    .comma-chat-dock-single-actions::before,
+  .comma-chat-dock-focus[data-single-task="true"]:has([aria-expanded="true"])
+    .comma-chat-dock-single-actions::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-start-end-radius: calc(var(--radius-xl) - var(--border-width-default));
+    border-end-end-radius: calc(var(--radius-xl) - var(--border-width-default));
+    background: var(--comma-chat-dock-attention-bg-hover);
+    content: "";
+    mask-image: linear-gradient(to right, transparent, black var(--spacing-3xl));
+  }
+}
+
+.comma-chat-dock-focus[data-single-task="true"]:hover
+  .comma-chat-dock-single-actions
+  button,
+.comma-chat-dock-focus[data-single-task="true"]:has([data-focus-visible])
+  .comma-chat-dock-single-actions
+  button,
+.comma-chat-dock-focus[data-single-task="true"]:has([aria-expanded="true"])
+  .comma-chat-dock-single-actions
+  button {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .comma-chat-dock-focus[data-single-task="true"] {
+    padding-inline-end: var(--spacing-xs);
+  }
+
+  .comma-chat-dock-single-actions {
+    position: static;
+    padding-inline: 0;
+  }
+
+  .comma-chat-dock-single-actions button {
+    opacity: 1;
+  }
+}
+
+/* Right bubble: compact Active Tasks pill. */
+.comma-chat-dock-active-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-block-size: calc(var(--spacing-3xl) + var(--spacing-lg));
+  padding-inline: var(--spacing-md);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--color-ai-input-panel-bg-input);
+  box-shadow: var(--shadow-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+.comma-chat-dock-active-pill:hover,
+.comma-chat-dock-active-pill[aria-expanded="true"] {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+.comma-chat-dock-active-pill[data-focus-visible] {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-chat-dock-pill-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
+}
+
+.comma-chat-dock-pill-icon svg {
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
+}
+
+.comma-chat-dock-chevron {
+  flex: none;
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
   color: var(--color-text-quaternary);
   transition: rotate var(--motion-duration-disclosure-turn)
     var(--motion-easing-smooth-out);
 }
 
-.comma-chat-task-panel[data-collapsed="true"] .comma-chat-task-panel-chevron {
+.comma-chat-dock-more-btn[aria-expanded="true"] .comma-chat-dock-chevron,
+.comma-chat-dock-active-pill[aria-expanded="true"] .comma-chat-dock-chevron {
   rotate: 180deg;
+}
+
+/* Floating popover anchored above the dock bar; zero layout shift for transcript. */
+.comma-chat-dock-popover {
+  position: absolute;
+  inset-block-end: calc(100% + var(--spacing-md));
+  inset-inline: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: var(--shadow-lg);
+  padding: var(--spacing-md);
+  transform-origin: bottom center;
+  animation: comma-chat-dock-popover-enter var(--motion-duration-panel-enter)
+    var(--motion-easing-smooth-out) backwards;
+}
+
+@keyframes comma-chat-dock-popover-enter {
+  from {
+    opacity: 0;
+    translate: 0 var(--spacing-sm);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-dock-popover {
+    animation: none;
+  }
+}
+
+.comma-chat-dock-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xxs) var(--spacing-xs) var(--spacing-sm);
+  border-block-end: var(--border-width-default) solid var(--color-border-secondary);
+}
+
+.comma-chat-dock-popover-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-chat-dock-head-alert-icon {
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
+  color: var(--color-yellow-500);
+}
+
+.comma-chat-dock-popover-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.comma-chat-dock-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xxs);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+}
+
+.comma-chat-dock-filter-btn {
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  padding-block: var(--spacing-xxs);
+  padding-inline: var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-micro);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-micro--line-height);
+  cursor: pointer;
+}
+
+.comma-chat-dock-filter-btn[data-active="true"] {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+.comma-chat-dock-popover-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--spacing-3xl);
+  block-size: var(--spacing-3xl);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-quaternary);
+  cursor: pointer;
+}
+
+.comma-chat-dock-popover-close:hover {
+  background: var(--color-bg-secondary-hover);
+  color: var(--color-text-primary);
+}
+
+.comma-chat-dock-popover-close svg {
+  inline-size: var(--spacing-xl);
+  block-size: var(--spacing-xl);
+}
+
+.comma-chat-dock-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+}
+
+.comma-chat-dock-section-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-md) var(--spacing-xxs);
+  color: var(--color-text-quaternary);
+  font-size: var(--text-micro);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-micro--line-height);
+}
+
+.comma-chat-dock-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  max-block-size: calc(4 * (var(--comma-chat-task-row-block) + var(--spacing-xxs)));
+  overflow-y: auto;
+  scrollbar-width: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comma-chat-dock-card-list::-webkit-scrollbar {
+  display: none;
+}
+
+.comma-chat-dock-card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  inline-size: 100%;
+  block-size: var(--comma-chat-task-row-block);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: var(--spacing-xs);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-feedback-out)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-chat-dock-card-row:hover {
+  background: var(--color-bg-secondary);
+}
+
+.comma-chat-dock-card-row[data-focus-visible] {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-chat-dock-card-icon-warn {
+  color: var(--color-fg-warning-primary);
+}
+
+.comma-chat-dock-card-icon-brand {
+  color: var(--color-fg-brand-primary);
+}
+
+.comma-chat-dock-card-trailing {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-inline-start: auto;
+  padding-inline-start: var(--spacing-sm);
 }
 
 /* Only the rows near the scrollport are mounted; the rows box is as tall as
@@ -6968,8 +7492,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   display: none;
 }
 
-/* Expanding opens the box at once and the list arrives into it. Folding has no
-   counterpart: the list leaves with the height, in the same frame. */
+/* Expanding opens the box at once and the list arrives into it. */
 .comma-chat-task-panel-list[data-arrival="expand"] {
   animation: comma-chat-task-list-expand var(--motion-duration-state-change)
     var(--motion-easing-smooth-out) backwards;
@@ -6978,6 +7501,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 @keyframes comma-chat-task-list-expand {
   from {
     opacity: 0;
+    translate: 0 -4px;
   }
 }
 
@@ -7030,13 +7554,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
     var(--motion-easing-smooth-out);
 }
 
-/* Only a Task that just docked arrives; a row mounting because it scrolled
-   into the window, or because the list expanded, is already known. Rows that
-   arrive together cascade top to bottom. Leaving has no counterpart: an
-   acknowledged row -- revealed or dismissed -- unmounts at once. Keep height
-   animations absent too: below the five-row cap, the content-sized panel
-   shares a column with the transcript viewport. The earlier height fold caused
-   18 viewport resizes across 150ms over 40 turns, versus one at unmount. */
 .comma-chat-task-item[data-arriving="true"] {
   animation: comma-chat-task-item-reveal var(--motion-duration-icon-swap)
     var(--motion-easing-smooth-out) backwards;
@@ -7045,9 +7562,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   );
 }
 
-/* Keyboard focus paints the surface the pointer does: the actions that show
-   with it sit on that surface. The open More menu keeps the same tint so the
-   cluster does not drop out from under the pointer. */
 .comma-chat-task-item:hover,
 .comma-chat-task-item:has([data-focus-visible]),
 .comma-chat-task-item:has([aria-expanded="true"]) {
@@ -7058,8 +7572,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   box-shadow: var(--shadow-focus-gray);
 }
 
-/* The press target that opens the Task carries the row's content; the row
-   itself only paints the shared hover and focus ring. */
 .comma-chat-task-item-row {
   display: flex;
   flex: 1 1 auto;
@@ -7074,9 +7586,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   cursor: pointer;
 }
 
-/* Anywhere on the row that is not one of its actions opens the Task: the
-   target stretches over the row's padding and the gaps between its controls.
-   The actions are positioned, so they stay above it. */
 .comma-chat-task-item-row::before {
   position: absolute;
   inset: 0;
@@ -7110,10 +7619,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   block-size: var(--spacing-xl);
 }
 
-/* The attention dot rides in a collapsing track (same motion tokens as the
-   Inbox rows' dot), so clearing it glides the title back into place instead
-   of snapping. The negative margins fold the row gap on both sides back to a
-   single gap while the track is empty. */
 .comma-chat-task-item-dot {
   display: inline-flex;
   flex: none;
@@ -7139,7 +7644,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   inline-size: var(--spacing-md);
   block-size: var(--spacing-md);
   border-radius: var(--radius-full);
-  background: var(--color-utility-brand-400);
+  background: var(--color-bg-brand-solid);
 }
 
 .comma-chat-task-item-title {
@@ -7160,18 +7665,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   line-height: var(--text-sm--line-height);
 }
 
-/* The row's hover actions are laid over its trailing edge, not given a share
-   of it. They only show under the pointer, and a share reserved for them at
-   rest came out of the title: in a narrow chat column a settled row, with
-   Dismiss, Reveal, and More, had no title left at all. Over the edge, nothing
-   in the row moves when the pointer lands. More sits in the same cluster as
-   the text actions so hovering it does not hide them.
-
-   The backing is the row's own surface rebuilt: the panel's fill with the
-   row's tint over it, so it is opaque from the first frame and still matches
-   the row while the tint fades in. A mask brings it in from the leading side,
-   so the text under it trails off instead of being cut. It is its own box
-   under the actions, so the mask never clips an action's focus ring. */
 .comma-chat-task-item-actions {
   position: absolute;
   inset-block: 0;
@@ -7182,8 +7675,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   gap: var(--spacing-xxs);
   padding-inline-start: var(--spacing-3xl);
   padding-inline-end: var(--spacing-xs);
-  /* Only the actions take the pointer; their backing lets a press through to
-     the row, which opens the Task. */
   pointer-events: none;
 }
 
@@ -7195,8 +7686,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
     position: absolute;
     inset: 0;
     z-index: -1;
-    /* Flush with the row's trailing edge, so it wears the row's corners there
-       instead of squaring them off. */
     border-start-end-radius: var(--radius-md);
     border-end-end-radius: var(--radius-md);
     background:
@@ -7204,7 +7693,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
         var(--comma-chat-task-item-tint),
         var(--comma-chat-task-item-tint)
       ),
-      var(--color-ai-input-panel-bg-input);
+      var(--color-bg-popup-secondary);
     content: "";
     mask-image: linear-gradient(to right, transparent, black var(--spacing-3xl));
   }
@@ -7213,8 +7702,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 .comma-chat-task-item-actions button {
   flex: none;
   pointer-events: auto;
-  /* The cluster appears the instant the pointer lands on the row: an entrance
-     animation here would lag the pointer on a list the user scans quickly. */
   opacity: 0;
 }
 
@@ -7231,6 +7718,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   font-size: var(--text-xs);
   font-weight: 500;
   line-height: var(--text-xs--line-height);
+  white-space: nowrap;
   cursor: pointer;
   transition:
     color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
@@ -7264,8 +7752,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   opacity: 1;
 }
 
-/* Without a pointer to land, the actions are always showing, so there they
-   keep a share of the row instead of covering its title for good. */
 @media (hover: none) {
   .comma-chat-task-item-actions {
     position: static;
@@ -7772,6 +8258,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
   background: var(--color-bg-secondary);
 }
 
@@ -7933,7 +8420,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 /* An agent at work on a device (ScreenAgentPresence.tsx): a glowing edge round the device, outside its body, and the
    agent's cursor over the picture. They take no press. The look is the in-app browser's agent edge and cursor
-   (cursor.js): its colours, blur and timings, in the nearest steps of the scale. */
+   (cursor.js): a fine bright line with a soft glow in the brand blue's steps, in the nearest steps of the scale. */
 .comma-remote-screen-agent {
   position: absolute;
   inset: 0;
@@ -7941,15 +8428,14 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   pointer-events: none;
 }
 
-/* Behind the body, which hides its middle: what shows is the glow that reaches out past the body's outline. (The
-   device's area is a stacking context of its own, so it stays above the stage's ground.) */
+/* Behind the body, which hides its middle: what shows is what reaches out past the body's outline. (The device's area
+   is a stacking context of its own, so it stays above the stage's ground.) */
 .comma-remote-screen-agent-edge {
   position: absolute;
   z-index: -1;
-  inset: calc(-1 * var(--spacing-sm));
+  inset: 0;
   border-radius: inherit;
   corner-shape: inherit;
-  filter: blur(var(--spacing-lg)) saturate(1.8);
   pointer-events: none;
   transition: opacity var(--motion-duration-state-change)
     var(--motion-easing-surface-smooth-out);
@@ -7959,25 +8445,116 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   }
 }
 
-/* The body's own rounded box, a little larger than it (a simulator's case says its corners itself). */
+/* One layer of the edge: the body's own rounded box, larger than it by the layer's reach (a simulator's case says its
+   corners itself), with a colour wheel that turns in it. */
 .comma-remote-screen-agent-ring {
   position: absolute;
-  inset: 0;
+  inset: calc(-1 * var(--comma-remote-screen-agent-reach));
   overflow: hidden;
   border-radius: inherit;
   corner-shape: inherit;
   container-type: size;
 }
 
-/* (wider than the device's diagonal, so its corners stay covered as it turns) */
+/* Each layer's corners are the body's, grown by its reach, so the edge runs at one width round them. */
+.comma-remote-screen-device[data-body="true"] .comma-remote-screen-agent-ring {
+  border-radius: calc(
+      var(--comma-remote-screen-device-corner-tl) *
+        var(--comma-remote-screen-device-side) +
+        var(--comma-remote-screen-device-bezel) + var(--comma-remote-screen-agent-reach)
+    )
+    calc(
+      var(--comma-remote-screen-device-corner-tr) *
+        var(--comma-remote-screen-device-side) +
+        var(--comma-remote-screen-device-bezel) + var(--comma-remote-screen-agent-reach)
+    )
+    calc(
+      var(--comma-remote-screen-device-corner-br) *
+        var(--comma-remote-screen-device-side) +
+        var(--comma-remote-screen-device-bezel) + var(--comma-remote-screen-agent-reach)
+    )
+    calc(
+      var(--comma-remote-screen-device-corner-bl) *
+        var(--comma-remote-screen-device-side) +
+        var(--comma-remote-screen-device-bezel) + var(--comma-remote-screen-agent-reach)
+    );
+}
+
+.comma-remote-screen-device[data-body="false"][data-case="false"]
+  .comma-remote-screen-agent-ring {
+  border-radius: calc(var(--radius-md) + var(--comma-remote-screen-agent-reach));
+}
+
+/* A fine bright line at the body's outline. */
+.comma-remote-screen-agent-ring[data-layer="line"] {
+  --comma-remote-screen-agent-reach: var(--spacing-xxs);
+}
+
+/* A short glow round the line, in the same colours at the same places. */
+.comma-remote-screen-agent-ring[data-layer="rim"] {
+  --comma-remote-screen-agent-reach: var(--spacing-sm);
+
+  filter: blur(var(--blur-sm));
+}
+
+/* A wide faint glow under both. Its wheel has two lobes and turns the other way, so the glow swells and thins along
+   the outline. */
+.comma-remote-screen-agent-ring[data-layer="bloom"] {
+  --comma-remote-screen-agent-reach: var(--spacing-lg);
+
+  opacity: 0.55;
+  filter: blur(var(--blur-lg));
+}
+
+/* The brand blue's steps, blended in OKLCH from one to the next: up to a highlight and down again twice, a long climb
+   to the lightest step and a shorter one to a middle step. One hue: only its lightness goes round. (Wider than the
+   device's diagonal, so its corners stay covered as it turns.) */
 .comma-remote-screen-agent-turning {
   position: absolute;
   top: 50%;
   left: 50%;
   width: 150cqmax;
   height: 150cqmax;
-  background: var(--comma-remote-screen-agent-edge);
+  background: conic-gradient(
+    in oklch,
+    var(--color-brand-600) 0%,
+    var(--color-brand-500) 6%,
+    var(--color-brand-400) 12%,
+    var(--color-brand-300) 18%,
+    var(--color-brand-200) 23%,
+    var(--color-brand-100) 27%,
+    var(--color-brand-50) 30%,
+    var(--color-brand-100) 34%,
+    var(--color-brand-200) 39%,
+    var(--color-brand-300) 45%,
+    var(--color-brand-400) 50%,
+    var(--color-brand-500) 56%,
+    var(--color-brand-400) 62%,
+    var(--color-brand-300) 67%,
+    var(--color-brand-200) 72%,
+    var(--color-brand-300) 78%,
+    var(--color-brand-400) 85%,
+    var(--color-brand-500) 93%,
+    var(--color-brand-600) 100%
+  );
   transform: translate(-50%, -50%);
+}
+
+/* The bloom's two lobes, a light one and a deeper one, clear between them. */
+.comma-remote-screen-agent-ring[data-layer="bloom"]
+  > .comma-remote-screen-agent-turning {
+  background: conic-gradient(
+    in oklch,
+    rgb(from var(--color-brand-200) r g b / 0) 0%,
+    var(--color-brand-200) 10%,
+    var(--color-brand-100) 22%,
+    rgb(from var(--color-brand-100) r g b / 0) 34%,
+    rgb(from var(--color-brand-400) r g b / 0) 50%,
+    var(--color-brand-400) 60%,
+    var(--color-brand-300) 70%,
+    rgb(from var(--color-brand-300) r g b / 0) 80%,
+    rgb(from var(--color-brand-200) r g b / 0) 100%
+  );
 }
 
 @keyframes comma-remote-screen-agent-turn {
@@ -7987,9 +8564,15 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  /* Once round in four seconds, a step each sixtieth of one. */
+  /* Once round in twelve seconds, a step each sixtieth of one. */
   .comma-remote-screen-agent-turning {
-    animation: comma-remote-screen-agent-turn 4s steps(240) infinite;
+    animation: comma-remote-screen-agent-turn 12s steps(720) infinite;
+  }
+
+  /* The other way, once in nineteen. */
+  .comma-remote-screen-agent-ring[data-layer="bloom"]
+    > .comma-remote-screen-agent-turning {
+    animation: comma-remote-screen-agent-turn 19s steps(1140) infinite reverse;
   }
 }
 
@@ -7999,8 +8582,8 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   position: absolute;
   top: 0;
   left: 0;
-  width: var(--comma-icon-button-size);
-  height: var(--comma-icon-button-size);
+  width: var(--comma-remote-screen-agent-size);
+  height: var(--comma-remote-screen-agent-size);
   opacity: 0;
   transition:
     opacity var(--motion-duration-state-change) var(--motion-easing-surface-smooth-out),
@@ -8016,7 +8599,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   display: block;
   overflow: visible;
   filter: drop-shadow(
-    0 var(--spacing-xxs) var(--spacing-xs) var(--color-alpha-black-50)
+    0 calc(var(--spacing-xxs) / 2) var(--spacing-xxs) var(--color-alpha-black-40)
   );
   transform-origin: 17% 13%;
   transition: scale var(--motion-duration-press-recoil)
@@ -9220,6 +9803,41 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   --comma-remote-screen-keep-y: var(--spacing-3xl);
 }
 
+/* A device that folds, as a 3D model (ScreenDuoFrame): the model fills the room over its buttons' row and frames itself
+   in it. The picture's own video stays under it, unseen: the model's screen shows it. */
+.comma-remote-screen-duo {
+  position: relative;
+  width: 100%;
+  height: calc(100% - var(--comma-remote-screen-keep-y, 0px));
+  margin-bottom: var(--comma-remote-screen-keep-y, 0px);
+}
+
+.comma-remote-screen-duo-picture {
+  /* The model's screens take its frames (DuoStage): the video itself only goes on decoding, in a corner too small to
+     be seen through the canvas where that is clear (not at no opacity: a video so may present no frames). */
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 2px;
+  overflow: hidden;
+  opacity: 0.01;
+  pointer-events: none;
+}
+
+.comma-remote-screen-duo-input {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+.comma-remote-screen-duo-model,
+.comma-remote-screen-duo-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .comma-remote-screen-device-below {
   position: absolute;
   top: calc(100% + var(--spacing-md));
@@ -9324,6 +9942,29 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   color: var(--color-text-tertiary);
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
+}
+
+/* A coding Task's sandbox's screen, live, in the conversation under what its
+   Worker is doing (CodingScreenInline). In the flow, in the display's shape
+   from the first paint: the conversation does not move as its frames come. */
+.comma-task-screen-inline {
+  --comma-remote-screen-glass: color-mix(
+    in oklch,
+    var(--color-bg-popup-primary) 72%,
+    transparent
+  );
+  position: relative;
+  width: min(100%, var(--container-md));
+  aspect-ratio: 16 / 9;
+  margin-block: var(--spacing-md);
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-secondary);
+  box-shadow: 0 0 0 var(--border-width-0-5) var(--color-border-primary);
+}
+
+.comma-task-screen-inline:hover .comma-remote-screen-actions {
+  opacity: 1;
 }
 
 /* A link to a screen in a message: a file's card, the screen live over its words where it can be. */
@@ -9546,6 +10187,13 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   height: 85%;
 }
 
+/* Official-model Workers share Comma's glyph with the Router; render the
+   Worker's Comma mark in dark gray so it reads distinctly from the Router's
+   primary-foreground brand mark in both light and dark themes. */
+.comma-worker-model-mark:is(:not([data-model-vendor]), [data-model-vendor="comma"]) {
+  color: var(--color-gray-true-500);
+}
+
 .comma-chat-activity-card-meta,
 .comma-chat-activity-card-title,
 .comma-chat-activity-step-text {
@@ -9699,16 +10347,16 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 /* Tall enough for every listed step, wrapped or not, unless the window's
    top comes first; then it scrolls. Its height eases as steps come. */
-.comma-chat-activity-log-frame {
+.comma-chat-activity-log-scroll {
   flex: none;
-  max-height: min(440px, var(--comma-activity-log-room, 440px));
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
   border: 0.5px solid var(--color-border-primary);
   border-radius: var(--radius-xl);
   background: var(--color-bg-popup-primary);
   box-shadow: var(--shadow-lg);
+}
+
+.comma-chat-activity-log-frame {
+  max-height: min(440px, var(--comma-activity-log-room, 440px));
   transition: height var(--motion-duration-spatial-move)
     var(--motion-easing-surface-smooth-out);
 }
@@ -9891,6 +10539,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   }
 }
 
+.comma-chat-activity-slot[data-active="false"] .comma-chat-thinking-bubble::before,
 .comma-chat-activity-slot:not([data-state="active"])
   .comma-chat-thinking-bubble::before,
 :root[data-comma-reduced-motion="true"] .comma-chat-thinking-bubble::before {
@@ -11577,6 +12226,12 @@ body[data-comma-window-role="meeting-recorder"]
   backdrop-filter: blur(var(--blur-md));
 }
 
+/* An invitation's Task (`Invitations.tsx`) behind a thicker blur than a request's: its words over it are read. */
+.comma-invitation-preview::after {
+  -webkit-backdrop-filter: blur(var(--blur-lg));
+  backdrop-filter: blur(var(--blur-lg));
+}
+
 .comma-inbox-request-reply {
   position: relative;
   display: flex;
@@ -11634,4 +12289,388 @@ body[data-comma-window-role="meeting-recorder"]
   from {
     opacity: 0;
   }
+}
+
+/* A face of an AvatarStack (`AvatarStack.tsx`) growing in or shrinking away. Its slot's width and overlap follow
+   the same --face-presence as its scale, so the faces beside it slide to make room instead of jumping. It keeps the
+   whole scale range, and its opacity follows its scale: 0 at half its size or less, 1 at full size. A transition, so
+   a face put back while it shrinks grows back from where it is. */
+@property --face-presence {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+.comma-face-presence {
+  --face-presence: 1;
+  display: flex;
+  flex: none;
+  justify-content: center;
+  width: calc(var(--face-size) * var(--face-presence));
+  margin-inline-start: calc(var(--face-overlap) * var(--face-presence));
+  /* A plain ease-out: a steeper one passes half size, where the face is gone, within a frame or two. */
+  transition: --face-presence var(--motion-duration-spatial-move)
+    var(--motion-easing-calm-out);
+}
+
+.comma-face-presence > * {
+  flex: none;
+  transform: scale(var(--face-presence));
+  opacity: clamp(0, calc((var(--face-presence) - 0.5) * 2), 1);
+}
+
+.comma-face-presence[data-phase="entering"] {
+  @starting-style {
+    --face-presence: 0;
+  }
+}
+
+.comma-face-presence[data-phase="leaving"] {
+  --face-presence: 0;
+  pointer-events: none;
+  /* It shrinks in view for the first half of its time, then makes room: eased in and out, so the first half shows. */
+  transition-timing-function: var(--motion-easing-calm-in-out);
+}
+
+/* A Task's member list shows a row's actions (⋯) on the row under the pointer, or holding focus or its open menu,
+   so a list of people reads as people. Hidden, they take no room: they sit over the row's end, so every row's word
+   (Host, Pending) lines up at the same edge. Where nothing hovers (touch), they always
+   show, in the row. */
+@media (hover: hover) {
+  .comma-member-row {
+    position: relative;
+  }
+
+  .comma-member-row-actions {
+    position: absolute;
+    inset-inline-end: 0;
+  }
+
+  /* Shown, the actions take the word's place rather than covering half of it. */
+  .comma-member-row:is(:hover, :focus-within, :has([aria-expanded="true"])):has(
+      .comma-member-row-actions
+    )
+    .comma-member-row-word {
+    visibility: hidden;
+  }
+
+  .comma-member-row:not(:hover, :focus-within, :has([aria-expanded="true"]))
+    .comma-member-row-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* Right-sidebar still.fail conversation preview panel: uses native Comma chat tokens. */
+.comma-stillfail-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0%;
+  flex-direction: column;
+  background-color: var(--color-main-panel-bg);
+  color: var(--color-text-primary);
+}
+
+.comma-stillfail-header {
+  display: flex;
+  height: 40px;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  border-bottom: 0.5px solid var(--color-border-primary);
+  padding-inline: var(--spacing-lg);
+}
+
+.comma-stillfail-header-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0%;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.comma-stillfail-header-mark {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-primary);
+}
+
+.comma-stillfail-header-mark svg {
+  width: 100%;
+  height: 100%;
+}
+
+.comma-stillfail-header-title {
+  overflow: hidden;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  color: var(--color-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-stillfail-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-xs);
+  border-radius: var(--radius-full);
+  padding: 2px var(--spacing-md);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  white-space: nowrap;
+}
+
+.comma-stillfail-status svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.comma-stillfail-status[data-status="need"] {
+  background-color: var(--color-bg-warning-primary);
+  color: var(--color-text-warning-primary);
+}
+
+.comma-stillfail-status[data-status="running"] {
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+
+.comma-stillfail-status[data-status="done"] {
+  background-color: var(--color-bg-success-primary);
+  color: var(--color-text-success-primary);
+}
+
+.comma-stillfail-status[data-status="failed"] {
+  background-color: var(--color-bg-error-primary);
+  color: var(--color-text-error-primary);
+}
+
+.comma-stillfail-station {
+  overflow: hidden;
+  flex: 0 0 auto;
+  max-width: 120px;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-quaternary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-stillfail-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.comma-stillfail-header-actions svg {
+  width: 16px;
+  height: 16px;
+}
+
+.comma-stillfail-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xl) var(--spacing-xl) var(--spacing-3xl);
+}
+
+.comma-stillfail-time {
+  padding-block: var(--spacing-xs);
+  text-align: center;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-quaternary);
+}
+
+.comma-stillfail-row {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+}
+
+.comma-stillfail-row[data-author-kind="person"] {
+  justify-content: flex-end;
+}
+
+.comma-stillfail-row[data-author-kind="agent"] {
+  justify-content: flex-start;
+}
+
+.comma-stillfail-user-bubble {
+  --color-markdown-text-primary: var(--color-text-white);
+  --color-markdown-text-secondary: color-mix(
+    in srgb,
+    var(--color-text-white) 85%,
+    transparent
+  );
+  --color-markdown-text-tertiary: color-mix(
+    in srgb,
+    var(--color-text-white) 72%,
+    transparent
+  );
+  --color-markdown-bg-code: color-mix(
+    in srgb,
+    var(--color-text-white) 18%,
+    transparent
+  );
+  --color-markdown-border-table: color-mix(
+    in srgb,
+    var(--color-text-white) 55%,
+    transparent
+  );
+  max-width: 85%;
+  min-width: 50px;
+  border-radius: 20px;
+  background-color: var(--color-bg-brand-solid);
+  padding: 10px 13px;
+  color: var(--color-text-white);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  overflow-wrap: anywhere;
+}
+
+.comma-stillfail-user-bubble .markdown-stream,
+.comma-stillfail-user-bubble .markdown-stream-copy,
+.comma-stillfail-user-bubble .markdown-stream-link,
+.comma-stillfail-user-bubble a {
+  color: var(--color-text-white);
+}
+
+.comma-stillfail-user-bubble .markdown-stream-link,
+.comma-stillfail-user-bubble a {
+  text-decoration: underline;
+}
+
+.comma-stillfail-agent-bubble {
+  max-width: 94%;
+  min-width: 50px;
+  border-radius: 20px;
+  background-color: var(--color-markdown-bg-message);
+  padding: 10px 13px;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  overflow-wrap: anywhere;
+}
+
+.comma-stillfail-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 0.5px solid var(--color-border-primary);
+}
+
+.comma-stillfail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  border-radius: var(--radius-md);
+  border: 0.5px solid var(--color-border-primary);
+  background-color: var(--color-bg-primary);
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-secondary);
+}
+
+.comma-stillfail-chip[data-tone="answered"] {
+  color: var(--color-text-primary);
+}
+
+.comma-stillfail-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  border-radius: var(--radius-xl);
+  background-color: var(--color-bg-tertiary);
+  padding: var(--spacing-lg) var(--spacing-xl);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  color: var(--color-text-secondary);
+}
+
+.comma-stillfail-offline-banner {
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-tertiary);
+  padding: var(--spacing-md) var(--spacing-lg);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-secondary);
+}
+
+/* Right-sidebar email preview reader (Outlook & Gmail). */
+.comma-mail-reader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-2xl) var(--spacing-xl) var(--spacing-4xl);
+}
+
+.comma-mail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding-bottom: var(--spacing-lg);
+  border-bottom: 0.5px solid var(--color-border-primary);
+}
+
+.comma-mail-subject {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold, 600);
+  line-height: var(--text-md--line-height);
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.comma-mail-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-secondary);
+}
+
+.comma-mail-field {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  min-width: 0;
+}
+
+.comma-mail-field-label {
+  flex: none;
+  color: var(--color-text-quaternary);
+}
+
+.comma-mail-field-value {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.comma-mail-body {
+  font-size: var(--text-sm);
+  line-height: 1.65;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

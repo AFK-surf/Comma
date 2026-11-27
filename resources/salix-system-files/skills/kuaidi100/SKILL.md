@@ -33,3 +33,9 @@ Tools:
 
 The MCP does not book pickups (寄件下单). Tell the user to book in the courier's
 app or on kuaidi100.com.
+
+## Live Activity
+
+When a parcel is out for delivery or actively watched, show its latest transit
+step and courier with `live_activity.upsert` (`category: "package"`), and call
+`live_activity.end` once signed for.

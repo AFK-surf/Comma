@@ -8,11 +8,11 @@ import { lazySchema } from "@comma/chat-contract";
 import type { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
-import { route } from "../api.ts";
 import {
   commaConversationSchema,
   type CommaConversation,
 } from "../comma/api-schemas.ts";
+import { conversationBasePath, membershipsKnown } from "../collaborations.ts";
 import type { Ctx } from "../ctx.ts";
 import {
   normalizeServerMessages,
@@ -39,10 +39,11 @@ export function readPreparedConversation(
 ): Effect.Effect<PreparedConversation | null, CoreError> {
   return Effect.gen(function* () {
     const account = yield* ctx.session.account();
+    yield* membershipsKnown(ctx);
     const conversation = yield* ctx.api.request(
       account,
       "GET",
-      `${route`/v1/comma/groups/${input.groupId}/conversations/${input.conversationId}`}?message_limit=${MESSAGE_LIMIT}`,
+      `${conversationBasePath(ctx, input.groupId, input.conversationId)}?message_limit=${MESSAGE_LIMIT}`,
       commaConversationSchema
     );
     const raw = conversation.messages ?? [];

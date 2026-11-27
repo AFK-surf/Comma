@@ -5,7 +5,13 @@
  * production bundles never include it.
  */
 
-import type { BftQqMenuItem } from "./api";
+import type {
+  BftDepartment,
+  BftQqMenuItem,
+  BftSearchTarget,
+  BftSearchTargetInput,
+  BftSwarmStillfail,
+} from "./api";
 
 const user = { id: "usr_01", name: "Maya Chen", email: "maya@acme-robotics.com" };
 const orgs = [
@@ -96,13 +102,20 @@ const wizard = {
 
 const noWizardOrg = () => new URLSearchParams(window.location.search).has("no-swarm");
 
-function wizardData() {
+function wizardData(targetOrg?: string | null) {
   const none = noWizardOrg();
+  const matched = targetOrg ? orgs.find((item) => item.slug === targetOrg) : orgs[0];
   return {
     ...wizard,
     capability_groups: wizardGroups.map(([key, keys]) => ({ key, capabilities: keys })),
     user,
-    org: none ? null : { slug: "acme", name: "Acme Robotics", role: "owner" },
+    org: none
+      ? null
+      : {
+          slug: matched?.slug ?? "acme",
+          name: matched?.name ?? "Acme Robotics",
+          role: "owner",
+        },
     teammates: none
       ? { total: 0, sample: [] }
       : {
@@ -154,10 +167,27 @@ function wizardIntegrations() {
   };
 }
 
-function wizardReply(method: string, rest: string, body: Record<string, unknown>) {
+function wizardReply(
+  method: string,
+  rest: string,
+  body: Record<string, unknown>,
+  targetOrg?: string | null
+) {
   const ok = (data: unknown) => reply(200, { ok: true, data });
+  if (
+    targetOrg !== undefined &&
+    targetOrg !== null &&
+    !orgs.some((item) => item.slug === targetOrg.trim())
+  ) {
+    return failure(
+      403,
+      "organization_unavailable",
+      "This organization is unavailable."
+    );
+  }
+  const slug = targetOrg?.trim() || "acme";
   if (method === "GET") {
-    if (rest === "") return ok(wizardData());
+    if (rest === "") return ok(wizardData(targetOrg));
     if (rest === "/integrations") return ok(wizardIntegrations());
     return notFound();
   }
@@ -165,10 +195,10 @@ function wizardReply(method: string, rest: string, body: Record<string, unknown>
     case "/capabilities":
       Object.assign(wizard.capabilities, body.capabilities);
       wizard.step = "profile";
-      return ok(wizardData());
+      return ok(wizardData(targetOrg));
     case "/profile":
       wizard.step = "integrations";
-      return ok(wizardData());
+      return ok(wizardData(targetOrg));
     case "/connect":
       return failure(
         503,
@@ -180,7 +210,7 @@ function wizardReply(method: string, rest: string, body: Record<string, unknown>
       // The mock keeps the wizard open so it can be walked again.
       wizard.step = "capabilities";
       return ok({
-        redirect: noWizardOrg() ? "/" : "/orgs/acme",
+        redirect: noWizardOrg() ? "/" : `/orgs/${encodeURIComponent(slug)}`,
         notice: rest === "/complete" ? "You're all set." : null,
       });
     default:
@@ -814,7 +844,7 @@ function runnersPage(slug: string, cursor: string | null) {
 
 const skill = `---
 name: bft-operator
-description: Operate Bridge for Teams through the bft CLI.
+description: Operate Comma for Teams through the bft CLI.
 ---
 
 # BFT operator
@@ -1294,6 +1324,8 @@ const mockOptionOf = (choice: MockModelChoice): MockModelOption => {
  */
 const settings = {
   general: {
+    billing: null,
+    billing_policy: { mode: "unmanaged" as const, member_count: 14 },
     organization: {
       name: "Acme Robotics",
       slug: "acme",
@@ -1410,7 +1442,7 @@ const settings = {
       scope_cards: [
         {
           id: "sso",
-          description: "Use when the app only signs users into Bridge For Teams.",
+          description: "Use when the app only signs users into Comma for Teams.",
           json: '{\n  "scopes": {\n    "user": [\n      "contact:user.base:readonly"\n    ]\n  }\n}',
           title: "SSO login",
         },
@@ -1781,6 +1813,90 @@ function settingsReply(method: string, rest: string, body: Record<string, unknow
  * joins the org's list. Plugins: Acme has a catalog; Globex's runtime is down.
  */
 const swarmRows: Record<string, ReturnType<typeof swarmRow>[]> = {};
+const orgDepartments: Record<string, BftDepartment[]> = {
+  acme: [
+    {
+      id: "dept_ops",
+      name: "Customer Operations",
+      targets: [
+        { kind: "self", id: "dept_ops", name: "Customer Operations" },
+        { kind: "department", id: "dept_eng", name: "Engineering" },
+      ],
+    },
+    {
+      id: "dept_eng",
+      name: "Engineering",
+      targets: [{ kind: "self", id: "dept_eng", name: "Engineering" }],
+    },
+    { id: "dept_legal", name: "Legal", targets: [] },
+  ],
+};
+const swarmDepartments: Record<string, string | null> = {
+  prj_support: "dept_ops",
+  prj_sales: "dept_ops",
+  prj_oncall: "dept_eng",
+  prj_hr: null,
+};
+const swarmExtraGrants: Record<string, BftSearchTargetInput[]> = {};
+
+const mockTargetTier = (kind: BftSearchTarget["kind"]) =>
+  kind === "all_departments" ? 0 : kind === "self" ? 1 : kind === "department" ? 2 : 3;
+
+function resolveMockTargets(
+  slug: string,
+  subjectKind: "department" | "project",
+  subjectId: string,
+  inputs: BftSearchTargetInput[]
+): BftSearchTarget[] {
+  const depts = orgDepartments[slug] ?? [];
+  const rows = swarmList(slug) ?? [];
+  const hasAllDepts = inputs.some((input) => input.kind === "all_departments");
+  const seen = new Set<string>();
+  const resolved: BftSearchTarget[] = [];
+
+  for (const input of inputs) {
+    if (input.kind === "all_departments") {
+      if (!seen.has("all_departments")) {
+        seen.add("all_departments");
+        resolved.push({
+          kind: "all_departments",
+          id: slug,
+          name: "All departments",
+        });
+      }
+      continue;
+    }
+    if (hasAllDepts && (input.kind === "self" || input.kind === "department")) {
+      continue;
+    }
+    if (input.kind === "self" && subjectKind === "department") {
+      const dept = depts.find((item) => item.id === subjectId);
+      const key = `self:${subjectId}`;
+      if (dept && !seen.has(key)) {
+        seen.add(key);
+        resolved.push({ kind: "self", id: subjectId, name: dept.name });
+      }
+    } else if (input.kind === "department" && input.id) {
+      const dept = depts.find((item) => item.id === input.id);
+      const key = `department:${input.id}`;
+      if (dept && !seen.has(key)) {
+        seen.add(key);
+        resolved.push({ kind: "department", id: dept.id, name: dept.name });
+      }
+    } else if (input.kind === "project" && input.id && input.id !== subjectId) {
+      const row = rows.find((item) => item.id === input.id);
+      const key = `project:${input.id}`;
+      if (row && !seen.has(key)) {
+        seen.add(key);
+        resolved.push({ kind: "project", id: row.id, name: row.name });
+      }
+    }
+  }
+
+  return resolved.toSorted(
+    (left, right) => mockTargetTier(left.kind) - mockTargetTier(right.kind)
+  );
+}
 
 function swarmRow(slug: string, project: { id: string; name: string }, index: number) {
   return {
@@ -1792,11 +1908,291 @@ function swarmRow(slug: string, project: { id: string; name: string }, index: nu
   };
 }
 
+// Swarms whose Group has information-flow control on; the others have it off.
+const mockIfcOnProjects = new Set(["prj_hr"]);
+const mockIfcOn = (projectId: string) => mockIfcOnProjects.has(projectId);
+
 function swarmList(slug: string) {
   const known = context(slug)?.projects;
   if (!known) return undefined;
   swarmRows[slug] ??= known.map((project, index) => swarmRow(slug, project, index));
   return swarmRows[slug];
+}
+
+function decorateSwarmRow(slug: string, row: ReturnType<typeof swarmRow>) {
+  const depts = orgDepartments[slug] ?? [];
+  const deptId = swarmDepartments[row.id] ?? null;
+  const dept = deptId ? depts.find((item) => item.id === deptId) : undefined;
+  return {
+    ...row,
+    department_id: dept?.id ?? null,
+    department_name: dept?.name ?? null,
+    extra_targets: resolveMockTargets(
+      slug,
+      "project",
+      row.id,
+      swarmExtraGrants[row.id] ?? []
+    ),
+  };
+}
+
+const mockDepartmentLimit = 200;
+const mockEffectiveTargetLimit = 64;
+const mockDepartmentNameMax = 80;
+
+/** Departments in the server's page order: by name, case-insensitively. */
+const mockDepartmentOrder = (
+  a: { id: string; name: string },
+  b: { id: string; name: string }
+) => {
+  const left = a.name.toLowerCase();
+  const right = b.name.toLowerCase();
+  return left < right ? -1 : left > right ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+};
+
+function buildSwarmsPage(slug: string, url?: URL) {
+  const rows = swarmList(slug);
+  if (!rows) return undefined;
+  const depts = orgDepartments[slug] ?? [];
+  const query = (url?.searchParams.get("query") ?? "").trim().toLowerCase();
+  const decorated = rows.map((row) => decorateSwarmRow(slug, row));
+  const deptRank = new Map(
+    depts.toSorted(mockDepartmentOrder).map((dept, index) => [dept.id, index])
+  );
+  const rank = (row: (typeof decorated)[number]) =>
+    row.department_id
+      ? (deptRank.get(row.department_id) ?? depts.length)
+      : depts.length;
+  const matching = decorated
+    .filter((row) =>
+      [row.name, row.slug, row.salix_group_id, row.department_name ?? ""].some(
+        (value) => value.toLowerCase().includes(query)
+      )
+    )
+    .toSorted((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const departmentCounts: Record<string, number> = {};
+  let unassignedCount = 0;
+  for (const row of matching) {
+    if (row.department_id) {
+      departmentCounts[row.department_id] =
+        (departmentCounts[row.department_id] ?? 0) + 1;
+    } else {
+      unassignedCount += 1;
+    }
+  }
+  const start = Number(url?.searchParams.get("cursor") ?? 0);
+  const end = start + 50;
+  return {
+    viewer: { can_create: true, can_manage_departments: true },
+    departments: depts,
+    catalog_swarms: decorated.map((row) => ({
+      id: row.id,
+      name: row.name,
+      department_id: row.department_id,
+      ifc_on: mockIfcOn(row.id),
+    })),
+    projects: matching.slice(start, end),
+    next_cursor: end < matching.length ? String(end) : null,
+    department_counts: departmentCounts,
+    unassigned_count: unassignedCount,
+  };
+}
+
+/** Every target id resolves in the org (the server answers 422 otherwise). */
+function validMockTargets(
+  slug: string,
+  subjectKind: "department" | "project",
+  subjectId: string,
+  inputs: BftSearchTargetInput[]
+) {
+  const depts = orgDepartments[slug] ?? [];
+  const rows = swarmList(slug) ?? [];
+  return inputs.every((input) =>
+    input.kind === "all_departments"
+      ? true
+      : input.kind === "self"
+        ? subjectKind === "department"
+        : input.kind === "department"
+          ? depts.some((dept) => dept.id === input.id)
+          : input.kind === "project" &&
+            input.id !== subjectId &&
+            rows.some((row) => row.id === input.id)
+  );
+}
+
+/** The most target Swarms any Swarm of the org reaches by its rules. */
+function mockLargestEffectiveTargets(slug: string) {
+  const depts = orgDepartments[slug] ?? [];
+  const rows = swarmList(slug) ?? [];
+  const deptOf = (id: string) => swarmDepartments[id] ?? null;
+  const members = (deptId: string) =>
+    rows.filter((candidate) => deptOf(candidate.id) === deptId);
+  return Math.max(
+    0,
+    ...rows.map((row) => {
+      const ownDept = deptOf(row.id);
+      const deptTargets = ownDept
+        ? (depts.find((dept) => dept.id === ownDept)?.targets ?? [])
+        : [];
+      const reached = new Set<string>();
+      const add = (input: { kind: string; id?: string }) => {
+        if (input.kind === "all_departments") {
+          for (const candidate of rows) {
+            if (deptOf(candidate.id) !== null) reached.add(candidate.id);
+          }
+        } else if (input.kind === "self" && ownDept) {
+          for (const peer of members(ownDept)) reached.add(peer.id);
+        } else if (input.kind === "department" && input.id) {
+          for (const peer of members(input.id)) reached.add(peer.id);
+        } else if (input.kind === "project" && input.id) {
+          reached.add(input.id);
+        }
+      };
+      deptTargets.forEach(add);
+      (swarmExtraGrants[row.id] ?? []).forEach(add);
+      reached.delete(row.id);
+      return reached.size;
+    })
+  );
+}
+
+const mockInvalidTargets = () =>
+  failure(
+    422,
+    "invalid_targets",
+    "Choose existing departments or Agent Swarms in this organization."
+  );
+
+const mockTargetLimit = () =>
+  failure(
+    422,
+    "effective_target_limit_exceeded",
+    `An Agent Swarm can search at most ${mockEffectiveTargetLimit} other Agent Swarms. Remove some departments or Agent Swarms and try again.`
+  );
+
+/** A blank, too long or taken department name, as the server words it. */
+function mockDepartmentNameError(
+  depts: BftDepartment[],
+  name: string,
+  selfId: string | null,
+  message: string
+) {
+  const field = !name
+    ? "can't be blank"
+    : name.length > mockDepartmentNameMax
+      ? `should be at most ${mockDepartmentNameMax} character(s)`
+      : depts.some(
+            (dept) =>
+              dept.id !== selfId && dept.name.toLowerCase() === name.toLowerCase()
+          )
+        ? "has already been taken"
+        : undefined;
+  return field
+    ? reply(422, {
+        ok: false,
+        error: {
+          code: "invalid_department",
+          message,
+          details: { fields: { name: [field] } },
+        },
+      })
+    : undefined;
+}
+
+function departmentsReply(
+  slug: string,
+  departmentId: string,
+  method: string,
+  url: URL,
+  body: Record<string, unknown>
+) {
+  if (!swarmList(slug)) return notFound();
+  const depts = (orgDepartments[slug] ??= []);
+  const rawTargets = Array.isArray(body.targets)
+    ? (body.targets as BftSearchTargetInput[])
+    : [];
+  // A write answers the first page again, filtered as the caller's list is.
+  const refreshed = new URL(url.pathname, url);
+  const query = url.searchParams.get("query");
+  if (query) refreshed.searchParams.set("query", query);
+
+  if (method === "POST" && !departmentId) {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const invalid = mockDepartmentNameError(
+      depts,
+      name,
+      null,
+      "Could not create the department."
+    );
+    if (invalid) return invalid;
+    if (depts.length >= mockDepartmentLimit) {
+      return failure(
+        422,
+        "department_limit_reached",
+        `An organization can have at most ${mockDepartmentLimit} departments.`
+      );
+    }
+    const id = `dept_${Date.now()}`;
+    if (!validMockTargets(slug, "department", id, rawTargets))
+      return mockInvalidTargets();
+    const created: BftDepartment = { id, name, targets: [] };
+    depts.push(created);
+    created.targets = resolveMockTargets(slug, "department", id, rawTargets);
+    if (mockLargestEffectiveTargets(slug) > mockEffectiveTargetLimit) {
+      depts.pop();
+      return mockTargetLimit();
+    }
+    return reply(201, { ok: true, data: buildSwarmsPage(slug, refreshed) });
+  }
+
+  const target = depts.find((item) => item.id === departmentId);
+  if (!target) return notFound("department_not_found", "Department not found.");
+
+  if (method === "PATCH") {
+    const name = typeof body.name === "string" ? body.name.trim() : target.name;
+    const invalid = mockDepartmentNameError(
+      depts,
+      name,
+      target.id,
+      "Could not update the department."
+    );
+    if (invalid) return invalid;
+    if (Array.isArray(body.targets)) {
+      if (!validMockTargets(slug, "department", target.id, rawTargets)) {
+        return mockInvalidTargets();
+      }
+      const previous = target.targets;
+      target.targets = resolveMockTargets(slug, "department", target.id, rawTargets);
+      if (mockLargestEffectiveTargets(slug) > mockEffectiveTargetLimit) {
+        target.targets = previous;
+        return mockTargetLimit();
+      }
+    }
+    target.name = name;
+    return reply(200, { ok: true, data: buildSwarmsPage(slug, refreshed) });
+  }
+
+  if (method === "DELETE") {
+    orgDepartments[slug] = depts
+      .filter((item) => item.id !== departmentId)
+      .map((item) => ({
+        ...item,
+        targets: item.targets.filter(
+          (rule) => !(rule.kind === "department" && rule.id === departmentId)
+        ),
+      }));
+    for (const [projId, assigned] of Object.entries(swarmDepartments)) {
+      if (assigned === departmentId) swarmDepartments[projId] = null;
+    }
+    for (const [projId, grants] of Object.entries(swarmExtraGrants)) {
+      swarmExtraGrants[projId] = grants.filter(
+        (rule) => !(rule.kind === "department" && rule.id === departmentId)
+      );
+    }
+    return reply(200, { ok: true, data: buildSwarmsPage(slug, refreshed) });
+  }
+
+  return notFound();
 }
 
 function swarmsReply(
@@ -1827,27 +2223,13 @@ function swarmsReply(
       });
     }
     const created = { ...row, slug: wanted || row.slug, created_at: minutesAgo(0) };
+    if (typeof body.department_id === "string" && body.department_id) {
+      swarmDepartments[created.id] = body.department_id;
+    }
     rows.push(created);
-    return reply(201, { ok: true, data: created });
+    return reply(201, { ok: true, data: decorateSwarmRow(slug, created) });
   }
-  const query = (url.searchParams.get("query") ?? "").toLowerCase();
-  const matching = rows
-    .filter((row) =>
-      [row.name, row.slug, row.salix_group_id].some((value) =>
-        value.toLowerCase().includes(query)
-      )
-    )
-    .toSorted((a, b) => a.name.localeCompare(b.name));
-  const start = Number(url.searchParams.get("cursor") ?? 0);
-  const end = start + 50;
-  return reply(200, {
-    ok: true,
-    data: {
-      viewer: { can_create: true },
-      projects: matching.slice(start, end),
-      next_cursor: end < matching.length ? String(end) : null,
-    },
-  });
+  return reply(200, { ok: true, data: buildSwarmsPage(slug, url) });
 }
 
 const emptyRefs = () => ({
@@ -1927,6 +2309,18 @@ type MockCredential = {
   action: "connect" | "reconnect" | null;
   disconnectable: boolean;
   integrations_href: string | null;
+  credential_setup?: { key: string; label: string; help_url: string };
+  accounts?: {
+    binding_id: string;
+    alias: string;
+    email: string;
+    status: string;
+    state: string;
+    ccu_balance: number;
+    ccu_rate_hourly: number;
+    eligible_gpus: string[];
+    active_vm_count: number;
+  }[];
 };
 
 const credential = (
@@ -1952,6 +2346,9 @@ const swarmPluginState: Record<
   {
     enabled: Set<string>;
     created: { id: string; name: string; description: string | null }[];
+    wecomKey?: boolean;
+    colabConnected?: boolean;
+    colabActiveVms?: number;
   }
 > = {};
 
@@ -2014,6 +2411,20 @@ function swarmPluginRows(slug: string, projectId: string) {
       }
     ),
     row(
+      "google-colab",
+      "Google Colab",
+      "Run GPU workloads on your Google Colab account.",
+      "system",
+      { attention: state.colabConnected ? [] : ["Google Colab"] }
+    ),
+    row(
+      "wecom-schedule",
+      "企业微信日程",
+      "Read, search, create and update WeCom calendar events and find free time.",
+      "system",
+      { attention: state.wecomKey ? [] : ["企业微信日程 apikey（或整段地址）"] }
+    ),
+    row(
       "group.release",
       "Release Helper",
       "Project-owned release checklist and changelog automation for every service this Agent Swarm ships.",
@@ -2058,6 +2469,68 @@ function swarmPluginSetup(slug: string, projectId: string, pluginId: string) {
       connections: [
         credential("linear-composio", "composio", "Linear via Composio", "external"),
       ],
+    };
+  }
+  if (pluginId === "google-colab") {
+    const connected = swarmPluginState[projectId]?.colabConnected === true;
+    const activeVms = swarmPluginState[projectId]?.colabActiveVms ?? 0;
+    return {
+      mcps: [],
+      connections: [
+        {
+          ...credential(
+            "google-colab-oauth",
+            "oauth_code_paste",
+            "Google Colab",
+            connected ? "connected" : "not_connected"
+          ),
+          // As `DashboardSwarmPlugins` lists a Google Colab credential's accounts.
+          accounts: connected
+            ? [
+                {
+                  binding_id: "colab_acc_mock_1",
+                  alias: "default",
+                  email: "alice@gmail.com",
+                  status: "ok",
+                  state: "active",
+                  ccu_balance: 2400,
+                  ccu_rate_hourly: 1.96,
+                  eligible_gpus: ["T4", "L4"],
+                  active_vm_count: activeVms,
+                },
+              ]
+            : [],
+        },
+      ],
+    };
+  }
+  if (pluginId === "wecom-schedule") {
+    const connected = swarmPluginState[projectId]?.wecomKey === true;
+    return {
+      mcps: [
+        {
+          alias: "wecom-schedule",
+          placement: "server",
+          state: connected ? "ready_on_use" : "waiting_for_credentials",
+          connections: [
+            {
+              ...credential(
+                "wecom-schedule-api-key",
+                "mcp_api_key",
+                "企业微信日程 apikey（或整段地址）",
+                connected ? "connected" : "not_connected",
+                ["wecom-schedule"]
+              ),
+              credential_setup: {
+                key: "WECOM_SCHEDULE_APIKEY",
+                label: "apikey（或整段地址）",
+                help_url: "https://developer.work.weixin.qq.com/document/path/101805",
+              },
+            },
+          ],
+        },
+      ],
+      connections: [],
     };
   }
   if (pluginId === "slack") {
@@ -2148,7 +2621,66 @@ function swarmPluginsReply(
     });
   }
   if (method === "POST" && section === "connections" && connectionId) {
-    if (action === "disconnect") return ok({ notice: "Connection disconnected." });
+    if (action === "disconnect") {
+      if (connectionId === "google-colab-oauth") {
+        if ((state?.colabActiveVms ?? 0) > 0) {
+          return failure(
+            409,
+            "colab_account_in_use",
+            "Active Google Colab VMs are still stopping. Try disconnecting again shortly."
+          );
+        }
+        if (state) state.colabConnected = false;
+      }
+      return ok({ notice: "Connection disconnected." });
+    }
+    if (connectionId === "google-colab-oauth") {
+      const values = (body.config_values ?? {}) as Record<string, string>;
+      const code = String(values.GOOGLE_COLAB_AUTH_CODE ?? "");
+      if (!code) {
+        return ok({
+          configuration: {
+            key: "GOOGLE_COLAB_AUTH_CODE",
+            label: "Authorization code",
+            help_url: "https://accounts.google.com/o/oauth2/v2/auth?state=mock_state",
+            format: "oauth_code",
+            attempt_id: "colab_att_mock_1",
+            ...(typeof body.binding_id === "string"
+              ? { binding_id: body.binding_id }
+              : {}),
+          },
+        });
+      }
+      if (code === "bad") {
+        return failure(
+          422,
+          "plugin_credential_rejected",
+          "Invalid authorization code. Paste the code or callback URL from Google."
+        );
+      }
+      if (state) state.colabConnected = true;
+      return ok({ notice: "Connected" });
+    }
+    if (connectionId === "wecom-schedule-api-key") {
+      // As Salix answers (`PluginSetup.configure_credentials`): another
+      // ability's address is refused, a key WeCom does not take is rejected.
+      const values = (body.config_values ?? {}) as Record<string, string>;
+      const value = String(values.WECOM_SCHEDULE_APIKEY ?? "");
+      if (value.includes("://") && !value.includes("/mcp/v2/bot/schedule?"))
+        return failure(
+          422,
+          "credential_address_mismatch",
+          "Paste the key, or this ability's own address."
+        );
+      if (!value.endsWith("FAKE-GOOD"))
+        return failure(
+          422,
+          "credential_rejected",
+          "The service rejected this token. Check it and try again."
+        );
+      if (state) state.wecomKey = true;
+      return ok({ notice: "Connected" });
+    }
     return connectionId === "linear-managed"
       ? ok({ notice: "Connected" })
       : failure(
@@ -2160,6 +2692,25 @@ function swarmPluginsReply(
   return notFound();
 }
 
+/** A Slack, Feishu or Lark connect's member scope and grants; absent reads as the organization's. */
+interface MockMembers {
+  member_scope?: "organization" | "external";
+  member_grants?: {
+    subject: string;
+    name: string | null;
+    email: string | null;
+    expires_at: number | null;
+    granted_at: number;
+  }[];
+}
+
+const members = (connect: MockMembers) => ({
+  member_scope: connect.member_scope ?? "organization",
+  member_grants: connect.member_grants ?? [],
+});
+
+const dayMs = 24 * 3600 * 1000;
+
 /*
  * Agent Swarm Connections: Support Desk has a Feishu route, a Slack app and
  * a Signal chat; Sales Assistant is read by a member; Eng On-call's runtime
@@ -2168,7 +2719,7 @@ function swarmPluginsReply(
 const connectionState: Record<
   string,
   {
-    feishu: {
+    feishu: ({
       connect_id: string;
       disabled: boolean;
       /** An app made by a scan: its own App ID, events through the long connection. */
@@ -2176,16 +2727,16 @@ const connectionState: Record<
       events?: "socket";
       /** Scopes Feishu refused the app for. */
       missing_scopes?: string[];
-    }[];
-    slack: {
+    } & MockMembers)[];
+    slack: ({
       connect_id: string;
       disabled: boolean;
       installed: boolean;
       /** Where its messages go, as the connect row names it. */
       inbound_agent: string;
       auto_join_public_channels: boolean;
-    }[];
-    lark: {
+    } & MockMembers)[];
+    lark: ({
       connect_id: string;
       disabled: boolean;
       app_id: string;
@@ -2194,7 +2745,7 @@ const connectionState: Record<
       events?: "webhook" | "socket";
       /** Scopes Lark refused the app for. */
       missing_scopes?: string[];
-    }[];
+    } & MockMembers)[];
     /** The connect a scan under way updates. */
     scanTarget?: string | undefined;
     qq: {
@@ -2207,6 +2758,11 @@ const connectionState: Record<
       connect_id: string;
       disabled: boolean;
       chats: { id: string; title: string; type: string; allowed: boolean }[];
+    }[];
+    wecom: {
+      connect_id: string;
+      disabled: boolean;
+      bot_id: string;
     }[];
     accounts: {
       binding_id: string;
@@ -2255,6 +2811,24 @@ function connectionsData(slug: string, projectId: string) {
             installed: true,
             inbound_agent: "Router · router",
             auto_join_public_channels: true,
+            // A shared workspace: two people of a partner may use the computers.
+            member_scope: "external",
+            member_grants: [
+              {
+                subject: "U07GUEST",
+                name: "Sam Rivera",
+                email: "sam@globex.test",
+                expires_at: null,
+                granted_at: Date.now() - 12 * dayMs,
+              },
+              {
+                subject: "U09CONTR",
+                name: "Priya Natarajan",
+                email: "priya@initech.test",
+                expires_at: Date.now() + 6 * dayMs,
+                granted_at: Date.now() - dayMs,
+              },
+            ],
           },
         ]
       : [],
@@ -2274,6 +2848,7 @@ function connectionsData(slug: string, projectId: string) {
       : [],
     qq: [],
     telegram: [],
+    wecom: [],
     accounts: support
       ? [{ binding_id: "ob_notion", provider: "notion", alias: "Docs", enabled: true }]
       : [],
@@ -2306,6 +2881,7 @@ function connectionsData(slug: string, projectId: string) {
           connect.events === "socket"
             ? {
                 ...connect,
+                ...members(connect),
                 status: "connected",
                 app_id: connect.app_id ?? "cli_scanned",
                 webhook_url: null,
@@ -2316,6 +2892,7 @@ function connectionsData(slug: string, projectId: string) {
               }
             : {
                 ...connect,
+                ...members(connect),
                 status: "connected",
                 app_id: "cli_a1b2c3",
                 webhook_url:
@@ -2347,6 +2924,7 @@ function connectionsData(slug: string, projectId: string) {
         task_models: mockSlackTaskModels,
         connects: state.slack.map((connect) => ({
           ...connect,
+          ...members(connect),
           inbound: connect.inbound_agent.startsWith("Tasks") ? "tasks" : "agent",
           workspace: "Acme Robotics",
           install_url: "https://slack.com/oauth/v2/authorize?client_id=1",
@@ -2358,6 +2936,7 @@ function connectionsData(slug: string, projectId: string) {
       lark: live({
         connects: state.lark.map((connect) => ({
           ...connect,
+          ...members(connect),
           status: "connected",
           app_name: "Acme Lark bot",
           events: connect.events ?? "webhook",
@@ -2433,6 +3012,25 @@ function connectionsData(slug: string, projectId: string) {
                 : "disabled",
           connect_id: state.qq[0]?.connect_id ?? null,
           router: state.qq.length === 0 ? null : "Router",
+        },
+      }),
+      wecom: live({
+        connects: state.wecom.map((connect) => ({
+          ...connect,
+          status: "connected",
+          online: true,
+          secret_configured: true,
+          updated_at: minutesAgo(5),
+        })),
+        route: {
+          status:
+            state.wecom.length === 0
+              ? "not_connected"
+              : state.wecom.some((connect) => !connect.disabled)
+                ? "ready"
+                : "disabled",
+          connect_id: state.wecom[0]?.connect_id ?? null,
+          router: state.wecom.length === 0 ? null : "Router",
         },
       }),
     },
@@ -2528,6 +3126,91 @@ function mockManifest(name: string) {
   };
 }
 
+const grantDays = [1, 7, 30];
+
+/**
+ * A Slack, Feishu or Lark connect's member scope, grants and people, or
+ * undefined for another write of the section. Answers as the other writes:
+ * a notice, the page read again.
+ */
+function memberReply(
+  connects: ({ connect_id: string } & MockMembers)[],
+  method: string,
+  id: string | undefined,
+  action: string | undefined,
+  subject: string | undefined,
+  body: Record<string, unknown>,
+  url: URL
+) {
+  if (!id || !["member-scope", "member-grants", "people"].includes(action ?? ""))
+    return undefined;
+  const ok = (value: unknown, status = 200) => reply(status, { ok: true, data: value });
+  const connect = connects.find((item) => item.connect_id === id);
+  if (!connect)
+    return failure(404, "connect_not_found", "That connect no longer exists.");
+  if (method === "GET" && action === "people") {
+    const query = (url.searchParams.get("query") ?? "").trim().toLowerCase();
+    const found = mockPeople.filter((person) =>
+      [person.id, person.name, person.email].some((value) =>
+        value.toLowerCase().includes(query)
+      )
+    );
+    return ok({
+      people: found.map((person) => ({
+        subject: person.id,
+        name: person.name,
+        email: person.email,
+      })),
+      complete: true,
+    });
+  }
+  if (method === "PUT" && action === "member-scope") {
+    if (body.scope !== "organization" && body.scope !== "external")
+      return failure(
+        422,
+        "invalid_member_scope",
+        "Send scope as organization or external."
+      );
+    connect.member_scope = body.scope;
+    return ok({
+      notice:
+        body.scope === "external"
+          ? "People here are external now. Only people you add can have the agents use this swarm's computers."
+          : "People here are members of this organization now.",
+    });
+  }
+  if (method === "POST" && action === "member-grants") {
+    const days = body.expires_in_days;
+    const person = mockPeople.find((item) => item.id === body.subject);
+    if (!person)
+      return failure(422, "unknown_person", "Nobody with that id is in this chat.");
+    if (days !== null && !grantDays.includes(Number(days)))
+      return failure(422, "invalid_expiry", "Choose no expiry, 1, 7 or 30 days.");
+    const now = Date.now();
+    connect.member_grants = [
+      ...(connect.member_grants ?? []).filter((grant) => grant.subject !== person.id),
+      {
+        subject: person.id,
+        name: person.name,
+        email: person.email,
+        expires_at: days === null ? null : now + Number(days) * dayMs,
+        granted_at: now,
+      },
+    ];
+    return ok(
+      { notice: `${person.name} can have the agents use this swarm's computers.` },
+      201
+    );
+  }
+  if (method === "DELETE" && action === "member-grants" && subject) {
+    connect.member_grants = (connect.member_grants ?? []).filter(
+      (grant) => grant.subject !== subject
+    );
+    return ok({ notice: "Access removed." });
+  }
+  return undefined;
+}
+
 function connectionsReply(
   slug: string,
   projectId: string,
@@ -2584,9 +3267,9 @@ function connectionsReply(
           ),
           mockGate(
             "bot.first_message",
-            "First message round-trips (@Bridge -> reply)",
+            "First message round-trips (@Comma -> reply)",
             "needs_manual",
-            "Send a real @Bridge message in the target Feishu group and watch for a reply.",
+            "Send a real @Comma message in the target Feishu group and watch for a reply.",
             "explicit_admin_action_required"
           ),
         ],
@@ -2654,7 +3337,13 @@ function connectionsReply(
       recorded: true,
       warning: null,
     });
-  if (method === "POST" && section === "feishu") {
+  const memberScope = (): { member_scope?: "external" } =>
+    body.member_scope === "external" ? { member_scope: "external" } : {};
+  if (section === "slack" || section === "feishu" || section === "lark") {
+    const answer = memberReply(state[section], method, id, action, parts[3], body, url);
+    if (answer) return answer;
+  }
+  if (method === "POST" && section === "feishu" && !id) {
     if (state.feishu.length > 0)
       return ok(
         {
@@ -2663,7 +3352,11 @@ function connectionsReply(
         },
         201
       );
-    state.feishu.push({ connect_id: `imc1_feishu_${Date.now()}`, disabled: false });
+    state.feishu.push({
+      connect_id: `imc1_feishu_${Date.now()}`,
+      disabled: false,
+      ...memberScope(),
+    });
     return ok({ notice: "Feishu webhook connect ready." }, 201);
   }
   if (method === "POST" && section === "feishu" && id === "registration") {
@@ -2691,6 +3384,7 @@ function connectionsReply(
       disabled: false,
       app_id: "cli_scanned",
       events: "socket",
+      ...memberScope(),
     });
     return ok({ state: "connected", notice: "Feishu app made and connected." });
   }
@@ -2721,6 +3415,7 @@ function connectionsReply(
       verification_token_configured: false,
       encrypt_key_configured: false,
       events: "socket",
+      ...memberScope(),
     });
     return ok({ state: "connected", notice: "Lark app made and connected." });
   }
@@ -2753,6 +3448,7 @@ function connectionsReply(
       app_id: appId,
       verification_token_configured: token,
       encrypt_key_configured: key,
+      ...memberScope(),
     });
     return ok(
       {
@@ -2819,6 +3515,23 @@ function connectionsReply(
       201
     );
   }
+  if (method === "POST" && section === "wecom") {
+    const botId = typeof body.bot_id === "string" ? body.bot_id : "";
+    if (!botId || typeof body.secret !== "string" || !body.secret)
+      return failure(422, "missing_credentials", "Connect is missing required fields.");
+    state.wecom.push({
+      connect_id: `imc1_wecom_${Date.now()}`,
+      disabled: false,
+      bot_id: botId,
+    });
+    return ok(
+      {
+        notice:
+          "WeCom bot connected. Write to it in WeCom, or add it to a group and mention it.",
+      },
+      201
+    );
+  }
   if (method === "PUT" && section === "qq" && id && action === "menu") {
     const connect = state.qq.find((item) => item.connect_id === id);
     if (!connect)
@@ -2870,6 +3583,7 @@ function connectionsReply(
         ? `Tasks · ${model?.label ?? "default Task model"}`
         : "Router · router",
       auto_join_public_channels: true,
+      ...memberScope(),
     });
     return ok(
       {
@@ -2886,6 +3600,7 @@ function connectionsReply(
       ...state.slack,
       ...state.qq,
       ...state.telegram,
+      ...state.wecom,
     ];
     const connect = connects.find((item) => item.connect_id === id);
     if (!connect)
@@ -2896,6 +3611,7 @@ function connectionsReply(
       state.lark = state.lark.filter((item) => item.connect_id !== id);
       state.qq = state.qq.filter((item) => item.connect_id !== id);
       state.telegram = state.telegram.filter((item) => item.connect_id !== id);
+      state.wecom = state.wecom.filter((item) => item.connect_id !== id);
       return ok({ notice: "Connect deleted." });
     }
     connect.disabled = body.enabled !== true;
@@ -3024,12 +3740,131 @@ const skillState: Record<string, MockSkill[]> = {};
 const listedSkills = (skills: MockSkill[]) =>
   skills.map(({ content: _content, ...fields }) => fields);
 
-/** The swarm's still.fail stations, one connected (DashboardSwarmStillfail). */
+/** The swarm's still.fail stations: two workspaces, one connected (DashboardSwarmStillfail). */
+const stillfailSeed = [
+  {
+    id: "dev_stillfail_1",
+    name: "Hypershell · Tokyo server",
+    workspace_id: "ws_hypershell",
+    connected: true,
+    connected_at: Date.UTC(2026, 9, 29, 6, 20),
+  },
+  {
+    id: "dev_stillfail_2",
+    name: "Design studio · Office Mac",
+    workspace_id: "ws_design",
+    connected: false,
+    connected_at: Date.UTC(2026, 9, 27, 2, 5),
+  },
+];
+
+// Each swarm's stations, changed by its disconnects.
+const stillfailState: Record<string, typeof stillfailSeed> = {};
+
+const stillfailUsage: Record<string, BftSwarmStillfail["usage"]> = {
+  dev_stillfail_1: [
+    {
+      key: "lin@example.com",
+      calls: 412,
+      input: 1_820_000,
+      cache_read: 9_400_000,
+      cache_write: 210_000,
+      output: 96_000,
+      cost: 18.42,
+    },
+  ],
+  dev_stillfail_2: [
+    {
+      key: "wu@example.com",
+      calls: 138,
+      input: 610_000,
+      cache_read: 2_100_000,
+      cache_write: 40_000,
+      output: 31_000,
+      cost: 5.07,
+    },
+  ],
+};
+
+const stillfailTasks: BftSwarmStillfail["tasks"] = [
+  {
+    id: "st_tokyo:c-login-prod",
+    station_id: "st_tokyo",
+    device_id: "dev_stillfail_1",
+    title: "Authorize GitHub CLI for release pipeline",
+    url: "https://still.fail/c/c-login-prod",
+    status: "needs_review",
+    attention: "need",
+    note: "Waiting for gh auth login approval on Tokyo server",
+    card_kind: "login",
+    waits_for: ["lin@example.com"],
+    created_by: "lin@example.com",
+    last_activity_at: Date.now() - 4 * 60_000,
+  },
+  {
+    id: "st_tokyo:c-rollout-plan",
+    station_id: "st_tokyo",
+    device_id: "dev_stillfail_1",
+    title: "Choose staging rollout window for billing worker",
+    url: "https://still.fail/c/c-rollout-plan",
+    status: "needs_review",
+    attention: "need",
+    note: "Options card ready: 14:00 JST or after nightly backup",
+    card_kind: "options",
+    waits_for: ["maya@acme-robotics.com"],
+    created_by: "maya@acme-robotics.com",
+    last_activity_at: Date.now() - 18 * 60_000,
+  },
+  {
+    id: "st_design:c-figma-export",
+    station_id: "st_design",
+    device_id: "dev_stillfail_2",
+    title: "Export dark-mode icon tokens from Figma",
+    url: "https://still.fail/c/c-figma-export",
+    status: "in_progress",
+    attention: "failed",
+    note: "Figma API returned 429 rate limit during batch export",
+    card_kind: null,
+    waits_for: ["wu@example.com"],
+    created_by: "wu@example.com",
+    last_activity_at: Date.now() - 42 * 60_000,
+  },
+  {
+    id: "st_tokyo:c-pr-5590",
+    station_id: "st_tokyo",
+    device_id: "dev_stillfail_1",
+    title: "Verify People tab migration on iOS and Android",
+    url: "https://still.fail/c/c-pr-5590",
+    status: "done",
+    attention: "done",
+    note: "All 42 checks passed and PR #5590 merged to main",
+    card_kind: null,
+    waits_for: ["lin@example.com"],
+    created_by: "lin@example.com",
+    last_activity_at: Date.now() - 2 * 3_600_000,
+  },
+  {
+    id: "st_tokyo:c-bench-index",
+    station_id: "st_tokyo",
+    device_id: "dev_stillfail_1",
+    title: "Profile Salix station index query latency",
+    url: "https://still.fail/c/c-bench-index",
+    status: "in_progress",
+    attention: null,
+    note: "Running EXPLAIN ANALYZE on 10k synthetic rows",
+    card_kind: null,
+    waits_for: [],
+    created_by: "maya@acme-robotics.com",
+    last_activity_at: Date.now() - 9 * 60_000,
+  },
+];
+
 function swarmStillfailReply(
   slug: string,
   projectId: string,
   rest: string,
-  method: string
+  method: string,
+  url: URL
 ) {
   const ok = (data: unknown) => reply(200, { ok: true, data });
   if (!orgs.some((org) => org.slug === slug)) return notFound();
@@ -3037,8 +3872,22 @@ function swarmStillfailReply(
   if (!swarm) return notFound("project_not_found", "Agent Swarm not found.");
   if (rest === "/line" && method === "POST")
     return ok({ line: "comma https://comma.example salix_conn_mockline0001" });
-  if (rest === "/stations" && method === "DELETE")
+  const stations = (stillfailState[projectId] ??= [...stillfailSeed]);
+  if (rest === "/stations" && method === "DELETE") {
+    stations.splice(0);
     return ok({ notice: "This Agent Swarm no longer has still.fail stations." });
+  }
+  if (rest.startsWith("/stations/") && method === "DELETE") {
+    const at = stations.findIndex(
+      (station) => station.id === decodeURIComponent(rest.slice("/stations/".length))
+    );
+    if (at < 0)
+      return notFound("not_found", "This Agent Swarm has no such Monoid station.");
+    stations.splice(at, 1);
+    return ok({ notice: "The Monoid station was disconnected." });
+  }
+  const device = url.searchParams.get("device_id");
+  const kept = new Set(stations.map((station) => station.id));
   return ok({
     project: {
       id: projectId,
@@ -3046,34 +3895,17 @@ function swarmStillfailReply(
       role: projectId === "prj_sales" ? "member" : "admin",
     },
     days: 30,
-    stations: [
-      {
-        id: "dev_stillfail_1",
-        name: "Office Mac",
-        connected: true,
-        connected_at: Date.UTC(2026, 9, 29, 6, 20),
-      },
-    ],
-    usage: [
-      {
-        key: "lin@example.com",
-        calls: 412,
-        input: 1_820_000,
-        cache_read: 9_400_000,
-        cache_write: 210_000,
-        output: 96_000,
-        cost: 18.42,
-      },
-      {
-        key: "wu@example.com",
-        calls: 138,
-        input: 610_000,
-        cache_read: 2_100_000,
-        cache_write: 40_000,
-        output: 31_000,
-        cost: 5.07,
-      },
-    ],
+    stations,
+    tasks: stillfailTasks.filter((task) =>
+      device
+        ? task.device_id === device
+        : task.device_id !== null && kept.has(task.device_id)
+    ),
+    usage: device
+      ? (stillfailUsage[device] ?? [])
+      : Object.entries(stillfailUsage)
+          .filter(([id]) => kept.has(id))
+          .flatMap(([, rows]) => rows),
   });
 }
 
@@ -3249,8 +4081,75 @@ const meetingSettings: Record<string, unknown> = {
   series: [],
 };
 
-function meetingsOverview() {
+// `?members-calendars`: every member's own calendars with reminder DMs;
+// `?no-meetings`: nothing in the next 24 hours.
+const meetingParams = new URLSearchParams(window.location.search);
+if (meetingParams.has("members-calendars"))
+  Object.assign(meetingSettings, {
+    mode: "join",
+    calendar_scope: "members",
+    calendar_selections: [],
+    personal_preparation: true,
+    channel_notice: false,
+  });
+
+// Google accounts members connected: Settings and Upcoming show the same count.
+const memberAccounts = 18;
+
+// One row per meeting, however many members have it; the recipients are the
+// members whose calendars hold it. Slack has no member with Sam's email.
+const slackUnmatched = new Set(["sam.okafor@acme.test"]);
+const memberMeetings: [string, string, string[]][] = [
+  [
+    "Weekly product sync",
+    "queued",
+    ["maya@acme.test", "li.wei@acme.test", "sam.okafor@acme.test", "priya@acme.test"],
+  ],
+  [
+    "Customer escalation review with the enterprise support team",
+    "ready",
+    ["jordan.alvarez-whitfield@acme.test", "maya@acme.test"],
+  ],
+  ["Design critique", "preparing", ["li.wei@acme.test"]],
+  [
+    "Hiring loop debrief",
+    "not_sent",
+    ["sam.okafor@acme.test", "priya@acme.test", "maya@acme.test"],
+  ],
+  ["Quarterly planning", "scheduled", ["priya@acme.test", "li.wei@acme.test"]],
+];
+
+function meetingEvents() {
+  if (meetingParams.has("no-meetings")) return [];
+  if (meetingSettings.calendar_scope === "members")
+    return memberMeetings.map(([title, status, recipients], index) => ({
+      meeting_plan_id: `plan-member-${index}`,
+      title,
+      start_ms: hoursFromNow(1 + index * 4),
+      status: meetingSettings.personal_preparation ? status : "join_only",
+      recipients: meetingSettings.personal_preparation
+        ? recipients.map((email) => ({
+            email,
+            slack_unmatched: slackUnmatched.has(email),
+          }))
+        : [],
+    }));
   const statuses = ["ready", "preparing", "scheduled", "queued", "failed"];
+  return [
+    "Weekly product sync",
+    "Customer escalation review with the enterprise support team",
+    "Design critique",
+    "Hiring loop debrief",
+    "Quarterly planning",
+  ].map((title, index) => ({
+    meeting_plan_id: `plan-${index}`,
+    title,
+    start_ms: hoursFromNow(1 + index * 4),
+    status: statuses[index],
+  }));
+}
+
+function meetingsOverview() {
   return {
     settings: meetingSettings,
     connects: [
@@ -3258,9 +4157,14 @@ function meetingsOverview() {
       ["slack-ops", "Ops Bot", "ops-bot", "connected", ["im:write"]],
       ["slack-old", "Legacy Bot", "legacy", "unconnected", null],
       ["lark-main", "会议助理", null, "connected", null],
+      ["feishu-main", "飞书助理", null, "connected", null],
     ].map(([connect_id, app_name, bot_username, state, missing]) => ({
       connect_id,
-      provider: String(connect_id).startsWith("lark") ? "lark" : "slack",
+      provider: String(connect_id).startsWith("lark")
+        ? "lark"
+        : String(connect_id).startsWith("feishu")
+          ? "feishu"
+          : "slack",
       app_name,
       bot_username,
       workspace_name: "Acme Robotics",
@@ -3273,20 +4177,10 @@ function meetingsOverview() {
           : "not_configured",
       missing_scopes: missing,
     })),
-    events: [
-      "Weekly product sync",
-      "Customer escalation review with the enterprise support team",
-      "Design critique",
-      "Hiring loop debrief",
-      "Quarterly planning",
-    ].map((title, index) => ({
-      meeting_plan_id: `plan-${index}`,
-      title,
-      start_ms: hoursFromNow(1 + index * 4),
-      status: statuses[index],
-    })),
+    events: meetingEvents(),
     calendar_health: meetingSettings.calendar_scope === "members" ? "members" : "ok",
-    member_calendars: meetingSettings.calendar_scope === "members" ? 214 : null,
+    member_calendars:
+      meetingSettings.calendar_scope === "members" ? memberAccounts : null,
     truncated: false,
     runtime_enabled: true,
   };
@@ -3317,6 +4211,10 @@ const dataPolicy = {
   language: "en",
   audience_modes: ["space", "members"],
   supervisors: [{ connect_id: "slack-main", id: "U01CEO" }],
+  memory_writers: {
+    restricted: false,
+    writers: [] as { connect_id: string; id: string }[],
+  },
   connects: [
     {
       connect_id: "slack-main",
@@ -3381,11 +4279,14 @@ const dataPolicy = {
 
 /*
  * Daily brief: saved settings on the first Agent Swarm's Slack bot, a few
- * linked members, today's state and the latest runs.
+ * linked members, today's state and the latest runs. Another Swarm's settings
+ * are saved beside it (`dailyBriefSettings`, by Swarm).
  */
 const dailyBrief = {
   settings: {
     project_id: "prj_support",
+    provider: "slack",
+    connect_id: "slack-main",
     slack_connect_id: "slack-main",
     enabled: true,
     retention_days: 30,
@@ -3403,10 +4304,13 @@ const dailyBrief = {
     id: `dbm-${index + 1}`,
     name,
     email,
+    provider: "slack",
+    provider_user_id: slack_user_id,
     slack_user_id,
     enabled: true,
     timezone,
     deliver_at,
+    project_id: "prj_support" as string | null,
     last_brief_at: index === 2 ? null : minutesAgo((5 + index) * 60),
     requested_at: null as string | null,
   })),
@@ -3437,7 +4341,58 @@ const dailyBrief = {
   })),
 };
 
-function dailyBriefReply(method: string, rest: string, body: Record<string, unknown>) {
+// The public groups and channels each bot can post the team brief to.
+const dailyBriefChannels: Record<string, { id: string; name: string }[]> = {
+  slack: [
+    ["C01GENERAL", "general"],
+    ["C02PRODUCT", "product"],
+    ["C03SUPPORT", "support"],
+  ].map(([id, name]) => ({ id: String(id), name: String(name) })),
+  feishu: [
+    ["oc_7a1f0general", "全员群"],
+    ["oc_7a1f1product", "产品讨论"],
+    ["oc_7a1f2design", "设计评审"],
+    ["oc_7a1f3support", "客户支持"],
+    ["oc_7a1f4growth", "增长周会"],
+    ["oc_7a1f5infra", "基础设施"],
+    ["oc_7a1f6release", "发版协调"],
+    ["oc_7a1f7sales", "销售前线"],
+  ].map(([id, name]) => ({ id: String(id), name: String(name) })),
+  lark: [
+    ["oc_9b2e0team", "Team"],
+    ["oc_9b2e1eng", "Engineering"],
+  ].map(([id, name]) => ({ id: String(id), name: String(name) })),
+};
+
+const dailyBriefSettings: Record<string, Record<string, unknown>> = {
+  prj_support: dailyBrief.settings,
+};
+
+function dailyBriefReply(
+  method: string,
+  rest: string,
+  url: URL,
+  body: Record<string, unknown>
+) {
+  const memberPath = /^\/members\/([^/]+)$/.exec(rest);
+  if (method === "PUT" && memberPath) {
+    const moved = dailyBrief.members.find(
+      (candidate) => candidate.id === memberPath[1]
+    );
+    if (!moved) return reply(404, { ok: false, error: { code: "not_found" } });
+    moved.project_id = String(body.project_id);
+    return reply(200, {
+      ok: true,
+      data: { id: moved.id, project_id: moved.project_id },
+    });
+  }
+  if (method === "GET" && rest === "/channels") {
+    const provider = url.searchParams.get("provider") ?? "slack";
+    return reply(200, {
+      ok: true,
+      data: { channels: dailyBriefChannels[provider] ?? [], complete: true },
+    });
+  }
   const send = /^\/members\/([^/]+)\/send$/.exec(rest);
   if (method === "POST" && send) {
     const asked = dailyBrief.members.find((candidate) => candidate.id === send[1]);
@@ -3450,8 +4405,12 @@ function dailyBriefReply(method: string, rest: string, body: Record<string, unkn
     });
   }
   if (method === "PUT" && rest === "/settings") {
-    Object.assign(dailyBrief.settings, body);
-    return reply(200, { ok: true, data: { ...dailyBrief.settings } });
+    const project = String(body.project_id ?? "prj_support");
+    dailyBriefSettings[project] = Object.assign(
+      dailyBriefSettings[project] ?? {},
+      body
+    );
+    return reply(200, { ok: true, data: { ...dailyBriefSettings[project] } });
   }
   if (method === "POST" && rest === "/members/sync") {
     return reply(200, {
@@ -3459,7 +4418,22 @@ function dailyBriefReply(method: string, rest: string, body: Record<string, unkn
       data: { linked: dailyBrief.members.length, unresolved: ["contractor@acme.test"] },
     });
   }
-  return reply(200, { ok: true, data: dailyBrief });
+  const project = url.searchParams.get("project_id") ?? "prj_support";
+  const swarmSettings = dailyBriefSettings[project] ?? null;
+  return reply(200, {
+    ok: true,
+    data: {
+      ...dailyBrief,
+      settings: swarmSettings,
+      today: swarmSettings ? dailyBrief.today : null,
+      runs: swarmSettings ? dailyBrief.runs : [],
+      configured_projects: Object.entries(dailyBriefSettings).map(([id, saved]) => ({
+        project_id: id,
+        provider: saved.provider,
+        enabled: saved.enabled,
+      })),
+    },
+  });
 }
 
 function meetingsReply(
@@ -3566,7 +4540,7 @@ function meetingsReply(
                       name,
                       account_name,
                     })),
-                    member_accounts: 214,
+                    member_accounts: memberAccounts,
                     channels: [
                       { id: "C-TEAM", name: "team-meetings" },
                       { id: "C-ENG", name: "engineering" },
@@ -4614,18 +5588,58 @@ function swarmPageReply(
   const admin = role === "admin";
   const forbidden = () =>
     failure(403, "forbidden", "Only Agent Swarm admins can manage this Agent Swarm.");
-  const settingsPage = () => ({
-    project: {
-      ...project,
-      slug: swarm.project.slug,
-      status: swarm.project.status,
-      runtime_id: `grp1_${projectId}_7f3a9c2e`,
-    },
-    org_runtime_id: `ten1_${slug}_41d0b7`,
-    task_model: swarmTaskModel(projectId),
-    task_place: swarmTaskPlace(projectId),
-    access: { members: (swarmGrants[projectId] ??= []), truncated: false },
-  });
+  const settingsPage = () => {
+    const depts = orgDepartments[slug] ?? [];
+    const deptId = swarmDepartments[projectId] ?? null;
+    const dept = deptId ? depts.find((item) => item.id === deptId) : undefined;
+    const allRows = (swarmList(slug) ?? []).map((row) => decorateSwarmRow(slug, row));
+    return {
+      project: {
+        ...project,
+        slug: swarm.project.slug,
+        status: swarm.project.status,
+        runtime_id: `grp1_${projectId}_7f3a9c2e`,
+      },
+      org_runtime_id: `ten1_${slug}_41d0b7`,
+      cross_search: {
+        status: "ok",
+        can_manage: admin,
+        department_id: dept?.id ?? null,
+        department_name: dept?.name ?? null,
+        // Only admins see rules: they name other Swarms of the org.
+        inherited_targets: admin
+          ? (dept?.targets ?? []).filter(
+              (item) => !(item.kind === "project" && item.id === projectId)
+            )
+          : [],
+        explicit_targets: admin
+          ? resolveMockTargets(
+              slug,
+              "project",
+              projectId,
+              swarmExtraGrants[projectId] ?? []
+            )
+          : [],
+        departments: admin
+          ? depts.map((item) => ({ id: item.id, name: item.name }))
+          : [],
+        ifc_on: admin ? mockIfcOn(projectId) : null,
+        catalog_swarms: admin
+          ? allRows
+              .filter((row) => row.id !== projectId)
+              .map((row) => ({
+                id: row.id,
+                name: row.name,
+                department_id: row.department_id,
+                ifc_on: mockIfcOn(row.id),
+              }))
+          : [],
+      },
+      task_model: swarmTaskModel(projectId),
+      task_place: swarmTaskPlace(projectId),
+      access: { members: (swarmGrants[projectId] ??= []), truncated: false },
+    };
+  };
   const schedules = () => ({
     project,
     status: down ? "unavailable" : "ok",
@@ -4711,6 +5725,39 @@ function swarmPageReply(
       }
       const listed = projects.find((candidate) => candidate.id === projectId);
       if (listed) listed.name = renamed;
+      return ok(settingsPage());
+    }
+    case "PUT /settings/department": {
+      if (!admin) return forbidden();
+      swarmDepartments[projectId] =
+        typeof body.department_id === "string" && body.department_id
+          ? body.department_id
+          : null;
+      return ok(settingsPage());
+    }
+    case "PUT /settings/search-grants": {
+      if (!admin) return forbidden();
+      const nextTargets = Array.isArray(body.targets)
+        ? (body.targets as BftSearchTargetInput[])
+        : undefined;
+      if (nextTargets && !validMockTargets(slug, "project", projectId, nextTargets)) {
+        return mockInvalidTargets();
+      }
+      const previousDept = swarmDepartments[projectId] ?? null;
+      const previousTargets = swarmExtraGrants[projectId];
+      if ("department_id" in body) {
+        swarmDepartments[projectId] =
+          typeof body.department_id === "string" && body.department_id
+            ? body.department_id
+            : null;
+      }
+      if (nextTargets) swarmExtraGrants[projectId] = nextTargets;
+      if (mockLargestEffectiveTargets(slug) > mockEffectiveTargetLimit) {
+        swarmDepartments[projectId] = previousDept;
+        if (previousTargets) swarmExtraGrants[projectId] = previousTargets;
+        else delete swarmExtraGrants[projectId];
+        return mockTargetLimit();
+      }
       return ok(settingsPage());
     }
     case "PUT /settings/task-model": {
@@ -5032,6 +6079,324 @@ function agentsReply(
   }
 }
 
+/*
+ * Feishu / Lark triage: 研发部 watches three groups with its Feishu bot and has
+ * a Lark bot that is paused; 财务部's Feishu bot tries to add the shared group
+ * 研发部 already watches (409). The timeline holds one reply, one reaction,
+ * one silence and one delegation, each with text behind an audited reveal.
+ */
+const zhMock = () =>
+  new URLSearchParams(window.location.search).get("locale") === "zh_Hans";
+const larkMinute = (hour: number, minute: number) =>
+  Date.UTC(2026, 10, 19, hour - 8, minute);
+const larkBotChats = [
+  { id: "oc_7f3a1d2e9b", name: "研发群" },
+  { id: "oc_51c0e8aa42", name: "发布值班群" },
+  { id: "oc_shared9d1c", name: "跨部门协作群" },
+  { id: "oc_2be6f0c713", name: "财务月结群" },
+  { id: "oc_8d44a19e05", name: "报销答疑群" },
+  { id: "oc_c03f7e2b6a", name: "全员群" },
+];
+interface LarkMockChat {
+  id: string;
+  name: string | null;
+  enabled: boolean;
+}
+interface LarkMockSource {
+  connect_id: string;
+  provider: "feishu" | "lark";
+  app_name: string;
+  enabled: boolean;
+  chats: LarkMockChat[];
+}
+interface LarkMockItem {
+  id: string;
+  provider: "feishu" | "lark";
+  chat_id: string;
+  chat_name: string;
+  state: "applied" | "stale" | "failed";
+  kind: "reply" | "reaction" | "silence" | "delegate";
+  reason_code: string | null;
+  reaction: string | null;
+  task_title: string | null;
+  task_conversation_id: string | null;
+  error_code: string | null;
+  at_ms: number;
+  texts: [string, number, string][];
+  reply_text: string | null;
+}
+const larkTriageState: {
+  agents: {
+    id: string;
+    name: string;
+    project_name: string;
+    state: "ready";
+    sources: LarkMockSource[];
+  }[];
+} = {
+  agents: [
+    {
+      id: "agt_router",
+      name: "研发部",
+      project_name: "研发部",
+      state: "ready",
+      sources: [
+        {
+          connect_id: "imc_feishu_rd",
+          provider: "feishu",
+          app_name: "研发助手",
+          enabled: true,
+          chats: [
+            { id: "oc_7f3a1d2e9b", name: "研发群", enabled: true },
+            { id: "oc_51c0e8aa42", name: "发布值班群", enabled: true },
+            { id: "oc_shared9d1c", name: "跨部门协作群", enabled: true },
+          ],
+        },
+        {
+          connect_id: "imc_lark_rd",
+          provider: "lark",
+          app_name: "R&D Assistant",
+          enabled: false,
+          chats: [],
+        },
+      ],
+    },
+    {
+      id: "agt_finance",
+      name: "财务部",
+      project_name: "财务部",
+      state: "ready",
+      sources: [
+        {
+          connect_id: "imc_feishu_fin",
+          provider: "feishu",
+          app_name: "财务助手",
+          enabled: true,
+          chats: [{ id: "oc_2be6f0c713", name: "财务月结群", enabled: true }],
+        },
+      ],
+    },
+  ],
+};
+const larkTriageItems: LarkMockItem[] = [
+  {
+    id: "ltb_reply",
+    provider: "feishu",
+    chat_id: "oc_51c0e8aa42",
+    chat_name: "发布值班群",
+    state: "applied",
+    kind: "reply",
+    reason_code: null,
+    reaction: null,
+    task_title: null,
+    task_conversation_id: null,
+    error_code: null,
+    at_ms: larkMinute(10, 43),
+    texts: [
+      [
+        "王小明",
+        larkMinute(10, 41),
+        "今天下午的发版流水线卡在镜像推送这一步了，谁知道怎么回事？",
+      ],
+      ["王小明", larkMinute(10, 42), "报错是 unauthorized: authentication required"],
+    ],
+    reply_text:
+      "这是昨晚 registry 凭据轮换后没有同步到 CI 导致的。在 CI 设置里更新 REGISTRY_TOKEN 后重跑流水线即可，步骤见《发布手册》第 3 节。",
+  },
+  {
+    id: "ltb_reaction",
+    provider: "feishu",
+    chat_id: "oc_7f3a1d2e9b",
+    chat_name: "研发群",
+    state: "applied",
+    kind: "reaction",
+    reason_code: null,
+    reaction: "THUMBSUP",
+    task_title: null,
+    task_conversation_id: null,
+    error_code: null,
+    at_ms: larkMinute(10, 20),
+    texts: [["李娜", larkMinute(10, 19), "PR #482 已合并，测试环境部署完成。"]],
+    reply_text: null,
+  },
+  {
+    id: "ltb_silence",
+    provider: "feishu",
+    chat_id: "oc_shared9d1c",
+    chat_name: "跨部门协作群",
+    state: "applied",
+    kind: "silence",
+    reason_code: "already_handled",
+    reaction: null,
+    task_title: null,
+    task_conversation_id: null,
+    error_code: null,
+    at_ms: larkMinute(9, 58),
+    texts: [
+      ["赵磊", larkMinute(9, 55), "周五的评审会改到几点？"],
+      ["孙悦", larkMinute(9, 57), "改到下午三点，会议室不变。"],
+    ],
+    reply_text: null,
+  },
+  {
+    id: "ltb_delegate",
+    provider: "feishu",
+    chat_id: "oc_7f3a1d2e9b",
+    chat_name: "研发群",
+    state: "applied",
+    kind: "delegate",
+    reason_code: null,
+    reaction: null,
+    task_title: "排查支付回调偶发超时",
+    task_conversation_id: "cnv1_payment_timeouts",
+    error_code: null,
+    at_ms: larkMinute(9, 31),
+    texts: [
+      [
+        "陈静",
+        larkMinute(9, 30),
+        "支付回调这周有十几次超时，日志里看不出规律，能帮忙查一下吗？",
+      ],
+    ],
+    reply_text: null,
+  },
+];
+
+function larkTriageReply(
+  slug: string,
+  method: string,
+  rest: string,
+  url: URL,
+  body: Record<string, unknown>
+) {
+  if (slug !== "acme") return notFound();
+  const ok = (data: unknown) => reply(200, { ok: true, data });
+  const zh = zhMock();
+  const swarm = larkTriageState.agents.find(
+    (item) => item.id === (url.searchParams.get("agent") ?? body.agent)
+  );
+  if (method === "GET" && rest === "") return ok(larkTriageState);
+  if (!swarm)
+    return failure(404, "agent_not_found", "That Agent is no longer available.");
+  const sourceOf = (id: string) => swarm.sources.find((item) => item.connect_id === id);
+  if (method === "GET" && rest === "/chats") {
+    const chatId = url.searchParams.get("chat_id");
+    if (chatId) {
+      const known = larkBotChats.find((chat) => chat.id === chatId);
+      return known
+        ? ok({ chats: [known], complete: true })
+        : failure(
+            404,
+            "not_found",
+            zh ? "这个群聊已不可用。" : "That item is no longer available."
+          );
+    }
+    return ok({ chats: larkBotChats, complete: true });
+  }
+  const source = /^\/sources\/([^/]+)$/.exec(rest);
+  if (method === "PUT" && source) {
+    const target = sourceOf(decodeURIComponent(source[1] ?? ""));
+    if (!target) return notFound("not_found");
+    target.enabled = body.enabled === true;
+    return ok({
+      notice: zh
+        ? target.enabled
+          ? "已为这个连接开启飞书 / Lark 分诊。"
+          : "已暂停这个连接的飞书 / Lark 分诊。"
+        : target.enabled
+          ? "Feishu / Lark triage enabled for this connection."
+          : "Feishu / Lark triage paused for this connection.",
+    });
+  }
+  const chat = /^\/sources\/([^/]+)\/chats\/([^/]+)$/.exec(rest);
+  if (method === "PUT" && chat) {
+    const target = sourceOf(decodeURIComponent(chat[1] ?? ""));
+    const id = decodeURIComponent(chat[2] ?? "");
+    if (!target) return notFound("not_found");
+    target.chats = target.chats.map((item) =>
+      item.id === id ? { ...item, enabled: body.enabled === true } : item
+    );
+    return ok({
+      notice: zh
+        ? body.enabled
+          ? "群聊已恢复值守。"
+          : "群聊已暂停值守。"
+        : body.enabled
+          ? "Group chat resumed."
+          : "Group chat paused.",
+    });
+  }
+  const add = /^\/sources\/([^/]+)\/chats$/.exec(rest);
+  if (method === "POST" && add) {
+    const target = sourceOf(decodeURIComponent(add[1] ?? ""));
+    if (!target) return notFound("not_found");
+    const chats = (body.chats as { id: string; name: string | null }[]) ?? [];
+    const holder = (id: string) =>
+      larkTriageState.agents.find(
+        (other) =>
+          other.id !== swarm.id &&
+          other.sources.some((item) =>
+            item.chats.some((watched) => watched.id === id && watched.enabled)
+          )
+      );
+    const claimed = chats.find((item) => holder(item.id));
+    if (claimed) {
+      const holderName = holder(claimed.id)?.name ?? "";
+      const name =
+        claimed.name ?? larkBotChats.find((item) => item.id === claimed.id)?.name;
+      return failure(
+        409,
+        "chat_already_claimed",
+        zh
+          ? `“${name}”已由 Agent Swarm“${holderName}”值守。请先在那边暂停，再在这里添加。`
+          : `“${name}” is already watched by the Agent Swarm “${holderName}”. Pause it there first.`
+      );
+    }
+    target.chats = [
+      ...target.chats,
+      ...chats.map((item) => ({ id: item.id, name: item.name, enabled: true })),
+    ];
+    return ok({
+      notice: zh
+        ? `已添加 ${chats.length} 个群聊。`
+        : `${chats.length} group chats added.`,
+    });
+  }
+  if (method === "GET" && rest === "/activity") {
+    const kind = url.searchParams.get("kind");
+    const chatId = url.searchParams.get("chat");
+    const items = (swarm.id === "agt_router" ? larkTriageItems : [])
+      .filter(
+        (item) => (!kind || item.kind === kind) && (!chatId || item.chat_id === chatId)
+      )
+      .map(({ texts, reply_text: _reply, ...item }) => ({
+        ...item,
+        message_count: texts.length,
+        target: { sender_name: texts.at(-1)?.[0], sent_at_ms: texts.at(-1)?.[1] },
+        messages: texts.map(([name, at], index) => ({
+          id: `${item.id}_m${index}`,
+          sender_name: name,
+          sent_at_ms: at,
+        })),
+      }));
+    return ok({ items, next_cursor: null });
+  }
+  if (method === "POST" && rest === "/reveal") {
+    const item = larkTriageItems.find((entry) => entry.id === body.batch);
+    if (!item) return notFound("not_found");
+    return ok({
+      messages: item.texts.map(([name, at, text], index) => ({
+        id: `${item.id}_m${index}`,
+        sender_name: name,
+        sent_at_ms: at,
+        text,
+      })),
+      reply_text: item.reply_text,
+    });
+  }
+  return notFound("not_found");
+}
+
 export const mockFetch: typeof fetch = async (input, init) => {
   const url = new URL(
     typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
@@ -5045,6 +6410,22 @@ export const mockFetch: typeof fetch = async (input, init) => {
     if (headers.get("x-csrf-token") !== mockCsrfToken) {
       return new Response("Invalid CSRF token", { status: 403 });
     }
+  }
+  const larkTriage = /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/lark-triage(\/.*)?$/.exec(
+    url.pathname
+  );
+  if (larkTriage) {
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : {};
+    return larkTriageReply(
+      decodeURIComponent(larkTriage[1] ?? ""),
+      method,
+      larkTriage[2] ?? "",
+      url,
+      body
+    );
   }
   const triage = /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/triage(\/.*)?$/.exec(
     url.pathname
@@ -5071,7 +6452,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : {};
-    return dailyBriefReply(method, brief[2] ?? "", body);
+    return dailyBriefReply(method, brief[2] ?? "", url, body);
   }
   const adminPage =
     /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/(meetings|data-policy)\/[^/]+(\/.*)?$/.exec(
@@ -5099,7 +6480,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
     return settingsReply(method, settingsPath[2] ?? "", body);
   }
   const catalog =
-    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/(projects|plugins)(\/[^/]*)?$/.exec(
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/(projects|departments|plugins)(\/[^/]*)?$/.exec(
       url.pathname
     );
   if (catalog) {
@@ -5108,6 +6489,15 @@ export const mockFetch: typeof fetch = async (input, init) => {
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : {};
+    if (catalog[2] === "departments") {
+      return departmentsReply(
+        slug,
+        decodeURIComponent((catalog[3] ?? "").replace(/^\//, "")),
+        method,
+        url,
+        body
+      );
+    }
     return catalog[2] === "projects"
       ? catalog[3]
         ? notFound()
@@ -5165,7 +6555,12 @@ export const mockFetch: typeof fetch = async (input, init) => {
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : {};
-    return wizardReply(method, wizardPath[1] ?? "", body);
+    return wizardReply(
+      method,
+      wizardPath[1] ?? "",
+      body,
+      url.searchParams.has("org") ? (url.searchParams.get("org") ?? "") : undefined
+    );
   }
   if (url.pathname === "/dashboard/api/v1/session") {
     // `?no-orgs` previews the state of a user outside every organization.
@@ -5194,7 +6589,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
       ? (JSON.parse(init.body) as Record<string, unknown>)
       : {};
   const stillfail =
-    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)\/stillfail(\/line|\/stations)?$/.exec(
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)\/stillfail(\/line|\/stations(?:\/[^/]+)?)?$/.exec(
       url.pathname
     );
   if (stillfail)
@@ -5202,7 +6597,8 @@ export const mockFetch: typeof fetch = async (input, init) => {
       decodeURIComponent(stillfail[1] ?? ""),
       decodeURIComponent(stillfail[2] ?? ""),
       stillfail[3] ?? "",
-      method
+      method,
+      url
     );
   const swarmCatalog =
     /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)(\/(plugins|skills)(?:\/[^/]+){0,4})$/.exec(
@@ -5219,7 +6615,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
     );
   }
   const swarmConnections =
-    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)\/connections((?:\/[^/]+){0,3})$/.exec(
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)\/connections((?:\/[^/]+){0,4})$/.exec(
       url.pathname
     );
   if (swarmConnections) {

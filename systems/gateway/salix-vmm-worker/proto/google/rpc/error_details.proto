@@ -1,0 +1,11 @@
+// The one google.rpc error detail the Agent VMM Host sends: a subset of
+// googleapis' google/rpc/error_details.proto with the same field numbers.
+syntax = "proto3";
+
+package google.rpc;
+
+message ErrorInfo {
+  string reason = 1;
+  string domain = 2;
+  map<string, string> metadata = 3;
+}

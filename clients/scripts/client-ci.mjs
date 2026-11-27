@@ -10,6 +10,7 @@ import {
   electronCiChanged,
   gitChangedFiles,
   storybookChanged,
+  raycastCiChanged,
   synchCiChanged,
   validateClientGate,
   workflowCiChanged,
@@ -59,6 +60,8 @@ if (command === "changes") {
     outputs.computer_use = full || computerUseCiChanged(files);
     outputs.electron = full || electronCiChanged(files);
     outputs.synch = full || synchCiChanged(files);
+    // The extension builds apart from the clients: only its own inputs run its job, on main too.
+    outputs.raycast = all || raycastCiChanged(files);
     outputs.storybook = all || full || storybookChanged(files);
     outputs.workflows = all || workflowCiChanged(files);
   }

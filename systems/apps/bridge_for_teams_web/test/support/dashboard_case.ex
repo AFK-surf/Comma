@@ -73,6 +73,34 @@ defmodule BridgeForTeamsWeb.DashboardCase do
     |> Plug.Conn.put_session(DashAuth.session_token_key(), token)
   end
 
+  @doc """
+  Gives `org` an enabled subscription account of each source in `sources`
+  (`"codex"`, `"claude"`…), so its catalog models count as served: swarm
+  model pickers offer only those (`BridgeForTeams.Models.offered/4`).
+  Returns the accounts.
+  """
+  def serve_models!(org, sources \\ ["codex", "claude"]) do
+    alias SalixAgent.SubscriptionStore, as: Store
+
+    for source <- sources do
+      id = Store.id()
+      {:ok, cipher} = Store.seal(org.salix_tenant_id, id, %{"access_token" => "test"})
+
+      {:ok, account} =
+        Store.create(org.salix_tenant_id, %{
+          "id" => id,
+          "credential" => "subscription",
+          "source" => source,
+          "status" => "ok",
+          "prepared" => true,
+          "disabled" => false,
+          "credentials" => cipher
+        })
+
+      account
+    end
+  end
+
   @doc "Setup helper: create user + org + owner membership and log in. Returns %{conn, user, org}."
   def register_and_log_in_user(%{conn: conn}) do
     %{user: user, org: org} = org_with_owner_fixture()

@@ -106,7 +106,7 @@ defmodule SalixWeb.EnvDispatch do
   @android_default_lease_seconds 900
   @cloud_vm_after_first_cursor "cloud-vm:registry-first-page"
 
-  @public_device_fields ~w(device_id environment_id alias name description capabilities os arch status connected_at disconnected_at updated_at environments connector_health connector_health_updated_at device_runtimes)
+  @public_device_fields ~w(device_id device_kind environment_id alias name description capabilities os arch status connected_at disconnected_at updated_at environments connector_health connector_health_updated_at device_runtimes)
 
   def create_device_install(agent_id, name, requester \\ nil) do
     with {:ok, %{"role" => "router"} = agent} <- SalixAgent.Control.get_record(agent_id) do
@@ -214,11 +214,25 @@ defmodule SalixWeb.EnvDispatch do
 
   def computer_use(agent_id, environment_ref, action) do
     with_vm_operation(agent_id, environment_ref, "computer_use", fn target ->
-      # The connector does not need the environment reference; forward the rest.
-      params = Map.drop(action, ["device_id", "environment"])
+      # The connector does not need the environment reference; bind the calling
+      # agent as session_id so concurrent agents cannot stomp on each other.
+      params =
+        action
+        |> Map.drop(["device_id", "environment"])
+        |> put_computer_use_session_id(agent_id)
+
       ConnectorRecovery.request(target, "computer_use", params)
     end)
   end
+
+  defp put_computer_use_session_id(params, agent_id) when is_binary(agent_id) do
+    case String.trim(agent_id) do
+      "" -> params
+      trimmed -> Map.put(params, "session_id", trimmed)
+    end
+  end
+
+  defp put_computer_use_session_id(params, _agent_id), do: params
 
   def android(agent_id, environment_ref, action) do
     with_android_operation(agent_id, environment_ref, fn target, policy, entry ->
@@ -440,7 +454,7 @@ defmodule SalixWeb.EnvDispatch do
            environment ==
              SalixStore.RuntimeIds.device_environment_id(device, "connector", "default"),
          :ok <-
-           SalixWeb.CloudVM.RuntimeLifecycle.hold(
+           SalixWeb.GroupStationLifecycle.hold(
              scope.group_id,
              scope.tenant_id,
              device,
@@ -463,7 +477,7 @@ defmodule SalixWeb.EnvDispatch do
       # may still be published in between. The retained exec is admitted only
       # once the VM is ready, so that admission sees it.
       vm_creating?(group) ->
-        _ = SalixWeb.CloudVM.RuntimeLifecycle.wake(group)
+        _ = SalixWeb.GroupStationLifecycle.wake(group)
         SystemsClock.sleep(min(remaining, 1_000))
         await_exec_admission(agent_id, ref, kind, group, deadline)
 
@@ -769,7 +783,7 @@ defmodule SalixWeb.EnvDispatch do
     else
       {:ok, _} -> {:error, SalixWeb.ComputeProviders.Cloudflare.unavailable_error(group_id)}
       {:error, %{"error_class" => _}} = error -> error
-      true -> {:error, SalixWeb.CloudVM.RuntimeLifecycle.retired_error(environment_id)}
+      true -> {:error, SalixWeb.GroupStationLifecycle.retired_error(environment_id)}
       _ -> {:error, :no_environment}
     end
   end
@@ -891,7 +905,10 @@ defmodule SalixWeb.EnvDispatch do
   end
 
   defp device_summary(device) do
-    Map.take(device, ~w(device_id alias name description os arch status capabilities updated_at))
+    Map.take(
+      device,
+      ~w(device_id device_kind alias name description os arch status capabilities updated_at)
+    )
   end
 
   # The Workload owns the stable VM identity even while its Connector has no

@@ -87,10 +87,29 @@ defmodule SalixMeet.LarkProvider do
          "provider" => "lark"
        }}
     else
-      {:error, _} = error -> error
-      false -> {:error, :invalid_meeting_source}
-      other -> {:error, other}
+      {:already_in_meeting, existing_id} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      {:error, {:join_abandoned, {:already_in_meeting, existing_id}}} ->
+        {:ok, already_in_meeting_result(existing_id)}
+
+      {:error, _} = error ->
+        error
+
+      false ->
+        {:error, :invalid_meeting_source}
+
+      other ->
+        {:error, other}
     end
+  end
+
+  defp already_in_meeting_result(existing_id) do
+    base = %{"status" => "already_in_meeting", "provider" => "lark"}
+
+    if is_binary(existing_id) and trim(existing_id) != "",
+      do: Map.put(base, "meeting_id", trim(existing_id)),
+      else: base
   end
 
   @doc "Terminal meeting publication used by `SalixMeet.ProviderDispatcher`."
@@ -295,7 +314,13 @@ defmodule SalixMeet.LarkProvider do
         end
 
       nil ->
-        create_meeting(connect, meeting_agent, envelope, event, message, request)
+        case Store.find_active_google_meet(connect["group_id"], request["meet_url"]) do
+          {:ok, existing_id, _existing_state} ->
+            {:already_in_meeting, existing_id}
+
+          :not_found ->
+            create_meeting(connect, meeting_agent, envelope, event, message, request)
+        end
     end
   end
 

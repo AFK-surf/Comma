@@ -43,6 +43,66 @@ defmodule SalixAgent.BuiltinSkillsTest do
     %{root: root, body: body, ctx: ctx}
   end
 
+  test "projected prompt exposes only selected built-in catalogs", %{ctx: ctx} do
+    persist(ctx, :group, "private-skill", "builtin", "PRIVATE_SKILL_BODY")
+    {:ok, projection} = SkillProjection.materialize(ctx)
+    disclosure = SalixAgent.ToolDisclosure.materialize_static("router", :internal, ctx)
+
+    private_tool = %{
+      "name" => "tenant.private_operation",
+      "summary" => "PRIVATE_PLUGIN",
+      "prompt_visibility" => "manual",
+      "manual" => "PRIVATE_CONNECTION"
+    }
+
+    disclosure =
+      Map.update!(disclosure, "tools", fn entries ->
+        [
+          private_tool
+          | Enum.map(entries, fn entry ->
+              if entry["name"] == "fs.read_file",
+                do: Map.put(entry, "manual", "PRIVATE_ANNOTATION"),
+                else: entry
+            end)
+        ]
+      end)
+
+    prompt =
+      SalixAgent.ToolPolicy.compose_session_prompt(
+        "router",
+        %{},
+        ctx.agent_id,
+        :internal,
+        disclosure,
+        projection,
+        true
+      )
+
+    assert prompt =~ "fs.read_file"
+    assert prompt =~ "A local skill."
+    refute prompt =~ "private-skill"
+    refute prompt =~ "PRIVATE_PLUGIN"
+    refute prompt =~ "PRIVATE_CONNECTION"
+    refute prompt =~ "PRIVATE_ANNOTATION"
+
+    persist(ctx, :group, "proof-skill", "builtin", "PRIVATE_OVERRIDE")
+    {:ok, overridden} = SkillProjection.materialize(ctx)
+
+    prompt =
+      SalixAgent.ToolPolicy.compose_session_prompt(
+        "router",
+        %{},
+        ctx.agent_id,
+        :internal,
+        disclosure,
+        overridden,
+        true
+      )
+
+    refute prompt =~ "A local skill."
+    refute prompt =~ "PRIVATE_OVERRIDE"
+  end
+
   test "local built-ins support runtime reads, streams and stat without catalog writes", %{
     ctx: ctx,
     body: body
@@ -134,6 +194,112 @@ defmodule SalixAgent.BuiltinSkillsTest do
 
     assert {:ok, %{editable: true}} =
              SkillProjection.stat(ctx, "/.runtime/skills/my-copy/SKILL.md")
+  end
+
+  test "role-scoped skills filter prompt listing by role while staying readable in runtime files",
+       %{ctx: ctx, root: root} do
+    File.mkdir_p!(Path.join(root, "router-only"))
+    File.mkdir_p!(Path.join(root, "worker-only"))
+
+    File.write!(
+      Path.join(root, "router-only/SKILL.md"),
+      "---\nname: router-only\nroles: router\ndescription: Router-only workflow.\n---\n\nRouter body\n"
+    )
+
+    File.write!(
+      Path.join(root, "worker-only/SKILL.md"),
+      "---\nname: worker-only\nroles: worker\ndescription: Worker-only workflow.\n---\n\nWorker body\n"
+    )
+
+    # Refresh cache against updated temp root
+    SystemsRuntime.put_env(:salix_agent, :builtin_skills_path, root <> "/.")
+
+    router_prompt = SkillProjection.prompt_section(Map.put(ctx, :role, "router"))
+    worker_prompt = SkillProjection.prompt_section(Map.put(ctx, :role, "worker"))
+
+    assert router_prompt =~ "router-only"
+    assert router_prompt =~ "proof-skill"
+    refute router_prompt =~ "worker-only"
+
+    assert worker_prompt =~ "worker-only"
+    assert worker_prompt =~ "proof-skill"
+    refute worker_prompt =~ "router-only"
+
+    # Runtime file reads remain available regardless of prompt role filtering.
+    assert {:ok, content} =
+             SkillProjection.read(
+               Map.put(ctx, :role, "router"),
+               "/.runtime/skills/worker-only/SKILL.md"
+             )
+
+    assert content =~ "Worker body"
+  end
+
+  test "custom skills with unknown frontmatter roles remain accepted by SkillFrontmatter" do
+    custom =
+      "---\nname: Custom Review\nroles: reviewer\ndescription: Custom team review.\n---\n\nBody\n"
+
+    assert {:ok, meta} = SalixAgent.SkillFrontmatter.metadata(custom)
+    assert meta["name"] == "Custom Review"
+    assert meta["description"] == "Custom team review."
+
+    assert {:error, _} = SalixAgent.SkillFrontmatter.parse_builtin_roles(meta["roles"])
+  end
+
+  test "shipped regular builtin skills have valid roles and concise prompt summaries" do
+    SystemsRuntime.delete_env(:salix_agent, :builtin_skills_path)
+    assert {:ok, %{skills: skills}} = SalixAgent.BuiltinSkills.snapshot()
+    assert map_size(skills) > 0
+
+    regular =
+      skills
+      |> Map.values()
+      |> Enum.reject(&(&1["activation"] == "per-message"))
+
+    assert length(regular) >= 30
+
+    for skill <- regular do
+      desc = String.trim(skill["description"] || "")
+      assert desc != "", "Expected non-empty description for #{skill["skill_id"]}"
+
+      prompt_text =
+        case skill["prompt_summary"] do
+          s when is_binary(s) and s != "" -> String.trim(s)
+          _ -> desc
+        end
+
+      assert String.length(prompt_text) <= 160,
+             "Regular builtin skill #{skill["skill_id"]} prompt summary is #{String.length(prompt_text)} chars (> 160): #{inspect(prompt_text)}"
+
+      if not is_nil(skill["roles"]) do
+        assert is_list(skill["roles"]) and skill["roles"] != []
+        assert Enum.all?(skill["roles"], &(&1 in ["router", "worker"]))
+      end
+    end
+
+    router_section = SkillProjection.render_prompt_section(regular, role: "router")
+    worker_section = SkillProjection.render_prompt_section(regular, role: "worker")
+
+    # Router-only skills stay out of Worker prompt
+    assert router_section =~ "mini-app-builder"
+    assert router_section =~ "inbound-api"
+    refute worker_section =~ "mini-app-builder"
+    refute worker_section =~ "inbound-api"
+
+    # Worker-only skills stay out of Router prompt
+    assert worker_section =~ "format-converter"
+    assert worker_section =~ "pdfs"
+    refute router_section =~ "format-converter"
+    refute router_section =~ "pdfs"
+
+    # Cross-role skills stay visible to both Router and Worker
+    shared_skills =
+      ~w(slack-thread-follow website-manager comma-settings github google linear notion ui-designer)
+
+    for shared <- shared_skills do
+      assert router_section =~ shared, "Expected #{shared} in router prompt"
+      assert worker_section =~ shared, "Expected #{shared} in worker prompt"
+    end
   end
 
   defp persist(ctx, layer, id, origin, body) do

@@ -3,7 +3,14 @@ defmodule SalixAgent.Tools.Media do
 
   require Logger
 
-  alias SalixAgent.{AudioTranscriber, FileBackend, MediaResolver, RuntimeFiles, SkillProjection}
+  alias SalixAgent.{
+    AudioTranscriber,
+    DriveMount,
+    FileBackend,
+    MediaResolver,
+    RuntimeFiles,
+    SkillProjection
+  }
 
   @image_desc """
   Generate or edit an image using the agent template's configured image model and save it into the agent-visible filesystem.
@@ -20,7 +27,7 @@ defmodule SalixAgent.Tools.Media do
   @audio_transcribe_desc """
   Transcribe an audio or video file from the current agent-visible workspace and save the complete transcript as a text artifact.
 
-  Params: path (required absolute VFS file path, at most 30 MiB), output_path (optional absolute .txt artifact path), locale (optional app locale of the person the transcript is for, such as zh-CN; chooses the Chinese script).
+  Params: path (required absolute visible file path, workspace or Drive, at most 256 MiB and 4 hours), output_path (optional absolute .txt artifact path), locale (optional app locale of the person the transcript is for, such as zh-CN; chooses the Chinese script).
 
   For video download and transcription requests, the Router delegates a Task to a Worker. The Worker completes these steps:
   1. Download the media in an authorized execution environment that permits file reads.
@@ -157,7 +164,7 @@ defmodule SalixAgent.Tools.Media do
 
   def transcribe_audio(args, ctx) do
     path = args |> arg("path") |> to_string() |> String.trim()
-    validate_audio_path!(path)
+    validate_audio_source!(path)
 
     output = blank_nil(arg(args, "output_path"))
 
@@ -235,6 +242,11 @@ defmodule SalixAgent.Tools.Media do
     )
 
     Salix.Telemetry.emit_asr_failure("audio_transcribe", reason)
+  end
+
+  # The source may be a Drive file: it is read in place, never copied first.
+  defp validate_audio_source!(path) do
+    if DriveMount.matches?(path), do: :ok, else: validate_audio_path!(path)
   end
 
   defp validate_audio_path!(path) do

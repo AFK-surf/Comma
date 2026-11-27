@@ -176,6 +176,13 @@ defmodule Salix.Bindings.AgentConversations do
     "billing_unavailable" => "Check the decision billing account before retrying."
   }
 
+  defp selection_error({:billing_unavailable, reason})
+       when reason in ["insufficient_credits", "account_inactive", "missing_account"] do
+    {:error,
+     {:task_model_selection_failed,
+      "billing_unavailable (#{reason}): #{@selection_recovery["billing_unavailable"]} The Task was not created. No default model was substituted."}}
+  end
+
   defp selection_error(reason) do
     code = if is_atom(reason), do: Atom.to_string(reason), else: reason
 
@@ -199,6 +206,42 @@ defmodule Salix.Bindings.AgentConversations do
       "#{code}: #{recovery} The Task was not created. No default model was substituted."}}
   end
 
+  @doc "Structured classification of a `selection_error/1` message for HTTP endpoints."
+  @spec classify_selection_error(term()) ::
+          {:billing_unavailable, String.t()}
+          | :rate_limited
+          | {:bad_request, String.t()}
+          | :unavailable
+  def classify_selection_error(message) when is_binary(message) do
+    cond do
+      String.starts_with?(message, "billing_unavailable (insufficient_credits):") ->
+        {:billing_unavailable, "insufficient_credits"}
+
+      String.starts_with?(message, "billing_unavailable (account_inactive):") ->
+        {:billing_unavailable, "account_inactive"}
+
+      String.starts_with?(message, "billing_unavailable (missing_account):") ->
+        {:billing_unavailable, "missing_account"}
+
+      String.starts_with?(message, "billing_unavailable:") ->
+        {:billing_unavailable, "billing_unavailable"}
+
+      String.starts_with?(message, "rate_limited:") ->
+        :rate_limited
+
+      String.starts_with?(message, "input_too_large:") ->
+        {:bad_request, "input_too_large"}
+
+      String.starts_with?(message, "invalid_request:") ->
+        {:bad_request, "invalid_request"}
+
+      true ->
+        :unavailable
+    end
+  end
+
+  def classify_selection_error(_message), do: :unavailable
+
   @impl SalixIM.Ports.TaskCreate
   def task_worker(scope),
     do:
@@ -218,9 +261,18 @@ defmodule Salix.Bindings.AgentConversations do
   @impl SalixIM.Ports.TaskCreate
   # A runtime without a model id, on a station: the station's default model of
   # that runtime, which it must run (a sandbox Task's switch and
-  # `SalixIM.TaskPlacement`, for a person's computer, ask this).
+  # `SalixIM.TaskPlacement`, for a person's computer or a new sandbox, ask
+  # this).
   def session_model(
         %{runs_on: %{"device_id" => _}} = scope,
+        %{"kind" => "runtime", "provider" => _} = choice
+      )
+      when not is_map_key(choice, "model") do
+    with :ok <- station_runs(scope, choice), do: {:ok, choice}
+  end
+
+  def session_model(
+        %{runs_on: %{"kind" => "sandbox"}} = scope,
         %{"kind" => "runtime", "provider" => _} = choice
       )
       when not is_map_key(choice, "model") do
@@ -243,34 +295,65 @@ defmodule Salix.Bindings.AgentConversations do
   # A Task that runs on a station takes a model the station's profiles have
   # enabled, as the station last said (`task_models`), or a runtime it has
   # enabled any model for. One that has said nothing runs no model a Task can
-  # name.
+  # name. A Comma station lists a runtime with no model under an account
+  # source of none; a still.fail station lists a runtime whose profiles name
+  # no model, which runs that runtime's default (`SalixWeb.TaskStations`).
+  #
+  # A sandbox not made yet has no station to ask. Its station will run the
+  # runtimes of the profiles Salix lends it (`SalixAgent.Sandboxes.runtimes/2`), and
+  # refuses a Task of any other runtime when it is invited, after the sandbox
+  # started. A Task that selected one account (`account_id`) is lent only
+  # that one. Accounts that cannot be read now refuse nothing: the station
+  # decides then, as before.
+  defp station_runs(
+         %{runs_on: %{"kind" => "sandbox"} = place} = scope,
+         %{"kind" => "runtime", "provider" => provider}
+       )
+       when not is_map_key(place, "device_id") do
+    case SalixAgent.Sandboxes.runtimes(scope.tenant_id, scope[:account_id]) do
+      {:ok, runtimes} ->
+        if provider in runtimes, do: :ok, else: {:error, {:not_in_sandbox, runtimes}}
+
+      {:error, _unread} ->
+        :ok
+    end
+  end
+
   defp station_runs(
          %{runs_on: %{"device_id" => device_id}} = scope,
          %{"kind" => "runtime", "provider" => provider} = choice
        ) do
-    models = station_models(scope, device_id)
+    {models, stillfail?} = station_models(scope, device_id)
 
     cond do
       not is_map(models) ->
-        {:error, {:not_on_station, %{}}}
+        {:error, not_on_station(%{}, stillfail?)}
 
       is_map_key(choice, "model") and choice["model"] in List.wrap(models[provider]) ->
         :ok
 
-      not is_map_key(choice, "model") and List.wrap(models[provider]) != [] ->
+      not is_map_key(choice, "model") and
+          SalixWeb.TaskStations.runs_runtime?(models, provider, stillfail?) ->
         :ok
 
       true ->
-        {:error, {:not_on_station, Map.take(models, ~w(claude codex))}}
+        {:error, not_on_station(Map.take(models, ~w(claude codex)), stillfail?)}
     end
   end
 
   defp station_runs(_scope, _choice), do: :ok
 
+  defp not_on_station(models, true), do: {:not_on_stillfail, models}
+  defp not_on_station(models, false), do: {:not_on_station, models}
+
   defp station_models(scope, device_id) do
     case SalixEnv.Registry.get_device(scope.tenant_id, scope.group_id, device_id) do
-      {:ok, device} -> get_in(device, ["meta", "capabilities", "task_models"])
-      _ -> nil
+      {:ok, device} ->
+        {get_in(device, ["meta", "capabilities", "task_models"]),
+         get_in(device, ["meta", "device_kind"]) == "stillfail"}
+
+      _ ->
+        {nil, false}
     end
   end
 
@@ -287,6 +370,216 @@ defmodule Salix.Bindings.AgentConversations do
 
   @impl SalixIM.Ports.TaskCreate
   def personal_computers(scope), do: SalixWeb.TaskStations.personal_computers(scope)
+
+  @impl SalixIM.Ports.TaskCreate
+  def external_choice_messages(scope, origin, limit) do
+    with key when not is_nil(key) <- SalixIM.ComputerChoice.external_thread_key(origin),
+         provider <- origin["provider"],
+         {:ok, agent_id, session_id} <- router_session_for_choice(scope) do
+      SalixAgent.InternalSessionStore.recent_messages(
+        agent_id,
+        session_id,
+        limit,
+        &external_choice_entry(&1, provider, key)
+      )
+    else
+      _ -> {:ok, []}
+    end
+  end
+
+  defp router_session_for_choice(scope) do
+    agent_id = get_in(scope, [:agent, "agent_id"]) || scope[:agent_id]
+
+    session_id =
+      scope[:computer_choice_session_id] ||
+        case scope[:agent] do
+          %{} = agent ->
+            case SalixStore.RuntimeIds.persisted_router_session_id(agent) do
+              {:ok, id} -> id
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+
+    if is_binary(agent_id) and agent_id != "" and is_binary(session_id) and session_id != "",
+      do: {:ok, agent_id, session_id},
+      else: :error
+  end
+
+  defp external_choice_entry(message, provider, key) when is_map(message) do
+    case choice_field(message, :role) do
+      "user" ->
+        message
+        |> user_choice_origins()
+        |> Enum.reverse()
+        |> Enum.flat_map(&external_user_choice_entry(&1, key))
+
+      "assistant" ->
+        case external_reply_text(message, provider, key) do
+          "" ->
+            []
+
+          text ->
+            [
+              %{
+                "actor_type" => "agent",
+                "external_reply" => true,
+                "content" => [%{"type" => "text", "text" => text}]
+              }
+            ]
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp external_choice_entry(_message, _provider, _key), do: []
+
+  defp user_choice_origins(message) do
+    case choice_field(message, :trusted_origins) do
+      list when is_list(list) and list != [] ->
+        Enum.filter(list, &is_map/1)
+
+      _ ->
+        case choice_field(message, :trusted_origin) do
+          %{} = origin -> [origin]
+          _ -> []
+        end
+    end
+  end
+
+  defp external_user_choice_entry(origin, key) do
+    with true <- choice_field(origin, :source_actor_type) == "provider_user",
+         true <-
+           SalixIM.ComputerChoice.external_thread_key(stringify_choice_origin(origin)) == key,
+         text when is_binary(text) and text != "" <- choice_field(origin, :source_text) do
+      [
+        %{
+          "actor_type" => "user",
+          "message_id" => choice_field(origin, :source_message_id),
+          "content" => [%{"type" => "text", "text" => text}]
+        }
+      ]
+    else
+      _ -> []
+    end
+  end
+
+  defp stringify_choice_origin(origin) when is_map(origin) do
+    Map.new(origin, fn
+      {k, v} when is_map(v) -> {to_string(k), stringify_choice_origin(v)}
+      {k, v} -> {to_string(k), v}
+    end)
+  end
+
+  defp external_reply_text(message, provider, key) do
+    prefix = "im_api.#{provider}."
+
+    message
+    |> choice_field(:tool_calls)
+    |> List.wrap()
+    |> Enum.flat_map(fn call ->
+      {tool_name, params} = unwrap_reply_tool_call(call)
+
+      if String.starts_with?(tool_name, prefix) and reply_matches_key?(provider, params, key),
+        do: extract_reply_args_text(params),
+        else: []
+    end)
+    |> Enum.join("\n")
+    |> String.trim()
+  end
+
+  defp unwrap_reply_tool_call(call) do
+    name = to_string(choice_field(call, :name) || "")
+    args = decode_choice_args(choice_field(call, :arguments) || choice_field(call, :args))
+
+    case name do
+      "call" ->
+        {to_string(choice_field(args, :tool) || ""),
+         decode_choice_args(choice_field(args, :params))}
+
+      "end_turn" ->
+        reply = decode_choice_args(choice_field(args, :reply))
+
+        {to_string(choice_field(reply, :tool) || ""),
+         decode_choice_args(choice_field(reply, :params))}
+
+      _other ->
+        {name, args}
+    end
+  end
+
+  defp decode_choice_args(args) when is_map(args), do: args
+
+  defp decode_choice_args(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _ -> %{}
+    end
+  end
+
+  defp decode_choice_args(_args), do: %{}
+
+  defp reply_matches_key?("slack", params, {"slack", _connect, {channel, thread}}) do
+    param_channel = choice_field(params, :channel) || choice_field(params, :channel_id)
+    param_thread = choice_field(params, :thread_ts)
+
+    (is_nil(param_channel) or param_channel == channel) and
+      (is_nil(thread) or is_nil(param_thread) or param_thread == thread)
+  end
+
+  defp reply_matches_key?(_provider, params, {_p, _connect, {room, _thread}}) do
+    param_room =
+      choice_field(params, :chat_id) || choice_field(params, :channel) ||
+        choice_field(params, :conversation_id)
+
+    is_nil(room) or is_nil(param_room) or param_room == room
+  end
+
+  defp reply_matches_key?(_provider, _params, _key), do: true
+
+  defp extract_reply_args_text(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, decoded} when is_map(decoded) -> extract_reply_args_text(decoded)
+      _ -> []
+    end
+  end
+
+  defp extract_reply_args_text(args) when is_map(args) do
+    text =
+      choice_field(args, :text) || choice_field(args, :content) || choice_field(args, :message) ||
+        choice_field(args, :body)
+
+    question = choice_field(args, :question)
+
+    question_parts =
+      if is_map(question) do
+        prompt = choice_field(question, :prompt)
+
+        labels =
+          question
+          |> choice_field(:choices)
+          |> List.wrap()
+          |> Enum.map(&choice_field(&1, :label))
+
+        [prompt | labels]
+      else
+        []
+      end
+
+    [text | question_parts]
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  defp extract_reply_args_text(_args), do: []
+
+  defp choice_field(map, key) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp choice_field(_map, _key), do: nil
 
   @doc "A sandbox of the Task's own, as automatic placement chooses it (`SalixWeb.TaskStations`)."
   def sandbox_place(scope), do: resolve_runs_on(scope, %{"kind" => "sandbox"})
@@ -350,7 +643,10 @@ defmodule Salix.Bindings.AgentConversations do
          :ok <- sandbox_room(scope),
          :ok <- sandbox_billing(scope),
          {:ok, %{token: token}} <-
-           SalixWeb.CodingSandboxes.github().token(scope.tenant_id, scope.group_id),
+           SalixWeb.CodingSandboxes.github().token(
+             scope.tenant_id,
+             SalixWeb.CodingSandboxes.github_group_id(scope.group_id)
+           ),
          {:ok, found} <- github_repo(token, repo),
          {:ok, repo} <- carried_pull_request(token, repo) do
       {:ok,
@@ -706,8 +1002,11 @@ defmodule Salix.Bindings.AgentConversations do
   end
 
   defp eligible_worker(agent, group_id) do
+    # A Task together's Worker holds what its people said: no other Agent of
+    # the Group, its host's Router included, consults it.
     if agent["group_id"] == group_id and agent["role"] == "worker" and
-         SalixAgent.Control.visible?(agent) do
+         SalixAgent.Control.visible?(agent) and
+         not SalixAgent.CollaborationPolicy.collaboration_purpose?(agent["purpose"]) do
       :ok
     else
       {:error, :target_unavailable}

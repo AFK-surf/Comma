@@ -141,6 +141,7 @@ async function renderComma() {
   });
   if (rendererRole === "main-window") {
     const stopAnalytics = startCommaAnalytics({
+      enabled: initialClientSettings.usageAnalyticsEnabled,
       runtime: "electron",
       lifecycle: sessionController.lifecycle,
       desktopLaunch: bridge.native

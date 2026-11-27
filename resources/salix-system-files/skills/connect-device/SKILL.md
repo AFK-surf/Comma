@@ -1,6 +1,8 @@
 ---
 name: connect-device
 description: Install a station on a Mac or Linux computer and enroll it in this Workspace, then confirm it and run Tasks on it.
+roles: router
+prompt_summary: "Connect a Mac or Linux computer to this Comma workspace (install, enroll, pair, and verify device connection)."
 ---
 
 # Connect Another Computer

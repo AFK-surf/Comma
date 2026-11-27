@@ -136,4 +136,60 @@ defmodule SalixAgent.ModelChoiceE2ETest do
     settle_receive({:llm_called, plain})
     assert plain["model"] == "anthropic/claude-haiku-4.5"
   end
+
+  test "a conversation_scan_only advance that births a Session preserves its model choice for the first real delivery",
+       %{agent: agent} do
+    scanned_session = "ses1_0000000000000000983"
+    conversation_id = "cnv1_0000000000000000983"
+    participant_id = "ptp1_0000000000000000983"
+    choice = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => true}
+
+    {:ok, _pid} = SalixAgent.Fleet.ensure_started(agent, create: true)
+
+    assert {:ok, :committed, []} =
+             SalixAgent.AgentActor.SessionDelivery.stage(agent, %{
+               source_message_id: nil,
+               payload: %{
+                 session_id: scanned_session,
+                 name: "Meeting · Nov 24, 10:59 AM",
+                 model: choice
+               },
+               conversation_source: %{
+                 "conversation_id" => conversation_id,
+                 "participant_id" => participant_id,
+                 "generation" => scanned_session,
+                 "start_seq" => 0,
+                 "seq" => 1
+               },
+               conversation_scan_only: true,
+               activate_on_admission: true
+             })
+
+    assert {:ok, born_state} = InternalSessionStore.read(agent, scanned_session)
+    assert InternalSession.get(born_state, :model) == choice
+    settle_refute_receive({:llm_called, _}, 50)
+
+    assert {:ok, :committed, _targets} =
+             SalixAgent.AgentActor.SessionDelivery.stage(agent, %{
+               source_message_id: "session-model-after-scan",
+               payload: %{
+                 content: "process the saved recording",
+                 role: "user",
+                 session_id: scanned_session,
+                 name: "Meeting · Nov 24, 10:59 AM",
+                 model: choice
+               },
+               conversation_source: %{
+                 "conversation_id" => conversation_id,
+                 "participant_id" => participant_id,
+                 "generation" => scanned_session,
+                 "start_seq" => 0,
+                 "seq" => 2
+               },
+               activate_on_admission: true
+             })
+
+    settle_receive({:llm_called, called})
+    assert called["model"] == "openai/gpt-5.5"
+  end
 end

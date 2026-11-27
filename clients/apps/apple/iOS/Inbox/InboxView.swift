@@ -15,6 +15,9 @@ struct InboxView: View {
     @State private var undo: InboxUndo?
     @State private var renaming: TaskSummary?
     @State private var sharing: TaskSummary?
+    /// Invitations to Collaborative Tasks others host: they wait here, above the Tasks, until answered.
+    @State private var invitations: PeopleModel?
+    @State private var invitation: PeopleCollaboration?
 
     var body: some View {
         let rows = inbox.rows(tasks: store.tasks)
@@ -23,6 +26,7 @@ struct InboxView: View {
         NavigationStack {
             ScrollViewReader { scroller in
                 List {
+                    invitationRows
                     // Day headers scroll with their rows: pinned plain-list headers have no surface of their own
                     // on iOS 26, so rows passing under one would show through it.
                     ForEach(days) { day in
@@ -41,19 +45,79 @@ struct InboxView: View {
                 // Rows that arrive or leave by themselves (an archive, a refresh, Undo) settle rather than jump.
                 .animation(CommaMotion.settle(reduced: reduceMotion), value: rows.map(\.id))
                 // Centred in the page rather than placed as a row, so it stands where the rows would be.
-                .overlay { if showsEmpty(rows) { empty } }
-                .refreshable { await store.refresh() }
+                .overlay { if showsEmpty(rows) && waiting.isEmpty { empty } }
+                .refreshable {
+                    async let tasks: Void = store.refresh()
+                    async let invites = try? invitations?.scope.call("collaborations.refresh", workspaceParameter: false)
+                    _ = await (tasks, invites)
+                }
+                .task(whileShowing: .inbox, id: store.workspace?.id) {
+                    guard let workspace = store.workspace else { invitations = nil; return }
+                    let model: PeopleModel
+                    if let current = invitations, current.workspace.id == workspace.id, current.scope.current { model = current }
+                    else { model = PeopleModel(store: store, workspace: workspace) }
+                    invitations = model
+                    await model.followCollaborations()
+                }
                 .onChange(of: navigation.reselect[.inbox]) { _, _ in
-                    guard let first = days.first?.id else { return }
-                    withAnimation(CommaMotion.spatialMove) { scroller.scrollTo(first, anchor: .top) }
+                    if !waiting.isEmpty {
+                        withAnimation(CommaMotion.spatialMove) { scroller.scrollTo("invitations", anchor: .top) }
+                    } else if let first = days.first?.id {
+                        withAnimation(CommaMotion.spatialMove) { scroller.scrollTo(first, anchor: .top) }
+                    }
                 }
             }
             .pageTitle("Inbox")
             .toolbar { toolbar(rows: rows, actions: actions) }
         }
         .sheet(isPresented: $filtersOpen) { filters }
+        .sheet(item: $invitation) { item in
+            if let invitations { InvitationSheet(store: store, model: invitations, item: item) }
+        }
         .taskActionSheets(store: store, renaming: $renaming, sharing: $sharing)
         .inboxUndoToast($undo, perform: actions.undo)
+    }
+
+    private var waiting: [PeopleCollaboration] { invitations?.collaborations.filter(\.invited) ?? [] }
+
+    /// Each invitation: the host's face, the Task's title and who invited the member, with the unread dot until
+    /// answered.
+    @ViewBuilder private var invitationRows: some View {
+        let waiting = waiting
+        if !waiting.isEmpty {
+            Text("Invitations").font(.subheadline.weight(.semibold)).foregroundStyle(CommaTheme.textQuaternary)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id("invitations")
+                .commaListRow()
+            ForEach(waiting) { item in
+                Button { invitation = item } label: {
+                    HStack(alignment: .center, spacing: 10) {
+                        AttentionDot().frame(width: 8)
+                        PersonAvatar(store: store, name: item.hostName, source: item.hostID.flatMap { invitations?.person($0)?.avatar }, size: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: item.title).font(.body).foregroundStyle(CommaTheme.textPrimary).lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            Text("\(item.hostName) invited you to collaborate").font(.footnote)
+                                .foregroundStyle(CommaTheme.textTertiary).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        if let at = item.invitedAt {
+                            TimelineView(.everyMinute) { context in
+                                Text(InboxRow.age(of: at, now: context.date))
+                                    .font(.footnote.monospacedDigit()).foregroundStyle(CommaTheme.textTertiary)
+                            }
+                        }
+                    }
+                    .padding(10).frame(minHeight: 44)
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(TaskRowButtonStyle())
+                .accessibilityIdentifier("inbox-invitation-" + item.id)
+                .commaListRow(.task)
+            }
+        }
     }
 
     private func row(_ task: TaskSummary, actions: InboxActions) -> some View {
@@ -147,6 +211,7 @@ struct InboxView: View {
                 Text("They come back when their tasks update.")
             }
         }
+        .verticalBarPreferred()
     }
 
     /// Status, Loops and Platform, with Unread only above them. Changes apply to the list behind as they are made.

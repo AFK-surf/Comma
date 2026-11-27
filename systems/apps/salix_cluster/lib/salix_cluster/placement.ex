@@ -38,6 +38,19 @@ defmodule SalixCluster.Placement do
     :exit, reason -> {:error, {:owner_unreachable, reason}}
   end
 
+  # Below-owner maintenance follows the ring alone, so each Agent has one node
+  # while the nodes agree on membership, whether or not its Server runs.
+  # An unreadable ring answers true: overlapping visits stay row-locked and
+  # idempotent, while work no node takes would wait for the ring.
+  @impl true
+  def placed_here?(agent_id) do
+    SalixCluster.Ring.owner(agent_id) == node()
+  rescue
+    _error -> true
+  catch
+    :exit, _reason -> true
+  end
+
   # A live claim held on this node routes locally without reading the head:
   # the cell mirrors the claim this node's Server installed, and the stage
   # itself still verifies the durable head before committing (the RPC

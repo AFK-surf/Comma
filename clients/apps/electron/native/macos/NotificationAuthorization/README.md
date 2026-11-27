@@ -3,10 +3,11 @@
 This macOS-only Node-API addon gives Electron Main the parts of
 `UNUserNotificationCenter` that Electron does not expose. It reads the current
 authorization status, asks the user for permission and waits for the answer, and
-sets the app icon badge.
+sets the app icon badge. It also reads and requests Comma's location
+authorization through `CLLocationManager`, which Electron does not expose either.
 
-It must run inside Comma's own process. macOS tracks notification authorization
-per bundle, so a spawned helper can only report its own status.
+It must run inside Comma's own process. macOS tracks notification and location
+authorization per bundle, so a spawned helper can only report its own status.
 
 Electron shows a banner without waiting for the authorization answer. While the
 status is `notDetermined`, the first banner races the system prompt and macOS
@@ -26,7 +27,23 @@ await addon.requestAuthorization();
 // the status the user's answer leaves behind, same names
 await addon.setBadgeCount(3);
 // "shown" | "cleared" | "unavailable"
+await addon.locationAuthorizationStatus();
+await addon.requestLocationAuthorization();
+// "notDetermined" | "restricted" | "denied" | "authorized" | "servicesOff" | "unavailable"
 ```
+
+Without the location grant, Chromium neither prompts nor refuses a position
+read. The read only times out. Main therefore checks location authorization
+before Settings › Share location turns on and before a location request card
+shares (`system-permission-authorization.ts`). While the status is
+`notDetermined`, `requestLocationAuthorization()` shows the system prompt and
+resolves when the user answers. macOS shows the prompt only to an app in use
+whose `Info.plist` has `NSLocationWhenInUseUsageDescription`, so in other cases
+the request resolves `notDetermined` at once. The packaged app and the source
+bundle (`scripts/dev-electron-bundle.ts`) both carry that key. When the status
+is already `denied` or `restricted`, or Location Services is off for the Mac
+(`servicesOff`), macOS does not ask again. Main then opens Location Services in
+System Settings.
 
 `requestAuthorization()` shows the system prompt only while the status is
 `notDetermined`. A decided status answers from the OS record. `unavailable`

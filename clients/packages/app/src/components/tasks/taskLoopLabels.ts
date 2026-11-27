@@ -7,7 +7,10 @@ import {
   type CommaLocale,
   type TaskStatusBucket,
 } from "@comma/i18n";
-import type { TaskLoopStop } from "@comma/ui/components/task-workspace";
+import type {
+  TaskLoopStanding,
+  TaskLoopStop,
+} from "@comma/ui/components/task-workspace";
 import type { useCommaMessages } from "@comma/i18n/react";
 import { uiClock } from "@comma/ui/clock";
 
@@ -106,7 +109,8 @@ export function taskLoopStop(
   loop: Pick<TaskLoop, "reason" | "state"> | undefined,
   messages: CommaMessages
 ): TaskLoopStop | undefined {
-  if (loop?.state !== "paused" || bucket !== "in_progress") return undefined;
+  if (loop?.state !== "paused" || (bucket !== "in_progress" && bucket !== "loops"))
+    return undefined;
   return {
     text: taskLoopPausedLabel(loop, messages) ?? messages.task_loop_paused(),
     failed: taskLoopStoppedOnError(loop),
@@ -116,6 +120,56 @@ export function taskLoopStop(
 /** A paused Loop that stopped on an error rather than by a person, a limit or a wait. */
 export function taskLoopStoppedOnError({ reason }: Pick<TaskLoop, "reason">): boolean {
   return reason === "failed" || reason === "exited" || reason === "undeliverable";
+}
+
+/**
+ * Standing trigger or setup state of an active or pending Loop Task while it
+ * waits between runs. Only applies while the Task is in progress; paused Loops
+ * are represented by `taskLoopStop`.
+ */
+export function taskLoopStanding(
+  bucket: TaskStatusBucket,
+  loop: TaskLoop | undefined,
+  messages: CommaMessages,
+  locale: CommaLocale,
+  clock?: TaskLoopZoneClock
+): TaskLoopStanding | undefined {
+  if (bucket !== "in_progress" && bucket !== "loops") return undefined;
+  if (loop?.state === "pending") {
+    return {
+      kind: "pending",
+      text: messages.task_loop_pending(),
+    };
+  }
+  if (loop?.state !== "active") return undefined;
+  const triggerType = taskLoopTriggerType(loop.cadence);
+  const kind: TaskLoopStanding["kind"] =
+    triggerType === "unknown" ? "other" : triggerType;
+  let text: string;
+  let title: string | undefined;
+  if (loop.cadence) {
+    const trigger = taskLoopTriggerText(loop.cadence, messages, locale, clock);
+    text = trigger.text || taskLoopLabel(loop, messages);
+    title = trigger.title;
+  } else {
+    text = messages.task_loop_active();
+  }
+  let nextRunText: string | undefined;
+  if (kind === "scheduled" && loop.nextRunAt !== undefined) {
+    const time = formatDate(loop.nextRunAt, locale, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    nextRunText = messages.task_loop_next_run({ time });
+  }
+  return {
+    kind,
+    text,
+    ...(title === undefined ? {} : { title }),
+    ...(nextRunText === undefined ? {} : { nextRunText }),
+  };
 }
 
 /**

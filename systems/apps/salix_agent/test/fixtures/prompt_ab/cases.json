@@ -1,0 +1,563 @@
+[
+  {
+    "name": "compat_purchase_conflicting_sources",
+    "category": "compatibility_checks",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "worker",
+      "cloud_vm_retired": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_task_compat role=user sender=Alice\n\nI want to buy a replacement M.2 SSD thermal bracket (Part #5M11B95321) for my ThinkPad X1 Carbon Gen 12 (21KC). One blog post says Gen 10/11 brackets don't fit Gen 12, while the seller says 5M11B95321 fits Gen 10/11/12. Can you verify and tell me whether I should buy it?"
+    ],
+    "tool_stubs": {
+      "web.search": {
+        "results": [
+          {
+            "title": "ThinkPad Upgrade Forum — SSD Bracket Warning",
+            "url": "https://forum.example.com/thinkpad-ssd-bracket",
+            "snippet": "Warning: do not buy Gen 10/11 SSD brackets for ThinkPad X1 Carbon Gen 12, many aftermarket brackets do not line up."
+          },
+          {
+            "title": "Lenovo ThinkPad X1 Carbon Gen 12 (21KC) Hardware Maintenance Manual",
+            "url": "https://support.lenovo.com/x1-carbon-gen-12-hmm",
+            "snippet": "2280 M.2 NVMe slot uses an integrated thermal bracket; fitment depends on the mounting screw-hole tab offset (25mm vs 22mm) and standoff height."
+          },
+          {
+            "title": "Replacement SSD Bracket 5M11B95321 Seller Listing",
+            "url": "https://parts.example.com/5M11B95321",
+            "snippet": "Fits ThinkPad X1 Carbon Gen 10 / Gen 11 / Gen 12. Exact tab offset and standoff dimensions are not published on this listing."
+          }
+        ]
+      },
+      "web.read_pages": {
+        "pages": [
+          {
+            "url": "https://support.lenovo.com/x1-carbon-gen-12-hmm",
+            "title": "ThinkPad X1 Carbon Gen 12 HMM — M.2 Bracket",
+            "content": "ThinkPad X1 Carbon Gen 12 (21KC) uses a 2280 M.2 thermal bracket whose compatibility is determined by the mounting tab screw-hole offset (25mm on 21KC vs 22mm on earlier revisions) and standoff height. Official parts lookup does not list aftermarket SKU 5M11B95321."
+          },
+          {
+            "url": "https://parts.example.com/5M11B95321",
+            "title": "Part 5M11B95321 Product Page",
+            "content": "Title claims compatibility with ThinkPad X1 Carbon Gen 10, Gen 11, and Gen 12. Specification table omits the mounting tab screw-hole offset and standoff height measurements; buyer photos show two different tab styles across batches."
+          }
+        ]
+      }
+    },
+    "checks": {
+      "required_tools": ["web.search", "web.read_pages"],
+      "required_output_patterns": [
+        "(?i)(25\\s*mm|22\\s*mm|offset|standoff|孔距|高度)",
+        "(?i)(check|compare|verify|confirm|measure|ask the seller|核对|对比|确认|量|问卖家)",
+        "(?i)(5M11B95321|X1 Carbon|Gen 12)"
+      ],
+      "forbidden_output_patterns": [
+        "(?i)(confirmed incompatible|definitely won't fit|definitely does not fit|肯定不兼容|绝对装不上)"
+      ],
+      "max_tool_calls": 12
+    }
+  },
+  {
+    "name": "blocked_site_with_desktop",
+    "category": "blocked_sites",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "worker",
+      "cloud_vm_retired": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_task_blocked1 role=user sender=Alice client_device=dev_mac_alice\n\nPlease fetch the product specs from https://shop.example.com/item/99881 and tell me its dimensions."
+    ],
+    "tool_stubs": {
+      "web.read_pages": {
+        "error": "HTTP 403 Forbidden: Cloudflare anti-bot challenge / captcha blocked cloud IP"
+      },
+      "web.http_request": {
+        "error": "HTTP 403 Forbidden: Cloudflare anti-bot challenge / captcha blocked cloud IP"
+      },
+      "web.search": {
+        "results": []
+      },
+      "device.list": {
+        "devices": [
+          {
+            "device_id": "dev_mac_alice",
+            "name": "Alice's MacBook Pro",
+            "status": "connected",
+            "os": "darwin",
+            "owner_is_requester": true
+          }
+        ]
+      },
+      "device.get": {
+        "device_id": "dev_mac_alice",
+        "name": "Alice's MacBook Pro",
+        "status": "connected",
+        "environments": [
+          {
+            "environment_id": "env_mac_1",
+            "os": "darwin",
+            "status": "connected",
+            "capabilities": {
+              "exec": true,
+              "in_app_browser": true
+            }
+          }
+        ]
+      },
+      "env.exec": {
+        "match_rules": [
+          {
+            "pattern": "(?i)(describe|--help|-h\\b|--version)",
+            "response": {
+              "status": "completed",
+              "exit_code": 0,
+              "stdout": "Usage: comma in-app-browser open <url> | comma in-app-browser read <url>\nOpens or reads a webpage inside the desktop app's built-in browser using the user's local session.",
+              "stderr": ""
+            }
+          },
+          {
+            "pattern": "(?i)in-app-browser.*(shop\\.example\\.com|99881)",
+            "response": {
+              "status": "completed",
+              "exit_code": 0,
+              "stdout": "Product 99881 Dimensions: 120mm x 80mm x 25mm, Weight: 310g",
+              "stderr": ""
+            }
+          }
+        ],
+        "default": {
+          "status": "completed",
+          "exit_code": 0,
+          "stdout": "ok",
+          "stderr": ""
+        }
+      }
+    },
+    "checks": {
+      "required_tools": ["web.read_pages", "device.list", "env.exec"],
+      "required_tool_arg_patterns": [
+        {"tool": "env.exec", "pattern": "in-app-browser"}
+      ],
+      "required_output_patterns": ["120", "(?i)(computer|desktop|mac|browser|电脑|浏览器)"],
+      "max_tool_calls": 12
+    }
+  },
+  {
+    "name": "blocked_site_no_desktop",
+    "category": "blocked_sites",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "worker",
+      "cloud_vm_retired": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_task_blocked2 role=user sender=Bob\n\nPlease read https://protected.example.com/pricing and summarize the enterprise tier."
+    ],
+    "tool_stubs": {
+      "web.read_pages": {
+        "error": "HTTP 429 Too Many Requests: site blocked cloud machine IP with captcha"
+      },
+      "web.http_request": {
+        "error": "HTTP 429 Too Many Requests: site blocked cloud machine IP with captcha"
+      },
+      "web.search": {
+        "results": []
+      },
+      "device.list": {
+        "devices": []
+      }
+    },
+    "checks": {
+      "required_tools": ["web.read_pages"],
+      "required_output_patterns": [
+        "(?i)(protected\\.example\\.com|429|captcha|blocked|refused|拒绝)",
+        "(?i)(desktop|Comma|桌面|电脑)"
+      ],
+      "forbidden_output_patterns": ["(?i)(\\$99/month|\\$199/month|unlimited seats)"],
+      "max_tool_calls": 12
+    }
+  },
+  {
+    "name": "show_screen_over_history_screenshots",
+    "category": "show_screen",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "router",
+      "cloud_vm_retired": true,
+      "with_screens": true,
+      "builtin_skills": true
+    },
+    "history_messages": [
+      {"role": "user", "content": "发张之前的模拟器截图给我看看"},
+      {"role": "assistant", "content": "好的，这是刚才的 iPhone 17 Pro 模拟器截图（已发送图片）。"}
+    ],
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_user_screen role=user sender=Peng client_device=dev_mac_peng\n\n我要看 simulator，跑起来给我看"
+    ],
+    "tool_stubs": {
+      "device.list": {
+        "devices": [
+          {
+            "device_id": "dev_mac_peng",
+            "name": "Peng's MacBook Pro",
+            "status": "connected",
+            "os": "darwin",
+            "owner_is_requester": true
+          }
+        ]
+      },
+      "device.get": {
+        "device_id": "dev_mac_peng",
+        "name": "Peng's MacBook Pro",
+        "status": "connected",
+        "environments": [
+          {
+            "environment_id": "env_peng_mac",
+            "os": "darwin",
+            "status": "connected",
+            "capabilities": {
+              "exec": true,
+              "screen_view": true
+            }
+          }
+        ]
+      },
+      "device.screens": {
+        "screens": [
+          {
+            "kind": "simulator",
+            "title": "iPhone 17 Pro",
+            "link": "comma:screen/dev_mac_peng/simulator%3A0702F8CC-2E2A-4D0A-8401-C37FA01E1646"
+          }
+        ]
+      }
+    },
+    "checks": {
+      "required_tools": ["device.screens"],
+      "required_output_patterns": [
+        "(?m)^comma:screen/dev_mac_peng/simulator%3A0702F8CC-2E2A-4D0A-8401-C37FA01E1646$"
+      ],
+      "forbidden_output_patterns": [
+        "`comma:screen/",
+        "\\[.*\\]\\(comma:screen/"
+      ],
+      "max_tool_calls": 10
+    }
+  },
+  {
+    "name": "sandbox_fallback_offline_cloud_vm",
+    "category": "sandbox_fallback",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "router",
+      "cloud_vm_retired": true,
+      "with_screens": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_user_5402 role=user sender=Heyang\n\n把 AFK-surf/board 的 web 客户端跑起来截张图给我看看现在长啥样"
+    ],
+    "tool_stubs": {
+      "device.list": {
+        "devices": [
+          {
+            "device_id": "dev_old_cloud_vm",
+            "name": "Legacy Cloud VM",
+            "device_kind": "cloud_vm",
+            "status": "disconnected"
+          }
+        ]
+      },
+      "station.list": {
+        "stations": [
+          {
+            "device_id": "station:old_cloud_vm",
+            "name": "Legacy Cloud VM",
+            "status": "offline"
+          }
+        ]
+      },
+      "im_api.internal.task.create": {
+        "conversation_id": "cnv_task_board_shot",
+        "status": "created"
+      }
+    },
+    "checks": {
+      "required_tools": ["im_api.internal.task.create"],
+      "required_tool_arg_patterns": [
+        {"tool": "im_api.internal.task.create", "pattern": "\"kind\"\\s*:\\s*\"sandbox\""}
+      ],
+      "forbidden_output_patterns": [
+        "(?i)(please connect your computer|请先连接电脑|没有可用电脑无法截图)"
+      ],
+      "max_tool_calls": 10
+    }
+  },
+  {
+    "name": "triage_full_base_casual_silence",
+    "category": "triage_worker",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "worker",
+      "cloud_vm_retired": true,
+      "triage": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Product-assigned Triage participation. Follow the Triage investigation protocol in your system instructions.\nInvestigate: Decide whether to participate in this channel message.\nExact Slack source: {\"connect_id\":\"imc_test\",\"workspace_id\":\"T_AFK\",\"channel_id\":\"C_GENERAL\",\"thread_ts\":\"1795200300.000100\"}\nSource references: [\"slack://T_AFK/C_GENERAL/1795200300.000100/1795200300.000100\"]\nLimited source excerpts: [{\"actor_kind\":\"human\",\"message_ts\":\"1795200300.000100\",\"excerpt\":\"中午吃啥，楼下新开那家拉面有人试过吗\"}]"
+    ],
+    "tool_stubs": {
+      "im_api.internal.triage.read_source": {
+        "source_snapshot": "snap_full_casual",
+        "messages": [
+          {
+            "message_ts": "1795200300.000100",
+            "actor_kind": "human",
+            "actor_id": "U_ALICE",
+            "text": "中午吃啥，楼下新开那家拉面有人试过吗",
+            "source_ref": "slack://T_AFK/C_GENERAL/1795200300.000100/1795200300.000100"
+          }
+        ],
+        "channel_context": {
+          "before": [
+            {"ts": "1795200250.000100", "user": "U_BOB", "actor_kind": "human", "text": "今天下雨好冷"}
+          ],
+          "after": []
+        }
+      }
+    },
+    "checks": {
+      "required_tools": ["im_api.internal.triage.read_source", "im_api.internal.triage.complete"],
+      "triage_allowed_kinds": ["silence"],
+      "triage_allowed_reason_codes": ["no_useful_addition"],
+      "triage_forbid_follow_up": true,
+      "max_tool_calls": 4
+    }
+  },
+  {
+    "name": "triage_full_base_answered_after",
+    "category": "triage_worker",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "worker",
+      "cloud_vm_retired": true,
+      "triage": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Product-assigned Triage participation. Follow the Triage investigation protocol in your system instructions.\nInvestigate: Decide whether to participate in this channel message.\nExact Slack source: {\"connect_id\":\"imc_test\",\"workspace_id\":\"T_AFK\",\"channel_id\":\"C_GENERAL\",\"thread_ts\":\"1795200200.000100\"}\nSource references: [\"slack://T_AFK/C_GENERAL/1795200200.000100/1795200200.000100\"]\nLimited source excerpts: [{\"actor_kind\":\"human\",\"message_ts\":\"1795200200.000100\",\"excerpt\":\"enterprise 的账号现在能登了吗？\"}]"
+    ],
+    "tool_stubs": {
+      "im_api.internal.triage.read_source": {
+        "source_snapshot": "snap_full_answered",
+        "messages": [
+          {
+            "message_ts": "1795200200.000100",
+            "actor_kind": "human",
+            "actor_id": "U_ALICE",
+            "text": "enterprise 的账号现在能登了吗？",
+            "source_ref": "slack://T_AFK/C_GENERAL/1795200200.000100/1795200200.000100"
+          }
+        ],
+        "channel_context": {
+          "before": [],
+          "after": [
+            {
+              "ts": "1795200240.000100",
+              "user": "U_BOB",
+              "actor_kind": "human",
+              "text": "能用了，添加 Profile -> Google Gemini 选企业版就能登，我刚配完"
+            }
+          ]
+        }
+      }
+    },
+    "checks": {
+      "required_tools": ["im_api.internal.triage.read_source", "im_api.internal.triage.complete"],
+      "triage_allowed_kinds": ["silence"],
+      "triage_allowed_reason_codes": ["already_handled"],
+      "triage_forbid_follow_up": true,
+      "max_tool_calls": 4
+    }
+  },
+  {
+    "name": "triage_full_base_fact_permalink",
+    "category": "triage_worker",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "worker",
+      "cloud_vm_retired": true,
+      "triage": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Product-assigned Triage participation. Follow the Triage investigation protocol in your system instructions.\nInvestigate: Decide whether to participate in this channel message.\nExact Slack source: {\"connect_id\":\"imc_test\",\"workspace_id\":\"T_AFK\",\"channel_id\":\"C_OPS\",\"thread_ts\":\"1795200900.000100\"}\nSource references: [\"slack://T_AFK/C_OPS/1795200900.000100/1795200900.000100\"]\nLimited source excerpts: [{\"actor_kind\":\"human\",\"message_ts\":\"1795200900.000100\",\"excerpt\":\"咱们公司采购的梯子方案最后定的是哪几家来着？\"}]"
+    ],
+    "tool_stubs": {
+      "im_api.internal.triage.read_source": {
+        "source_snapshot": "snap_full_fact",
+        "messages": [
+          {
+            "message_ts": "1795200900.000100",
+            "actor_kind": "human",
+            "actor_id": "U_CAROL",
+            "text": "咱们公司采购的梯子方案最后定的是哪几家来着？",
+            "source_ref": "slack://T_AFK/C_OPS/1795200900.000100/1795200900.000100"
+          }
+        ],
+        "channel_context": {
+          "before": [],
+          "after": []
+        }
+      },
+      "im_api.slack.search": {
+        "messages": [
+          {
+            "ts": "1795100555.000200",
+            "thread_ts": "1795100100.000100",
+            "channel": "C_INFRA",
+            "user": "U_YANYU",
+            "text": "梯子采购已敲定花云、奶昔、苏菲三家，由 Yanyu 负责采购，darksky 做聚合下发。",
+            "permalink": "https://afk-ai.slack.com/archives/C_INFRA/p1795100555000200?thread_ts=1795100100.000100&cid=C_INFRA",
+            "reactions": [{"name": "white_check_mark", "count": 1, "users": ["U_DARKSKY"]}]
+          }
+        ],
+        "has_more": false
+      },
+      "im_api.slack.message_search": {
+        "messages": [
+          {
+            "ts": "1795100555.000200",
+            "thread_ts": "1795100100.000100",
+            "channel": "C_INFRA",
+            "user": "U_YANYU",
+            "text": "梯子采购已敲定花云、奶昔、苏菲三家，由 Yanyu 负责采购，darksky 做聚合下发。",
+            "permalink": "https://afk-ai.slack.com/archives/C_INFRA/p1795100555000200?thread_ts=1795100100.000100&cid=C_INFRA",
+            "reactions": [{"name": "white_check_mark", "count": 1, "users": ["U_DARKSKY"]}]
+          }
+        ],
+        "has_more": false
+      }
+    },
+    "checks": {
+      "required_tools": ["im_api.internal.triage.read_source", "im_api.internal.triage.complete"],
+      "triage_allowed_kinds": ["reply"],
+      "required_output_patterns": [
+        "花云",
+        "奶昔",
+        "苏菲",
+        "p1795100555000200\\?thread_ts=1795100100\\.000100"
+      ],
+      "max_tool_calls": 10
+    }
+  },
+  {
+    "name": "router_secret_oauth_form",
+    "category": "credentials",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "router",
+      "cloud_vm_retired": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_user_secret role=user sender=Alice\n\nI want to connect our internal billing API to Comma. It needs a client_id, client_secret, and base_url. How should I give them to you?"
+    ],
+    "tool_stubs": {
+      "oauth.list_credentials": {
+        "credentials": []
+      },
+      "oauth.request_authorization": {
+        "status": "pending",
+        "authorization_url": "https://comma.surf/oauth/secret/req_123"
+      }
+    },
+    "checks": {
+      "required_tools": ["oauth.request_authorization"],
+      "required_tool_arg_patterns": [
+        {"tool": "oauth.request_authorization", "pattern": "\"provider\"\\s*:\\s*\"secret\""}
+      ],
+      "forbidden_output_patterns": [
+        "(?i)(paste your client_secret here|reply with your client_secret|直接把.*secret.*发给我)"
+      ],
+      "max_tool_calls": 8
+    }
+  },
+  {
+    "name": "router_attached_local_file",
+    "category": "attached_local_files",
+    "hard_guardrail": true,
+    "variant": {
+      "role": "router",
+      "cloud_vm_retired": true,
+      "builtin_skills": true
+    },
+    "user_messages": [
+      "Inbound message source: provider=internal conversation_id=cnv_user_localfile role=user sender=Peng client_device=dev_mac_peng\n\nAttached local files on the sender's computer:\n- /Users/peng/Downloads/logs-bundle.zip (185 MB)\n\n帮我解压这个 zip 看一下里面有没有报错日志"
+    ],
+    "tool_stubs": {
+      "device.list": {
+        "devices": [
+          {
+            "device_id": "dev_mac_peng",
+            "name": "Peng's MacBook Pro",
+            "status": "connected",
+            "os": "darwin",
+            "owner_is_requester": true,
+            "capabilities": {
+              "task_models": ["codex/gpt-6-astra"]
+            }
+          }
+        ]
+      },
+      "device.get": {
+        "device_id": "dev_mac_peng",
+        "name": "Peng's MacBook Pro",
+        "status": "connected",
+        "environments": [
+          {
+            "environment_id": "env_peng_mac",
+            "os": "darwin",
+            "status": "connected",
+            "capabilities": {
+              "exec": true,
+              "task_models": ["codex/gpt-6-astra"]
+            }
+          }
+        ]
+      },
+      "station.list": {
+        "stations": [
+          {
+            "device_id": "station:dev_mac_peng",
+            "name": "Peng's MacBook Pro",
+            "status": "connected"
+          }
+        ]
+      },
+      "im_api.internal.task.create": {
+        "conversation_id": "cnv_task_unzip",
+        "status": "created"
+      },
+      "env.exec": {
+        "status": "completed",
+        "exit_code": 0,
+        "stdout": "ERROR 2026-11-24 database pool timeout",
+        "stderr": ""
+      }
+    },
+    "checks": {
+      "any_of_tools": ["im_api.internal.task.create", "env.exec"],
+      "forbidden_tools": ["env.copy"],
+      "forbidden_output_patterns": [
+        "(?i)(please upload|请重新上传|文件未上传无法访问)"
+      ],
+      "max_tool_calls": 10
+    }
+  }
+]
